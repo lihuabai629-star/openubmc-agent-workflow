@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openubmc-target-runtime"
+version = "0.1.0"
+description = "Internal task-scoped runtime primitives for openUBMC tooling"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["openubmc_target_runtime"]

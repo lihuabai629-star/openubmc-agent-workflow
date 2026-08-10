@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "name": "openubmc-upgrade",
+  "version": "1.0.0",
+  "description": "通过 Redfish 升级、监控或回滚已验证的 openUBMC HPM。",
+  "author": "OpenUBMC Team",
+  "license": "MulanPSL-2.0",
+  "relatedSkills": ["openubmc-developer", "openubmc-build", "openubmc-debug", "openubmc-environment-setup"],
+  "files": [
+    "SKILL.md",
+    "skill.json",
+    "agents/openai.yaml",
+    "references/redfish-upgrade.md",
+    "openubmc_upgrade/__init__.py",
+    "openubmc_upgrade/runtime_backend.py",
+    "scripts/artifact_identity.py",
+    "scripts/redfish_credentials.py",
+    "scripts/target_runtime_adapter.py"
+  ],
+  "keywords": ["openubmc", "redfish", "upgrade", "rollback", "hpm"],
+  "categories": ["delivery", "operations"]
+}

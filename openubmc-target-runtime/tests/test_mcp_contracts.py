@@ -1,0 +1,956 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+import tempfile
+import threading
+import unittest
+
+
+RUNTIME_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RUNTIME_ROOT))
+
+from openubmc_target_runtime import (  # noqa: E402
+    JsonRpcMcpEndpoint,
+    OperationCatalog,
+    OperationCatalogError,
+    OperationDescriptor,
+    OrchestratedMcpBackend,
+    RuntimeMcpService,
+    TaskContextStore,
+)
+from openubmc_target_runtime import mcp as runtime_mcp  # noqa: E402
+
+
+class FakeTask:
+    def __init__(self, task_id: str) -> None:
+        self.task_id = task_id
+        self.calls: list[str] = []
+        self.closed = False
+
+
+class FakeDebugBackend:
+    def __init__(self) -> None:
+        self.created: list[FakeTask] = []
+
+    def open_task(self, task_id: str) -> FakeTask:
+        task = FakeTask(task_id)
+        self.created.append(task)
+        return task
+
+    @staticmethod
+    def close_task(task: FakeTask) -> None:
+        task.closed = True
+
+    @staticmethod
+    def maintain_task(_task: FakeTask) -> int:
+        return 0
+
+    @staticmethod
+    def task_status(task: FakeTask) -> dict[str, object]:
+        return {
+            "task_id": task.task_id,
+            "calls": list(task.calls),
+            "closed": task.closed,
+        }
+
+    @staticmethod
+    def debug_run(task: FakeTask, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        task.calls.append("debug_run")
+        return {"schema": "openubmc-debug.v1", "task": task.task_id}
+
+    @staticmethod
+    def debug_collect(task: FakeTask, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        task.calls.append("debug_collect")
+        return {
+            "schema": "openubmc-debug.v1",
+            "task": task.task_id,
+            "profile": arguments.get("profile", "standard"),
+        }
+
+
+class CapturingDomainBackend:
+    def __init__(self) -> None:
+        self.created: list[FakeTask] = []
+        self.arguments: list[dict[str, object]] = []
+
+    def open_task(self, task_id: str) -> FakeTask:
+        task = FakeTask(task_id)
+        self.created.append(task)
+        return task
+
+    @staticmethod
+    def close_task(task: FakeTask) -> None:
+        task.closed = True
+
+    @staticmethod
+    def maintain_task(_task: FakeTask) -> int:
+        return 0
+
+    @staticmethod
+    def task_status(task: FakeTask) -> dict[str, object]:
+        return {"task_id": task.task_id, "closed": task.closed}
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        captured = dict(arguments)
+        self.arguments.append(captured)
+        return {
+            "ok": True,
+            "task": task.task_id,
+            "ip": captured.get("ip"),
+            "targets": captured.get("targets"),
+        }
+
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        captured = dict(arguments)
+        self.arguments.append(captured)
+        return {
+            "ok": True,
+            "task": task.task_id,
+            "ip": captured["ip"],
+            "profile": captured.get("profile", "standard"),
+        }
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        captured = dict(arguments)
+        self.arguments.append(captured)
+        return {
+            "ok": True,
+            "task": task.task_id,
+            "journal": {"stage": "verified"},
+        }
+
+
+class RegistryClock:
+    def __init__(self) -> None:
+        self.value = 100.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+class CountingTaskContextStore(TaskContextStore):
+    def __init__(self, root: Path, **options) -> None:
+        super().__init__(root, **options)
+        self.save_count = 0
+
+    def save(self, task_id: str, context) -> None:
+        self.save_count += 1
+        super().save(task_id, context)
+
+
+class CapturingOrchestratedMcpBackend(OrchestratedMcpBackend):
+    def __init__(self, tool_backends, *, state_store: TaskContextStore) -> None:
+        super().__init__(tool_backends, state_store=state_store)
+        self.opened_tasks = []
+
+    def open_task(self, task_id: str):
+        task = super().open_task(task_id)
+        self.opened_tasks.append(task)
+        return task
+
+
+class RuntimeMcpServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.backend = FakeDebugBackend()
+        self.service = RuntimeMcpService(self.backend)
+
+    def tearDown(self) -> None:
+        self.service.close()
+
+    def test_catalog_metadata_is_derived_from_one_operation_binding_table(self) -> None:
+        bindings = runtime_mcp._OPERATION_BINDINGS
+        descriptors = self.service.catalog.descriptors()
+        descriptor_names = {descriptor.name for descriptor in descriptors}
+        active_bindings = tuple(
+            binding for binding in bindings if binding.name in descriptor_names
+        )
+
+        self.assertEqual(
+            tuple(descriptor.name for descriptor in descriptors),
+            tuple(binding.name for binding in active_bindings),
+        )
+        for descriptor, binding in zip(descriptors, active_bindings, strict=True):
+            self.assertEqual(descriptor.lifecycle, binding.lifecycle)
+            self.assertEqual(descriptor.handler_name, binding.handler_name)
+            self.assertEqual(descriptor.mutation, binding.mutation)
+        self.assertEqual(
+            runtime_mcp._DOMAIN_TO_TOOL,
+            {
+                binding.domain: binding.name
+                for binding in bindings
+                if binding.domain and binding.workflow_entry
+            },
+        )
+
+    def test_only_domain_specific_tools_are_exposed(self) -> None:
+        definitions = self.service.tool_definitions()
+        names = [definition["name"] for definition in definitions]
+
+        self.assertEqual(
+            names,
+            [
+                "debug_run",
+                "debug_collect",
+                "case_read",
+                "evidence_read",
+                "case_close",
+                "case_forget",
+                "phase_record",
+                "workflow.advance",
+                "runtime_status",
+            ],
+        )
+        debug_run = next(
+            definition for definition in definitions if definition["name"] == "debug_run"
+        )
+        self.assertIn(
+            "mdb_queries",
+            debug_run["inputSchema"]["properties"],
+        )
+        self.assertIn(
+            "mdb_only",
+            debug_run["inputSchema"]["properties"],
+        )
+        self.assertIn(
+            "mdb_expand_classes",
+            debug_run["inputSchema"]["properties"],
+        )
+        self.assertIn(
+            "mdb_concurrency",
+            debug_run["inputSchema"]["properties"],
+        )
+        debug_collect = next(
+            definition for definition in definitions if definition["name"] == "debug_collect"
+        )
+        self.assertIn(
+            "mdb",
+            debug_collect["inputSchema"]["properties"]["profile"]["enum"],
+        )
+        rendered = json.dumps(definitions, sort_keys=True)
+        for forbidden in ("remote_command", "shell", "exec", "ssh_command"):
+            self.assertNotIn(forbidden, rendered)
+
+    def test_catalog_is_the_source_for_listing_and_dispatch(self) -> None:
+        self.assertEqual(
+            self.service.catalog.names(),
+            (
+                "debug_run",
+                "debug_collect",
+                "case_read",
+                "evidence_read",
+                "case_close",
+                "case_forget",
+                "phase_record",
+                "workflow.advance",
+                "runtime_status",
+            ),
+        )
+        self.assertEqual(
+            self.service.tool_definitions(),
+            self.service.catalog.tool_definitions(),
+        )
+        debug = self.service.catalog.require("debug_run")
+        self.assertEqual(debug.handler_name, "debug_run")
+        self.assertEqual(debug.lifecycle, "invoke")
+        status = self.service.catalog.require("runtime_status")
+        self.assertIsNone(status.handler_name)
+        self.assertEqual(status.lifecycle, "status")
+
+    def test_catalog_rejects_duplicate_or_unbound_operations(self) -> None:
+        descriptor = OperationDescriptor(
+            name="debug_run",
+            description="debug",
+            input_schema={"type": "object"},
+            handler_name="debug_run",
+        )
+        with self.assertRaisesRegex(OperationCatalogError, "duplicate"):
+            OperationCatalog((descriptor, descriptor), backend=self.backend)
+        with self.assertRaisesRegex(OperationCatalogError, "unavailable"):
+            OperationCatalog(
+                (
+                    OperationDescriptor(
+                        name="missing",
+                        description="missing",
+                        input_schema={"type": "object"},
+                        handler_name="missing",
+                    ),
+                ),
+                backend=self.backend,
+            )
+
+        with self.assertRaisesRegex(OperationCatalogError, "schema"):
+            OperationDescriptor(
+                name="invalid-schema",
+                description="invalid",
+                input_schema={
+                    "type": "object",
+                    "properties": {"value": {"type": "not-a-json-type"}},
+                },
+            )
+
+    def test_catalog_validates_arguments_against_the_exposed_schema(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unexpected"):
+            self.service.call_tool(
+                "case_read",
+                {"case_id": "case-a", "unexpected": True},
+                task_id="schema-task",
+                operation_id="schema-operation",
+            )
+
+        with self.assertRaisesRegex(ValueError, "deadline"):
+            self.service.call_tool(
+                "debug_run",
+                {"ip": "target.example", "deadline": "slow"},
+                task_id="schema-task",
+                operation_id="schema-operation-two",
+            )
+
+    def test_legacy_underscore_and_live_patch_aliases_are_canonicalized(self) -> None:
+        backend = CapturingDomainBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            result = service.call_tool(
+                "live_patch_run",
+                {
+                    "ip": "target.example",
+                    "intent": "live_patch",
+                    "action": "live_patch",
+                    "local_path": "/tmp/unit.lua",
+                    "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                },
+                task_id="alias-task",
+                operation_id="alias-operation",
+            )
+            case = service.call_tool(
+                "case_read",
+                {"case_id": result.envelope["case_id"]},
+                task_id="alias-task",
+                operation_id="alias-case-read",
+            )
+        finally:
+            service.close()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(backend.arguments[0]["action"], "apply")
+        self.assertEqual(case["intent"], "live-patch")
+
+    def test_calls_reuse_one_task_and_isolate_different_codex_tasks(self) -> None:
+        first = self.service.call_tool(
+            "debug_run",
+            {"ip": "target.example", "deadline": 2},
+            task_id="codex-task-a",
+            operation_id="1",
+        )
+        follow_up = self.service.call_tool(
+            "debug_collect",
+            {"ip": "target.example", "profile": "freshness", "deadline": 2},
+            task_id="codex-task-a",
+            operation_id="2",
+        )
+        other = self.service.call_tool(
+            "debug_run",
+            {"ip": "other.example", "deadline": 2},
+            task_id="codex-task-b",
+            operation_id="3",
+        )
+
+        self.assertEqual(first["task"], follow_up["task"])
+        self.assertNotEqual(first["task"], other["task"])
+        self.assertEqual(len(self.backend.created), 2)
+        status = self.service.call_tool(
+            "runtime_status",
+            {},
+            task_id="codex-task-a",
+            operation_id="4",
+        )
+        self.assertEqual(status["task_count"], 2)
+        task_a = next(
+            task for task in status["tasks"] if task["task_id"] == "codex-task-a"
+        )
+        self.assertEqual(task_a["resource"]["calls"], ["debug_run", "debug_collect"])
+
+    def test_task_completion_closes_owned_runtime(self) -> None:
+        self.service.call_tool(
+            "debug_run",
+            {"ip": "target.example", "deadline": 2},
+            task_id="codex-task-a",
+            operation_id="1",
+        )
+
+        self.assertTrue(self.service.complete_task("codex-task-a"))
+        self.assertTrue(self.backend.created[0].closed)
+
+
+class PersistentTaskContextTests(unittest.TestCase):
+    @staticmethod
+    def service_for(
+        root: Path,
+        domain: CapturingDomainBackend,
+        **registry_options,
+    ) -> RuntimeMcpService:
+        backend = OrchestratedMcpBackend(
+            {
+                "debug_run": domain,
+                "debug_collect": domain,
+            },
+            state_store=TaskContextStore(root),
+        )
+        return RuntimeMcpService(backend, **registry_options)
+
+    def test_process_restart_restores_context_but_rebuilds_domain_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            first_domain = CapturingDomainBackend()
+            first_service = self.service_for(root, first_domain)
+            first_service.call_tool(
+                "debug_run",
+                {
+                    "ip": "192.0.2.40",
+                    "intent": "diagnosis-only",
+                    "final_purpose": "定位风扇状态差异",
+                    "ssh_password": "must-not-be-persisted",
+                    "deadline": 2,
+                },
+                task_id="stable-codex-task",
+                operation_id="first",
+            )
+            first_resource = first_domain.created[0]
+            first_service.close()
+
+            self.assertTrue(first_resource.closed)
+            persisted = "".join(
+                path.read_text(encoding="utf-8")
+                for path in root.glob("*.json")
+            )
+            self.assertNotIn("must-not-be-persisted", persisted)
+            second_domain = CapturingDomainBackend()
+            second_service = self.service_for(root, second_domain)
+            try:
+                follow_up = second_service.call_tool(
+                    "debug_collect",
+                    {"profile": "object-alarm", "deadline": 2},
+                    task_id="stable-codex-task",
+                    operation_id="second",
+                )
+                status = second_service.call_tool(
+                    "runtime_status",
+                    {},
+                    task_id="stable-codex-task",
+                    operation_id="status",
+                )
+            finally:
+                second_service.close()
+
+        self.assertEqual(follow_up["ip"], "192.0.2.40")
+        self.assertEqual(len(second_domain.created), 1)
+        self.assertIsNot(second_domain.created[0], first_resource)
+        task_status = status["tasks"][0]["resource"]
+        self.assertTrue(task_status["task_context"]["recovered"])
+        self.assertFalse(task_status["task_context"]["connections_recovered"])
+        self.assertFalse(task_status["task_context"]["evidence_results_recovered"])
+
+    def test_target_replacement_reuses_credentials_and_resets_old_ports(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            domain = CapturingDomainBackend()
+            service = self.service_for(Path(raw), domain)
+            try:
+                first = service.call_tool(
+                    "debug_run",
+                    {
+                        "ip": "192.0.2.50",
+                        "ssh_port": 2222,
+                        "telnet_port": 2323,
+                        "ssh_user": "root",
+                        "ssh_password": "shared-secret",
+                        "telnet_user": "root",
+                        "telnet_password": "shared-secret",
+                        "ssh_host_key_policy": "strict",
+                    },
+                    task_id="replace-target",
+                    operation_id="target-a",
+                )
+                case_id = first.envelope["case_id"]
+                service.call_tool(
+                    "debug_run",
+                    {"case_id": case_id, "ip": "192.0.2.51"},
+                    task_id="replace-target",
+                    operation_id="target-b",
+                )
+                case = service.call_tool(
+                    "case_read",
+                    {"case_id": case_id},
+                    task_id="replace-target",
+                    operation_id="read-target-b",
+                )
+            finally:
+                service.close()
+
+        second = domain.arguments[-1]
+        self.assertEqual(second["ip"], "192.0.2.51")
+        self.assertEqual(second["ssh_port"], 22)
+        self.assertEqual(second["telnet_port"], 23)
+        self.assertEqual(second["ssh_user"], "root")
+        self.assertEqual(second["ssh_password"], "shared-secret")
+        self.assertEqual(second["telnet_password"], "shared-secret")
+        self.assertEqual(second["ssh_host_key_policy"], "strict")
+        self.assertNotIn("ssh_port", case["workflow_inputs"])
+        self.assertNotIn("telnet_port", case["workflow_inputs"])
+        self.assertEqual(case["workflow_inputs"]["ssh_password"], "shared-secret")
+        self.assertEqual(case["target_version"], 2)
+
+    def test_absolute_runtime_lifetime_rehydrates_a_recent_long_running_task(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            clock = RegistryClock()
+            domain = CapturingDomainBackend()
+            service = self.service_for(
+                Path(raw),
+                domain,
+                clock=clock,
+                idle_timeout_seconds=1000,
+                max_lifetime_seconds=10,
+            )
+            try:
+                service.call_tool(
+                    "debug_run",
+                    {"ip": "192.0.2.41", "deadline": 2},
+                    task_id="long-running-task",
+                    operation_id="first",
+                )
+                clock.advance(11)
+                result = service.call_tool(
+                    "debug_collect",
+                    {"profile": "freshness", "deadline": 2},
+                    task_id="long-running-task",
+                    operation_id="second",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(result["ip"], "192.0.2.41")
+        self.assertEqual(len(domain.created), 2)
+        self.assertTrue(domain.created[0].closed)
+
+    def test_multi_target_context_restores_each_target_selector(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            first_domain = CapturingDomainBackend()
+            first_service = self.service_for(root, first_domain)
+            first_service.call_tool(
+                "debug_run",
+                {
+                    "targets": [
+                        {
+                            "ip": "192.0.2.50",
+                            "target_id": "reference-a",
+                            "role": "reference",
+                        },
+                        {
+                            "ip": "192.0.2.51",
+                            "target_id": "candidate-b",
+                            "role": "candidate",
+                        },
+                    ],
+                    "deadline": 2,
+                },
+                task_id="comparison-task",
+                operation_id="first",
+            )
+            first_service.close()
+
+            second_domain = CapturingDomainBackend()
+            second_service = self.service_for(root, second_domain)
+            try:
+                selected = second_service.call_tool(
+                    "debug_collect",
+                    {
+                        "target_id": "candidate-b",
+                        "profile": "object-alarm",
+                        "deadline": 2,
+                    },
+                    task_id="comparison-task",
+                    operation_id="second",
+                )
+            finally:
+                second_service.close()
+
+        self.assertEqual(selected["ip"], "192.0.2.51")
+
+    def test_explicit_task_completion_retains_the_durable_context(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            domain = CapturingDomainBackend()
+            service = self.service_for(root, domain)
+            service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.42", "deadline": 2},
+                task_id="completed-task",
+                operation_id="first",
+            )
+
+            self.assertTrue(service.complete_task("completed-task"))
+            self.assertIsNotNone(TaskContextStore(root).load("completed-task"))
+            service.close()
+
+    def test_explicit_completion_blocks_late_workflow_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            domain = CapturingDomainBackend()
+            backend = CapturingOrchestratedMcpBackend(
+                {
+                    "debug_run": domain,
+                    "debug_collect": domain,
+                },
+                state_store=TaskContextStore(root),
+            )
+            service = RuntimeMcpService(backend)
+            service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.45", "deadline": 2},
+                task_id="completed-race-task",
+                operation_id="first",
+            )
+            task = backend.opened_tasks[0]
+            started = threading.Event()
+            release = threading.Event()
+
+            def record_late_summary() -> None:
+                started.set()
+                release.wait(timeout=2)
+                task.record_workflow_summary(
+                    "late-summary",
+                    {
+                        "completed": False,
+                        "partial": True,
+                        "next_action": "retry",
+                        "phase_states": {},
+                    },
+                )
+
+            worker = threading.Thread(target=record_late_summary)
+            worker.start()
+            self.assertTrue(started.wait(timeout=2))
+            self.assertTrue(service.complete_task("completed-race-task"))
+            release.set()
+            worker.join(timeout=2)
+
+            self.assertFalse(worker.is_alive())
+            persisted = TaskContextStore(root).load("completed-race-task")
+            self.assertIsNotNone(persisted)
+            self.assertEqual(persisted.get("workflow_summaries", []), [])
+            service.close()
+
+    def test_identical_follow_up_calls_do_not_rewrite_unchanged_context(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            domain = CapturingDomainBackend()
+            store = CountingTaskContextStore(Path(raw))
+            service = RuntimeMcpService(
+                OrchestratedMcpBackend(
+                    {
+                        "debug_run": domain,
+                        "debug_collect": domain,
+                    },
+                    state_store=store,
+                )
+            )
+            try:
+                service.call_tool(
+                    "debug_run",
+                    {"ip": "192.0.2.43", "deadline": 2},
+                    task_id="low-write-task",
+                    operation_id="first",
+                )
+                for operation_id in ("second", "third"):
+                    service.call_tool(
+                        "debug_collect",
+                        {"profile": "object-alarm", "deadline": 2},
+                        task_id="low-write-task",
+                        operation_id=operation_id,
+                    )
+            finally:
+                service.close()
+
+        self.assertEqual(store.save_count, 1)
+
+    def test_failed_persistence_invalidates_old_target_without_retry_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            domain = CapturingDomainBackend()
+            store = CountingTaskContextStore(root, max_state_bytes=1024)
+            service = RuntimeMcpService(
+                OrchestratedMcpBackend(
+                    {
+                        "debug_run": domain,
+                        "debug_collect": domain,
+                    },
+                    state_store=store,
+                )
+            )
+            try:
+                service.call_tool(
+                    "debug_run",
+                    {"ip": "192.0.2.46", "deadline": 2},
+                    task_id="oversized-switch-task",
+                    operation_id="first",
+                )
+                switched = service.call_tool(
+                    "debug_run",
+                    {
+                        "ip": "192.0.2.47",
+                        "final_purpose": "x" * 4096,
+                        "deadline": 2,
+                    },
+                    task_id="oversized-switch-task",
+                    operation_id="second",
+                )
+                follow_up = service.call_tool(
+                    "debug_collect",
+                    {"profile": "freshness", "deadline": 2},
+                    task_id="oversized-switch-task",
+                    operation_id="third",
+                )
+            finally:
+                service.close()
+            restored = TaskContextStore(root).load("oversized-switch-task")
+
+        self.assertEqual(switched["ip"], "192.0.2.47")
+        self.assertEqual(follow_up["ip"], "192.0.2.47")
+        self.assertEqual(store.save_count, 2)
+        self.assertIsNone(restored)
+
+    def test_reconnect_restores_only_mutation_journal_identity_not_cached_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            first_domain = CapturingDomainBackend()
+            first_service = RuntimeMcpService(
+                OrchestratedMcpBackend(
+                    {
+                        "debug_collect": first_domain,
+                        "live_patch_run": first_domain,
+                    },
+                    state_store=TaskContextStore(root),
+                )
+            )
+            first_service.call_tool(
+                "live_patch_run",
+                {
+                    "ip": "192.0.2.44",
+                    "intent": "live-patch",
+                    "local_path": "/tmp/unit.lua",
+                    "remote_path": "/opt/bmc/apps/unit.lua",
+                    "deadline": 2,
+                },
+                task_id="mutation-task",
+                operation_id="first",
+            )
+            first_service.close()
+
+            second_domain = CapturingDomainBackend()
+            second_service = RuntimeMcpService(
+                OrchestratedMcpBackend(
+                    {
+                        "debug_collect": second_domain,
+                        "live_patch_run": second_domain,
+                    },
+                    state_store=TaskContextStore(root),
+                )
+            )
+            try:
+                second_service.call_tool(
+                    "debug_collect",
+                    {"profile": "freshness", "deadline": 2},
+                    task_id="mutation-task",
+                    operation_id="second",
+                )
+                status = second_service.call_tool(
+                    "runtime_status",
+                    {},
+                    task_id="mutation-task",
+                    operation_id="status",
+                )
+            finally:
+                second_service.close()
+
+        resource = status["tasks"][0]["resource"]
+        self.assertEqual(
+            resource["task_context"]["mutation_journal_identity_count"],
+            1,
+        )
+        self.assertEqual(resource["cached_mutation_count"], 0)
+
+
+class JsonRpcEndpointTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.backend = FakeDebugBackend()
+        self.service = RuntimeMcpService(self.backend)
+        self.endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="stdio-session-task",
+        )
+
+    def tearDown(self) -> None:
+        self.service.close()
+
+    def test_initialize_list_and_call_follow_mcp_json_rpc_shape(self) -> None:
+        initialized = self.endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"},
+            }
+        )
+        self.assertEqual(initialized["result"]["protocolVersion"], "2025-06-18")
+        self.assertIn("tools", initialized["result"]["capabilities"])
+
+        listed = self.endpoint.handle(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        )
+        self.assertEqual(
+            [tool["name"] for tool in listed["result"]["tools"]],
+            [
+                "debug_run",
+                "debug_collect",
+                "case_read",
+                "evidence_read",
+                "case_close",
+                "case_forget",
+                "phase_record",
+                "workflow.advance",
+                "runtime_status",
+            ],
+        )
+
+        called = self.endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "debug_run",
+                    "arguments": {"ip": "target.example", "deadline": 2},
+                    "_meta": {"codex/taskId": "codex-task-a"},
+                },
+            }
+        )
+        self.assertFalse(called["result"]["isError"])
+        envelope = called["result"]["structuredContent"]
+        self.assertTrue(envelope["case_id"])
+        facts = {item["key"]: item["value"] for item in envelope["facts"]}
+        self.assertEqual(facts["task"], "codex-task-a")
+        summary = called["result"]["content"][0]["text"]
+        self.assertIn("openUBMC 诊断完成", summary)
+        self.assertIn("实时读取", summary)
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(summary)
+
+    def test_unknown_methods_and_tools_fail_without_remote_fallback(self) -> None:
+        unknown_method = self.endpoint.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "ssh/exec", "params": {}}
+        )
+        self.assertEqual(unknown_method["error"]["code"], -32601)
+
+        unknown_tool = self.endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "remote_command", "arguments": {}},
+            }
+        )
+        self.assertTrue(unknown_tool["result"]["isError"])
+        self.assertIn("下一步", unknown_tool["result"]["content"][0]["text"])
+        self.assertEqual(self.backend.created, [])
+
+    def test_related_domain_results_share_concise_chinese_text_content(self) -> None:
+        cases = (
+            (
+                "log_bundle_collect",
+                {
+                    "ok": True,
+                    "result": {
+                        "bundle_root": "/tmp/bundle",
+                        "next_step": "分析日志",
+                    },
+                },
+                "日志包采集已完成",
+            ),
+            (
+                "live_patch_run",
+                {"journal": {"stage": "verified"}},
+                "Live Patch已完成",
+            ),
+            (
+                "upgrade_run",
+                {"journal": {"stage": "verified"}},
+                "固件升级已完成",
+            ),
+            (
+                "runtime_status",
+                {
+                    "task_count": 1,
+                    "persistent_task_contexts": {"entry_count": 2},
+                },
+                "磁盘保留 2 个可恢复上下文",
+            ),
+        )
+
+        for tool_name, value, expected in cases:
+            with self.subTest(tool=tool_name):
+                result = self.endpoint._tool_result(value, tool_name=tool_name)
+                self.assertIn(expected, result["content"][0]["text"])
+                self.assertEqual(result["structuredContent"], value)
+
+    def test_mutation_summary_does_not_report_non_success_stage_as_completed(self) -> None:
+        cases = (
+            ("upgrade_run", "replan_required", "需要重新规划"),
+            ("live_patch_run", "rollback_verified", "已回滚"),
+            ("upgrade_run", "verification_failed_terminal", "验证失败"),
+        )
+
+        for tool_name, stage, expected in cases:
+            with self.subTest(tool=tool_name, stage=stage):
+                result = self.endpoint._tool_result(
+                    {"journal": {"stage": stage}},
+                    tool_name=tool_name,
+                )
+                summary = result["content"][0]["text"]
+                self.assertNotIn(f"{self.endpoint._tool_label(tool_name)}已完成", summary)
+                self.assertIn(expected, summary)
+                self.assertIn("下一步", summary)
+
+    def test_task_completion_notification_uses_internal_session_identity(self) -> None:
+        self.endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "debug_run",
+                    "arguments": {"ip": "target.example", "deadline": 2},
+                },
+            }
+        )
+        response = self.endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/openubmc-task-complete",
+                "params": {},
+            }
+        )
+
+        self.assertIsNone(response)
+        self.assertTrue(self.backend.created[0].closed)
+
+
+if __name__ == "__main__":
+    unittest.main()

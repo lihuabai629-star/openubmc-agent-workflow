@@ -1,0 +1,2347 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from contextlib import redirect_stderr, redirect_stdout
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import tempfile
+import unittest
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parent
+INSTALLER = ROOT / "scripts" / "install_environment.py"
+SPEC = importlib.util.spec_from_file_location("openubmc_environment_installer", INSTALLER)
+assert SPEC is not None and SPEC.loader is not None
+installer = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(installer)
+
+
+EXPECTED_BUNDLE = (
+    ("openubmc-environment-setup", "openubmc-environment-setup"),
+    ("openubmc-debug", "openubmc-debug"),
+    ("openubmc-log-analyzer", "openubmc-log-analyzer"),
+    ("openubmc-developer", "openubmc-developer"),
+    ("openubmc-build", "openubmc-build"),
+    ("openubmc-upgrade", "openubmc-upgrade"),
+    ("openubmc-live-patch", "openubmc-live-patch"),
+    ("openubmc-dt-testing", "testing"),
+)
+EXPECTED_TARGET_RUNTIME_BUNDLE = (
+    ("openubmc-environment-setup", "openubmc-environment-setup"),
+    ("openubmc-debug", "openubmc-debug"),
+    ("openubmc-log-analyzer", "openubmc-log-analyzer"),
+    ("openubmc-developer", "openubmc-developer"),
+    ("openubmc-build", "openubmc-build"),
+    ("openubmc-upgrade", "openubmc-upgrade"),
+    ("openubmc-live-patch", "openubmc-live-patch"),
+)
+
+class EnvironmentSetupTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.home = self.root / "home"
+        self.source = self.root / "skills-source"
+        self.bin_dir = self.root / "bin"
+        self.bin_dir.mkdir()
+        fixture_tools = {
+            *installer.REQUIRED_TOOLS,
+            *installer.CONDITIONAL_TOOLS,
+            *installer.RECOMMENDED_TOOLS,
+            "codex",
+        }
+        for tool in fixture_tools:
+            executable = self.bin_dir / tool
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+        for canonical, relative in EXPECTED_BUNDLE:
+            directory = self.source / relative
+            directory.mkdir(parents=True)
+            (directory / "SKILL.md").write_text(
+                f"---\nname: {canonical}\ndescription: Test fixture.\n---\n",
+                encoding="utf-8",
+            )
+        shutil.copytree(
+            REPO_ROOT / "openubmc-target-runtime" / "openubmc_target_runtime",
+            self.source / "openubmc-target-runtime" / "openubmc_target_runtime",
+        )
+        debug_mcp = self.source / "openubmc-debug" / "scripts" / "target_runtime_mcp.py"
+        debug_mcp.parent.mkdir(parents=True)
+        debug_mcp.write_text(
+            "import json, sys\n"
+            "for line in sys.stdin:\n"
+            "    request = json.loads(line)\n"
+            "    if request.get('method') == 'initialize':\n"
+            "        result = {'protocolVersion': '2025-06-18', 'serverInfo': "
+            "{'name': 'openubmc-target-runtime', 'version': "
+            "'openubmc.target-runtime.v1'}, 'capabilities': {'tools': {}}}\n"
+            "    elif request.get('method') == 'tools/list':\n"
+            "        result = {'tools': [{'name': name} for name in "
+            "('debug_run', 'debug_collect', 'log_bundle_collect', "
+            "'live_patch_run', 'upgrade_run', 'case_read', 'evidence_read', "
+            "'case_close', 'case_forget', 'phase_record', 'workflow.advance', "
+            "'runtime_status')]}\n"
+            "    elif request.get('method') == 'notifications/initialized':\n"
+            "        continue\n"
+            "    elif request.get('method') == 'tools/call' and "
+            "request.get('params', {}).get('name') == 'runtime_status':\n"
+            "        status = {'api_version': 'openubmc.target-runtime.v1'}\n"
+            "        result = {'content': [{'type': 'text', 'text': "
+            "json.dumps(status)}], 'isError': False, "
+            "'structuredContent': status}\n"
+            "    else:\n"
+            "        continue\n"
+            "    print(json.dumps({'jsonrpc': '2.0', 'id': request.get('id'), "
+            "'result': result}), flush=True)\n",
+            encoding="utf-8",
+        )
+        for helper in (
+            "_target_runtime_adapter.py",
+            "target_runtime_cli.py",
+            "workflow_remote.py",
+        ):
+            (debug_mcp.parent / helper).write_text("# test fixture\n", encoding="utf-8")
+        self.environment_patch = mock.patch.dict(
+            installer.os.environ, {"SHELL": "/bin/bash"}, clear=False
+        )
+        self.environment_patch.start()
+        installer.os.environ.pop("XDG_CONFIG_HOME", None)
+
+    def tearDown(self) -> None:
+        self.environment_patch.stop()
+        self.temporary.cleanup()
+
+    @staticmethod
+    def credential_values() -> dict[str, str]:
+        return {
+            "OPENUBMC_SSH_USER": "fixture-bmc-user",
+            "OPENUBMC_SSH_PASSWORD": "fixture-bmc-password",
+            "OPENUBMC_TELNET_USER": "fixture-telnet-user",
+            "OPENUBMC_TELNET_PASSWORD": "fixture-telnet-password",
+            "REDFISH_USERNAME": "fixture-bmc-user",
+            "REDFISH_PASSWORD": "fixture-bmc-password",
+            "OPENUBMC_OS_SSH_USER": "fixture-os-user",
+            "OPENUBMC_OS_SSH_PASSWORD": "fixture-os-password",
+        }
+
+    def prepare_credentials(self) -> Path:
+        path = installer.credentials_path(self.home)
+        installer.write_credentials_file(path, self.credential_values(), False)
+        return path
+
+    def args(self, *extra: str):
+        return installer.parse_args(
+            [
+                "--home",
+                str(self.home),
+                "--source",
+                str(self.source),
+                "--non-interactive",
+                *extra,
+            ]
+        )
+
+    def install(self, *extra: str) -> tuple[int, str]:
+        output = io.StringIO()
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            redirect_stdout(output),
+        ):
+            result = installer.perform_install(self.args("--install", *extra))
+        return result, output.getvalue()
+
+    def check(self) -> tuple[int, str]:
+        output = io.StringIO()
+        args = installer.parse_args(["--home", str(self.home), "--check"])
+        with (
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            redirect_stdout(output),
+        ):
+            result = installer.perform_check(args)
+        return result, output.getvalue()
+
+    def test_bundle_manifest_has_eight_canonical_mappings(self) -> None:
+        self.assertEqual(installer.SKILL_BUNDLE, EXPECTED_BUNDLE)
+        self.assertEqual(
+            installer.TARGET_RUNTIME_SKILL_BUNDLE,
+            EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+        full = installer.resolve_skill_profile("full")
+        target_runtime = installer.resolve_skill_profile("target-runtime")
+        self.assertEqual(full.bundle, EXPECTED_BUNDLE)
+        self.assertTrue(full.manages_studio)
+        self.assertEqual(target_runtime.bundle, EXPECTED_TARGET_RUNTIME_BUNDLE)
+        self.assertFalse(target_runtime.manages_studio)
+        self.assertEqual(installer.validate_source(self.source), self.source.absolute())
+
+    def test_bootstrap_tools_install_all_missing_debian_dependencies(self) -> None:
+        with (
+            mock.patch.object(installer.shutil, "which", return_value=None),
+            mock.patch.object(installer, "python_pip_available", return_value=False),
+            mock.patch.object(installer, "install_apt_packages") as install_apt,
+            mock.patch.object(installer, "install_codex_client") as install_codex,
+        ):
+            installer.install_bootstrap_tools(
+                self.home,
+                ["codex"],
+                [str(installer.user_tool_bin(self.home))],
+                dry_run=False,
+            )
+
+        installed = set(install_apt.call_args.args[0])
+        self.assertEqual(
+            installed,
+            {
+                "git",
+                "openssh-client",
+                "sshpass",
+                "ripgrep",
+                "python3-pip",
+                "nodejs",
+                "npm",
+            },
+        )
+        install_codex.assert_called_once_with(
+            self.home,
+            [str(installer.user_tool_bin(self.home))],
+            dry_run=False,
+        )
+
+    def test_apt_install_is_noninteractive(self) -> None:
+        completed = subprocess.CompletedProcess(["apt-get"], 0, "", "")
+        with (
+            mock.patch.object(installer.shutil, "which", return_value="/usr/bin/apt-get"),
+            mock.patch.object(
+                installer, "privileged_command", side_effect=lambda command: command
+            ),
+            mock.patch.object(installer, "run_command", return_value=completed) as run,
+        ):
+            installer.install_apt_packages(["ripgrep", "sshpass"], dry_run=False)
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args[0], ["apt-get", "update"])
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "apt-get",
+                "install",
+                "-y",
+                "--no-install-recommends",
+                "ripgrep",
+                "sshpass",
+            ],
+        )
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["env"]["DEBIAN_FRONTEND"], "noninteractive")
+
+    def test_python_workflow_installs_bmcgo_and_conan_together(self) -> None:
+        wheel = ROOT / "assets" / installer.BMCGO_WHEEL_NAME
+
+        def find_tool(tool: str, **_: object) -> str | None:
+            return None if tool in {"bmcgo", "conan"} else f"/usr/bin/{tool}"
+
+        completed = subprocess.CompletedProcess(["pip"], 0, "", "")
+        with (
+            mock.patch.object(installer.shutil, "which", side_effect=find_tool),
+            mock.patch.object(installer, "discover_bmcgo_wheel", return_value=wheel),
+            mock.patch.object(installer, "run_command", return_value=completed) as run,
+        ):
+            installer.install_python_workflow_tools(
+                self.home,
+                self.source,
+                [str(installer.user_tool_bin(self.home))],
+                dry_run=False,
+            )
+
+        command = run.call_args.args[0]
+        self.assertIn(str(wheel), command)
+        self.assertIn("conan", command)
+        self.assertEqual(run.call_args.kwargs["env"]["HOME"], str(self.home))
+        self.assertEqual(
+            run.call_args.kwargs["env"]["PYTHONUSERBASE"],
+            str(self.home / ".local"),
+        )
+
+    def test_python_install_retries_for_older_pip(self) -> None:
+        wheel = ROOT / "assets" / installer.BMCGO_WHEEL_NAME
+
+        def find_tool(tool: str, **_: object) -> str | None:
+            return None if tool == "bmcgo" else f"/usr/bin/{tool}"
+
+        unsupported = subprocess.CompletedProcess(
+            ["pip"], 2, "", "no such option: --break-system-packages"
+        )
+        completed = subprocess.CompletedProcess(["pip"], 0, "", "")
+        with (
+            mock.patch.object(installer.shutil, "which", side_effect=find_tool),
+            mock.patch.object(installer, "discover_bmcgo_wheel", return_value=wheel),
+            mock.patch.object(
+                installer, "run_command", side_effect=[unsupported, completed]
+            ) as run,
+        ):
+            installer.install_python_workflow_tools(
+                self.home,
+                self.source,
+                [str(installer.user_tool_bin(self.home))],
+                dry_run=False,
+            )
+
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("--break-system-packages", run.call_args_list[0].args[0])
+        self.assertNotIn("--break-system-packages", run.call_args_list[1].args[0])
+
+    def test_codex_is_installed_under_user_local(self) -> None:
+        def find_tool(tool: str, **_: object) -> str | None:
+            return "/usr/bin/npm" if tool == "npm" else None
+
+        completed = subprocess.CompletedProcess(["npm"], 0, "", "")
+        with (
+            mock.patch.object(installer.shutil, "which", side_effect=find_tool),
+            mock.patch.object(installer, "run_command", return_value=completed) as run,
+        ):
+            installer.install_codex_client(
+                self.home,
+                [str(installer.user_tool_bin(self.home))],
+                dry_run=False,
+            )
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/usr/bin/npm",
+                "install",
+                "--global",
+                "--prefix",
+                str(self.home / ".local"),
+                installer.CODEX_NPM_PACKAGE,
+            ],
+        )
+
+    def test_bmcgo_wheel_digest_mismatch_is_rejected(self) -> None:
+        damaged = self.root / installer.BMCGO_WHEEL_NAME
+        damaged.write_bytes(b"not the bundled wheel")
+        with (
+            mock.patch.dict(
+                installer.os.environ,
+                {"OPENUBMC_BMCGO_PACKAGE": str(damaged)},
+                clear=False,
+            ),
+            self.assertRaisesRegex(installer.SetupError, "digest mismatch"),
+        ):
+            installer.discover_bmcgo_wheel(self.source)
+
+    def test_skip_tool_install_bypasses_all_package_installers(self) -> None:
+        with (
+            mock.patch.object(installer, "install_bootstrap_tools") as bootstrap,
+            mock.patch.object(installer, "install_python_workflow_tools") as python_tools,
+        ):
+            result, _ = self.install("--clients", "codex", "--skip-tool-install")
+
+        self.assertEqual(result, 0)
+        bootstrap.assert_not_called()
+        python_tools.assert_not_called()
+
+    def test_tool_install_failure_does_not_write_installer_state(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                installer,
+                "install_bootstrap_tools",
+                side_effect=installer.SetupError("apt failed"),
+            ),
+            redirect_stderr(stderr),
+        ):
+            result = installer.main(
+                [
+                    "install",
+                    "--home",
+                    str(self.home),
+                    "--source",
+                    str(self.source),
+                    "--clients",
+                    "codex",
+                    "--non-interactive",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertIn("apt failed", stderr.getvalue())
+        self.assertFalse(installer.state_path(self.home).exists())
+        self.assertFalse(installer.client_skills_dir(self.home, "codex").exists())
+
+    def test_resolve_source_materializes_one_shot_bundle_before_fallback(self) -> None:
+        invalid_local = self.root / "invalid-local"
+        invalid_local.mkdir()
+        managed_source = installer.managed_source_dir(self.home)
+        managed_source.mkdir(parents=True)
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "auto",
+            ]
+        )
+
+        def reject_local(bundle):
+            try:
+                installer.validate_source(invalid_local, bundle)
+            except installer.SetupError:
+                return None
+            raise AssertionError("invalid local source unexpectedly passed validation")
+
+        with (
+            mock.patch.object(
+                installer,
+                "local_repository_from_script",
+                side_effect=reject_local,
+            ),
+            self.assertRaisesRegex(installer.SetupError, "missing .*SKILL.md"),
+        ):
+            installer.resolve_source(
+                args,
+                bundle=(item for item in EXPECTED_TARGET_RUNTIME_BUNDLE),
+            )
+
+    def test_install_removes_retired_compatibility_links(self) -> None:
+        skills_dir = installer.client_skills_dir(self.home, "codex")
+        skills_dir.mkdir(parents=True)
+        for retired_name, relative in installer.RETIRED_SKILL_LINKS:
+            target = self.source / relative
+            target.mkdir(exist_ok=True)
+            (skills_dir / retired_name).symlink_to(target, target_is_directory=True)
+
+        result, _ = self.install("--clients", "codex")
+
+        self.assertEqual(result, 0)
+        for retired_name, _ in installer.RETIRED_SKILL_LINKS:
+            retired = skills_dir / retired_name
+            self.assertFalse(retired.exists())
+            self.assertFalse(retired.is_symlink())
+
+    def test_target_runtime_profile_manages_only_its_seven_skills(self) -> None:
+        self.prepare_credentials()
+        shutil.rmtree(self.source / "testing")
+        skills_dir = installer.client_skills_dir(self.home, "codex")
+        skills_dir.mkdir(parents=True)
+        untouched_targets = {}
+        for name in ("openubmc-dt-testing",):
+            target = self.root / f"existing-{name}"
+            target.mkdir()
+            link = skills_dir / name
+            link.symlink_to(target, target_is_directory=True)
+            untouched_targets[link] = target
+
+        result, output = self.install(
+            "--clients", "codex", "--skill-profile", "target-runtime"
+        )
+
+        self.assertEqual(result, 0)
+        self.assertIn("skills=7", output)
+        state = installer.load_state(self.home)
+        self.assertEqual(state["skill_profile"], "target-runtime")
+        self.assertEqual(
+            {Path(link).name for link in state["links"]},
+            {canonical for canonical, _ in EXPECTED_TARGET_RUNTIME_BUNDLE},
+        )
+        for canonical, relative in EXPECTED_TARGET_RUNTIME_BUNDLE:
+            self.assertTrue(
+                installer.same_target(skills_dir / canonical, self.source / relative)
+            )
+        for link, target in untouched_targets.items():
+            self.assertTrue(installer.same_target(link, target))
+
+        codex = self.home / ".codex" / "config.toml"
+        self.assertNotIn("openubmc-kb", codex.read_text(encoding="utf-8"))
+        self.assertIn("openubmc-target-runtime", codex.read_text(encoding="utf-8"))
+        self.assertEqual(self.check()[0], 0)
+
+        reinstall_result, _ = self.install("--clients", "codex")
+        self.assertEqual(reinstall_result, 0)
+        self.assertEqual(
+            installer.load_state(self.home)["skill_profile"], "target-runtime"
+        )
+        for link, target in untouched_targets.items():
+            self.assertTrue(installer.same_target(link, target))
+
+        (skills_dir / "openubmc-debug").unlink()
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        self.assertTrue(
+            installer.same_target(
+                skills_dir / "openubmc-debug", self.source / "openubmc-debug"
+            )
+        )
+
+        uninstall_args = installer.parse_args(["uninstall", "--home", str(self.home)])
+        self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+        for canonical, _ in EXPECTED_TARGET_RUNTIME_BUNDLE:
+            self.assertFalse((skills_dir / canonical).exists())
+        for link, target in untouched_targets.items():
+            self.assertTrue(installer.same_target(link, target))
+
+    def test_target_profile_migrates_legacy_standalone_kb_name(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text(
+            "[mcp_servers.openubmc-studio]\n"
+            'command = "/opt/openubmc-standalone-mcp"\n'
+            'args = ["--config", "/opt/openubmc-kb.json"]\n',
+            encoding="utf-8",
+        )
+
+        result, _ = self.install(
+            "--clients",
+            "codex",
+            "--skill-profile",
+            "target-runtime",
+        )
+
+        self.assertEqual(result, 0)
+        installed = codex.read_text(encoding="utf-8")
+        self.assertNotIn("[mcp_servers.openubmc-studio]", installed)
+        self.assertIn("[mcp_servers.openubmc-kb]", installed)
+        self.assertIn('command = "/opt/openubmc-standalone-mcp"', installed)
+        self.assertIn("[mcp_servers.openubmc-target-runtime]", installed)
+
+        uninstall_args = installer.parse_args(["uninstall", "--home", str(self.home)])
+        self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+        remaining = codex.read_text(encoding="utf-8")
+        self.assertIn("[mcp_servers.openubmc-kb]", remaining)
+        self.assertNotIn("[mcp_servers.openubmc-target-runtime]", remaining)
+
+    def test_preserved_debug_survives_source_switch_repair_and_uninstall(self) -> None:
+        self.prepare_credentials()
+        result, _output = self.install(
+            "--clients",
+            "codex",
+            "--skill-profile",
+            "target-runtime",
+        )
+        self.assertEqual(result, 0)
+
+        updated_debug = self.root / "updated-debug"
+        shutil.copytree(self.source / "openubmc-debug", updated_debug)
+        (updated_debug / "updated.marker").write_text("updated\n", encoding="utf-8")
+        debug_link = installer.client_skills_dir(self.home, "codex") / "openubmc-debug"
+        debug_link.unlink()
+        debug_link.symlink_to(updated_debug, target_is_directory=True)
+
+        replacement = self.root / "replacement-source"
+        shutil.copytree(self.source, replacement)
+        install_args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source",
+                str(replacement),
+                "--source-mode",
+                "linked",
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+                "--preserve-skills",
+                "openubmc-debug",
+                "--skip-credentials",
+                "--non-interactive",
+            ]
+        )
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_install(install_args), 0)
+
+        setup_link = (
+            installer.client_skills_dir(self.home, "codex")
+            / "openubmc-environment-setup"
+        )
+        self.assertTrue(installer.same_target(debug_link, updated_debug))
+        self.assertTrue(
+            installer.same_target(
+                setup_link,
+                replacement / "openubmc-environment-setup",
+            )
+        )
+        state = installer.load_state(self.home)
+        self.assertEqual(state["preserved_skills"], ["openubmc-debug"])
+        self.assertEqual(state["links"][str(debug_link)], str(updated_debug))
+
+        check_args = installer.parse_args(["check", "--home", str(self.home)])
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            report = installer.collect_check_report(check_args)
+        preserved_check = next(
+            item
+            for item in report["checks"]
+            if item["name"] == "link:" + str(debug_link)
+        )
+        self.assertTrue(preserved_check["ok"])
+        self.assertIn("preserved", preserved_check["detail"])
+
+        wrong_debug = self.root / "wrong-debug"
+        shutil.copytree(self.source / "openubmc-debug", wrong_debug)
+        debug_link.unlink()
+        debug_link.symlink_to(wrong_debug, target_is_directory=True)
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        self.assertTrue(installer.same_target(debug_link, updated_debug))
+
+        debug_link.unlink()
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        self.assertTrue(installer.same_target(debug_link, updated_debug))
+
+        uninstall_args = installer.parse_args(["uninstall", "--home", str(self.home)])
+        self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+        self.assertTrue(installer.same_target(debug_link, updated_debug))
+        self.assertFalse(setup_link.exists())
+
+    def test_preserve_skills_none_returns_link_to_selected_source(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        skills_dir = installer.client_skills_dir(self.home, "codex")
+        debug_link = skills_dir / "openubmc-debug"
+        updated_debug = self.root / "updated-debug"
+        shutil.copytree(self.source / "openubmc-debug", updated_debug)
+        debug_link.unlink()
+        debug_link.symlink_to(updated_debug, target_is_directory=True)
+
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+                "--preserve-skills",
+                "openubmc-debug",
+            )[0],
+            0,
+        )
+        self.assertTrue(installer.same_target(debug_link, updated_debug))
+
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+                "--preserve-skills",
+                "none",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        self.assertEqual(state["preserved_skills"], [])
+        self.assertTrue(
+            installer.same_target(debug_link, self.source / "openubmc-debug")
+        )
+
+    def test_preserved_targets_remain_distinct_across_clients(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex,claude",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        links = {
+            client: installer.client_skills_dir(self.home, client) / "openubmc-debug"
+            for client in ("codex", "claude")
+        }
+        targets: dict[str, Path] = {}
+        for client, link in links.items():
+            target = self.root / f"updated-debug-{client}"
+            shutil.copytree(self.source / "openubmc-debug", target)
+            link.unlink()
+            link.symlink_to(target, target_is_directory=True)
+            targets[client] = target
+
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex,claude",
+                "--skill-profile",
+                "target-runtime",
+                "--preserve-skills",
+                "openubmc-debug",
+            )[0],
+            0,
+        )
+        for client, link in links.items():
+            self.assertTrue(installer.same_target(link, targets[client]))
+
+        wrong_target = self.root / "wrong-debug"
+        shutil.copytree(self.source / "openubmc-debug", wrong_target)
+        for link in links.values():
+            link.unlink()
+            link.symlink_to(wrong_target, target_is_directory=True)
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        for client, link in links.items():
+            self.assertTrue(installer.same_target(link, targets[client]))
+
+    def test_repair_rejects_an_unavailable_recorded_preserved_target(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        debug_link = installer.client_skills_dir(self.home, "codex") / "openubmc-debug"
+        updated_debug = self.root / "updated-debug"
+        shutil.copytree(self.source / "openubmc-debug", updated_debug)
+        debug_link.unlink()
+        debug_link.symlink_to(updated_debug, target_is_directory=True)
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+                "--preserve-skills",
+                "openubmc-debug",
+            )[0],
+            0,
+        )
+
+        shutil.rmtree(updated_debug)
+        fallback_debug = self.root / "fallback-debug"
+        shutil.copytree(self.source / "openubmc-debug", fallback_debug)
+        debug_link.unlink()
+        debug_link.symlink_to(fallback_debug, target_is_directory=True)
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            self.assertRaisesRegex(installer.SetupError, "target is unavailable"),
+        ):
+            installer.perform_repair(repair_args)
+        state = installer.load_state(self.home)
+        self.assertEqual(state["links"][str(debug_link)], str(updated_debug))
+        self.assertTrue(installer.same_target(debug_link, fallback_debug))
+
+    def test_repair_migrates_state_without_preserved_skills(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        state.pop("preserved_skills")
+        installer.save_state(self.home, state, False)
+
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        self.assertEqual(installer.load_state(self.home)["preserved_skills"], [])
+
+    def test_preserve_skills_rejects_unknown_skill_name(self) -> None:
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source",
+                str(self.source),
+                "--preserve-skills",
+                "unknown-skill",
+                "--skip-credentials",
+                "--non-interactive",
+            ]
+        )
+        with mock.patch.object(
+            installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+        ):
+            with self.assertRaisesRegex(installer.SetupError, "unknown-skill"):
+                installer.perform_install(args)
+
+    def test_uninstall_rejects_unknown_preserved_skill_without_side_effects(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        debug_link = installer.client_skills_dir(self.home, "codex") / "openubmc-debug"
+        expected_target = self.source / "openubmc-debug"
+        state = installer.load_state(self.home)
+        state["preserved_skills"] = ["unknown-skill"]
+        installer.save_state(self.home, state, False)
+
+        uninstall_args = installer.parse_args(["uninstall", "--home", str(self.home)])
+        with self.assertRaisesRegex(installer.SetupError, "unknown-skill"):
+            installer.perform_uninstall(uninstall_args)
+        self.assertTrue(installer.same_target(debug_link, expected_target))
+        self.assertTrue(installer.state_path(self.home).is_file())
+
+    def test_target_profile_uninstall_preserves_studio_but_removes_runtime(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text("[other]\nvalue = 1\n", encoding="utf-8")
+
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+
+        uninstall_args = installer.parse_args(
+            ["uninstall", "--home", str(self.home)]
+        )
+        self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+        remaining = codex.read_text(encoding="utf-8")
+        self.assertIn("[other]", remaining)
+        self.assertIn("openubmc-kb", remaining)
+        self.assertNotIn("openubmc-target-runtime", remaining)
+
+    def test_full_target_full_roundtrip_preserves_studio_ownership(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text("[other]\nvalue = 1\n", encoding="utf-8")
+
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        full_state = installer.load_state(self.home)
+        self.assertIs(full_state["mcp"]["codex"]["created_entry"], True)
+        full_text = codex.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        target_state = installer.load_state(self.home)
+        self.assertIs(target_state["mcp"]["codex"]["created_entry"], True)
+        self.assertEqual(codex.read_text(encoding="utf-8"), full_text)
+
+        repair_args = installer.parse_args(
+            ["repair", "--home", str(self.home)]
+        )
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        self.assertEqual(codex.read_text(encoding="utf-8"), full_text)
+
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "full",
+            )[0],
+            0,
+        )
+        restored_state = installer.load_state(self.home)
+        self.assertIs(restored_state["mcp"]["codex"]["created_entry"], True)
+
+        uninstall_args = installer.parse_args(
+            ["uninstall", "--home", str(self.home)]
+        )
+        self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+        remaining = codex.read_text(encoding="utf-8")
+        self.assertIn("[other]", remaining)
+        self.assertNotIn("openubmc-kb", remaining)
+        self.assertNotIn("openubmc-target-runtime", remaining)
+
+    def test_target_profile_uninstall_keeps_source_used_by_excluded_links(self) -> None:
+        self.prepare_credentials()
+        managed_source = installer.managed_source_dir(self.home)
+        shutil.copytree(self.source, managed_source)
+
+        def install_managed(*extra: str) -> int:
+            args = installer.parse_args(
+                [
+                    "install",
+                    "--home",
+                    str(self.home),
+                    "--source-mode",
+                    "managed",
+                    "--clients",
+                    "codex",
+                    "--non-interactive",
+                    *extra,
+                ]
+            )
+            with (
+                mock.patch.object(
+                    installer,
+                    "resolve_tool_dirs",
+                    return_value=([str(self.bin_dir)], []),
+                ),
+                mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            ):
+                return installer.perform_install(args)
+
+        self.assertEqual(install_managed(), 0)
+        self.assertEqual(
+            install_managed("--skill-profile", "target-runtime"),
+            0,
+        )
+        skills_dir = installer.client_skills_dir(self.home, "codex")
+        excluded_link = skills_dir / "openubmc-dt-testing"
+        self.assertTrue(
+            installer.same_target(excluded_link, managed_source / "testing")
+        )
+        uninstall_args = installer.parse_args(
+            ["uninstall", "--home", str(self.home)]
+        )
+        with (
+            mock.patch.object(
+                installer, "git_output", return_value=installer.DEFAULT_REPO_URL
+            ),
+            mock.patch.object(installer, "git_dirty", return_value=False),
+        ):
+            self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+
+        self.assertTrue(managed_source.is_dir())
+        self.assertTrue(
+            installer.same_target(excluded_link, managed_source / "testing")
+        )
+        codex_text = (self.home / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("openubmc-kb", codex_text)
+        self.assertNotIn("openubmc-target-runtime", codex_text)
+
+    def test_uninstall_keeps_source_used_by_changed_managed_link(self) -> None:
+        self.prepare_credentials()
+        managed_source = installer.managed_source_dir(self.home)
+        shutil.copytree(self.source, managed_source)
+        install_args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "managed",
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+                "--non-interactive",
+            ]
+        )
+        with mock.patch.object(
+            installer,
+            "resolve_tool_dirs",
+            return_value=([str(self.bin_dir)], []),
+        ):
+            self.assertEqual(installer.perform_install(install_args), 0)
+
+        changed_link = installer.client_skills_dir(self.home, "codex") / "openubmc-debug"
+        changed_link.unlink()
+        changed_link.symlink_to(managed_source / "openubmc-build", target_is_directory=True)
+
+        uninstall_args = installer.parse_args(
+            ["uninstall", "--home", str(self.home)]
+        )
+        with (
+            mock.patch.object(
+                installer, "git_output", return_value=installer.DEFAULT_REPO_URL
+            ),
+            mock.patch.object(installer, "git_dirty", return_value=False),
+        ):
+            self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+
+        self.assertTrue(managed_source.is_dir())
+        self.assertTrue(
+            installer.same_target(changed_link, managed_source / "openubmc-build")
+        )
+
+    def test_new_subcommands_and_legacy_flags_parse_to_the_same_commands(self) -> None:
+        modern = installer.parse_args(["check", "--json", "--home", str(self.home)])
+        legacy = installer.parse_args(["--check", "--home", str(self.home)])
+        managed = installer.parse_args(
+            ["install", "--source-mode", "managed", "--home", str(self.home)]
+        )
+        profiled = installer.parse_args(
+            [
+                "install",
+                "--skill-profile",
+                "target-runtime",
+                "--home",
+                str(self.home),
+            ]
+        )
+        self.assertEqual(modern.command, "check")
+        self.assertTrue(modern.json)
+        self.assertEqual(legacy.command, "check")
+        self.assertTrue(legacy.legacy_cli)
+        self.assertEqual(managed.command, "install")
+        self.assertEqual(managed.source_mode, "managed")
+        self.assertEqual(profiled.skill_profile, "target-runtime")
+
+    def test_install_is_idempotent_for_all_clients_and_shell_hook(self) -> None:
+        credentials = self.prepare_credentials()
+        (self.home / ".bash_profile").write_text("user login content\n", encoding="utf-8")
+        first, first_output = self.install("--clients", "all")
+        second, second_output = self.install("--clients", "all")
+        self.assertEqual(first, 0)
+        self.assertEqual(second, 0)
+
+        for client in installer.CLIENTS:
+            skills_dir = installer.client_skills_dir(self.home, client)
+            for canonical, relative in EXPECTED_BUNDLE:
+                link = skills_dir / canonical
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(link.resolve(), (self.source / relative).resolve())
+
+        for profile in (
+            self.home / ".bashrc",
+            self.home / ".profile",
+            self.home / ".bash_profile",
+        ):
+            content = profile.read_text(encoding="utf-8")
+            self.assertEqual(content.count(installer.MARKER_START), 1)
+            self.assertEqual(content.count(installer.MARKER_END), 1)
+
+        env_file = installer.openubmc_config_dir(self.home) / "env.sh"
+        env_text = env_file.read_text(encoding="utf-8")
+        self.assertIn("unset OPENUBMC_BUILD_SKILL_ROOT", env_text)
+        self.assertNotIn("export OPENUBMC_BUILD_SKILL_ROOT", env_text)
+        self.assertNotIn("export OPENUBMC_DEBUG_SKILL_ROOT", env_text)
+        self.assertNotIn("export OPENUBMC_UPGRADE_SKILL_ROOT", env_text)
+
+        probe = subprocess.run(
+            [
+                "bash",
+                "-c",
+                ". \"$1\"; printf '%s|%s|%s|%s|%s' "
+                '"${OPENUBMC_BUILD_SKILL_ROOT:+set}" '
+                '"${OPENUBMC_DEBUG_SKILL_ROOT:+set}" '
+                '"${OPENUBMC_UPGRADE_SKILL_ROOT:+set}" '
+                '"${OPENUBMC_CREDENTIALS_FILE}" '
+                '"${OPENUBMC_SSH_PASSWORD:+set}"',
+                "probe",
+                str(env_file),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                "HOME": str(self.home),
+                "PATH": "/usr/bin:/bin",
+                "OPENUBMC_BUILD_SKILL_ROOT": "/stale/build",
+                "OPENUBMC_DEBUG_SKILL_ROOT": "/stale/debug",
+                "OPENUBMC_UPGRADE_SKILL_ROOT": "/stale/upgrade",
+            },
+        )
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.assertEqual(probe.stdout, f"|||{credentials}|")
+
+        combined_output = first_output + second_output
+        for secret in ("fixture-bmc-password", "fixture-os-password"):
+            self.assertNotIn(secret, combined_output)
+        self.assertTrue(installer.check_toml_mcp(self.home / ".codex/config.toml", installer.DEFAULT_STUDIO_URL))
+        self.assertTrue(installer.check_json_mcp(self.home / ".claude.json", installer.DEFAULT_STUDIO_URL))
+
+    def test_install_deploys_runtime_launcher_and_registers_stdio_mcp(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        claude = self.home / ".claude.json"
+        codex.parent.mkdir(parents=True)
+        codex.write_text("[other]\nvalue = 1\n", encoding="utf-8")
+        claude.write_text('{"keep": true}\n', encoding="utf-8")
+
+        result, _ = self.install("--clients", "codex,claude")
+
+        self.assertEqual(result, 0)
+        state = installer.load_state(self.home)
+        runtime = state["runtime"]
+        self.assertEqual(runtime["api_version"], "openubmc.target-runtime.v1")
+        self.assertRegex(runtime["content_digest"], r"^sha256:[0-9a-f]{64}$")
+        package = Path(runtime["package_path"])
+        launcher = Path(runtime["launcher_path"])
+        self.assertTrue((package / "__init__.py").is_file())
+        self.assertTrue((package / "runtime.py").is_file())
+        self.assertTrue(launcher.is_file())
+        self.assertTrue(os.access(launcher, os.X_OK))
+
+        codex_text = codex.read_text(encoding="utf-8")
+        self.assertIn("[other]", codex_text)
+        self.assertIn("[mcp_servers.openubmc-kb]", codex_text)
+        self.assertIn("[mcp_servers.openubmc-target-runtime]", codex_text)
+        self.assertIn(f"command = {json.dumps(str(launcher))}", codex_text)
+
+        claude_document = json.loads(claude.read_text(encoding="utf-8"))
+        self.assertTrue(claude_document["keep"])
+        self.assertEqual(
+            claude_document["mcpServers"]["openubmc-target-runtime"],
+            {"type": "stdio", "command": str(launcher), "args": []},
+        )
+
+    def test_credentials_map_bmc_to_redfish_and_require_private_import(self) -> None:
+        values = {
+            "OPENUBMC_SSH_USER": "shared-user",
+            "OPENUBMC_SSH_PASSWORD": "shared-password",
+            "OPENUBMC_OS_SSH_USER": "os-user",
+            "OPENUBMC_OS_SSH_PASSWORD": "os-password",
+        }
+        normalized = installer.normalize_credentials(values, require_complete=True)
+        self.assertEqual(normalized["REDFISH_USERNAME"], "shared-user")
+        self.assertEqual(normalized["REDFISH_PASSWORD"], "shared-password")
+
+        import_file = self.root / "import.env"
+        import_file.write_text(installer.render_credentials(values), encoding="utf-8")
+        import_file.chmod(0o644)
+        args = self.args("--install", "--clients", "codex", "--import-credentials", str(import_file))
+        with self.assertRaises(installer.SetupError):
+            installer.configure_credentials(args)
+
+        import_file.chmod(0o600)
+        self.assertEqual(installer.configure_credentials(args), "imported")
+        destination = installer.credentials_path(self.home)
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+        parsed = installer.parse_credentials(
+            destination.read_text(encoding="utf-8"), require_complete=True
+        )
+        self.assertEqual(parsed["OPENUBMC_SSH_USER"], parsed["REDFISH_USERNAME"])
+        self.assertEqual(parsed["OPENUBMC_SSH_PASSWORD"], parsed["REDFISH_PASSWORD"])
+
+        with self.assertRaises(installer.SetupError):
+            installer.normalize_credentials(
+                {
+                    "OPENUBMC_SSH_USER": "one",
+                    "REDFISH_USERNAME": "two",
+                }
+            )
+
+    def test_credentials_subcommand_changes_only_the_private_file(self) -> None:
+        import_file = self.root / "import.env"
+        import_file.write_text(
+            installer.render_credentials(self.credential_values()), encoding="utf-8"
+        )
+        import_file.chmod(0o600)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = installer.main(
+                [
+                    "credentials",
+                    "--home",
+                    str(self.home),
+                    "--import-credentials",
+                    str(import_file),
+                    "--non-interactive",
+                ]
+            )
+        self.assertEqual(result, 0)
+        self.assertIn("credentials: imported", output.getvalue())
+        self.assertTrue(installer.credentials_path(self.home).is_file())
+        self.assertFalse(installer.state_path(self.home).exists())
+        self.assertFalse((self.home / ".bashrc").exists())
+
+    def test_mcp_upsert_remove_and_preexisting_ownership(self) -> None:
+        backups = installer.backup_path(self.home)
+        codex = self.home / ".codex" / "config.toml"
+        claude = self.home / ".claude.json"
+        codex.parent.mkdir(parents=True)
+        codex.write_text("[other]\nvalue = 1\n", encoding="utf-8")
+        claude.write_text('{"keep": true}\n', encoding="utf-8")
+
+        state = installer.configure_mcp(
+            self.home,
+            ("codex", "claude"),
+            installer.DEFAULT_STUDIO_URL,
+            backups,
+            False,
+        )
+        state = installer.configure_mcp(
+            self.home,
+            ("codex", "claude"),
+            installer.DEFAULT_STUDIO_URL,
+            backups,
+            False,
+            state,
+        )
+        installer.remove_toml_mcp(codex, state["codex"], backups, False)
+        installer.remove_json_mcp(claude, state["claude"], backups, False)
+        self.assertEqual(codex.read_text(encoding="utf-8").strip(), "[other]\nvalue = 1")
+        self.assertEqual(json.loads(claude.read_text(encoding="utf-8")), {"keep": True, "mcpServers": {}})
+
+        codex.write_text(
+            '[mcp_servers.openubmc-kb]\nurl = "http://localhost:9876/mcp"\n',
+            encoding="utf-8",
+        )
+        preexisting = installer.upsert_toml_mcp(
+            codex, installer.DEFAULT_STUDIO_URL, backups, False
+        )
+        self.assertFalse(preexisting["created_entry"])
+        installer.remove_toml_mcp(codex, preexisting, backups, False)
+        self.assertTrue(installer.check_toml_mcp(codex, installer.DEFAULT_STUDIO_URL))
+
+        with self.assertRaises(installer.SetupError):
+            installer.upsert_toml_mcp(
+                codex, "http://localhost:9999/mcp", backups, False
+            )
+
+    def test_external_codex_kb_stdio_survives_runtime_lifecycle(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        legacy_kb = (
+            "[mcp_servers.openubmc-studio]\n"
+            'command = "/opt/openubmc-standalone-mcp"\n'
+            'args = ["serve", "--stdio"]\n'
+        )
+        migrated_kb = legacy_kb.replace("openubmc-studio", "openubmc-kb")
+        codex.write_text(legacy_kb, encoding="utf-8")
+
+        result, _ = self.install("--clients", "codex")
+
+        self.assertEqual(result, 0)
+        installed = codex.read_text(encoding="utf-8")
+        self.assertTrue(installed.startswith(migrated_kb))
+        self.assertIn("[mcp_servers.openubmc-target-runtime]", installed)
+        state = installer.load_state(self.home)
+        self.assertEqual(state["mcp"]["codex"]["ownership"], "external")
+        self.assertEqual(self.check()[0], 0)
+
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        self.assertTrue(codex.read_text(encoding="utf-8").startswith(migrated_kb))
+
+        uninstall_args = installer.parse_args(["uninstall", "--home", str(self.home)])
+        self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+        self.assertEqual(codex.read_text(encoding="utf-8"), migrated_kb)
+
+    def test_external_codex_kb_stdio_skips_legacy_http_health_probe(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text(
+            "[mcp_servers.openubmc-kb]\n"
+            'command = "/opt/openubmc-standalone-mcp"\n'
+            'args = ["serve", "--stdio"]\n',
+            encoding="utf-8",
+        )
+        install_output = io.StringIO()
+        with (
+            mock.patch.object(
+                installer,
+                "resolve_tool_dirs",
+                return_value=([str(self.bin_dir)], []),
+            ),
+            mock.patch.object(
+                installer,
+                "studio_health",
+                side_effect=AssertionError("legacy HTTP health must not be probed"),
+            ),
+            redirect_stdout(install_output),
+        ):
+            result = installer.perform_install(
+                self.args("--install", "--clients", "codex")
+            )
+        self.assertEqual(result, 0, install_output.getvalue())
+        self.assertIn("client starts it on demand", install_output.getvalue())
+
+        check_output = io.StringIO()
+        with (
+            mock.patch.object(
+                installer,
+                "studio_health",
+                side_effect=AssertionError("legacy HTTP health must not be probed"),
+            ),
+            redirect_stdout(check_output),
+        ):
+            result = installer.main(
+                ["check", "--home", str(self.home), "--json"]
+            )
+        self.assertEqual(result, 0, check_output.getvalue())
+        document = json.loads(check_output.getvalue())
+        self.assertTrue(document["readiness"]["knowledge"])
+        self.assertTrue(document["readiness"]["studio"])
+        self.assertEqual(document["knowledge_mcp"]["transport"], "external-stdio")
+        self.assertIn("external stdio", document["knowledge_mcp"]["detail"])
+
+    def test_repair_restores_installer_owned_studio_entries(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex,claude")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        claude = self.home / ".claude.json"
+        codex.write_text(
+            codex.read_text(encoding="utf-8").replace(
+                installer.DEFAULT_STUDIO_URL,
+                "http://localhost:9999/mcp",
+            ),
+            encoding="utf-8",
+        )
+        claude_document = json.loads(claude.read_text(encoding="utf-8"))
+        claude_document["mcpServers"][installer.STUDIO_MCP_NAME]["url"] = (
+            "http://localhost:9999/mcp"
+        )
+        claude.write_text(
+            json.dumps(claude_document, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.check()[0], 1)
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+
+        self.assertTrue(
+            installer.check_toml_mcp(codex, installer.DEFAULT_STUDIO_URL)
+        )
+        self.assertTrue(
+            installer.check_json_mcp(claude, installer.DEFAULT_STUDIO_URL)
+        )
+
+    def test_non_boolean_mcp_ownership_never_authorizes_replacement_or_removal(self) -> None:
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        external = (
+            "[mcp_servers.openubmc-target-runtime]\n"
+            'command = "/opt/external-runtime"\n'
+            "args = []\n"
+        )
+        codex.write_text(external, encoding="utf-8")
+        launcher = self.root / "managed-runtime"
+        prior = {"codex": {"created_entry": "false", "created_file": 1}}
+
+        with self.assertRaises(installer.SetupError):
+            installer.validate_runtime_mcp_configuration(
+                self.home,
+                ["codex"],
+                launcher,
+                prior,
+            )
+
+        installer.remove_toml_stdio_mcp(
+            codex,
+            {
+                "command": "/opt/external-runtime",
+                "args": [],
+                "created_entry": "false",
+                "created_file": 1,
+            },
+            installer.backup_path(self.home),
+            False,
+        )
+        self.assertEqual(codex.read_text(encoding="utf-8"), external)
+
+        installer.remove_toml_stdio_mcp(
+            codex,
+            {
+                "command": "/opt/external-runtime",
+                "args": [],
+                "created_entry": True,
+                "created_file": "false",
+            },
+            installer.backup_path(self.home),
+            False,
+        )
+        self.assertTrue(codex.is_file())
+        self.assertEqual(codex.read_text(encoding="utf-8"), "")
+
+    def test_mcp_conflict_fails_before_any_managed_write(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex/config.toml"
+        codex.parent.mkdir(parents=True)
+        original = '[mcp_servers.openubmc-kb]\nurl = "http://localhost:9999/mcp"\n'
+        codex.write_text(original, encoding="utf-8")
+
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            self.assertRaises(installer.SetupError),
+        ):
+            installer.perform_install(self.args("--install", "--clients", "codex"))
+
+        self.assertEqual(codex.read_text(encoding="utf-8"), original)
+        self.assertFalse((self.home / ".agents").exists())
+        self.assertFalse((self.home / ".bashrc").exists())
+        self.assertFalse((self.home / ".profile").exists())
+        self.assertFalse(installer.state_path(self.home).exists())
+
+    def test_check_detects_state_link_profile_and_permission_damage_then_repair_fixes_it(self) -> None:
+        credentials = self.prepare_credentials()
+        result, _ = self.install("--clients", "codex")
+        self.assertEqual(result, 0)
+        self.assertEqual(self.check()[0], 0)
+
+        state = installer.load_state(self.home)
+        damaged_link = self.home / ".agents/skills/openubmc-debug"
+        damaged_link.unlink()
+        state_links = state["links"]
+        assert isinstance(state_links, dict)
+        state_links.pop(str(self.home / ".agents/skills/openubmc-build"))
+        installer.save_state(self.home, state, False)
+        bashrc = self.home / ".bashrc"
+        bashrc.write_text("user content\n", encoding="utf-8")
+        original_credentials = credentials.read_bytes()
+        credentials.chmod(0o644)
+
+        checked, output = self.check()
+        self.assertEqual(checked, 1)
+        self.assertIn("missing from installer state", output)
+        self.assertIn("missing hook", output)
+        self.assertIn("expected 0600", output)
+
+        repair_args = installer.parse_args(["--home", str(self.home), "--repair"])
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        self.assertTrue(damaged_link.is_symlink())
+        self.assertEqual(credentials.read_bytes(), original_credentials)
+        self.assertEqual(stat.S_IMODE(credentials.stat().st_mode), 0o600)
+        self.assertEqual(self.check()[0], 0)
+
+    def test_repair_restores_corrupt_runtime_launcher_and_managed_mcp_entry(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        runtime = state["runtime"]
+        package = Path(runtime["package_path"])
+        launcher = Path(runtime["launcher_path"])
+        (package / "runtime.py").write_text("# corrupt\n", encoding="utf-8")
+        launcher.unlink()
+        codex = self.home / ".codex" / "config.toml"
+        codex.write_text(
+            "[other]\nvalue = 1\n\n"
+            "[mcp_servers.openubmc-kb]\n"
+            f"url = {json.dumps(installer.DEFAULT_STUDIO_URL)}\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.check()[0], 1)
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+
+        self.assertIn("[other]", codex.read_text(encoding="utf-8"))
+        self.assertTrue(launcher.is_file())
+        self.assertEqual(self.check()[0], 0)
+
+    def test_repair_migrates_state_without_runtime_mcp_ownership(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        state.pop("runtime_mcp")
+        installer.save_state(self.home, state, False)
+
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+
+        repaired = installer.load_state(self.home)
+        self.assertIs(repaired["runtime_mcp"]["codex"]["created_entry"], True)
+        self.assertEqual(self.check()[0], 0)
+
+        uninstall_args = installer.parse_args(
+            ["uninstall", "--home", str(self.home)]
+        )
+        self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+        codex = self.home / ".codex" / "config.toml"
+        self.assertNotIn(
+            installer.TARGET_RUNTIME_MCP_NAME,
+            codex.read_text(encoding="utf-8") if codex.exists() else "",
+        )
+
+    def test_launcher_rejects_digest_mismatch_before_mcp_entrypoint_runs(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        runtime = state["runtime"]
+        marker = self.root / "entrypoint-ran"
+        source_entrypoint = Path(runtime["mcp_entrypoint"])
+        source_entrypoint.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        package = Path(runtime["package_path"])
+        with (package / "runtime.py").open("a", encoding="utf-8") as handle:
+            handle.write("\n# digest mismatch\n")
+
+        result = subprocess.run(
+            [runtime["launcher_path"]],
+            input="",
+            text=True,
+            capture_output=True,
+            check=False,
+            env={**os.environ, "HOME": str(self.home)},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("content digest mismatch", result.stderr.lower())
+        self.assertIn("repair", result.stderr.lower())
+        self.assertFalse(marker.exists())
+
+    def test_real_repository_launcher_initializes_and_lists_domain_tools(self) -> None:
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source",
+                str(REPO_ROOT),
+                "--clients",
+                "codex",
+                "--skip-credentials",
+                "--non-interactive",
+            ]
+        )
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+        ):
+            self.assertEqual(installer.perform_install(args), 0)
+        state = installer.load_state(self.home)
+        healthy, detail, tools = installer.runtime_mcp_health(
+            Path(state["runtime"]["launcher_path"]), self.home
+        )
+        self.assertTrue(healthy, detail)
+        self.assertTrue(
+            {
+                "debug_run",
+                "debug_collect",
+                "log_bundle_collect",
+                "live_patch_run",
+                "upgrade_run",
+                "case_read",
+                "evidence_read",
+                "case_close",
+                "case_forget",
+                "phase_record",
+                "workflow.advance",
+                "runtime_status",
+            }.issubset(tools)
+        )
+        persistent_root = (
+            self.home / ".local" / "state" / "openubmc-target-runtime"
+        )
+        self.assertTrue((persistent_root / "context-runtime.sqlite3").is_file())
+        self.assertTrue((persistent_root / "evidence-blobs").is_dir())
+        marker = persistent_root / "preserve-on-uninstall"
+        marker.write_text("case-history\n", encoding="utf-8")
+        uninstall_args = installer.parse_args(
+            ["uninstall", "--home", str(self.home), "--non-interactive"]
+        )
+        self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "case-history\n")
+
+    def test_uninstall_preserves_credentials_and_unrelated_client_config(self) -> None:
+        credentials = self.prepare_credentials()
+        codex = self.home / ".codex/config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text("[other]\nvalue = 1\n", encoding="utf-8")
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        self.assertTrue(installer.runtime_install_root(self.home).is_dir())
+
+        args = installer.parse_args(["--home", str(self.home), "--uninstall"])
+        self.assertEqual(installer.perform_uninstall(args), 0)
+        self.assertTrue(credentials.is_file())
+        self.assertFalse(installer.state_path(self.home).exists())
+        self.assertFalse((installer.openubmc_config_dir(self.home) / "env.sh").exists())
+        self.assertFalse((self.home / ".agents/skills/openubmc-build").exists())
+        self.assertNotIn("openubmc-kb", codex.read_text(encoding="utf-8"))
+        self.assertNotIn("openubmc-target-runtime", codex.read_text(encoding="utf-8"))
+        self.assertIn("[other]", codex.read_text(encoding="utf-8"))
+        self.assertFalse(installer.runtime_install_root(self.home).exists())
+
+    def test_uninstall_removes_client_files_created_for_both_mcp_entries(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        claude = self.home / ".claude.json"
+        self.assertFalse(codex.exists())
+        self.assertFalse(claude.exists())
+
+        self.assertEqual(self.install("--clients", "codex,claude")[0], 0)
+        state = installer.load_state(self.home)
+        for client in ("codex", "claude"):
+            self.assertIs(state["mcp"][client]["created_file"], True)
+            self.assertIs(state["runtime_mcp"][client]["created_file"], True)
+
+        args = installer.parse_args(["uninstall", "--home", str(self.home)])
+        self.assertEqual(installer.perform_uninstall(args), 0)
+        self.assertFalse(codex.exists())
+        self.assertFalse(claude.exists())
+
+    def test_uninstall_decodes_invalid_state_before_removing_anything(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        original_state = installer.load_state(self.home)
+        managed_links = [Path(link) for link in original_state["links"]]
+        codex = self.home / ".codex" / "config.toml"
+        original_config = codex.read_text(encoding="utf-8")
+        args = installer.parse_args(["uninstall", "--home", str(self.home)])
+
+        for field, value, pattern in (
+            ("source_mode", {}, "unsupported source mode"),
+            ("source_root", {}, "source_root in installer state"),
+            ("profiles", [{}], "profiles in installer state"),
+            ("mcp", {"codex": []}, "mcp in installer state"),
+            (
+                "runtime_mcp",
+                {"codex": []},
+                "runtime_mcp in installer state",
+            ),
+        ):
+            with self.subTest(field=field):
+                state = dict(original_state)
+                state[field] = value
+                installer.save_state(self.home, state, False)
+                with self.assertRaisesRegex(installer.SetupError, pattern):
+                    installer.perform_uninstall(args)
+                self.assertTrue(installer.state_path(self.home).is_file())
+                self.assertTrue(all(link.is_symlink() for link in managed_links))
+                self.assertEqual(codex.read_text(encoding="utf-8"), original_config)
+
+    def test_uninstall_rejects_missing_client_ownership_without_side_effects(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        original_state = installer.load_state(self.home)
+        managed_links = [Path(link) for link in original_state["links"]]
+        codex = self.home / ".codex" / "config.toml"
+        original_config = codex.read_text(encoding="utf-8")
+        runtime_root = installer.runtime_install_root(self.home)
+        env_file = installer.openubmc_config_dir(self.home) / "env.sh"
+        original_env = env_file.read_text(encoding="utf-8")
+        original_profiles = {
+            profile: Path(profile).read_text(encoding="utf-8")
+            for profile in original_state["profiles"]
+        }
+        args = installer.parse_args(["uninstall", "--home", str(self.home)])
+
+        for field in ("mcp", "runtime_mcp"):
+            with self.subTest(field=field):
+                state = json.loads(json.dumps(original_state))
+                state[field].pop("codex")
+                installer.save_state(self.home, state, False)
+                state_before = installer.state_path(self.home).read_text(
+                    encoding="utf-8"
+                )
+
+                with self.assertRaisesRegex(
+                    installer.SetupError,
+                    rf"{field}\.codex.*run repair before uninstalling",
+                ):
+                    installer.perform_uninstall(args)
+
+                self.assertEqual(
+                    installer.state_path(self.home).read_text(encoding="utf-8"),
+                    state_before,
+                )
+                self.assertTrue(all(link.is_symlink() for link in managed_links))
+                self.assertEqual(codex.read_text(encoding="utf-8"), original_config)
+                self.assertTrue(runtime_root.is_dir())
+                self.assertEqual(env_file.read_text(encoding="utf-8"), original_env)
+                for profile, content in original_profiles.items():
+                    self.assertEqual(Path(profile).read_text(encoding="utf-8"), content)
+
+    def test_dry_run_does_not_create_target_home(self) -> None:
+        output = io.StringIO()
+        args = self.args("--install", "--clients", "all", "--skip-credentials", "--dry-run")
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(installer.perform_install(args), 0)
+        self.assertFalse(self.home.exists())
+        self.assertIn("would link", output.getvalue())
+
+    def test_managed_dry_run_allows_the_planned_clone_to_be_absent(self) -> None:
+        output = io.StringIO()
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "managed",
+                "--clients",
+                "codex",
+                "--skip-credentials",
+                "--non-interactive",
+                "--dry-run",
+            ]
+        )
+        with (
+            mock.patch.object(installer, "local_repository_from_script", return_value=None),
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(installer.perform_install(args), 0)
+        self.assertFalse(self.home.exists())
+        self.assertIn("would clone", output.getvalue())
+
+    def test_reinstall_with_explicit_source_restores_recorded_studio_url(self) -> None:
+        self.prepare_credentials()
+        custom_url = "http://localhost:9988/mcp"
+        self.assertEqual(
+            self.install("--clients", "codex", "--studio-url", custom_url)[0],
+            0,
+        )
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source",
+                str(self.source),
+                "--clients",
+                "codex",
+                "--non-interactive",
+            ]
+        )
+        with (
+            mock.patch.object(
+                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_install(args), 0)
+        self.assertEqual(installer.load_state(self.home)["studio_url"], custom_url)
+
+    def test_legacy_link_and_profile_markers_are_migrated(self) -> None:
+        self.prepare_credentials()
+        skills_dir = self.home / ".agents/skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "openubmc-environment").symlink_to(self.source, target_is_directory=True)
+        self.home.mkdir(exist_ok=True)
+        (self.home / ".bashrc").write_text(
+            "before\n"
+            f"{installer.OLD_MARKER_START}\nold body\n{installer.OLD_MARKER_END}\n"
+            f"{installer.LEGACY_CREDENTIALS_START}\nsecret source\n{installer.LEGACY_CREDENTIALS_END}\n"
+            "after\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        content = (self.home / ".bashrc").read_text(encoding="utf-8")
+        self.assertFalse((skills_dir / "openubmc-environment").exists())
+        self.assertNotIn(installer.OLD_MARKER_START, content)
+        self.assertNotIn(installer.LEGACY_CREDENTIALS_START, content)
+        self.assertEqual(content.count(installer.MARKER_START), 1)
+        self.assertIn("before", content)
+        self.assertIn("after", content)
+
+    def test_update_preserves_managed_checkout_ownership(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        state["managed_checkout"] = True
+        state["source_mode"] = "managed"
+        state["repo_url"] = installer.DEFAULT_REPO_URL
+        state.pop("runtime_mcp")
+        installer.save_state(self.home, state, False)
+
+        args = installer.parse_args(["--home", str(self.home), "--update"])
+        with (
+            mock.patch.object(installer, "update_managed_source") as update_source,
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_update(args), 0)
+        update_source.assert_called_once_with(
+            self.source,
+            installer.DEFAULT_REPO_URL,
+            installer.DEFAULT_REF,
+            False,
+            bundle=EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+        updated = installer.load_state(self.home)
+        self.assertTrue(updated["managed_checkout"])
+        self.assertIs(updated["runtime_mcp"]["codex"]["created_entry"], True)
+
+    def test_update_managed_source_uses_the_selected_bundle_dirty_scope(self) -> None:
+        with (
+            mock.patch.object(
+                installer,
+                "git_output",
+                return_value=installer.DEFAULT_REPO_URL,
+            ),
+            mock.patch.object(installer, "git_dirty", return_value=False) as dirty,
+        ):
+            installer.update_managed_source(
+                self.source,
+                installer.DEFAULT_REPO_URL,
+                installer.DEFAULT_REF,
+                True,
+                bundle=EXPECTED_TARGET_RUNTIME_BUNDLE,
+            )
+
+        dirty.assert_called_once_with(
+            self.source,
+            paths=installer.bundle_git_paths(EXPECTED_TARGET_RUNTIME_BUNDLE),
+        )
+
+    def test_linked_source_uses_refresh_instead_of_update(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        self.assertEqual(state["source_mode"], "linked")
+
+        update_args = installer.parse_args(["update", "--home", str(self.home)])
+        with self.assertRaises(installer.SetupError):
+            installer.perform_update(update_args)
+
+        refresh_args = installer.parse_args(["refresh", "--home", str(self.home)])
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            self.assertEqual(installer.perform_refresh(refresh_args), 0)
+        self.assertEqual(installer.load_state(self.home)["source_mode"], "linked")
+
+    def test_repair_preserves_recorded_commit_until_refresh(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        state["source_commit"] = "recorded-commit"
+        installer.save_state(self.home, state, False)
+
+        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+        with (
+            mock.patch.object(installer, "git_commit", return_value="current-commit"),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        self.assertEqual(
+            installer.load_state(self.home)["source_commit"],
+            "recorded-commit",
+        )
+
+        refresh_args = installer.parse_args(["refresh", "--home", str(self.home)])
+        with (
+            mock.patch.object(installer, "git_commit", return_value="current-commit"),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_refresh(refresh_args), 0)
+        self.assertEqual(
+            installer.load_state(self.home)["source_commit"],
+            "current-commit",
+        )
+
+    def test_non_boolean_legacy_checkout_marker_never_enables_managed_lifecycle(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        state.pop("source_mode")
+        state["managed_checkout"] = "false"
+        installer.save_state(self.home, state, False)
+
+        update_args = installer.parse_args(
+            ["update", "--home", str(self.home)]
+        )
+        with (
+            mock.patch.object(installer, "update_managed_source") as update_source,
+            self.assertRaisesRegex(installer.SetupError, "source is linked"),
+        ):
+            installer.perform_update(update_args)
+        update_source.assert_not_called()
+
+        refresh_args = installer.parse_args(
+            ["refresh", "--home", str(self.home)]
+        )
+        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+            self.assertEqual(installer.perform_refresh(refresh_args), 0)
+        refreshed = installer.load_state(self.home)
+        self.assertEqual(refreshed["source_mode"], "linked")
+        self.assertIs(refreshed["managed_checkout"], False)
+
+        for value in ("invalid", [], {}):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    installer.SetupError, "unsupported source mode"
+                ):
+                    installer.source_mode_from_state({"source_mode": value})
+
+    def test_recorded_lifecycle_reads_one_state_snapshot(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        repair_args = installer.parse_args(
+            ["repair", "--home", str(self.home)]
+        )
+        original_load_state = installer.load_state
+        with (
+            mock.patch.object(
+                installer,
+                "load_state",
+                wraps=original_load_state,
+            ) as load_state,
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_repair(repair_args), 0)
+        self.assertEqual(load_state.call_count, 1)
+        self.assertEqual(
+            installer.load_state(self.home)["skill_profile"],
+            "target-runtime",
+        )
+
+    def test_check_json_is_structured_and_contains_readiness_layers(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        output = io.StringIO()
+        with (
+            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+        self.assertEqual(result, 0)
+        document = json.loads(output.getvalue())
+        self.assertTrue(document["ok"])
+        self.assertTrue(document["readiness"]["core"])
+        self.assertTrue(document["readiness"]["credentials"])
+        self.assertFalse(document["readiness"]["knowledge"])
+        self.assertFalse(document["readiness"]["studio"])
+        self.assertEqual(document["source"]["mode"], "linked")
+
+    def test_noninteractive_dry_run_does_not_plan_tty_credentials(self) -> None:
+        args = self.args("--install", "--dry-run")
+        plan = installer.prepare_credentials(args)
+        self.assertEqual(plan["result"], "missing")
+        self.assertNotIn("missing_count", plan)
+
+    def test_dry_run_json_separates_current_and_planned_workflows(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        output = io.StringIO()
+        with (
+            mock.patch.object(
+                installer,
+                "resolve_tool_dirs",
+                return_value=([str(self.bin_dir)], []),
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            result = installer.main(
+                [
+                    "install",
+                    "--home",
+                    str(self.home),
+                    "--source",
+                    str(self.source),
+                    "--source-mode",
+                    "linked",
+                    "--clients",
+                    "codex",
+                    "--skill-profile",
+                    "full",
+                    "--preserve-skills",
+                    "none",
+                    "--non-interactive",
+                    "--dry-run",
+                    "--json",
+                ]
+            )
+        self.assertEqual(result, 0, output.getvalue())
+        document = json.loads(output.getvalue())
+        self.assertEqual(document["workflow"]["skill_profile"], "target-runtime")
+        self.assertEqual(document["workflow"]["skill_count"], 7)
+        self.assertEqual(document["planned_workflow"]["skill_profile"], "full")
+        self.assertEqual(document["planned_workflow"]["skill_count"], 8)
+        self.assertTrue(document["planned_workflow"]["openubmc_kb_managed"])
+        self.assertEqual(document["knowledge_mcp"]["transport"], "http")
+        action_codes = {action["code"] for action in document["next_actions"]}
+        self.assertIn("configure_openubmc_kb", action_codes)
+
+    def test_tooling_report_distinguishes_required_optional_and_client_tools(self) -> None:
+        required_bin = self.root / "required-bin"
+        required_bin.mkdir()
+        for tool in installer.REQUIRED_TOOLS:
+            executable = required_bin / tool
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+        with mock.patch.dict(installer.os.environ, {"PATH": str(required_bin)}, clear=True):
+            tooling = installer.inspect_tooling([str(required_bin)], ["codex"])
+        self.assertTrue(tooling["ready"])
+        self.assertTrue(all(tooling["required"].values()))
+        self.assertFalse(tooling["conditional"]["sshpass"])
+        self.assertFalse(tooling["recommended"]["rg"])
+        self.assertFalse(tooling["clients"]["codex"])
+
+    def test_check_json_reports_nonblocking_capability_gaps_and_next_actions(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        tooling = {
+            "ready": True,
+            "client_ready": False,
+            "required": {tool: True for tool in installer.REQUIRED_TOOLS},
+            "conditional": {"sshpass": False},
+            "recommended": {"rg": False},
+            "clients": {"codex": False},
+        }
+        output = io.StringIO()
+        with (
+            mock.patch.object(installer, "inspect_tooling", return_value=tooling),
+            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+        self.assertEqual(result, 0, output.getvalue())
+        document = json.loads(output.getvalue())
+        self.assertTrue(document["readiness"]["tooling"])
+        self.assertFalse(document["readiness"]["password_ssh"])
+        self.assertFalse(document["readiness"]["source_search"])
+        self.assertFalse(document["readiness"]["client"])
+        checks = {check["name"]: check for check in document["checks"]}
+        for name in ("tool:sshpass", "tool:rg", "client:codex"):
+            self.assertFalse(checks[name]["ok"])
+            self.assertFalse(checks[name]["blocking"])
+        action_codes = {action["code"] for action in document["next_actions"]}
+        self.assertIn("repair_tooling", action_codes)
+        repair = next(
+            action
+            for action in document["next_actions"]
+            if action["code"] == "repair_tooling"
+        )
+        self.assertEqual(repair["tools"], "codex,rg,sshpass")
+
+    def test_lifecycle_commands_emit_one_structured_json_document(self) -> None:
+        self.prepare_credentials()
+        commands = (
+            (
+                "install",
+                [
+                    "install",
+                    "--home",
+                    str(self.home),
+                    "--source",
+                    str(self.source),
+                    "--source-mode",
+                    "linked",
+                    "--clients",
+                    "codex",
+                    "--skill-profile",
+                    "target-runtime",
+                    "--skip-credentials",
+                    "--non-interactive",
+                    "--json",
+                ],
+            ),
+            (
+                "repair",
+                ["repair", "--home", str(self.home), "--non-interactive", "--json"],
+            ),
+            (
+                "refresh",
+                ["refresh", "--home", str(self.home), "--non-interactive", "--json"],
+            ),
+            (
+                "uninstall",
+                ["uninstall", "--home", str(self.home), "--non-interactive", "--json"],
+            ),
+        )
+        with (
+            mock.patch.object(
+                installer,
+                "resolve_tool_dirs",
+                return_value=([str(self.bin_dir)], []),
+            ),
+            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+        ):
+            for command, argv in commands:
+                with self.subTest(command=command):
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        result = installer.main(argv)
+                    self.assertEqual(result, 0, output.getvalue())
+                    document = json.loads(output.getvalue())
+                    self.assertTrue(document["ok"])
+                    self.assertEqual(document["command"], command)
+                    self.assertIsInstance(document["messages"], list)
+                    self.assertTrue(document["credentials"]["configured"])
+                    if command == "uninstall":
+                        self.assertFalse(document["workflow"]["installed"])
+                        self.assertTrue(document["credentials"]["preserved"])
+                        self.assertEqual(document["next_actions"], [])
+                    else:
+                        self.assertTrue(document["workflow"]["installed"])
+                        self.assertEqual(
+                            document["workflow"]["skill_profile"],
+                            "target-runtime",
+                        )
+                        self.assertEqual(document["workflow"]["skill_count"], 7)
+
+    def test_check_json_blocks_missing_supported_client_ownership_records(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        state["mcp"].pop("codex")
+        state["runtime_mcp"].pop("codex")
+        installer.save_state(self.home, state, False)
+        output = io.StringIO()
+
+        with (
+            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+
+        self.assertEqual(result, 1)
+        document = json.loads(output.getvalue())
+        self.assertFalse(document["ok"])
+        self.assertFalse(document["readiness"]["core"])
+        self.assertFalse(document["readiness"]["mcp"])
+        checks = {check["name"]: check for check in document["checks"]}
+        for name in ("mcp:codex", "runtime_mcp:codex"):
+            self.assertFalse(checks[name]["ok"])
+            self.assertTrue(checks[name]["blocking"])
+            self.assertIn("ownership missing", checks[name]["detail"])
+
+    def test_check_json_reports_invalid_source_mode_as_core_failure(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        state["source_mode"] = []
+        installer.save_state(self.home, state, False)
+        output = io.StringIO()
+
+        with (
+            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+
+        self.assertEqual(result, 1)
+        document = json.loads(output.getvalue())
+        self.assertFalse(document["ok"])
+        self.assertFalse(document["readiness"]["core"])
+        self.assertEqual(document["source"]["mode"], "unknown")
+        source_mode = next(
+            check for check in document["checks"] if check["name"] == "source_mode"
+        )
+        self.assertFalse(source_mode["ok"])
+        self.assertIn("unsupported source mode", source_mode["detail"])
+
+    def test_check_json_handles_non_object_and_invalid_collection_state(self) -> None:
+        state_file = installer.state_path(self.home)
+        installer.atomic_write(state_file, "[]\n", 0o600)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+        self.assertEqual(result, 1)
+        document = json.loads(output.getvalue())
+        self.assertFalse(document["ok"])
+        self.assertIn("must be an object", document["checks"][0]["detail"])
+
+        self.prepare_credentials()
+        state_file.unlink()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        original_state = installer.load_state(self.home)
+        for field, value, check_name in (
+            ("clients", [{}], "clients"),
+            ("profiles", [{}], "profiles"),
+            ("source_root", {}, "source_root"),
+            ("mcp", [], "mcp"),
+            ("mcp", {"codex": []}, "mcp"),
+            ("runtime_mcp", [], "runtime_mcp"),
+            ("runtime_mcp", {"codex": []}, "runtime_mcp"),
+        ):
+            with self.subTest(field=field):
+                state = dict(original_state)
+                state[field] = value
+                installer.save_state(self.home, state, False)
+                output = io.StringIO()
+                with (
+                    mock.patch.object(
+                        installer,
+                        "studio_health",
+                        return_value=(False, "offline"),
+                    ),
+                    redirect_stdout(output),
+                ):
+                    result = installer.main(
+                        ["check", "--home", str(self.home), "--json"]
+                    )
+                self.assertEqual(result, 1)
+                document = json.loads(output.getvalue())
+                invalid = [
+                    check
+                    for check in document["checks"]
+                    if check["name"] == check_name and not check["ok"]
+                ]
+                self.assertTrue(invalid)
+
+    def test_check_json_reports_runtime_mcp_and_engine_readiness_without_secrets(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        output = io.StringIO()
+        with (
+            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+
+        self.assertEqual(result, 0)
+        serialized = output.getvalue()
+        document = json.loads(serialized)
+        self.assertTrue(document["readiness"]["runtime"])
+        self.assertTrue(document["readiness"]["mcp"])
+        self.assertTrue(document["readiness"]["engine"])
+        self.assertEqual(
+            document["runtime"]["api_version"], "openubmc.target-runtime.v1"
+        )
+        self.assertRegex(
+            document["runtime"]["content_digest"], r"^sha256:[0-9a-f]{64}$"
+        )
+        self.assertTrue(document["runtime"]["matches_installed_state"])
+        self.assertTrue(document["runtime_mcp"]["healthy"])
+        self.assertEqual(
+            document["runtime_mcp"]["tools"],
+            [
+                "case_close",
+                "case_forget",
+                "case_read",
+                "debug_collect",
+                "debug_run",
+                "evidence_read",
+                "live_patch_run",
+                "log_bundle_collect",
+                "phase_record",
+                "runtime_status",
+                "upgrade_run",
+                "workflow.advance",
+            ],
+        )
+        self.assertTrue(document["engines"]["mcp"])
+        self.assertTrue(document["engines"]["cli"])
+        self.assertTrue(document["engines"]["one_shot"])
+        for secret in ("fixture-bmc-password", "fixture-os-password"):
+            self.assertNotIn(secret, serialized)
+
+    def test_fast_dirty_check_scopes_git_commands_to_the_bundle(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(installer, "run_command", side_effect=fake_run):
+            self.assertFalse(
+                installer.git_dirty(self.source, paths=installer.bundle_git_paths())
+            )
+        self.assertEqual(calls[0][3], "diff-index")
+        self.assertIn("openubmc-environment-setup", calls[0])
+        self.assertIn("openubmc-target-runtime", calls[0])
+        self.assertEqual(calls[1][3], "ls-files")
+
+        calls.clear()
+        with mock.patch.object(installer, "run_command", side_effect=fake_run):
+            self.assertFalse(
+                installer.git_dirty(
+                    self.source,
+                    paths=installer.bundle_git_paths(
+                        installer.TARGET_RUNTIME_SKILL_BUNDLE
+                    ),
+                )
+            )
+        self.assertNotIn("testing", calls[0])
+        self.assertIn("openubmc-target-runtime", calls[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

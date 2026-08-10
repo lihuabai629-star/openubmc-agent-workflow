@@ -1,0 +1,15 @@
+.system/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+build/
+*.bak-*
+*.7z
+*.pyo
+*.zip
+**/data/browser_state/
+**/browser_profile/
+**/node_modules/
+*.log
+.scratch/

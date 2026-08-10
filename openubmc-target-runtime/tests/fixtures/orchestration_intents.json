@@ -1,0 +1,64 @@
+{
+  "schema_version": "openubmc-target-runtime.orchestration-fixtures.v1",
+  "cases": [
+    {
+      "id": "diagnosis-only",
+      "intent": "diagnosis-only",
+      "entry_domain": "debug",
+      "expected_steps": ["debug:diagnosis"]
+    },
+    {
+      "id": "diagnose-and-fix",
+      "intent": "diagnose-and-fix",
+      "entry_domain": "debug",
+      "delivery_strategy": "live-patch",
+      "expected_steps": [
+        "debug:diagnosis",
+        "developer:edit",
+        "live_patch:mutation",
+        "debug:fresh_verification"
+      ]
+    },
+    {
+      "id": "diagnose-and-fix-source-only",
+      "intent": "diagnose-and-fix",
+      "entry_domain": "debug",
+      "delivery_strategy": "source-only",
+      "expected_steps": [
+        "debug:diagnosis",
+        "developer:edit"
+      ]
+    },
+    {
+      "id": "diagnose-and-fix-build-upgrade",
+      "intent": "diagnose-and-fix",
+      "entry_domain": "debug",
+      "delivery_strategy": "build-upgrade",
+      "expected_steps": [
+        "debug:diagnosis",
+        "developer:edit",
+        "build:package",
+        "upgrade:mutation",
+        "debug:fresh_verification"
+      ]
+    },
+    {
+      "id": "upgrade-and-verify",
+      "intent": "upgrade-and-verify",
+      "entry_domain": "upgrade",
+      "expected_steps": [
+        "upgrade:mutation",
+        "debug:fresh_verification"
+      ]
+    },
+    {
+      "id": "bundle-and-diagnose",
+      "intent": "bundle-and-diagnose",
+      "entry_domain": "log_analyzer",
+      "expected_steps": [
+        "log_analyzer:bundle",
+        "debug:diagnosis"
+      ]
+    }
+  ]
+}

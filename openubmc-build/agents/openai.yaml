@@ -1,0 +1,4 @@
+interface:
+  display_name: "openUBMC Build"
+  short_description: "Build components and produce verified HPM artifacts"
+  default_prompt: "Use $openubmc-build to build changed openUBMC components or products and return a verified package or HPM artifact without connecting to a target."
