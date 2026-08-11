@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         "--host-key-policy",
         choices=("strict", "accept-new", "insecure"),
         default="insecure",
-        help="SSH host-key policy, default: insecure",
+        help="BMC SSH host-key policy, default: insecure for replaceable lab targets",
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON summary")
     return parser.parse_args()

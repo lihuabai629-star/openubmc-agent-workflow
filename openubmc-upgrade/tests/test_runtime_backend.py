@@ -15,9 +15,11 @@ sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-upgrade"))
 
 from openubmc_target_runtime import (  # noqa: E402
+    MutationAuthorizationDenied,
     MutationJournalStore,
     MutationOperationConflict,
     RuntimeMcpService,
+    TaskAuthorizationPolicy,
 )
 from openubmc_upgrade.runtime_backend import (  # noqa: E402
     RedfishHttpSession,
@@ -277,6 +279,105 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
             "deadline": TEST_DEADLINE_SECONDS,
         }
 
+    def test_insecure_tls_override_rejects_non_boolean_values(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {},
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                with self.assertRaises(TypeError):
+                    service.call_tool(
+                        "upgrade_run",
+                        {
+                            **self.arguments(artifact, digest),
+                            "allow_insecure_tls": "false",
+                        },
+                        task_id="task-upgrade-non-bool-tls",
+                        operation_id="upgrade-non-bool-tls",
+                    )
+            finally:
+                service.close()
+
+    def test_frozen_policy_blocks_insecure_tls_before_transport_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: (_ for _ in ()).throw(
+                    AssertionError("credentials must not be loaded")
+                ),
+            )
+            task = backend.open_task("task-upgrade-tls-denied")
+            arguments = {
+                **self.arguments(artifact, digest),
+                "allow_insecure_tls": True,
+                "_task_authorization_policy": (
+                    TaskAuthorizationPolicy.from_original_intent(
+                        "upgrade-and-verify"
+                    ).to_public_dict()
+                ),
+            }
+
+            try:
+                with self.assertRaises(MutationAuthorizationDenied):
+                    backend.upgrade_run(
+                        task,
+                        arguments,
+                        SimpleNamespace(raise_if_stopped=lambda: None),
+                    )
+            finally:
+                backend.close_task(task)
+
+    def test_explicit_insecure_tls_authorization_reaches_upgrade_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            transport = FakeRedfishTransport()
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda arguments: (
+                    transport
+                    if arguments["allow_insecure_tls"] is True
+                    else (_ for _ in ()).throw(
+                        AssertionError("insecure TLS flag was not preserved")
+                    )
+                ),
+            )
+            service = RuntimeMcpService(backend)
+
+            try:
+                result = service.call_tool(
+                    "upgrade_run",
+                    {
+                        **self.arguments(artifact, digest),
+                        "allow_insecure_tls": True,
+                    },
+                    task_id="task-upgrade-tls-authorized",
+                    operation_id="upgrade-tls-authorized",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(result["journal"]["stage"], "verified")
+        self.assertGreaterEqual(transport.opens, 1)
+
     def run_uncertain_then_recover(
         self,
         *,
@@ -516,6 +617,61 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                 service.close()
 
             journal = store.load("task-upgrade-discovery", "upgrade-discovery")
+
+        self.assertIsNotNone(journal)
+        self.assertEqual(journal.stage, "replan_required")
+        self.assertFalse(journal.effects_started)
+
+    def test_missing_upload_method_does_not_cross_the_effect_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+            class NoUploadMethodSession(FakeRedfishSession):
+                def request_json(self, method: str, path: str, **kwargs) -> RedfishResponse:
+                    if path == "/redfish/v1/UpdateService":
+                        return RedfishResponse(status=200, headers={}, payload={})
+                    return super().request_json(method, path, **kwargs)
+
+            class NoUploadMethodTransport(FakeRedfishTransport):
+                def open_session(self, *, target, credentials) -> FakeRedfishSession:
+                    self.opens += 1
+                    session = NoUploadMethodSession(self.opens)
+                    self.sessions.append(session)
+                    return session
+
+            store = MutationJournalStore(root / "journals")
+            backend = UpgradeMcpBackend(
+                journal_store=store,
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: NoUploadMethodTransport(),
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "advertises no supported upload method",
+                ):
+                    service.call_tool(
+                        "upgrade_run",
+                        self.arguments(artifact, digest),
+                        task_id="task-upgrade-no-upload-method",
+                        operation_id="upgrade-no-upload-method",
+                    )
+            finally:
+                service.close()
+
+            journal = store.load(
+                "task-upgrade-no-upload-method",
+                "upgrade-no-upload-method",
+            )
 
         self.assertIsNotNone(journal)
         self.assertEqual(journal.stage, "replan_required")

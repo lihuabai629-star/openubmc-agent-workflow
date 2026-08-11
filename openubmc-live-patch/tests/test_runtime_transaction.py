@@ -143,8 +143,9 @@ class LivePatchRuntimeTransactionTests(unittest.TestCase):
 
         result = adapter.run(
             operation_id="live-patch-1",
-            authorization=MutationAuthorization.from_original_intent(
-                "diagnose-and-fix"
+            authorization=MutationAuthorization.from_task_intent(
+                "diagnose-and-fix",
+                delivery_strategy="live-patch",
             ),
             restart_scope="none",
             operation={"remote": "/opt/bmc/apps/demo/unit.lua"},
@@ -198,7 +199,10 @@ class LivePatchRuntimeTransactionTests(unittest.TestCase):
 
     def test_authorization_projection_keeps_all_existing_apply_gates(self) -> None:
         projection = self.module.ProjectedLivePatchAuthorization.from_authorization(
-            MutationAuthorization.from_original_intent("diagnose-and-fix"),
+            MutationAuthorization.from_task_intent(
+                "diagnose-and-fix",
+                delivery_strategy="live-patch",
+            ),
             restart_scope="skynet",
         )
 
@@ -213,6 +217,21 @@ class LivePatchRuntimeTransactionTests(unittest.TestCase):
                 "skynet",
             ),
         )
+
+    def test_rollback_projection_requires_the_distinct_rollback_authorization(self) -> None:
+        projection = self.module.ProjectedLivePatchAuthorization.from_authorization(
+            MutationAuthorization.from_original_intent("rollback"),
+            restart_scope="none",
+            action="rollback",
+        )
+
+        self.assertEqual(projection.original_intent, "rollback")
+        with self.assertRaises(MutationAuthorizationDenied):
+            self.module.ProjectedLivePatchAuthorization.from_authorization(
+                MutationAuthorization.from_original_intent("live-patch"),
+                restart_scope="none",
+                action="rollback",
+            )
 
 
 if __name__ == "__main__":

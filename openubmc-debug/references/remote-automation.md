@@ -76,11 +76,17 @@ analysis when CodeGraph is unavailable. Missing executables are capability gaps:
 metadata (for example `ssh_client_missing` with return code `127`) and route preparation to
 `openubmc-environment-setup` instead of installing from this Skill.
 
-SSH host-key verification defaults to `insecure` in internal development mode. Set
-`OPENUBMC_SSH_HOST_KEY_POLICY=strict` or `accept-new` when verification is useful for a particular
-target. Machine-readable transport metadata records the effective policy and its source. Under a
-verified policy, host-key mismatch or unknown-key failures remain classified as
-`ssh_host_key_verification_failed` rather than generic SSH failure.
+BMC SSH host-key verification defaults to `insecure` in the internal-development workflow so a
+replaceable BMC whose key changes does not trigger a user confirmation loop. The transport emits
+`ssh_host_key_verification_disabled`. `OPENUBMC_SSH_HOST_KEY_POLICY` or an explicit argument may
+override the BMC lane with `strict` or `accept-new`; under either verified policy, host-key mismatch
+or unknown-key failures are classified as `ssh_host_key_verification_failed` rather than generic
+SSH failure. Machine-readable metadata records the effective policy, its source, and only the
+known-hosts source category (`ssh_default`, `environment`, `explicit_argument`, or `disabled`),
+never the known-hosts path.
+
+This default is limited to BMC access. `doctor.py --os-check` explicitly keeps OS-host SSH at
+`strict`; never inherit the BMC policy into `OPENUBMC_OS_*` access.
 
 Typed Debug object and alarm reads may reconnect and replay once only when an established SSH
 ControlMaster is lost during that explicitly read-only request. Unclassified or mutating SSH
@@ -203,22 +209,33 @@ fail, perform the same analysis sequentially and preserve the missing dimension 
 One MCP task may bind a new single target, replace a target set, or update ports and credential
 selectors. A call that omits target coordinates incrementally inherits the currently bound targets.
 A call that supplies `ip` or `targets` resets the old host and ports, then uses default ports unless
-the call supplies replacements. Reusable users, credential selectors or direct credentials, SSH
-identity, and transport policy continue from a single previously bound target unless explicitly
-overridden. Replacing a multi-target set inherits only common reusable connection fields; each new
-target may override them. The task purpose, delivery strategy, and a single target's ID/role remain
-available without being repeated, while the earlier orchestration context is retained in a bounded
-history.
+the call supplies replacements. For a single active target, direct users/passwords and the matching
+SSH policy may continue within the active task so an address replacement does not force credential
+re-entry. Environment selectors, identity files, known-hosts paths, insecure overrides, and an old
+multi-target set are not copied into a newly supplied binding. The task purpose, delivery strategy,
+and a single target's ID/role remain available without being repeated, while the earlier
+orchestration context is retained in a bounded history.
 
 The restartable TaskContext retains the secret-free SSH, Telnet, and Redfish target description and
 credential selectors, but each domain backend receives only its own connection arguments. Debug
 receives SSH and Telnet, Log Analyzer receives SSH and Redfish, Live Patch receives SSH and Telnet
 plus its SSH host-key settings, and Upgrade receives Redfish. Target-specific connection arguments
 are stored by `target_id`, so a later Upgrade or Live Patch selection cannot inherit another
-target's host or ports. Existing domain leases remain available for a later return to a previously
-used target within the same process and are closed with the task. Changing a direct password,
-credential selector, or SSH policy selects a distinct domain binding without limiting the number
-of targets that may be requested.
+target's host or ports. Cache-resident domain leases remain available for a later return to a
+previously used target within the same process. Each domain keeps a 32-entry LRU by default; an
+evicted target reconnects when selected again, and all remaining leases close with the task.
+Changing a direct password, credential selector, or SSH policy selects a distinct domain binding
+without limiting the number of targets that may be requested.
+
+Treat matching target bindings, credential selectors, artifact identities, delivery strategy, and
+task-level authorization as reusable Case facts. A direct user request to apply/live-patch,
+upgrade, or rollback authorizes that named mutation and is projected onto internal gates without a
+second confirmation. Apply or upgrade authorization never implies rollback. Insecure TLS and the
+Live Patch exceptions `force_path`, `no_backup`, and `no_remount` are frozen task facts. Internal
+BMC workflows authorize insecure TLS by default and may explicitly set it to `false` for a trusted
+certificate; Live Patch exceptions remain explicit. A Case that already carries the matching facts
+must not ask again. Stop automatic advancement when a mutation outcome is unknown, or when recovery
+requires a rollback that was not separately authorized.
 
 The local stdio server persists the material TaskContext under the Target Runtime state directory.
 Reconnecting with the same task ID restores the typed intent, target bindings/selectors, at most 16
@@ -275,10 +292,16 @@ than the active concurrency budget, and Runtime status exposes the active/peak l
 in-flight submission counts. Context maintenance attempts, failures, and the last failure are also
 visible in Runtime status.
 
-MCP tool responses put a concise Chinese status, recovery state, and next action in text `content`.
-Automation must read the bounded Agent Envelope from `structuredContent` and follow its evidence
-references for exact raw fields. Use `case_read` for the recoverable projection and `evidence_read`
-for a bounded verified slice; do not depend on parsing the human summary.
+During active work, MCP tool responses put a concise Chinese status, recovery state, and next
+action in text `content`. When a Case becomes terminal, Target Runtime automatically persists
+`closeout`, `closeout_markdown`, and the default `closeout_bundle`. Use `workflow.advance` only for
+first execution or an explicit delivery-strategy selection; use the strict `workflow.next` entry
+for every later bare “continue” request. `workflow.next` reuses the Case's frozen context, creates no
+Case when none exists, and returns a terminal Closeout without adding another control event. Its
+`structuredContent` contains the real operation result plus
+the bounded Agent Envelope, and the bundle indexes `closeout.json`, `closeout.md`, stage evidence,
+and artifacts. Use `case_read` for the recoverable projection and `evidence_read` for a bounded
+verified body; do not reconstruct completion from the human summary or from phase status alone.
 
 ## Common JSON envelope
 

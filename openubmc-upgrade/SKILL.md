@@ -1,15 +1,15 @@
 ---
 name: openubmc-upgrade
-description: Use when an already-built openUBMC HPM must be uploaded, activated, monitored, or rolled back on a specific BMC through Redfish, including a typed build-upgrade handoff from an existing diagnose-and-fix task. Requires current-task mutation authorization, a target, and verified artifact identity. Do not use to build HPMs, publish Conan packages, or diagnose source code.
+description: Use when an already-built openUBMC HPM must be uploaded, activated, monitored, and version-verified on a specific BMC through Redfish, including a typed build-upgrade handoff from an existing diagnose-and-fix task. Also assess an explicit firmware rollback request against a separately available recovery path; the current production backend does not expose a standalone firmware rollback action. Requires current-task mutation authorization, a target, and verified artifact identity. Do not use to build HPMs, publish Conan packages, or diagnose source code.
 ---
 
 # openUBMC Upgrade
 
 Upgrade owns remote BMC firmware mutation. It accepts either a verified HPM
 summary returned by Build or an already-built HPM whose path, SHA-256, and
-product version are supplied by the current task. It starts only when the task
-is routed to `upgrade-and-verify` or `delivery_strategy=build-upgrade`, or when
-the user directly requests an upgrade or rollback.
+product version are supplied by the current task. It starts when Target Runtime
+selects the typed Upgrade operation for a Case or a direct non-Case request enters
+that operation. Use the typed decision without reinterpreting or reconfirming it.
 
 It does not build components, edit a manifest, publish Conan packages, or claim
 runtime acceptance by itself.
@@ -21,11 +21,13 @@ Internal phases do not ask the user to repeat the target, credentials,
 artifact identity, final purpose, or authorization. Build supplies the HPM
 path, SHA-256, product version, and build evidence; it never opens the target.
 
-When a Context Runtime `case_id` is present, consume `build.artifact` from that Case and keep upload,
-activation, reconnect, and fresh Debug verification in the same workflow. Do not ask the user to
-repeat the artifact identity or target. A mutation outcome unknown blocks automatic
-`workflow.advance`; reconcile the durable MutationJournal explicitly with the same Case and
-operation identity. Upgrade results are domain operations, not `phase_record` claims.
+When a Context Runtime `case_id` is present, consume `build.artifact`, target, credential selector,
+final purpose, and authorization from that Case. Bare “继续” or “continue” means call
+`workflow.next`; do not re-upload an HPM or reconstruct the operation from conversation history.
+Upload, activation, reconnect, and fresh Debug verification stay in the same workflow. A mutation
+outcome unknown blocks automatic continuation until the same durable MutationJournal is reconciled
+with the same Case and operation identity. Upgrade results are domain operations, not
+`phase_record` claims.
 Build evidence IDs remain attached to the Case's `build.artifact` provenance; consume the artifact
 identity from that record without asking the user to restate or confirm it.
 
@@ -41,16 +43,17 @@ canonical Skill link is unavailable, route the local setup gap to
 
 ## Required input
 
-Before any write to a BMC, require all of the following:
+Before an upgrade write to a BMC, require all of the following:
 
-- current-task authorization to upgrade or roll back, either direct or carried by the typed delivery strategy;
+- a typed Upgrade authorization accepted by Target Runtime;
 - one HTTPS BMC target;
 - HPM absolute path, expected SHA-256, and expected product version;
-- an approved rollback HPM or a confirmed recovery path when rollback is
-  required;
 - a Redfish credential selector already carried by Target Runtime, explicit
   Redfish environment variables, a direct internal-development Redfish password,
   or a user-selected credentials file.
+
+Require a confirmed recovery path only when rollback or recovery is actually in
+scope. Authorization does not create a capability that the backend lacks.
 
 When a shared credentials file is selected, it must contain the Redfish entries
 below. It may also contain the documented openubmc-debug SSH, Telnet, and
@@ -164,11 +167,13 @@ the write.
 
 ## Rollback
 
-Rollback is another explicit upgrade operation. Require new authorization and
-the rollback artifact identity. Use the same target-discovered lane, then
-verify the restored version and request a fresh runtime check only when the
-caller asked for runtime acceptance. Never roll back
-automatically because an upload, timeout, or restart was ambiguous.
+The current production Upgrade backend does not expose an independent firmware rollback action. A
+Case may carry a distinct rollback authorization, but that decision does not create the missing
+backend capability. Do not invent one, relabel a normal upgrade as rollback, or claim that a rollback
+HPM was applied. Use only a separately available, explicitly selected recovery mechanism; if none
+exists, report the capability gap and stop. Never roll back automatically because an upload,
+timeout, restart, or mutation outcome is ambiguous, and never treat Upgrade authorization as
+rollback authorization.
 
 ## Report
 
@@ -176,6 +181,12 @@ Return the target, artifact path and SHA-256, method, task URI or status, and
 version result. Include the separate openubmc-debug verification status only
 when runtime acceptance was requested. Report a partial external mutation
 honestly when the task state is unknown.
+
+When the Case becomes terminal, Target Runtime automatically derives and
+persists `closeout`, `closeout_markdown`, and the default `closeout_bundle`.
+Use the Markdown as the user-facing first screen and the bundle as the immutable
+index for Closeout documents, build evidence, HPM identity, mutation journal,
+installed-version proof, and fresh Debug acceptance evidence.
 
 ## Resources
 

@@ -17,7 +17,19 @@ An apply operation receives all of:
 --apply --intent live_patch --authorize-live-patch --restart-scope <none|skynet>
 ```
 
-`--intent live_patch` identifies the requested side effect. `--authorize-live-patch` is the CLI projection of canonical `authorization.live_patch=true` for the reviewed target and plan. `--restart-scope` bounds its process impact. The Skill infers and supplies `none` or `skynet` from the runtime consumer and requested verification instead of asking the user to choose. A missing CLI gate remains a usage error and must not load credentials or contact the target.
+`--intent live_patch` and `--authorize-live-patch` are the compatibility CLI projection of the
+typed mutation authorization for the bound target and plan. Context Runtime keeps Apply and
+rollback as distinct canonical actions even though both scripts use these legacy CLI gates. A
+direct user request to apply/live-patch authorizes Apply; a direct rollback request authorizes only
+rollback. Do not ask again when the Case carries the matching authorization, and never infer
+rollback authorization from Apply. `--restart-scope` bounds process impact; infer `none` or
+`skynet` from the consumer and requested verification. Announce a `skynet` restart and expected
+disconnect without pausing for another confirmation. A missing CLI gate remains a usage error and
+must not load credentials or contact the target.
+
+`force_path`, `no_backup`, and `no_remount` require their own explicit task-level boolean
+authorization. Project an already-carried exception onto the CLI flag without reconfirming it; do
+not infer an exception from the path, mount state, or absence of a convenient backup.
 
 ## Credentials and dependencies
 
@@ -30,10 +42,13 @@ Credential values may come from direct internal-development CLI arguments, the o
 
 SSH host-key policies:
 
-- `insecure` is the internal-development default and disables verification.
-- `accept-new` may add a previously unseen key while rejecting changed keys.
+- `insecure` is the BMC default for replaceable internal-development targets and tolerates key
+  changes without a confirmation loop.
 - `strict` requires a known host key.
+- `accept-new` may add a previously unseen key while rejecting changed keys.
 - `--known-hosts <path>` and `--ssh-identity <path>` make the trust and identity sources explicit.
+
+The BMC default does not apply to OS-host SSH, which remains `strict`.
 
 ## Plan result
 
@@ -81,3 +96,8 @@ Supplying `--verify-mdbctl` also enables the generic framework health sequence, 
 | `2` | Invalid/ambiguous target or missing mutation gate |
 
 JSON failures return `ok=false` with an `error` field. A checksum, mode, uid, gid, health, or business verification failure cannot be reported as a successful deployment even when the file copy itself completed.
+
+If the transport fails after mutation may have started and the durable journal cannot determine
+the outcome, return `mutation_outcome_unknown` and stop. Do not reapply, continue to Debug, or run
+automatic rollback until the same operation identity is reconciled. If recovery needs rollback but
+the task lacks the distinct rollback authorization, stop as `recovery_blocked`.

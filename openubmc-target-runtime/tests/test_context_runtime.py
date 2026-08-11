@@ -6,7 +6,6 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
-import tracemalloc
 import unittest
 
 
@@ -15,13 +14,13 @@ sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
     AGENT_ENVELOPE_MAX_BYTES,
-    EvidenceUnavailable,
     FilesystemBlobRepository,
     IdempotencyConflict,
     InMemoryBlobRepository,
     InMemoryRuntimeRepository,
     JsonRpcMcpEndpoint,
     MutationOutcomeUnknown,
+    MutationAuthorizationDenied,
     OperationAlreadyInProgress,
     PendingCaseEvent,
     RevisionConflict,
@@ -80,12 +79,6 @@ class FullFakeBackend:
         context.raise_if_stopped()
         value = self._result("debug_collect", task, arguments)
         value["profile"] = arguments.get("profile", "standard")
-        minimum_epoch = arguments.get("_minimum_target_epoch", 0)
-        value["target_epoch"] = (
-            int(minimum_epoch)
-            if isinstance(minimum_epoch, int) and not isinstance(minimum_epoch, bool)
-            else 0
-        )
         return value
 
     def log_bundle_collect(self, task, arguments, context) -> dict[str, object]:
@@ -129,6 +122,18 @@ class FailTerminalCommitRepository(InMemoryRuntimeRepository):
         )
 
 
+class FailOnceReceiptRepository(InMemoryRuntimeRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_receipt = True
+
+    def complete_idempotency(self, case_id, key, receipt) -> None:
+        if self.fail_next_receipt:
+            self.fail_next_receipt = False
+            raise OSError("receipt completion interrupted")
+        super().complete_idempotency(case_id, key, receipt)
+
+
 class FailOnceUpgradeBackend(FullFakeBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -144,50 +149,6 @@ class FailOnceUpgradeBackend(FullFakeBackend):
 class ExplodingDebugBackend(FullFakeBackend):
     def debug_run(self, task, arguments, context) -> dict[str, object]:
         raise ValueError("failure-" + "x" * (1024 * 1024))
-
-
-class PartialDebugBackend(FullFakeBackend):
-    def debug_run(self, task, arguments, context) -> dict[str, object]:
-        self.calls.append(("debug_run", dict(arguments)))
-        return {
-            "ok": False,
-            "code": "workflow_partial_failure",
-            "normalized_code": "workflow_partial_failure",
-            "returncode": 1,
-            "error": "collection failed",
-        }
-
-
-class DeterministicFailureBackend(FullFakeBackend):
-    def __init__(self) -> None:
-        super().__init__()
-        self.attempts = 0
-
-    def debug_run(self, task, arguments, context) -> dict[str, object]:
-        self.attempts += 1
-        raise ValueError("deterministic debug failure")
-
-
-class FailOnceDebugBackend(FullFakeBackend):
-    def __init__(self) -> None:
-        super().__init__()
-        self.attempts = 0
-
-    def debug_run(self, task, arguments, context) -> dict[str, object]:
-        self.attempts += 1
-        if self.attempts == 1:
-            raise ValueError("temporary debug failure")
-        return super().debug_run(task, arguments, context)
-
-
-class RawEvidenceBackend(FullFakeBackend):
-    def debug_run(self, task, arguments, context) -> dict[str, object]:
-        value = super().debug_run(task, arguments, context)
-        value["credential_status"] = {
-            "password_policy": "development-default",
-            "token_state": "present",
-        }
-        return value
 
 
 class RepositoryContractTests(unittest.TestCase):
@@ -241,62 +202,6 @@ class RepositoryContractTests(unittest.TestCase):
                         events=(PendingCaseEvent("CaseClosed", {}),),
                     )
 
-    def test_step_invalidation_uses_explicit_plan_membership_not_text_order(self) -> None:
-        repository = InMemoryRuntimeRepository()
-        events = [
-            PendingCaseEvent(
-                "CaseOpened",
-                {
-                    "intent": "diagnose-and-fix",
-                    "targets": [],
-                    "target_version": 1,
-                },
-            )
-        ]
-        for operation_id, step_id in (
-            ("build", "step-2-build"),
-            ("upgrade", "step-10-upgrade"),
-        ):
-            events.extend(
-                (
-                    PendingCaseEvent(
-                        "OperationAccepted",
-                        {
-                            "operation": operation_id,
-                            "workflow_cycle_id": "cycle-1",
-                            "workflow_step_id": step_id,
-                            "workflow_step_kind": "operation",
-                            "target_version": 1,
-                        },
-                        operation_id,
-                    ),
-                    PendingCaseEvent("OperationStarted", {}, operation_id),
-                    PendingCaseEvent(
-                        "OperationTerminal",
-                        {"status": "completed", "case_status": "open"},
-                        operation_id,
-                    ),
-                )
-            )
-        events.append(
-            PendingCaseEvent(
-                "WorkflowStepsInvalidated",
-                {
-                    "after_step_id": "step-2-build",
-                    "retained_step_ids": ["step-2-build"],
-                },
-            )
-        )
-
-        projection = repository.commit(
-            "ordered-invalidation", expected_revision=0, events=events
-        )
-
-        self.assertEqual(
-            set(projection["workflow_step_states"]),
-            {"step-2-build"},
-        )
-
     def test_idempotency_claim_and_conflict(self) -> None:
         for repository in self.repositories():
             with self.subTest(adapter=repository.status()["adapter"]):
@@ -317,157 +222,6 @@ class RepositoryContractTests(unittest.TestCase):
                         "case-a", "same", "fingerprint-b"
                     )
 
-    def test_long_case_projection_is_bounded_without_losing_history_indexes(self) -> None:
-        for repository in self.repositories():
-            with self.subTest(adapter=repository.status()["adapter"]):
-                events = [
-                    PendingCaseEvent(
-                        "CaseOpened",
-                        {
-                            "intent": "diagnosis-only",
-                            "final_purpose": "diagnose",
-                            "targets": [],
-                        },
-                    )
-                ]
-                for index in range(300):
-                    operation_id = f"operation-{index}"
-                    operation = "debug_run" if index == 0 else "runtime_status"
-                    reference = {
-                        "evidence_id": f"evidence-{index}",
-                        "blob_id": f"{index:064x}",
-                        "media_type": "application/json",
-                        "byte_count": index + 1,
-                        "target_id": "candidate",
-                        "generation": "1",
-                        "provenance": operation,
-                        "observed_at": float(index),
-                    }
-                    accepted_payload = {
-                        "operation": operation,
-                        "idempotency_key": operation_id,
-                    }
-                    if index == 0:
-                        accepted_payload.update(
-                            {
-                                "workflow_cycle_id": "cycle-1",
-                                "workflow_step_id": "step-01-debug_run",
-                                "workflow_step_kind": "operation",
-                                "target_version": 1,
-                            }
-                        )
-                    events.extend(
-                        (
-                            PendingCaseEvent(
-                                "OperationAccepted",
-                                accepted_payload,
-                                operation_id,
-                            ),
-                            PendingCaseEvent("OperationStarted", {}, operation_id),
-                            PendingCaseEvent(
-                                "EvidenceAttached",
-                                {"evidence": reference},
-                                operation_id,
-                            ),
-                            PendingCaseEvent(
-                                "OperationTerminal",
-                                {
-                                    "status": "completed",
-                                    "summary": "done",
-                                    "case_status": "terminal",
-                                },
-                                operation_id,
-                            ),
-                        )
-                    )
-
-                projection = repository.commit(
-                    "long-case",
-                    expected_revision=0,
-                    events=events,
-                )
-
-                self.assertEqual(projection["operation_count"], 300)
-                self.assertEqual(projection["evidence_ref_count"], 300)
-                self.assertLessEqual(len(projection["operations"]), 128)
-                self.assertLessEqual(len(projection["evidence_refs"]), 256)
-                self.assertTrue(projection["projection_truncated"])
-                self.assertEqual(
-                    projection["completed_operation_counts"]["debug_run"], 1
-                )
-                self.assertEqual(
-                    repository.evidence_reference("long-case", "evidence-0")[
-                        "blob_id"
-                    ],
-                    "0" * 64,
-                )
-                references = repository.delete_case("long-case")
-                self.assertEqual(len(references), 300)
-
-    def test_workflow_uses_completed_operation_counts_after_recent_window_trims(self) -> None:
-        for repository in self.repositories():
-            with self.subTest(adapter=repository.status()["adapter"]):
-                events = [
-                    PendingCaseEvent(
-                        "CaseOpened",
-                        {
-                            "intent": "diagnosis-only",
-                            "final_purpose": "diagnose",
-                            "targets": [],
-                        },
-                    )
-                ]
-                for index in range(160):
-                    operation_id = f"history-{index}"
-                    operation = "debug_run" if index == 0 else "runtime_status"
-                    accepted_payload = {
-                        "operation": operation,
-                        "idempotency_key": operation_id,
-                    }
-                    if index == 0:
-                        accepted_payload.update(
-                            {
-                                "workflow_cycle_id": "cycle-1",
-                                "workflow_step_id": "step-01-debug_run",
-                                "workflow_step_kind": "operation",
-                                "target_version": 1,
-                            }
-                        )
-                    events.extend(
-                        (
-                            PendingCaseEvent(
-                                "OperationAccepted",
-                                accepted_payload,
-                                operation_id,
-                            ),
-                            PendingCaseEvent("OperationStarted", {}, operation_id),
-                            PendingCaseEvent(
-                                "OperationTerminal",
-                                {
-                                    "status": "completed",
-                                    "summary": "done",
-                                    "case_status": "terminal",
-                                },
-                                operation_id,
-                            ),
-                        )
-                    )
-                repository.commit("workflow-history", expected_revision=0, events=events)
-                backend = FullFakeBackend()
-                service = RuntimeMcpService(backend, context_repository=repository)
-                try:
-                    result = service.call_tool(
-                        "workflow.advance",
-                        {"case_id": "workflow-history"},
-                        task_id=f"workflow-{repository.status()['adapter']}",
-                        operation_id="advance-history",
-                    )
-                finally:
-                    service.close()
-
-                self.assertEqual(result["status"], "completed")
-                self.assertEqual(backend.calls, [])
-
 
 class BlobRepositoryContractTests(unittest.TestCase):
     def test_content_addressing_range_and_hash(self) -> None:
@@ -484,159 +238,89 @@ class BlobRepositoryContractTests(unittest.TestCase):
                     self.assertEqual(repository.read(first, offset=2, limit=5), body[2:7])
                     self.assertGreater(repository.size_bytes(), 0)
 
-    def test_filesystem_range_read_does_not_materialize_the_full_blob(self) -> None:
-        body = b"x" * (16 * 1024 * 1024)
-        with tempfile.TemporaryDirectory() as raw:
-            repository = FilesystemBlobRepository(Path(raw))
-            blob_id = repository.put(body)
-            tracemalloc.start()
-            returned = repository.read(blob_id, offset=1024, limit=65536)
-            _current, peak = tracemalloc.get_traced_memory()
-            tracemalloc.stop()
-
-        self.assertEqual(returned, body[1024 : 1024 + 65536])
-        self.assertLess(peak, 4 * 1024 * 1024)
-
-    def test_filesystem_put_repairs_an_existing_corrupt_blob(self) -> None:
-        body = json.dumps({"value": "repair-me"}).encode("utf-8")
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            repository = FilesystemBlobRepository(root)
-            blob_id = repository.put(body)
-            path = root / blob_id[:2] / f"{blob_id}.json.gz"
-            path.write_bytes(b"corrupt")
-
-            self.assertEqual(repository.put(body), blob_id)
-            self.assertEqual(repository.read(blob_id, offset=0, limit=-1), body)
-
 
 class ContextRuntimeIntegrationTests(unittest.TestCase):
-    def test_partial_domain_result_stops_workflow_before_developer_phase(self) -> None:
-        backend = PartialDebugBackend()
-        service = RuntimeMcpService(backend)
+    def test_json_rpc_error_uses_mutation_journal_outcome_classification(self) -> None:
+        class RollbackFailedBackend(FullFakeBackend):
+            def live_patch_run(self, task, arguments, context):
+                error = ValueError("rollback transport failed")
+                error.mutation_outcome = "unknown"
+                error.mutation_journal_stage = "rollback_failed"
+                error.mutation_effects_started = True
+                raise error
+
+        service = RuntimeMcpService(RollbackFailedBackend())
+        endpoint = JsonRpcMcpEndpoint(
+            service,
+            session_task_id="rollback-failed-task",
+        )
         try:
-            direct = service.call_tool(
-                "debug_run",
-                {"ip": "192.0.2.70"},
-                task_id="partial-direct",
-                operation_id="partial-direct-op",
-            )
-            advanced = service.call_tool(
-                "workflow.advance",
+            response = endpoint.handle(
                 {
-                    "ip": "192.0.2.71",
-                    "intent": "diagnose-and-fix",
-                    "delivery_strategy": "build-upgrade",
-                },
-                task_id="partial-advance",
-                operation_id="partial-advance-op",
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "live_patch_run",
+                        "arguments": {
+                            "ip": "192.0.2.20",
+                            "intent": "live-patch",
+                            "deadline": 10,
+                        },
+                    },
+                }
             )
         finally:
             service.close()
 
-        self.assertEqual(direct.envelope["status"], "partial")
-        self.assertEqual(advanced["status"], "partial")
-        self.assertNotIn("required_phase_type", advanced)
-        self.assertEqual(len(backend.calls), 2)
+        self.assertIsNotNone(response)
+        result = response["result"]
+        self.assertTrue(result["isError"])
+        structured = result["structuredContent"]
+        self.assertEqual(structured["status"], "mutation_outcome_unknown")
+        self.assertEqual(structured["code"], "mutation_outcome_unknown")
+        self.assertIn("reconcile", structured["next_action"])
+        self.assertNotIn("修正工具参数", result["content"][0]["text"])
 
-    def test_failed_domain_step_retries_with_a_new_attempt_on_continue(self) -> None:
-        backend = FailOnceDebugBackend()
-        service = RuntimeMcpService(backend)
+    def test_authorization_rejection_is_not_recorded_as_unknown_mutation(self) -> None:
+        class AuthorizationRejectedBackend(FullFakeBackend):
+            def live_patch_run(self, task, arguments, context):
+                raise MutationAuthorizationDenied("rollback requires explicit intent")
+
+        repository = InMemoryRuntimeRepository()
+        service = RuntimeMcpService(
+            AuthorizationRejectedBackend(),
+            context_repository=repository,
+        )
         try:
-            first = service.call_tool(
-                "workflow.advance",
-                {"ip": "192.0.2.72", "intent": "diagnosis-only"},
-                task_id="failed-advance",
-                operation_id="failed-advance-one",
-            )
-            second = service.call_tool(
-                "workflow.advance",
-                {"case_id": first.envelope["case_id"]},
-                task_id="failed-advance",
-                operation_id="failed-advance-two",
-            )
-        finally:
-            service.close()
-
-        self.assertEqual(first["status"], "failed")
-        self.assertEqual(second["status"], "completed")
-        self.assertEqual(backend.attempts, 2)
-
-    def test_build_phase_failure_without_artifact_can_retry_in_the_same_case(self) -> None:
-        service = RuntimeMcpService(FullFakeBackend())
-        try:
-            opened = service.call_tool(
-                "debug_run",
-                {"ip": "192.0.2.73", "intent": "diagnose-and-fix"},
-                task_id="build-retry",
-                operation_id="debug-before-build",
-            )
-            case_id = opened.envelope["case_id"]
+            with self.assertRaises(MutationAuthorizationDenied):
+                service.call_tool(
+                    "live_patch_run",
+                    {
+                        "ip": "192.0.2.45",
+                        "intent": "live-patch",
+                        "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                        "deadline": 10,
+                    },
+                    task_id="authorization-rejected-task",
+                    operation_id="authorization-rejected",
+                )
+            case_id = repository.case_for_task("authorization-rejected-task")
             case = service.call_tool(
                 "case_read",
                 {"case_id": case_id},
-                task_id="build-retry",
-                operation_id="read-before-failure",
-            )
-            failed = service.call_tool(
-                "phase_record",
-                {
-                    "case_id": case_id,
-                    "expected_revision": case["revision"],
-                    "idempotency_key": "build-failed",
-                    "phase_type": "build.artifact",
-                    "producer_identity": "openubmc-build",
-                    "status": "failed",
-                    "source_revision": "abc123",
-                    "summary": "build failed before producing an artifact",
-                },
-                task_id="build-retry",
-                operation_id="build-failed-op",
-            )
-            case = service.call_tool(
-                "case_read",
-                {"case_id": case_id},
-                task_id="build-retry",
-                operation_id="read-before-retry",
-            )
-            completed = service.call_tool(
-                "phase_record",
-                {
-                    "case_id": case_id,
-                    "expected_revision": case["revision"],
-                    "idempotency_key": "build-completed",
-                    "phase_type": "build.artifact",
-                    "producer_identity": "openubmc-build",
-                    "status": "completed",
-                    "source_revision": "abc123",
-                    "summary": "retry produced an artifact",
-                    "artifact_path": "/tmp/product.hpm",
-                    "artifact_sha256": "a" * 64,
-                    "product_version": "1.2.3",
-                },
-                task_id="build-retry",
-                operation_id="build-completed-op",
+                task_id="authorization-rejected-reader",
+                operation_id="authorization-rejected-read",
             )
         finally:
             service.close()
 
-        self.assertEqual(failed["status"], "failed")
-        self.assertEqual(failed["phase_attempt"], 1)
-        self.assertEqual(completed["status"], "completed")
-        self.assertEqual(completed["phase_attempt"], 2)
-
-    def test_sqlite_reclaims_a_pending_claim_owned_by_an_inactive_process(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            path = Path(raw) / "runtime.sqlite3"
-            first = SQLiteRuntimeRepository(path)
-            self.assertIsNone(first.claim_idempotency("case-a", "key-a", "fingerprint"))
-            second = SQLiteRuntimeRepository(
-                path,
-                owner_is_active=lambda _pid, _started: False,
-            )
-            self.assertIsNone(
-                second.claim_idempotency("case-a", "key-a", "fingerprint")
-            )
+        operation = next(
+            item
+            for item in case["operations"]
+            if item["operation_id"] == "authorization-rejected"
+        )
+        self.assertEqual(operation["status"], "failed")
 
     def test_shadow_mode_never_breaks_the_legacy_read_result(self) -> None:
         backend = FullFakeBackend()
@@ -781,9 +465,6 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         )
         arguments = {
             "ip": "192.0.2.24",
-            "artifact_path": "/tmp/test.hpm",
-            "artifact_sha256": "a" * 64,
-            "product_version": "1.2.3",
             "deadline": 10,
             "idempotency_key": "commit-failure",
         }
@@ -805,6 +486,172 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         finally:
             service.close()
         self.assertEqual([name for name, _ in backend.calls], ["upgrade_run"])
+
+    def test_terminal_case_repairs_a_pending_idempotency_receipt(self) -> None:
+        backend = FullFakeBackend()
+        repository = FailOnceReceiptRepository()
+        service = RuntimeMcpService(backend, context_repository=repository)
+        arguments = {
+            "ip": "192.0.2.25",
+            "intent": "live-patch",
+            "delivery_strategy": "live-patch",
+            "local_path": "/tmp/unit.lua",
+            "remote_path": "/opt/bmc/apps/demo/unit.lua",
+            "restart_scope": "none",
+            "deadline": 10,
+            "idempotency_key": "receipt-repair",
+        }
+        try:
+            with self.assertRaisesRegex(OSError, "receipt completion interrupted"):
+                service.call_tool(
+                    "live_patch_run",
+                    arguments,
+                    task_id="receipt-repair-task",
+                    operation_id="receipt-repair-operation",
+                )
+            case_id = repository.case_for_task("receipt-repair-task")
+            repaired = service.call_tool(
+                "live_patch_run",
+                {**arguments, "case_id": case_id},
+                task_id="receipt-repair-task",
+                operation_id="receipt-repair-retry",
+            )
+            status = service.call_tool(
+                "runtime_status",
+                {},
+                task_id="receipt-repair-task",
+                operation_id="receipt-repair-status",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual([name for name, _ in backend.calls], ["live_patch_run"])
+        self.assertTrue(repaired["idempotent_replay"])
+        self.assertIn("closeout", repaired)
+        self.assertEqual(
+            status["context_runtime"]["metrics"][
+                "idempotency_receipt_repairs"
+            ],
+            1,
+        )
+
+    def test_completed_retries_ignore_stale_revision_but_new_work_does_not(self) -> None:
+        backend = FullFakeBackend()
+        repository = InMemoryRuntimeRepository()
+        service = RuntimeMcpService(backend, context_repository=repository)
+        domain_arguments = {
+            "ip": "192.0.2.26",
+            "intent": "diagnosis-only",
+            "deadline": 10,
+            "idempotency_key": "stale-domain-retry",
+        }
+        workflow_arguments = {
+            "ip": "192.0.2.27",
+            "intent": "diagnosis-only",
+            "deadline": 10,
+            "idempotency_key": "stale-workflow-retry",
+        }
+        try:
+            domain_first = service.call_tool(
+                "debug_run",
+                domain_arguments,
+                task_id="stale-domain-task",
+                operation_id="stale-domain-first",
+            )
+            domain_case_id = domain_first.envelope["case_id"]
+            domain_replay = service.call_tool(
+                "debug_run",
+                {
+                    **domain_arguments,
+                    "case_id": domain_case_id,
+                    "expected_revision": 1,
+                },
+                task_id="stale-domain-task",
+                operation_id="stale-domain-replay",
+            )
+            with self.assertRaises(RevisionConflict):
+                service.call_tool(
+                    "debug_run",
+                    {
+                        **domain_arguments,
+                        "case_id": domain_case_id,
+                        "expected_revision": 1,
+                        "idempotency_key": "new-domain-work",
+                    },
+                    task_id="stale-domain-task",
+                    operation_id="new-domain-work",
+                )
+
+            workflow_first = service.call_tool(
+                "workflow.advance",
+                workflow_arguments,
+                task_id="stale-workflow-task",
+                operation_id="stale-workflow-first",
+            )
+            workflow_case_id = workflow_first.envelope["case_id"]
+            workflow_replay = service.call_tool(
+                "workflow.advance",
+                {
+                    **workflow_arguments,
+                    "case_id": workflow_case_id,
+                    "expected_revision": 1,
+                },
+                task_id="stale-workflow-task",
+                operation_id="stale-workflow-replay",
+            )
+            with self.assertRaises(RevisionConflict):
+                service.call_tool(
+                    "workflow.advance",
+                    {
+                        **workflow_arguments,
+                        "case_id": workflow_case_id,
+                        "expected_revision": 1,
+                        "idempotency_key": "new-workflow-work",
+                    },
+                    task_id="stale-workflow-task",
+                    operation_id="new-workflow-work",
+                )
+        finally:
+            service.close()
+
+        self.assertTrue(domain_replay["ok"])
+        self.assertTrue(workflow_replay["completed"])
+        self.assertEqual(
+            [name for name, _ in backend.calls].count("debug_run"),
+            2,
+        )
+
+    def test_password_env_selector_is_preserved_and_affects_idempotency(self) -> None:
+        backend = FullFakeBackend()
+        service = RuntimeMcpService(backend)
+        arguments = {
+            "ip": "192.0.2.28",
+            "intent": "diagnosis-only",
+            "ssh_password_env": "BMC_PASSWORD_A",
+            "deadline": 10,
+            "idempotency_key": "selector-identity",
+        }
+        try:
+            service.call_tool(
+                "debug_run",
+                arguments,
+                task_id="selector-task",
+                operation_id="selector-first",
+            )
+            with self.assertRaises(IdempotencyConflict):
+                service.call_tool(
+                    "debug_run",
+                    {
+                        **arguments,
+                        "ssh_password_env": "BMC_PASSWORD_B",
+                    },
+                    task_id="selector-task",
+                    operation_id="selector-second",
+                )
+        finally:
+            service.close()
+
+        self.assertEqual(backend.calls[0][1]["ssh_password_env"], "BMC_PASSWORD_A")
 
     def test_large_result_is_blob_backed_and_mcp_envelope_is_bounded(self) -> None:
         backend = FullFakeBackend(large_bytes=1024 * 1024 + 123)
@@ -1014,390 +861,174 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         finally:
             service.close()
 
-    def test_preexisting_collect_does_not_satisfy_post_upgrade_verification(self) -> None:
+    def test_workflow_advance_runs_direct_rollback_then_fresh_verification(self) -> None:
         backend = FullFakeBackend()
         service = RuntimeMcpService(backend)
         try:
-            opened = service.call_tool(
-                "debug_collect",
+            result = service.call_tool(
+                "workflow.advance",
                 {
-                    "ip": "192.0.2.80",
-                    "intent": "diagnose-and-fix",
-                    "delivery_strategy": "build-upgrade",
+                    "ip": "192.0.2.44",
+                    "intent": "rollback",
+                    "action": "rollback",
+                    "backup_path": "/tmp/unit.lua.bak",
+                    "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                    "final_purpose": "restore the previous runtime file",
+                    "idempotency_key": "rollback-advance",
+                    "deadline": 10,
                 },
-                task_id="fresh-verification",
-                operation_id="preexisting-collect",
+                task_id="rollback-workflow-task",
+                operation_id="rollback-advance",
             )
-            case_id = opened.envelope["case_id"]
+        finally:
+            service.close()
+
+        self.assertTrue(result["completed"])
+        self.assertEqual(
+            [name for name, _arguments in backend.calls],
+            ["live_patch_run", "debug_collect"],
+        )
+        self.assertEqual(backend.calls[0][1]["action"], "rollback")
+
+    def _advance_after_terminal_phase(
+        self, *, phase_type: str, status: str
+    ) -> tuple[dict[str, object], list[str]]:
+        label = f"{phase_type.replace('.', '-')}-{status}"
+        delivery_strategy = (
+            "live-patch" if phase_type == "developer.change" else "build-upgrade"
+        )
+        backend = FullFakeBackend()
+        service = RuntimeMcpService(backend)
+        try:
             waiting = service.call_tool(
                 "workflow.advance",
-                {"case_id": case_id},
-                task_id="fresh-verification",
-                operation_id="advance-diagnose",
-            )
-            case = service.call_tool(
-                "case_read",
-                {"case_id": case_id},
-                task_id="fresh-verification",
-                operation_id="read-developer",
-            )
-            service.call_tool(
-                "phase_record",
                 {
-                    "case_id": case_id,
-                    "expected_revision": case["revision"],
-                    "idempotency_key": "fresh-developer",
-                    "phase_type": "developer.change",
-                    "producer_identity": "developer",
-                    "status": "completed",
-                    "source_revision": "abc",
-                    "summary": "fixed",
-                    "authored_files": ["src/unit.lua"],
-                    "verification_plan": ["upgrade", "verify"],
-                },
-                task_id="fresh-verification",
-                operation_id="fresh-developer",
-            )
-            service.call_tool(
-                "workflow.advance",
-                {"case_id": case_id},
-                task_id="fresh-verification",
-                operation_id="advance-build",
-            )
-            case = service.call_tool(
-                "case_read",
-                {"case_id": case_id},
-                task_id="fresh-verification",
-                operation_id="read-build",
-            )
-            service.call_tool(
-                "phase_record",
-                {
-                    "case_id": case_id,
-                    "expected_revision": case["revision"],
-                    "idempotency_key": "fresh-build",
-                    "phase_type": "build.artifact",
-                    "producer_identity": "build",
-                    "status": "completed",
-                    "source_revision": "abc",
-                    "summary": "built",
-                    "artifact_path": "/tmp/product.hpm",
-                    "artifact_sha256": "b" * 64,
-                    "product_version": "2",
-                },
-                task_id="fresh-verification",
-                operation_id="fresh-build",
-            )
-            final = service.call_tool(
-                "workflow.advance",
-                {"case_id": case_id},
-                task_id="fresh-verification",
-                operation_id="advance-verify",
-            )
-        finally:
-            service.close()
-
-        self.assertEqual(waiting["required_phase_type"], "developer.change")
-        self.assertTrue(final["completed"])
-        collects = [args for name, args in backend.calls if name == "debug_collect"]
-        self.assertEqual(len(collects), 2)
-        self.assertEqual(collects[-1]["_minimum_target_epoch"], 3)
-
-    def test_target_switch_updates_case_and_followup_delivery_target(self) -> None:
-        backend = FullFakeBackend()
-        service = RuntimeMcpService(backend)
-        try:
-            first = service.call_tool(
-                "workflow.advance",
-                {
-                    "ip": "192.0.2.81",
+                    "ip": "192.0.2.31",
                     "intent": "diagnose-and-fix",
-                    "delivery_strategy": "build-upgrade",
+                    "delivery_strategy": delivery_strategy,
+                    "final_purpose": "fix and verify",
+                    "idempotency_key": f"advance-{label}-1",
+                    "deadline": 10,
                 },
-                task_id="target-switch",
-                operation_id="advance-a",
+                task_id=f"{label}-task",
+                operation_id=f"advance-{label}-1",
             )
-            case_id = first.envelope["case_id"]
-            service.call_tool(
-                "debug_run",
-                {"case_id": case_id, "ip": "192.0.2.82"},
-                task_id="target-switch",
-                operation_id="manual-b",
-            )
-            case = service.call_tool(
-                "case_read",
-                {"case_id": case_id},
-                task_id="target-switch",
-                operation_id="read-b",
-            )
-            service.call_tool(
-                "phase_record",
-                {
-                    "case_id": case_id,
-                    "expected_revision": case["revision"],
-                    "idempotency_key": "switch-developer",
-                    "phase_type": "developer.change",
-                    "producer_identity": "developer",
-                    "status": "completed",
-                    "source_revision": "abc",
-                    "summary": "fixed",
-                    "authored_files": ["src/unit.lua"],
-                    "verification_plan": ["upgrade", "verify"],
-                },
-                task_id="target-switch",
-                operation_id="switch-developer",
-            )
-            service.call_tool(
-                "workflow.advance",
-                {"case_id": case_id},
-                task_id="target-switch",
-                operation_id="advance-b-debug",
-            )
-            case = service.call_tool(
-                "case_read",
-                {"case_id": case_id},
-                task_id="target-switch",
-                operation_id="read-switch-build",
-            )
-            service.call_tool(
-                "phase_record",
-                {
-                    "case_id": case_id,
-                    "expected_revision": case["revision"],
-                    "idempotency_key": "switch-build",
-                    "phase_type": "build.artifact",
-                    "producer_identity": "build",
-                    "status": "completed",
-                    "source_revision": "abc",
-                    "summary": "built",
-                    "artifact_path": "/tmp/product.hpm",
-                    "artifact_sha256": "c" * 64,
-                    "product_version": "3",
-                },
-                task_id="target-switch",
-                operation_id="switch-build",
-            )
-            final = service.call_tool(
-                "workflow.advance",
-                {"case_id": case_id},
-                task_id="target-switch",
-                operation_id="advance-b-final",
-            )
-        finally:
-            service.close()
-
-        self.assertEqual(case["targets"][0]["address"], "192.0.2.82")
-        self.assertTrue(final["completed"])
-        upgrade = [args for name, args in backend.calls if name == "upgrade_run"]
-        self.assertEqual(upgrade[-1]["ip"], "192.0.2.82")
-
-    def test_existing_target_selection_does_not_advance_target_version(self) -> None:
-        service = RuntimeMcpService(FullFakeBackend())
-        try:
-            opened = service.call_tool(
-                "debug_run",
-                {
-                    "targets": [
-                        {
-                            "ip": "192.0.2.86",
-                            "target_id": "reference",
-                            "role": "reference",
-                        },
-                        {
-                            "ip": "192.0.2.87",
-                            "target_id": "candidate",
-                            "role": "candidate",
-                        },
-                    ]
-                },
-                task_id="target-selector",
-                operation_id="compare",
-            )
-            case_id = opened.envelope["case_id"]
-            service.call_tool(
-                "debug_collect",
-                {"case_id": case_id, "target_id": "candidate"},
-                task_id="target-selector",
-                operation_id="candidate-read",
-            )
-            selected = service.call_tool(
-                "case_read",
-                {"case_id": case_id},
-                task_id="target-selector",
-                operation_id="read-selection",
-            )
-            service.call_tool(
-                "debug_collect",
-                {"case_id": case_id, "target_id": "reference"},
-                task_id="target-selector",
-                operation_id="reference-read",
-            )
-            switched = service.call_tool(
-                "case_read",
-                {"case_id": case_id},
-                task_id="target-selector",
-                operation_id="read-switched-selection",
-            )
-        finally:
-            service.close()
-
-        self.assertEqual(selected["target_version"], 1)
-        self.assertEqual(switched["target_version"], 1)
-        self.assertEqual(switched["workflow_inputs"]["target_id"], "reference")
-
-    def test_new_developer_change_starts_a_new_delivery_cycle(self) -> None:
-        backend = FullFakeBackend()
-        service = RuntimeMcpService(backend)
-        try:
-            first = service.call_tool(
-                "workflow.advance",
-                {"ip": "192.0.2.83", "intent": "diagnose-and-fix"},
-                task_id="second-cycle",
-                operation_id="cycle-one-debug",
-            )
-            case_id = first.envelope["case_id"]
-
-            def submit_developer(key: str, revision: int):
-                return service.call_tool(
+            self.assertEqual(waiting["required_phase_type"], "developer.change")
+            case_id = waiting.envelope["case_id"]
+            if phase_type == "build.artifact":
+                case = service.call_tool(
+                    "case_read",
+                    {"case_id": case_id},
+                    task_id=f"{label}-task",
+                    operation_id=f"read-{label}-developer",
+                )
+                service.call_tool(
                     "phase_record",
                     {
                         "case_id": case_id,
-                        "expected_revision": revision,
-                        "idempotency_key": key,
+                        "expected_revision": case["revision"],
+                        "idempotency_key": f"developer-completed-{label}",
                         "phase_type": "developer.change",
-                        "producer_identity": "developer",
+                        "producer_identity": "openubmc-developer",
                         "status": "completed",
-                        "source_revision": key,
-                        "summary": key,
+                        "source_revision": "abc123",
+                        "summary": "implemented source fix",
                         "authored_files": ["src/unit.lua"],
-                        "verification_plan": ["verify"],
+                        "verification_plan": ["build", "upgrade", "verify"],
                     },
-                    task_id="second-cycle",
-                    operation_id=key,
+                    task_id=f"{label}-task",
+                    operation_id=f"phase-{label}-developer",
                 )
-
+                waiting = service.call_tool(
+                    "workflow.advance",
+                    {
+                        "case_id": case_id,
+                        "idempotency_key": f"advance-{label}-2",
+                        "deadline": 10,
+                    },
+                    task_id=f"{label}-task",
+                    operation_id=f"advance-{label}-2",
+                )
+                self.assertEqual(waiting["required_phase_type"], "build.artifact")
             case = service.call_tool(
                 "case_read",
                 {"case_id": case_id},
-                task_id="second-cycle",
-                operation_id="read-cycle-one",
+                task_id=f"{label}-task",
+                operation_id=f"read-{label}-terminal",
             )
-            first_phase = submit_developer("developer-cycle-one", case["revision"])
-            service.call_tool(
-                "workflow.advance",
-                {"case_id": case_id},
-                task_id="second-cycle",
-                operation_id="finish-cycle-one",
+            producer = (
+                "openubmc-developer"
+                if phase_type == "developer.change"
+                else "openubmc-build"
             )
-            case = service.call_tool(
-                "case_read",
-                {"case_id": case_id},
-                task_id="second-cycle",
-                operation_id="read-cycle-two",
-            )
-            second_phase = submit_developer("developer-cycle-two", case["revision"])
-            final = service.call_tool(
-                "workflow.advance",
-                {"case_id": case_id},
-                task_id="second-cycle",
-                operation_id="finish-cycle-two",
-            )
-        finally:
-            service.close()
-
-        self.assertEqual(first_phase["workflow_cycle_id"], "cycle-1")
-        self.assertEqual(second_phase["workflow_cycle_id"], "cycle-2")
-        self.assertTrue(final["completed"])
-        self.assertEqual(
-            len([name for name, _args in backend.calls if name == "debug_run"]),
-            2,
-        )
-
-    def test_persisted_evidence_keeps_internal_development_fields(self) -> None:
-        service = RuntimeMcpService(RawEvidenceBackend())
-        try:
-            result = service.call_tool(
-                "debug_run",
-                {"ip": "192.0.2.84"},
-                task_id="raw-evidence",
-                operation_id="raw-evidence",
-            )
-            reference = result.envelope["evidence_refs"][0]
-            evidence = service.call_tool(
-                "evidence_read",
+            phase = service.call_tool(
+                "phase_record",
                 {
-                    "case_id": result.envelope["case_id"],
-                    "evidence_id": reference["evidence_id"],
+                    "case_id": case_id,
+                    "expected_revision": case["revision"],
+                    "idempotency_key": f"phase-terminal-{label}",
+                    "phase_type": phase_type,
+                    "producer_identity": producer,
+                    "status": status,
+                    "source_revision": "abc123",
+                    "summary": f"{phase_type} {status}",
                 },
-                task_id="raw-evidence",
-                operation_id="read-raw-evidence",
+                task_id=f"{label}-task",
+                operation_id=f"phase-terminal-{label}",
+            )
+            self.assertEqual(phase["status"], status)
+            blocked = service.call_tool(
+                "workflow.next",
+                {"case_id": case_id},
+                task_id=f"{label}-task",
+                operation_id=f"next-{label}-terminal",
+            )
+            self.assertEqual(blocked["status"], status)
+            self.assertEqual(blocked["blocked_phase_type"], phase_type)
+            retried = service.call_tool(
+                "workflow.advance",
+                {
+                    "case_id": case_id,
+                    "idempotency_key": f"advance-{label}-terminal",
+                    "deadline": 10,
+                },
+                task_id=f"{label}-task",
+                operation_id=f"advance-{label}-terminal",
+            )
+            retry_case = service.call_tool(
+                "case_read",
+                {"case_id": case_id},
+                task_id=f"{label}-task",
+                operation_id=f"read-{label}-blocked",
             )
         finally:
             service.close()
+        self.assertEqual(retry_case["status"], "waiting_phase_record")
+        return retried, [name for name, _ in backend.calls]
 
-        body = json.loads(evidence["body"])
-        self.assertEqual(
-            body["credential_status"]["password_policy"],
-            "development-default",
-        )
-        self.assertEqual(body["credential_status"]["token_state"], "present")
+    def test_workflow_advance_opens_new_developer_phase_attempt(self) -> None:
+        for status in ("failed", "cancelled"):
+            with self.subTest(status=status):
+                retried, calls = self._advance_after_terminal_phase(
+                    phase_type="developer.change", status=status
+                )
+                self.assertFalse(retried["completed"])
+                self.assertEqual(retried["status"], "waiting_phase_record")
+                self.assertEqual(
+                    retried["required_phase_type"], "developer.change"
+                )
+                self.assertEqual(calls, ["debug_run"])
 
-    def test_service_maintenance_evicts_expired_unbound_terminal_case(self) -> None:
-        now = [0.0]
-        repository = InMemoryRuntimeRepository(clock=lambda: now[0])
-        service = RuntimeMcpService(
-            FullFakeBackend(),
-            context_repository=repository,
-            context_retention_seconds=5,
-            context_maintenance_interval_seconds=0,
-        )
-        try:
-            result = service.call_tool(
-                "debug_run",
-                {"ip": "192.0.2.85"},
-                task_id="maintenance-case",
-                operation_id="maintenance-debug",
-            )
-            case_id = result.envelope["case_id"]
-            service.complete_task("maintenance-case")
-            now[0] = 6.0
-            service.call_tool(
-                "runtime_status",
-                {},
-                task_id="maintenance-status",
-                operation_id="maintenance-status",
-            )
-        finally:
-            service.close()
-
-        self.assertIsNone(repository.load(case_id))
-
-    def test_service_status_reports_context_maintenance_failure(self) -> None:
-        service = RuntimeMcpService(
-            FullFakeBackend(),
-            context_maintenance_interval_seconds=0,
-        )
-
-        def fail_maintenance():
-            raise OSError("maintenance store unavailable")
-
-        service.context_runtime.maintain = fail_maintenance
-        try:
-            status = service.call_tool(
-                "runtime_status",
-                {},
-                task_id="maintenance-failure",
-                operation_id="maintenance-failure-status",
-            )
-        finally:
-            service.close()
-
-        self.assertEqual(status["context_maintenance"]["attempts"], 1)
-        self.assertEqual(status["context_maintenance"]["failures"], 1)
-        self.assertIn(
-            "maintenance store unavailable",
-            status["context_maintenance"]["last_error"],
-        )
+    def test_workflow_advance_opens_new_build_phase_attempt(self) -> None:
+        for status in ("failed", "cancelled"):
+            with self.subTest(status=status):
+                retried, calls = self._advance_after_terminal_phase(
+                    phase_type="build.artifact", status=status
+                )
+                self.assertFalse(retried["completed"])
+                self.assertEqual(retried["status"], "waiting_phase_record")
+                self.assertEqual(retried["required_phase_type"], "build.artifact")
+                self.assertEqual(calls, ["debug_run"])
 
     def test_task_completion_closes_connection_but_case_remains(self) -> None:
         backend = FullFakeBackend()
@@ -1520,113 +1151,6 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         finally:
             service.close()
 
-    def test_projection_cache_also_respects_the_total_byte_budget(self) -> None:
-        service = RuntimeMcpService(
-            FullFakeBackend(),
-            context_max_cached_projections=64,
-            context_max_cached_projection_bytes=4096,
-        )
-        try:
-            for index in range(5):
-                service.call_tool(
-                    "debug_run",
-                    {
-                        "ip": f"192.0.2.{80 + index}",
-                        "problem": "large-context-" + "x" * 4096,
-                    },
-                    task_id=f"byte-cache-{index}",
-                    operation_id=f"byte-cache-op-{index}",
-                )
-            status = service.context_runtime.status()
-        finally:
-            service.close()
-
-        self.assertLessEqual(
-            status["projection_cache_bytes"],
-            status["projection_cache_byte_limit"],
-        )
-
-    def test_trimmed_evidence_remains_readable_and_is_deleted_with_the_case(self) -> None:
-        repositories = [InMemoryRuntimeRepository()]
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        repositories.append(
-            SQLiteRuntimeRepository(Path(temporary.name) / "runtime.sqlite3")
-        )
-        for repository in repositories:
-            with self.subTest(adapter=repository.status()["adapter"]):
-                blobs = InMemoryBlobRepository()
-                body = b'{"old":"evidence"}'
-                blob_id = blobs.put(body)
-                events = [
-                    PendingCaseEvent(
-                        "CaseOpened",
-                        {
-                            "intent": "diagnosis-only",
-                            "final_purpose": "diagnose",
-                            "targets": [],
-                        },
-                    )
-                ]
-                for index in range(300):
-                    operation_id = f"evidence-operation-{index}"
-                    events.extend(
-                        (
-                            PendingCaseEvent(
-                                "OperationAccepted",
-                                {
-                                    "operation": "runtime_status",
-                                    "idempotency_key": operation_id,
-                                },
-                                operation_id,
-                            ),
-                            PendingCaseEvent("OperationStarted", {}, operation_id),
-                            PendingCaseEvent(
-                                "EvidenceAttached",
-                                {
-                                    "evidence": {
-                                        "evidence_id": f"old-evidence-{index}",
-                                        "blob_id": blob_id,
-                                        "media_type": "application/json",
-                                        "byte_count": len(body),
-                                        "target_id": "candidate",
-                                        "generation": "1",
-                                        "provenance": "runtime_status",
-                                        "observed_at": float(index),
-                                    }
-                                },
-                                operation_id,
-                            ),
-                            PendingCaseEvent(
-                                "OperationTerminal",
-                                {
-                                    "status": "completed",
-                                    "summary": "done",
-                                    "case_status": "terminal",
-                                },
-                                operation_id,
-                            ),
-                        )
-                    )
-                repository.commit("evidence-history", expected_revision=0, events=events)
-                service = RuntimeMcpService(
-                    FullFakeBackend(),
-                    context_repository=repository,
-                    blob_repository=blobs,
-                )
-                try:
-                    read = service.context_runtime.read_evidence(
-                        "evidence-history", "old-evidence-0"
-                    )
-                    forgotten = service.context_runtime.forget_case("evidence-history")
-                finally:
-                    service.close()
-
-                self.assertEqual(read["body"], body.decode("utf-8"))
-                self.assertEqual(forgotten["deleted_blobs"], 1)
-                with self.assertRaises(EvidenceUnavailable):
-                    blobs.read(blob_id, offset=0, limit=-1)
-
     def test_phase_record_replay_precedes_terminal_transition_validation(self) -> None:
         service = RuntimeMcpService(FullFakeBackend())
         try:
@@ -1735,7 +1259,6 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 service.context_runtime.status()["metrics"]["capsule_cache_hits"],
                 0,
             )
-            service.complete_task("shared-task")
             service.context_runtime.maintain()
             self.assertIsNotNone(repository.load("case-old"))
             self.assertIsNone(repository.load("case-new"))

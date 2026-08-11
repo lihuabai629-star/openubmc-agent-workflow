@@ -11,8 +11,9 @@ hook, private credential-file selection, client MCP configuration, and
 installer state.
 
 The installed `openubmc-target-runtime` MCP exposes the domain tools plus `case_read`,
-`evidence_read`, `case_close`, `case_forget`, `phase_record`, and `workflow.advance` from one
-OperationCatalog. Its persistent Case database, evidence CAS, task contexts, and mutation journals
+`evidence_read`, `case_close`, `case_forget`, `phase_record`, `workflow.advance`, and
+`workflow.next` from one OperationCatalog. Its persistent Case database, evidence CAS, task
+contexts, and mutation journals
 share `~/.local/state/openubmc-target-runtime` by default. Repair and update preserve that state.
 Uninstall removes the managed launcher and client registration but leaves Case history and
 mutation recovery state available for a later reinstall.

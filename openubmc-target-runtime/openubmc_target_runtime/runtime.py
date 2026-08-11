@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from collections import OrderedDict, deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -25,6 +26,7 @@ from .contracts import (
 from .mutation import (
     FreshVerificationRequired,
     MutationAuthorization,
+    MutationAuthorizationDenied,
     MutationEffectsRejected,
     MutationJournal,
     MutationJournalStore,
@@ -38,6 +40,7 @@ from .mutation import (
     TargetLeaseCoordinator,
     UnfinishedMutationExists,
     decide_mutation_recovery,
+    mutation_journal_operation_status,
 )
 from .orchestration import TaskIntent, TaskOrchestrationContext
 
@@ -52,6 +55,50 @@ RedfishResultT = TypeVar("RedfishResultT")
 CredentialT = TypeVar("CredentialT")
 MutationResultT = TypeVar("MutationResultT")
 VerificationResultT = TypeVar("VerificationResultT")
+
+
+def _annotate_mutation_exception(
+    error: BaseException,
+    *,
+    outcome: str,
+    journal: MutationJournal | None = None,
+) -> None:
+    """Expose a bounded mutation outcome hint to the owning Context Runtime."""
+
+    try:
+        setattr(error, "mutation_outcome", outcome)
+        if journal is not None:
+            setattr(error, "mutation_journal_stage", journal.stage)
+            setattr(error, "mutation_effects_started", journal.effects_started)
+    except (AttributeError, TypeError):
+        pass
+
+
+@contextmanager
+def _annotated_recovery_mutation_lease(
+    coordinator: "TargetCoordinator",
+    operation_context: object | None,
+    journal: MutationJournal,
+):
+    """Annotate every failure window while recovery holds mutation ownership."""
+
+    try:
+        with coordinator.lease_coordinator.mutation(operation_context) as token:
+            yield token
+    except BaseException as exc:
+        if not hasattr(exc, "mutation_outcome"):
+            status = mutation_journal_operation_status(journal)
+            outcome = (
+                "unknown"
+                if status == "mutation_outcome_unknown"
+                else ("applied" if journal.effects_started else "not_started")
+            )
+            _annotate_mutation_exception(
+                exc,
+                outcome=outcome,
+                journal=journal,
+            )
+        raise
 
 
 class RequestIdConflict(ValueError):
@@ -1968,7 +2015,11 @@ class OpenUBMCTaskRun:
     ) -> MutationTransactionResult[MutationResultT, VerificationResultT]:
         """Run one authorized target mutation and mandatory fresh verification."""
 
-        authorization.require(request.action)
+        try:
+            authorization.require(request.action)
+        except BaseException as exc:
+            _annotate_mutation_exception(exc, outcome="not_started")
+            raise
         with self._lock:
             existing = self._mutation_journals.get(request.operation_id)
             if existing is not None:
@@ -2020,11 +2071,15 @@ class OpenUBMCTaskRun:
             coordinator = self._coordinator(request.target)
 
         with coordinator.lease_coordinator.mutation(operation_context) as token:
-            resolution = self._ssh_credential_resolver().resolve_with_status(
-                task_id=self.task_id,
-                target=request.target,
-                selector=request.credential_selector,
-            )
+            try:
+                resolution = self._ssh_credential_resolver().resolve_with_status(
+                    task_id=self.task_id,
+                    target=request.target,
+                    selector=request.credential_selector,
+                )
+            except BaseException as exc:
+                _annotate_mutation_exception(exc, outcome="not_started")
+                raise
             if not resolution.cache_hit:
                 self._record_metric("credential_resolutions")
             epoch_before = coordinator.epochs_snapshot().target_epoch
@@ -2095,12 +2150,14 @@ class OpenUBMCTaskRun:
                         last_known_state="mutation-explicitly-rejected",
                         recovery_decision="replan",
                     )
+                    outcome = "not_started"
                 elif journal.effects_started:
                     journal.transition(
                         "mutation_failed",
                         verification_state="not_started",
                         last_known_state="mutation-outcome-uncertain",
                     )
+                    outcome = "unknown"
                 else:
                     journal.transition(
                         "replan_required",
@@ -2108,12 +2165,26 @@ class OpenUBMCTaskRun:
                         last_known_state="mutation-effects-not-started",
                         recovery_decision="replan",
                     )
+                    outcome = "not_started"
+                _annotate_mutation_exception(
+                    exc,
+                    outcome=outcome,
+                    journal=journal,
+                )
                 raise
 
-            epoch_after = self._advance_target_epoch(
-                coordinator,
-                reason=f"{request.action}-{request.operation_id}",
-            )
+            try:
+                epoch_after = self._advance_target_epoch(
+                    coordinator,
+                    reason=f"{request.action}-{request.operation_id}",
+                )
+            except BaseException as exc:
+                _annotate_mutation_exception(
+                    exc,
+                    outcome="applied",
+                    journal=journal,
+                )
+                raise
             journal.transition(
                 "verifying",
                 epoch_after=epoch_after,
@@ -2149,6 +2220,11 @@ class OpenUBMCTaskRun:
                         verification_state="failed",
                         last_known_state="mutation-completed-verification-failed",
                     )
+                _annotate_mutation_exception(
+                    exc,
+                    outcome="applied",
+                    journal=journal,
+                )
                 raise
 
             self._record_metric("fresh_verifications")
@@ -2196,10 +2272,36 @@ class OpenUBMCTaskRun:
                 raise MutationOperationConflict(
                     "recovery request does not match the durable operation"
                 )
-            if authorization.original_intent != journal.original_intent:
-                raise MutationOperationConflict(
-                    "recovery authorization does not match the durable task intent"
-                )
+            supplemental_rollback = (
+                authorization.original_intent != journal.original_intent
+            )
+            if supplemental_rollback:
+                try:
+                    authorization.require("rollback")
+                except BaseException as exc:
+                    _annotate_mutation_exception(
+                        exc,
+                        outcome="not_started",
+                        journal=journal,
+                    )
+                    raise MutationOperationConflict(
+                        "recovery authorization does not match the durable task intent"
+                    ) from exc
+                if not (
+                    journal.stage == "recovery_blocked"
+                    and journal.recovery_decision == "rollback"
+                ):
+                    error = MutationOperationConflict(
+                        "supplemental rollback authorization requires the exact "
+                        "recovery_blocked journal"
+                    )
+                    _annotate_mutation_exception(
+                        error,
+                        outcome="not_started",
+                        journal=journal,
+                    )
+                    raise error
+                journal.authorize_recovery_action("rollback")
             coordinator = self._coordinator(request.target)
         if journal.terminal:
             return MutationRecoveryStatus(
@@ -2209,24 +2311,40 @@ class OpenUBMCTaskRun:
                 inspection=MutationRecoveryEvidence(),
             )
 
-        resolution = self._ssh_credential_resolver().resolve_with_status(
-            task_id=self.task_id,
-            target=request.target,
-            selector=request.credential_selector,
-        )
+        try:
+            resolution = self._ssh_credential_resolver().resolve_with_status(
+                task_id=self.task_id,
+                target=request.target,
+                selector=request.credential_selector,
+            )
+        except BaseException as exc:
+            _annotate_mutation_exception(
+                exc,
+                outcome="not_started",
+                journal=journal,
+            )
+            raise
         if not resolution.cache_hit:
             self._record_metric("credential_resolutions")
-        with coordinator.lease_coordinator.read(operation_context):
-            evidence = MutationRecoveryEvidence.from_value(
-                inspect(
-                    MutationRecoveryInspectionContext(
-                        task_id=self.task_id,
-                        request=request,
-                        credentials=resolution.credentials,
-                        journal=journal,
+        try:
+            with coordinator.lease_coordinator.read(operation_context):
+                evidence = MutationRecoveryEvidence.from_value(
+                    inspect(
+                        MutationRecoveryInspectionContext(
+                            task_id=self.task_id,
+                            request=request,
+                            credentials=resolution.credentials,
+                            journal=journal,
+                        )
                     )
                 )
+        except BaseException as exc:
+            _annotate_mutation_exception(
+                exc,
+                outcome="not_started",
+                journal=journal,
             )
+            raise
         journal.record_execution_evidence(
             observed_checksum=evidence.remote_checksum,
             root_mount_mode=evidence.root_mount_mode,
@@ -2266,7 +2384,33 @@ class OpenUBMCTaskRun:
                 inspection=evidence,
             )
 
-        with coordinator.lease_coordinator.mutation(operation_context) as token:
+        if decision == "rollback":
+            try:
+                authorization.require("rollback")
+            except MutationAuthorizationDenied as exc:
+                if journal.recovery_action_authorized("rollback"):
+                    pass
+                else:
+                    journal.transition(
+                        "recovery_blocked",
+                        verification_state="blocked",
+                        last_known_state="rollback-requires-explicit-task-authorization",
+                        recovery_decision=decision,
+                    )
+                    _annotate_mutation_exception(
+                        exc,
+                        outcome="not_started",
+                        journal=journal,
+                    )
+                    raise
+            else:
+                journal.authorize_recovery_action("rollback")
+
+        with _annotated_recovery_mutation_lease(
+            coordinator,
+            operation_context,
+            journal,
+        ) as token:
             post_mutation_epoch = journal.epoch_after or journal.epoch_before + 1
             post_mutation_epoch = self._restore_target_epoch(
                 coordinator,
@@ -2277,9 +2421,22 @@ class OpenUBMCTaskRun:
             verification_epoch = post_mutation_epoch
             if decision == "rollback":
                 self._record_metric("mutation_rollbacks")
-                authorization.require("rollback")
                 if rollback is None:
-                    raise ValueError("rollback callback is required by recovery evidence")
+                    error = ValueError(
+                        "rollback callback is required by recovery evidence"
+                    )
+                    journal.transition(
+                        "recovery_blocked",
+                        verification_state="blocked",
+                        last_known_state="rollback-callback-is-unavailable",
+                        recovery_decision=decision,
+                    )
+                    _annotate_mutation_exception(
+                        error,
+                        outcome="not_started",
+                        journal=journal,
+                    )
+                    raise error
                 journal.transition(
                     "rolling_back",
                     epoch_after=post_mutation_epoch,
@@ -2302,12 +2459,17 @@ class OpenUBMCTaskRun:
                         rollback_value,
                         mutation_phase=False,
                     )
-                except BaseException:
+                except BaseException as exc:
                     journal.transition(
                         "rollback_failed",
                         verification_state="not_started",
                         last_known_state="rollback-outcome-uncertain",
                         recovery_decision=decision,
+                    )
+                    _annotate_mutation_exception(
+                        exc,
+                        outcome="unknown",
+                        journal=journal,
                     )
                     raise
                 verification_epoch = self._advance_target_epoch(
@@ -2371,6 +2533,11 @@ class OpenUBMCTaskRun:
                         last_known_state="recovery-verification-failed",
                         recovery_decision=decision,
                     )
+                _annotate_mutation_exception(
+                    exc,
+                    outcome="applied",
+                    journal=journal,
+                )
                 raise
             self._record_metric("fresh_verifications")
             journal.transition(

@@ -151,6 +151,7 @@ def run_os_ssh_smoke(os_access: dict[str, str | int], args: argparse.Namespace) 
         OS_SMOKE_PROBE_COMMAND,
         float(args.os_timeout),
         port=port,
+        host_key_policy="strict",
         stdout_limit_bytes=OS_SMOKE_STDOUT_LIMIT_BYTES,
         stderr_limit_bytes=OS_SMOKE_STDERR_LIMIT_BYTES,
     )

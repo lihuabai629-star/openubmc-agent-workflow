@@ -14,8 +14,10 @@ from openubmc_target_runtime import (  # noqa: E402
     CredentialResolver,
     CredentialSelector,
     MutationAuthorization,
+    MutationAuthorizationDenied,
     MutationEffectsRejected,
     MutationJournal,
+    MutationJournalCorrupt,
     MutationJournalStore,
     MutationRequest,
     MutationVerificationTerminalFailure,
@@ -41,8 +43,9 @@ class MutationRecoveryTests(unittest.TestCase):
             host="bmc.example",
             credential_selector_fingerprint=self.selector.fingerprint,
         )
-        self.authorization = MutationAuthorization.from_original_intent(
-            "diagnose-and-fix"
+        self.authorization = MutationAuthorization.from_task_intent(
+            "diagnose-and-fix",
+            delivery_strategy="live-patch",
         )
 
     def request(self, operation_id: str = "patch-1") -> MutationRequest:
@@ -77,6 +80,25 @@ class MutationRecoveryTests(unittest.TestCase):
             ),
             mutation_journal_store=store,
         )
+
+    def test_journal_rejects_invalid_authorized_recovery_actions(self) -> None:
+        journal = MutationJournal(
+            task_id="recovery-task",
+            operation_id="patch-1",
+            operation_fingerprint=self.request().fingerprint,
+            action="live_patch",
+            original_intent="diagnose-and-fix",
+            target_fingerprint=self.target.fingerprint,
+            target_identity=None,
+            epoch_before=0,
+        ).to_public_dict()
+
+        for actions in ([""], [1], ["live_patch"]):
+            with self.subTest(actions=actions):
+                serialized = dict(journal)
+                serialized["authorized_recovery_actions"] = actions
+                with self.assertRaises(MutationJournalCorrupt):
+                    MutationJournal.from_public_dict(serialized)
 
     def test_completed_operation_retry_is_idempotent_and_does_not_apply_twice(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -364,7 +386,7 @@ class MutationRecoveryTests(unittest.TestCase):
             self.assertEqual(status.journal.stage, "verified")
             self.assertEqual(status.verification.target_epoch, 1)
 
-    def test_intermediate_state_rolls_back_only_when_evidence_supports_it(self) -> None:
+    def test_intermediate_state_never_auto_rolls_back_without_new_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = MutationJournalStore(Path(raw) / "journals")
             journal = MutationJournal(
@@ -389,9 +411,67 @@ class MutationRecoveryTests(unittest.TestCase):
             restarted = self.task(store)
             order: list[str] = []
 
+            with self.assertRaises(MutationAuthorizationDenied):
+                restarted.recover_mutation(
+                    self.request(),
+                    authorization=self.authorization,
+                    inspect=lambda _context: (
+                        order.append("inspect"),
+                        {
+                            "target_identity": TargetIdentity(
+                                product_id="product-a",
+                                machine_id="machine-a",
+                            ),
+                            "remote_checksum": "b" * 64,
+                            "backup_exists": True,
+                            "backup_checksum": "a" * 64,
+                            "root_mount_mode": "rw",
+                            "root_mount_restored": False,
+                            "restart_observed": False,
+                        },
+                    )[-1],
+                    rollback=lambda *_args: order.append("rollback"),
+                    verify=lambda *_args: order.append("verify"),
+                )
+
+            self.assertEqual(order, ["inspect"])
+            blocked = store.load("recovery-task", "patch-1")
+            self.assertIsNotNone(blocked)
+            self.assertEqual(blocked.stage, "recovery_blocked")
+            self.assertEqual(blocked.recovery_decision, "rollback")
+
+    def test_explicit_rollback_authorization_resumes_the_same_blocked_journal(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = MutationJournalStore(Path(raw) / "journals")
+            store.create(
+                MutationJournal(
+                    task_id="recovery-task",
+                    operation_id="patch-1",
+                    operation_fingerprint=self.request().fingerprint,
+                    action="live_patch",
+                    original_intent="diagnose-and-fix",
+                    target_fingerprint=self.target.fingerprint,
+                    target_identity=TargetIdentity(
+                        product_id="product-a",
+                        machine_id="machine-a",
+                    ),
+                    epoch_before=0,
+                    stage="recovery_blocked",
+                    effects_started=True,
+                    before_checksum="a" * 64,
+                    expected_checksum="b" * 64,
+                    backup_reference="/tmp/unit.lua.bak",
+                    root_mount_restored=False,
+                    recovery_decision="rollback",
+                )
+            )
+            restarted = self.task(store)
+            order: list[str] = []
             status = restarted.recover_mutation(
                 self.request(),
-                authorization=self.authorization,
+                authorization=MutationAuthorization.from_original_intent(
+                    "rollback"
+                ),
                 inspect=lambda _context: (
                     order.append("inspect"),
                     {
@@ -407,25 +487,30 @@ class MutationRecoveryTests(unittest.TestCase):
                         "restart_observed": False,
                     },
                 )[-1],
-                rollback=lambda context, _evidence: (
+                rollback=lambda _context, _evidence: (
                     order.append("rollback"),
-                    context.record_backup("/tmp/unit.lua.bak"),
-                    {"remote_after_sha256": "a" * 64},
+                    {
+                        "remote_after_sha256": "a" * 64,
+                        "root_mount_restored": True,
+                    },
                 )[-1],
                 verify=lambda context: (
                     order.append("verify"),
                     context.run_read(
-                        self.read_request("rollback-verify"),
+                        self.read_request("rollback-recovery-verify"),
                         lambda read_context: read_context.epochs.target_epoch,
                     ),
                 )[-1],
             )
 
+            persisted = store.load("recovery-task", "patch-1")
+
             self.assertEqual(order, ["inspect", "rollback", "verify"])
             self.assertEqual(status.decision, "rollback")
             self.assertEqual(status.journal.stage, "rollback_verified")
-            self.assertEqual(status.journal.rollback_epoch, 2)
-            self.assertEqual(status.verification.target_epoch, 2)
+            self.assertEqual(status.journal.original_intent, "diagnose-and-fix")
+            self.assertIsNotNone(persisted)
+            self.assertEqual(persisted.authorized_recovery_actions, ("rollback",))
 
     def test_unfinished_journal_blocks_stacked_mutation_with_recovery_status(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

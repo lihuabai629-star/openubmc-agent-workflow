@@ -207,6 +207,7 @@ class RuntimeMcpServiceTests(unittest.TestCase):
                 "case_forget",
                 "phase_record",
                 "workflow.advance",
+                "workflow.next",
                 "runtime_status",
             ],
         )
@@ -252,6 +253,7 @@ class RuntimeMcpServiceTests(unittest.TestCase):
                 "case_forget",
                 "phase_record",
                 "workflow.advance",
+                "workflow.next",
                 "runtime_status",
             ),
         )
@@ -418,6 +420,7 @@ class PersistentTaskContextTests(unittest.TestCase):
                     "ip": "192.0.2.40",
                     "intent": "diagnosis-only",
                     "final_purpose": "定位风扇状态差异",
+                    "allow_insecure_tls": True,
                     "ssh_password": "must-not-be-persisted",
                     "deadline": 2,
                 },
@@ -433,6 +436,7 @@ class PersistentTaskContextTests(unittest.TestCase):
                 for path in root.glob("*.json")
             )
             self.assertNotIn("must-not-be-persisted", persisted)
+            self.assertIn("authorization_policy", persisted)
             second_domain = CapturingDomainBackend()
             second_service = self.service_for(root, second_domain)
             try:
@@ -458,6 +462,72 @@ class PersistentTaskContextTests(unittest.TestCase):
         self.assertTrue(task_status["task_context"]["recovered"])
         self.assertFalse(task_status["task_context"]["connections_recovered"])
         self.assertFalse(task_status["task_context"]["evidence_results_recovered"])
+        self.assertTrue(
+            task_status["orchestration"]["intent"]["authorization"][
+                "allow_insecure_tls"
+            ]
+        )
+
+    def test_authorization_policy_restore_is_legacy_compatible_and_fail_closed(self) -> None:
+        for mode in ("legacy", "tampered"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                store = TaskContextStore(root)
+                domain = CapturingDomainBackend()
+                first = self.service_for(root, domain)
+                try:
+                    first.call_tool(
+                        "debug_run",
+                        {
+                            "ip": "192.0.2.42",
+                            "intent": "diagnosis-only",
+                            "allow_insecure_tls": True,
+                            "deadline": 2,
+                        },
+                        task_id="policy-restore-task",
+                        operation_id="policy-first",
+                    )
+                finally:
+                    first.close()
+                persisted = store.load("policy-restore-task")
+                assert persisted is not None
+                orchestration = persisted["orchestration"]
+                if mode == "legacy":
+                    orchestration.pop("authorization_policy")
+                else:
+                    orchestration["authorization_policy"]["allowed_actions"] = [
+                        "upgrade"
+                    ]
+                store.save("policy-restore-task", persisted)
+
+                backend = OrchestratedMcpBackend(
+                    {
+                        "debug_run": CapturingDomainBackend(),
+                        "debug_collect": CapturingDomainBackend(),
+                    },
+                    state_store=store,
+                )
+                task = backend.open_task("policy-restore-task")
+                try:
+                    status = backend.task_status(task)
+                finally:
+                    backend.close_task(task)
+
+                if mode == "legacy":
+                    self.assertTrue(
+                        status["orchestration"]["intent"]["authorization"][
+                            "allow_insecure_tls"
+                        ]
+                    )
+                    self.assertTrue(status["task_context"]["recovered"])
+                else:
+                    self.assertIsNone(status["orchestration"])
+                    self.assertFalse(status["task_context"]["recovered"])
+                    self.assertIn(
+                        "allowed_actions",
+                        status["task_context"]["last_error"],
+                    )
+                    self.assertIsNone(store.load("policy-restore-task"))
 
     def test_target_replacement_reuses_credentials_and_resets_old_ports(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -826,6 +896,7 @@ class JsonRpcEndpointTests(unittest.TestCase):
                 "case_forget",
                 "phase_record",
                 "workflow.advance",
+                "workflow.next",
                 "runtime_status",
             ],
         )
@@ -848,8 +919,12 @@ class JsonRpcEndpointTests(unittest.TestCase):
         facts = {item["key"]: item["value"] for item in envelope["facts"]}
         self.assertEqual(facts["task"], "codex-task-a")
         summary = called["result"]["content"][0]["text"]
-        self.assertIn("openUBMC 诊断完成", summary)
-        self.assertIn("实时读取", summary)
+        self.assertIn("# 问题闭环报告", summary)
+        self.assertIn("## 验收矩阵", summary)
+        self.assertEqual(
+            envelope["closeout_summary"]["closure_status"],
+            "completed_in_scope",
+        )
         with self.assertRaises(json.JSONDecodeError):
             json.loads(summary)
 

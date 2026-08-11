@@ -555,7 +555,7 @@ def parse_args() -> argparse.Namespace:
         "--host-key-policy",
         choices=("strict", "accept-new", "insecure"),
         default="insecure",
-        help="SSH host-key policy, default: insecure",
+        help="BMC SSH host-key policy, default: insecure for replaceable lab targets",
     )
     parser.add_argument("--timeout", type=int, default=60, help="Network command timeout seconds")
     parser.add_argument("--json", action="store_true", help="Emit JSON summary")
@@ -608,6 +608,11 @@ def _runtime_execute(
         "no_backup": args.no_backup,
         "no_remount": args.no_remount,
         "force_path": args.force_path,
+        "authorized_exceptions": {
+            "no_backup": args.no_backup,
+            "no_remount": args.no_remount,
+            "force_path": args.force_path,
+        },
         "ssh_user": args.ssh_user,
         "ssh_password": args.ssh_password,
         "telnet_user": args.telnet_user,

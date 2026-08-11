@@ -11,31 +11,42 @@ Use this Skill for temporary runtime validation. It does not replace a source ch
 
 - Every CLI is plan-only by default. A plan must not load credentials or contact the BMC.
 - Mutation uses all four CLI gates: `--apply --intent live_patch --authorize-live-patch --restart-scope <none|skynet>`. Select the restart scope internally; the user does not need to name it separately.
+- On a bound Case, use Target Runtime's typed decision without reinterpreting or reconfirming it.
+  The admitted action must match the transaction; Apply authorization never implies rollback.
 - Use `none` when replacement is effective without a framework reload. Use `skynet` when reload is required to complete an explicitly requested live-patch verification. Announce the bounded restart and expected transient disconnect, but do not ask for redundant confirmation.
 - Back up an existing target with its file attributes, preserve its numeric owner/group during replacement, verify deployed checksum and metadata, run `sync`, and restore the original root mount mode.
 - Treat copy, checksum, metadata, mount restoration, health, and requested business verification failures as failures. Return `ok=false` and a nonzero exit status.
-- Internal development mode accepts direct SSH/Telnet password arguments as well as the openubmc-debug credential source and `OPENUBMC_*` environment variables.
-- SSH host-key verification defaults to `insecure`; use `strict` or `accept-new` only when requested for that target.
+- Internal development mode accepts direct SSH/Telnet password arguments as well as the
+  openubmc-debug credential source and `OPENUBMC_*` environment variables. Never print them.
+- BMC SSH host-key verification defaults to `insecure` for replaceable development targets, including
+  host-key changes. `strict` and `accept-new` remain optional overrides; this policy does not weaken
+  OS-host SSH.
+- `force_path`, `no_backup`, and `no_remount` are narrowly scoped task-level exceptions. Require an
+  explicit user request or an already-carried typed authorization for each one; do not infer them
+  from convenience, and do not reconfirm them once bound to the Case.
 
 Read [references/live-patch-contract.md](references/live-patch-contract.md) for CLI fields, credential/helper discovery, exit semantics, and evidence requirements. Read [references/remote-file-patterns.md](references/remote-file-patterns.md) before choosing a target or restart scope.
 
 ## Input
 
-Accept a direct request or concise handoff that binds one local artifact, one remote target, backup, verification, and rollback. Infer the host-key policy and minimum restart scope from the runtime context and requested verification. Planning keeps `apply=false`; applying requires both `apply=true` and explicit live-patch authorization. A direct request to live patch and verify authorizes the minimum `none` or `skynet` scope needed for that verification.
+Accept a direct request or concise handoff that binds one local artifact, one remote target, backup,
+verification, and any requested rollback; host-key policy may use the BMC default. Infer the minimum
+restart scope from the runtime consumer and requested verification. Planning keeps `apply=false`;
+mutation still uses the typed transaction and internal CLI gates. A direct request to live patch and
+verify carries the required action decision and authorizes the minimum `none` or `skynet` scope
+needed for that verification without a second prompt.
 
-When Target Runtime invokes this Skill from a task whose original intent is `diagnose-and-fix` and
-whose delivery strategy is `live-patch`, reuse the carried target, credential selectors, final
-purpose, restart scope, and mutation authorization. Project those fields onto the CLI gates
-internally; do not ask the user to repeat them. A task currently routed as `source-only` or
-`build-upgrade` does not authorize Live Patch.
+When Target Runtime invokes this Skill with a `case_id`, consume the carried artifact, target,
+credential selectors, restart scope, and typed decision. Do not derive a different route or ask the
+user to repeat those facts.
 
 ## Workflow
 
 1. Inspect the changed file and its runtime owner.
 2. Resolve the local and remote paths. For `/opt/bmc/apps/<app>/...`, require an explicit app mapping; repository name alone is not evidence.
-3. Run the relevant command without `--apply` and review its JSON plan.
-4. Review backup, remount, target, mode, inferred restart scope, host-key policy, health checks, and business verification internally. Inform the user before a `skynet` restart; do not pause for a second confirmation when live-patch verification is already authorized.
-5. Apply after explicit live-patch authorization. Ask only when the artifact, target mapping, or mutation intent itself remains ambiguous.
+3. Run the relevant command without `--apply` and inspect its JSON plan internally.
+4. Check backup, remount, target, mode, inferred restart scope, host-key policy, health checks, and business verification. Inform the user before a `skynet` restart; do not pause for a second confirmation when live-patch verification is already authorized.
+5. Execute only after the typed transaction admits the action. Do not ask for confirmation already represented by it; ask only when the artifact, target mapping, or mutation intent itself remains ambiguous.
 6. Report before/after checksums, backup path or created-target state, mount restoration, restart scope, verification evidence, and the plan-only rollback command. When the target did not exist before Apply, generate a checksum-guarded `--remove-created` rollback instead of leaving a temporary file behind.
 7. After a temporary patch or validation succeeds, return to `openubmc-developer` for the permanent source fix and focused validation; it routes any requested build and review to their owners. Never treat the live patch as the final production change.
 
@@ -47,6 +58,21 @@ If the local MCP process reconnects with the same task ID, Target Runtime restor
 typed delivery context but opens new SSH/Telnet resources; the durable journal remains the only
 source for deciding whether mutation work may be reused.
 
+When a Context Runtime `case_id` is present, bare “继续” or “continue” means call `workflow.next`.
+Keep the Live Patch operation in that Case; never replay Apply, create a new operation, or create a
+new journal merely because the transport disconnected. A terminal MutationJournal receipt, target
+epoch advance, and fresh verification are recorded by the Runtime; do not duplicate them with
+`phase_record`.
+
+If the mutation outcome is unknown, stop automatic `workflow.next` and reconcile the same durable
+journal explicitly. This is not a request for another Apply confirmation. Automatic recovery may
+execute rollback only when the Case carries the distinct rollback authorization. Otherwise preserve
+the original operation as `recovery_blocked`. A later explicit rollback intent is necessary but is
+not by itself proof that recovery ran; keep `workflow.next` blocked until a recovery-capable path
+reconciles that same journal. Never reinterpret Apply authorization as permission to restore or
+remove a file. When the Case becomes terminal, Target Runtime derives the Closeout automatically.
+Return `closeout_markdown` as the primary result and use
+`closeout_bundle` for the immutable document, evidence, artifact, backup, and checksum index.
 The task keeps direct SSH/Telnet credentials for warm continuation, and the persistent Case keeps
 the internal-development workflow inputs used by `workflow.advance`. Target-specific bindings use
 a 32-entry LRU by default; target count is not limited, and returning to an evicted target simply
@@ -130,7 +156,11 @@ Do not apply when any of these is unresolved:
 
 - multiple candidate files or an ambiguous target mapping;
 - missing live-patch intent, carried `delivery_strategy=live-patch`, or mutation authorization;
-- unavailable credentials or helper discovery;
-- no acceptable backup strategy for an existing target;
-- inability to determine or restore the original root mount mode;
+- unknown credentials or helper discovery;
+- `force_path`, `no_backup`, or `no_remount` requested without its task-level authorization;
+- no acceptable backup strategy for an existing target unless `no_backup` is authorized;
+- inability to determine or restore the original root mount mode unless an authorized
+  `no_remount` plan has already proved the target writable;
+- an unknown prior mutation outcome that has not been reconciled;
+- recovery that requires rollback when the distinct rollback action is not authorized;
 - verification requirements that cannot be executed or interpreted.

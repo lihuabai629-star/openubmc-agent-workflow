@@ -3216,6 +3216,7 @@ def runtime_mcp_health(
         "case_forget",
         "phase_record",
         "workflow.advance",
+        "workflow.next",
         "runtime_status",
     }
     if not required.issubset(tools_found):

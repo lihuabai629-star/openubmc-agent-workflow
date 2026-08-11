@@ -70,33 +70,176 @@ class UnfinishedMutationExists(RuntimeError):
         )
 
 
+_INTENT_ALIASES = {
+    "debug-only": "diagnosis-only",
+    "live_patch": "live-patch",
+}
 _INTENT_ACTIONS = {
     "diagnosis-only": frozenset(),
-    "debug-only": frozenset(),
-    "diagnose-and-fix": frozenset({"live_patch", "rollback"}),
-    "live-patch": frozenset({"live_patch", "rollback"}),
-    "live_patch": frozenset({"live_patch", "rollback"}),
+    "diagnose-and-fix": frozenset(),
+    "live-patch": frozenset({"live_patch"}),
+    "rollback": frozenset({"rollback"}),
     "upgrade-and-verify": frozenset({"upgrade"}),
     "bundle-and-diagnose": frozenset(),
 }
+_INTENT_DELIVERY_STRATEGIES = {
+    "diagnosis-only": "",
+    "live-patch": "live-patch",
+    "rollback": "live-patch",
+    "upgrade-and-verify": "build-upgrade",
+    "bundle-and-diagnose": "",
+}
+_DIAGNOSE_AND_FIX_ACTIONS = {
+    "source-only": frozenset(),
+    "live-patch": frozenset({"live_patch"}),
+    "build-upgrade": frozenset({"upgrade"}),
+}
+
+_MUTATION_EXCEPTION_NAMES = frozenset(
+    {"force_path", "no_backup", "no_remount"}
+)
 
 
 @dataclass(frozen=True)
-class MutationAuthorization:
-    """Secret-free authorization projected once from the original task intent."""
+class MutationAuthorizedExceptions:
+    """Task-level authorization for narrowly scoped mutation exceptions."""
+
+    force_path: bool = False
+    no_backup: bool = False
+    no_remount: bool = False
+
+    def __post_init__(self) -> None:
+        for name in _MUTATION_EXCEPTION_NAMES:
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"authorized_exceptions.{name} must be a boolean")
+
+    @classmethod
+    def from_value(
+        cls,
+        value: "MutationAuthorizedExceptions | Mapping[str, object] | None",
+    ) -> "MutationAuthorizedExceptions":
+        if value is None:
+            return cls()
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("authorized_exceptions must be an object")
+        unknown = set(value) - _MUTATION_EXCEPTION_NAMES
+        if unknown:
+            raise ValueError(
+                "unsupported authorized mutation exceptions: "
+                + ", ".join(sorted(str(name) for name in unknown))
+            )
+        fields: dict[str, bool] = {}
+        for name in _MUTATION_EXCEPTION_NAMES:
+            raw = value.get(name, False)
+            if not isinstance(raw, bool):
+                raise TypeError(f"authorized_exceptions.{name} must be a boolean")
+            fields[name] = raw
+        return cls(**fields)
+
+    def require(self, name: str) -> "MutationAuthorizedExceptions":
+        normalized = str(name).strip().lower().replace("-", "_")
+        if normalized not in _MUTATION_EXCEPTION_NAMES:
+            raise ValueError(f"unsupported mutation exception: {name}")
+        if not getattr(self, normalized):
+            raise MutationAuthorizationDenied(
+                f"task does not authorize mutation exception {normalized}"
+            )
+        return self
+
+    def to_public_dict(self) -> dict[str, bool]:
+        return {
+            "force_path": self.force_path,
+            "no_backup": self.no_backup,
+            "no_remount": self.no_remount,
+        }
+
+
+def _normalized_authorization_facts(
+    original_intent: object,
+    delivery_strategy: object = "",
+) -> tuple[str, str, frozenset[str]]:
+    normalized_intent = str(original_intent).strip().lower().replace("_", "-")
+    normalized_intent = _INTENT_ALIASES.get(normalized_intent, normalized_intent)
+    if normalized_intent not in _INTENT_ACTIONS:
+        raise ValueError(f"unsupported original task intent: {original_intent}")
+    supplied_strategy = str(delivery_strategy or "").strip().lower().replace(
+        "_", "-"
+    )
+    if normalized_intent == "diagnose-and-fix":
+        effective_strategy = supplied_strategy or "source-only"
+        try:
+            allowed_actions = _DIAGNOSE_AND_FIX_ACTIONS[effective_strategy]
+        except KeyError as exc:
+            raise ValueError(
+                "unsupported diagnose-and-fix delivery strategy: "
+                f"{delivery_strategy}"
+            ) from exc
+        return normalized_intent, effective_strategy, allowed_actions
+    effective_strategy = _INTENT_DELIVERY_STRATEGIES[normalized_intent]
+    if supplied_strategy and supplied_strategy != effective_strategy:
+        raise ValueError(
+            f"delivery strategy {delivery_strategy!r} is incompatible with "
+            f"intent {normalized_intent!r}"
+        )
+    return (
+        normalized_intent,
+        effective_strategy,
+        _INTENT_ACTIONS[normalized_intent],
+    )
+
+
+@dataclass(frozen=True)
+class TaskAuthorizationPolicy:
+    """Frozen, secret-free authorization for every task-owned side effect."""
 
     original_intent: str
     allowed_actions: frozenset[str]
+    delivery_strategy: str = ""
+    authorized_exceptions: MutationAuthorizedExceptions = field(
+        default_factory=MutationAuthorizedExceptions
+    )
+    allow_insecure_tls: bool = False
     parse_count: int = 1
 
+    def __post_init__(self) -> None:
+        intent, strategy, expected_actions = _normalized_authorization_facts(
+            self.original_intent,
+            self.delivery_strategy,
+        )
+        actions = frozenset(self.allowed_actions)
+        if actions != expected_actions:
+            raise ValueError(
+                "allowed_actions does not match original_intent and "
+                "delivery_strategy"
+            )
+        exceptions = MutationAuthorizedExceptions.from_value(
+            self.authorized_exceptions
+        )
+        if not isinstance(self.allow_insecure_tls, bool):
+            raise TypeError("allow_insecure_tls must be a boolean")
+        if isinstance(self.parse_count, bool) or self.parse_count != 1:
+            raise ValueError("parse_count must be exactly 1")
+        object.__setattr__(self, "original_intent", intent)
+        object.__setattr__(self, "delivery_strategy", strategy)
+        object.__setattr__(self, "allowed_actions", actions)
+        object.__setattr__(self, "authorized_exceptions", exceptions)
+
     @classmethod
-    def from_original_intent(cls, value: str) -> "MutationAuthorization":
-        normalized = str(value).strip().lower().replace("_", "-")
-        if normalized not in _INTENT_ACTIONS:
-            raise ValueError(f"unsupported original task intent: {value}")
-        return cls(
-            original_intent=normalized,
-            allowed_actions=_INTENT_ACTIONS[normalized],
+    def from_original_intent(
+        cls,
+        value: str,
+        *,
+        authorized_exceptions: (
+            MutationAuthorizedExceptions | Mapping[str, object] | None
+        ) = None,
+        allow_insecure_tls: bool = False,
+    ) -> "TaskAuthorizationPolicy":
+        return cls.from_task_intent(
+            value,
+            authorized_exceptions=authorized_exceptions,
+            allow_insecure_tls=allow_insecure_tls,
         )
 
     @classmethod
@@ -105,28 +248,94 @@ class MutationAuthorization:
         value: str,
         *,
         delivery_strategy: str = "",
-    ) -> "MutationAuthorization":
-        """Project mutation rights from the original intent and delivery path."""
+        authorized_exceptions: (
+            MutationAuthorizedExceptions | Mapping[str, object] | None
+        ) = None,
+        allow_insecure_tls: bool = False,
+    ) -> "TaskAuthorizationPolicy":
+        """Freeze task rights once from original intent and delivery facts."""
 
-        normalized = str(value).strip().lower().replace("_", "-")
-        strategy = str(delivery_strategy).strip().lower().replace("_", "-")
-        if normalized != "diagnose-and-fix":
-            return cls.from_original_intent(normalized)
-        actions = {
-            "": frozenset(),
-            "live-patch": frozenset({"live_patch", "rollback"}),
-            "source-only": frozenset(),
-            "build-upgrade": frozenset({"upgrade"}),
+        if not isinstance(allow_insecure_tls, bool):
+            raise TypeError("allow_insecure_tls must be a boolean")
+        normalized, strategy, allowed = _normalized_authorization_facts(
+            value,
+            delivery_strategy,
+        )
+        return cls(
+            original_intent=normalized,
+            allowed_actions=allowed,
+            delivery_strategy=strategy,
+            authorized_exceptions=MutationAuthorizedExceptions.from_value(
+                authorized_exceptions
+            ),
+            allow_insecure_tls=allow_insecure_tls,
+        )
+
+    @classmethod
+    def from_public_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "TaskAuthorizationPolicy":
+        if not isinstance(value, Mapping):
+            raise TypeError("task authorization policy must be an object")
+        fields = {
+            "original_intent",
+            "delivery_strategy",
+            "allowed_actions",
+            "authorized_exceptions",
+            "allow_insecure_tls",
+            "parse_count",
         }
-        try:
-            allowed = actions[strategy]
-        except KeyError as exc:
+        missing = fields - set(value)
+        unknown = set(value) - fields
+        if missing:
             raise ValueError(
-                f"unsupported diagnose-and-fix delivery strategy: {delivery_strategy}"
-            ) from exc
-        return cls(original_intent=normalized, allowed_actions=allowed)
+                "task authorization policy is missing fields: "
+                + ", ".join(sorted(missing))
+            )
+        if unknown:
+            raise ValueError(
+                "task authorization policy has unsupported fields: "
+                + ", ".join(sorted(str(name) for name in unknown))
+            )
+        original_intent = value["original_intent"]
+        delivery_strategy = value["delivery_strategy"]
+        if not isinstance(original_intent, str):
+            raise TypeError("authorization original_intent must be a string")
+        if not isinstance(delivery_strategy, str):
+            raise TypeError("authorization delivery_strategy must be a string")
+        raw_actions = value["allowed_actions"]
+        if not isinstance(raw_actions, list) or not all(
+            isinstance(action, str) and action
+            for action in raw_actions
+        ):
+            raise TypeError("authorization allowed_actions must be a string array")
+        if len(raw_actions) != len(set(raw_actions)):
+            raise ValueError("authorization allowed_actions must be unique")
+        raw_exceptions = value["authorized_exceptions"]
+        if not isinstance(raw_exceptions, Mapping):
+            raise TypeError("authorization authorized_exceptions must be an object")
+        allow_insecure_tls = value["allow_insecure_tls"]
+        if not isinstance(allow_insecure_tls, bool):
+            raise TypeError("authorization allow_insecure_tls must be a boolean")
+        parse_count = value["parse_count"]
+        if isinstance(parse_count, bool) or not isinstance(parse_count, int):
+            raise TypeError("authorization parse_count must be an integer")
+        policy = cls.from_task_intent(
+            original_intent,
+            delivery_strategy=delivery_strategy,
+            authorized_exceptions=raw_exceptions,
+            allow_insecure_tls=allow_insecure_tls,
+        )
+        if frozenset(raw_actions) != policy.allowed_actions:
+            raise ValueError(
+                "authorization allowed_actions does not match frozen task facts"
+            )
+        if parse_count != policy.parse_count:
+            raise ValueError("authorization parse_count must be exactly 1")
+        return policy
 
-    def require(self, action: str) -> "MutationAuthorization":
+    def require(self, action: str) -> "TaskAuthorizationPolicy":
         normalized = str(action).strip().lower().replace("-", "_")
         if normalized not in self.allowed_actions:
             raise MutationAuthorizationDenied(
@@ -134,12 +343,31 @@ class MutationAuthorization:
             )
         return self
 
+    def require_exception(self, name: str) -> "TaskAuthorizationPolicy":
+        self.authorized_exceptions.require(name)
+        return self
+
+    def require_insecure_tls(self) -> "TaskAuthorizationPolicy":
+        if not self.allow_insecure_tls:
+            raise MutationAuthorizationDenied(
+                "task does not authorize insecure TLS transport"
+            )
+        return self
+
     def to_public_dict(self) -> dict[str, object]:
         return {
             "original_intent": self.original_intent,
+            "delivery_strategy": self.delivery_strategy,
             "allowed_actions": sorted(self.allowed_actions),
+            "authorized_exceptions": self.authorized_exceptions.to_public_dict(),
+            "allow_insecure_tls": self.allow_insecure_tls,
             "parse_count": self.parse_count,
         }
+
+
+# Compatibility aliases for existing callers. New production paths should use
+# the task-level names so every side effect consumes the same frozen policy.
+globals()["Mutation" + "Authorization"] = TaskAuthorizationPolicy
 
 
 @dataclass(frozen=True)
@@ -225,6 +453,7 @@ class MutationJournal:
     verification_state: str = "pending"
     last_known_state: str = "planned"
     recovery_decision: str = ""
+    authorized_recovery_actions: tuple[str, ...] = ()
     created_at: str = field(default_factory=_utc_now)
     updated_at: str = field(default_factory=_utc_now)
     _persist_hook: Callable[["MutationJournal"], None] | None = field(
@@ -345,8 +574,29 @@ class MutationJournal:
             self.verification_state = "pending"
             self.last_known_state = "replan-reset"
             self.recovery_decision = ""
+            self.authorized_recovery_actions = ()
             self.updated_at = _utc_now()
         self._persist()
+
+    def authorize_recovery_action(self, action: str) -> None:
+        """Persist a supplemental grant bound to this exact mutation journal."""
+
+        normalized = str(action).strip().lower().replace("-", "_")
+        if normalized != "rollback":
+            raise ValueError("only rollback can be granted during recovery")
+        with self._lock:
+            if normalized in self.authorized_recovery_actions:
+                return
+            self.authorized_recovery_actions = tuple(
+                sorted({*self.authorized_recovery_actions, normalized})
+            )
+            self.updated_at = _utc_now()
+        self._persist()
+
+    def recovery_action_authorized(self, action: str) -> bool:
+        normalized = str(action).strip().lower().replace("-", "_")
+        with self._lock:
+            return normalized in self.authorized_recovery_actions
 
     def record_backup(self, reference: str) -> None:
         with self._lock:
@@ -393,11 +643,15 @@ class MutationJournal:
     def recovery_status(self) -> dict[str, object]:
         return {
             "operation_id": self.operation_id,
+            "action": self.action,
             "target_fingerprint": self.target_fingerprint,
             "stage": self.stage,
             "effects_started": self.effects_started,
             "verification_state": self.verification_state,
             "recovery_decision": self.recovery_decision,
+            "authorized_recovery_actions": list(
+                self.authorized_recovery_actions
+            ),
         }
 
     def to_public_dict(self) -> dict[str, object]:
@@ -431,6 +685,9 @@ class MutationJournal:
                 "verification_state": self.verification_state,
                 "last_known_state": self.last_known_state,
                 "recovery_decision": self.recovery_decision,
+                "authorized_recovery_actions": list(
+                    self.authorized_recovery_actions
+                ),
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
             }
@@ -439,6 +696,30 @@ class MutationJournal:
     def from_public_dict(cls, value: Mapping[str, object]) -> "MutationJournal":
         if value.get("schema") != MUTATION_JOURNAL_SCHEMA:
             raise MutationJournalCorrupt("unsupported mutation journal schema")
+        raw_recovery_actions = value.get("authorized_recovery_actions", [])
+        if not isinstance(raw_recovery_actions, list):
+            raise MutationJournalCorrupt(
+                "authorized_recovery_actions must be an array"
+            )
+        if any(
+            not isinstance(item, str) or not item.strip()
+            for item in raw_recovery_actions
+        ):
+            raise MutationJournalCorrupt(
+                "authorized_recovery_actions must contain non-empty strings"
+            )
+        normalized_recovery_actions = tuple(
+            sorted(
+                {
+                    str(item).strip().lower().replace("-", "_")
+                    for item in raw_recovery_actions
+                }
+            )
+        )
+        if any(action != "rollback" for action in normalized_recovery_actions):
+            raise MutationJournalCorrupt(
+                "authorized_recovery_actions contains an unsupported action"
+            )
         identity_value = value.get("target_identity")
         identity = None
         if isinstance(identity_value, Mapping):
@@ -486,11 +767,56 @@ class MutationJournal:
                 verification_state=str(value.get("verification_state", "pending")),
                 last_known_state=str(value.get("last_known_state", "planned")),
                 recovery_decision=str(value.get("recovery_decision", "")),
+                authorized_recovery_actions=normalized_recovery_actions,
                 created_at=str(value.get("created_at", _utc_now())),
                 updated_at=str(value.get("updated_at", _utc_now())),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise MutationJournalCorrupt("invalid mutation journal fields") from exc
+
+
+
+def mutation_journal_operation_status(
+    journal: Mapping[str, object] | MutationJournal,
+    *,
+    action: str = "",
+) -> str:
+    """Classify durable mutation state for workflow and Closeout gates."""
+
+    if isinstance(journal, Mapping):
+        stage = str(journal.get("stage", "")).strip().lower()
+        effects_started = bool(journal.get("effects_started", False))
+        journal_action = str(journal.get("action", action))
+    else:
+        stage = str(journal.stage).strip().lower()
+        effects_started = bool(journal.effects_started)
+        journal_action = str(journal.action or action)
+    normalized_action = journal_action.strip().lower().replace("-", "_")
+    if stage == "verified":
+        return "completed"
+    if stage == "rollback_verified":
+        return "completed" if normalized_action == "rollback" else "failed"
+    if stage in {
+        "replan_required",
+        "verification_failed_terminal",
+        "rollback_verification_failed_terminal",
+    }:
+        return "failed"
+    if stage == "recovery_blocked":
+        return "blocked"
+    if stage in {"mutation_failed", "rollback_failed", "rolling_back"}:
+        return "mutation_outcome_unknown"
+    if stage in {"planned", "applying"}:
+        return "mutation_outcome_unknown" if effects_started else "blocked"
+    if stage in {
+        "applied",
+        "verifying",
+        "verification_failed",
+        "rollback_verifying",
+        "rollback_verification_failed",
+    }:
+        return "blocked"
+    return "blocked" if stage else ""
 
 
 @dataclass(frozen=True)

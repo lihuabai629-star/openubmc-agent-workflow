@@ -121,12 +121,17 @@ artifact_path: <absolute HPM path; required when completed>
 artifact_sha256: <64 lowercase hex characters; required when completed>
 product_version: <built product version; required when completed>
 evidence_ids: [<build log or artifact evidence IDs>]
+component_versions: [<component and Conan package identities>]
+build_commands: [<exact commands executed>]
+build_logs: [<absolute log paths or evidence IDs>]
+known_gaps: [<remaining validation gaps>]
 ```
 
-   - Record running/failed/cancelled states through the same typed phase instead of creating a second workflow state. Failed and cancelled attempts do not require artifact identity and may be retried as a new phase attempt in the same Case.
-   - When the task's delivery strategy is `build-upgrade`, hand that result to `openubmc-upgrade`; do not upload from Build or acquire a target lease.
+   - Record running, failed, and cancelled states through the same typed phase and preserve their logs and known gaps instead of creating a second workflow state or publishing a stale artifact. Failed and cancelled attempts do not require artifact identity and may be retried as a new phase attempt in the same Case.
+   - `openubmc-upgrade` owns any selected `build-upgrade` next step; do not upload from Build or acquire a target lease.
    - After Upgrade, route acceptance checks to `openubmc-debug` for fresh evidence from the new target epoch.
-   - After recording a completed artifact, call `workflow.advance` when the requested sequence continues; Upgrade consumes the artifact identity and provenance from the Case without asking the user to repeat or confirm them.
+   - With a bound Case, bare “继续” or “continue” means call `workflow.next` before rebuilding anything. After recording a terminal `build.artifact` phase, call `workflow.next` again. Target Runtime owns downstream routing and authorization; Build must not re-evaluate or reconfirm them. Use `workflow.advance` only for first execution, an explicit route choice, or a normal failed attempt that deliberately starts a new attempt.
+   - When the Case reaches a terminal state, Target Runtime automatically persists `closeout`, `closeout_markdown`, and the default `closeout_bundle`. Use the Markdown as the user-facing first screen and the bundle as the immutable index for the Closeout documents, phase evidence, build logs, and HPM identity.
 
 ## Quick Commands
 
@@ -150,8 +155,8 @@ Component build options include `-bt debug|release`, `--stage dev|pre|rc|stable`
 - Do not treat an HPM file left behind by a failed, interrupted, or timed-out build as valid; success requires `rc=0`, clean log completion, a package timestamp newer than build start, and metadata/package refs that include the new component versions.
 - Do not replace missing product dependencies with local source packages unless the user explicitly approves a local workaround.
 - Do not hand-edit `temp/build.../tmp_root` as a durable fix.
-- Do not perform an upgrade from Build; `openubmc-upgrade` owns Redfish mutation, pre-version checks, and rollback handling.
-- Do not treat a missing structured handoff as permission to trust noisy git state; ask for or reconstruct changed components from the active session first.
+- Do not perform an upgrade from Build; `openubmc-upgrade` owns Redfish mutation, pre-version checks, version verification, and recovery assessment.
+- Do not treat a missing structured handoff as permission to trust noisy git state; reconstruct changed components from the active session first and pause only when multiple materially different candidates remain.
 
 ## References
 

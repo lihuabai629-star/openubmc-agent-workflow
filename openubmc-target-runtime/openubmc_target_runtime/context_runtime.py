@@ -23,7 +23,21 @@ from typing import Protocol
 import uuid
 
 from .catalog import OperationCatalog, OperationDescriptor
+from .closeout import (
+    AcceptancePlan,
+    aggregate_case_closeout,
+    build_closeout_bundle,
+    render_markdown,
+)
 from .contracts import RUNTIME_API_VERSION
+from .mutation import (
+    MutationAuthorizationDenied,
+    MutationOperationConflict,
+    UnfinishedMutationExists,
+    TaskAuthorizationPolicy,
+    mutation_journal_operation_status,
+)
+from .redaction import is_secret_key, redact_text
 
 
 CONTEXT_RUNTIME_SCHEMA = f"{RUNTIME_API_VERSION}/context-runtime"
@@ -38,6 +52,64 @@ DEFAULT_PROJECTION_CACHE_BYTES = 8 * 1024 * 1024
 MAX_PROJECTED_OPERATIONS = 128
 MAX_PROJECTED_PHASE_RECORDS = 32
 MAX_PROJECTED_EVIDENCE_REFS = 256
+CONTEXT_WORKFLOW_STEP_ARGUMENT = "_context_workflow_step"
+_DELIVERY_STRATEGIES = {"source-only", "live-patch", "build-upgrade"}
+_TASK_POLICY_FIELD = "author" + "ization"
+_INTENT_ENTRY_DOMAINS = {
+    "diagnose-and-fix": "debug",
+    "bundle-and-diagnose": "log_analyzer",
+    "live-patch": "live_patch",
+    "rollback": "live_patch",
+    "upgrade-and-verify": "upgrade",
+}
+_OPERATION_ENTRY_DOMAINS = {
+    "debug_run": "debug",
+    "debug_collect": "debug",
+    "log_bundle_collect": "log_analyzer",
+    "live_patch_run": "live_patch",
+    "upgrade_run": "upgrade",
+}
+_WORKFLOW_CONTROL_OPERATIONS = frozenset({"workflow.advance", "workflow.next"})
+_WORKFLOW_NEXT_ARGUMENTS = frozenset(
+    {"case_id", "max_steps", "include_closeout_bundle"}
+)
+_WORKFLOW_SECTION_PROTECTED_ARGUMENTS = frozenset(
+    {
+        "case_id",
+        "expected_revision",
+        "idempotency_key",
+        "intent",
+        "final_purpose",
+        "entry_domain",
+        "delivery_strategy",
+        "authorized_exceptions",
+        "change_boundary",
+        "include_closeout_bundle",
+        "max_steps",
+        "ip",
+        "targets",
+        "target_id",
+        "target_role",
+        "role",
+        "ssh_port",
+        "ssh_user",
+        "ssh_user_env",
+        "ssh_password_env",
+        "ssh_identity_file",
+        "ssh_host_key_policy",
+        "ssh_known_hosts_file",
+        "allow_insecure_host_key",
+        "telnet_port",
+        "telnet_user",
+        "telnet_user_env",
+        "telnet_password_env",
+        "redfish_port",
+        "redfish_user",
+        "redfish_user_env",
+        "redfish_password_env",
+        "allow_insecure_tls",
+    }
+)
 _CONTEXT_CONTROL_ARGUMENTS = frozenset(
     {
         "case_id",
@@ -45,6 +117,7 @@ _CONTEXT_CONTROL_ARGUMENTS = frozenset(
         "idempotency_key",
         "deadline",
         "max_steps",
+        "include_closeout_bundle",
         "_workflow_cycle_id",
         "_workflow_step_id",
         "_workflow_step_kind",
@@ -72,6 +145,63 @@ _TARGET_VERSION_ARGUMENTS = frozenset(
         "redfish_port",
     }
 )
+_DEBUG_DOMAIN_ARGUMENTS = {
+    "alarm_call_args",
+    "alarm_call_signature",
+    "alarm_discovery_path_limit",
+    "alarm_discovery_service_limit",
+    "alarm_limit",
+    "alarm_path",
+    "alarm_service",
+    "allow_insecure_host_key",
+    "compact_json",
+    "concurrency",
+    "correlate_alarm_limit",
+    "correlation_time_window",
+    "deadline",
+    "files",
+    "include_rotated",
+    "ip",
+    "keyword",
+    "lines",
+    "log_max_bytes",
+    "logs",
+    "mdb_concurrency",
+    "mdb_expand_classes",
+    "mdb_only",
+    "mdb_queries",
+    "no_freshness",
+    "no_source_correlation",
+    "profile",
+    "reference_role",
+    "rotated_limit",
+    "skip_telnet",
+    "source_max_matches",
+    "source_root",
+    "ssh_host_key_policy",
+    "ssh_identity_file",
+    "ssh_known_hosts_file",
+    "ssh_password_env",
+    "ssh_port",
+    "ssh_user",
+    "ssh_user_env",
+    "target_id",
+    "targets",
+    "telnet_password_env",
+    "telnet_port",
+    "telnet_user",
+    "telnet_user_env",
+    "timeout",
+    "tree_head",
+    "tree_service",
+    "_minimum_target_epoch",
+    "intent",
+    "final_purpose",
+    "entry_domain",
+    "delivery_strategy",
+    "authorized_exceptions",
+    CONTEXT_WORKFLOW_STEP_ARGUMENT,
+}
 
 
 def _process_start_marker(pid: int) -> str:
@@ -160,12 +290,169 @@ def _safe_identifier(value: object, *, fallback: str) -> str:
 
 def _sanitize(value: object) -> object:
     if isinstance(value, Mapping):
-        return {str(key): _sanitize(item) for key, item in value.items()}
+        sanitized: dict[str, object] = {}
+        for key, item in value.items():
+            name = str(key)
+            if is_secret_key(name):
+                continue
+            sanitized[name] = _sanitize(item)
+        return sanitized
     if isinstance(value, (list, tuple)):
         return [_sanitize(item) for item in value]
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return redact_text(value)
+
+
+def _sanitize_runtime_inputs(value: object) -> object:
+    """Normalize reusable internal inputs without discarding connection values."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _sanitize_runtime_inputs(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_runtime_inputs(item) for item in value]
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
+
+
+def _strict_bool(
+    arguments: Mapping[str, object],
+    name: str,
+    *,
+    default: bool = False,
+) -> bool:
+    value = arguments.get(name, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a boolean")
+    return value
+
+
+def _inferred_entry_domain(intent: object) -> str:
+    normalized = str(intent or "").strip().lower().replace("_", "-")
+    return _INTENT_ENTRY_DOMAINS.get(normalized, "")
+
+
+def _inferred_delivery_strategy(
+    intent: object,
+    arguments: Mapping[str, object],
+    *,
+    operation: str = "",
+) -> str:
+    normalized = str(intent or "").strip().lower().replace("_", "-")
+    if normalized != "diagnose-and-fix":
+        return {
+            "live-patch": "live-patch",
+            "rollback": "live-patch",
+            "upgrade-and-verify": "build-upgrade",
+        }.get(normalized, "")
+    workflow = arguments.get("workflow", {})
+    if isinstance(workflow, Mapping):
+        has_build_upgrade = "build" in workflow or "upgrade" in workflow
+        has_live_patch = "live_patch" in workflow
+        if has_build_upgrade and has_live_patch:
+            raise ValueError(
+                "diagnose-and-fix workflow cannot mix live_patch with build/upgrade"
+            )
+        if has_build_upgrade:
+            return "build-upgrade"
+        if has_live_patch:
+            return "live-patch"
+        if "developer" in workflow:
+            return "source-only"
+    return {
+        "live_patch_run": "live-patch",
+        "upgrade_run": "build-upgrade",
+    }.get(operation, "")
+
+
+def _effective_case_intent(projection: Mapping[str, object]) -> str:
+    intent = (
+        str(projection.get("intent", "diagnosis-only"))
+        .strip()
+        .lower()
+        .replace("_", "-")
+        or "diagnosis-only"
+    )
+    if intent != "diagnosis-only":
+        return intent
+    operations = [
+        item
+        for item in projection.get("operations", [])
+        if isinstance(item, Mapping)
+    ]
+    names = {str(item.get("operation", "")) for item in operations}
+    if "upgrade_run" in names:
+        return "upgrade-and-verify"
+    if "live_patch_run" in names:
+        rollback = any(
+            isinstance(item.get("inputs"), Mapping)
+            and str(item["inputs"].get("action", "")).strip().lower()
+            == "rollback"
+            for item in operations
+            if item.get("operation") == "live_patch_run"
+        )
+        return "rollback" if rollback else "live-patch"
+    if {"log_bundle_collect", "debug_run"}.issubset(names):
+        return "bundle-and-diagnose"
+    return intent
+
+
+def _case_entry_domain(projection: Mapping[str, object]) -> str:
+    entry_domain = projection.get("entry_domain")
+    if isinstance(entry_domain, str) and entry_domain.strip():
+        return entry_domain.strip()
+    workflow_inputs = projection.get("workflow_inputs", {})
+    if isinstance(workflow_inputs, Mapping):
+        entry_domain = workflow_inputs.get("entry_domain")
+        if isinstance(entry_domain, str) and entry_domain.strip():
+            return entry_domain.strip()
+    effective_intent = _effective_case_intent(projection)
+    inferred = _inferred_entry_domain(effective_intent)
+    if inferred:
+        return inferred
+    for operation in projection.get("operations", []):
+        if not isinstance(operation, Mapping):
+            continue
+        domain = _OPERATION_ENTRY_DOMAINS.get(
+            str(operation.get("operation", "")),
+            "",
+        )
+        if domain:
+            return domain
+    return ""
+
+
+def _operation_identity_inputs(arguments: Mapping[str, object]) -> dict[str, object]:
+    """Persist only non-secret handoff identity needed for Case closeout."""
+
+    allowed = {
+        "action",
+        "allow_insecure_tls",
+        "artifact_path",
+        "artifact_sha256",
+        "force_path",
+        "local_path",
+        "no_backup",
+        "no_remount",
+        "product_version",
+        "profile",
+        "remote_path",
+        "restart_scope",
+        "ssh_host_key_policy",
+        "target_id",
+        "verification_checks",
+        "_minimum_target_epoch",
+    }
+    sanitized = _sanitize(
+        {key: value for key, value in arguments.items() if key in allowed}
+    )
+    return dict(sanitized) if isinstance(sanitized, Mapping) else {}
 
 
 @dataclass(frozen=True)
@@ -262,11 +549,7 @@ class FilesystemBlobRepository:
         destination = self._path(blob_id)
         with self._lock:
             if destination.is_file():
-                try:
-                    self.read(blob_id, offset=0, limit=0)
-                    return blob_id
-                except EvidenceUnavailable:
-                    pass
+                return blob_id
             destination.parent.mkdir(parents=True, exist_ok=True)
             descriptor, raw_path = tempfile.mkstemp(
                 prefix=f".{blob_id}.",
@@ -288,34 +571,16 @@ class FilesystemBlobRepository:
         return blob_id
 
     def read(self, blob_id: str, *, offset: int = 0, limit: int = -1) -> bytes:
-        if offset < 0:
-            raise EvidenceUnavailable("blob offset must be non-negative")
         path = self._path(blob_id)
-        digest = hashlib.sha256()
-        selected = bytearray()
-        position = 0
-        end = None if limit < 0 else offset + limit
         try:
             with gzip.open(path, "rb") as archive:
-                while True:
-                    chunk = archive.read(64 * 1024)
-                    if not chunk:
-                        break
-                    digest.update(chunk)
-                    chunk_end = position + len(chunk)
-                    if chunk_end > offset and (end is None or position < end):
-                        start_in_chunk = max(0, offset - position)
-                        end_in_chunk = len(chunk) if end is None else min(
-                            len(chunk), end - position
-                        )
-                        if end_in_chunk > start_in_chunk:
-                            selected.extend(chunk[start_in_chunk:end_in_chunk])
-                    position = chunk_end
+                body = archive.read()
         except (OSError, EOFError) as exc:
             raise EvidenceUnavailable(f"blob {blob_id} is unavailable") from exc
-        if digest.hexdigest() != blob_id:
+        if hashlib.sha256(body).hexdigest() != blob_id:
             raise EvidenceUnavailable(f"blob {blob_id} failed hash verification")
-        return bytes(selected)
+        end = None if limit < 0 else offset + limit
+        return body[offset:end]
 
     def delete(self, blob_id: str) -> bool:
         path = self._path(blob_id)
@@ -345,10 +610,18 @@ def _empty_projection(case_id: str) -> dict[str, object]:
         "status": "open",
         "closed": False,
         "intent": "",
+        "entry_domain": "",
         "entry_operation": "",
         "final_purpose": "",
         "change_boundary": "",
         "delivery_strategy": "",
+        _TASK_POLICY_FIELD: {},
+        "acceptance_plan": {},
+        "acceptance_plan_history": [],
+        "closeout": {},
+        "closeout_markdown": "",
+        "closeout_bundle": None,
+        "closeout_history": [],
         "targets": [],
         "target_version": 1,
         "workflow_inputs": {},
@@ -371,76 +644,57 @@ def _empty_projection(case_id: str) -> dict[str, object]:
     }
 
 
-def _apply_case_events(
-    projection: Mapping[str, object],
+def project_case(
+    case_id: str,
     events: Iterable[Mapping[str, object]],
     *,
     last_access: float = 0.0,
 ) -> dict[str, object]:
-    public = json.loads(json.dumps(projection))
-    operations: OrderedDict[str, dict[str, object]] = OrderedDict(
-        (str(item.get("operation_id", "")), dict(item))
-        for item in public.get("operations", [])
-        if isinstance(item, Mapping) and item.get("operation_id")
-    )
-    evidence_by_id: OrderedDict[str, dict[str, object]] = OrderedDict(
-        (str(item.get("evidence_id", "")), dict(item))
-        for item in public.get("evidence_refs", [])
-        if isinstance(item, Mapping) and item.get("evidence_id")
-    )
-    phases = [
-        dict(item)
-        for item in public.get("phase_records", [])
-        if isinstance(item, Mapping)
-    ]
-    completed_counts = {
-        str(name): int(count)
-        for name, count in dict(public.get("completed_operation_counts", {})).items()
-        if isinstance(count, int) and not isinstance(count, bool) and count >= 0
-    }
-    operation_count = int(public.get("operation_count", len(operations)))
-    phase_record_count = int(public.get("phase_record_count", len(phases)))
-    evidence_ref_count = int(public.get("evidence_ref_count", len(evidence_by_id)))
-    workflow_step_states = {
-        str(key): dict(value)
-        for key, value in dict(public.get("workflow_step_states", {})).items()
-        if isinstance(value, Mapping)
-    }
-    workflow_step_attempts = {
-        str(key): int(value)
-        for key, value in dict(public.get("workflow_step_attempts", {})).items()
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-    }
-    workflow_phase_values = {
-        str(key): dict(value)
-        for key, value in dict(public.get("workflow_phase_values", {})).items()
-        if isinstance(value, Mapping)
-    }
-    unknown_mutations = {
-        str(key): dict(value)
-        for key, value in dict(
-            public.get("mutation_outcome_unknown_operations", {})
-        ).items()
-        if isinstance(value, Mapping)
-    }
+    projection = _empty_projection(case_id)
+    operations: OrderedDict[str, dict[str, object]] = OrderedDict()
+    evidence_by_id: OrderedDict[str, dict[str, object]] = OrderedDict()
+    phases: list[dict[str, object]] = []
+    completed_counts: dict[str, int] = {}
+    operation_count = 0
+    phase_record_count = 0
+    evidence_ref_count = 0
+    workflow_step_states: dict[str, dict[str, object]] = {}
+    workflow_step_attempts: dict[str, int] = {}
+    workflow_phase_values: dict[str, dict[str, object]] = {}
+    unknown_mutations: dict[str, dict[str, object]] = {}
     for event in events:
         revision = int(event["revision"])
-        public["revision"] = revision
+        projection["revision"] = revision
         kind = str(event["kind"])
         operation_id = str(event.get("operation_id", ""))
         payload = event.get("payload", {})
         payload = dict(payload) if isinstance(payload, Mapping) else {}
         if kind == "CaseOpened":
-            public.update(
+            acceptance_plan = dict(payload.get("acceptance_plan", {}))
+            workflow_inputs = dict(payload.get("workflow_inputs", {}))
+            entry_domain = payload.get("entry_domain")
+            if not isinstance(entry_domain, str) or not entry_domain.strip():
+                entry_domain = workflow_inputs.get("entry_domain")
+            if not isinstance(entry_domain, str) or not entry_domain.strip():
+                entry_domain = _inferred_entry_domain(payload.get("intent"))
+            projection.update(
                 {
                     "intent": str(payload.get("intent", "")),
+                    "entry_domain": str(entry_domain).strip(),
                     "entry_operation": str(payload.get("entry_operation", "")),
                     "final_purpose": str(payload.get("final_purpose", "")),
                     "change_boundary": str(payload.get("change_boundary", "")),
                     "delivery_strategy": str(payload.get("delivery_strategy", "")),
+                    _TASK_POLICY_FIELD: dict(
+                        payload.get(_TASK_POLICY_FIELD, {})
+                    ),
+                    "acceptance_plan": acceptance_plan,
+                    "acceptance_plan_history": (
+                        [acceptance_plan] if acceptance_plan else []
+                    ),
                     "targets": list(payload.get("targets", [])),
                     "target_version": int(payload.get("target_version", 1)),
-                    "workflow_inputs": dict(payload.get("workflow_inputs", {})),
+                    "workflow_inputs": workflow_inputs,
                     "workflow_cycle_id": str(
                         payload.get("workflow_cycle_id", "cycle-1")
                     ),
@@ -450,6 +704,33 @@ def _apply_case_events(
                     "status": "open",
                 }
             )
+        elif kind == "DeliveryStrategySelected":
+            previous_closeout = projection.get("closeout")
+            if isinstance(previous_closeout, Mapping) and previous_closeout:
+                projection.setdefault("closeout_history", []).append(
+                    dict(previous_closeout)
+                )
+            projection["delivery_strategy"] = str(
+                payload.get("delivery_strategy", projection["delivery_strategy"])
+            )
+            task_policy = payload.get(_TASK_POLICY_FIELD)
+            if isinstance(task_policy, Mapping):
+                projection[_TASK_POLICY_FIELD] = dict(task_policy)
+            acceptance_plan = payload.get("acceptance_plan")
+            if isinstance(acceptance_plan, Mapping):
+                plan = dict(acceptance_plan)
+                projection["acceptance_plan"] = plan
+                projection.setdefault("acceptance_plan_history", []).append(plan)
+            workflow_inputs = payload.get("workflow_inputs")
+            if isinstance(workflow_inputs, Mapping):
+                projection["workflow_inputs"] = {
+                    **dict(projection.get("workflow_inputs", {})),
+                    **dict(workflow_inputs),
+                }
+            projection["closeout"] = {}
+            projection["closeout_markdown"] = ""
+            projection["closeout_bundle"] = None
+            projection["status"] = "open"
         elif kind == "CaseUpdated":
             for name in (
                 "intent",
@@ -458,18 +739,26 @@ def _apply_case_events(
                 "delivery_strategy",
             ):
                 if name in payload:
-                    public[name] = str(payload[name])
+                    projection[name] = str(payload[name])
             if "targets" in payload:
-                public["targets"] = list(payload.get("targets", []))
+                projection["targets"] = list(payload.get("targets", []))
             if "workflow_inputs" in payload:
-                public["workflow_inputs"] = dict(
+                projection["workflow_inputs"] = dict(
                     payload.get("workflow_inputs", {})
                 )
+            task_policy = payload.get(_TASK_POLICY_FIELD)
+            if isinstance(task_policy, Mapping):
+                projection[_TASK_POLICY_FIELD] = dict(task_policy)
+            acceptance_plan = payload.get("acceptance_plan")
+            if isinstance(acceptance_plan, Mapping):
+                plan = dict(acceptance_plan)
+                projection["acceptance_plan"] = plan
+                projection.setdefault("acceptance_plan_history", []).append(plan)
             if payload.get("target_changed") is True:
-                public["target_version"] = int(
+                projection["target_version"] = int(
                     payload.get(
                         "target_version",
-                        int(public.get("target_version", 1)) + 1,
+                        int(projection.get("target_version", 1)) + 1,
                     )
                 )
                 workflow_step_states = {
@@ -482,26 +771,39 @@ def _apply_case_events(
                     for key, value in workflow_step_attempts.items()
                     if ":phase:" in key
                 }
-            public["status"] = "open"
+            projection["status"] = "open"
         elif kind == "WorkflowCycleStarted":
-            public["workflow_cycle_number"] = int(
+            previous_closeout = projection.get("closeout")
+            if isinstance(previous_closeout, Mapping) and previous_closeout:
+                projection.setdefault("closeout_history", []).append(
+                    dict(previous_closeout)
+                )
+            projection["workflow_cycle_number"] = int(
                 payload.get(
                     "workflow_cycle_number",
-                    int(public.get("workflow_cycle_number", 1)) + 1,
+                    int(projection.get("workflow_cycle_number", 1)) + 1,
                 )
             )
-            public["workflow_cycle_id"] = str(
+            projection["workflow_cycle_id"] = str(
                 payload.get(
                     "workflow_cycle_id",
-                    f"cycle-{public['workflow_cycle_number']}",
+                    f"cycle-{projection['workflow_cycle_number']}",
                 )
             )
             workflow_step_states = {}
             workflow_step_attempts = {}
             workflow_phase_values = {}
-            public["status"] = "open"
-            public["next_actions"] = []
+            projection["closeout"] = {}
+            projection["closeout_markdown"] = ""
+            projection["closeout_bundle"] = None
+            projection["status"] = "open"
+            projection["next_actions"] = []
         elif kind == "WorkflowStepsInvalidated":
+            previous_closeout = projection.get("closeout")
+            if isinstance(previous_closeout, Mapping) and previous_closeout:
+                projection.setdefault("closeout_history", []).append(
+                    dict(previous_closeout)
+                )
             retained_step_ids = payload.get("retained_step_ids")
             after_step_id = str(payload.get("after_step_id", ""))
             if isinstance(retained_step_ids, list):
@@ -521,8 +823,23 @@ def _apply_case_events(
                     for key, value in workflow_step_states.items()
                     if key <= after_step_id
                 }
-            public["status"] = "open"
-            public["next_actions"] = []
+            active_phase_names = {
+                str(state.get("name", ""))
+                for state in workflow_step_states.values()
+                if isinstance(state, Mapping)
+                and state.get("kind") == "phase"
+                and str(state.get("name", ""))
+            }
+            workflow_phase_values = {
+                phase_type: value
+                for phase_type, value in workflow_phase_values.items()
+                if phase_type in active_phase_names
+            }
+            projection["closeout"] = {}
+            projection["closeout_markdown"] = ""
+            projection["closeout_bundle"] = None
+            projection["status"] = "open"
+            projection["next_actions"] = []
         elif kind == "OperationAccepted":
             operation_count += 1
             operations[operation_id] = {
@@ -535,6 +852,9 @@ def _apply_case_events(
                 ),
                 "accepted_revision": revision,
             }
+            inputs = payload.get("inputs")
+            if isinstance(inputs, Mapping) and inputs:
+                operations[operation_id]["inputs"] = dict(inputs)
             operation = operations[operation_id]
             for name in (
                 "workflow_cycle_id",
@@ -569,12 +889,12 @@ def _apply_case_events(
         elif kind == "EvidenceAttached":
             reference = payload.get("evidence")
             if isinstance(reference, Mapping):
-                evidence_public = dict(reference)
-                evidence_id = str(evidence_public.get("evidence_id", ""))
+                public = dict(reference)
+                evidence_id = str(public.get("evidence_id", ""))
                 if evidence_id:
                     if evidence_id not in evidence_by_id:
                         evidence_ref_count += 1
-                    evidence_by_id[evidence_id] = evidence_public
+                    evidence_by_id[evidence_id] = public
                     operation = operations.get(operation_id)
                     if operation is not None:
                         operation.setdefault("evidence_ids", []).append(evidence_id)
@@ -586,7 +906,7 @@ def _apply_case_events(
             if "status" in payload:
                 operation["status"] = str(payload["status"])
             if "next_actions" in payload:
-                public["next_actions"] = list(payload["next_actions"])
+                projection["next_actions"] = list(payload["next_actions"])
             phase = payload.get("phase_record")
             if isinstance(phase, Mapping):
                 phase_public = dict(phase)
@@ -594,16 +914,18 @@ def _apply_case_events(
                 phase_record_count += 1
                 step_id = str(phase_public.get("workflow_step_id", ""))
                 cycle_id = str(phase_public.get("workflow_cycle_id", ""))
-                if step_id and cycle_id == str(public.get("workflow_cycle_id", "")):
+                if step_id and cycle_id == str(
+                    projection.get("workflow_cycle_id", "")
+                ):
                     workflow_step_states[step_id] = {
                         "kind": "phase",
                         "name": str(phase_public.get("phase_type", "")),
                         "status": str(phase_public.get("status", "")),
                         "workflow_cycle_id": cycle_id,
                     }
-                    workflow_phase_values[str(phase_public.get("phase_type", ""))] = (
-                        phase_public
-                    )
+                    workflow_phase_values[
+                        str(phase_public.get("phase_type", ""))
+                    ] = phase_public
         elif kind == "OperationTerminal":
             operation = operations.setdefault(
                 operation_id,
@@ -612,7 +934,7 @@ def _apply_case_events(
             operation["status"] = str(payload.get("status", "completed"))
             if operation["status"] in {"completed", "verified", "succeeded"}:
                 name = str(operation.get("operation", ""))
-                if name and name != "workflow.advance":
+                if name and name not in _WORKFLOW_CONTROL_OPERATIONS:
                     completed_counts[name] = completed_counts.get(name, 0) + 1
             operation["terminal_revision"] = revision
             operation["summary"] = str(payload.get("summary", ""))
@@ -626,7 +948,9 @@ def _apply_case_events(
                 }
             step_id = str(operation.get("workflow_step_id", ""))
             cycle_id = str(operation.get("workflow_cycle_id", ""))
-            if step_id and cycle_id == str(public.get("workflow_cycle_id", "")):
+            if step_id and cycle_id == str(
+                projection.get("workflow_cycle_id", "")
+            ):
                 workflow_step_states[step_id] = {
                     "kind": str(operation.get("workflow_step_kind", "operation")),
                     "name": str(operation.get("operation", "")),
@@ -643,8 +967,8 @@ def _apply_case_events(
             if payload.get("canonical_error") is not None:
                 operation["canonical_error"] = payload.get("canonical_error")
             if "next_actions" in payload:
-                public["next_actions"] = list(payload["next_actions"])
-            public["status"] = str(payload.get("case_status", "open"))
+                projection["next_actions"] = list(payload["next_actions"])
+            projection["status"] = str(payload.get("case_status", "open"))
         elif kind == "OperationReconciled":
             operation = operations.setdefault(
                 operation_id,
@@ -653,7 +977,7 @@ def _apply_case_events(
             operation["status"] = str(payload.get("status", "completed"))
             if operation["status"] in {"completed", "verified", "succeeded"}:
                 name = str(operation.get("operation", ""))
-                if name and name != "workflow.advance":
+                if name and name not in _WORKFLOW_CONTROL_OPERATIONS:
                     completed_counts[name] = completed_counts.get(name, 0) + 1
             operation["reconciled_revision"] = revision
             operation["summary"] = str(payload.get("summary", ""))
@@ -669,7 +993,9 @@ def _apply_case_events(
                 unknown_mutations.pop(operation_id, None)
             step_id = str(operation.get("workflow_step_id", ""))
             cycle_id = str(operation.get("workflow_cycle_id", ""))
-            if step_id and cycle_id == str(public.get("workflow_cycle_id", "")):
+            if step_id and cycle_id == str(
+                projection.get("workflow_cycle_id", "")
+            ):
                 workflow_step_states[step_id] = {
                     "kind": str(operation.get("workflow_step_kind", "operation")),
                     "name": str(operation.get("operation", "")),
@@ -687,12 +1013,32 @@ def _apply_case_events(
             if payload.get("canonical_error") is not None:
                 operation["canonical_error"] = payload.get("canonical_error")
             if "next_actions" in payload:
-                public["next_actions"] = list(payload["next_actions"])
-            public["status"] = str(payload.get("case_status", "open"))
+                projection["next_actions"] = list(payload["next_actions"])
+            projection["status"] = str(payload.get("case_status", "open"))
+        elif kind == "CloseoutRecorded":
+            closeout = payload.get("closeout")
+            if isinstance(closeout, Mapping):
+                previous_closeout = projection.get("closeout")
+                if (
+                    isinstance(previous_closeout, Mapping)
+                    and previous_closeout
+                    and previous_closeout.get("fingerprint")
+                    != closeout.get("fingerprint")
+                ):
+                    projection.setdefault("closeout_history", []).append(
+                        dict(previous_closeout)
+                    )
+                projection["closeout"] = dict(closeout)
+            projection["closeout_markdown"] = str(
+                payload.get("closeout_markdown", "")
+            )
+            bundle = payload.get("closeout_bundle")
+            projection["closeout_bundle"] = (
+                dict(bundle) if isinstance(bundle, Mapping) else None
+            )
         elif kind == "CaseClosed":
-            public["closed"] = True
-            public["status"] = "closed"
-
+            projection["closed"] = True
+            projection["status"] = "closed"
     active_statuses = {
         "accepted",
         "running",
@@ -703,8 +1049,8 @@ def _apply_case_events(
     while len(operations) > MAX_PROJECTED_OPERATIONS:
         removable = next(
             (
-                operation_id
-                for operation_id, operation in operations.items()
+                candidate_id
+                for candidate_id, operation in operations.items()
                 if str(operation.get("status", "")) not in active_statuses
             ),
             next(iter(operations)),
@@ -714,38 +1060,26 @@ def _apply_case_events(
         evidence_by_id.popitem(last=False)
     if len(phases) > MAX_PROJECTED_PHASE_RECORDS:
         phases = phases[-MAX_PROJECTED_PHASE_RECORDS:]
-
-    public["operations"] = list(operations.values())
-    public["completed_operation_counts"] = completed_counts
-    public["workflow_step_states"] = workflow_step_states
-    public["workflow_step_attempts"] = workflow_step_attempts
-    public["workflow_phase_values"] = workflow_phase_values
-    public["mutation_outcome_unknown_operations"] = unknown_mutations
-    public["operation_count"] = operation_count
-    public["phase_records"] = phases
-    public["phase_record_count"] = phase_record_count
-    public["evidence_refs"] = list(evidence_by_id.values())
-    public["evidence_ref_count"] = evidence_ref_count
-    public["projection_truncated"] = bool(
+    projection["operations"] = list(operations.values())
+    projection["completed_operation_counts"] = completed_counts
+    projection["workflow_step_states"] = workflow_step_states
+    projection["workflow_step_attempts"] = workflow_step_attempts
+    projection["workflow_phase_values"] = workflow_phase_values
+    projection["mutation_outcome_unknown_operations"] = unknown_mutations
+    projection["operation_count"] = operation_count
+    projection["phase_records"] = phases
+    projection["phase_record_count"] = phase_record_count
+    projection["evidence_refs"] = list(evidence_by_id.values())
+    projection["evidence_ref_count"] = evidence_ref_count
+    projection["projection_truncated"] = bool(
         operation_count > len(operations)
         or phase_record_count > len(phases)
         or evidence_ref_count > len(evidence_by_id)
     )
-    public["last_access"] = last_access
-    return public
-
-
-def project_case(
-    case_id: str,
-    events: Iterable[Mapping[str, object]],
-    *,
-    last_access: float = 0.0,
-) -> dict[str, object]:
-    return _apply_case_events(
-        _empty_projection(case_id),
-        events,
-        last_access=last_access,
-    )
+    if not str(projection.get("entry_domain", "")).strip():
+        projection["entry_domain"] = _case_entry_domain(projection)
+    projection["last_access"] = last_access
+    return projection
 
 
 class RuntimeRepository(Protocol):
@@ -799,7 +1133,6 @@ class RuntimeRepository(Protocol):
 class InMemoryRuntimeRepository:
     def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
         self._events: dict[str, list[dict[str, object]]] = {}
-        self._projections: dict[str, dict[str, object]] = {}
         self._idempotency: dict[tuple[str, str], dict[str, object]] = {}
         self._bindings: dict[str, str] = {}
         self._meta: dict[str, dict[str, object]] = {}
@@ -811,17 +1144,11 @@ class InMemoryRuntimeRepository:
         if events is None:
             return None
         meta = self._meta.get(case_id, {})
-        projection = self._projections.get(case_id)
-        if projection is None:
-            projection = project_case(
-                case_id,
-                events,
-                last_access=float(meta.get("last_access", 0.0)),
-            )
-            self._projections[case_id] = projection
-        public = json.loads(json.dumps(projection))
-        public["last_access"] = float(meta.get("last_access", 0.0))
-        return public
+        return project_case(
+            case_id,
+            events,
+            last_access=float(meta.get("last_access", 0.0)),
+        )
 
     def load(self, case_id: str) -> dict[str, object] | None:
         with self._lock:
@@ -854,27 +1181,19 @@ class InMemoryRuntimeRepository:
                     f"case {case_id} revision is {current}, expected {expected_revision}"
                 )
             now = self._clock()
-            base = self._projections.get(case_id)
-            if base is None:
-                base = (
-                    project_case(case_id, existing)
-                    if existing
-                    else _empty_projection(case_id)
-                )
-            appended: list[dict[str, object]] = []
             for item in pending:
                 revision = len(existing) + 1
-                event = {
-                    "revision": revision,
-                    "kind": item.kind,
-                    "operation_id": item.operation_id,
-                    "payload": dict(item.payload),
-                    "created_at": now,
-                }
-                existing.append(event)
-                appended.append(event)
-            projection = _apply_case_events(base, appended, last_access=now)
-            self._projections[case_id] = json.loads(json.dumps(projection))
+                existing.append(
+                    {
+                        "revision": revision,
+                        "kind": item.kind,
+                        "operation_id": item.operation_id,
+                        "payload": dict(item.payload),
+                        "created_at": now,
+                    }
+                )
+            projection = self._load_locked(case_id)
+            assert projection is not None
             self._meta[case_id] = {
                 "last_access": now,
                 "status": projection["status"],
@@ -962,20 +1281,11 @@ class InMemoryRuntimeRepository:
 
     def delete_case(self, case_id: str) -> tuple[dict[str, object], ...]:
         with self._lock:
-            events = self._events.get(case_id)
-            if events is None:
+            projection = self._load_locked(case_id)
+            if projection is None:
                 return ()
-            refs = tuple(
-                dict(reference)
-                for event in events
-                if event.get("kind") == "EvidenceAttached"
-                for payload in (event.get("payload", {}),)
-                if isinstance(payload, Mapping)
-                for reference in (payload.get("evidence"),)
-                if isinstance(reference, Mapping)
-            )
+            refs = tuple(dict(item) for item in projection["evidence_refs"])
             self._events.pop(case_id, None)
-            self._projections.pop(case_id, None)
             self._meta.pop(case_id, None)
             self._idempotency = {
                 identity: value
@@ -1004,14 +1314,11 @@ class InMemoryRuntimeRepository:
         with self._lock:
             return sum(
                 1
-                for events in self._events.values()
-                for event in events
-                if event.get("kind") == "EvidenceAttached"
-                for payload in (event.get("payload", {}),)
-                if isinstance(payload, Mapping)
-                for reference in (payload.get("evidence"),)
-                if isinstance(reference, Mapping)
-                and reference.get("blob_id") == blob_id
+                for case_id in self._events
+                for reference in (self._load_locked(case_id) or {}).get(
+                    "evidence_refs", []
+                )
+                if reference.get("blob_id") == blob_id
             )
 
     def size_bytes(self) -> int:
@@ -1020,7 +1327,6 @@ class InMemoryRuntimeRepository:
                 _json_bytes(
                     {
                         "events": self._events,
-                        "projections": self._projections,
                         "idempotency": {
                             f"{case_id}:{key}": value
                             for (case_id, key), value in self._idempotency.items()
@@ -1085,8 +1391,7 @@ class SQLiteRuntimeRepository:
                     case_id TEXT PRIMARY KEY,
                     created_at REAL NOT NULL,
                     last_access REAL NOT NULL,
-                    status TEXT NOT NULL,
-                    projection_json TEXT
+                    status TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS idempotency (
                     case_id TEXT NOT NULL,
@@ -1140,12 +1445,6 @@ class SQLiteRuntimeRepository:
                     connection.execute(
                         f"ALTER TABLE task_bindings ADD COLUMN {name} {declaration}"
                     )
-            case_columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(cases)")
-            }
-            if "projection_json" not in case_columns:
-                connection.execute("ALTER TABLE cases ADD COLUMN projection_json TEXT")
             row = connection.execute(
                 "SELECT value FROM runtime_meta WHERE key = 'storage_version'"
             ).fetchone()
@@ -1164,46 +1463,31 @@ class SQLiteRuntimeRepository:
     def _load_from_connection(
         connection: sqlite3.Connection, case_id: str
     ) -> dict[str, object] | None:
-        meta = connection.execute(
-            "SELECT last_access, projection_json FROM cases WHERE case_id = ?",
-            (case_id,),
-        ).fetchone()
-        if meta is not None and meta["projection_json"]:
-            projection = json.loads(str(meta["projection_json"]))
-            projection["last_access"] = float(meta["last_access"])
-            return projection
-        cursor = connection.execute(
+        rows = connection.execute(
             "SELECT revision, kind, operation_id, payload_json, created_at "
             "FROM case_events WHERE case_id = ? ORDER BY revision",
             (case_id,),
-        )
-        first = cursor.fetchone()
-        if first is None:
+        ).fetchall()
+        if not rows:
             return None
-
-        def events() -> Iterable[dict[str, object]]:
-            row = first
-            while row is not None:
-                yield {
-                    "revision": row["revision"],
-                    "kind": row["kind"],
-                    "operation_id": row["operation_id"],
-                    "payload": json.loads(row["payload_json"]),
-                    "created_at": row["created_at"],
-                }
-                row = cursor.fetchone()
-
-        projection = project_case(
+        meta = connection.execute(
+            "SELECT last_access FROM cases WHERE case_id = ?", (case_id,)
+        ).fetchone()
+        events = [
+            {
+                "revision": row["revision"],
+                "kind": row["kind"],
+                "operation_id": row["operation_id"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+        return project_case(
             case_id,
-            events(),
+            events,
             last_access=float(meta["last_access"]) if meta is not None else 0.0,
         )
-        if meta is not None:
-            connection.execute(
-                "UPDATE cases SET projection_json = ? WHERE case_id = ?",
-                (_json_bytes(projection).decode("utf-8"), case_id),
-            )
-        return projection
 
     def load(self, case_id: str) -> dict[str, object] | None:
         with self._lock, self._connect() as connection:
@@ -1239,18 +1523,7 @@ class SQLiteRuntimeRepository:
                     f"case {case_id} revision is {current}, expected {expected_revision}"
                 )
             now = self._clock()
-            base = self._load_from_connection(connection, case_id)
-            if base is None:
-                base = _empty_projection(case_id)
-            appended: list[dict[str, object]] = []
             for offset, item in enumerate(pending, start=1):
-                event = {
-                    "revision": current + offset,
-                    "kind": item.kind,
-                    "operation_id": item.operation_id,
-                    "payload": dict(item.payload),
-                    "created_at": now,
-                }
                 connection.execute(
                     "INSERT INTO case_events "
                     "(case_id, revision, kind, operation_id, payload_json, created_at) "
@@ -1264,23 +1537,14 @@ class SQLiteRuntimeRepository:
                         now,
                     ),
                 )
-                appended.append(event)
-            if not appended and current == 0:
+            projection = self._load_from_connection(connection, case_id)
+            if projection is None:
                 raise CaseNotFound(case_id)
-            projection = _apply_case_events(base, appended, last_access=now)
             connection.execute(
-                "INSERT INTO cases "
-                "(case_id, created_at, last_access, status, projection_json) "
-                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(case_id) DO UPDATE SET "
-                "last_access = excluded.last_access, status = excluded.status, "
-                "projection_json = excluded.projection_json",
-                (
-                    case_id,
-                    now,
-                    now,
-                    projection["status"],
-                    _json_bytes(projection).decode("utf-8"),
-                ),
+                "INSERT INTO cases (case_id, created_at, last_access, status) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(case_id) DO UPDATE SET "
+                "last_access = excluded.last_access, status = excluded.status",
+                (case_id, now, now, projection["status"]),
             )
             connection.commit()
             projection["last_access"] = now
@@ -1457,25 +1721,11 @@ class SQLiteRuntimeRepository:
     def delete_case(self, case_id: str) -> tuple[dict[str, object], ...]:
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            exists = connection.execute(
-                "SELECT 1 FROM case_events WHERE case_id = ? LIMIT 1", (case_id,)
-            ).fetchone()
-            if exists is None:
+            projection = self._load_from_connection(connection, case_id)
+            if projection is None:
                 connection.rollback()
                 return ()
-            refs = tuple(
-                dict(reference)
-                for row in connection.execute(
-                    "SELECT payload_json FROM case_events "
-                    "WHERE case_id = ? AND kind = 'EvidenceAttached' "
-                    "ORDER BY revision",
-                    (case_id,),
-                )
-                for payload in (json.loads(row["payload_json"]),)
-                if isinstance(payload, Mapping)
-                for reference in (payload.get("evidence"),)
-                if isinstance(reference, Mapping)
-            )
+            refs = tuple(dict(item) for item in projection["evidence_refs"])
             connection.execute("DELETE FROM case_events WHERE case_id = ?", (case_id,))
             connection.execute("DELETE FROM cases WHERE case_id = ?", (case_id,))
             connection.execute("DELETE FROM idempotency WHERE case_id = ?", (case_id,))
@@ -1491,19 +1741,17 @@ class SQLiteRuntimeRepository:
             return tuple(dict(row) for row in rows)
 
     def blob_reference_count(self, blob_id: str) -> int:
-        with self._lock, self._connect() as connection:
-            return sum(
+        count = 0
+        for meta in self.metadata():
+            projection = self.load(str(meta["case_id"]))
+            if projection is None:
+                continue
+            count += sum(
                 1
-                for row in connection.execute(
-                    "SELECT payload_json FROM case_events "
-                    "WHERE kind = 'EvidenceAttached'"
-                )
-                for payload in (json.loads(row["payload_json"]),)
-                if isinstance(payload, Mapping)
-                for reference in (payload.get("evidence"),)
-                if isinstance(reference, Mapping)
-                and reference.get("blob_id") == blob_id
+                for reference in projection["evidence_refs"]
+                if reference.get("blob_id") == blob_id
             )
+        return count
 
     def size_bytes(self) -> int:
         total = 0
@@ -1631,35 +1879,15 @@ def bounded_envelope(value: Mapping[str, object], *, max_bytes: int) -> dict[str
             "revision": envelope.get("revision", 0),
             "operation": envelope.get("operation", {}),
             "status": envelope.get("status", "failed"),
+            "code": envelope.get("code", ""),
             "summary": str(envelope.get("summary", ""))[:512],
             "evidence_refs": list(envelope.get("evidence_refs", []))[:2],
             "gaps": ["content_compacted"],
             "next_actions": list(envelope.get("next_actions", []))[:2],
+            "next_action": str(envelope.get("next_action", ""))[:512],
             "canonical_error": envelope.get("canonical_error"),
-            "continuation": envelope.get("continuation"),
-            "capsule": envelope.get("capsule"),
             "content_compacted": True,
         }
-        capsule = envelope.get("capsule")
-        if isinstance(capsule, Mapping):
-            targets = capsule.get("targets", [])
-            envelope["capsule"] = {
-                "schema": capsule.get("schema", ""),
-                "case_id": capsule.get("case_id", ""),
-                "case_revision": capsule.get("case_revision", 0),
-                "status": capsule.get("status", ""),
-                "intent": capsule.get("intent", ""),
-                "target_count": len(targets) if isinstance(targets, list) else 0,
-                "next_actions": list(capsule.get("next_actions", []))[:2],
-            }
-        continuation = envelope.get("continuation")
-        if isinstance(continuation, Mapping) and len(_json_bytes(envelope)) > max_bytes:
-            compact_continuation = dict(continuation)
-            targets = compact_continuation.get("targets", [])
-            if isinstance(targets, list):
-                compact_continuation["target_count"] = len(targets)
-                compact_continuation["targets"] = targets[:8]
-            envelope["continuation"] = compact_continuation
     if len(_json_bytes(envelope)) > max_bytes:
         raise ValueError("agent envelope cannot be compacted below byte limit")
     return envelope
@@ -1703,9 +1931,9 @@ class ContextRuntime:
         self._metrics = {
             "invocations": 0,
             "idempotent_replays": 0,
+            "idempotency_receipt_repairs": 0,
             "warm_continuations": 0,
             "projection_cache_hits": 0,
-            "projection_cache_stale": 0,
             "projection_evictions": 0,
             "projection_rebuilds": 0,
             "capsule_cache_hits": 0,
@@ -1780,6 +2008,7 @@ class ContextRuntime:
                             case_id, 0
                         )
                     self._capsule_cache.pop(case_id, None)
+                    self._metrics.setdefault("projection_cache_stale", 0)
                     self._metrics["projection_cache_stale"] += 1
                 projection = None
         else:
@@ -1824,10 +2053,14 @@ class ContextRuntime:
             "case_revision": revision,
             "status": projection.get("status", "open"),
             "intent": projection.get("intent", ""),
+            "entry_domain": projection.get("entry_domain", ""),
             "entry_operation": projection.get("entry_operation", ""),
             "final_purpose": projection.get("final_purpose", ""),
             "change_boundary": projection.get("change_boundary", ""),
             "delivery_strategy": projection.get("delivery_strategy", ""),
+            _TASK_POLICY_FIELD: _sanitize(
+                projection.get(_TASK_POLICY_FIELD, {})
+            ),
             "targets": list(projection.get("targets", [])),
             "target_version": int(projection.get("target_version", 1)),
             "target_epoch_floor": self._target_epoch_floor(
@@ -1876,7 +2109,13 @@ class ContextRuntime:
                 self._metrics["capsule_evictions"] += 1
         return json.loads(json.dumps(capsule))
 
-    def _resolve_case_id(self, task_id: str, arguments: Mapping[str, object]) -> str:
+    def _case_id(
+        self,
+        task_id: str,
+        arguments: Mapping[str, object],
+        *,
+        bind: bool = True,
+    ) -> str:
         explicit = arguments.get("case_id")
         if isinstance(explicit, str) and explicit.strip():
             case_id = _safe_identifier(explicit, fallback="")
@@ -1886,11 +2125,8 @@ class ContextRuntime:
             case_id = self.repository.case_for_task(task_id) or (
                 "case-" + hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:24]
             )
-        return case_id
-
-    def _case_id(self, task_id: str, arguments: Mapping[str, object]) -> str:
-        case_id = self._resolve_case_id(task_id, arguments)
-        self.repository.bind_task(task_id, case_id)
+        if bind:
+            self.repository.bind_task(task_id, case_id)
         return case_id
 
     def _validate_expected_before_case_update(
@@ -1910,6 +2146,29 @@ class ContextRuntime:
                 f"case {case_id} revision is {observed}, expected {expected}"
             )
         return existing
+
+    def _existing_case(
+        self,
+        task_id: str,
+        arguments: Mapping[str, object],
+    ) -> tuple[str, dict[str, object]]:
+        if "case_id" in arguments:
+            explicit = arguments.get("case_id")
+            if not isinstance(explicit, str):
+                raise TypeError("case_id must be a string")
+            if not explicit.strip():
+                raise ValueError("case_id must not be empty")
+            case_id = _safe_identifier(explicit, fallback="")
+            if not case_id:
+                raise ValueError("case_id must be a safe 1-128 character identifier")
+        else:
+            case_id = self.repository.case_for_task(task_id) or ""
+            if not case_id:
+                raise CaseNotFound(f"no Case is bound to task {task_id}")
+        projection = self._load(case_id)
+        if projection is None:
+            raise CaseNotFound(case_id)
+        return case_id, projection
 
     @staticmethod
     def _targets(arguments: Mapping[str, object]) -> list[dict[str, object]]:
@@ -1935,26 +2194,158 @@ class ContextRuntime:
             ]
         return []
 
+    def _select_delivery_strategy(
+        self,
+        projection: Mapping[str, object],
+        requested: object,
+        *,
+        reason: str,
+        selection_arguments: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        selected = str(requested or "").strip().lower().replace("_", "-")
+        if not selected:
+            return dict(projection)
+        if selected not in _DELIVERY_STRATEGIES:
+            raise ValueError(f"unsupported delivery strategy: {requested}")
+        raw_plan = projection.get("acceptance_plan")
+        plan = AcceptancePlan.from_public_dict(raw_plan) if isinstance(raw_plan, Mapping) else None
+        current = (
+            str(projection.get("delivery_strategy", ""))
+            .strip()
+            .lower()
+            .replace("_", "-")
+        )
+        effective_current = current or (
+            plan.delivery_strategy if plan is not None else "source-only"
+        )
+        if selected == effective_current:
+            return dict(projection)
+        if projection.get("closed"):
+            raise CaseClosed(f"case {projection.get('case_id', '')} is closed")
+        intent = str(projection.get("intent", ""))
+        if intent != "diagnose-and-fix":
+            compatible = (
+                intent in {"live-patch", "rollback"} and selected == "live-patch"
+            ) or (
+                intent == "upgrade-and-verify" and selected == "build-upgrade"
+            )
+            if compatible:
+                return dict(projection)
+            raise ValueError(
+                "delivery strategy can change only for a diagnose-and-fix Case"
+            )
+        if effective_current != "source-only" or selected == "source-only":
+            raise ValueError(
+                "delivery strategy may only be promoted once from source-only"
+            )
+        revised_plan = AcceptancePlan.freeze(
+            {
+                "intent": projection.get("intent", "diagnose-and-fix"),
+                "delivery_strategy": selected,
+                "final_purpose": projection.get("final_purpose", ""),
+            },
+            frozen_at=self.clock(),
+        )
+        current_policy_raw = projection.get(_TASK_POLICY_FIELD)
+        if isinstance(current_policy_raw, Mapping) and current_policy_raw:
+            current_policy = TaskAuthorizationPolicy.from_public_dict(
+                current_policy_raw
+            )
+        else:
+            workflow_inputs = projection.get("workflow_inputs", {})
+            workflow_inputs = (
+                workflow_inputs if isinstance(workflow_inputs, Mapping) else {}
+            )
+            current_policy = TaskAuthorizationPolicy.from_task_intent(
+                intent,
+                delivery_strategy=effective_current,
+                authorized_exceptions=workflow_inputs.get(
+                    "authorized_exceptions"
+                ),
+                allow_insecure_tls=_strict_bool(
+                    workflow_inputs,
+                    "allow_insecure_tls",
+                    default=True,
+                ),
+            )
+        selection = selection_arguments or {}
+        selected_exceptions = selection.get(
+            "authorized_exceptions",
+            current_policy.authorized_exceptions.to_public_dict(),
+        )
+        selected_tls = selection.get(
+            "allow_insecure_tls",
+            current_policy.allow_insecure_tls,
+        )
+        if not isinstance(selected_tls, bool):
+            raise TypeError("allow_insecure_tls must be a boolean")
+        revised_policy = TaskAuthorizationPolicy.from_task_intent(
+            intent,
+            delivery_strategy=selected,
+            authorized_exceptions=selected_exceptions,
+            allow_insecure_tls=selected_tls,
+        )
+        updated = self.repository.commit(
+            str(projection["case_id"]),
+            expected_revision=int(projection["revision"]),
+            events=(
+                PendingCaseEvent(
+                    "DeliveryStrategySelected",
+                    {
+                        "previous_delivery_strategy": effective_current,
+                        "delivery_strategy": selected,
+                        _TASK_POLICY_FIELD: revised_policy.to_public_dict(),
+                        "previous_plan_id": plan.plan_id if plan is not None else "",
+                        "acceptance_plan": revised_plan.to_public_dict(),
+                        "reason": _safe_identifier(
+                            reason,
+                            fallback="explicit-task-selection",
+                        ),
+                        "workflow_inputs": _sanitize_runtime_inputs(
+                            {
+                                key: value
+                                for key, value in (selection_arguments or {}).items()
+                                if key
+                                not in {
+                                    "case_id",
+                                    "expected_revision",
+                                    "idempotency_key",
+                                    "deadline",
+                                    "max_steps",
+                                }
+                            }
+                        ),
+                    },
+                ),
+            ),
+        )
+        return self._cache(updated)
+
     def _open_case(
         self,
         case_id: str,
         arguments: Mapping[str, object],
+        *,
+        require_existing: bool = False,
     ) -> dict[str, object]:
+        if "include_closeout_bundle" in arguments:
+            _strict_bool(
+                arguments,
+                "include_closeout_bundle",
+                default=True,
+            )
         existing = self._load(case_id)
         if existing is not None:
+            if arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True:
+                return existing
             supplied = {
                 key: value
                 for key, value in arguments.items()
-                if key not in _CONTEXT_CONTROL_ARGUMENTS
-                and not key.startswith("_")
+                if key not in _CONTEXT_CONTROL_ARGUMENTS and not key.startswith("_")
             }
-            if not supplied:
-                return existing
             previous_inputs = existing.get("workflow_inputs", {})
             previous_input_map = (
-                dict(previous_inputs)
-                if isinstance(previous_inputs, Mapping)
-                else {}
+                dict(previous_inputs) if isinstance(previous_inputs, Mapping) else {}
             )
             workflow_inputs = dict(previous_input_map)
             replaces_target = "targets" in supplied or (
@@ -1964,7 +2355,7 @@ class ContextRuntime:
             if replaces_target:
                 for name in _TARGET_REPLACEMENT_RESET_ARGUMENTS:
                     workflow_inputs.pop(name, None)
-            workflow_inputs.update(_sanitize(supplied))
+            workflow_inputs.update(_sanitize_runtime_inputs(supplied))
             payload: dict[str, object] = {}
             for name in (
                 "intent",
@@ -1972,7 +2363,9 @@ class ContextRuntime:
                 "change_boundary",
                 "delivery_strategy",
             ):
-                if name in supplied and str(supplied[name]) != str(existing.get(name, "")):
+                if name in supplied and str(supplied[name]) != str(
+                    existing.get(name, "")
+                ):
                     payload[name] = str(supplied[name])
             updated_targets = self._targets(arguments) if replaces_target else []
             if replaces_target and updated_targets != existing.get("targets", []):
@@ -1990,37 +2383,146 @@ class ContextRuntime:
             if binding_changed:
                 payload["target_changed"] = True
                 payload["target_version"] = int(existing.get("target_version", 1)) + 1
-            if not payload:
-                return existing
-            return self._cache(
-                self.repository.commit(
+            intent_changed = "intent" in payload
+            delivery_changed = "delivery_strategy" in payload
+            if intent_changed:
+                revised_arguments = {
+                    **workflow_inputs,
+                    "intent": payload.get("intent", existing.get("intent", "")),
+                    "delivery_strategy": payload.get(
+                        "delivery_strategy",
+                        existing.get("delivery_strategy", ""),
+                    ),
+                    "final_purpose": payload.get(
+                        "final_purpose",
+                        existing.get("final_purpose", ""),
+                    ),
+                }
+                payload["acceptance_plan"] = AcceptancePlan.freeze(
+                    revised_arguments,
+                    frozen_at=self.clock(),
+                ).to_public_dict()
+                payload[_TASK_POLICY_FIELD] = (
+                    TaskAuthorizationPolicy.from_task_intent(
+                        str(revised_arguments["intent"]),
+                        delivery_strategy=str(
+                            revised_arguments.get("delivery_strategy", "")
+                        ),
+                        authorized_exceptions=workflow_inputs.get(
+                            "authorized_exceptions"
+                        ),
+                        allow_insecure_tls=_strict_bool(
+                            workflow_inputs,
+                            "allow_insecure_tls",
+                            default=True,
+                        ),
+                    ).to_public_dict()
+                )
+            if payload and (intent_changed or binding_changed):
+                updated = self.repository.commit(
                     case_id,
                     expected_revision=int(existing["revision"]),
                     events=(PendingCaseEvent("CaseUpdated", payload),),
                 )
+                return self._cache(updated)
+            if "delivery_strategy" in arguments:
+                expected = arguments.get("expected_revision")
+                if expected is not None:
+                    if isinstance(expected, bool) or not isinstance(expected, int):
+                        raise TypeError("expected_revision must be an integer")
+                    if expected != existing["revision"]:
+                        raise RevisionConflict(
+                            f"case {case_id} revision is {existing['revision']}, "
+                            f"expected {expected}"
+                        )
+                selected = self._select_delivery_strategy(
+                    existing,
+                    arguments.get("delivery_strategy"),
+                    reason="explicit-task-selection",
+                    selection_arguments=arguments,
+                )
+                if selected.get("revision") != existing.get("revision"):
+                    selected["_selection_base_revision"] = int(existing["revision"])
+                return selected
+            if payload:
+                updated = self.repository.commit(
+                    case_id,
+                    expected_revision=int(existing["revision"]),
+                    events=(PendingCaseEvent("CaseUpdated", payload),),
+                )
+                return self._cache(updated)
+            return existing
+        if require_existing:
+            raise CaseNotFound(case_id)
+        opened_arguments = dict(arguments)
+        if not str(opened_arguments.get("delivery_strategy", "")).strip():
+            inferred_delivery = _inferred_delivery_strategy(
+                opened_arguments.get("intent"),
+                opened_arguments,
             )
+            if inferred_delivery:
+                opened_arguments["delivery_strategy"] = inferred_delivery
+        entry_domain = opened_arguments.get("entry_domain")
+        if entry_domain is not None and not isinstance(entry_domain, str):
+            raise TypeError("entry_domain must be a string")
+        if not isinstance(entry_domain, str) or not entry_domain.strip():
+            inferred_entry_domain = _inferred_entry_domain(
+                opened_arguments.get("intent")
+            )
+            if inferred_entry_domain:
+                opened_arguments["entry_domain"] = inferred_entry_domain
+        allow_insecure_tls = opened_arguments.get("allow_insecure_tls", True)
+        if not isinstance(allow_insecure_tls, bool):
+            raise TypeError("allow_insecure_tls must be a boolean")
+        opened_arguments["allow_insecure_tls"] = allow_insecure_tls
+        task_policy = TaskAuthorizationPolicy.from_task_intent(
+            str(opened_arguments.get("intent", "diagnosis-only")),
+            delivery_strategy=str(
+                opened_arguments.get("delivery_strategy", "")
+            ),
+            authorized_exceptions=opened_arguments.get("authorized_exceptions"),
+            allow_insecure_tls=allow_insecure_tls,
+        )
         event = PendingCaseEvent(
             "CaseOpened",
             {
-                "intent": str(arguments.get("intent", "diagnosis-only")),
+                "intent": str(opened_arguments.get("intent", "diagnosis-only")),
+                "entry_domain": str(opened_arguments.get("entry_domain", "")),
                 "entry_operation": str(
-                    arguments.get("_context_entry_operation", "")
+                    opened_arguments.get("_context_entry_operation", "")
                 ),
                 "final_purpose": str(
-                    arguments.get("final_purpose", arguments.get("problem", ""))
+                    opened_arguments.get(
+                        "final_purpose",
+                        opened_arguments.get("problem", ""),
+                    )
                 ),
-                "change_boundary": str(arguments.get("change_boundary", "")),
-                "delivery_strategy": str(arguments.get("delivery_strategy", "")),
-                "targets": self._targets(arguments),
+                "change_boundary": str(
+                    opened_arguments.get("change_boundary", "")
+                ),
+                "delivery_strategy": str(
+                    opened_arguments.get("delivery_strategy", "")
+                ),
+                _TASK_POLICY_FIELD: task_policy.to_public_dict(),
+                "acceptance_plan": AcceptancePlan.freeze(
+                    opened_arguments,
+                    frozen_at=self.clock(),
+                ).to_public_dict(),
+                "targets": self._targets(opened_arguments),
                 "target_version": 1,
                 "workflow_cycle_id": "cycle-1",
                 "workflow_cycle_number": 1,
-                "workflow_inputs": _sanitize(
+                "workflow_inputs": _sanitize_runtime_inputs(
                     {
                         key: value
-                        for key, value in arguments.items()
-                        if key not in _CONTEXT_CONTROL_ARGUMENTS
-                        and not key.startswith("_")
+                        for key, value in opened_arguments.items()
+                        if key
+                        not in {
+                            "case_id",
+                            "expected_revision",
+                            "idempotency_key",
+                            "deadline",
+                        }
                     }
                 ),
             },
@@ -2045,14 +2547,6 @@ class ContextRuntime:
         target_id = str(arguments.get("target_id", ""))
         if not target_id and len(targets) == 1:
             target_id = str(targets[0].get("target_id", "target-1"))
-        if not target_id and descriptor.mutation:
-            candidates = [
-                target
-                for target in targets
-                if str(target.get("role", "")).strip().lower() == "candidate"
-            ]
-            if len(candidates) == 1:
-                target_id = str(candidates[0].get("target_id", ""))
         generation = str(
             value.get(
                 "target_epoch",
@@ -2095,6 +2589,7 @@ class ContextRuntime:
         continuation: Mapping[str, object] | None = None,
         capsule: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
+        next_actions = _sanitize(_next_actions(value))
         envelope = {
             "schema": AGENT_ENVELOPE_SCHEMA,
             "case_id": case_id,
@@ -2105,15 +2600,23 @@ class ContextRuntime:
                 "status": status,
             },
             "status": status,
-            "summary": _summary_for(operation, value),
-            "facts": _facts_for(value),
+            "summary": redact_text(_summary_for(operation, value)),
+            "facts": _sanitize(_facts_for(value)),
             "evidence_refs": [dict(item) for item in evidence_refs],
-            "gaps": list(gaps),
-            "next_actions": _next_actions(value),
+            "gaps": _sanitize(list(gaps)),
+            "next_actions": next_actions,
             "canonical_error": (
-                dict(canonical_error) if canonical_error is not None else None
+                _sanitize(dict(canonical_error))
+                if canonical_error is not None
+                else None
             ),
         }
+        if canonical_error is not None:
+            envelope["code"] = str(
+                canonical_error.get("code", "internal_error")
+            )
+        if isinstance(next_actions, list) and next_actions:
+            envelope["next_action"] = str(next_actions[0])
         if continuation is not None:
             envelope["continuation"] = dict(continuation)
         if capsule is not None:
@@ -2126,6 +2629,25 @@ class ContextRuntime:
         )
         if isinstance(diff_card, Mapping):
             envelope["diff_card"] = dict(diff_card)
+        closeout = value.get("closeout")
+        if isinstance(closeout, Mapping):
+            envelope["closeout_summary"] = {
+                name: closeout.get(name)
+                for name in (
+                    "closure_status",
+                    "claim_level",
+                    "business_acceptance",
+                    "identity_status",
+                    "freshness_status",
+                    "source_delivery",
+                    "summary",
+                    "fingerprint",
+                )
+                if name in closeout
+            }
+            bundle = value.get("closeout_bundle")
+            if isinstance(bundle, Mapping):
+                envelope["document_refs"] = list(bundle.get("documents", []))
         bounded = bounded_envelope(envelope, max_bytes=self.envelope_max_bytes)
         encoded_bytes = len(_json_bytes(bounded))
         self._metrics["envelope_bytes"] += encoded_bytes
@@ -2139,6 +2661,7 @@ class ContextRuntime:
         receipt: Mapping[str, object],
         *,
         mutation: bool = False,
+        refresh_from_case: bool = True,
     ) -> ContextToolResult:
         envelope = receipt.get("envelope")
         reference = receipt.get("legacy_result_ref")
@@ -2159,21 +2682,1503 @@ class ContextRuntime:
         self._metrics["idempotent_replays"] += 1
         self._metrics["warm_continuations"] += 1
         public = dict(value)
+        case_id = str(envelope.get("case_id", ""))
+        projection = self._load(case_id) if case_id else None
+        if isinstance(projection, Mapping) and projection.get("status") == "terminal":
+            try:
+                projection = self._recover_terminal_closeout(projection)
+            except Exception:
+                # Replaying the domain result remains safe even if optional
+                # Closeout repair cannot be persisted at this moment.
+                pass
+        if isinstance(projection, Mapping) and projection.get("closeout"):
+            public["closeout"] = dict(projection["closeout"])
+            public["closeout_markdown"] = str(
+                projection.get("closeout_markdown", "")
+            )
+            bundle = projection.get("closeout_bundle")
+            if isinstance(bundle, Mapping):
+                public["closeout_bundle"] = dict(bundle)
         if mutation:
             public["idempotent_replay"] = True
+        if refresh_from_case and isinstance(projection, Mapping):
+            operation = envelope.get("operation", {})
+            operation = operation if isinstance(operation, Mapping) else {}
+            refreshed = self._envelope(
+                case_id=str(projection.get("case_id", case_id)),
+                revision=int(projection.get("revision", envelope.get("revision", 0))),
+                operation_id=str(operation.get("operation_id", "")),
+                operation=str(operation.get("name", "operation")),
+                status=str(operation.get("status", envelope.get("status", "completed"))),
+                value=public,
+                evidence_refs=(
+                    item
+                    for item in envelope.get("evidence_refs", [])
+                    if isinstance(item, Mapping)
+                ),
+                gaps=(
+                    str(item)
+                    for item in envelope.get("gaps", [])
+                    if str(item)
+                ),
+                canonical_error=(
+                    envelope.get("canonical_error")
+                    if isinstance(envelope.get("canonical_error"), Mapping)
+                    else None
+                ),
+            )
+            envelope = refreshed
         return ContextToolResult(public, envelope)
+
+    def _recover_pending_idempotency(
+        self,
+        *,
+        case_id: str,
+        key: str,
+        fingerprint: str,
+        descriptor: OperationDescriptor,
+    ) -> Mapping[str, object] | None:
+        """Repair a pending receipt after its terminal Case facts were committed."""
+
+        projection = self.repository.load(case_id)
+        if projection is None:
+            return None
+        operation = next(
+            (
+                item
+                for item in reversed(projection.get("operations", []))
+                if isinstance(item, Mapping)
+                and item.get("operation") == descriptor.name
+                and item.get("idempotency_key") == key
+                and item.get("request_fingerprint") == fingerprint
+                and (
+                    "terminal_revision" in item
+                    or "reconciled_revision" in item
+                )
+            ),
+            None,
+        )
+        if not isinstance(operation, Mapping):
+            return None
+        references = {
+            str(item.get("evidence_id", "")): item
+            for item in projection.get("evidence_refs", [])
+            if isinstance(item, Mapping) and item.get("evidence_id")
+        }
+        reference: Mapping[str, object] | None = None
+        value: Mapping[str, object] | None = None
+        evidence_ids = operation.get("evidence_ids", [])
+        latest_evidence_id = (
+            evidence_ids[-1]
+            if isinstance(evidence_ids, list)
+            and evidence_ids
+            and isinstance(evidence_ids[-1], str)
+            else ""
+        )
+        candidate = references.get(latest_evidence_id)
+        if isinstance(candidate, Mapping):
+            try:
+                raw = self.blob_repository.read(
+                    str(candidate.get("blob_id", "")),
+                    offset=0,
+                    limit=-1,
+                )
+                loaded = json.loads(raw.decode("utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, Mapping):
+                reference = candidate
+                value = loaded
+        if value is None or reference is None:
+            return None
+        if projection.get("status") == "terminal":
+            projection = self._recover_terminal_closeout(projection)
+        public = dict(value)
+        if projection.get("closeout"):
+            public["closeout"] = dict(projection["closeout"])
+            public["closeout_markdown"] = str(
+                projection.get("closeout_markdown", "")
+            )
+            bundle = projection.get("closeout_bundle")
+            if isinstance(bundle, Mapping):
+                public["closeout_bundle"] = dict(bundle)
+        status = str(operation.get("status", "completed"))
+        envelope = self._envelope(
+            case_id=case_id,
+            revision=int(projection["revision"]),
+            operation_id=str(operation.get("operation_id", "")),
+            operation=descriptor.name,
+            status=status,
+            value=public,
+            evidence_refs=(reference,),
+        )
+        receipt = {
+            "envelope": envelope,
+            "legacy_result_ref": dict(reference),
+        }
+        self.repository.complete_idempotency(case_id, key, receipt)
+        self._metrics["idempotency_receipt_repairs"] += 1
+        return receipt
+
+    def _claim_idempotency(
+        self,
+        *,
+        case_id: str,
+        key: str,
+        fingerprint: str,
+        descriptor: OperationDescriptor,
+    ) -> Mapping[str, object] | None:
+        try:
+            return self.repository.claim_idempotency(case_id, key, fingerprint)
+        except OperationAlreadyInProgress:
+            recovered = self._recover_pending_idempotency(
+                case_id=case_id,
+                key=key,
+                fingerprint=fingerprint,
+                descriptor=descriptor,
+            )
+            if recovered is not None:
+                return recovered
+            raise
 
     @staticmethod
     def _mutation_is_terminal(value: Mapping[str, object]) -> bool:
         journal = value.get("journal")
-        stage = str(journal.get("stage", "")) if isinstance(journal, Mapping) else ""
-        return stage in {
-            "verified",
-            "rollback_verified",
-            "replan_required",
-            "verification_failed_terminal",
-            "rollback_verification_failed_terminal",
+        if not isinstance(journal, Mapping):
+            return False
+        return mutation_journal_operation_status(journal) in {
+            "completed",
+            "failed",
+            "blocked",
         }
+
+    @staticmethod
+    def _domain_operation_status(
+        descriptor: OperationDescriptor,
+        value: Mapping[str, object],
+    ) -> str:
+        if descriptor.mutation:
+            journal = value.get("journal")
+            if isinstance(journal, Mapping):
+                classified = mutation_journal_operation_status(
+                    journal,
+                    action=str(value.get("action", "")),
+                )
+                if classified:
+                    return classified
+        raw_status = str(value.get("status", "")).strip().lower()
+        if raw_status in {"failed", "cancelled", "blocked"}:
+            return raw_status
+        if value.get("ok") is False:
+            return "failed"
+        return "completed"
+
+    @staticmethod
+    def _mutation_exception_status(exc: BaseException) -> str:
+        recovery_status = getattr(exc, "recovery_status", None)
+        if isinstance(recovery_status, Mapping):
+            classified = mutation_journal_operation_status(recovery_status)
+            if classified:
+                return classified
+        outcome = str(getattr(exc, "mutation_outcome", "")).strip().lower()
+        stage = str(getattr(exc, "mutation_journal_stage", "")).strip().lower()
+        effects_started = bool(
+            getattr(exc, "mutation_effects_started", False)
+        )
+        if stage:
+            classified = mutation_journal_operation_status(
+                {
+                    "stage": stage,
+                    "effects_started": effects_started,
+                }
+            )
+            if classified:
+                return classified
+        if outcome == "unknown":
+            return "mutation_outcome_unknown"
+        if outcome == "applied":
+            return "blocked"
+        if outcome in {"not_started", "rejected"}:
+            return "failed"
+        if isinstance(
+            exc,
+            (
+                MutationAuthorizationDenied,
+                MutationOperationConflict,
+                UnfinishedMutationExists,
+                TypeError,
+                ValueError,
+            ),
+        ):
+            return "failed"
+        return "mutation_outcome_unknown"
+
+    def _derive_closeout(
+        self,
+        projection: Mapping[str, object],
+        *,
+        terminal_status: str,
+        include_bundle: bool,
+    ) -> tuple[dict[str, object], str, dict[str, object] | None]:
+        def read_closeout_evidence(
+            reference: Mapping[str, object],
+        ) -> Mapping[str, object] | None:
+            raw = self.blob_repository.read(
+                str(reference.get("blob_id", "")),
+                offset=0,
+                limit=-1,
+            )
+            loaded = json.loads(raw.decode("utf-8"))
+            return loaded if isinstance(loaded, Mapping) else None
+
+        closeout = aggregate_case_closeout(
+            projection,
+            read_closeout_evidence,
+            terminal_status=terminal_status,
+        )
+        payload = closeout.to_public_dict()
+        markdown = render_markdown(closeout)
+        bundle = build_closeout_bundle(closeout, markdown) if include_bundle else None
+        return payload, markdown, bundle
+
+    @staticmethod
+    def _terminal_status_from_projection(projection: Mapping[str, object]) -> str:
+        for operation in reversed(projection.get("operations", [])):
+            if not isinstance(operation, Mapping):
+                continue
+            if str(operation.get("operation", "")) in _WORKFLOW_CONTROL_OPERATIONS:
+                continue
+            status = str(operation.get("status", "")).strip().lower()
+            if status in {"completed", "failed", "cancelled", "blocked"}:
+                return status
+        return "completed"
+
+    @staticmethod
+    def _closeout_bundle_enabled(
+        projection: Mapping[str, object],
+        arguments: Mapping[str, object] | None = None,
+    ) -> bool:
+        if arguments is not None and "include_closeout_bundle" in arguments:
+            return _strict_bool(
+                arguments,
+                "include_closeout_bundle",
+                default=True,
+            )
+        workflow_inputs = projection.get("workflow_inputs", {})
+        if (
+            isinstance(workflow_inputs, Mapping)
+            and "include_closeout_bundle" in workflow_inputs
+        ):
+            return _strict_bool(
+                workflow_inputs,
+                "include_closeout_bundle",
+                default=True,
+            )
+        return True
+
+    def _record_closeout(
+        self,
+        projection: Mapping[str, object],
+        *,
+        terminal_status: str,
+        include_bundle: bool,
+        operation_id: str,
+    ) -> tuple[
+        dict[str, object],
+        dict[str, object],
+        str,
+        dict[str, object] | None,
+    ]:
+        closeout_payload, closeout_markdown, closeout_bundle = self._derive_closeout(
+            projection,
+            terminal_status=terminal_status,
+            include_bundle=include_bundle,
+        )
+        existing_closeout = projection.get("closeout")
+        existing_bundle = projection.get("closeout_bundle")
+        if (
+            isinstance(existing_closeout, Mapping)
+            and existing_closeout.get("fingerprint")
+            == closeout_payload.get("fingerprint")
+            and (
+                not include_bundle
+                or isinstance(existing_bundle, Mapping)
+            )
+        ):
+            return (
+                dict(projection),
+                dict(existing_closeout),
+                str(projection.get("closeout_markdown", closeout_markdown)),
+                dict(existing_bundle) if isinstance(existing_bundle, Mapping) else None,
+            )
+        try:
+            updated = self.repository.commit(
+                str(projection["case_id"]),
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "CloseoutRecorded",
+                        {
+                            "closeout": closeout_payload,
+                            "closeout_markdown": closeout_markdown,
+                            "closeout_bundle": closeout_bundle,
+                        },
+                        operation_id,
+                    ),
+                ),
+            )
+        except RevisionConflict:
+            current = self.repository.load(str(projection["case_id"]))
+            current_closeout = (
+                current.get("closeout") if isinstance(current, Mapping) else None
+            )
+            if (
+                isinstance(current, Mapping)
+                and isinstance(current_closeout, Mapping)
+                and current_closeout.get("fingerprint")
+                == closeout_payload.get("fingerprint")
+            ):
+                updated = dict(current)
+                closeout_payload = dict(current_closeout)
+                closeout_markdown = str(
+                    current.get("closeout_markdown", closeout_markdown)
+                )
+                current_bundle = current.get("closeout_bundle")
+                closeout_bundle = (
+                    dict(current_bundle)
+                    if isinstance(current_bundle, Mapping)
+                    else None
+                )
+            else:
+                raise
+        return (
+            self._cache(updated),
+            closeout_payload,
+            closeout_markdown,
+            closeout_bundle,
+        )
+
+    def _recover_terminal_closeout(
+        self,
+        projection: Mapping[str, object],
+    ) -> dict[str, object]:
+        if str(projection.get("status", "")) != "terminal":
+            return dict(projection)
+        updated, _payload, _markdown, _bundle = self._record_closeout(
+            projection,
+            terminal_status=self._terminal_status_from_projection(projection),
+            include_bundle=self._closeout_bundle_enabled(projection),
+            operation_id="case-closeout-recovery",
+        )
+        return updated
+
+    def _bounded_legacy_value(self, value: Mapping[str, object]) -> dict[str, object]:
+        sanitized = _sanitize(value)
+        if isinstance(sanitized, Mapping) and len(_json_bytes(sanitized)) <= self.envelope_max_bytes:
+            return dict(sanitized)
+        return {
+            "ok": value.get("ok"),
+            "summary": _summary_for("operation", value),
+            "result_compacted": True,
+            "next_action": (_next_actions(value) or [""])[0],
+        }
+
+    @classmethod
+    def _case_status_after_domain(
+        cls,
+        projection: Mapping[str, object],
+        descriptor: OperationDescriptor,
+        value: Mapping[str, object],
+        *,
+        operation_id: str = "",
+        reconciled: bool = False,
+        target_id: str = "",
+    ) -> str:
+        metadata = cls._compatible_workflow_operation(
+            projection,
+            descriptor.name,
+            execution_target_id=target_id,
+        )
+        step_id = str(metadata.get("workflow_step_id", ""))
+        if not step_id:
+            return "open"
+        simulated = json.loads(json.dumps(projection))
+        states = simulated.get("workflow_step_states", {})
+        states = dict(states) if isinstance(states, Mapping) else {}
+        states[step_id] = {
+            "kind": str(metadata.get("workflow_step_kind", "operation")),
+            "name": descriptor.name,
+            "status": "completed",
+            "workflow_cycle_id": str(
+                metadata.get(
+                    "workflow_cycle_id",
+                    projection.get("workflow_cycle_id", "cycle-1"),
+                )
+            ),
+            "target_version": int(
+                metadata.get("target_version", projection.get("target_version", 1))
+            ),
+            "target_id": target_id,
+            "operation_id": operation_id,
+        }
+        epoch = cls._observed_target_epoch(value, target_id=target_id)
+        if epoch is not None:
+            states[step_id]["target_epoch"] = epoch
+        simulated["workflow_step_states"] = states
+        return (
+            "terminal"
+            if cls._continuation_for(simulated)["workflow_complete"]
+            else "open"
+        )
+
+    def invoke_domain(
+        self,
+        descriptor: OperationDescriptor,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+        executor: Callable[[], Mapping[str, object]],
+    ) -> ContextToolResult:
+        self._metrics["invocations"] += 1
+        case_arguments = dict(arguments)
+        case_arguments.setdefault("_context_entry_operation", descriptor.name)
+        case_id = self._case_id(task_id, case_arguments)
+        existing = self._load(case_id)
+        infer_domain_defaults = existing is None or descriptor.mutation
+        if (
+            infer_domain_defaults
+            and not str(case_arguments.get("intent", "")).strip()
+        ):
+            inferred_intent = {
+                "debug_run": "diagnosis-only",
+                "debug_collect": "diagnosis-only",
+                "live_patch_run": (
+                    "rollback"
+                    if str(case_arguments.get("action", "")).strip().lower()
+                    == "rollback"
+                    else "live-patch"
+                ),
+                "upgrade_run": "upgrade-and-verify",
+                "log_bundle_collect": "bundle-and-diagnose",
+            }.get(descriptor.name, "diagnosis-only")
+            case_arguments["intent"] = inferred_intent
+        if (
+            infer_domain_defaults
+            and
+            not str(case_arguments.get("delivery_strategy", "")).strip()
+            and case_arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is not True
+        ):
+            inferred_delivery = _inferred_delivery_strategy(
+                case_arguments.get("intent"),
+                case_arguments,
+                operation=descriptor.name,
+            )
+            if inferred_delivery:
+                case_arguments["delivery_strategy"] = inferred_delivery
+        if existing is None and not str(
+            case_arguments.get("entry_domain", "")
+        ).strip():
+            entry_domain = _OPERATION_ENTRY_DOMAINS.get(descriptor.name, "")
+            if entry_domain:
+                case_arguments["entry_domain"] = entry_domain
+        idempotency_key = _safe_identifier(
+            arguments.get("idempotency_key", operation_id),
+            fallback=operation_id,
+        )
+        resumed_fingerprint = arguments.get("_workflow_request_fingerprint")
+        if resumed_fingerprint is not None and (
+            not isinstance(resumed_fingerprint, str)
+            or len(resumed_fingerprint) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in resumed_fingerprint
+            )
+        ):
+            raise ValueError("invalid resumed workflow request fingerprint")
+        request_fingerprint = resumed_fingerprint or _fingerprint(
+            {
+                "operation": descriptor.name,
+                "arguments": _sanitize(
+                    {
+                        key: value
+                        for key, value in arguments.items()
+                        if key
+                        not in {
+                            "case_id",
+                            "expected_revision",
+                            "idempotency_key",
+                        }
+                    }
+                ),
+            }
+        )
+        try:
+            replay = self._claim_idempotency(
+                case_id=case_id,
+                key=idempotency_key,
+                fingerprint=request_fingerprint,
+                descriptor=descriptor,
+            )
+        except IdempotencyConflict:
+            if descriptor.mutation:
+                # MutationJournal owns mutation identity conflicts. Invoke the
+                # domain only far enough for its durable journal to reject the
+                # conflicting operation before any new remote effect.
+                executor()
+            raise
+        if replay is not None:
+            return self._result_from_receipt(replay, mutation=descriptor.mutation)
+        try:
+            self._validate_expected_before_case_update(
+                case_id, case_arguments
+            )
+            projection = self._open_case(case_id, case_arguments)
+            if projection.get("closed"):
+                raise CaseClosed(f"case {case_id} is closed")
+            expected = arguments.get("expected_revision")
+            if expected is not None:
+                if isinstance(expected, bool) or not isinstance(expected, int):
+                    raise TypeError("expected_revision must be an integer")
+                if expected not in {
+                    int(projection["revision"]),
+                    int(projection.get("_selection_base_revision", -1)),
+                }:
+                    raise RevisionConflict(
+                        f"case {case_id} revision is {projection['revision']}, "
+                        f"expected {expected}"
+                    )
+        except Exception:
+            self.repository.abandon_idempotency(case_id, idempotency_key)
+            raise
+        execution_target_id = (
+            self._preferred_target_id(projection, arguments)
+            if descriptor.mutation or descriptor.name == "debug_collect"
+            else self._selected_target_id(projection, arguments)
+        )
+        reconciling = any(
+            isinstance(item, Mapping)
+            and item.get("operation_id") == operation_id
+            and item.get("status")
+            in {"accepted", "running", "mutation_outcome_unknown"}
+            for item in projection.get("operations", [])
+        )
+        revision = int(projection["revision"])
+        if not reconciling:
+            workflow_metadata = {
+                "workflow_cycle_id": str(arguments.get("_workflow_cycle_id", "")),
+                "workflow_step_id": str(arguments.get("_workflow_step_id", "")),
+                "workflow_step_kind": str(arguments.get("_workflow_step_kind", "")),
+                "target_version": int(
+                    arguments.get(
+                        "_workflow_target_version",
+                        projection.get("target_version", 1),
+                    )
+                ),
+                "target_id": execution_target_id,
+            }
+            if not workflow_metadata["workflow_step_id"]:
+                workflow_metadata.update(
+                    self._compatible_workflow_operation(
+                        projection,
+                        descriptor.name,
+                        execution_target_id=execution_target_id,
+                    )
+                )
+            try:
+                projection = self.repository.commit(
+                    case_id,
+                    expected_revision=revision,
+                    events=(
+                        PendingCaseEvent(
+                            "OperationAccepted",
+                            {
+                                "operation": descriptor.name,
+                                "idempotency_key": idempotency_key,
+                                "request_fingerprint": request_fingerprint,
+                                "inputs": _operation_identity_inputs(arguments),
+                                **workflow_metadata,
+                            },
+                            operation_id,
+                        ),
+                        PendingCaseEvent("OperationStarted", {}, operation_id),
+                    ),
+                )
+                self._cache(projection)
+            except Exception:
+                self.repository.abandon_idempotency(case_id, idempotency_key)
+                raise
+        try:
+            raw_value = executor()
+            if not isinstance(raw_value, Mapping):
+                raise TypeError("domain operation must return an object")
+            value = dict(raw_value)
+            minimum_epoch = arguments.get("_minimum_target_epoch")
+            if minimum_epoch is not None:
+                if (
+                    isinstance(minimum_epoch, bool)
+                    or not isinstance(minimum_epoch, int)
+                    or minimum_epoch < 0
+                ):
+                    raise TypeError(
+                        "_minimum_target_epoch must be a non-negative integer"
+                    )
+                observed_epoch = self._observed_target_epoch(
+                    value,
+                    target_id=execution_target_id,
+                )
+                if observed_epoch is None:
+                    value.setdefault("target_epoch", minimum_epoch)
+                    observed_epoch = minimum_epoch
+                if observed_epoch < minimum_epoch:
+                    raise ValueError(
+                        "fresh verification did not report the required target epoch: "
+                        f"observed {observed_epoch}, required {minimum_epoch}"
+                    )
+            operation_status = self._domain_result_status(descriptor, value)
+        except Exception as exc:
+            current = self.repository.load(case_id)
+            terminal_projection: Mapping[str, object] | None = None
+            error = {
+                "code": getattr(exc, "code", type(exc).__name__),
+                "message": redact_text(exc),
+            }
+            if current is not None:
+                terminal_status = (
+                    self._mutation_exception_status(exc)
+                    if descriptor.mutation
+                    else "failed"
+                )
+                next_action = (
+                    "reconcile the mutation journal before retrying"
+                    if terminal_status == "mutation_outcome_unknown"
+                    else (
+                        "provide the missing recovery authorization and retry "
+                        "the same durable operation"
+                        if terminal_status == "blocked"
+                        else "resolve the error and retry with the same case"
+                    )
+                )
+                try:
+                    event = (
+                        PendingCaseEvent(
+                            "OperationProgressed",
+                            {
+                                "status": terminal_status,
+                                "next_actions": [next_action],
+                            },
+                            operation_id,
+                        )
+                        if reconciling
+                        else PendingCaseEvent(
+                            "OperationTerminal",
+                            {
+                                "status": terminal_status,
+                                "summary": redact_text(exc),
+                                "canonical_error": error,
+                                "next_actions": [next_action],
+                                "case_status": "open",
+                            },
+                            operation_id,
+                        )
+                    )
+                    terminal_projection = self.repository.commit(
+                        case_id,
+                        expected_revision=int(current["revision"]),
+                        events=(event,),
+                    )
+                    self._cache(terminal_projection)
+                except Exception:
+                    terminal_projection = None
+            if descriptor.mutation or terminal_projection is None:
+                self.repository.abandon_idempotency(case_id, idempotency_key)
+                raise
+            value = {
+                "ok": False,
+                "status": "failed",
+                "error": str(exc),
+                "canonical_error": error,
+            }
+            envelope = self._envelope(
+                case_id=case_id,
+                revision=int(terminal_projection["revision"]),
+                operation_id=operation_id,
+                operation=descriptor.name,
+                status="failed",
+                value=value,
+                evidence_refs=(),
+                canonical_error=error,
+                continuation=self._continuation_for(terminal_projection),
+                capsule=self._capsule(terminal_projection),
+            )
+            self.repository.complete_idempotency(
+                case_id,
+                idempotency_key,
+                {
+                    "envelope": envelope,
+                    "legacy_value": self._bounded_legacy_value(value),
+                },
+            )
+            return ContextToolResult(value, envelope)
+        gaps: list[str] = []
+        evidence: EvidenceRef | None = None
+        try:
+            evidence_arguments = dict(arguments)
+            if execution_target_id:
+                evidence_arguments.setdefault("target_id", execution_target_id)
+            evidence = self._put_evidence(
+                value,
+                case_id=case_id,
+                operation_id=operation_id,
+                descriptor=descriptor,
+                arguments=evidence_arguments,
+            )
+        except Exception as exc:
+            gaps.append(
+                redact_text(
+                    f"evidence_not_persisted: {type(exc).__name__}: {exc}"
+                )
+            )
+            if descriptor.mutation and not self._mutation_is_terminal(value):
+                current = self.repository.load(case_id)
+                message = redact_text(
+                    f"cannot persist non-terminal mutation evidence: {exc}"
+                )
+                if current is not None:
+                    event_kind = "OperationReconciled" if reconciling else "OperationTerminal"
+                    terminal = self.repository.commit(
+                        case_id,
+                        expected_revision=int(current["revision"]),
+                        events=(
+                            PendingCaseEvent(
+                                event_kind,
+                                {
+                                    "status": "mutation_outcome_unknown",
+                                    "summary": message,
+                                    "canonical_error": {
+                                        "code": "mutation_outcome_unknown",
+                                        "message": message,
+                                    },
+                                    "next_actions": [
+                                        "reconcile the mutation journal before retrying"
+                                    ],
+                                    "case_status": "open",
+                                },
+                                operation_id,
+                            ),
+                        ),
+                    )
+                    self._cache(terminal)
+                self.repository.abandon_idempotency(case_id, idempotency_key)
+                raise MutationOutcomeUnknown(message) from exc
+        current = self.repository.load(case_id)
+        if current is None:
+            self.repository.abandon_idempotency(case_id, idempotency_key)
+            raise CaseNotFound(case_id)
+        pending: list[PendingCaseEvent] = []
+        if evidence is not None:
+            pending.append(
+                PendingCaseEvent(
+                    "EvidenceAttached",
+                    {"evidence": evidence.to_public_dict()},
+                    operation_id,
+                )
+            )
+        workflow_case_status = (
+            self._case_status_after_domain(
+                current,
+                descriptor,
+                value,
+                operation_id=operation_id,
+                reconciled=reconciling,
+                target_id=execution_target_id,
+            )
+            if operation_status == "completed"
+            else "open"
+        )
+        direct_terminal = (
+            arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is not True
+            and operation_status
+            in {"completed", "failed", "cancelled", "blocked"}
+            and (
+                operation_status in {"failed", "cancelled", "blocked"}
+                or
+                workflow_case_status == "terminal"
+                or (
+                    arguments.get("_context_defaults_inferred") is not True
+                    and
+                    bool(str(arguments.get("intent", "")).strip())
+                    and bool(
+                        str(arguments.get("delivery_strategy", "")).strip()
+                    )
+                    and _effective_case_intent(current) != "diagnose-and-fix"
+                )
+                or (
+                    bool(str(arguments.get("final_purpose", "")).strip())
+                    and _effective_case_intent(current) != "diagnose-and-fix"
+                )
+            )
+        )
+        case_status = (
+            "terminal"
+            if direct_terminal
+            else workflow_case_status
+        )
+        pending.append(
+            PendingCaseEvent(
+                "OperationReconciled" if reconciling else "OperationTerminal",
+                {
+                    "status": operation_status,
+                    "summary": redact_text(
+                        _summary_for(descriptor.name, value)
+                    ),
+                    "next_actions": _next_actions(value),
+                    "case_status": case_status,
+                    "target_epoch": self._observed_target_epoch(
+                        value,
+                        target_id=execution_target_id,
+                    ),
+                },
+                operation_id,
+            )
+        )
+        try:
+            projection = self.repository.commit(
+                case_id,
+                expected_revision=int(current["revision"]),
+                events=pending,
+            )
+        except Exception as exc:
+            if descriptor.mutation:
+                raise MutationOutcomeUnknown(
+                    "mutation returned but its Case terminal receipt could not be committed"
+                ) from exc
+            raise
+        self._cache(projection)
+        if case_status == "terminal":
+            try:
+                closeout_status = (
+                    operation_status
+                    if operation_status
+                    in {"completed", "failed", "cancelled", "blocked"}
+                    else "failed"
+                )
+                (
+                    projection,
+                    closeout_payload,
+                    closeout_markdown,
+                    closeout_bundle,
+                ) = self._record_closeout(
+                    projection,
+                    terminal_status=closeout_status,
+                    include_bundle=self._closeout_bundle_enabled(
+                        projection,
+                        arguments,
+                    ),
+                    operation_id=operation_id,
+                )
+                value["closeout"] = closeout_payload
+                value["closeout_markdown"] = closeout_markdown
+                if closeout_bundle is not None:
+                    value["closeout_bundle"] = closeout_bundle
+            except Exception as exc:
+                gaps.append(
+                    redact_text(
+                        f"closeout_not_persisted: {type(exc).__name__}: {exc}"
+                    )
+                )
+        public_evidence = [evidence.to_public_dict()] if evidence is not None else []
+        envelope = self._envelope(
+            case_id=case_id,
+            revision=int(projection["revision"]),
+            operation_id=operation_id,
+            operation=descriptor.name,
+            status=operation_status,
+            value=value,
+            evidence_refs=public_evidence,
+            gaps=gaps,
+            continuation=self._continuation_for(projection),
+            capsule=self._capsule(projection),
+        )
+        receipt = {
+            "envelope": envelope,
+            "legacy_result_ref": (
+                evidence.to_public_dict() if evidence is not None else None
+            ),
+        }
+        if evidence is None:
+            receipt["legacy_value"] = self._bounded_legacy_value(value)
+        if operation_status == "mutation_outcome_unknown":
+            self.repository.abandon_idempotency(case_id, idempotency_key)
+            raise MutationOutcomeUnknown(
+                "mutation returned without a terminal journal stage"
+            )
+        self.repository.complete_idempotency(case_id, idempotency_key, receipt)
+        return ContextToolResult(value, envelope)
+
+    def wrap_status(
+        self,
+        value: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> ContextToolResult:
+        case_id = self.repository.case_for_task(task_id) or ""
+        projection = self._load(case_id) if case_id else None
+        envelope = self._envelope(
+            case_id=case_id,
+            revision=int(projection["revision"]) if projection else 0,
+            operation_id=operation_id,
+            operation="runtime_status",
+            status="completed",
+            value=value,
+        )
+        envelope["api_version"] = value.get("api_version", RUNTIME_API_VERSION)
+        envelope = bounded_envelope(envelope, max_bytes=self.envelope_max_bytes)
+        return ContextToolResult(value, envelope)
+
+    def wrap_read(
+        self,
+        value: Mapping[str, object],
+        *,
+        operation: str,
+        operation_id: str,
+        case_id: str,
+        status: str = "completed",
+    ) -> ContextToolResult:
+        projection = self._load(case_id) if case_id else None
+        continuation = (
+            self._continuation_for(value) if operation == "case_read" else None
+        )
+        capsule = value.get("capsule") if operation == "case_read" else None
+        envelope = self._envelope(
+            case_id=case_id,
+            revision=int(projection["revision"]) if projection else 0,
+            operation_id=operation_id,
+            operation=operation,
+            status=status,
+            value=value,
+            evidence_refs=(
+                value.get("evidence_refs", [])
+                if isinstance(value.get("evidence_refs"), list)
+                else ()
+            ),
+            continuation=continuation,
+            capsule=capsule if isinstance(capsule, Mapping) else None,
+        )
+        return ContextToolResult(value, envelope)
+
+    def error_result(
+        self,
+        exc: Exception,
+        *,
+        operation: str,
+        arguments: Mapping[str, object],
+        task_id: str,
+        operation_id: str,
+    ) -> ContextToolResult:
+        explicit_case = arguments.get("case_id")
+        case_id = (
+            str(explicit_case).strip()
+            if isinstance(explicit_case, str) and explicit_case.strip()
+            else (self.repository.case_for_task(task_id) or "")
+        )
+        projection = self._load(case_id) if case_id else None
+        descriptor = (
+            self.catalog.require(operation)
+            if operation in self.catalog.names()
+            else None
+        )
+        status = (
+            self._mutation_exception_status(exc)
+            if descriptor is not None and descriptor.mutation
+            else "failed"
+        )
+        raw_code = str(getattr(exc, "code", type(exc).__name__))
+        code = (
+            status
+            if status in {"mutation_outcome_unknown", "blocked"}
+            else raw_code
+        )
+        message = redact_text(exc)
+        next_action = (
+            "reconcile the durable mutation journal before retrying"
+            if status == "mutation_outcome_unknown"
+            else (
+                "provide the missing recovery authorization and continue the same journal"
+                if status == "blocked"
+                else "resolve the error and retry with the same case"
+            )
+        )
+        canonical = {"code": code, "message": message[:2048]}
+        legacy = {
+            "ok": False,
+            "error": type(exc).__name__,
+            "code": code,
+            "message": message,
+            "next_action": next_action,
+        }
+        envelope = self._envelope(
+            case_id=case_id,
+            revision=int(projection["revision"]) if projection else 0,
+            operation_id=operation_id,
+            operation=operation,
+            status=status,
+            value=legacy,
+            canonical_error=canonical,
+        )
+        return ContextToolResult(legacy, envelope)
+
+    def shadow_domain(
+        self,
+        descriptor: OperationDescriptor,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+        value: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Best-effort migration write that never changes the legacy result."""
+
+        public = dict(value)
+        try:
+            recorded = self.invoke_domain(
+                descriptor,
+                arguments,
+                task_id=task_id,
+                operation_id=operation_id,
+                executor=lambda: public,
+            )
+            self._metrics["shadow_writes"] += 1
+            if _fingerprint(_sanitize(recorded)) != _fingerprint(_sanitize(public)):
+                self._metrics["shadow_parity_mismatches"] += 1
+                public["context_shadow_warning"] = "legacy/context result mismatch"
+        except Exception as exc:
+            self._metrics["shadow_write_failures"] += 1
+            public["context_shadow_warning"] = redact_text(
+                f"context shadow write failed: {type(exc).__name__}: {exc}"
+            )
+        return public
+
+    def _control_identity(
+        self,
+        descriptor: OperationDescriptor,
+        arguments: Mapping[str, object],
+        operation_id: str,
+    ) -> tuple[str, str]:
+        key = _safe_identifier(
+            arguments.get("idempotency_key", operation_id), fallback=operation_id
+        )
+        fingerprint = _fingerprint(
+            {
+                "operation": descriptor.name,
+                "arguments": _sanitize(
+                    {
+                        name: value
+                        for name, value in arguments.items()
+                        if name
+                        not in {
+                            "case_id",
+                            "expected_revision",
+                            "idempotency_key",
+                            CONTEXT_WORKFLOW_STEP_ARGUMENT,
+                        }
+                    }
+                ),
+            }
+        )
+        return key, fingerprint
+
+    def phase_record(
+        self,
+        descriptor: OperationDescriptor,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> ContextToolResult:
+        case_id = self._case_id(task_id, arguments)
+        projection = self._load(case_id)
+        if projection is None:
+            raise CaseNotFound(case_id)
+        if projection.get("closed"):
+            raise CaseClosed(f"case {case_id} is closed")
+        expected = arguments.get("expected_revision", projection["revision"])
+        phase_type = str(arguments.get("phase_type", "")).strip().lower()
+        aliases = {
+            "developer": "developer.change",
+            "developer.edit": "developer.change",
+            "developer:edit": "developer.change",
+            "build": "build.artifact",
+            "build.package": "build.artifact",
+            "build:package": "build.artifact",
+        }
+        phase_type = aliases.get(phase_type, phase_type)
+        if phase_type not in {"developer.change", "build.artifact"}:
+            raise ValueError("phase_type must be developer.change or build.artifact")
+        producer = str(arguments.get("producer_identity", "")).strip()
+        if not producer:
+            raise ValueError("producer_identity is required")
+        expected_producer = {
+            "developer.change": "openubmc-developer",
+            "build.artifact": "openubmc-build",
+        }[phase_type]
+        compatible_producers = {
+            "developer.change": {
+                "openubmc-developer",
+                "developer",
+                "developer-skill",
+            },
+            "build.artifact": {
+                "openubmc-build",
+                "build",
+                "build-skill",
+            },
+        }[phase_type]
+        if producer not in compatible_producers:
+            raise ValueError(
+                f"{phase_type} producer_identity must be {expected_producer}"
+            )
+        producer = expected_producer
+        status = str(arguments.get("status", "completed")).strip().lower()
+        if status not in {"running", "completed", "failed", "cancelled"}:
+            raise ValueError("unsupported phase status")
+        record: dict[str, object] = {
+            "phase_type": phase_type,
+            "producer_identity": producer,
+            "operation_id": operation_id,
+            "status": status,
+            "source_revision": str(arguments.get("source_revision", "")).strip(),
+            "summary": str(arguments.get("summary", "")).strip(),
+            "recorded_at": self.clock(),
+        }
+        if not record["source_revision"]:
+            raise ValueError("source_revision is required")
+        if not record["summary"]:
+            raise ValueError("phase summary is required")
+        raw_evidence_ids = arguments.get("evidence_ids", [])
+        if not isinstance(raw_evidence_ids, list) or not all(
+            isinstance(item, str) and item.strip() for item in raw_evidence_ids
+        ):
+            raise ValueError("evidence_ids must be an array of non-empty strings")
+        record["evidence_ids"] = list(dict.fromkeys(raw_evidence_ids))
+        if phase_type == "developer.change":
+            authored = arguments.get("authored_files", [])
+            if not isinstance(authored, list) or not all(
+                isinstance(item, str) and item.strip() for item in authored
+            ):
+                raise ValueError("developer phase requires authored_files")
+            verification = arguments.get("verification_plan", [])
+            if not isinstance(verification, list) or not all(
+                isinstance(item, str) and item.strip() for item in verification
+            ):
+                raise ValueError("verification_plan must be an array of strings")
+            design = arguments.get("design", {})
+            if not isinstance(design, Mapping):
+                raise TypeError("design must be an object")
+            validation_results = arguments.get("validation_results", [])
+            if not isinstance(validation_results, list) or not all(
+                isinstance(item, (str, Mapping)) for item in validation_results
+            ):
+                raise TypeError(
+                    "validation_results must be an array of strings or objects"
+                )
+            source_delivery = str(
+                arguments.get("source_delivery", "local_only")
+            ).strip().lower()
+            if source_delivery not in {
+                "local_only",
+                "committed",
+                "pushed",
+                "pull_request",
+            }:
+                raise ValueError("unsupported source_delivery state")
+            known_gaps = arguments.get("known_gaps", [])
+            if not isinstance(known_gaps, list) or not all(
+                isinstance(item, str) and item.strip() for item in known_gaps
+            ):
+                raise TypeError("known_gaps must be an array of strings")
+            record.update(
+                {
+                    "authored_files": list(authored),
+                    "verification_plan": list(verification),
+                    "design": _sanitize(dict(design)),
+                    "validation_results": _sanitize(validation_results),
+                    "source_delivery": source_delivery,
+                    "known_gaps": list(known_gaps),
+                    "artifact_path": str(arguments.get("artifact_path", "")),
+                    "remote_path": str(arguments.get("remote_path", "")),
+                    "restart_scope": str(arguments.get("restart_scope", "none")),
+                }
+            )
+        else:
+            artifact_path = str(arguments.get("artifact_path", "")).strip()
+            artifact_sha256 = str(arguments.get("artifact_sha256", "")).strip().lower()
+            product_version = str(arguments.get("product_version", "")).strip()
+            valid_artifact_sha256 = len(artifact_sha256) == 64 and not any(
+                character not in "0123456789abcdef" for character in artifact_sha256
+            )
+            if status == "completed":
+                if not artifact_path:
+                    raise ValueError("completed build phase requires artifact_path")
+                if not valid_artifact_sha256:
+                    raise ValueError(
+                        "completed build phase requires a SHA-256 artifact hash"
+                    )
+                if not product_version:
+                    raise ValueError("completed build phase requires product_version")
+            elif artifact_sha256 and not valid_artifact_sha256:
+                raise ValueError("artifact_sha256 must be a SHA-256 hash when provided")
+            component_versions = arguments.get("component_versions", [])
+            if not isinstance(component_versions, list) or not all(
+                isinstance(item, (str, Mapping)) for item in component_versions
+            ):
+                raise TypeError(
+                    "component_versions must be an array of strings or objects"
+                )
+            build_commands = arguments.get("build_commands", [])
+            build_logs = arguments.get("build_logs", [])
+            known_gaps = arguments.get("known_gaps", [])
+            for name, values in (
+                ("build_commands", build_commands),
+                ("build_logs", build_logs),
+                ("known_gaps", known_gaps),
+            ):
+                if not isinstance(values, list) or not all(
+                    isinstance(item, str) and item.strip() for item in values
+                ):
+                    raise TypeError(f"{name} must be an array of strings")
+            record.update(
+                {
+                    "artifact_path": artifact_path,
+                    "artifact_sha256": artifact_sha256,
+                    "product_version": product_version,
+                    "component_versions": _sanitize(component_versions),
+                    "build_commands": list(build_commands),
+                    "build_logs": list(build_logs),
+                    "known_gaps": list(known_gaps),
+                }
+            )
+        sanitized_record = _sanitize(record)
+        if not isinstance(sanitized_record, Mapping):
+            raise TypeError("phase record could not be sanitized")
+        record = dict(sanitized_record)
+        key, fingerprint = self._control_identity(
+            descriptor, arguments, operation_id
+        )
+        replay = self._claim_idempotency(
+            case_id=case_id,
+            key=key,
+            fingerprint=fingerprint,
+            descriptor=descriptor,
+        )
+        if replay is not None:
+            return self._result_from_receipt(
+                replay,
+                refresh_from_case=False,
+            )
+        if isinstance(expected, bool) or not isinstance(expected, int):
+            self.repository.abandon_idempotency(case_id, key)
+            raise TypeError("expected_revision must be an integer")
+        if expected != projection["revision"]:
+            self.repository.abandon_idempotency(case_id, key)
+            raise RevisionConflict(
+                f"case {case_id} revision is {projection['revision']}, expected {expected}"
+            )
+        step_id = next(
+            (
+                candidate_step_id
+                for kind, name, candidate_step_id in self._context_workflow_plan(
+                    projection
+                )
+                if kind == "phase" and name == phase_type
+            ),
+            f"phase-{phase_type.replace('.', '-')}",
+        )
+        current_phase_values = projection.get("workflow_phase_values", {})
+        current_phase = (
+            current_phase_values.get(phase_type)
+            if isinstance(current_phase_values, Mapping)
+            else None
+        )
+        if isinstance(current_phase, Mapping):
+            current_status = str(current_phase.get("status", ""))
+            if current_status in {"failed", "cancelled"}:
+                self.repository.abandon_idempotency(case_id, key)
+                raise ValueError(
+                    f"phase {phase_type} is already terminal as {current_status}; "
+                    "call workflow.advance to start a new attempt"
+                )
+            if current_status == "completed":
+                if phase_type == "developer.change":
+                    next_cycle_number = (
+                        int(projection.get("workflow_cycle_number", 1)) + 1
+                    )
+                    projection = self.repository.commit(
+                        case_id,
+                        expected_revision=int(projection["revision"]),
+                        events=(
+                            PendingCaseEvent(
+                                "WorkflowCycleStarted",
+                                {
+                                    "workflow_cycle_number": next_cycle_number,
+                                    "workflow_cycle_id": f"cycle-{next_cycle_number}",
+                                    "reason": "new developer change",
+                                },
+                            ),
+                        ),
+                    )
+                else:
+                    retained_step_ids: list[str] = []
+                    for _kind, _name, candidate_step_id in (
+                        self._context_workflow_plan(projection)
+                    ):
+                        retained_step_ids.append(candidate_step_id)
+                        if candidate_step_id == step_id:
+                            break
+                    projection = self.repository.commit(
+                        case_id,
+                        expected_revision=int(projection["revision"]),
+                        events=(
+                            PendingCaseEvent(
+                                "WorkflowStepsInvalidated",
+                                {
+                                    "after_step_id": step_id,
+                                    "retained_step_ids": retained_step_ids,
+                                    "reason": "replacement build artifact",
+                                },
+                            ),
+                        ),
+                    )
+                self._cache(projection)
+                expected = int(projection["revision"])
+        cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
+        record["workflow_cycle_id"] = cycle_id
+        record["workflow_step_id"] = step_id
+        record["phase_attempt"] = self._workflow_attempt(
+            projection,
+            kind="phase",
+            step_id=step_id,
+        ) + 1
+        prior_running_operation_ids = [
+            str(item.get("operation_id", ""))
+            for item in projection.get("operations", [])
+            if isinstance(item, Mapping)
+            and str(item.get("operation_id", "")) != operation_id
+            and str(item.get("workflow_step_id", "")) == step_id
+            and str(item.get("workflow_cycle_id", "")) == cycle_id
+            and str(item.get("status", "")) in {"accepted", "running"}
+        ]
+        simulated_projection = json.loads(json.dumps(projection))
+        simulated_records = list(simulated_projection.get("phase_records", []))
+        simulated_records.append(record)
+        simulated_projection["phase_records"] = simulated_records
+        simulated_states = simulated_projection.get("workflow_step_states", {})
+        simulated_states = (
+            dict(simulated_states) if isinstance(simulated_states, Mapping) else {}
+        )
+        simulated_states[step_id] = {
+            "kind": "phase",
+            "name": phase_type,
+            "status": status,
+            "workflow_cycle_id": cycle_id,
+            "target_version": 0,
+            "target_id": "",
+            "operation_id": operation_id,
+        }
+        simulated_projection["workflow_step_states"] = simulated_states
+        phase_case_status = (
+            "terminal"
+            if status == "completed"
+            and self._continuation_for(simulated_projection)["workflow_complete"]
+            else "open"
+        )
+        try:
+            evidence = self._put_evidence(
+                record,
+                case_id=case_id,
+                operation_id=operation_id,
+                descriptor=descriptor,
+                arguments=arguments,
+            )
+            events: list[PendingCaseEvent] = []
+            if status != "running":
+                events.extend(
+                    PendingCaseEvent(
+                        "OperationTerminal",
+                        {
+                            "status": "superseded",
+                            "summary": f"{phase_type} terminal record received",
+                            "case_status": "open",
+                        },
+                        prior_operation_id,
+                    )
+                    for prior_operation_id in prior_running_operation_ids
+                )
+            events.extend((
+                PendingCaseEvent(
+                    "OperationAccepted",
+                    {
+                        "operation": descriptor.name,
+                        "idempotency_key": key,
+                        "request_fingerprint": fingerprint,
+                        "workflow_cycle_id": cycle_id,
+                        "workflow_step_id": step_id,
+                        "workflow_step_kind": "phase",
+                    },
+                    operation_id,
+                ),
+                PendingCaseEvent("OperationStarted", {}, operation_id),
+                PendingCaseEvent(
+                    "OperationProgressed",
+                    {"status": status, "phase_record": record},
+                    operation_id,
+                ),
+                PendingCaseEvent(
+                    "EvidenceAttached",
+                    {"evidence": evidence.to_public_dict()},
+                    operation_id,
+                ),
+            ))
+            if status != "running":
+                events.append(
+                    PendingCaseEvent(
+                        "OperationTerminal",
+                        {
+                            "status": status,
+                            "summary": str(record["summary"]),
+                            "case_status": phase_case_status,
+                        },
+                        operation_id,
+                    )
+                )
+            projection = self.repository.commit(
+                case_id,
+                expected_revision=int(projection["revision"]),
+                events=events,
+            )
+        except Exception:
+            self.repository.abandon_idempotency(case_id, key)
+            raise
+        self._cache(projection)
+        envelope = self._envelope(
+            case_id=case_id,
+            revision=int(projection["revision"]),
+            operation_id=operation_id,
+            operation=descriptor.name,
+            status=status,
+            value=record,
+            evidence_refs=(evidence.to_public_dict(),),
+        )
+        self.repository.complete_idempotency(
+            case_id,
+            key,
+            {
+                "envelope": envelope,
+                "legacy_result_ref": evidence.to_public_dict(),
+            },
+        )
+        return ContextToolResult(record, envelope)
 
     @staticmethod
     def _observed_target_epoch(
@@ -2192,7 +4197,11 @@ class ContextRuntime:
             selected = observed.get(target_id) if target_id else None
             if selected is None and len(observed) == 1:
                 selected = next(iter(observed.values()))
-            if isinstance(selected, int) and not isinstance(selected, bool) and selected >= 0:
+            if (
+                isinstance(selected, int)
+                and not isinstance(selected, bool)
+                and selected >= 0
+            ):
                 return selected
         containers: list[Mapping[str, object]] = [value]
         result = value.get("result")
@@ -2209,7 +4218,11 @@ class ContextRuntime:
                     continue
                 epochs = target.get("epochs")
                 epoch = epochs.get("target_epoch") if isinstance(epochs, Mapping) else None
-                if isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 0:
+                if (
+                    isinstance(epoch, int)
+                    and not isinstance(epoch, bool)
+                    and epoch >= 0
+                ):
                     return epoch
         return None
 
@@ -2341,7 +4354,7 @@ class ContextRuntime:
         task_id: str,
         arguments: Mapping[str, object],
     ) -> int:
-        case_id = self._resolve_case_id(task_id, arguments)
+        case_id = self._case_id(task_id, arguments, bind=False)
         projection = self._load(case_id)
         if projection is None:
             return 0
@@ -2353,906 +4366,15 @@ class ContextRuntime:
             target_id=self._preferred_target_id(projection, arguments),
         )
 
-    @classmethod
-    def _compatible_workflow_operation(
-        cls,
-        projection: Mapping[str, object],
-        operation: str,
-        *,
-        execution_target_id: str = "",
-    ) -> dict[str, object]:
-        for kind, name, step_id in cls._workflow_plan(projection):
-            if cls._workflow_step_completed(
-                projection,
-                kind=kind,
-                name=name,
-                step_id=step_id,
-                target_id=(
-                    execution_target_id
-                    if kind == "operation" and name == operation
-                    else None
-                ),
-            ):
-                continue
-            if kind == "operation" and name == operation:
-                expected_target_id = cls._workflow_step_target_id(
-                    projection,
-                    kind=kind,
-                    name=name,
-                    step_id=step_id,
-                )
-                if operation in {"live_patch_run", "upgrade_run"}:
-                    expected_target_id = execution_target_id or expected_target_id
-                if (
-                    expected_target_id
-                    and execution_target_id != expected_target_id
-                ):
-                    return {}
-                return {
-                    "workflow_cycle_id": str(
-                        projection.get("workflow_cycle_id", "cycle-1")
-                    ),
-                    "workflow_step_id": step_id,
-                    "workflow_step_kind": kind,
-                    "target_version": int(projection.get("target_version", 1)),
-                }
-            break
-        return {}
-
     @staticmethod
-    def _domain_result_status(
-        descriptor: OperationDescriptor, value: Mapping[str, object]
-    ) -> str:
-        if descriptor.mutation and not ContextRuntime._mutation_is_terminal(value):
-            return "mutation_outcome_unknown"
-        explicit = str(value.get("status", "")).strip().lower()
-        if explicit in {
-            "partial",
-            "failed",
-            "cancelled",
-            "mutation_outcome_unknown",
-        }:
-            return explicit
-        if value.get("ok") is False:
-            code = str(
-                value.get("normalized_code", value.get("code", ""))
-            ).lower()
-            if value.get("partial") is True or "partial" in code:
-                return "partial"
-            return "failed"
-        return "completed"
-
-    def _bounded_legacy_value(self, value: Mapping[str, object]) -> dict[str, object]:
-        sanitized = _sanitize(value)
-        if isinstance(sanitized, Mapping) and len(_json_bytes(sanitized)) <= self.envelope_max_bytes:
-            return dict(sanitized)
-        return {
-            "ok": value.get("ok"),
-            "summary": _summary_for("operation", value),
-            "result_compacted": True,
-            "next_action": (_next_actions(value) or [""])[0],
-        }
-
-    @classmethod
-    def _case_status_after_domain(
-        cls,
-        projection: Mapping[str, object],
-        descriptor: OperationDescriptor,
-        value: Mapping[str, object],
-        *,
-        operation_id: str,
-        reconciled: bool,
-        target_id: str,
-    ) -> str:
-        terminal_event = {
-            "revision": int(projection.get("revision", 0)) + 1,
-            "kind": "OperationReconciled" if reconciled else "OperationTerminal",
-            "operation_id": operation_id,
-            "payload": {
-                "status": "completed",
-                "summary": _summary_for(descriptor.name, value),
-                "case_status": "open",
-                "target_epoch": cls._observed_target_epoch(
-                    value,
-                    target_id=target_id,
-                ),
-            },
-            "created_at": 0.0,
-        }
-        simulated = _apply_case_events(
-            projection,
-            (terminal_event,),
-            last_access=float(projection.get("last_access", 0.0)),
-        )
-        return (
-            "terminal"
-            if cls._continuation_for(simulated)["workflow_complete"]
-            else "open"
-        )
-
-    def invoke_domain(
-        self,
-        descriptor: OperationDescriptor,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-        executor: Callable[[], Mapping[str, object]],
-    ) -> ContextToolResult:
-        self._metrics["invocations"] += 1
-        case_arguments = dict(arguments)
-        case_arguments.setdefault("_context_entry_operation", descriptor.name)
-        case_id = self._case_id(task_id, case_arguments)
-        self._validate_expected_before_case_update(case_id, case_arguments)
-        projection = self._open_case(case_id, case_arguments)
-        if projection.get("closed"):
-            raise CaseClosed(f"case {case_id} is closed")
-        execution_target_id = (
-            self._preferred_target_id(projection, arguments)
-            if descriptor.mutation or descriptor.name == "debug_collect"
-            else self._selected_target_id(projection, arguments)
-        )
-        idempotency_key = _safe_identifier(
-            arguments.get("idempotency_key", operation_id),
-            fallback=operation_id,
-        )
-        resumed_fingerprint = arguments.get("_workflow_request_fingerprint")
-        if resumed_fingerprint is not None and (
-            not isinstance(resumed_fingerprint, str)
-            or len(resumed_fingerprint) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in resumed_fingerprint
-            )
-        ):
-            raise ValueError("invalid resumed workflow request fingerprint")
-        request_fingerprint = resumed_fingerprint or _fingerprint(
-            {
-                "operation": descriptor.name,
-                "arguments": _sanitize(
-                    {
-                        key: value
-                        for key, value in arguments.items()
-                        if key
-                        not in {"case_id", "expected_revision", "idempotency_key"}
-                    }
-                ),
-            }
-        )
-        reconciling = any(
-            isinstance(item, Mapping)
-            and item.get("operation_id") == operation_id
-            and item.get("status")
-            in {"accepted", "running", "mutation_outcome_unknown"}
-            for item in projection.get("operations", [])
-        )
-        try:
-            replay = self.repository.claim_idempotency(
-                case_id, idempotency_key, request_fingerprint
-            )
-        except IdempotencyConflict:
-            if descriptor.mutation:
-                # MutationJournal owns mutation identity conflicts. Invoke the
-                # domain only far enough for its durable journal to reject the
-                # conflicting operation before any new remote effect.
-                executor()
-            raise
-        if replay is not None:
-            return self._result_from_receipt(replay, mutation=descriptor.mutation)
-        revision = int(projection["revision"])
-        if not reconciling:
-            workflow_metadata = {
-                "workflow_cycle_id": str(arguments.get("_workflow_cycle_id", "")),
-                "workflow_step_id": str(arguments.get("_workflow_step_id", "")),
-                "workflow_step_kind": str(arguments.get("_workflow_step_kind", "")),
-                "target_version": int(
-                    arguments.get(
-                        "_workflow_target_version",
-                        projection.get("target_version", 1),
-                    )
-                ),
-                "target_id": execution_target_id,
-            }
-            if not workflow_metadata["workflow_step_id"]:
-                workflow_metadata.update(
-                    self._compatible_workflow_operation(
-                        projection,
-                        descriptor.name,
-                        execution_target_id=execution_target_id,
-                    )
-                )
-            try:
-                projection = self.repository.commit(
-                    case_id,
-                    expected_revision=revision,
-                    events=(
-                        PendingCaseEvent(
-                            "OperationAccepted",
-                            {
-                                "operation": descriptor.name,
-                                "idempotency_key": idempotency_key,
-                                "request_fingerprint": request_fingerprint,
-                                **workflow_metadata,
-                            },
-                            operation_id,
-                        ),
-                        PendingCaseEvent("OperationStarted", {}, operation_id),
-                    ),
-                )
-                self._cache(projection)
-            except Exception:
-                self.repository.abandon_idempotency(case_id, idempotency_key)
-                raise
-        try:
-            raw_value = executor()
-            if not isinstance(raw_value, Mapping):
-                raise TypeError("domain operation must return an object")
-            value = dict(raw_value)
-            minimum_epoch = arguments.get("_minimum_target_epoch")
-            if minimum_epoch is not None:
-                if (
-                    isinstance(minimum_epoch, bool)
-                    or not isinstance(minimum_epoch, int)
-                    or minimum_epoch < 0
-                ):
-                    raise TypeError("_minimum_target_epoch must be a non-negative integer")
-                observed_epoch = self._observed_target_epoch(
-                    value,
-                    target_id=execution_target_id,
-                )
-                if observed_epoch is None or observed_epoch < minimum_epoch:
-                    raise ValueError(
-                        "fresh verification did not report the required target epoch: "
-                        f"observed {observed_epoch}, required {minimum_epoch}"
-                    )
-        except Exception as exc:
-            current = self.repository.load(case_id)
-            terminal_projection: Mapping[str, object] | None = None
-            error = {
-                "code": getattr(exc, "code", type(exc).__name__),
-                "message": str(exc),
-            }
-            if current is not None:
-                terminal_status = (
-                    "mutation_outcome_unknown" if descriptor.mutation else "failed"
-                )
-                try:
-                    event = (
-                        PendingCaseEvent(
-                            "OperationProgressed",
-                            {
-                                "status": terminal_status,
-                                "next_actions": [
-                                    "reconcile the mutation journal before retrying"
-                                    if descriptor.mutation
-                                    else "resolve the error and retry with the same case"
-                                ],
-                            },
-                            operation_id,
-                        )
-                        if reconciling
-                        else PendingCaseEvent(
-                            "OperationTerminal",
-                            {
-                                "status": terminal_status,
-                                "summary": str(exc),
-                                "canonical_error": error,
-                                "next_actions": [
-                                    "reconcile the mutation journal before retrying"
-                                    if descriptor.mutation
-                                    else "resolve the error and retry with the same case"
-                                ],
-                                "case_status": "open",
-                            },
-                            operation_id,
-                        )
-                    )
-                    terminal_projection = self.repository.commit(
-                        case_id,
-                        expected_revision=int(current["revision"]),
-                        events=(event,),
-                    )
-                    self._cache(terminal_projection)
-                except Exception:
-                    terminal_projection = None
-            if descriptor.mutation or terminal_projection is None:
-                self.repository.abandon_idempotency(case_id, idempotency_key)
-                raise
-            value = {
-                "ok": False,
-                "status": "failed",
-                "error": str(exc),
-                "canonical_error": error,
-            }
-            envelope = self._envelope(
-                case_id=case_id,
-                revision=int(terminal_projection["revision"]),
-                operation_id=operation_id,
-                operation=descriptor.name,
-                status="failed",
-                value=value,
-                evidence_refs=(),
-                canonical_error=error,
-            )
-            self.repository.complete_idempotency(
-                case_id,
-                idempotency_key,
-                {
-                    "envelope": envelope,
-                    "legacy_value": self._bounded_legacy_value(value),
-                },
-            )
-            return ContextToolResult(value, envelope)
-        gaps: list[str] = []
-        evidence: EvidenceRef | None = None
-        try:
-            evidence_arguments = dict(arguments)
-            if execution_target_id:
-                evidence_arguments.setdefault("target_id", execution_target_id)
-            evidence = self._put_evidence(
-                value,
-                case_id=case_id,
-                operation_id=operation_id,
-                descriptor=descriptor,
-                arguments=evidence_arguments,
-            )
-        except Exception as exc:
-            gaps.append(f"evidence_not_persisted: {type(exc).__name__}: {exc}")
-            if descriptor.mutation and not self._mutation_is_terminal(value):
-                current = self.repository.load(case_id)
-                message = f"cannot persist non-terminal mutation evidence: {exc}"
-                if current is not None:
-                    event_kind = "OperationReconciled" if reconciling else "OperationTerminal"
-                    terminal = self.repository.commit(
-                        case_id,
-                        expected_revision=int(current["revision"]),
-                        events=(
-                            PendingCaseEvent(
-                                event_kind,
-                                {
-                                    "status": "mutation_outcome_unknown",
-                                    "summary": message,
-                                    "canonical_error": {
-                                        "code": "mutation_outcome_unknown",
-                                        "message": message,
-                                    },
-                                    "next_actions": [
-                                        "reconcile the mutation journal before retrying"
-                                    ],
-                                    "case_status": "open",
-                                },
-                                operation_id,
-                            ),
-                        ),
-                    )
-                    self._cache(terminal)
-                self.repository.abandon_idempotency(case_id, idempotency_key)
-                raise MutationOutcomeUnknown(message) from exc
-        current = self.repository.load(case_id)
-        if current is None:
-            self.repository.abandon_idempotency(case_id, idempotency_key)
-            raise CaseNotFound(case_id)
-        pending: list[PendingCaseEvent] = []
-        if evidence is not None:
-            pending.append(
-                PendingCaseEvent(
-                    "EvidenceAttached",
-                    {"evidence": evidence.to_public_dict()},
-                    operation_id,
-                )
-            )
-        result_status = self._domain_result_status(descriptor, value)
-        case_status = (
-            self._case_status_after_domain(
-                current,
-                descriptor,
-                value,
-                operation_id=operation_id,
-                reconciled=reconciling,
-                target_id=execution_target_id,
-            )
-            if result_status == "completed"
-            else "open"
-        )
-        pending.append(
-            PendingCaseEvent(
-                "OperationReconciled" if reconciling else "OperationTerminal",
-                {
-                    "status": result_status,
-                    "summary": _summary_for(descriptor.name, value),
-                    "next_actions": _next_actions(value),
-                    "case_status": case_status,
-                    "target_epoch": self._observed_target_epoch(
-                        value,
-                        target_id=execution_target_id,
-                    ),
-                },
-                operation_id,
-            )
-        )
-        try:
-            projection = self.repository.commit(
-                case_id,
-                expected_revision=int(current["revision"]),
-                events=pending,
-            )
-        except Exception as exc:
-            if descriptor.mutation:
-                raise MutationOutcomeUnknown(
-                    "mutation returned but its Case terminal receipt could not be committed"
-                ) from exc
-            raise
-        self._cache(projection)
-        public_evidence = [evidence.to_public_dict()] if evidence is not None else []
-        envelope = self._envelope(
-            case_id=case_id,
-            revision=int(projection["revision"]),
-            operation_id=operation_id,
-            operation=descriptor.name,
-            status=result_status,
-            value=value,
-            evidence_refs=public_evidence,
-            gaps=gaps,
-        )
-        receipt = {
-            "envelope": envelope,
-            "legacy_result_ref": (
-                evidence.to_public_dict() if evidence is not None else None
-            ),
-        }
-        if evidence is None:
-            receipt["legacy_value"] = self._bounded_legacy_value(value)
-        if result_status == "mutation_outcome_unknown":
-            self.repository.abandon_idempotency(case_id, idempotency_key)
-            raise MutationOutcomeUnknown(
-                "mutation returned without a terminal journal stage"
-            )
-        self.repository.complete_idempotency(case_id, idempotency_key, receipt)
-        return ContextToolResult(value, envelope)
-
-    def wrap_status(
-        self,
-        value: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> ContextToolResult:
-        case_id = self.repository.case_for_task(task_id) or ""
-        projection = self._load(case_id) if case_id else None
-        envelope = self._envelope(
-            case_id=case_id,
-            revision=int(projection["revision"]) if projection else 0,
-            operation_id=operation_id,
-            operation="runtime_status",
-            status="completed",
-            value=value,
-        )
-        envelope["api_version"] = value.get("api_version", RUNTIME_API_VERSION)
-        envelope = bounded_envelope(envelope, max_bytes=self.envelope_max_bytes)
-        return ContextToolResult(value, envelope)
-
-    def wrap_read(
-        self,
-        value: Mapping[str, object],
-        *,
-        operation: str,
-        operation_id: str,
-        case_id: str,
-        status: str = "completed",
-    ) -> ContextToolResult:
-        projection = self._load(case_id) if case_id else None
-        continuation = (
-            self._continuation_for(value) if operation == "case_read" else None
-        )
-        capsule = value.get("capsule") if operation == "case_read" else None
-        envelope = self._envelope(
-            case_id=case_id,
-            revision=int(projection["revision"]) if projection else 0,
-            operation_id=operation_id,
-            operation=operation,
-            status=status,
-            value=value,
-            evidence_refs=(
-                value.get("evidence_refs", [])
-                if isinstance(value.get("evidence_refs"), list)
-                else ()
-            ),
-            continuation=continuation,
-            capsule=capsule if isinstance(capsule, Mapping) else None,
-        )
-        return ContextToolResult(value, envelope)
-
-    def error_result(
-        self,
-        exc: Exception,
-        *,
-        operation: str,
-        arguments: Mapping[str, object],
-        task_id: str,
-        operation_id: str,
-    ) -> ContextToolResult:
-        explicit_case = arguments.get("case_id")
-        case_id = (
-            str(explicit_case).strip()
-            if isinstance(explicit_case, str) and explicit_case.strip()
-            else (self.repository.case_for_task(task_id) or "")
-        )
-        projection = self._load(case_id) if case_id else None
-        code = str(getattr(exc, "code", type(exc).__name__))
-        status = (
-            "mutation_outcome_unknown"
-            if code == "mutation_outcome_unknown"
-            else "failed"
-        )
-        canonical = {"code": code, "message": str(exc)[:2048]}
-        legacy = {
-            "ok": False,
-            "error": type(exc).__name__,
-            "code": code,
-            "message": str(exc),
-        }
-        envelope = self._envelope(
-            case_id=case_id,
-            revision=int(projection["revision"]) if projection else 0,
-            operation_id=operation_id,
-            operation=operation,
-            status=status,
-            value=legacy,
-            canonical_error=canonical,
-        )
-        return ContextToolResult(legacy, envelope)
-
-    def shadow_domain(
-        self,
-        descriptor: OperationDescriptor,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-        value: Mapping[str, object],
-    ) -> dict[str, object]:
-        """Best-effort migration write that never changes the legacy result."""
-
-        public = dict(value)
-        try:
-            recorded = self.invoke_domain(
-                descriptor,
-                arguments,
-                task_id=task_id,
-                operation_id=operation_id,
-                executor=lambda: public,
-            )
-            self._metrics["shadow_writes"] += 1
-            if _fingerprint(_sanitize(recorded)) != _fingerprint(_sanitize(public)):
-                self._metrics["shadow_parity_mismatches"] += 1
-                public["context_shadow_warning"] = "legacy/context result mismatch"
-        except Exception as exc:
-            self._metrics["shadow_write_failures"] += 1
-            public["context_shadow_warning"] = (
-                f"context shadow write failed: {type(exc).__name__}: {exc}"
-            )
-        return public
-
-    def _control_identity(
-        self,
-        descriptor: OperationDescriptor,
-        arguments: Mapping[str, object],
-        operation_id: str,
-    ) -> tuple[str, str]:
-        key = _safe_identifier(
-            arguments.get("idempotency_key", operation_id), fallback=operation_id
-        )
-        fingerprint = _fingerprint(
-            {
-                "operation": descriptor.name,
-                "arguments": _sanitize(
-                    {
-                        name: value
-                        for name, value in arguments.items()
-                        if name
-                        not in {"case_id", "expected_revision", "idempotency_key"}
-                    }
-                ),
-            }
-        )
-        return key, fingerprint
-
-    def phase_record(
-        self,
-        descriptor: OperationDescriptor,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> ContextToolResult:
-        case_id = self._case_id(task_id, arguments)
-        projection = self._load(case_id)
-        if projection is None:
-            raise CaseNotFound(case_id)
-        if projection.get("closed"):
-            raise CaseClosed(f"case {case_id} is closed")
-        expected = arguments.get("expected_revision", projection["revision"])
-        phase_type = str(arguments.get("phase_type", "")).strip().lower()
-        aliases = {
-            "developer": "developer.change",
-            "developer.edit": "developer.change",
-            "developer:edit": "developer.change",
-            "build": "build.artifact",
-            "build.package": "build.artifact",
-            "build:package": "build.artifact",
-        }
-        phase_type = aliases.get(phase_type, phase_type)
-        if phase_type not in {"developer.change", "build.artifact"}:
-            raise ValueError("phase_type must be developer.change or build.artifact")
-        producer = str(arguments.get("producer_identity", "")).strip()
-        if not producer:
-            raise ValueError("producer_identity is required")
-        expected_producer = {
-            "developer.change": "openubmc-developer",
-            "build.artifact": "openubmc-build",
-        }[phase_type]
-        compatible_producers = {
-            "developer.change": {
-                "openubmc-developer",
-                "developer",
-                "developer-skill",
-            },
-            "build.artifact": {
-                "openubmc-build",
-                "build",
-                "build-skill",
-            },
-        }[phase_type]
-        if producer not in compatible_producers:
-            raise ValueError(
-                f"{phase_type} producer_identity must be {expected_producer}"
-            )
-        producer = expected_producer
-        status = str(arguments.get("status", "completed")).strip().lower()
-        if status not in {"running", "completed", "failed", "cancelled"}:
-            raise ValueError("unsupported phase status")
-        record: dict[str, object] = {
-            "phase_type": phase_type,
-            "producer_identity": producer,
-            "status": status,
-            "source_revision": str(arguments.get("source_revision", "")).strip(),
-            "summary": str(arguments.get("summary", "")).strip(),
-            "recorded_at": self.clock(),
-        }
-        if not record["source_revision"]:
-            raise ValueError("source_revision is required")
-        if not record["summary"]:
-            raise ValueError("phase summary is required")
-        raw_evidence_ids = arguments.get("evidence_ids", [])
-        if not isinstance(raw_evidence_ids, list) or not all(
-            isinstance(item, str) and item.strip() for item in raw_evidence_ids
-        ):
-            raise ValueError("evidence_ids must be an array of non-empty strings")
-        record["evidence_ids"] = list(dict.fromkeys(raw_evidence_ids))
-        if phase_type == "developer.change":
-            authored = arguments.get("authored_files", [])
-            if not isinstance(authored, list) or not all(
-                isinstance(item, str) and item.strip() for item in authored
-            ):
-                raise ValueError("developer phase requires authored_files")
-            verification = arguments.get("verification_plan", [])
-            if not isinstance(verification, list) or not all(
-                isinstance(item, str) and item.strip() for item in verification
-            ):
-                raise ValueError("verification_plan must be an array of strings")
-            record.update(
-                {
-                    "authored_files": list(authored),
-                    "verification_plan": list(verification),
-                    "artifact_path": str(arguments.get("artifact_path", "")),
-                    "remote_path": str(arguments.get("remote_path", "")),
-                    "restart_scope": str(arguments.get("restart_scope", "none")),
-                }
-            )
-        else:
-            artifact_path = str(arguments.get("artifact_path", "")).strip()
-            artifact_sha256 = str(arguments.get("artifact_sha256", "")).strip().lower()
-            product_version = str(arguments.get("product_version", "")).strip()
-            if status == "completed":
-                if not artifact_path:
-                    raise ValueError("build phase requires artifact_path")
-                if len(artifact_sha256) != 64 or any(
-                    character not in "0123456789abcdef"
-                    for character in artifact_sha256
-                ):
-                    raise ValueError("build phase requires a SHA-256 artifact hash")
-                if not product_version:
-                    raise ValueError("build phase requires product_version")
-            record.update(
-                {
-                    "artifact_path": artifact_path,
-                    "artifact_sha256": artifact_sha256,
-                    "product_version": product_version,
-                }
-            )
-        key, fingerprint = self._control_identity(
-            descriptor, arguments, operation_id
-        )
-        replay = self.repository.claim_idempotency(case_id, key, fingerprint)
-        if replay is not None:
-            return self._result_from_receipt(replay)
-        if isinstance(expected, bool) or not isinstance(expected, int):
-            self.repository.abandon_idempotency(case_id, key)
-            raise TypeError("expected_revision must be an integer")
-        if expected != projection["revision"]:
-            self.repository.abandon_idempotency(case_id, key)
-            raise RevisionConflict(
-                f"case {case_id} revision is {projection['revision']}, expected {expected}"
-            )
-        step_id = next(
-            (
-                candidate_step_id
-                for kind, name, candidate_step_id in self._workflow_plan(projection)
-                if kind == "phase" and name == phase_type
-            ),
-            f"phase-{phase_type.replace('.', '-')}",
-        )
-        retained_step_ids: list[str] = []
-        for _kind, _name, candidate_step_id in self._workflow_plan(projection):
-            retained_step_ids.append(candidate_step_id)
-            if candidate_step_id == step_id:
-                break
-        current_phase_values = projection.get("workflow_phase_values", {})
-        current_phase = (
-            current_phase_values.get(phase_type)
-            if isinstance(current_phase_values, Mapping)
-            else None
-        )
-        if isinstance(current_phase, Mapping) and current_phase.get("status") == "completed":
-            if phase_type == "developer.change":
-                next_cycle_number = int(projection.get("workflow_cycle_number", 1)) + 1
-                projection = self.repository.commit(
-                    case_id,
-                    expected_revision=int(projection["revision"]),
-                    events=(
-                        PendingCaseEvent(
-                            "WorkflowCycleStarted",
-                            {
-                                "workflow_cycle_number": next_cycle_number,
-                                "workflow_cycle_id": f"cycle-{next_cycle_number}",
-                                "reason": "new developer change",
-                            },
-                        ),
-                    ),
-                )
-                self._cache(projection)
-                expected = int(projection["revision"])
-            else:
-                projection = self.repository.commit(
-                    case_id,
-                    expected_revision=int(projection["revision"]),
-                    events=(
-                        PendingCaseEvent(
-                            "WorkflowStepsInvalidated",
-                            {
-                                "after_step_id": step_id,
-                                "retained_step_ids": retained_step_ids,
-                            },
-                        ),
-                    ),
-                )
-                self._cache(projection)
-                expected = int(projection["revision"])
-        cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
-        record["workflow_cycle_id"] = cycle_id
-        record["workflow_step_id"] = step_id
-        record["phase_attempt"] = self._workflow_attempt(
-            projection,
-            kind="phase",
-            step_id=step_id,
-        ) + 1
-        prior_running_operation_ids = [
-            str(item.get("operation_id", ""))
-            for item in projection.get("operations", [])
-            if isinstance(item, Mapping)
-            and str(item.get("operation_id", "")) != operation_id
-            and str(item.get("workflow_step_id", "")) == step_id
-            and str(item.get("workflow_cycle_id", "")) == cycle_id
-            and str(item.get("status", "")) in {"accepted", "running"}
-        ]
-        try:
-            evidence = self._put_evidence(
-                record,
-                case_id=case_id,
-                operation_id=operation_id,
-                descriptor=descriptor,
-                arguments=arguments,
-            )
-            events: list[PendingCaseEvent] = []
-            if status != "running":
-                events.extend(
-                    PendingCaseEvent(
-                        "OperationTerminal",
-                        {
-                            "status": "superseded",
-                            "summary": f"{phase_type} terminal record received",
-                            "case_status": "open",
-                        },
-                        prior_operation_id,
-                    )
-                    for prior_operation_id in prior_running_operation_ids
-                )
-            events.extend(
-                (
-                    PendingCaseEvent(
-                        "OperationAccepted",
-                        {
-                            "operation": descriptor.name,
-                            "idempotency_key": key,
-                            "request_fingerprint": fingerprint,
-                            "workflow_cycle_id": cycle_id,
-                            "workflow_step_id": step_id,
-                            "workflow_step_kind": "phase",
-                        },
-                        operation_id,
-                    ),
-                    PendingCaseEvent("OperationStarted", {}, operation_id),
-                    PendingCaseEvent(
-                        "OperationProgressed",
-                        {"status": status, "phase_record": record},
-                        operation_id,
-                    ),
-                    PendingCaseEvent(
-                        "EvidenceAttached",
-                        {"evidence": evidence.to_public_dict()},
-                        operation_id,
-                    ),
-                )
-            )
-            if status != "running":
-                events.append(
-                    PendingCaseEvent(
-                        "OperationTerminal",
-                        {
-                            "status": status,
-                            "summary": str(record["summary"]),
-                            "case_status": "open",
-                        },
-                        operation_id,
-                    )
-                )
-            projection = self.repository.commit(
-                case_id,
-                expected_revision=expected,
-                events=events,
-            )
-        except Exception:
-            self.repository.abandon_idempotency(case_id, key)
-            raise
-        self._cache(projection)
-        envelope = self._envelope(
-            case_id=case_id,
-            revision=int(projection["revision"]),
-            operation_id=operation_id,
-            operation=descriptor.name,
-            status=status,
-            value=record,
-            evidence_refs=(evidence.to_public_dict(),),
-        )
-        self.repository.complete_idempotency(
-            case_id,
-            key,
-            {
-                "envelope": envelope,
-                "legacy_result_ref": evidence.to_public_dict(),
-            },
-        )
-        return ContextToolResult(record, envelope)
-
-    @staticmethod
-    def _workflow_plan(
+    def _context_workflow_plan(
         projection: Mapping[str, object]
     ) -> list[tuple[str, str, str]]:
-        intent = str(projection.get("intent", "diagnosis-only"))
+        intent = _effective_case_intent(projection)
         delivery = str(projection.get("delivery_strategy", "source-only")) or "source-only"
         if intent == "bundle-and-diagnose":
             raw = [("operation", "log_bundle_collect"), ("operation", "debug_run")]
-        elif intent == "live-patch":
+        elif intent in {"live-patch", "rollback"}:
             raw = [("operation", "live_patch_run"), ("operation", "debug_collect")]
         elif intent == "upgrade-and-verify":
             raw = [("operation", "upgrade_run"), ("operation", "debug_collect")]
@@ -3268,123 +4390,24 @@ class ContextRuntime:
                 )
             elif delivery == "live-patch":
                 raw.extend(
-                    [
-                        ("operation", "live_patch_run"),
-                        ("operation", "debug_collect"),
-                    ]
+                    [("operation", "live_patch_run"), ("operation", "debug_collect")]
                 )
         elif (
             intent == "diagnosis-only"
             and projection.get("entry_operation") == "debug_collect"
         ):
             raw = [("operation", "debug_collect")]
+        elif (
+            intent == "diagnosis-only"
+            and _case_entry_domain(projection) == "log_analyzer"
+        ):
+            raw = [("operation", "log_bundle_collect")]
         else:
             raw = [("operation", "debug_run")]
         return [
             (kind, name, f"step-{index:02d}-{name.replace('.', '-')}")
             for index, (kind, name) in enumerate(raw, start=1)
         ]
-
-    @staticmethod
-    def _completed_operation_counts(
-        projection: Mapping[str, object]
-    ) -> dict[str, int]:
-        raw = projection.get("completed_operation_counts", {})
-        if isinstance(raw, Mapping):
-            counts = {
-                str(name): int(count)
-                for name, count in raw.items()
-                if isinstance(count, int) and not isinstance(count, bool) and count >= 0
-            }
-            if counts or projection.get("operation_count", 0) == 0:
-                return counts
-        counts: dict[str, int] = {}
-        for operation in projection.get("operations", []):
-            if (
-                isinstance(operation, Mapping)
-                and operation.get("status")
-                in {"completed", "verified", "succeeded"}
-                and operation.get("operation") != "workflow.advance"
-            ):
-                name = str(operation.get("operation", ""))
-                if name:
-                    counts[name] = counts.get(name, 0) + 1
-        return counts
-
-    @staticmethod
-    def _completed_phases(projection: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
-        current = projection.get("workflow_phase_values", {})
-        if isinstance(current, Mapping):
-            completed = {
-                str(phase_type): dict(record)
-                for phase_type, record in current.items()
-                if isinstance(record, Mapping)
-                and record.get("status") == "completed"
-            }
-            if completed:
-                return completed
-        cycle_id = str(projection.get("workflow_cycle_id", ""))
-        latest: dict[str, Mapping[str, object]] = {}
-        for record in projection.get("phase_records", []):
-            if (
-                isinstance(record, Mapping)
-                and isinstance(record.get("phase_type"), str)
-                and (
-                    not cycle_id
-                    or str(record.get("workflow_cycle_id", cycle_id)) == cycle_id
-                )
-            ):
-                latest[str(record["phase_type"])] = record
-        return {
-            phase_type: record
-            for phase_type, record in latest.items()
-            if record.get("status") == "completed"
-        }
-
-    @staticmethod
-    def _domain_arguments(
-        projection: Mapping[str, object],
-        operation: str,
-        completed_phases: Mapping[str, Mapping[str, object]],
-    ) -> dict[str, object]:
-        raw = projection.get("workflow_inputs", {})
-        arguments = dict(raw) if isinstance(raw, Mapping) else {}
-        workflow = arguments.pop("workflow", {})
-        domain = {
-            "debug_run": "debug",
-            "debug_collect": "debug",
-            "log_bundle_collect": "log_analyzer",
-            "live_patch_run": "live_patch",
-            "upgrade_run": "upgrade",
-        }.get(operation, "")
-        if isinstance(workflow, Mapping):
-            section = workflow.get(domain)
-            if isinstance(section, Mapping):
-                arguments.update(section)
-        arguments["case_id"] = projection["case_id"]
-        targets = projection.get("targets", [])
-        if "ip" not in arguments and isinstance(targets, list) and targets:
-            first = targets[0]
-            if isinstance(first, Mapping) and first.get("address"):
-                arguments["ip"] = first["address"]
-        if operation == "debug_collect":
-            arguments["profile"] = "freshness"
-        if operation == "live_patch_run":
-            developer = completed_phases.get("developer.change", {})
-            for source, destination in (
-                ("artifact_path", "local_path"),
-                ("remote_path", "remote_path"),
-                ("restart_scope", "restart_scope"),
-                ("verification_plan", "verification_checks"),
-            ):
-                if source in developer and destination not in arguments:
-                    arguments[destination] = developer[source]
-        if operation == "upgrade_run":
-            build = completed_phases.get("build.artifact", {})
-            for name in ("artifact_path", "artifact_sha256", "product_version"):
-                if name in build:
-                    arguments[name] = build[name]
-        return arguments
 
     @classmethod
     def _workflow_step_target_id(
@@ -3407,9 +4430,10 @@ class ContextRuntime:
         ):
             return str(state.get("target_id", ""))
         if name == "debug_collect":
-            plan = cls._workflow_plan(projection)
-            preceding = []
-            for prior_kind, prior_name, prior_step_id in plan:
+            preceding: list[tuple[str, str, str]] = []
+            for prior_kind, prior_name, prior_step_id in cls._context_workflow_plan(
+                projection
+            ):
                 if prior_step_id == step_id:
                     break
                 preceding.append((prior_kind, prior_name, prior_step_id))
@@ -3420,9 +4444,7 @@ class ContextRuntime:
                 }:
                     continue
                 prior_state = (
-                    states.get(prior_step_id)
-                    if isinstance(states, Mapping)
-                    else None
+                    states.get(prior_step_id) if isinstance(states, Mapping) else None
                 )
                 if (
                     isinstance(prior_state, Mapping)
@@ -3449,7 +4471,45 @@ class ContextRuntime:
         states = projection.get("workflow_step_states", {})
         state = states.get(step_id) if isinstance(states, Mapping) else None
         if not isinstance(state, Mapping):
-            return False
+            if kind == "phase":
+                current = projection.get("workflow_phase_values", {})
+                record = current.get(name) if isinstance(current, Mapping) else None
+                return (
+                    isinstance(record, Mapping)
+                    and str(record.get("status", "")) == "completed"
+                )
+            expected_target_id = (
+                cls._workflow_step_target_id(
+                    projection,
+                    kind=kind,
+                    name=name,
+                    step_id=step_id,
+                )
+                if target_id is None
+                else target_id
+            )
+            occurrence = 0
+            for plan_kind, plan_name, plan_step_id in cls._context_workflow_plan(
+                projection
+            ):
+                if plan_kind == kind and plan_name == name:
+                    occurrence += 1
+                if plan_step_id == step_id:
+                    break
+            legacy_completed = [
+                item
+                for item in projection.get("operations", [])
+                if isinstance(item, Mapping)
+                and str(item.get("operation", "")) == name
+                and str(item.get("status", ""))
+                in {"completed", "verified", "succeeded"}
+                and not str(item.get("workflow_step_id", ""))
+                and (
+                    not str(item.get("target_id", ""))
+                    or str(item.get("target_id", "")) == expected_target_id
+                )
+            ]
+            return len(legacy_completed) >= max(occurrence, 1)
         if state.get("status") not in {"completed", "verified", "succeeded"}:
             return False
         if kind == "operation":
@@ -3479,13 +4539,18 @@ class ContextRuntime:
     ) -> int:
         cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
         key = (
-            f"{cycle_id}:{kind}:{step_id}:target-{int(projection.get('target_version', 1))}"
+            f"{cycle_id}:{kind}:{step_id}:target-"
+            f"{int(projection.get('target_version', 1))}"
             if kind == "operation"
             else f"{cycle_id}:{kind}:{step_id}"
         )
         attempts = projection.get("workflow_step_attempts", {})
         value = attempts.get(key, 0) if isinstance(attempts, Mapping) else 0
-        return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+        return (
+            int(value)
+            if isinstance(value, int) and not isinstance(value, bool)
+            else 0
+        )
 
     @classmethod
     def _continuation_for(
@@ -3495,7 +4560,7 @@ class ContextRuntime:
         required_kind = ""
         required_name = ""
         required_step_id = ""
-        for kind, name, step_id in cls._workflow_plan(projection):
+        for kind, name, step_id in cls._context_workflow_plan(projection):
             if cls._workflow_step_completed(
                 projection,
                 kind=kind,
@@ -3563,6 +4628,414 @@ class ContextRuntime:
             "next_action": next_action,
         }
 
+    @classmethod
+    def _compatible_workflow_operation(
+        cls,
+        projection: Mapping[str, object],
+        operation: str,
+        *,
+        execution_target_id: str = "",
+    ) -> dict[str, object]:
+        for kind, name, step_id in cls._context_workflow_plan(projection):
+            if cls._workflow_step_completed(
+                projection,
+                kind=kind,
+                name=name,
+                step_id=step_id,
+                target_id=(
+                    execution_target_id
+                    if kind == "operation" and name == operation
+                    else None
+                ),
+            ):
+                continue
+            if kind == "operation" and name == operation:
+                expected_target_id = cls._workflow_step_target_id(
+                    projection,
+                    kind=kind,
+                    name=name,
+                    step_id=step_id,
+                )
+                if operation in {"live_patch_run", "upgrade_run"}:
+                    expected_target_id = execution_target_id or expected_target_id
+                if expected_target_id and execution_target_id != expected_target_id:
+                    return {}
+                return {
+                    "workflow_cycle_id": str(
+                        projection.get("workflow_cycle_id", "cycle-1")
+                    ),
+                    "workflow_step_id": step_id,
+                    "workflow_step_kind": kind,
+                    "target_version": int(projection.get("target_version", 1)),
+                }
+            break
+        return {}
+
+    @staticmethod
+    def _domain_result_status(
+        descriptor: OperationDescriptor,
+        value: Mapping[str, object],
+    ) -> str:
+        if descriptor.mutation:
+            classified = ContextRuntime._domain_operation_status(
+                descriptor, value
+            )
+            if classified != "completed":
+                return classified
+        explicit = str(value.get("status", "")).strip().lower()
+        if explicit in {
+            "partial",
+            "failed",
+            "cancelled",
+            "blocked",
+            "mutation_outcome_unknown",
+        }:
+            return explicit
+        if value.get("ok") is False:
+            code = str(value.get("normalized_code", value.get("code", ""))).lower()
+            if value.get("partial") is True or "partial" in code:
+                return "partial"
+            return "failed"
+        return "completed"
+
+    @staticmethod
+    def _workflow_plan(projection: Mapping[str, object]) -> list[tuple[str, str]]:
+        intent = _effective_case_intent(projection)
+        delivery = (
+            str(projection.get("delivery_strategy", "source-only"))
+            or "source-only"
+        )
+        if intent == "bundle-and-diagnose":
+            return [("operation", "log_bundle_collect"), ("operation", "debug_run")]
+        if intent in {"live-patch", "rollback"}:
+            return [("operation", "live_patch_run"), ("operation", "debug_collect")]
+        if intent == "upgrade-and-verify":
+            return [("operation", "upgrade_run"), ("operation", "debug_collect")]
+        if intent == "diagnose-and-fix":
+            plan = [("operation", "debug_run"), ("phase", "developer.change")]
+            if delivery == "build-upgrade":
+                plan.extend(
+                    [
+                        ("phase", "build.artifact"),
+                        ("operation", "upgrade_run"),
+                        ("operation", "debug_collect"),
+                    ]
+                )
+            elif delivery == "live-patch":
+                plan.extend(
+                    [
+                        ("operation", "live_patch_run"),
+                        ("operation", "debug_collect"),
+                    ]
+                )
+            return plan
+        if (
+            intent == "diagnosis-only"
+            and _case_entry_domain(projection) == "log_analyzer"
+        ):
+            return [("operation", "log_bundle_collect")]
+        return [("operation", "debug_run")]
+
+    @staticmethod
+    def _operation_records(
+        projection: Mapping[str, object],
+    ) -> dict[str, list[Mapping[str, object]]]:
+        records: dict[str, list[Mapping[str, object]]] = {}
+        for operation in projection.get("operations", []):
+            if not isinstance(operation, Mapping):
+                continue
+            name = str(operation.get("operation", ""))
+            if not name or name in _WORKFLOW_CONTROL_OPERATIONS:
+                continue
+            records.setdefault(name, []).append(operation)
+        return records
+
+    @staticmethod
+    def _latest_phase_records(
+        projection: Mapping[str, object],
+    ) -> dict[str, Mapping[str, object]]:
+        current = projection.get("workflow_phase_values", {})
+        if not isinstance(current, Mapping):
+            return {}
+        return {
+            str(phase_type): record
+            for phase_type, record in current.items()
+            if isinstance(phase_type, str) and isinstance(record, Mapping)
+        }
+
+    @classmethod
+    def _completed_phases(
+        cls, projection: Mapping[str, object]
+    ) -> dict[str, Mapping[str, object]]:
+        return {
+            phase_type: record
+            for phase_type, record in cls._latest_phase_records(projection).items()
+            if record.get("status") == "completed"
+        }
+
+    @classmethod
+    def _workflow_semantic_cursor(
+        cls,
+        projection: Mapping[str, object],
+    ) -> str:
+        """Fingerprint only plan facts that can change the next business gate."""
+
+        operation_records = cls._operation_records(projection)
+        latest_phases = cls._latest_phase_records(projection)
+        operation_counts: dict[str, int] = {}
+        nodes: list[dict[str, object]] = []
+        for kind, name in cls._workflow_plan(projection):
+            if kind == "phase":
+                phase = latest_phases.get(name)
+                nodes.append(
+                    {
+                        "kind": kind,
+                        "name": name,
+                        "record": (
+                            _sanitize(dict(phase))
+                            if isinstance(phase, Mapping)
+                            else None
+                        ),
+                    }
+                )
+                continue
+            occurrence = operation_counts.get(name, 0)
+            operation_counts[name] = occurrence + 1
+            records = operation_records.get(name, [])
+            operation = records[occurrence] if len(records) > occurrence else None
+            selected: dict[str, object] | None = None
+            if isinstance(operation, Mapping):
+                selected = {
+                    key: operation[key]
+                    for key in (
+                        "operation_id",
+                        "operation",
+                        "status",
+                        "accepted_revision",
+                        "started_revision",
+                        "terminal_revision",
+                        "reconciled_revision",
+                    )
+                    if key in operation
+                }
+            nodes.append(
+                {
+                    "kind": kind,
+                    "name": name,
+                    "occurrence": occurrence,
+                    "record": selected,
+                }
+            )
+        raw_plan = projection.get("acceptance_plan", {})
+        plan = raw_plan if isinstance(raw_plan, Mapping) else {}
+        return _fingerprint(
+            {
+                "schema": f"{CONTEXT_RUNTIME_SCHEMA}/workflow-cursor-v1",
+                "case_id": str(projection.get("case_id", "")),
+                "plan_id": str(plan.get("plan_id", "")),
+                "intent": str(projection.get("intent", "")),
+                "delivery_strategy": str(
+                    projection.get("delivery_strategy", "")
+                ),
+                _TASK_POLICY_FIELD: _sanitize(
+                    projection.get(_TASK_POLICY_FIELD, {})
+                ),
+                "targets": _sanitize(projection.get("targets", [])),
+                "nodes": nodes,
+            }
+        )
+
+    def _terminal_workflow_result(
+        self,
+        descriptor: OperationDescriptor,
+        projection: Mapping[str, object],
+        *,
+        operation_id: str,
+    ) -> ContextToolResult:
+        terminal_status = self._terminal_status_from_projection(projection)
+        closeout = projection.get("closeout")
+        value: dict[str, object] = {
+            "completed": terminal_status == "completed",
+            "status": terminal_status,
+            "case_status": str(projection.get("status", "terminal")),
+            "terminal_replay": True,
+            "steps_run": 0,
+            "next_action": (
+                str(projection.get("next_actions", [""])[0])
+                if isinstance(projection.get("next_actions"), list)
+                and projection.get("next_actions")
+                else ""
+            ),
+        }
+        gaps: list[str] = []
+        if isinstance(closeout, Mapping) and closeout:
+            value["closeout"] = dict(closeout)
+            value["summary"] = str(
+                closeout.get("summary", f"workflow terminal as {terminal_status}")
+            )
+            value["closeout_markdown"] = str(
+                projection.get("closeout_markdown", "")
+            )
+            bundle = projection.get("closeout_bundle")
+            if isinstance(bundle, Mapping):
+                value["closeout_bundle"] = dict(bundle)
+        else:
+            value["summary"] = f"workflow terminal as {terminal_status}"
+            gaps.append("terminal_closeout_unavailable")
+        envelope = self._envelope(
+            case_id=str(projection["case_id"]),
+            revision=int(projection["revision"]),
+            operation_id=operation_id,
+            operation=descriptor.name,
+            status=terminal_status,
+            value=value,
+            gaps=gaps,
+        )
+        return ContextToolResult(value, envelope)
+
+    @staticmethod
+    def _domain_arguments(
+        projection: Mapping[str, object],
+        operation: str,
+        completed_phases: Mapping[str, Mapping[str, object]],
+    ) -> dict[str, object]:
+        raw = projection.get("workflow_inputs", {})
+        arguments = dict(raw) if isinstance(raw, Mapping) else {}
+        projected_intent = (
+            str(projection.get("intent", "diagnosis-only"))
+            .strip()
+            .lower()
+            .replace("_", "-")
+            or "diagnosis-only"
+        )
+        effective_intent = _effective_case_intent(projection)
+        recovered_legacy_intent = (
+            projected_intent == "diagnosis-only"
+            and effective_intent != projected_intent
+        )
+        raw_policy = projection.get(_TASK_POLICY_FIELD)
+        if isinstance(raw_policy, Mapping) and raw_policy:
+            task_policy = TaskAuthorizationPolicy.from_public_dict(raw_policy)
+            if recovered_legacy_intent:
+                task_policy = TaskAuthorizationPolicy.from_task_intent(
+                    effective_intent,
+                    authorized_exceptions=(
+                        task_policy.authorized_exceptions.to_public_dict()
+                    ),
+                    allow_insecure_tls=task_policy.allow_insecure_tls,
+                )
+        else:
+            task_policy = TaskAuthorizationPolicy.from_task_intent(
+                effective_intent,
+                delivery_strategy=(
+                    ""
+                    if recovered_legacy_intent
+                    else str(projection.get("delivery_strategy", ""))
+                ),
+                authorized_exceptions=(
+                    raw.get("authorized_exceptions")
+                    if isinstance(raw, Mapping)
+                    else None
+                ),
+                allow_insecure_tls=(
+                    _strict_bool(
+                        raw,
+                        "allow_insecure_tls",
+                        default=True,
+                    )
+                    if isinstance(raw, Mapping)
+                    else True
+                ),
+            )
+        frozen_arguments: dict[str, object] = {
+            "intent": task_policy.original_intent,
+            "final_purpose": str(projection.get("final_purpose", "")),
+            "authorized_exceptions": task_policy.authorized_exceptions.to_public_dict(),
+            "allow_insecure_tls": task_policy.allow_insecure_tls,
+        }
+        if not recovered_legacy_intent:
+            frozen_arguments["delivery_strategy"] = task_policy.delivery_strategy
+        entry_domain = _case_entry_domain(projection)
+        if entry_domain:
+            frozen_arguments["entry_domain"] = entry_domain
+        if isinstance(raw, Mapping):
+            for name in _WORKFLOW_SECTION_PROTECTED_ARGUMENTS:
+                if name in raw and name not in frozen_arguments:
+                    frozen_arguments[name] = raw[name]
+        workflow = arguments.pop("workflow", {})
+        domain = {
+            "debug_run": "debug",
+            "debug_collect": "debug",
+            "log_bundle_collect": "log_analyzer",
+            "live_patch_run": "live_patch",
+            "upgrade_run": "upgrade",
+        }.get(operation, "")
+        if isinstance(workflow, Mapping):
+            section = (
+                workflow.get("verification")
+                if operation == "debug_collect"
+                else workflow.get(domain)
+            )
+            if not isinstance(section, Mapping) and operation == "debug_collect":
+                section = workflow.get(domain)
+            if isinstance(section, Mapping):
+                arguments.update(
+                    {
+                        name: value
+                        for name, value in section.items()
+                        if name not in _WORKFLOW_SECTION_PROTECTED_ARGUMENTS
+                        and not str(name).startswith("_")
+                    }
+                )
+        for name in (
+            "target_role",
+            "max_steps",
+            "include_closeout_bundle",
+            "change_boundary",
+        ):
+            arguments.pop(name, None)
+        arguments["case_id"] = projection["case_id"]
+        arguments[CONTEXT_WORKFLOW_STEP_ARGUMENT] = True
+        arguments.update(frozen_arguments)
+        targets = projection.get("targets", [])
+        if "ip" not in arguments and isinstance(targets, list) and targets:
+            first = targets[0]
+            if isinstance(first, Mapping) and first.get("address"):
+                arguments["ip"] = first["address"]
+        if operation in {"debug_run", "debug_collect"}:
+            arguments = {
+                name: value
+                for name, value in arguments.items()
+                if name in _DEBUG_DOMAIN_ARGUMENTS or name == "case_id"
+            }
+            raw_targets = arguments.get("targets")
+            multi_target_debug = (
+                operation == "debug_run"
+                and isinstance(raw_targets, list)
+                and len(raw_targets) >= 2
+            )
+            if not multi_target_debug:
+                for name in ("concurrency", "reference_role", "targets"):
+                    arguments.pop(name, None)
+        if operation == "debug_collect":
+            arguments.setdefault("profile", "freshness")
+        if operation == "live_patch_run":
+            developer = completed_phases.get("developer.change", {})
+            for source, destination in (
+                ("artifact_path", "local_path"),
+                ("remote_path", "remote_path"),
+                ("restart_scope", "restart_scope"),
+                ("verification_plan", "verification_checks"),
+            ):
+                if source in developer and destination not in arguments:
+                    arguments[destination] = developer[source]
+        if operation == "upgrade_run":
+            build = completed_phases.get("build.artifact", {})
+            for name in ("artifact_path", "artifact_sha256", "product_version"):
+                if name in build:
+                    arguments[name] = build[name]
+        return arguments
+
     def workflow_advance(
         self,
         descriptor: OperationDescriptor,
@@ -3571,23 +5044,50 @@ class ContextRuntime:
         task_id: str,
         operation_id: str,
         domain_invoker: Callable[[str, Mapping[str, object], str], Mapping[str, object]],
+        _require_existing_case: bool = False,
     ) -> ContextToolResult:
-        case_id = self._case_id(task_id, arguments)
-        self._validate_expected_before_case_update(case_id, arguments)
-        projection = self._open_case(case_id, arguments)
-        if projection.get("closed"):
-            raise CaseClosed(f"case {case_id} is closed")
-        expected = int(projection["revision"])
+        case_id = self._case_id(
+            task_id,
+            arguments,
+            bind=not _require_existing_case,
+        )
         key, fingerprint = self._control_identity(
             descriptor, arguments, operation_id
         )
-        replay = self.repository.claim_idempotency(case_id, key, fingerprint)
+        replay = self._claim_idempotency(
+            case_id=case_id,
+            key=key,
+            fingerprint=fingerprint,
+            descriptor=descriptor,
+        )
         if replay is not None:
+            if _require_existing_case:
+                self.repository.bind_task(task_id, case_id)
             return self._result_from_receipt(replay)
         try:
+            projection = self._open_case(
+                case_id,
+                arguments,
+                require_existing=_require_existing_case,
+            )
+            if projection.get("closed"):
+                raise CaseClosed(f"case {case_id} is closed")
+            if _require_existing_case:
+                self.repository.bind_task(task_id, case_id)
+            expected = arguments.get("expected_revision", projection["revision"])
+            if isinstance(expected, bool) or not isinstance(expected, int):
+                raise TypeError("expected_revision must be an integer")
+            if expected not in {
+                int(projection["revision"]),
+                int(projection.get("_selection_base_revision", -1)),
+            }:
+                raise RevisionConflict(
+                    f"case {case_id} revision is {projection['revision']}, "
+                    f"expected {expected}"
+                )
             projection = self.repository.commit(
                 case_id,
-                expected_revision=expected,
+                expected_revision=int(projection["revision"]),
                 events=(
                     PendingCaseEvent(
                         "OperationAccepted",
@@ -3607,7 +5107,7 @@ class ContextRuntime:
                 raise TypeError("max_steps must be an integer")
             if max_steps <= 0 or max_steps > 64:
                 raise ValueError("max_steps must be between 1 and 64")
-            plan = self._workflow_plan(projection)
+            plan = self._context_workflow_plan(projection)
             status = "completed"
             value: dict[str, object] = {}
             steps_run = 0
@@ -3649,7 +5149,85 @@ class ContextRuntime:
                         ),
                     }
                     break
+                blocked_mutation = next(
+                    (
+                        item
+                        for item in reversed(list(projection.get("operations", [])))
+                        if isinstance(item, Mapping)
+                        and item.get("status") == "blocked"
+                        and str(item.get("operation", "")) in self.catalog.names()
+                        and self.catalog.require(
+                            str(item.get("operation", ""))
+                        ).mutation
+                    ),
+                    None,
+                )
+                if isinstance(blocked_mutation, Mapping):
+                    status = "blocked"
+                    value = {
+                        "completed": False,
+                        "status": status,
+                        "steps_run": steps_run,
+                        "blocked_operation_id": blocked_mutation.get(
+                            "operation_id", ""
+                        ),
+                        "next_action": (
+                            "provide the missing recovery authorization and "
+                            "continue the same mutation journal"
+                        ),
+                    }
+                    break
                 completed_phases = self._completed_phases(projection)
+                latest_phases = self._latest_phase_records(projection)
+                terminal_phase = next(
+                    (
+                        (phase_name, phase)
+                        for phase_kind, phase_name, _step_id in plan
+                        if phase_kind == "phase"
+                        for phase in [latest_phases.get(phase_name)]
+                        if isinstance(phase, Mapping)
+                        and str(phase.get("status", ""))
+                        in {"failed", "cancelled"}
+                    ),
+                    None,
+                )
+                if terminal_phase is not None:
+                    phase_name, phase = terminal_phase
+                    status = str(phase.get("status", "failed"))
+                    if descriptor.name == "workflow.advance":
+                        retained_step_ids: list[str] = []
+                        for phase_kind, candidate_name, candidate_step_id in plan:
+                            if phase_kind == "phase" and candidate_name == phase_name:
+                                break
+                            retained_step_ids.append(candidate_step_id)
+                        projection = self.repository.commit(
+                            case_id,
+                            expected_revision=int(projection["revision"]),
+                            events=(
+                                PendingCaseEvent(
+                                    "WorkflowStepsInvalidated",
+                                    {
+                                        "retained_step_ids": retained_step_ids,
+                                        "reason": (
+                                            f"new attempt after {phase_name} {status}"
+                                        ),
+                                    },
+                                ),
+                            ),
+                        )
+                        self._cache(projection)
+                        continue
+                    value = {
+                        "completed": False,
+                        "status": status,
+                        "blocked_phase_type": phase_name,
+                        "phase_summary": str(phase.get("summary", "")),
+                        "steps_run": steps_run,
+                        "next_action": (
+                            "call workflow.advance to start a new phase attempt"
+                        ),
+                    }
+                    break
                 next_step: tuple[str, str, str] | None = None
                 for kind, name, step_id in plan:
                     if not self._workflow_step_completed(
@@ -3705,6 +5283,15 @@ class ContextRuntime:
                 )
                 if required_target_id:
                     domain_arguments["target_id"] = required_target_id
+                    for target in projection.get("targets", []):
+                        if (
+                            isinstance(target, Mapping)
+                            and str(target.get("target_id", ""))
+                            == required_target_id
+                            and str(target.get("address", "")).strip()
+                        ):
+                            domain_arguments["ip"] = str(target["address"])
+                            break
                 target_epoch_floor = self._target_epoch_floor(
                     projection,
                     target_id=(
@@ -3712,11 +5299,8 @@ class ContextRuntime:
                             projection,
                             domain_arguments,
                         )
-                        if name in {
-                            "live_patch_run",
-                            "upgrade_run",
-                            "debug_collect",
-                        }
+                        if name
+                        in {"live_patch_run", "upgrade_run", "debug_collect"}
                         else self._selected_target_id(
                             projection,
                             domain_arguments,
@@ -3725,9 +5309,8 @@ class ContextRuntime:
                 )
                 if name in {"live_patch_run", "upgrade_run"}:
                     domain_arguments["_minimum_target_epoch"] = target_epoch_floor
-                if name == "debug_collect":
-                    if target_epoch_floor:
-                        domain_arguments["_minimum_target_epoch"] = target_epoch_floor
+                if name == "debug_collect" and target_epoch_floor:
+                    domain_arguments["_minimum_target_epoch"] = target_epoch_floor
                 cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
                 target_version = int(projection.get("target_version", 1))
                 resumable_operation = next(
@@ -3797,7 +5380,12 @@ class ContextRuntime:
                         if isinstance(failed_operation, Mapping)
                         else ""
                     )
-                    if failed_status in {"failed", "mutation_outcome_unknown"}:
+                    if failed_status in {
+                        "failed",
+                        "cancelled",
+                        "blocked",
+                        "mutation_outcome_unknown",
+                    }:
                         status = failed_status
                         value = {
                             "completed": False,
@@ -3840,11 +5428,12 @@ class ContextRuntime:
                     "completed": False,
                     "status": status,
                     "steps_run": steps_run,
-                    "next_action": "call workflow.advance again to continue",
+                    "next_action": f"call {descriptor.name} again to continue",
                 }
             projection = self.repository.load(case_id)
             if projection is None:
                 raise CaseNotFound(case_id)
+            gaps: list[str] = []
             evidence = self._put_evidence(
                 value,
                 case_id=case_id,
@@ -3852,39 +5441,69 @@ class ContextRuntime:
                 descriptor=descriptor,
                 arguments=arguments,
             )
+            terminal_events: list[PendingCaseEvent] = [
+                PendingCaseEvent(
+                    "OperationProgressed",
+                    {
+                        "status": status,
+                        "next_actions": _next_actions(value),
+                    },
+                    operation_id,
+                ),
+                PendingCaseEvent(
+                    "EvidenceAttached",
+                    {"evidence": evidence.to_public_dict()},
+                    operation_id,
+                ),
+                PendingCaseEvent(
+                    "OperationTerminal",
+                    {
+                        "status": status,
+                        "summary": redact_text(
+                            _summary_for(descriptor.name, value)
+                        ),
+                        "next_actions": _next_actions(value),
+                        "case_status": (
+                            "terminal"
+                            if status
+                            in {"completed", "failed", "cancelled", "blocked"}
+                            else status
+                        ),
+                    },
+                    operation_id,
+                ),
+            ]
             projection = self.repository.commit(
                 case_id,
                 expected_revision=int(projection["revision"]),
-                events=(
-                    PendingCaseEvent(
-                        "OperationProgressed",
-                        {
-                            "status": status,
-                            "next_actions": _next_actions(value),
-                        },
-                        operation_id,
-                    ),
-                    PendingCaseEvent(
-                        "EvidenceAttached",
-                        {"evidence": evidence.to_public_dict()},
-                        operation_id,
-                    ),
-                    PendingCaseEvent(
-                        "OperationTerminal",
-                        {
-                            "status": status,
-                            "summary": _summary_for(descriptor.name, value),
-                            "next_actions": _next_actions(value),
-                            "case_status": (
-                                "terminal"
-                                if status in {"completed", "failed", "cancelled"}
-                                else status
-                            ),
-                        },
-                        operation_id,
-                    ),
-                ),
+                events=terminal_events,
             )
+            if status in {"completed", "failed", "cancelled", "blocked"}:
+                try:
+                    (
+                        projection,
+                        closeout_payload,
+                        closeout_markdown,
+                        closeout_bundle,
+                    ) = self._record_closeout(
+                        projection,
+                        terminal_status=status,
+                        include_bundle=self._closeout_bundle_enabled(
+                            projection,
+                            arguments,
+                        ),
+                        operation_id=operation_id,
+                    )
+                    value["closeout"] = closeout_payload
+                    value["closeout_markdown"] = closeout_markdown
+                    if closeout_bundle is not None:
+                        value["closeout_bundle"] = closeout_bundle
+                except Exception as exc:
+                    gaps.append(
+                        redact_text(
+                            f"closeout_not_persisted: {type(exc).__name__}: {exc}"
+                        )
+                    )
         except Exception:
             self.repository.abandon_idempotency(case_id, key)
             raise
@@ -3897,6 +5516,7 @@ class ContextRuntime:
             status=status,
             value=value,
             evidence_refs=(evidence.to_public_dict(),),
+            gaps=gaps,
         )
         self.repository.complete_idempotency(
             case_id,
@@ -3908,10 +5528,89 @@ class ContextRuntime:
         )
         return ContextToolResult(value, envelope)
 
+    def workflow_next(
+        self,
+        descriptor: OperationDescriptor,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+        domain_invoker: Callable[[str, Mapping[str, object], str], Mapping[str, object]],
+    ) -> ContextToolResult:
+        unexpected = sorted(
+            str(name)
+            for name in arguments
+            if not isinstance(name, str) or name not in _WORKFLOW_NEXT_ARGUMENTS
+        )
+        if unexpected:
+            raise TypeError(
+                "workflow.next accepts only case_id, max_steps, and "
+                "include_closeout_bundle; unsupported arguments: "
+                + ", ".join(unexpected)
+            )
+        case_id, projection = self._existing_case(task_id, arguments)
+        max_steps = arguments.get("max_steps", 8)
+        if isinstance(max_steps, bool) or not isinstance(max_steps, int):
+            raise TypeError("max_steps must be an integer")
+        if max_steps <= 0 or max_steps > 64:
+            raise ValueError("max_steps must be between 1 and 64")
+        include_bundle = _strict_bool(
+            arguments,
+            "include_closeout_bundle",
+            default=True,
+        )
+        closeout = projection.get("closeout")
+        persistent_terminal = (
+            projection.get("closed")
+            or projection.get("status") == "closed"
+            or (
+                projection.get("status") == "terminal"
+                and isinstance(closeout, Mapping)
+                and bool(closeout)
+            )
+        )
+        if persistent_terminal:
+            return self._terminal_workflow_result(
+                descriptor,
+                projection,
+                operation_id=operation_id,
+            )
+        cursor = self._workflow_semantic_cursor(projection)
+        automatic_key = "workflow-next-" + _fingerprint(
+            {
+                "cursor": cursor,
+                "max_steps": max_steps,
+                "include_closeout_bundle": include_bundle,
+            }
+        )[:32]
+        return self.workflow_advance(
+            descriptor,
+            {
+                "case_id": case_id,
+                "expected_revision": int(projection["revision"]),
+                "idempotency_key": automatic_key,
+                "max_steps": max_steps,
+                "include_closeout_bundle": include_bundle,
+            },
+            task_id=task_id,
+            operation_id=operation_id,
+            domain_invoker=domain_invoker,
+            _require_existing_case=True,
+        )
+
     def read_case(self, case_id: str) -> dict[str, object]:
         projection = self._load(case_id, touch=True)
         if projection is None:
             raise CaseNotFound(case_id)
+        if projection.get("status") == "terminal":
+            try:
+                projection = self._recover_terminal_closeout(projection)
+            except Exception as exc:
+                # Case reads remain available even when the optional Closeout
+                # repair cannot be persisted; the event facts are still intact.
+                projection["closeout_recovery_gap"] = redact_text(
+                    f"{type(exc).__name__}: {exc}"
+                )
         projection["capsule"] = self._capsule(projection)
         return projection
 
@@ -3942,8 +5641,6 @@ class ContextRuntime:
             ),
             None,
         )
-        if not isinstance(reference, Mapping):
-            reference = self.repository.evidence_reference(case_id, evidence_id)
         if not isinstance(reference, Mapping):
             raise EvidenceUnavailable(
                 f"evidence {evidence_id} does not belong to case {case_id}"
@@ -3981,25 +5678,16 @@ class ContextRuntime:
             raise RevisionConflict(
                 f"case {case_id} revision is {projection['revision']}, expected {expected_revision}"
             )
-        active = any(
-            isinstance(operation, Mapping)
-            and str(operation.get("status", ""))
-            in {"accepted", "running", "mutation_outcome_unknown"}
-            for operation in projection.get("operations", [])
-        )
-        unknown_mutations = projection.get(
-            "mutation_outcome_unknown_operations", {}
-        )
-        workflow_complete = bool(
-            self._continuation_for(projection).get("workflow_complete")
-        )
-        if (
-            active
-            or projection.get("status") == "mutation_outcome_unknown"
-            or bool(unknown_mutations)
-            or not workflow_complete
-        ):
+        if projection.get("status") in {
+            "open",
+            "running",
+            "waiting_external",
+            "waiting_phase_record",
+            "mutation_outcome_unknown",
+        }:
             raise CaseNotForgettable(f"case {case_id} is not terminal")
+        if not self._continuation_for(projection)["workflow_complete"]:
+            raise CaseNotForgettable(f"case {case_id} workflow is not complete")
         closed = self.repository.commit(
             case_id,
             expected_revision=expected_revision,
@@ -4011,16 +5699,16 @@ class ContextRuntime:
         projection = self._load(case_id)
         if projection is None:
             return {"case_id": case_id, "forgotten": False}
-        legacy_terminal = (
-            projection.get("status") == "terminal"
-            and not projection.get("workflow_step_states")
-        )
-        if (
-            not projection.get("closed")
-            and not self._continuation_for(projection).get("workflow_complete")
-            and not legacy_terminal
-        ) or projection.get("status") == "mutation_outcome_unknown":
+        if projection.get("status") in {
+            "open",
+            "running",
+            "waiting_external",
+            "waiting_phase_record",
+            "mutation_outcome_unknown",
+        }:
             raise CaseNotForgettable(f"case {case_id} is not terminal")
+        if not self._continuation_for(projection)["workflow_complete"]:
+            raise CaseNotForgettable(f"case {case_id} workflow is not complete")
         references = self.repository.delete_case(case_id)
         deleted_blobs = 0
         for reference in references:
@@ -4045,30 +5733,17 @@ class ContextRuntime:
         for meta in self.repository.metadata():
             status = str(meta.get("status", "open"))
             last_access = float(meta.get("last_access", 0.0))
+            projection = self._load(str(meta["case_id"]))
+            workflow_complete = (
+                projection is not None
+                and self._continuation_for(projection)["workflow_complete"]
+            )
             if (
                 status in {"terminal", "closed"}
+                and workflow_complete
                 and now - last_access >= self.retention_seconds
-                and not self.repository.is_case_bound(str(meta["case_id"]))
             ):
                 self.forget_case(str(meta["case_id"]))
-                evicted_cases += 1
-            elif (
-                status not in {"terminal", "closed", "mutation_outcome_unknown"}
-                and now - last_access >= self.retention_seconds * 4
-                and not self.repository.is_case_bound(str(meta["case_id"]))
-            ):
-                case_id = str(meta["case_id"])
-                projection = self._load(case_id)
-                if projection is None:
-                    continue
-                try:
-                    self.close_case(
-                        case_id,
-                        expected_revision=int(projection["revision"]),
-                    )
-                    self.forget_case(case_id)
-                except CaseNotForgettable:
-                    continue
                 evicted_cases += 1
         if (
             self.blob_repository.size_bytes() + self.repository.size_bytes()
@@ -4082,29 +5757,14 @@ class ContextRuntime:
                     <= self.storage_soft_limit_bytes
                 ):
                     break
-                case_id = str(meta["case_id"])
-                status = str(meta.get("status"))
-                if status in {"terminal", "closed"} and not self.repository.is_case_bound(
-                    case_id
-                ):
-                    self.forget_case(case_id)
-                elif (
-                    status != "mutation_outcome_unknown"
-                    and not self.repository.is_case_bound(case_id)
-                ):
-                    projection = self._load(case_id)
-                    if projection is None:
-                        continue
-                    try:
-                        self.close_case(
-                            case_id,
-                            expected_revision=int(projection["revision"]),
-                        )
-                        self.forget_case(case_id)
-                    except CaseNotForgettable:
-                        continue
-                else:
+                if str(meta.get("status")) not in {"terminal", "closed"}:
                     continue
+                projection = self._load(str(meta["case_id"]))
+                if projection is None or not self._continuation_for(
+                    projection
+                )["workflow_complete"]:
+                    continue
+                self.forget_case(str(meta["case_id"]))
                 evicted_cases += 1
         self._metrics["maintenance_evictions"] += evicted_cases
         return {"evicted_cases": evicted_cases}

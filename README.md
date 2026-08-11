@@ -4,6 +4,11 @@ This repository contains the coordinated openUBMC development and target-runtime
 Codex, Claude, and OpenClaw. The Environment Setup installer manages Skill links, workflow tools,
 the Target Runtime MCP, client registration, updates, and repair.
 
+## Baseline
+
+The workflow content is synchronized with the integrated openUBMC Skills baseline
+`ceb46e8ca5542a4273128b1a4aa8606b2f5eaee0`.
+
 ## Install
 
 ```bash

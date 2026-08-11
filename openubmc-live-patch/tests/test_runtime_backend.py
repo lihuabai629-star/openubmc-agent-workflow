@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-live-patch"))
 
 from openubmc_target_runtime import (  # noqa: E402
+    MutationAuthorizationDenied,
     MutationJournalStore,
     MutationOperationConflict,
     RuntimeMcpService,
@@ -185,6 +186,142 @@ class FakeTelnetTransport:
 
 
 class LivePatchRuntimeBackendTests(unittest.TestCase):
+    def test_high_risk_flags_require_task_authorized_exceptions(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            credential_loads = 0
+
+            def credentials(_arguments):
+                nonlocal credential_loads
+                credential_loads += 1
+                return {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                }
+
+            backend = LivePatchMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=credentials,
+                ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                telnet_transport_factory=lambda _arguments: FakeTelnetTransport(
+                    digest
+                ),
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                for index, (name, remote_path) in enumerate(
+                    (
+                        ("force_path", "/var/lib/openubmc/unit.lua"),
+                        ("no_backup", "/opt/bmc/apps/demo/unit.lua"),
+                        ("no_remount", "/opt/bmc/apps/demo/unit.lua"),
+                    )
+                ):
+                    with self.subTest(exception=name):
+                        with self.assertRaises(MutationAuthorizationDenied):
+                            service.call_tool(
+                                "live_patch_run",
+                                {
+                                    "intent": "live-patch",
+                                    "ip": "bmc.example",
+                                    "local_path": str(local),
+                                    "remote_path": remote_path,
+                                    name: True,
+                                    "deadline": TEST_DEADLINE_SECONDS,
+                                },
+                                task_id=f"task-denied-{name}",
+                                operation_id=f"denied-{index}",
+                            )
+                self.assertEqual(credential_loads, 0)
+            finally:
+                service.close()
+
+    def test_task_authorized_force_path_reaches_the_mutation_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            ssh = FakeSshTransport()
+            telnet = FakeTelnetTransport(digest)
+            credential_loads = 0
+
+            def credentials(_arguments):
+                nonlocal credential_loads
+                credential_loads += 1
+                return {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                }
+
+            backend = LivePatchMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=credentials,
+                ssh_transport_factory=lambda _arguments: ssh,
+                telnet_transport_factory=lambda _arguments: telnet,
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                result = service.call_tool(
+                    "live_patch_run",
+                    {
+                        "intent": "live-patch",
+                        "ip": "bmc.example",
+                        "local_path": str(local),
+                        "remote_path": "/var/lib/openubmc/unit.lua",
+                        "restart_scope": "none",
+                        "force_path": True,
+                        "authorized_exceptions": {"force_path": True},
+                        "deadline": TEST_DEADLINE_SECONDS,
+                    },
+                    task_id="task-authorized-force-path",
+                    operation_id="authorized-force-path",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(result["journal"]["stage"], "verified")
+        self.assertEqual(credential_loads, 1)
+        self.assertEqual(len(ssh.uploads), 1)
+
+    def test_high_risk_flags_reject_non_boolean_values(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            backend = LivePatchMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {},
+                ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                telnet_transport_factory=lambda _arguments: FakeTelnetTransport(
+                    digest
+                ),
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                for index, name in enumerate(
+                    ("force_path", "no_backup", "no_remount")
+                ):
+                    with self.subTest(flag=name):
+                        with self.assertRaises(TypeError):
+                            service.call_tool(
+                                "live_patch_run",
+                                {
+                                    "intent": "live-patch",
+                                    "ip": "bmc.example",
+                                    "local_path": str(local),
+                                    "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                                    name: "false",
+                                    "deadline": TEST_DEADLINE_SECONDS,
+                                },
+                                task_id=f"task-non-bool-{name}",
+                                operation_id=f"non-bool-{index}",
+                            )
+            finally:
+                service.close()
     def test_binding_identity_changes_with_direct_credentials_and_ssh_policy(self) -> None:
         base = {
             "ip": "bmc.example",
@@ -330,7 +467,7 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
             service = RuntimeMcpService(backend)
             try:
                 arguments = {
-                    "intent": "live_patch",
+                    "intent": "rollback",
                     "action": "rollback",
                     "ip": "bmc.example",
                     "backup_path": "/tmp/unit.lua.bak.1",
@@ -397,7 +534,7 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                 result = service.call_tool(
                     "live_patch_run",
                     {
-                        "intent": "live_patch",
+                        "intent": "rollback",
                         "action": "rollback",
                         "ip": "bmc.example",
                         "remove_created": True,

@@ -27,13 +27,19 @@ from .catalog import OperationCatalog, OperationDescriptor
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     BlobRepository,
+    CONTEXT_WORKFLOW_STEP_ARGUMENT,
     ContextRuntime,
     ContextToolResult,
     RuntimeRepository,
 )
 from .credential_file import load_selected_credentials_file
 from .lifecycle import OperationContext, TaskRunRegistry
-from .mutation import TargetLeaseCoordinator
+from .mutation import (
+    MutationAuthorizedExceptions,
+    TaskAuthorizationPolicy,
+    TargetLeaseCoordinator,
+    mutation_journal_operation_status,
+)
 from .task_context import TaskContextStore
 from .orchestration import (
     DeliveryStrategy,
@@ -131,6 +137,7 @@ _OPERATION_BINDINGS = (
     _OperationBinding("case_forget", lifecycle="close"),
     _OperationBinding("phase_record"),
     _OperationBinding("workflow.advance"),
+    _OperationBinding("workflow.next"),
     _OperationBinding("runtime_status", lifecycle="status"),
 )
 _OPERATION_BINDING_BY_NAME = {
@@ -147,11 +154,22 @@ _ORCHESTRATION_ARGUMENTS = frozenset(
         "final_purpose",
         "entry_domain",
         "delivery_strategy",
+        "authorized_exceptions",
         "target_id",
         "target_role",
     }
 )
 _WORKFLOW_ARGUMENT = "workflow"
+_TASK_AUTHORIZATION_POLICY_ARGUMENT = "_task_authorization_policy"
+_INTERNAL_TASK_ARGUMENTS = frozenset(
+    {
+        _TASK_AUTHORIZATION_POLICY_ARGUMENT,
+        "_task_intent",
+        "_task_delivery_strategy",
+        "_task_authorized_exceptions",
+        "_credential_values",
+    }
+)
 _DOMAIN_TO_TOOL = {
     binding.domain: binding.name
     for binding in _OPERATION_BINDINGS
@@ -163,6 +181,16 @@ _CREDENTIAL_VALUE_TOOLS = frozenset(
 _MUTATION_TOOLS = frozenset(
     binding.name for binding in _OPERATION_BINDINGS if binding.mutation
 )
+_CONTEXT_OPERATION_LIFECYCLES = {
+    "case_read": "read",
+    "evidence_read": "read",
+    "case_close": "close",
+    "case_forget": "close",
+    "phase_record": "invoke",
+    "workflow.advance": "invoke",
+    "workflow.next": "invoke",
+    "runtime_status": "status",
+}
 _EXTERNAL_WORKFLOW_DOMAINS = frozenset({"developer", "build"})
 _MAX_ORCHESTRATION_HISTORY = 16
 _MAX_WORKFLOW_SUMMARIES = 16
@@ -193,11 +221,17 @@ _SHARED_ARGUMENTS = frozenset(
         "allow_insecure_tls",
     }
 )
-_TARGET_ADDRESS_ARGUMENTS = frozenset({"ip"})
-_REUSABLE_CONNECTION_ARGUMENTS = (
-    (_SHARED_ARGUMENTS | _SECRET_ARGUMENTS)
-    - {"ssh_port", "telnet_port", "redfish_port"}
+_REUSABLE_CONNECTION_ARGUMENTS = frozenset(
+    {
+        "ssh_user",
+        "ssh_password",
+        "telnet_user",
+        "telnet_password",
+        "redfish_user",
+        "redfish_password",
+    }
 )
+_TARGET_ADDRESS_ARGUMENTS = frozenset({"ip"})
 _SSH_ARGUMENTS = frozenset(
     {
         "ssh_port",
@@ -231,8 +265,6 @@ _DOMAIN_CONNECTION_ARGUMENTS = {
         _TARGET_ADDRESS_ARGUMENTS
         | _SSH_ARGUMENTS
         | _TELNET_ARGUMENTS
-        | _SSH_SECRET_ARGUMENTS
-        | _TELNET_SECRET_ARGUMENTS
         | frozenset(
             {
                 "ssh_host_key_policy",
@@ -259,13 +291,24 @@ _DOMAIN_CONNECTION_ARGUMENTS = {
     "upgrade": (
         _TARGET_ADDRESS_ARGUMENTS
         | _REDFISH_ARGUMENTS
-        | _REDFISH_SECRET_ARGUMENTS
         | frozenset({"allow_insecure_tls"})
     ),
 }
 _DOMAIN_ARGUMENTS_TO_STRIP = {
     "debug": frozenset({"problem"}),
 }
+_WORKFLOW_SECTION_PROTECTED_ARGUMENTS = (
+    _ORCHESTRATION_ARGUMENTS
+    | _SHARED_ARGUMENTS
+    | _SECRET_ARGUMENTS
+    | frozenset(
+        {
+            "targets",
+            "role",
+            CONTEXT_WORKFLOW_STEP_ARGUMENT,
+        }
+    )
+)
 
 
 class _OrchestratedMcpTask:
@@ -372,6 +415,10 @@ class _OrchestratedMcpTask:
                     if intent.delivery_strategy is not None
                     else None
                 ),
+                "authorized_exceptions": (
+                    intent.authorization.authorized_exceptions.to_public_dict()
+                ),
+                "authorization_policy": intent.authorization.to_public_dict(),
             },
             "shared_arguments": shared_arguments,
             "targets": target_payloads,
@@ -474,6 +521,32 @@ class _OrchestratedMcpTask:
                 value = orchestration.get(source)
                 if isinstance(value, str) and value.strip():
                     arguments[destination] = value.strip()
+            raw_policy = orchestration.get("authorization_policy")
+            if raw_policy is not None:
+                if not isinstance(raw_policy, Mapping):
+                    raise TypeError("persisted authorization_policy must be an object")
+                policy = TaskAuthorizationPolicy.from_public_dict(raw_policy)
+                restored_intent = arguments.get("intent")
+                if restored_intent != policy.original_intent:
+                    raise ValueError(
+                        "persisted authorization policy intent does not match orchestration"
+                    )
+                restored_delivery = str(arguments.get("delivery_strategy", ""))
+                if (
+                    policy.original_intent == "diagnose-and-fix"
+                    and restored_delivery != policy.delivery_strategy
+                ):
+                    raise ValueError(
+                        "persisted authorization policy delivery strategy does not match orchestration"
+                    )
+                arguments["authorized_exceptions"] = (
+                    policy.authorized_exceptions.to_public_dict()
+                )
+                arguments["allow_insecure_tls"] = policy.allow_insecure_tls
+            else:
+                authorized_exceptions = orchestration.get("authorized_exceptions")
+                if isinstance(authorized_exceptions, Mapping):
+                    arguments["authorized_exceptions"] = dict(authorized_exceptions)
             entry_domain = orchestration.get("entry_domain")
             preferred_tool = (
                 _DOMAIN_TO_TOOL.get(entry_domain)
@@ -685,10 +758,17 @@ class _OrchestratedMcpTask:
         domain = _TOOL_DOMAINS[tool_name]
         intent_value = arguments.get("intent")
         if not isinstance(intent_value, str) or not intent_value.strip():
-            intent_value = {
-                "upgrade": "upgrade-and-verify",
-                "live_patch": "live-patch",
-            }.get(domain, "diagnosis-only")
+            if (
+                domain == "live_patch"
+                and str(arguments.get("action", "")).strip().lower()
+                == "rollback"
+            ):
+                intent_value = "rollback"
+            else:
+                intent_value = {
+                    "upgrade": "upgrade-and-verify",
+                    "live_patch": "live-patch",
+                }.get(domain, "diagnosis-only")
         entry_domain = arguments.get("entry_domain", domain)
         if not isinstance(entry_domain, str):
             raise TypeError("entry_domain must be a string")
@@ -703,6 +783,14 @@ class _OrchestratedMcpTask:
                 ),
                 f"complete the {intent_value} task",
             )
+        authorized_exceptions = arguments.get("authorized_exceptions")
+        if authorized_exceptions is not None and not isinstance(
+            authorized_exceptions, Mapping
+        ):
+            raise TypeError("authorized_exceptions must be an object")
+        allow_insecure_tls = arguments.get("allow_insecure_tls", True)
+        if not isinstance(allow_insecure_tls, bool):
+            raise TypeError("allow_insecure_tls must be a boolean")
         return TaskIntent.create(
             original_intent=intent_value,
             final_purpose=final_purpose,
@@ -713,6 +801,8 @@ class _OrchestratedMcpTask:
                 arguments,
                 tool_name=tool_name,
             ),
+            authorized_exceptions=authorized_exceptions,
+            allow_insecure_tls=allow_insecure_tls,
         )
 
     def _remember_orchestration(self, context: TaskOrchestrationContext) -> None:
@@ -766,15 +856,27 @@ class _OrchestratedMcpTask:
             }
             if len(current.intent.targets) == 1:
                 current_target = current.intent.targets[0]
+                current_payload = self._target_arguments.get(
+                    current_target.target_id, {}
+                )
                 merged.update(
                     {
                         key: value
-                        for key, value in self._target_arguments.get(
-                            current_target.target_id, {}
-                        ).items()
+                        for key, value in current_payload.items()
                         if key in _REUSABLE_CONNECTION_ARGUMENTS
                     }
                 )
+                if any(
+                    key in current_payload
+                    for key in (
+                        "ssh_password",
+                        "telnet_password",
+                        "redfish_password",
+                    )
+                ) and "ssh_host_key_policy" in current_payload:
+                    merged["ssh_host_key_policy"] = current_payload[
+                        "ssh_host_key_policy"
+                    ]
         if current is not None and not has_ip and not has_targets:
             merged.pop("ip", None)
             merged["targets"] = self._current_target_payloads(arguments)
@@ -782,6 +884,7 @@ class _OrchestratedMcpTask:
             merged.pop("ip", None)
         merged.update(arguments)
         if current is None:
+            merged.setdefault("allow_insecure_tls", True)
             return merged
         if has_ip and not has_targets and len(current.intent.targets) == 1:
             current_target = current.intent.targets[0]
@@ -789,6 +892,14 @@ class _OrchestratedMcpTask:
             merged.setdefault("target_role", current_target.role)
 
         supplied_intent = arguments.get("intent")
+        if (
+            tool_name == "live_patch_run"
+            and (not isinstance(supplied_intent, str) or not supplied_intent.strip())
+        ):
+            supplied_action = str(arguments.get("action", "")).strip().lower()
+            if supplied_action == "rollback":
+                supplied_intent = "rollback"
+                merged["intent"] = supplied_intent
         same_intent = (
             not isinstance(supplied_intent, str)
             or not supplied_intent.strip()
@@ -799,21 +910,81 @@ class _OrchestratedMcpTask:
                 is current.intent.original_intent
             )
         if same_intent:
+            inferred = self._inferred_delivery_strategy(
+                current.intent.original_intent.value,
+                arguments,
+                tool_name=tool_name,
+            )
+            current_delivery = (
+                current.intent.delivery_strategy.value
+                if current.intent.delivery_strategy is not None
+                else ""
+            )
+            selecting_delivery = (
+                current.intent.original_intent
+                is TaskIntentKind.DIAGNOSE_AND_FIX
+                and current_delivery == DeliveryStrategy.SOURCE_ONLY.value
+                and inferred
+                in {
+                    DeliveryStrategy.LIVE_PATCH.value,
+                    DeliveryStrategy.BUILD_UPGRADE.value,
+                }
+            )
             merged.setdefault("intent", current.intent.original_intent.value)
             merged.setdefault("entry_domain", current.intent.entry_domain)
             merged.setdefault("final_purpose", current.intent.final_purpose)
+            current_exceptions = (
+                current.intent.authorization.authorized_exceptions.to_public_dict()
+            )
+            if selecting_delivery:
+                merged.setdefault("authorized_exceptions", current_exceptions)
+                if current.intent.authorization.allow_insecure_tls:
+                    merged.setdefault("allow_insecure_tls", True)
+            else:
+                supplied_exceptions = arguments.get("authorized_exceptions")
+                if supplied_exceptions is None:
+                    merged["authorized_exceptions"] = current_exceptions
+                else:
+                    if not isinstance(supplied_exceptions, Mapping):
+                        raise TypeError("authorized_exceptions must be an object")
+                    requested_exceptions = MutationAuthorizedExceptions.from_value(
+                        {
+                            **current_exceptions,
+                            **dict(supplied_exceptions),
+                        }
+                    ).to_public_dict()
+                    merged["authorized_exceptions"] = {
+                        name: current_exceptions[name]
+                        and requested_exceptions[name]
+                        for name in current_exceptions
+                    }
+                if "allow_insecure_tls" in arguments:
+                    supplied_tls = arguments["allow_insecure_tls"]
+                    if not isinstance(supplied_tls, bool):
+                        raise TypeError("allow_insecure_tls must be a boolean")
+                    merged["allow_insecure_tls"] = (
+                        current.intent.authorization.allow_insecure_tls
+                        and supplied_tls
+                    )
+                elif current.intent.authorization.allow_insecure_tls:
+                    merged["allow_insecure_tls"] = True
             if "delivery_strategy" not in arguments:
-                inferred = self._inferred_delivery_strategy(
-                    current.intent.original_intent.value,
-                    arguments,
-                    tool_name=tool_name,
-                )
                 if inferred is not None:
                     merged["delivery_strategy"] = inferred
                 elif current.intent.delivery_strategy is not None:
                     merged["delivery_strategy"] = (
                         current.intent.delivery_strategy.value
                     )
+        else:
+            merged.setdefault("final_purpose", current.intent.final_purpose)
+            merged.setdefault(
+                "authorized_exceptions",
+                current.intent.authorization.authorized_exceptions.to_public_dict(),
+            )
+            merged.setdefault(
+                "allow_insecure_tls",
+                current.intent.authorization.allow_insecure_tls,
+            )
         return merged
 
     @staticmethod
@@ -838,7 +1009,8 @@ class _OrchestratedMcpTask:
                 {
                     key: value
                     for key, value in raw.items()
-                    if key in (_SHARED_ARGUMENTS | _SECRET_ARGUMENTS) and key != "ip"
+                    if key in (_SHARED_ARGUMENTS | _SECRET_ARGUMENTS)
+                    and key != "ip"
                 }
             )
             payload.update(
@@ -862,13 +1034,7 @@ class _OrchestratedMcpTask:
             for selector in target.credential_selectors
         )
 
-    def bind_intent(
-        self,
-        tool_name: str,
-        arguments: Mapping[str, object],
-        *,
-        persist: bool = True,
-    ) -> None:
+    def bind_intent(self, tool_name: str, arguments: Mapping[str, object]) -> None:
         with self._lock:
             current = self.orchestration
             merged = self._merged_intent_arguments(tool_name, arguments)
@@ -897,8 +1063,7 @@ class _OrchestratedMcpTask:
                 merged,
                 intent,
             )
-        if persist:
-            self._persist_context()
+        self._persist_context()
 
     @staticmethod
     def _explicit_target_id(arguments: Mapping[str, object]) -> str:
@@ -953,6 +1118,13 @@ class _OrchestratedMcpTask:
     ) -> dict[str, object]:
         domain = _TOOL_DOMAINS[tool_name]
         allowed = _DOMAIN_CONNECTION_ARGUMENTS[domain]
+        if arguments.get("_context_authoritative") is True:
+            allowed = allowed | {
+                "debug": _SSH_SECRET_ARGUMENTS | _TELNET_SECRET_ARGUMENTS,
+                "log_analyzer": _SSH_SECRET_ARGUMENTS | _REDFISH_SECRET_ARGUMENTS,
+                "live_patch": _SSH_SECRET_ARGUMENTS | _TELNET_SECRET_ARGUMENTS,
+                "upgrade": _REDFISH_SECRET_ARGUMENTS,
+            }[domain]
         projected = dict(arguments)
         disallowed = (
             ((_SHARED_ARGUMENTS | _SECRET_ARGUMENTS) - allowed)
@@ -974,19 +1146,13 @@ class _OrchestratedMcpTask:
                 )
                 for target in raw_targets
             ]
+        projected.pop("_context_authoritative", None)
         return projected
 
     def arguments_for(
         self, tool_name: str, arguments: Mapping[str, object]
     ) -> dict[str, object]:
-        self.bind_intent(
-            tool_name,
-            arguments,
-            persist=not (
-                arguments.get("_context_authoritative") is True
-                and tool_name in _MUTATION_TOOLS
-            ),
-        )
+        self.bind_intent(tool_name, arguments)
         assert self.orchestration is not None
         merged = dict(self._shared_arguments)
         if (
@@ -1008,7 +1174,7 @@ class _OrchestratedMcpTask:
                         {
                             key: value
                             for key, value in raw_targets[index].items()
-                            if not key.startswith("_")
+                            if key not in _SECRET_ARGUMENTS and not key.startswith("_")
                         }
                     )
                 target_payloads.append(payload)
@@ -1037,7 +1203,6 @@ class _OrchestratedMcpTask:
                 merged["redfish_port"] = target.target.redfish_port
             merged.pop("targets", None)
         merged.pop(_WORKFLOW_ARGUMENT, None)
-        merged.pop("_context_authoritative", None)
         for key in _ORCHESTRATION_ARGUMENTS:
             merged.pop(key, None)
         merged.pop("role", None)
@@ -1048,11 +1213,23 @@ class _OrchestratedMcpTask:
             merged["_task_intent"] = (
                 self.orchestration.intent.original_intent.value
             )
-            merged["_task_delivery_strategy"] = (
+            frozen_delivery_strategy = ""
+            if arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True:
+                frozen_delivery_strategy = str(
+                    arguments.get("delivery_strategy", "")
+                ).strip()
+            merged["_task_delivery_strategy"] = frozen_delivery_strategy or (
                 self.orchestration.intent.delivery_strategy.value
                 if self.orchestration.intent.delivery_strategy is not None
                 else ""
             )
+            merged["_task_authorized_exceptions"] = (
+                self.orchestration.intent.authorization.authorized_exceptions.to_public_dict()
+            )
+            merged[_TASK_AUTHORIZATION_POLICY_ARGUMENT] = (
+                self.orchestration.intent.authorization.to_public_dict()
+            )
+        merged.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
         return merged
 
     def credential_values(self) -> dict[str, str]:
@@ -1383,14 +1560,9 @@ class OrchestratedMcpBackend:
         tool_name: str,
         arguments: Mapping[str, object],
     ) -> bool:
-        if arguments.get("_context_authoritative") is True:
-            task.bind_intent(
-                tool_name,
-                arguments,
-                persist=tool_name not in _MUTATION_TOOLS,
-            )
-            return False
         task.bind_intent(tool_name, arguments)
+        if arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True:
+            return False
         assert task.orchestration is not None
         steps = task.orchestration.intent.steps
         if len(steps) <= 1 or _DOMAIN_TO_TOOL.get(steps[0].domain) != tool_name:
@@ -1611,7 +1783,12 @@ class OrchestratedMcpBackend:
             raw = sections.get(section_name, {})
             if not isinstance(raw, Mapping):
                 raise TypeError(f"workflow.{section_name} must be an object")
-            selected = dict(raw)
+            selected = {
+                key: value
+                for key, value in raw.items()
+                if key not in _WORKFLOW_SECTION_PROTECTED_ARGUMENTS
+                and not str(key).startswith("_")
+            }
         if execution.domain == "live_patch" and execution.edit_intent is not None:
             selected.setdefault("local_path", execution.edit_intent.runtime_artifact)
             selected.setdefault("restart_scope", execution.edit_intent.restart_scope)
@@ -1851,9 +2028,11 @@ class OrchestratedMcpBackend:
                     ),
                 )
             with task.domain_admission(name, arguments, domain_context):
+                projected_arguments = task.arguments_for(name, arguments)
+                projected_arguments.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
                 return callback(
                     resource,
-                    task.arguments_for(name, arguments),
+                    projected_arguments,
                     domain_context,
                 )
 
@@ -1950,14 +2129,7 @@ class RuntimeMcpService:
         self._context_maintenance_last_result: dict[str, object] = {}
 
     def _close_task_resource(self, task: TaskT) -> None:
-        task_id = str(getattr(task, "task_id", ""))
-        if not task_id and isinstance(task, Mapping):
-            task_id = str(task.get("task_id", ""))
-        try:
-            self.backend.close_task(task)
-        finally:
-            if task_id and hasattr(self, "context_runtime"):
-                self.context_runtime.repository.unbind_task(task_id)
+        self.backend.close_task(task)
 
     def _maintain_context_if_due(self) -> None:
         now = time.monotonic()
@@ -2023,6 +2195,19 @@ class RuntimeMcpService:
                     "from workflow sections or the selected mutation tool; otherwise "
                     "remain source-only without asking the user to repeat intent."
                 ),
+            },
+            "authorized_exceptions": {
+                "type": "object",
+                "description": (
+                    "Task-level authorization for narrowly scoped mutation "
+                    "exceptions. A mutation flag cannot authorize itself."
+                ),
+                "properties": {
+                    "force_path": {"type": "boolean", "default": False},
+                    "no_backup": {"type": "boolean", "default": False},
+                    "no_remount": {"type": "boolean", "default": False},
+                },
+                "additionalProperties": False,
             },
             "target_id": {
                 "type": "string",
@@ -2263,6 +2448,18 @@ class RuntimeMcpService:
                                     "corresponding patch created from absence."
                                 ),
                             },
+                            "force_path": {
+                                "type": "boolean",
+                                "default": False,
+                            },
+                            "no_backup": {
+                                "type": "boolean",
+                                "default": False,
+                            },
+                            "no_remount": {
+                                "type": "boolean",
+                                "default": False,
+                            },
                             "expected_current_sha256": {
                                 "type": "string",
                                 "pattern": "^[0-9a-fA-F]{64}$",
@@ -2357,11 +2554,6 @@ class RuntimeMcpService:
                             "allow_insecure_tls": {
                                 "type": "boolean",
                                 "default": True,
-                                "description": (
-                                    "Disable Redfish certificate verification for "
-                                    "the internal-development target. Set false when "
-                                    "the target has a trusted certificate."
-                                ),
                             },
                         },
                         "required": [
@@ -2477,13 +2669,57 @@ class RuntimeMcpService:
                                 "type": "array",
                                 "items": {"type": "string", "minLength": 1},
                             },
+                            "design": {
+                                "type": "object",
+                                "description": (
+                                    "Structured solution design: what_changed, rationale, "
+                                    "invariants, tradeoffs, and rollback when applicable."
+                                ),
+                                "additionalProperties": True,
+                            },
+                            "validation_results": {
+                                "type": "array",
+                                "items": {
+                                    "oneOf": [
+                                        {"type": "string", "minLength": 1},
+                                        {"type": "object"},
+                                    ]
+                                },
+                            },
+                            "source_delivery": {
+                                "type": "string",
+                                "enum": [
+                                    "local_only",
+                                    "committed",
+                                    "pushed",
+                                    "pull_request",
+                                ],
+                                "default": "local_only",
+                            },
                             "artifact_path": {"type": "string"},
                             "artifact_sha256": {
                                 "type": "string",
                                 "pattern": "^[0-9a-fA-F]{64}$",
                             },
                             "product_version": {"type": "string"},
-                            "evidence_ids": {
+                            "component_versions": {
+                                "type": "array",
+                                "items": {
+                                    "oneOf": [
+                                        {"type": "string", "minLength": 1},
+                                        {"type": "object"},
+                                    ]
+                                },
+                            },
+                            "build_commands": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                            },
+                            "build_logs": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                            },
+                            "known_gaps": {
                                 "type": "array",
                                 "items": {"type": "string", "minLength": 1},
                             },
@@ -2513,8 +2749,41 @@ class RuntimeMcpService:
                                 "maximum": 64,
                                 "default": 8,
                             },
+                            "include_closeout_bundle": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": (
+                                    "Return the immutable closeout JSON/Markdown "
+                                    "bundle manifest when the Case becomes terminal."
+                                ),
+                            },
                         },
                         "additionalProperties": True,
+                    },
+                },
+                {
+                    "name": "workflow.next",
+                    "description": (
+                        "Continue an existing Case to the next external gate or "
+                        "terminal result using its frozen targets, credentials, "
+                        "artifacts, authorization, and acceptance plan."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "case_id": {"type": "string", "minLength": 1},
+                            "max_steps": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 64,
+                                "default": 8,
+                            },
+                            "include_closeout_bundle": {
+                                "type": "boolean",
+                                "default": True,
+                            },
+                        },
+                        "additionalProperties": False,
                     },
                 },
             ]
@@ -2548,6 +2817,7 @@ class RuntimeMcpService:
         name: str, arguments: Mapping[str, object]
     ) -> dict[str, object]:
         canonical = dict(arguments)
+        inferred_defaults = False
         for field in ("intent", "delivery_strategy"):
             value = canonical.get(field)
             if isinstance(value, str):
@@ -2560,6 +2830,7 @@ class RuntimeMcpService:
             }.get(name)
             if inferred_intent:
                 canonical["intent"] = inferred_intent
+                inferred_defaults = True
         if name == "live_patch_run":
             action = canonical.get("action")
             if isinstance(action, str):
@@ -2596,10 +2867,12 @@ class RuntimeMcpService:
                 inferred = "build-upgrade"
             canonical["delivery_strategy"] = inferred or "source-only"
         elif not isinstance(delivery, str) or not delivery.strip():
-            if intent == "live-patch":
+            if intent in {"live-patch", "rollback"}:
                 canonical["delivery_strategy"] = "live-patch"
             elif intent == "upgrade-and-verify":
                 canonical["delivery_strategy"] = "build-upgrade"
+        if inferred_defaults:
+            canonical["_context_defaults_inferred"] = True
         return canonical
 
     def call_tool(
@@ -2609,13 +2882,25 @@ class RuntimeMcpService:
         *,
         task_id: str,
         operation_id: str,
+        _context_workflow_step: bool = False,
     ) -> dict[str, object]:
         self._maintain_context_if_due()
-        descriptor = self.catalog.require(name)
         if not isinstance(arguments, Mapping):
             raise TypeError("tool arguments must be an object")
+        arguments = dict(arguments)
+        external_context_marker = (
+            arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True
+            and not _context_workflow_step
+        )
+        for internal_name in _INTERNAL_TASK_ARGUMENTS:
+            arguments.pop(internal_name, None)
+        arguments.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
         arguments = self._canonicalize_tool_arguments(name, arguments)
-        self.catalog.validate_arguments(name, arguments)
+        descriptor = self.catalog.require(name)
+        if descriptor.handler_name is None:
+            self.catalog.validate_arguments(name, arguments)
+        if _context_workflow_step:
+            arguments[CONTEXT_WORKFLOW_STEP_ARGUMENT] = True
         if descriptor.lifecycle == "status":
             status = {
                 "api_version": RUNTIME_API_VERSION,
@@ -2704,6 +2989,23 @@ class RuntimeMcpService:
                             domain_arguments,
                             task_id=task_id,
                             operation_id=derived_id,
+                            _context_workflow_step=True,
+                        )
+                    ),
+                )
+            if name == "workflow.next":
+                return self.context_runtime.workflow_next(
+                    descriptor,
+                    arguments,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                    domain_invoker=lambda operation, domain_arguments, derived_id: (
+                        self.call_tool(
+                            operation,
+                            domain_arguments,
+                            task_id=task_id,
+                            operation_id=derived_id,
+                            _context_workflow_step=True,
                         )
                     ),
                 )
@@ -2720,8 +3022,9 @@ class RuntimeMcpService:
             for key, value in arguments.items()
             if key not in {"case_id", "expected_revision", "idempotency_key"}
             and not key.startswith("_workflow_")
+            and key != "_context_defaults_inferred"
         }
-        if self.context_mode == "authoritative":
+        if self.context_mode == "authoritative" and not external_context_marker:
             domain_arguments.pop(_WORKFLOW_ARGUMENT, None)
             if isinstance(self.backend, OrchestratedMcpBackend):
                 domain_arguments["_context_authoritative"] = True
@@ -2759,6 +3062,13 @@ class RuntimeMcpService:
                 operation_id=operation_id,
                 value=legacy_value,
             )
+        if external_context_marker and isinstance(
+            self.backend, OrchestratedMcpBackend
+        ):
+            legacy_value = executor()
+            if not isinstance(legacy_value, Mapping):
+                raise TypeError("domain operation must return an object")
+            return dict(legacy_value)
         return self.context_runtime.invoke_domain(
             descriptor,
             context_arguments,
@@ -2843,6 +3153,7 @@ class JsonRpcMcpEndpoint:
             "log_bundle_collect": "日志包采集",
             "live_patch_run": "Live Patch",
             "upgrade_run": "固件升级",
+            "workflow.next": "工作流继续",
             "runtime_status": "Target Runtime",
         }.get(tool_name, "MCP 工具调用")
 
@@ -2896,6 +3207,9 @@ class JsonRpcMcpEndpoint:
 
         if not isinstance(value, Mapping):
             return str(value)
+        closeout_markdown = value.get("closeout_markdown")
+        if isinstance(closeout_markdown, str) and closeout_markdown.strip():
+            return closeout_markdown.strip()
         if tool_name == "runtime_status":
             task_count = value.get("task_count", 0)
             persistent = value.get("persistent_task_contexts")
@@ -2933,6 +3247,11 @@ class JsonRpcMcpEndpoint:
                 if isinstance(journal, Mapping)
                 else ""
             )
+            operation_status = (
+                mutation_journal_operation_status(journal)
+                if isinstance(journal, Mapping)
+                else ""
+            )
             next_action = cls._summary_text(value, "next_action", "next_step")
             if isinstance(journal, Mapping) and not next_action:
                 next_action = cls._summary_text(
@@ -2941,12 +3260,14 @@ class JsonRpcMcpEndpoint:
                     "next_action",
                     "next_step",
                 )
-            if stage == "verified":
+            if operation_status == "completed" and stage != "rollback_verified":
                 return f"{label}已完成并验证；结构化结果中保留完整证据。"
             if stage == "replan_required":
                 state = "尚未完成，需要重新规划"
                 next_action = next_action or "修正变更计划后沿用同一任务重新执行"
             elif stage == "rollback_verified":
+                if operation_status == "completed":
+                    return f"{label}回滚已完成并验证；结构化结果中保留完整证据。"
                 state = "尚未完成，已回滚并验证恢复"
                 next_action = next_action or "确认新的变更方案后重新执行"
             elif stage == "verification_failed_terminal":
@@ -2955,6 +3276,15 @@ class JsonRpcMcpEndpoint:
             elif stage == "rollback_verification_failed_terminal":
                 state = "尚未完成，回滚验证失败且流程已终止"
                 next_action = next_action or "先确认目标当前状态，再决定恢复动作"
+            elif operation_status == "mutation_outcome_unknown":
+                state = "尚未完成，变更结果未知"
+                next_action = next_action or "先核对持久化变更日志和目标现状"
+            elif operation_status == "blocked":
+                state = "尚未完成，当前恢复流程受阻"
+                next_action = next_action or "补齐恢复条件后继续同一变更日志"
+            elif operation_status == "failed":
+                state = "尚未完成，变更流程失败"
+                next_action = next_action or "检查结构化证据后重新规划"
             else:
                 stage_text = stage or "unknown"
                 state = f"尚未完成，当前变更日志阶段为 {stage_text}"
@@ -2988,21 +3318,44 @@ class JsonRpcMcpEndpoint:
         tool_name: str | None = None,
         error: bool = False,
     ) -> dict[str, object]:
+        if isinstance(value, ContextToolResult) and str(
+            value.envelope.get("status", "")
+        ) in {
+            "failed",
+            "cancelled",
+            "blocked",
+            "mutation_outcome_unknown",
+        }:
+            error = True
         text = cls._human_summary(tool_name, value, error=error)
         encoded = text.encode("utf-8")
-        if len(encoded) > 4096:
-            text = encoded[:4093].decode("utf-8", errors="ignore") + "..."
+        text_limit = (
+            16_384
+            if isinstance(value, Mapping) and value.get("closeout_markdown")
+            else 4096
+        )
+        if len(encoded) > text_limit:
+            text = encoded[: text_limit - 3].decode("utf-8", errors="ignore") + "..."
         result: dict[str, object] = {
             "content": [{"type": "text", "text": text}],
             "isError": error,
         }
         if isinstance(value, ContextToolResult):
-            result["structuredContent"] = value.envelope
-            if str(value.envelope.get("status", "")) in {
-                "failed",
-                "mutation_outcome_unknown",
+            if tool_name in {
+                "case_read",
+                "evidence_read",
+                "case_close",
+                "case_forget",
+                "phase_record",
+                "workflow.advance",
+                "workflow.next",
             }:
-                result["isError"] = True
+                structured = dict(value.envelope)
+                structured.update(dict(value))
+                structured["agent_envelope"] = dict(value.envelope)
+                result["structuredContent"] = structured
+            else:
+                result["structuredContent"] = value.envelope
         elif isinstance(value, dict):
             result["structuredContent"] = value
         return result

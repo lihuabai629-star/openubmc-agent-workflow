@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 import importlib.util
@@ -11,6 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -130,6 +132,66 @@ class ScriptedSshTransport:
 
 
 class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
+    def test_task_reuses_one_lease_under_concurrent_same_target_calls(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        created: list[object] = []
+
+        def open_lease(**_kwargs):
+            lease = mock.MagicMock()
+            created.append(lease)
+            entered.set()
+            self.assertTrue(release.wait(timeout=2))
+            return lease
+
+        task = target_runtime_adapter.LogBundleMcpTask(
+            "parallel-log-task",
+            redfish_transport_factory=None,
+            ssh_transport_factory=None,
+        )
+        same_target = args()
+        with (
+            mock.patch.object(
+                target_runtime_adapter,
+                "open_log_bundle_runtime_lease",
+                side_effect=open_lease,
+            ),
+            ThreadPoolExecutor(max_workers=4) as pool,
+        ):
+            futures = [pool.submit(task.lease_for, same_target) for _ in range(4)]
+            self.assertTrue(entered.wait(timeout=2))
+            release.set()
+            leases = [future.result(timeout=2) for future in futures]
+
+        try:
+            self.assertEqual(len(created), 1)
+            self.assertTrue(all(lease is leases[0] for lease in leases))
+        finally:
+            task.close()
+
+    def test_task_lru_eviction_closes_only_the_evicted_lease(self) -> None:
+        first = mock.MagicMock()
+        second = mock.MagicMock()
+        task = target_runtime_adapter.LogBundleMcpTask(
+            "log-lru-task",
+            redfish_transport_factory=None,
+            ssh_transport_factory=None,
+            max_cached_leases=1,
+        )
+        with mock.patch.object(
+            target_runtime_adapter,
+            "open_log_bundle_runtime_lease",
+            side_effect=[first, second],
+        ):
+            self.assertIs(task.lease_for(args(ip="bmc-a.example")), first)
+            self.assertIs(task.lease_for(args(ip="bmc-b.example")), second)
+
+        self.assertEqual(task.status()["lease_evictions"], 1)
+        first.close.assert_called_once_with()
+        second.close.assert_not_called()
+        task.close()
+        second.close.assert_called_once_with()
+
     def test_lease_identity_changes_when_direct_password_changes(self) -> None:
         first = target_runtime_adapter._mcp_parse_args(
             {
@@ -216,6 +278,7 @@ class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
                 "case_forget",
                 "phase_record",
                 "workflow.advance",
+                "workflow.next",
                 "runtime_status",
             ],
         )

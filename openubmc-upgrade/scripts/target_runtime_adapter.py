@@ -44,6 +44,7 @@ def _load_runtime():
 _runtime = _load_runtime()
 FreshVerificationContext = _runtime.FreshVerificationContext
 MutationAuthorization = _runtime.MutationAuthorization
+TaskAuthorizationPolicy = _runtime.TaskAuthorizationPolicy
 MutationContext = _runtime.MutationContext
 MutationRequest = _runtime.MutationRequest
 MutationTransactionResult = _runtime.MutationTransactionResult

@@ -800,6 +800,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 "case_forget",
                 "phase_record",
                 "workflow.advance",
+                "workflow.next",
                 "runtime_status",
             ],
         )

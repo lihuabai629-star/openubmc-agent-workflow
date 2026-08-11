@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
 from typing import Callable
 import uuid
 
@@ -642,53 +643,64 @@ class LogBundleMcpTask:
             tuple[object, ...], LogBundleRuntimeLease
         ] = OrderedDict()
         self._lease_evictions = 0
+        self._lock = threading.RLock()
 
     def lease_for(self, args) -> LogBundleRuntimeLease:
         key = _lease_key(args)
-        lease = self._leases.get(key)
-        if lease is not None:
-            self._leases.move_to_end(key)
-            return lease
-        lease = open_log_bundle_runtime_lease(
-            args=args,
-            task_id=self.task_id,
-            redfish_transport=(
-                self._redfish_transport_factory(args)
-                if self._redfish_transport_factory is not None
-                else None
-            ),
-            ssh_transport=(
-                self._ssh_transport_factory(args)
-                if self._ssh_transport_factory is not None
-                else None
-            ),
-        )
-        if len(self._leases) >= self.max_cached_leases:
-            _, victim = self._leases.popitem(last=False)
+        victim = None
+        with self._lock:
+            lease = self._leases.get(key)
+            if lease is not None:
+                self._leases.move_to_end(key)
+                return lease
+            lease = open_log_bundle_runtime_lease(
+                args=args,
+                task_id=self.task_id,
+                redfish_transport=(
+                    self._redfish_transport_factory(args)
+                    if self._redfish_transport_factory is not None
+                    else None
+                ),
+                ssh_transport=(
+                    self._ssh_transport_factory(args)
+                    if self._ssh_transport_factory is not None
+                    else None
+                ),
+            )
+            if len(self._leases) >= self.max_cached_leases:
+                _, victim = self._leases.popitem(last=False)
+                self._lease_evictions += 1
+            self._leases[key] = lease
+        if victim is not None:
             victim.close()
-            self._lease_evictions += 1
-        self._leases[key] = lease
         return lease
 
     def maintain(self) -> int:
+        with self._lock:
+            leases = list(self._leases.values())
         return sum(
             lease.task_run.prune_dead_connections()
-            for lease in self._leases.values()
+            for lease in leases
         )
 
     def status(self) -> dict[str, object]:
+        with self._lock:
+            leases = list(self._leases.values())
+            evictions = self._lease_evictions
         return {
             "task_id": self.task_id,
-            "lease_count": len(self._leases),
+            "lease_count": len(leases),
             "lease_cache_limit": self.max_cached_leases,
-            "lease_evictions": self._lease_evictions,
-            "leases": [lease.runtime_status() for lease in self._leases.values()],
+            "lease_evictions": evictions,
+            "leases": [lease.runtime_status() for lease in leases],
         }
 
     def close(self) -> None:
-        for lease in self._leases.values():
+        with self._lock:
+            leases = list(self._leases.values())
+            self._leases.clear()
+        for lease in leases:
             lease.close()
-        self._leases.clear()
 
 
 class LogBundleMcpBackend:

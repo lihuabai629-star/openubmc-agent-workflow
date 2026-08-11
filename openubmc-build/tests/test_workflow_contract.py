@@ -128,10 +128,10 @@ class BuildContractTestCase(unittest.TestCase):
             operation_id="record-developer",
         )
         waiting_build = self.service.call_tool(
-            "workflow.advance",
+            "workflow.next",
             {"case_id": case_id},
             task_id=self.task_id,
-            operation_id="advance-to-build",
+            operation_id="next-to-build",
         )
         self.assertEqual(waiting_build["required_phase_type"], "build.artifact")
         return case_id
@@ -233,6 +233,7 @@ class BuildSkillContractTests(unittest.TestCase):
             "artifact_sha256",
             "product_version",
             "evidence_ids",
+            "workflow.next",
             "workflow.advance",
         ):
             self.assertIn(field, skill)
@@ -284,10 +285,10 @@ class BuildWorkflowContractTests(BuildContractTestCase):
         self.record_build(case_id, key="build-one")
 
         completed = self.service.call_tool(
-            "workflow.advance",
+            "workflow.next",
             {"case_id": case_id},
             task_id=self.task_id,
-            operation_id="advance-delivery",
+            operation_id="next-delivery",
         )
 
         self.assertTrue(completed["completed"])
@@ -299,6 +300,7 @@ class BuildWorkflowContractTests(BuildContractTestCase):
         self.assertEqual(upgrade["artifact_path"], "/tmp/openubmc-contract.hpm")
         self.assertEqual(upgrade["artifact_sha256"], "a" * 64)
         self.assertEqual(upgrade["product_version"], "2.0.0")
+        self.assertTrue(upgrade["allow_insecure_tls"])
         case = self.read_case(case_id, "read-build-evidence")
         self.assertEqual(
             case["workflow_phase_values"]["build.artifact"]["evidence_ids"],
@@ -314,10 +316,17 @@ class BuildWorkflowContractTests(BuildContractTestCase):
     def test_failed_build_can_retry_in_the_same_case_without_an_artifact(self) -> None:
         case_id = self.advance_to_build()
         failed = self.record_build(case_id, key="build-failed", status="failed")
+        waiting_retry = self.service.call_tool(
+            "workflow.advance",
+            {"case_id": case_id},
+            task_id=self.task_id,
+            operation_id="advance-build-retry",
+        )
         completed = self.record_build(case_id, key="build-retry")
 
         self.assertEqual(failed["phase_attempt"], 1)
         self.assertEqual(failed["artifact_path"], "")
+        self.assertEqual(waiting_retry["required_phase_type"], "build.artifact")
         self.assertEqual(completed["phase_attempt"], 2)
         self.assertEqual(completed["artifact_sha256"], "a" * 64)
 
@@ -358,10 +367,10 @@ class BuildWorkflowContractTests(BuildContractTestCase):
         case_id = self.advance_to_build()
         self.record_build(case_id, key="build-one", digest="a" * 64, version="2.0.0")
         first = self.service.call_tool(
-            "workflow.advance",
+            "workflow.next",
             {"case_id": case_id},
             task_id=self.task_id,
-            operation_id="advance-first-delivery",
+            operation_id="next-first-delivery",
         )
         self.assertTrue(first["completed"])
 
@@ -372,10 +381,10 @@ class BuildWorkflowContractTests(BuildContractTestCase):
             version="2.0.1",
         )
         second = self.service.call_tool(
-            "workflow.advance",
+            "workflow.next",
             {"case_id": case_id},
             task_id=self.task_id,
-            operation_id="advance-second-delivery",
+            operation_id="next-second-delivery",
         )
 
         self.assertEqual(second_build["phase_attempt"], 2)

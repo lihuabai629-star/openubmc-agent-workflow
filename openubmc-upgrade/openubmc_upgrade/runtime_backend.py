@@ -45,6 +45,7 @@ from openubmc_target_runtime import (  # noqa: E402
     ResolvedRedfishCredentials,
     TargetPolicy,
     TargetSpec,
+    TaskAuthorizationPolicy,
     load_selected_credentials_file,
 )
 
@@ -228,6 +229,18 @@ def _argument_text(arguments: Mapping[str, object], name: str) -> str:
     return str(value).strip() if isinstance(value, (str, int)) else ""
 
 
+def _argument_bool(
+    arguments: Mapping[str, object],
+    name: str,
+    *,
+    default: bool = False,
+) -> bool:
+    value = arguments.get(name, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a boolean")
+    return value
+
+
 def _argument_timeout(
     arguments: Mapping[str, object],
     name: str,
@@ -390,7 +403,7 @@ class _UpgradeTask:
             _argument_text(arguments, "redfish_user_env"),
             _argument_text(arguments, "redfish_password_env"),
             _argument_text(arguments, "redfish_password"),
-            bool(arguments.get("allow_insecure_tls", True)),
+            _argument_bool(arguments, "allow_insecure_tls", default=True),
         )
 
     def binding_for(self, arguments: Mapping[str, object]) -> _UpgradeBinding:
@@ -510,7 +523,11 @@ class UpgradeMcpBackend:
             self.redfish_transport_factory(arguments)
             if self.redfish_transport_factory is not None
             else RedfishUpgradeTransport(
-                verify_tls=not bool(arguments.get("allow_insecure_tls", True)),
+                verify_tls=not _argument_bool(
+                    arguments,
+                    "allow_insecure_tls",
+                    default=True,
+                ),
                 timeout=_argument_timeout(arguments, "redfish_timeout", 30),
             )
         )
@@ -531,7 +548,9 @@ class UpgradeMcpBackend:
         arguments: Mapping[str, object],
         *,
         upload_timeout: float,
+        mark_effects_started: Callable[[], None] | None = None,
     ) -> dict[str, object]:
+        mark_effects = mark_effects_started or (lambda: None)
         multipart_uri = update_service.get("MultipartHttpPushUri")
         http_push_uri = update_service.get("HttpPushUri")
         actions = update_service.get("Actions")
@@ -542,6 +561,7 @@ class UpgradeMcpBackend:
         )
         if isinstance(multipart_uri, str) and multipart_uri:
             body, boundary = _multipart_body(artifact, artifact_bytes)
+            mark_effects()
             response = session.request_json(
                 "POST",
                 multipart_uri,
@@ -551,6 +571,7 @@ class UpgradeMcpBackend:
             )
             method = "MultipartHttpPushUri"
         elif isinstance(http_push_uri, str) and http_push_uri:
+            mark_effects()
             response = session.request_json(
                 "POST",
                 http_push_uri,
@@ -566,6 +587,7 @@ class UpgradeMcpBackend:
                 raise ValueError(
                     "SimpleUpdate requires an advertised target and a BMC-reachable image_uri"
                 )
+            mark_effects()
             response = session.request_json(
                 "POST",
                 target,
@@ -831,17 +853,31 @@ class UpgradeMcpBackend:
             sha256=expected_sha,
             product_version=product_version,
         )
-        intent = _argument_text(arguments, "_task_intent") or _argument_text(
-            arguments, "intent"
+        allow_insecure_tls = _argument_bool(
+            arguments,
+            "allow_insecure_tls",
+            default=True,
         )
-        authorization = MutationAuthorization.from_task_intent(
-            intent,
-            delivery_strategy=_argument_text(
-                arguments,
-                "_task_delivery_strategy",
+        raw_policy = arguments.get("_task_authorization_policy")
+        if raw_policy is not None:
+            if not isinstance(raw_policy, Mapping):
+                raise TypeError("_task_authorization_policy must be an object")
+            authorization = TaskAuthorizationPolicy.from_public_dict(raw_policy)
+        else:
+            intent = _argument_text(arguments, "_task_intent") or _argument_text(
+                arguments, "intent"
             )
-            or _argument_text(arguments, "delivery_strategy"),
-        )
+            authorization = MutationAuthorization.from_task_intent(
+                intent,
+                delivery_strategy=_argument_text(
+                    arguments,
+                    "_task_delivery_strategy",
+                )
+                or _argument_text(arguments, "delivery_strategy"),
+                allow_insecure_tls=allow_insecure_tls,
+            )
+        if allow_insecure_tls:
+            authorization.require_insecure_tls()
         binding = task.binding_for(arguments)
         minimum_target_epoch = arguments.get("_minimum_target_epoch", 0)
         if (
@@ -1098,7 +1134,6 @@ class UpgradeMcpBackend:
         )
         if upload_timeout <= 0:
             context.raise_if_stopped()
-        mark_effects_started()
         try:
             upload = self._upload(
                 session,
@@ -1107,6 +1142,7 @@ class UpgradeMcpBackend:
                 artifact_bytes,
                 arguments,
                 upload_timeout=upload_timeout,
+                mark_effects_started=mark_effects_started,
             )
         except RedfishHttpError as exc:
             if 400 <= exc.status < 500:

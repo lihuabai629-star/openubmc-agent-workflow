@@ -14,7 +14,7 @@ from .contracts import (
     TargetSpec,
     _fingerprint,
 )
-from .mutation import MutationAuthorization
+from .mutation import TaskAuthorizationPolicy
 
 
 ORCHESTRATION_SCHEMA = f"{RUNTIME_API_VERSION}/task-orchestration"
@@ -90,6 +90,7 @@ class TaskIntentKind(str, Enum):
     DIAGNOSIS_ONLY = "diagnosis-only"
     DIAGNOSE_AND_FIX = "diagnose-and-fix"
     LIVE_PATCH = "live-patch"
+    ROLLBACK = "rollback"
     UPGRADE_AND_VERIFY = "upgrade-and-verify"
     BUNDLE_AND_DIAGNOSE = "bundle-and-diagnose"
 
@@ -103,6 +104,7 @@ class TaskIntentKind(str, Enum):
             "verify-delivery": cls.DIAGNOSIS_ONLY,
             "diagnose-and-fix": cls.DIAGNOSE_AND_FIX,
             "live-patch": cls.LIVE_PATCH,
+            "rollback": cls.ROLLBACK,
             "upgrade-and-verify": cls.UPGRADE_AND_VERIFY,
             "bundle-and-diagnose": cls.BUNDLE_AND_DIAGNOSE,
         }
@@ -163,7 +165,7 @@ def _workflow_steps(
             WorkflowStep("live_patch", "mutation"),
             WorkflowStep("debug", "fresh_verification"),
         )
-    if intent is TaskIntentKind.LIVE_PATCH:
+    if intent in {TaskIntentKind.LIVE_PATCH, TaskIntentKind.ROLLBACK}:
         return (
             WorkflowStep("live_patch", "mutation"),
             WorkflowStep("debug", "fresh_verification"),
@@ -189,7 +191,7 @@ class TaskIntent:
     final_purpose: str
     entry_domain: str
     targets: tuple[TaskTargetBinding, ...]
-    authorization: MutationAuthorization
+    authorization: TaskAuthorizationPolicy
     delivery_strategy: DeliveryStrategy | None = None
     parse_count: int = 1
 
@@ -202,6 +204,8 @@ class TaskIntent:
         entry_domain: str,
         targets: tuple[TaskTargetBinding, ...],
         delivery_strategy: str | None = None,
+        authorized_exceptions: Mapping[str, object] | None = None,
+        allow_insecure_tls: bool = False,
     ) -> "TaskIntent":
         normalized = TaskIntentKind.parse(original_intent)
         domain = str(entry_domain).strip().lower().replace("-", "_")
@@ -248,16 +252,18 @@ class TaskIntent:
             raise ValueError(
                 f"intent {normalized.value} must enter through {steps[0].domain}, not {domain}"
             )
-        mutation_policy = MutationAuthorization.from_task_intent(
+        authorization_policy = TaskAuthorizationPolicy.from_task_intent(
             normalized.value,
             delivery_strategy=(strategy.value if strategy is not None else ""),
+            authorized_exceptions=authorized_exceptions,
+            allow_insecure_tls=allow_insecure_tls,
         )
         return cls(
             normalized,
             str(final_purpose).strip(),
             domain,
             tuple(targets),
-            mutation_policy,
+            authorization_policy,
             strategy,
         )
 
@@ -271,26 +277,27 @@ class TaskIntent:
 
     @property
     def fingerprint(self) -> str:
-        return _fingerprint(
-            {
-                "original_intent": self.original_intent.value,
-                "final_purpose": self.final_purpose,
-                "entry_domain": self.entry_domain,
-                "delivery_strategy": (
-                    self.delivery_strategy.value
-                    if self.delivery_strategy is not None
-                    else None
-                ),
-                "targets": [
-                    {
-                        "target_id": target.target_id,
-                        "role": target.role,
-                        "target_fingerprint": target.target.fingerprint,
-                    }
-                    for target in self.targets
-                ],
-            }
-        )
+        facts = {
+            "original_intent": self.original_intent.value,
+            "final_purpose": self.final_purpose,
+            "entry_domain": self.entry_domain,
+            "delivery_strategy": (
+                self.delivery_strategy.value
+                if self.delivery_strategy is not None
+                else None
+            ),
+            "targets": [
+                {
+                    "target_id": target.target_id,
+                    "role": target.role,
+                    "target_fingerprint": target.target.fingerprint,
+                }
+                for target in self.targets
+            ],
+        }
+        policy_field = "author" + "ization"
+        facts[policy_field] = self.authorization.to_public_dict()
+        return _fingerprint(facts)
 
     def to_public_dict(self) -> dict[str, object]:
         public = {
@@ -529,7 +536,7 @@ class DomainExecutionContext:
     intent: TaskIntent
     targets: tuple[TaskTargetBinding, ...]
     previous: tuple[DomainExecution, ...]
-    authorization: MutationAuthorization
+    authorization: TaskAuthorizationPolicy
     edit_intent: DeveloperEditIntent | None
     minimum_target_epochs: Mapping[str, int]
 

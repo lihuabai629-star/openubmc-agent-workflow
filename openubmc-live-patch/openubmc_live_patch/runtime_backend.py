@@ -43,6 +43,7 @@ from openubmc_target_runtime import (  # noqa: E402
     ResolvedTelnetCredentials,
     TargetPolicy,
     TargetSpec,
+    TaskAuthorizationPolicy,
     load_selected_credentials_file,
 )
 
@@ -69,6 +70,18 @@ class _RootMountState:
 def _argument_text(arguments: Mapping[str, object], name: str) -> str:
     value = arguments.get(name, "")
     return str(value).strip() if isinstance(value, (str, int)) else ""
+
+
+def _argument_bool(
+    arguments: Mapping[str, object],
+    name: str,
+    *,
+    default: bool = False,
+) -> bool:
+    value = arguments.get(name, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a boolean")
+    return value
 
 
 def _default_credential_loader(
@@ -716,7 +729,42 @@ class LivePatchMcpBackend:
             action = "live_patch"
         if action not in {"live_patch", "rollback"}:
             raise ValueError("Live Patch action must be apply or rollback")
-        allow_outside_roots = bool(arguments.get("force_path", False))
+        raw_policy = arguments.get("_task_authorization_policy")
+        if raw_policy is not None:
+            if not isinstance(raw_policy, Mapping):
+                raise TypeError("_task_authorization_policy must be an object")
+            authorization = TaskAuthorizationPolicy.from_public_dict(raw_policy)
+        else:
+            intent = _argument_text(arguments, "_task_intent") or _argument_text(
+                arguments, "intent"
+            )
+            authorized_exceptions = arguments.get(
+                "_task_authorized_exceptions",
+                arguments.get("authorized_exceptions"),
+            )
+            if authorized_exceptions is not None and not isinstance(
+                authorized_exceptions, Mapping
+            ):
+                raise TypeError("authorized_exceptions must be an object")
+            authorization = MutationAuthorization.from_task_intent(
+                intent,
+                delivery_strategy=_argument_text(
+                    arguments,
+                    "_task_delivery_strategy",
+                )
+                or _argument_text(arguments, "delivery_strategy"),
+                authorized_exceptions=authorized_exceptions,
+            )
+        allow_outside_roots = _argument_bool(arguments, "force_path")
+        no_backup = _argument_bool(arguments, "no_backup")
+        no_remount = _argument_bool(arguments, "no_remount")
+        for exception_name, enabled in (
+            ("force_path", allow_outside_roots),
+            ("no_backup", no_backup),
+            ("no_remount", no_remount),
+        ):
+            if enabled:
+                authorization.require_exception(exception_name)
         remote = _validate_remote_path(
             _argument_text(arguments, "remote_path"),
             allow_outside_roots=allow_outside_roots,
@@ -730,17 +778,6 @@ class LivePatchMcpBackend:
         if _SAFE_MODE.fullmatch(mode) is None:
             raise ValueError("Live Patch mode must be a 3- or 4-digit octal value")
         restart_scope = _argument_text(arguments, "restart_scope") or "none"
-        intent = _argument_text(arguments, "_task_intent") or _argument_text(
-            arguments, "intent"
-        )
-        authorization = MutationAuthorization.from_task_intent(
-            intent,
-            delivery_strategy=_argument_text(
-                arguments,
-                "_task_delivery_strategy",
-            )
-            or _argument_text(arguments, "delivery_strategy"),
-        )
         binding = task.binding_for(arguments)
         minimum_target_epoch = arguments.get("_minimum_target_epoch", 0)
         if (
@@ -794,8 +831,6 @@ class LivePatchMcpBackend:
         )
         backup_dir = posixpath.dirname(backup_probe)
         backup = f"{backup_dir}/{PurePosixPath(remote).name}.bak.{token}"
-        no_backup = bool(arguments.get("no_backup", False))
-        no_remount = bool(arguments.get("no_remount", False))
         expected_metadata: dict[str, int | str] = {}
 
         def apply(execution) -> dict[str, object]:
@@ -1046,7 +1081,7 @@ class LivePatchMcpBackend:
         mode: str,
         restart_scope: str,
     ) -> dict[str, object]:
-        remove_created = bool(arguments.get("remove_created", False))
+        remove_created = _argument_bool(arguments, "remove_created")
         backup_text = _argument_text(arguments, "backup_path")
         expected_current_sha = _argument_text(
             arguments,
@@ -1068,7 +1103,7 @@ class LivePatchMcpBackend:
                 backup_text,
                 allowed_roots=("/tmp/",),
             )
-        no_remount = bool(arguments.get("no_remount", False))
+        no_remount = _argument_bool(arguments, "no_remount")
         token = hashlib.sha256(context.operation_id.encode("utf-8")).hexdigest()[:16]
         expected: dict[str, int | str] = {}
 
@@ -1290,7 +1325,7 @@ class LivePatchMcpBackend:
                 "no_remount": no_remount,
                 "remove_created": remove_created,
                 "expected_current_sha256": expected_current_sha,
-                "force_path": bool(arguments.get("force_path", False)),
+                "force_path": _argument_bool(arguments, "force_path"),
             },
             apply=apply,
             verify=verify,

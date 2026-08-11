@@ -22,7 +22,6 @@ from _source_root import resolve_source_root
 from _target_runtime_adapter import _load_runtime_module, open_debug_runtime_lease
 import workflow_remote
 from _remote_common import (
-    DEFAULT_SSH_HOST_KEY_POLICY,
     SSH_HOST_KEY_POLICY_ENV,
     SSH_KNOWN_HOSTS_FILE_ENV,
 )
@@ -89,6 +88,18 @@ _TRANSPORT_STRING_OPTIONS = {
     "ssh_known_hosts_file",
 }
 _TRANSPORT_BOOLEAN_OPTIONS = {"allow_insecure_host_key"}
+
+
+def _boolean_argument(
+    arguments: Mapping[str, object],
+    name: str,
+    *,
+    default: bool = False,
+) -> bool:
+    value = arguments.get(name, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a boolean")
+    return value
 
 
 def _workflow_argv(arguments: Mapping[str, object]) -> list[str]:
@@ -179,7 +190,7 @@ def _lease_key(args) -> tuple[object, ...]:
     host_key_policy = str(
         getattr(args, "ssh_host_key_policy", "")
         or os.environ.get(SSH_HOST_KEY_POLICY_ENV, "")
-        or DEFAULT_SSH_HOST_KEY_POLICY
+        or "insecure"
     ).strip().lower()
     known_hosts_file = str(
         getattr(args, "ssh_known_hosts_file", "")
@@ -471,7 +482,7 @@ class DebugMcpBackend:
             for name in _TRANSPORT_STRING_OPTIONS:
                 setattr(args, name, str(bounded.get(name, "")))
             for name in _TRANSPORT_BOOLEAN_OPTIONS:
-                setattr(args, name, bool(bounded.get(name, False)))
+                setattr(args, name, _boolean_argument(bounded, name))
             args.fast_snapshot = fast_object_alarm or fast_mdb
             workflow_remote._validate_numeric_args(args)
             workflow_remote.validate_workflow_inputs(args)

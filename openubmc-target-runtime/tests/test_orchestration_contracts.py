@@ -109,6 +109,8 @@ class OrchestrationContractTests(unittest.TestCase):
         *,
         entry_domain: str = "debug",
         delivery_strategy: str | None = None,
+        authorized_exceptions: dict[str, object] | None = None,
+        allow_insecure_tls: bool = False,
     ) -> TaskIntent:
         return TaskIntent.create(
             original_intent=value,
@@ -116,6 +118,8 @@ class OrchestrationContractTests(unittest.TestCase):
             entry_domain=entry_domain,
             targets=(self.reference, self.candidate),
             delivery_strategy=delivery_strategy,
+            authorized_exceptions=authorized_exceptions,
+            allow_insecure_tls=allow_insecure_tls,
         )
 
     def test_intent_fixtures_define_the_public_workflow_steps(self) -> None:
@@ -174,6 +178,49 @@ class OrchestrationContractTests(unittest.TestCase):
         self.assertEqual(
             build_upgrade.to_public_dict()["delivery_strategy"],
             "build-upgrade",
+        )
+
+    def test_direct_rollback_is_a_distinct_task_intent(self) -> None:
+        rollback = self.intent("rollback", entry_domain="live_patch")
+
+        self.assertIs(rollback.original_intent, TaskIntentKind.ROLLBACK)
+        self.assertEqual(
+            [step.key for step in rollback.steps],
+            ["live_patch:mutation", "debug:fresh_verification"],
+        )
+        rollback.authorization.require("rollback")
+        with self.assertRaises(PermissionError):
+            rollback.authorization.require("live_patch")
+
+    def test_task_intent_binds_authorized_mutation_exceptions_once(self) -> None:
+        intent = self.intent(
+            "diagnose-and-fix",
+            delivery_strategy="live-patch",
+            authorized_exceptions={"no_backup": True},
+        )
+
+        intent.authorization.require_exception("no_backup")
+        with self.assertRaises(PermissionError):
+            intent.authorization.require_exception("force_path")
+        self.assertEqual(
+            intent.to_public_dict()["authorization"]["authorized_exceptions"],
+            {
+                "force_path": False,
+                "no_backup": True,
+                "no_remount": False,
+            },
+        )
+
+    def test_task_intent_binds_insecure_tls_authorization_once(self) -> None:
+        intent = self.intent(
+            "diagnose-and-fix",
+            delivery_strategy="build-upgrade",
+            allow_insecure_tls=True,
+        )
+
+        intent.authorization.require("upgrade").require_insecure_tls()
+        self.assertTrue(
+            intent.to_public_dict()["authorization"]["allow_insecure_tls"]
         )
 
     def test_mutation_backend_result_has_one_typed_epoch_adapter(self) -> None:
@@ -576,39 +623,7 @@ class OrchestrationContractTests(unittest.TestCase):
         "openubmc_target_runtime.mcp.load_selected_credentials_file",
         return_value={},
     )
-    def test_mcp_direct_credentials_follow_same_process_continuation(
-        self,
-        _load_selected_credentials_file,
-    ) -> None:
-        domain = RecordingMcpBackend()
-        backend = OrchestratedMcpBackend({"debug_run": domain})
-        task = backend.open_task("direct-credential-continuation")
-        backend.debug_run(
-            task,
-            {
-                "ip": "192.0.2.12",
-                "ssh_user": "root",
-                "ssh_password": "direct-ssh-password",
-                "telnet_user": "root",
-                "telnet_password": "direct-telnet-password",
-            },
-            object(),
-        )
-        backend.debug_run(task, {"problem": "continue"}, object())
-
-        continued = domain.calls[-1][1]
-        self.assertEqual(continued["ssh_password"], "direct-ssh-password")
-        self.assertEqual(continued["telnet_password"], "direct-telnet-password")
-        self.assertNotIn(
-            "direct-ssh-password",
-            json.dumps(backend.task_status(task), sort_keys=True),
-        )
-
-    @mock.patch(
-        "openubmc_target_runtime.mcp.load_selected_credentials_file",
-        return_value={},
-    )
-    def test_mcp_explicit_target_rebind_resets_ports_and_reuses_credentials(
+    def test_mcp_explicit_target_rebind_resets_connection_scope(
         self,
         _load_selected_credentials_file,
     ) -> None:
@@ -651,24 +666,24 @@ class OrchestrationContractTests(unittest.TestCase):
         self.assertEqual(call["ip"], "192.0.2.99")
         self.assertEqual(call["ssh_port"], 22)
         self.assertEqual(call["telnet_port"], 23)
-        self.assertEqual(call["ssh_user_env"], "OLD_SSH_USER")
-        self.assertEqual(call["ssh_password_env"], "OLD_SSH_PASSWORD")
-        self.assertEqual(call["ssh_identity_file"], "/tmp/old-identity")
-        self.assertEqual(call["telnet_user_env"], "OLD_TELNET_USER")
-        self.assertEqual(call["telnet_password_env"], "OLD_TELNET_PASSWORD")
-        self.assertEqual(call["ssh_host_key_policy"], "accept-new")
-        self.assertEqual(call["ssh_known_hosts_file"], "/tmp/old-known-hosts")
-        self.assertTrue(call["allow_insecure_host_key"])
-        unrelated_keys = {
+        stale_keys = {
             "ssh_user",
+            "ssh_user_env",
+            "ssh_password_env",
+            "ssh_identity_file",
             "telnet_user",
+            "telnet_user_env",
+            "telnet_password_env",
             "redfish_port",
             "redfish_user",
             "redfish_user_env",
             "redfish_password_env",
+            "ssh_host_key_policy",
+            "ssh_known_hosts_file",
+            "allow_insecure_host_key",
             "allow_insecure_tls",
         }
-        for key in unrelated_keys:
+        for key in stale_keys:
             self.assertNotIn(key, call)
         status = backend.task_status(task)
         intent = status["orchestration"]["intent"]
@@ -681,7 +696,7 @@ class OrchestrationContractTests(unittest.TestCase):
             {"ssh": 22, "telnet": 23, "redfish": 443},
         )
         self.assertEqual(
-            target["target"]["policy"]["ssh_host_key_policy"], "accept-new"
+            target["target"]["policy"]["ssh_host_key_policy"], "insecure"
         )
         self.assertEqual(len(status["orchestration_history"]), 1)
 
@@ -689,7 +704,7 @@ class OrchestrationContractTests(unittest.TestCase):
         "openubmc_target_runtime.mcp.load_selected_credentials_file",
         return_value={},
     )
-    def test_mcp_explicit_target_set_reuses_common_credentials_and_resets_ports(
+    def test_mcp_explicit_target_set_rebind_resets_connection_scope(
         self,
         _load_selected_credentials_file,
     ) -> None:
@@ -742,10 +757,10 @@ class OrchestrationContractTests(unittest.TestCase):
         for target in targets:
             self.assertEqual(target["ssh_port"], 22)
             self.assertEqual(target["telnet_port"], 23)
-            self.assertEqual(target["ssh_user_env"], "OLD_SSH_USER")
-            self.assertEqual(target["telnet_user_env"], "OLD_TELNET_USER")
             for key in (
                 "redfish_port",
+                "ssh_user_env",
+                "telnet_user_env",
                 "redfish_user_env",
                 "redfish_password",
             ):
@@ -760,6 +775,150 @@ class OrchestrationContractTests(unittest.TestCase):
                 {"ssh": 22, "telnet": 23, "redfish": 443},
             ],
         )
+
+    @mock.patch(
+        "openubmc_target_runtime.mcp.load_selected_credentials_file",
+        return_value={},
+    )
+    def test_explicit_target_rebind_preserves_tls_authorization_until_revoked(
+        self,
+        _load_selected_credentials_file,
+    ) -> None:
+        for label, rebound in (
+            ("ip", {"ip": "192.0.2.99"}),
+            (
+                "targets",
+                {
+                    "targets": [
+                        {
+                            "ip": "192.0.2.99",
+                            "target_id": "candidate",
+                            "role": "candidate",
+                        }
+                    ]
+                },
+            ),
+        ):
+            with self.subTest(rebind=label):
+                domain = RecordingMcpBackend()
+                backend = OrchestratedMcpBackend({"debug_run": domain})
+                task = backend.open_task(f"tls-rebind-{label}")
+                operation_context = object()
+                backend.debug_run(
+                    task,
+                    {
+                        "intent": "diagnosis-only",
+                        "final_purpose": "retain the frozen TLS authorization",
+                        "ip": "192.0.2.11",
+                        "allow_insecure_tls": True,
+                    },
+                    operation_context,
+                )
+                backend.debug_run(task, rebound, operation_context)
+                status = backend.task_status(task)
+                self.assertTrue(
+                    status["orchestration"]["intent"]["authorization"][
+                        "allow_insecure_tls"
+                    ]
+                )
+
+                revoked = dict(rebound)
+                revoked["allow_insecure_tls"] = False
+                backend.debug_run(task, revoked, operation_context)
+                status = backend.task_status(task)
+                self.assertFalse(
+                    status["orchestration"]["intent"]["authorization"][
+                        "allow_insecure_tls"
+                    ]
+                )
+                backend.close_task(task)
+
+    @mock.patch(
+        "openubmc_target_runtime.mcp.load_selected_credentials_file",
+        return_value={},
+    )
+    def test_same_intent_cannot_expand_frozen_authorization(
+        self,
+        _load_selected_credentials_file,
+    ) -> None:
+        domain = RecordingMcpBackend()
+        backend = OrchestratedMcpBackend(
+            {"debug_run": domain, "live_patch_run": domain}
+        )
+        task = backend.open_task("frozen-authorization")
+        operation_context = object()
+        backend.debug_run(
+            task,
+            {
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "live-patch",
+                "final_purpose": "preserve the original authorization boundary",
+                "ip": "192.0.2.11",
+                "allow_insecure_tls": False,
+            },
+            operation_context,
+        )
+
+        backend.live_patch_run(
+            task,
+            {
+                "local_path": "/tmp/unit.lua",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "force_path": True,
+                "authorized_exceptions": {"force_path": True},
+                "allow_insecure_tls": True,
+            },
+            operation_context,
+        )
+
+        mutation_arguments = domain.calls[-1][1]
+        policy = mutation_arguments["_task_authorization_policy"]
+        self.assertFalse(policy["authorized_exceptions"]["force_path"])
+        self.assertFalse(policy["allow_insecure_tls"])
+        self.assertTrue(mutation_arguments["force_path"])
+        backend.close_task(task)
+
+    @mock.patch(
+        "openubmc_target_runtime.mcp.load_selected_credentials_file",
+        return_value={},
+    )
+    def test_explicit_delivery_selection_can_freeze_new_authorization(
+        self,
+        _load_selected_credentials_file,
+    ) -> None:
+        domain = RecordingMcpBackend()
+        backend = OrchestratedMcpBackend(
+            {"debug_run": domain, "live_patch_run": domain}
+        )
+        task = backend.open_task("authorization-selection")
+        operation_context = object()
+        backend.debug_run(
+            task,
+            {
+                "intent": "diagnose-and-fix",
+                "final_purpose": "select the requested delivery route once",
+                "ip": "192.0.2.11",
+            },
+            operation_context,
+        )
+
+        backend.live_patch_run(
+            task,
+            {
+                "local_path": "/tmp/unit.lua",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "force_path": True,
+                "authorized_exceptions": {"force_path": True},
+                "allow_insecure_tls": True,
+            },
+            operation_context,
+        )
+
+        policy = domain.calls[-1][1]["_task_authorization_policy"]
+        self.assertTrue(policy["authorized_exceptions"]["force_path"])
+        self.assertTrue(policy["allow_insecure_tls"])
+        self.assertEqual(policy["delivery_strategy"], "live-patch")
+        backend.close_task(task)
 
     @mock.patch(
         "openubmc_target_runtime.mcp.load_selected_credentials_file",
@@ -816,8 +975,6 @@ class OrchestrationContractTests(unittest.TestCase):
             "debug_run": (
                 {
                     "ip",
-                    "ssh_password",
-                    "telnet_password",
                     "ssh_host_key_policy",
                     "ssh_known_hosts_file",
                     "allow_insecure_host_key",
@@ -828,8 +985,6 @@ class OrchestrationContractTests(unittest.TestCase):
             "debug_collect": (
                 {
                     "ip",
-                    "ssh_password",
-                    "telnet_password",
                     "ssh_host_key_policy",
                     "ssh_known_hosts_file",
                     "allow_insecure_host_key",
@@ -851,12 +1006,7 @@ class OrchestrationContractTests(unittest.TestCase):
                 | ssh
                 | telnet
             ),
-            "upgrade_run": {
-                "ip",
-                "redfish_password",
-                "allow_insecure_tls",
-            }
-            | redfish,
+            "upgrade_run": {"ip", "allow_insecure_tls"} | redfish,
         }
         connection_keys = set(connection_arguments)
         tool_intents = {
@@ -1313,6 +1463,7 @@ class OrchestrationContractTests(unittest.TestCase):
                     "case_forget",
                     "phase_record",
                     "workflow.advance",
+                    "workflow.next",
                     "runtime_status",
                 ],
             )
@@ -1327,6 +1478,17 @@ class OrchestrationContractTests(unittest.TestCase):
                 "expected_current_sha256",
                 live_patch["properties"],
             )
+            for name in ("force_path", "no_backup", "no_remount"):
+                self.assertEqual(
+                    live_patch["properties"][name]["type"],
+                    "boolean",
+                )
+                self.assertEqual(
+                    live_patch["properties"]["authorized_exceptions"][
+                        "properties"
+                    ][name]["type"],
+                    "boolean",
+                )
             self.assertEqual(
                 live_patch["properties"]["delivery_strategy"]["enum"],
                 ["source-only", "live-patch", "build-upgrade"],
@@ -1365,6 +1527,13 @@ class OrchestrationContractTests(unittest.TestCase):
             self.assertEqual(
                 upgrade["properties"]["upload_timeout"]["default"],
                 600,
+            )
+            self.assertEqual(
+                upgrade["properties"]["allow_insecure_tls"]["type"],
+                "boolean",
+            )
+            self.assertTrue(
+                upgrade["properties"]["allow_insecure_tls"]["default"]
             )
         finally:
             service.close()
@@ -1413,6 +1582,132 @@ class OrchestrationContractTests(unittest.TestCase):
         self.assertEqual(domain.arguments[0]["_task_intent"], "live-patch")
         self.assertEqual(domain.arguments[0]["ip"], "192.0.2.11")
         self.assertNotIn("intent", domain.arguments[0])
+
+    def test_mcp_infers_rollback_intent_from_a_direct_rollback_request(self) -> None:
+        class Backend:
+            def __init__(self) -> None:
+                self.arguments: list[dict[str, object]] = []
+
+            @staticmethod
+            def open_task(task_id: str):
+                return {"task_id": task_id}
+
+            @staticmethod
+            def close_task(_task) -> None:
+                return None
+
+            @staticmethod
+            def maintain_task(_task) -> int:
+                return 0
+
+            @staticmethod
+            def task_status(_task) -> dict[str, object]:
+                return {}
+
+            def live_patch_run(self, _task, arguments, _context):
+                self.arguments.append(dict(arguments))
+                return {"ok": True}
+
+        domain = Backend()
+        backend = OrchestratedMcpBackend({"live_patch_run": domain})
+        task = backend.open_task("direct-rollback")
+
+        backend.live_patch_run(
+            task,
+            {
+                "action": "rollback",
+                "ip": "192.0.2.11",
+                "backup_path": "/tmp/unit.lua.bak",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+            },
+            object(),
+        )
+
+        self.assertEqual(domain.arguments[0]["_task_intent"], "rollback")
+
+        bound = backend.open_task("apply-then-rollback")
+        backend.live_patch_run(
+            bound,
+            {
+                "intent": "live-patch",
+                "ip": "192.0.2.12",
+                "local_path": "/tmp/unit.lua",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+            },
+            object(),
+        )
+        backend.live_patch_run(
+            bound,
+            {
+                "action": "rollback",
+                "backup_path": "/tmp/unit.lua.bak",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+            },
+            object(),
+        )
+
+        self.assertEqual(domain.arguments[-1]["_task_intent"], "rollback")
+        self.assertEqual(
+            domain.arguments[-1]["_task_authorization_policy"]["allowed_actions"],
+            ["rollback"],
+        )
+        self.assertEqual(domain.arguments[-1]["ip"], "192.0.2.12")
+
+    def test_mcp_projects_task_authorized_exceptions_to_the_mutation_backend(self) -> None:
+        class Backend:
+            def __init__(self) -> None:
+                self.arguments: list[dict[str, object]] = []
+
+            @staticmethod
+            def open_task(task_id: str):
+                return {"task_id": task_id}
+
+            @staticmethod
+            def close_task(_task) -> None:
+                return None
+
+            @staticmethod
+            def maintain_task(_task) -> int:
+                return 0
+
+            @staticmethod
+            def task_status(_task) -> dict[str, object]:
+                return {}
+
+            def live_patch_run(self, _task, arguments, _context):
+                self.arguments.append(dict(arguments))
+                return {"ok": True}
+
+        domain = Backend()
+        backend = OrchestratedMcpBackend({"live_patch_run": domain})
+        task = backend.open_task("authorized-exceptions")
+
+        backend.live_patch_run(
+            task,
+            {
+                "intent": "live-patch",
+                "ip": "192.0.2.11",
+                "local_path": "/tmp/unit.lua",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "no_backup": True,
+                "authorized_exceptions": {"no_backup": True},
+            },
+            object(),
+        )
+
+        self.assertEqual(
+            domain.arguments[0]["_task_authorized_exceptions"],
+            {
+                "force_path": False,
+                "no_backup": True,
+                "no_remount": False,
+            },
+        )
+        self.assertEqual(
+            domain.arguments[0]["_task_authorization_policy"],
+            task.orchestration.intent.authorization.to_public_dict(),
+        )
+        self.assertNotIn("authorized_exceptions", domain.arguments[0])
 
     def test_later_direct_mutation_selects_route_and_uses_stable_operation_id(
         self,
@@ -1809,6 +2104,14 @@ class OrchestrationContractTests(unittest.TestCase):
                     "local_path": "/tmp/handler.lua",
                     "remote_path": "/opt/bmc/apps/storage/handler.lua",
                     "restart_scope": "skynet",
+                    "intent": "rollback",
+                    "delivery_strategy": "build-upgrade",
+                    "authorized_exceptions": {"force_path": True},
+                    "force_path": True,
+                    "allow_insecure_tls": True,
+                    "_task_authorization_policy": {"grant_all": True},
+                    "ssh_password": "nested-secret",
+                    "telnet_password": "nested-telnet",
                 },
                 "verification": {"keyword": "GetState"},
             },
@@ -1847,6 +2150,24 @@ class OrchestrationContractTests(unittest.TestCase):
             if name == "live_patch"
         )
         self.assertEqual(live_patch_arguments["_task_intent"], "diagnose-and-fix")
+        self.assertEqual(
+            live_patch_arguments["_task_authorization_policy"]["allowed_actions"],
+            ["live_patch"],
+        )
+        self.assertFalse(
+            live_patch_arguments["_task_authorization_policy"][
+                "authorized_exceptions"
+            ]["force_path"]
+        )
+        self.assertTrue(
+            live_patch_arguments["_task_authorization_policy"][
+                "allow_insecure_tls"
+            ]
+        )
+        self.assertTrue(live_patch_arguments["force_path"])
+        self.assertNotIn("allow_insecure_tls", live_patch_arguments)
+        self.assertNotIn("ssh_password", live_patch_arguments)
+        self.assertNotIn("telnet_password", live_patch_arguments)
         verification_arguments = calls[-1][2]
         self.assertEqual(verification_arguments["_minimum_target_epoch"], 3)
         self.assertNotIn("operation_id", json.dumps(arguments, sort_keys=True))
@@ -2164,6 +2485,7 @@ class OrchestrationContractTests(unittest.TestCase):
         self.assertEqual(upgrade_arguments["artifact_path"], "/tmp/openubmc.hpm")
         self.assertEqual(upgrade_arguments["artifact_sha256"], "b" * 64)
         self.assertEqual(upgrade_arguments["product_version"], "2.1")
+        self.assertTrue(upgrade_arguments["allow_insecure_tls"])
         self.assertEqual(upgrade_arguments["_task_intent"], "diagnose-and-fix")
         self.assertEqual(
             upgrade_arguments["_task_delivery_strategy"], "build-upgrade"

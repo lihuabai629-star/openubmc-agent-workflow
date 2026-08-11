@@ -32,8 +32,27 @@ first domain operation opens or resumes a persistent Case automatically. Keep it
 the Runtime retain the original intent, final purpose, change boundary, target roles, operation
 receipts, evidence references, and next action.
 
-- When the user says “继续”, call `workflow.advance` with the current `case_id`; do not reparse or
-  ask again for information already bound to the Case.
+- When the user says “继续” or “continue”, call `workflow.next` with the bound `case_id`; do not
+  reparse the request or rebuild inputs already retained by the Case.
+- Treat `workflow.next` as the continuation loop, not as a one-step status read. When it returns
+  `waiting_phase_record`, run the named owning Skill, record that phase, and call `workflow.next`
+  again in the same user turn. Call it again after `budget_exhausted`; for
+  `operation_in_progress`, wait for and reuse the current operation rather than creating another.
+  Return control only for a terminal Closeout or a concrete blocker that requires new input, new
+  task-level authorization, an unavailable external capability, or unresolved mutation
+  reconciliation.
+- Treat target bindings, credential selectors, artifact identities, delivery strategy, mutation
+  authorization, and authorized exceptions as Case facts. Reuse them while their identity still
+  matches; do not ask the user to repeat or reconfirm them at each Skill boundary.
+- Target Runtime's typed authorization decision is authoritative. A named Live Patch, Upgrade, or
+  rollback request authorizes only that action; Apply or Upgrade never implies rollback. Internal
+  BMC workflows authorize insecure TLS by default and may explicitly set it to `false` for a trusted
+  certificate. The Live Patch exceptions `force_path`, `no_backup`, and `no_remount` remain explicit
+  task facts, while the minimum required `skynet` restart is announced rather than reconfirmed.
+  Reuse every matching decision already carried by the Case.
+- A mutation outcome unknown is a reconciliation blocker, not a confirmation question: reconcile
+  the same durable journal before continuing. If recovery requires rollback that the Case does not
+  authorize, preserve the original operation as `recovery_blocked`.
 - A failed read or delivery step remains incomplete. The next `workflow.advance` creates the next
   numbered attempt and executes it again; it does not replay the failed receipt forever. Keep an
   unknown mutation outcome blocked until its durable journal is reconciled.
@@ -47,6 +66,10 @@ receipts, evidence references, and next action.
   `case_close` seals completed work; `case_forget` removes an ordinary terminal Case.
 - A target switch or comparison remains in the same Case. Keep target identity, epoch, role, scope,
   and freshness separate; switching back may rebuild or reuse only the matching target lease.
+- When the Case reaches a terminal state, Target Runtime automatically derives and persists
+  `closeout`, `closeout_markdown`, and, by default, `closeout_bundle` from the Case event stream.
+  `workflow.next` returns the Closeout Markdown as the user-facing first screen and exposes the
+  structured Closeout plus its document, evidence, and artifact index for later retrieval.
 - Explicit target-set or port changes advance `target_version` and invalidate old target-bound
   workflow steps. Selecting an existing multi-target entry with `target_id` changes only the active
   selector and does not invalidate the comparison or advance the version.
@@ -72,9 +95,10 @@ Resolve source from the supplied repository/worktree, `OPENUBMC_SOURCE_ROOT`, or
 root only when its remote identifies an openUBMC repository. Never substitute a control-plane,
 example, or author workspace.
 
-Internal development mode is the default: direct password arguments are accepted, SSH host-key
-verification defaults to disabled, sensitive path/member reads are permitted, and diagnostic
-evidence is returned without automatic redaction.
+Internal development mode is the default: direct password arguments are accepted, BMC SSH
+host-key verification defaults to `insecure`, sensitive path/member reads are permitted, and
+diagnostic evidence is returned without automatic redaction. This replaceable-target policy does
+not apply to an OS host: `doctor.py --os-check` keeps OS SSH host-key verification `strict`.
 
 The active task keeps direct credential values for later domain calls. Context Runtime also keeps
 the Case workflow inputs used by `workflow.advance`, including direct values in internal
@@ -198,9 +222,10 @@ If the local MCP stdio process disconnects, reuse the same task ID. Target Runti
 typed intent, target bindings and credential selectors, bounded workflow summaries, and mutation
 journal identities. It never restores an SSH/Telnet/Redfish connection or a previous evidence
 result; the next domain call lazily rebuilds its connection and performs fresh reads. The default
-MCP text content is a concise Chinese summary. `structuredContent` is a bounded Agent Envelope with
-facts, DiffCard, gaps, next actions, canonical errors, and evidence references; read full raw JSON,
-logs, journals, or detailed diffs through `evidence_read` only when needed.
+MCP text content is a concise Chinese summary during active work. At terminal Closeout, it becomes
+the Closeout Markdown report. `structuredContent` contains the real Context result plus the bounded
+Agent Envelope; read full raw JSON, logs, journals, or detailed diffs through `evidence_read` only
+when needed.
 
 The same task may replace one target, expand into a comparison set, select a different target by
 `target_id`, or change connection and evidence parameters. Preserve the original purpose and typed
@@ -272,6 +297,11 @@ Use `references/diagnostic-contract.md` only when a structured diagnostic or ver
 actually needed. A completed procedure is not a successful verification when requested items failed
 or did not run.
 
+For a terminal Case, do not compose a second ad-hoc summary. Use `closeout_markdown` as the primary
+answer and `closeout_bundle` as the immutable index for `closeout.json`, `closeout.md`, stage
+evidence, build artifacts, and other recorded outputs. Missing or unreadable evidence remains an
+explicit unverified gap; phase completion alone must not be presented as business acceptance.
+
 ## Safety
 
 - Keep all remote actions read-only. Do not restart services, mutate properties, upload, upgrade,
@@ -281,7 +311,8 @@ or did not run.
 - Treat `GetAlarmList` as current alarm evidence and historical event APIs as historical evidence.
 - A failed `mdbctl` query does not prove an object is absent; cross-check the exact path/interface
   with another available object capability.
-- SSH host-key verification defaults to `insecure` for internal development.
+- BMC SSH host-key verification defaults to `insecure` for internal development and tolerates
+  replaceable-target key changes. OS-host SSH remains `strict`.
 
 ## References
 

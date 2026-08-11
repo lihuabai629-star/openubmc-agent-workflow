@@ -1,4 +1,4 @@
 interface:
   display_name: "openUBMC Upgrade"
-  short_description: "通过 Redfish 验证、升级或回滚 openUBMC HPM 固件"
-  default_prompt: "使用 $openubmc-upgrade 接收已验证的 HPM 或 build-upgrade handoff，通过 Redfish 升级指定 BMC，并把验收交回 fresh Debug。"
+  short_description: "通过 Redfish 验证并升级 openUBMC HPM 固件"
+  default_prompt: "使用 $openubmc-upgrade 接收已验证的 HPM 或 build-upgrade handoff，通过 Redfish 升级指定 BMC，并把验收交回 fresh Debug；若请求固件回滚，先核对是否存在独立恢复能力。"

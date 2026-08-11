@@ -88,7 +88,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             "('debug_run', 'debug_collect', 'log_bundle_collect', "
             "'live_patch_run', 'upgrade_run', 'case_read', 'evidence_read', "
             "'case_close', 'case_forget', 'phase_record', 'workflow.advance', "
-            "'runtime_status')]}\n"
+            "'workflow.next', 'runtime_status')]}\n"
             "    elif request.get('method') == 'notifications/initialized':\n"
             "        continue\n"
             "    elif request.get('method') == 'tools/call' and "
@@ -1590,6 +1590,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                 "case_forget",
                 "phase_record",
                 "workflow.advance",
+                "workflow.next",
                 "runtime_status",
             }.issubset(tools)
         )
@@ -2305,6 +2306,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                 "runtime_status",
                 "upgrade_run",
                 "workflow.advance",
+                "workflow.next",
             ],
         )
         self.assertTrue(document["engines"]["mcp"])

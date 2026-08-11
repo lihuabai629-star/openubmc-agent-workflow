@@ -15,12 +15,15 @@ from openubmc_target_runtime import (  # noqa: E402
     CredentialSelector,
     MutationAuthorization,
     MutationAuthorizationDenied,
+    MutationAuthorizedExceptions,
     MutationRequest,
     OpenUBMCTaskRun,
     RemoteReadRequest,
     ResolvedSshCredentials,
     StaleEvidenceRejected,
+    TaskAuthorizationPolicy,
     TargetSpec,
+    mutation_journal_operation_status,
 )
 
 
@@ -68,20 +71,141 @@ def read_request(
 
 
 class MutationTransactionTests(unittest.TestCase):
-    def test_original_intent_is_projected_once_and_diagnosis_only_is_denied(self) -> None:
+    def test_journal_stage_classifier_is_fail_closed(self) -> None:
+        cases = (
+            ({"stage": "verified", "action": "live_patch"}, "completed"),
+            ({"stage": "rollback_verified", "action": "rollback"}, "completed"),
+            ({"stage": "rollback_verified", "action": "live_patch"}, "failed"),
+            ({"stage": "replan_required"}, "failed"),
+            ({"stage": "recovery_blocked"}, "blocked"),
+            ({"stage": "mutation_failed"}, "mutation_outcome_unknown"),
+            ({"stage": "rollback_failed"}, "mutation_outcome_unknown"),
+            ({"stage": "rolling_back"}, "mutation_outcome_unknown"),
+            ({"stage": "planned", "effects_started": False}, "blocked"),
+            (
+                {"stage": "planned", "effects_started": True},
+                "mutation_outcome_unknown",
+            ),
+            ({"stage": "rollback_verifying"}, "blocked"),
+            ({"stage": "future_stage"}, "blocked"),
+        )
+        for journal, expected in cases:
+            with self.subTest(journal=journal):
+                self.assertEqual(
+                    mutation_journal_operation_status(journal),
+                    expected,
+                )
+
+    def test_original_intent_and_delivery_are_projected_once(self) -> None:
         diagnosis = MutationAuthorization.from_original_intent("diagnosis-only")
-        diagnose_and_fix = MutationAuthorization.from_original_intent(
-            "diagnose-and-fix"
+        source_only = MutationAuthorization.from_original_intent(
+            "diagnose-and-fix",
+        )
+        diagnose_and_fix = MutationAuthorization.from_task_intent(
+            "diagnose-and-fix",
+            delivery_strategy="live-patch",
         )
 
         with self.assertRaises(MutationAuthorizationDenied):
             diagnosis.require("live_patch")
+        with self.assertRaises(MutationAuthorizationDenied):
+            source_only.require("live_patch")
 
         self.assertEqual(
             diagnose_and_fix.require("live_patch").original_intent,
             "diagnose-and-fix",
         )
         self.assertEqual(diagnose_and_fix.parse_count, 1)
+
+    def test_task_authorization_policy_round_trips_and_rejects_tampering(self) -> None:
+        policy = TaskAuthorizationPolicy.from_task_intent(
+            "diagnose-and-fix",
+            delivery_strategy="build-upgrade",
+            authorized_exceptions={"no_backup": True},
+            allow_insecure_tls=True,
+        )
+
+        restored = TaskAuthorizationPolicy.from_public_dict(
+            policy.to_public_dict()
+        )
+
+        self.assertEqual(restored, policy)
+        restored.require("upgrade").require_insecure_tls()
+        restored.require_exception("no_backup")
+
+        for field, replacement in (
+            ("allowed_actions", ["rollback"]),
+            ("delivery_strategy", "live-patch"),
+            ("parse_count", 2),
+        ):
+            with self.subTest(field=field):
+                tampered = policy.to_public_dict()
+                tampered[field] = replacement
+                with self.assertRaises(ValueError):
+                    TaskAuthorizationPolicy.from_public_dict(tampered)
+
+        missing = policy.to_public_dict()
+        missing.pop("allow_insecure_tls")
+        with self.assertRaises(ValueError):
+            TaskAuthorizationPolicy.from_public_dict(missing)
+
+        unknown = policy.to_public_dict()
+        unknown["grant_all"] = True
+        with self.assertRaises(ValueError):
+            TaskAuthorizationPolicy.from_public_dict(unknown)
+
+    def test_apply_intents_do_not_authorize_rollback(self) -> None:
+        direct_apply = MutationAuthorization.from_original_intent("live-patch")
+        diagnose_and_fix = MutationAuthorization.from_task_intent(
+            "diagnose-and-fix",
+            delivery_strategy="live-patch",
+        )
+        direct_rollback = MutationAuthorization.from_original_intent("rollback")
+
+        direct_apply.require("live_patch")
+        diagnose_and_fix.require("live_patch")
+        direct_rollback.require("rollback")
+
+        with self.assertRaises(MutationAuthorizationDenied):
+            direct_apply.require("rollback")
+        with self.assertRaises(MutationAuthorizationDenied):
+            diagnose_and_fix.require("rollback")
+        with self.assertRaises(MutationAuthorizationDenied):
+            direct_rollback.require("live_patch")
+
+    def test_mutation_exceptions_are_typed_and_authorized_at_task_level(self) -> None:
+        authorization = MutationAuthorization.from_task_intent(
+            "diagnose-and-fix",
+            delivery_strategy="live-patch",
+            authorized_exceptions={
+                "force_path": False,
+                "no_backup": True,
+                "no_remount": False,
+            },
+        )
+
+        self.assertIsInstance(
+            authorization.authorized_exceptions,
+            MutationAuthorizedExceptions,
+        )
+        authorization.require_exception("no_backup")
+        with self.assertRaises(MutationAuthorizationDenied):
+            authorization.require_exception("force_path")
+        self.assertEqual(
+            authorization.to_public_dict()["authorized_exceptions"],
+            {
+                "force_path": False,
+                "no_backup": True,
+                "no_remount": False,
+            },
+        )
+
+        with self.assertRaises(TypeError):
+            MutationAuthorization.from_task_intent(
+                "diagnose-and-fix",
+                delivery_strategy="live-patch",
+                authorized_exceptions={"no_backup": "true"},
+            )
 
     def test_mutation_waits_for_running_read_blocks_new_read_and_verifies_first(self) -> None:
         task, target, selector = runtime_fixture()
@@ -139,8 +263,9 @@ class MutationTransactionTests(unittest.TestCase):
 
                 result = task.run_mutation(
                     request,
-                    authorization=MutationAuthorization.from_original_intent(
-                        "diagnose-and-fix"
+                    authorization=MutationAuthorization.from_task_intent(
+                        "diagnose-and-fix",
+                        delivery_strategy="live-patch",
                     ),
                     apply=apply,
                     verify=verify,
@@ -207,8 +332,9 @@ class MutationTransactionTests(unittest.TestCase):
         with self.assertRaises(StaleEvidenceRejected):
             task.run_mutation(
                 request,
-                authorization=MutationAuthorization.from_original_intent(
-                    "diagnose-and-fix"
+                authorization=MutationAuthorization.from_task_intent(
+                    "diagnose-and-fix",
+                    delivery_strategy="live-patch",
                 ),
                 apply=lambda _context: {"ok": True},
                 verify=lambda context: context.run_read(
@@ -222,6 +348,54 @@ class MutationTransactionTests(unittest.TestCase):
         self.assertEqual(journal["stage"], "verification_failed")
         self.assertEqual(journal["epoch_before"], 0)
         self.assertEqual(journal["epoch_after"], 1)
+
+    def test_mutation_errors_expose_whether_remote_effects_may_have_started(self) -> None:
+        task, target, selector = runtime_fixture()
+        request = MutationRequest.create(
+            operation_id="patch-outcome-marker",
+            target=target,
+            credential_selector=selector,
+            action="live_patch",
+            operation={"remote": "/opt/bmc/apps/demo/unit.lua"},
+        )
+
+        with self.assertRaisesRegex(ValueError, "local validation failed") as rejected:
+            task.run_mutation(
+                request,
+                authorization=MutationAuthorization.from_original_intent(
+                    "live-patch"
+                ),
+                apply=lambda _context: (_ for _ in ()).throw(
+                    ValueError("local validation failed")
+                ),
+                verify=lambda _context: None,
+            )
+
+        self.assertEqual(rejected.exception.mutation_outcome, "not_started")
+
+        uncertain_request = MutationRequest.create(
+            operation_id="patch-uncertain-marker",
+            target=target,
+            credential_selector=selector,
+            action="live_patch",
+            operation={"remote": "/opt/bmc/apps/demo/other.lua"},
+        )
+
+        def uncertain_apply(context):
+            context.mark_effects_started()
+            raise OSError("connection lost")
+
+        with self.assertRaisesRegex(OSError, "connection lost") as uncertain:
+            task.run_mutation(
+                uncertain_request,
+                authorization=MutationAuthorization.from_original_intent(
+                    "live-patch"
+                ),
+                apply=uncertain_apply,
+                verify=lambda _context: None,
+            )
+
+        self.assertEqual(uncertain.exception.mutation_outcome, "unknown")
 
 
 if __name__ == "__main__":

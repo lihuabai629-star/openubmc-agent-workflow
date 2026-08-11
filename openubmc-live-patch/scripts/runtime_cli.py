@@ -56,6 +56,18 @@ def _text(arguments: Mapping[str, object], name: str) -> str:
     return str(value).strip() if isinstance(value, (str, int)) else ""
 
 
+def _boolean(
+    arguments: Mapping[str, object],
+    name: str,
+    *,
+    default: bool = False,
+) -> bool:
+    value = arguments.get(name, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a boolean")
+    return value
+
+
 def _action(arguments: Mapping[str, object]) -> str:
     action = _text(arguments, "action").lower().replace("-", "_")
     if action in {"", "apply"}:
@@ -119,7 +131,7 @@ def _identities(
         "action": action,
         "remote_path": _text(arguments, "remote_path"),
         "backup_path": _text(arguments, "backup_path"),
-        "remove_created": bool(arguments.get("remove_created", False)),
+        "remove_created": _boolean(arguments, "remove_created"),
         "expected_current_sha256": _text(
             arguments,
             "expected_current_sha256",
@@ -129,9 +141,9 @@ def _identities(
         "local_sha256": local_sha256,
         "mode": _text(arguments, "mode") or "644",
         "restart_scope": _text(arguments, "restart_scope") or "none",
-        "no_backup": bool(arguments.get("no_backup", False)),
-        "no_remount": bool(arguments.get("no_remount", False)),
-        "force_path": bool(arguments.get("force_path", False)),
+        "no_backup": _boolean(arguments, "no_backup"),
+        "no_remount": _boolean(arguments, "no_remount"),
+        "force_path": _boolean(arguments, "force_path"),
     }
     task_id = f"live-patch-cli-{_digest(target)[:24]}"
     label = "rollback" if action == "rollback" else "apply"
@@ -151,7 +163,12 @@ def run_runtime_mutation(
     action = _action(bounded)
     bounded["action"] = action
     bounded["intent"] = (
-        _text(bounded, "intent").lower().replace("_", "-") or "live-patch"
+        "rollback"
+        if action == "rollback"
+        else (
+            _text(bounded, "intent").lower().replace("_", "-")
+            or "live-patch"
+        )
     )
     local_sha256 = _local_sha256(bounded, action)
     task_id, operation_id = _identities(

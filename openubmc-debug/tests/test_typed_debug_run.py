@@ -1053,6 +1053,7 @@ class TypedDebugRunTests(unittest.TestCase):
             second_runner("preflight_start", command, {}, 30)
             second_runner("preflight_end", command, {}, 30)
             status = lease.runtime_status()
+            target_host_key_policy = lease.target.policy.ssh_host_key_policy
 
         self.assertIsNone(refresh_arguments[0])
         self.assertEqual(refresh_arguments[1], checks)
@@ -1071,6 +1072,7 @@ class TypedDebugRunTests(unittest.TestCase):
             },
         )
         self.assertEqual(status["debug_preflight_cache"]["entry_count"], 1)
+        self.assertEqual(target_host_key_policy, "insecure")
         self.assertEqual(
             status["debug_preflight_cache"]["profiles"],
             ["mdb-only"],

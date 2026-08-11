@@ -44,6 +44,7 @@ _runtime = _load_runtime()
 CredentialFileError = _runtime.CredentialFileError
 FreshVerificationContext = _runtime.FreshVerificationContext
 MutationAuthorization = _runtime.MutationAuthorization
+TaskAuthorizationPolicy = _runtime.TaskAuthorizationPolicy
 MutationContext = _runtime.MutationContext
 MutationRequest = _runtime.MutationRequest
 MutationTransactionResult = _runtime.MutationTransactionResult
@@ -140,8 +141,12 @@ class ProjectedLivePatchAuthorization:
         authorization: MutationAuthorization,
         *,
         restart_scope: str,
+        action: str = "live_patch",
     ) -> "ProjectedLivePatchAuthorization":
-        authorization.require("live_patch")
+        normalized_action = str(action).strip().lower().replace("-", "_")
+        if normalized_action not in {"live_patch", "rollback"}:
+            raise ValueError("action must be live_patch or rollback")
+        authorization.require(normalized_action)
         if restart_scope not in {"none", "skynet"}:
             raise ValueError("restart_scope must be none or skynet")
         return cls(
@@ -272,6 +277,7 @@ class LivePatchRuntimeAdapter(Generic[MutationValueT, VerificationValueT]):
         gates = ProjectedLivePatchAuthorization.from_authorization(
             authorization,
             restart_scope=restart_scope,
+            action=action,
         )
         request = MutationRequest.create(
             operation_id=operation_id,

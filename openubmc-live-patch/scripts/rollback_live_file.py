@@ -118,6 +118,10 @@ def _runtime_rollback(args: argparse.Namespace, plan: dict[str, Any]) -> int:
                 "deadline": max(1, args.health_timeout),
                 "no_remount": args.no_remount,
                 "force_path": args.force_path,
+                "authorized_exceptions": {
+                    "no_remount": args.no_remount,
+                    "force_path": args.force_path,
+                },
                 "telnet_user": args.telnet_user,
                 "telnet_password": args.telnet_password,
                 "ssh_user": args.ssh_user,
