@@ -207,21 +207,72 @@ class LogBundleRuntimeLease:
         task_run=None,
         redfish_transport=None,
         ssh_transport=None,
+        credential_values: Mapping[str, str] | None = None,
     ) -> None:
         runtime = _load_runtime_module()
         self._runtime = runtime
         self.args = args
         self._closed = False
+        file_credentials = dict(credential_values or {})
+
+        def selector_env(
+            configured: str,
+            *,
+            direct_explicit: bool,
+            fallback_names: tuple[str, ...],
+        ) -> str:
+            if configured or direct_explicit:
+                return configured
+            return next(
+                (
+                    name
+                    for name in fallback_names
+                    if name in os.environ or name in file_credentials
+                ),
+                "",
+            )
+
+        redfish_user_explicit = bool(
+            getattr(args, "_redfish_user_explicit", False)
+        )
+        ssh_user_explicit = bool(getattr(args, "_ssh_user_explicit", False))
         self.redfish_selector = runtime.CredentialSelector.for_redfish(
-            user=str(getattr(args, "redfish_user", "")),
-            user_env=str(getattr(args, "redfish_user_env", "")),
-            password_env=str(getattr(args, "redfish_password_env", "")),
+            user=(
+                str(getattr(args, "redfish_user", ""))
+                if redfish_user_explicit
+                else ""
+            ),
+            user_env=selector_env(
+                str(getattr(args, "redfish_user_env", "")),
+                direct_explicit=redfish_user_explicit,
+                fallback_names=("OPENUBMC_REDFISH_USER", "REDFISH_USERNAME"),
+            ),
+            password_env=selector_env(
+                str(getattr(args, "redfish_password_env", "")),
+                direct_explicit=bool(getattr(args, "redfish_password", "")),
+                fallback_names=(
+                    "OPENUBMC_REDFISH_PASSWORD",
+                    "REDFISH_PASSWORD",
+                ),
+            ),
             environ=os.environ,
         )
         self.ssh_selector = runtime.CredentialSelector.for_ssh(
-            user=str(getattr(args, "ssh_user", "")),
-            user_env=str(getattr(args, "ssh_user_env", "")),
-            password_env=str(getattr(args, "ssh_password_env", "")),
+            user=(
+                str(getattr(args, "ssh_user", ""))
+                if ssh_user_explicit
+                else ""
+            ),
+            user_env=selector_env(
+                str(getattr(args, "ssh_user_env", "")),
+                direct_explicit=ssh_user_explicit,
+                fallback_names=("OPENUBMC_SSH_USER",),
+            ),
+            password_env=selector_env(
+                str(getattr(args, "ssh_password_env", "")),
+                direct_explicit=bool(getattr(args, "ssh_password", "")),
+                fallback_names=("OPENUBMC_SSH_PASSWORD",),
+            ),
             identity_file=str(getattr(args, "ssh_identity_file", "")),
             environ=os.environ,
         )
@@ -235,17 +286,78 @@ class LogBundleRuntimeLease:
         self.redfish_target = self.target
         self.ssh_target = self.target
 
-        def load_redfish(_selector):
-            user = pull_bundle.resolve_value(
-                str(getattr(args, "redfish_user", "Administrator")),
-                str(getattr(args, "redfish_user_env", "")),
-                "Redfish 用户名",
+        def resolve_runtime_value(
+            *,
+            direct_value: str,
+            direct_explicit: bool,
+            env_name: str,
+            fallback_env_names: tuple[str, ...],
+            label: str,
+            default_value: str = "",
+        ) -> str:
+            if env_name:
+                if env_name in os.environ:
+                    return os.environ[env_name]
+                if env_name in file_credentials:
+                    return file_credentials[env_name]
+                raise pull_bundle.BundlePullError(
+                    "missing_env",
+                    f"{label} 环境变量 {env_name} 未设置",
+                )
+            if direct_explicit and direct_value:
+                return direct_value
+            for fallback in fallback_env_names:
+                if fallback in os.environ:
+                    return os.environ[fallback]
+            for fallback in fallback_env_names:
+                if fallback in file_credentials:
+                    return file_credentials[fallback]
+            return direct_value or default_value
+
+        def resolve_runtime_secret(
+            *,
+            direct_value: str,
+            env_name: str,
+            fallback_env_names: tuple[str, ...],
+            label: str,
+            allow_empty: bool = False,
+        ) -> str:
+            value = resolve_runtime_value(
+                direct_value=direct_value,
+                direct_explicit=bool(direct_value),
+                env_name=env_name,
+                fallback_env_names=fallback_env_names,
+                label=label,
             )
-            password = pull_bundle.resolve_secret(
-                str(getattr(args, "redfish_password", "")),
-                str(getattr(args, "redfish_password_env", "")),
-                "Redfish 密码",
-                json_mode=bool(getattr(args, "json", False)),
+            if value or allow_empty:
+                return value
+            raise pull_bundle.BundlePullError(
+                "missing_secret",
+                f"JSON 模式必须提供 {label}；请显式传参、配置凭据文件或使用环境变量。",
+            )
+
+        def load_redfish(_selector):
+            user = resolve_runtime_value(
+                direct_value=str(getattr(args, "redfish_user", "")),
+                direct_explicit=bool(
+                    getattr(args, "_redfish_user_explicit", False)
+                ),
+                env_name=str(getattr(args, "redfish_user_env", "")),
+                fallback_env_names=(
+                    "OPENUBMC_REDFISH_USER",
+                    "REDFISH_USERNAME",
+                ),
+                label="Redfish 用户名",
+                default_value="Administrator",
+            )
+            password = resolve_runtime_secret(
+                direct_value=str(getattr(args, "redfish_password", "")),
+                env_name=str(getattr(args, "redfish_password_env", "")),
+                fallback_env_names=(
+                    "OPENUBMC_REDFISH_PASSWORD",
+                    "REDFISH_PASSWORD",
+                ),
+                label="Redfish 密码",
             )
             return runtime.ResolvedRedfishCredentials(
                 user=user,
@@ -254,16 +366,21 @@ class LogBundleRuntimeLease:
             )
 
         def load_ssh(_selector):
-            user = pull_bundle.resolve_value(
-                str(getattr(args, "ssh_user", "Administrator")),
-                str(getattr(args, "ssh_user_env", "")),
-                "SSH 用户名",
+            user = resolve_runtime_value(
+                direct_value=str(getattr(args, "ssh_user", "")),
+                direct_explicit=bool(
+                    getattr(args, "_ssh_user_explicit", False)
+                ),
+                env_name=str(getattr(args, "ssh_user_env", "")),
+                fallback_env_names=("OPENUBMC_SSH_USER",),
+                label="SSH 用户名",
+                default_value="Administrator",
             )
-            password = pull_bundle.resolve_secret(
-                str(getattr(args, "ssh_password", "")),
-                str(getattr(args, "ssh_password_env", "")),
-                "SSH 密码",
-                json_mode=bool(getattr(args, "json", False)),
+            password = resolve_runtime_secret(
+                direct_value=str(getattr(args, "ssh_password", "")),
+                env_name=str(getattr(args, "ssh_password_env", "")),
+                fallback_env_names=("OPENUBMC_SSH_PASSWORD",),
+                label="SSH 密码",
                 allow_empty=bool(getattr(args, "ssh_identity_file", "")),
             )
             return runtime.ResolvedSshCredentials(
@@ -502,6 +619,7 @@ def open_log_bundle_runtime_lease(
     task_run=None,
     redfish_transport=None,
     ssh_transport=None,
+    credential_values: Mapping[str, str] | None = None,
 ) -> LogBundleRuntimeLease:
     return LogBundleRuntimeLease(
         args=args,
@@ -509,6 +627,7 @@ def open_log_bundle_runtime_lease(
         task_run=task_run,
         redfish_transport=redfish_transport,
         ssh_transport=ssh_transport,
+        credential_values=credential_values,
     )
 
 
@@ -600,6 +719,8 @@ def _mcp_parse_args(arguments: Mapping[str, object]):
         argv.append("--no-extract")
     argv.append("--json")
     parsed = pull_bundle.parse_args(argv)
+    parsed._ssh_user_explicit = "ssh_user" in arguments
+    parsed._redfish_user_explicit = "redfish_user" in arguments
     if not str(parsed.ip).strip():
         raise ValueError("ip is required")
     return parsed
@@ -621,6 +742,8 @@ def _lease_key(args) -> tuple[object, ...]:
         str(args.redfish_password_env),
         str(args.redfish_password),
         str(args.redfish_proxy),
+        os.environ.get("OPENUBMC_CREDENTIALS_FILE", ""),
+        os.environ.get("OPENUBMC_DEBUG_CREDENTIALS_FILE", ""),
     )
 
 
@@ -645,7 +768,12 @@ class LogBundleMcpTask:
         self._lease_evictions = 0
         self._lock = threading.RLock()
 
-    def lease_for(self, args) -> LogBundleRuntimeLease:
+    def lease_for(
+        self,
+        args,
+        *,
+        credential_values: Mapping[str, str] | None = None,
+    ) -> LogBundleRuntimeLease:
         key = _lease_key(args)
         victim = None
         with self._lock:
@@ -666,6 +794,7 @@ class LogBundleMcpTask:
                     if self._ssh_transport_factory is not None
                     else None
                 ),
+                credential_values=credential_values,
             )
             if len(self._leases) >= self.max_cached_leases:
                 _, victim = self._leases.popitem(last=False)
@@ -742,7 +871,14 @@ class LogBundleMcpBackend:
     @staticmethod
     def log_bundle_collect(task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
-        args = _mcp_parse_args(arguments)
+        bounded = dict(arguments)
+        credential_values = bounded.pop("_credential_values", None)
+        if credential_values is not None and not isinstance(
+            credential_values,
+            Mapping,
+        ):
+            raise TypeError("_credential_values must be an internal mapping")
+        args = _mcp_parse_args(bounded)
         remaining = max(1, int(context.remaining()))
         for name in (
             "search_timeout",
@@ -759,7 +895,14 @@ class LogBundleMcpBackend:
         extract_parent = Path(args.extract_dir or local_dir / "extract")
         search_roots = args.search_roots or list(pull_bundle.DEFAULT_SEARCH_ROOTS)
         name_globs = args.name_globs or list(pull_bundle.DEFAULT_NAME_GLOBS)
-        stage = task.lease_for(args).collect(
+        stage = task.lease_for(
+            args,
+            credential_values=(
+                dict(credential_values)
+                if isinstance(credential_values, Mapping)
+                else None
+            ),
+        ).collect(
             local_dir=local_dir,
             search_roots=search_roots,
             name_globs=name_globs,

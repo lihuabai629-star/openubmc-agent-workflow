@@ -2208,6 +2208,70 @@ def toml_knowledge_mcp_entry(path: Path) -> dict[str, str] | None:
     )
 
 
+def toml_string_array_field(
+    lines: list[str],
+    start: int,
+    end: int,
+    name: str,
+) -> list[str] | None:
+    assignment = re.compile(rf"\s*{re.escape(name)}\s*=\s*(.*)")
+    for index in range(start + 1, end):
+        match = assignment.fullmatch(lines[index])
+        if match is None:
+            continue
+        raw = match.group(1).strip()
+        while raw.count("[") > raw.count("]") and index + 1 < end:
+            index += 1
+            raw += "\n" + lines[index]
+        try:
+            parsed = ast.literal_eval(raw)
+        except (SyntaxError, ValueError) as error:
+            raise SetupError(
+                f"{KNOWLEDGE_MCP_NAME} TOML {name} must be a string array"
+            ) from error
+        if not isinstance(parsed, list) or not all(
+            isinstance(item, str) for item in parsed
+        ):
+            raise SetupError(
+                f"{KNOWLEDGE_MCP_NAME} TOML {name} must be a string array"
+            )
+        return parsed
+    return None
+
+
+def is_known_legacy_knowledge_stdio(
+    command: object,
+    args: object,
+) -> bool:
+    command_name = Path(str(command)).name.casefold()
+    if command_name not in {"node", "node.exe"}:
+        return False
+    if not isinstance(args, list) or not all(
+        isinstance(item, str) for item in args
+    ):
+        return False
+    return any(
+        item.replace("\\", "/").casefold().endswith(
+            "/openubmc-standalone-mcp/src/server.js"
+        )
+        for item in args
+    )
+
+
+def toml_has_known_legacy_knowledge_stdio(path: Path) -> bool:
+    if not path.is_file() or path.is_symlink():
+        return False
+    lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
+    bounds = toml_section_bounds(lines, f"[mcp_servers.{KNOWLEDGE_MCP_NAME}]")
+    if bounds is None:
+        return False
+    entry = toml_knowledge_mcp_entry(path)
+    if entry is None or entry.get("transport") != "stdio":
+        return False
+    args = toml_string_array_field(lines, bounds[0], bounds[1], "args")
+    return is_known_legacy_knowledge_stdio(entry.get("command"), args)
+
+
 def toml_mcp_url(path: Path) -> str | None:
     entry = toml_knowledge_mcp_entry(path)
     if entry is None or entry.get("transport") != "http":
@@ -2782,6 +2846,8 @@ def upsert_toml_knowledge_stdio_mcp(
             and existing.get("url") == LEGACY_STUDIO_HTTP_URL
         ):
             created_entry = True
+        elif not created_entry and toml_has_known_legacy_knowledge_stdio(path):
+            created_entry = True
         elif not created_entry:
             return {
                 "path": str(path),
@@ -2852,6 +2918,16 @@ def upsert_json_knowledge_stdio_mcp(
         not created_entry
         and isinstance(existing, dict)
         and existing.get("url") == LEGACY_STUDIO_HTTP_URL
+    ):
+        created_entry = True
+        servers[KNOWLEDGE_MCP_NAME] = expected
+    elif (
+        not created_entry
+        and isinstance(existing, dict)
+        and is_known_legacy_knowledge_stdio(
+            existing.get("command"),
+            existing.get("args"),
+        )
     ):
         created_entry = True
         servers[KNOWLEDGE_MCP_NAME] = expected
@@ -3814,7 +3890,7 @@ def inspect_runtime_installation(state: dict[str, object]) -> dict[str, object]:
 def runtime_mcp_health(
     launcher: Path,
     home: Path,
-    timeout: float = 5.0,
+    timeout: float = 15.0,
 ) -> tuple[bool, str, list[str]]:
     if not launcher.is_file() or launcher.is_symlink() or not os.access(launcher, os.X_OK):
         return False, "launcher is missing or not executable", []
@@ -3899,7 +3975,7 @@ def runtime_mcp_health(
 def knowledge_mcp_health(
     launcher: Path,
     home: Path,
-    timeout: float = 8.0,
+    timeout: float = 15.0,
 ) -> tuple[bool, str, list[str], bool]:
     if not launcher.is_file() or launcher.is_symlink() or not os.access(launcher, os.X_OK):
         return False, "launcher is missing or not executable", [], False

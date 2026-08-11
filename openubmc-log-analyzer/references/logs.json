@@ -720,6 +720,10 @@
   ],
   "rules": [
     {
+      "match_keywords": ["运行状态", "当前状态", "状态检查", "近期错误", "最近错误", "错误检查", "异常检查", "健康检查", "健康状态", "整体检查"],
+      "include": ["app.log", "framework.log", "journalctl.log"]
+    },
+    {
       "match_keywords": ["login", "auth", "permission", "证书", "签名", "登录失败", "无法登录", "认证失败", "密码错误", "账号锁定", "账户锁定", "ssh登录失败", "web登录失败"],
       "include": ["security.log", "operation.log", "sshd", "login"]
     },

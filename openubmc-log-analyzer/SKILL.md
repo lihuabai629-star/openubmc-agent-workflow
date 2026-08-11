@@ -20,6 +20,9 @@ description: Diagnose openUBMC/BMC issues from a one-click log bundle (.tar/.tar
    - 通过统一 MCP 工作流调用时，断开后沿用同一任务 ID 即可继承目标和问题意图；
      Redfish/SSH 会话不会恢复，重连后会新建会话并重新采集，不复用旧日志包结果。
      当前任务和 Case 工作流可继续使用已提供的直接 SSH/Redfish 凭据。
+     通过托管 Target Runtime 调用时，它会自动读取
+     `OPENUBMC_CREDENTIALS_FILE` 并把所需 SSH/Redfish 值传入本域，无需手动
+     导出用户名或密码环境变量。
    - 终端人工使用时，`--ip` 可以不传，脚本会交互提示输入。
    - SSH/Redfish 密码默认不再内置。内部研发可直接传入密码，也可使用 `--ssh-password-env` / `--redfish-password-env`；非 JSON 模式缺失时会交互提示输入。
    - 默认模式是 `--transport auto`：优先走 Redfish 一键采集，失败时再回退到 SSH 发现/下载。
@@ -32,7 +35,7 @@ description: Diagnose openUBMC/BMC issues from a one-click log bundle (.tar/.tar
    - 如果结果要给其他脚本/agent 消费，使用 `--json`；此时必须显式传 `--ip`，不能走交互输入。
    - 传 `--problem '<现象>'` 可以在解压后立即执行问题驱动的日志分析；如果用户给了故障时间，继续传 `--analysis-since` / `--analysis-until` 收敛证据窗口。
 3. 解包并做目录确认。如果输入是 `.tar` 或 `.tar.gz`，先解压到临时目录；如果 `pull_bundle.py` 已经解压，直接从返回的 `BUNDLE_ROOT` 开始。重点关注 `dump_info/LogDump`、`dump_info/AppDump`、`dump_info/RTOSDump`。
-4. 根据问题挑日志。先读取 `references/logs.json`，按关键词规则选日志；如果匹配为空或太少，再使用规则兜底（topic -> log files）。不要默认去扫无关的“优先日志”。
+4. 根据问题挑日志。先读取 `references/logs.json`，按关键词规则选日志；“运行状态、近期错误、异常检查、健康检查”等泛化检查只兜底到 `app.log`、`framework.log` 和 `journalctl.log`。不要默认去扫无关的“优先日志”或整个日志包。
 5. 分析选中的日志。抽取错误、告警和时间点。只有当问题明显指向组件/服务异常时，才额外关联 `app.log` 和 `framework.log`。如果是“数据不更新”“对象缺失”这类问题，优先看 AppDump 里的 `mdb_info.log`、`sync_property_trace.log`、`rpc_records.log`。解析输出字段和排序逻辑见 `references/analysis.md`。
 6. 输出结论。至少包括：问题摘要、证据片段（命令或日志行）、可能原因、下一步验证建议。
 7. 只有在遇到未知日志类型时，才去查 NotebookLM。若查询后确认了新日志含义，要把结果补到 `references/logs.md` 和 `references/logs.json`，避免下次重复查询。

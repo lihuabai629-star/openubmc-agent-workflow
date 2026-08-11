@@ -101,6 +101,12 @@ class _DomainBackend:
         return value
 
 
+class _BundleDomainBackend(_DomainBackend):
+    def log_bundle_collect(self, _task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        return self._capture("log_bundle_collect", arguments)
+
+
 class _FailingCollectBackend(_DomainBackend):
     def debug_collect(self, _task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
@@ -130,6 +136,92 @@ class _CrashDuringPatchBackend(_DomainBackend):
 
 
 class WorkflowRegressionTests(unittest.TestCase):
+    def test_authoritative_bundle_entry_waits_for_context_debug_step(self) -> None:
+        backend = _BundleDomainBackend()
+        service = RuntimeMcpService(
+            OrchestratedMcpBackend(
+                {
+                    "log_bundle_collect": backend,
+                    "debug_run": backend,
+                }
+            ),
+            context_mode="authoritative",
+        )
+        try:
+            collected = service.call_tool(
+                "log_bundle_collect",
+                {
+                    "ip": "192.0.2.61",
+                    "problem": "inspect recent BMC failures",
+                    "final_purpose": "collect a bundle and diagnose the target",
+                },
+                task_id="bundle-authoritative-task",
+                operation_id="bundle-authoritative-collect",
+            )
+            waiting = service.call_tool(
+                "case_read",
+                {"case_id": collected.envelope["case_id"]},
+                task_id="bundle-authoritative-task",
+                operation_id="bundle-authoritative-read",
+            )
+            completed = service.call_tool(
+                "workflow.next",
+                {"case_id": collected.envelope["case_id"]},
+                task_id="bundle-authoritative-task",
+                operation_id="bundle-authoritative-next",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(
+            [name for name, _arguments in backend.calls],
+            ["log_bundle_collect", "debug_run"],
+        )
+        self.assertEqual(waiting["status"], "open")
+        self.assertFalse(waiting.envelope["continuation"]["workflow_complete"])
+        self.assertEqual(
+            waiting.envelope["continuation"]["required_operation"],
+            "debug_run",
+        )
+        self.assertTrue(completed["completed"])
+
+    def test_direct_domain_resume_restores_target_from_case(self) -> None:
+        backend = _BundleDomainBackend()
+        service = RuntimeMcpService(
+            OrchestratedMcpBackend(
+                {
+                    "log_bundle_collect": backend,
+                    "debug_run": backend,
+                }
+            ),
+            context_mode="authoritative",
+        )
+        try:
+            collected = service.call_tool(
+                "log_bundle_collect",
+                {
+                    "ip": "192.0.2.62",
+                    "problem": "inspect current BMC state",
+                },
+                task_id="bundle-resume-owner",
+                operation_id="bundle-resume-collect",
+            )
+            case_id = collected.envelope["case_id"]
+            service.complete_task("bundle-resume-owner")
+            resumed = service.call_tool(
+                "debug_run",
+                {"case_id": case_id},
+                task_id="bundle-resume-reader",
+                operation_id="bundle-resume-debug",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(resumed["ip"], "192.0.2.62")
+        self.assertEqual(backend.calls[-1][0], "debug_run")
+        self.assertEqual(backend.calls[-1][1]["ip"], "192.0.2.62")
+        self.assertTrue(resumed.envelope["continuation"]["workflow_complete"])
+
     def test_direct_debug_satisfies_the_first_workflow_step(self) -> None:
         backend = _DomainBackend()
         service = RuntimeMcpService(backend)

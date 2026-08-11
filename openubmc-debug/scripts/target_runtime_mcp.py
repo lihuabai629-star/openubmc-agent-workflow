@@ -27,6 +27,24 @@ from _remote_common import (
 )
 
 
+def select_default_credentials_file() -> str:
+    selectors = (
+        "OPENUBMC_CREDENTIALS_FILE",
+        "OPENUBMC_DEBUG_CREDENTIALS_FILE",
+    )
+    for selector in selectors:
+        if selector in os.environ:
+            return str(os.environ[selector])
+    config_root = Path(
+        os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+    )
+    credentials = config_root / "openubmc" / "credentials.env"
+    if credentials.is_file():
+        os.environ["OPENUBMC_CREDENTIALS_FILE"] = str(credentials)
+        return str(credentials)
+    return ""
+
+
 _STRING_OPTIONS = {
     "ip": "--ip",
     "keyword": "--keyword",
@@ -674,6 +692,7 @@ def _load_upgrade_backend(journal_store):
 
 
 def create_service():
+    select_default_credentials_file()
     runtime = _load_runtime_module()
     state_dir = _runtime_state_dir()
     artifact_dir = state_dir / "artifacts"

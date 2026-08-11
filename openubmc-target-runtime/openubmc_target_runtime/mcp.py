@@ -114,6 +114,7 @@ _OPERATION_BINDINGS = (
         domain="log_analyzer",
         handler_name="log_bundle_collect",
         workflow_entry=True,
+        credential_values=True,
     ),
     _OperationBinding(
         "live_patch_run",
@@ -1561,6 +1562,8 @@ class OrchestratedMcpBackend:
         arguments: Mapping[str, object],
     ) -> bool:
         task.bind_intent(tool_name, arguments)
+        if arguments.get("_context_authoritative") is True:
+            return False
         if arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True:
             return False
         assert task.orchestration is not None
@@ -2888,15 +2891,21 @@ class RuntimeMcpService:
         if not isinstance(arguments, Mapping):
             raise TypeError("tool arguments must be an object")
         arguments = dict(arguments)
+        descriptor = self.catalog.require(name)
         external_context_marker = (
             arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True
             and not _context_workflow_step
         )
+        if descriptor.handler_name is not None and not external_context_marker:
+            arguments = self.context_runtime.restore_domain_arguments(
+                task_id,
+                name,
+                arguments,
+            )
         for internal_name in _INTERNAL_TASK_ARGUMENTS:
             arguments.pop(internal_name, None)
         arguments.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
         arguments = self._canonicalize_tool_arguments(name, arguments)
-        descriptor = self.catalog.require(name)
         if descriptor.handler_name is None:
             self.catalog.validate_arguments(name, arguments)
         if _context_workflow_step:

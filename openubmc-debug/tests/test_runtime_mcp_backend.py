@@ -65,6 +65,28 @@ class FakeLease:
 
 
 class RuntimeMcpBackendTests(unittest.TestCase):
+    def test_runtime_entrypoint_selects_default_credentials_file(self) -> None:
+        module = load_script("target_runtime_mcp")
+        with tempfile.TemporaryDirectory() as raw:
+            config_root = Path(raw) / "config"
+            credentials = config_root / "openubmc" / "credentials.env"
+            credentials.parent.mkdir(parents=True)
+            credentials.write_text(
+                "OPENUBMC_SSH_USER=root\nOPENUBMC_SSH_PASSWORD=secret\n",
+                encoding="utf-8",
+            )
+            credentials.chmod(0o600)
+            with mock.patch.dict(
+                os.environ,
+                {"XDG_CONFIG_HOME": str(config_root)},
+                clear=True,
+            ):
+                selected = module.select_default_credentials_file()
+                exported = os.environ.get("OPENUBMC_CREDENTIALS_FILE")
+
+        self.assertEqual(selected, str(credentials))
+        self.assertEqual(exported, str(credentials))
+
     def test_orchestrated_debug_compares_two_roleless_targets_symmetrically(self) -> None:
         module = load_script("target_runtime_mcp")
         runtime = module._load_runtime_module()

@@ -124,10 +124,11 @@ or a comma-separated list for an explicit selection.
 The `full` profile deploys the repository-bundled `openubmc-kb` package and
 registers its managed stdio launcher for Codex and Claude. The client starts it
 on demand; no Studio process or localhost service is required. A pre-existing
-external stdio entry is preserved. A legacy `openubmc-studio` entry is renamed
-to `openubmc-kb`; a legacy default localhost HTTP entry is migrated to the
-managed stdio launcher. An explicitly customized external endpoint remains
-external. The `target-runtime` profile leaves KB configuration untouched.
+custom external stdio entry is preserved. A legacy `openubmc-studio` entry is
+renamed to `openubmc-kb`; the historical default standalone Node entry and the
+legacy default localhost HTTP entry are migrated to the managed stdio launcher.
+An explicitly customized external endpoint remains external. The
+`target-runtime` profile leaves KB configuration untouched.
 OpenClaw receives Skill links and the deployed launchers, but no unsupported MCP
 configuration field is written. KB health failure is non-blocking.
 
@@ -145,7 +146,10 @@ not stored. Existing supported Telnet fields are preserved.
 
 Credential values are never sourced into the login shell. The shell hook
 exports only `OPENUBMC_CREDENTIALS_FILE` after verifying the file owner, type,
-and mode.
+and mode. The managed Target Runtime entrypoint also selects this private file
+when started directly by an MCP client or compatibility CLI, and passes only
+the required values to Debug, Log Analyzer, Live Patch, or Upgrade domain
+backends.
 
 Use hidden TTY input:
 

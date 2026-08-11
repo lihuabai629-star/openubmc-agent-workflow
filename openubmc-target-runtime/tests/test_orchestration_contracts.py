@@ -555,7 +555,7 @@ class OrchestrationContractTests(unittest.TestCase):
             operation_context,
         )
         credential_status = backend.task_status(task)
-        self.assertEqual(credential_status["credential_parse_count"], 2)
+        self.assertEqual(credential_status["credential_parse_count"], 3)
 
     @mock.patch(
         "openubmc_target_runtime.mcp.load_selected_credentials_file",

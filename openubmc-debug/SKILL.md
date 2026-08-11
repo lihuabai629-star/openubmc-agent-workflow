@@ -61,7 +61,9 @@ receipts, evidence references, and next action.
 - Use `case_read` to recover the bounded Case projection after a task or MCP restart.
   Its `structuredContent` includes the typed continuation (intent, delivery route, targets,
   workflow cycle, required phase/operation, blocker, target epoch floor, and next action) plus the
-  bounded Capsule, so resume from that contract instead of reconstructing the task from chat.
+  bounded Capsule, so resume from that contract instead of reconstructing the task from chat. A
+  direct domain retry with the same `case_id` automatically rebuilds the retained target binding;
+  do not ask for or resend the IP unless the target is intentionally changing.
 - Use `evidence_read` only for the evidence slice needed now; do not pull every raw result back into
   context.
 - Task completion closes TargetRun connections and transient leases but keeps the Case. Explicit

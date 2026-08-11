@@ -649,6 +649,20 @@ class RedfishFlowTests(unittest.TestCase):
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_generic_chinese_runtime_check_uses_bounded_core_logs(self) -> None:
+        reference = pull_bundle.load_reference_data()
+
+        selected = pull_bundle.select_logs_for_problem(
+            "BMC运行状态与近期错误检查",
+            reference,
+            max_files=8,
+        )
+
+        self.assertEqual(
+            [item["name"] for item in selected[:3]],
+            ["app.log", "framework.log", "journalctl.log"],
+        )
+
     def test_select_logs_for_problem_prefers_rule_matches(self) -> None:
         reference = {
             "files": [

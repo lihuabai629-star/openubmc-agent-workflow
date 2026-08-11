@@ -70,9 +70,12 @@ class CallbackRedfishTransport:
     def __init__(self) -> None:
         self.opens = 0
         self.operations: list[str] = []
+        self.credentials: list[object] = []
 
     def open_session(self, *, target, credentials) -> FakeRedfishSession:
+        del target
         self.opens += 1
+        self.credentials.append(credentials)
         return FakeRedfishSession(self.opens)
 
     def request(self, session, operation: str, **kwargs):
@@ -132,6 +135,72 @@ class ScriptedSshTransport:
 
 
 class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
+    def test_orchestrated_bundle_uses_credentials_file_without_manual_exports(self) -> None:
+        redfish = CallbackRedfishTransport()
+        stage = runtime_pull_bundle.BundleStageResult(
+            remote_bundle_path="/tmp/dump.tar.gz",
+            local_bundle_path=Path("/tmp/dump.tar.gz"),
+            generation_ran=True,
+            transport="redfish",
+        )
+        manager = {"UUID": "machine-a", "FirmwareVersion": "1.0"}
+        runtime = target_runtime_adapter._load_runtime_module()
+        backend = target_runtime_adapter.LogBundleMcpBackend(
+            redfish_transport_factory=lambda _args: redfish,
+            ssh_transport_factory=lambda _args: ScriptedSshTransport([]),
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            credentials_path = Path(raw) / "credentials.env"
+            credentials_path.write_text(
+                "REDFISH_USERNAME=file-user\n"
+                "REDFISH_PASSWORD=file-password\n"
+                "OPENUBMC_SSH_USER=ssh-file-user\n"
+                "OPENUBMC_SSH_PASSWORD=ssh-file-password\n",
+                encoding="utf-8",
+            )
+            credentials_path.chmod(0o600)
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"OPENUBMC_CREDENTIALS_FILE": str(credentials_path)},
+                    clear=False,
+                ),
+                mock.patch.object(
+                    runtime_pull_bundle,
+                    "redfish_request_json",
+                    return_value=manager,
+                ),
+                mock.patch.object(
+                    runtime_pull_bundle,
+                    "run_redfish_bundle_flow_with_session",
+                    return_value=stage,
+                ),
+            ):
+                service = runtime.RuntimeMcpService(
+                    runtime.OrchestratedMcpBackend(
+                        {"log_bundle_collect": backend}
+                    )
+                )
+                try:
+                    result = service.call_tool(
+                        "log_bundle_collect",
+                        {
+                            "ip": "bmc.example",
+                            "transport": "redfish",
+                            "extract": False,
+                            "deadline": 10,
+                        },
+                        task_id="credential-file-bundle-task",
+                        operation_id="credential-file-bundle-operation",
+                    )
+                finally:
+                    service.close()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(redfish.opens, 1)
+        self.assertEqual(redfish.credentials[0].user, "file-user")
+        self.assertEqual(redfish.credentials[0].password, "file-password")
+
     def test_task_reuses_one_lease_under_concurrent_same_target_calls(self) -> None:
         entered = threading.Event()
         release = threading.Event()

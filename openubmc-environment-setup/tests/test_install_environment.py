@@ -1450,6 +1450,39 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
         self.assertEqual(codex.read_text(encoding="utf-8"), migrated_kb)
 
+    def test_known_legacy_standalone_codex_kb_migrates_to_managed_stdio(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text(
+            "[mcp_servers.openubmc-kb]\n"
+            'command = "/usr/local/bin/node"\n'
+            "args = [\n"
+            '  "/mnt/c/Users/test/.codex/mcp/openubmc-standalone-mcp/src/server.js",\n'
+            '  "--config",\n'
+            '  "/mnt/c/Users/test/.codex/mcp/openubmc-standalone-mcp/config.local.json",\n'
+            "]\n"
+            "startup_timeout_sec = 30\n"
+            "tool_timeout_sec = 120\n",
+            encoding="utf-8",
+        )
+
+        result, output = self.install("--clients", "codex")
+
+        self.assertEqual(result, 0, output)
+        installed = codex.read_text(encoding="utf-8")
+        launcher = str(installer.knowledge_launcher_path(self.home))
+        self.assertIn("[mcp_servers.openubmc-kb]", installed)
+        self.assertIn(f"command = {json.dumps(launcher)}", installed)
+        self.assertIn("args = []", installed)
+        self.assertNotIn("openubmc-standalone-mcp", installed)
+        state = installer.load_state(self.home)
+        self.assertIs(state["mcp"]["codex"]["created_entry"], True)
+        self.assertNotEqual(
+            state["mcp"]["codex"].get("ownership"),
+            "external",
+        )
+
     def test_full_profile_migrates_legacy_http_kb_to_managed_stdio(self) -> None:
         self.prepare_credentials()
         codex = self.home / ".codex" / "config.toml"

@@ -3523,6 +3523,11 @@ class ContextRuntime:
                 )
             )
         )
+        if (
+            descriptor.name == "log_bundle_collect"
+            and workflow_case_status != "terminal"
+        ):
+            direct_terminal = False
         case_status = (
             "terminal"
             if direct_terminal
@@ -4369,6 +4374,36 @@ class ContextRuntime:
             projection,
             target_id=self._preferred_target_id(projection, arguments),
         )
+
+    def restore_domain_arguments(
+        self,
+        task_id: str,
+        operation: str,
+        arguments: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Recover Case-owned domain inputs before a new task opens its backend."""
+
+        restored = dict(arguments)
+        supplied_ip = restored.get("ip")
+        if (
+            isinstance(supplied_ip, str)
+            and supplied_ip.strip()
+        ) or "targets" in restored:
+            return restored
+        if self.repository.case_for_task(task_id):
+            return restored
+        case_id = self._case_id(task_id, restored, bind=False)
+        projection = self._load(case_id)
+        if projection is None:
+            return restored
+        recovered = self._domain_arguments(
+            projection,
+            operation,
+            self._completed_phases(projection),
+        )
+        recovered.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
+        recovered.update(restored)
+        return recovered
 
     @staticmethod
     def _context_workflow_plan(
@@ -5614,6 +5649,9 @@ class ContextRuntime:
             default=True,
         )
         closeout = projection.get("closeout")
+        workflow_complete = self._continuation_for(projection)[
+            "workflow_complete"
+        ]
         persistent_terminal = (
             projection.get("closed")
             or projection.get("status") == "closed"
@@ -5621,6 +5659,7 @@ class ContextRuntime:
                 projection.get("status") == "terminal"
                 and isinstance(closeout, Mapping)
                 and bool(closeout)
+                and workflow_complete
             )
         )
         if persistent_terminal:
