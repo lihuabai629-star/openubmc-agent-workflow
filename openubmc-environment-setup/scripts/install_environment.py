@@ -3341,7 +3341,7 @@ def perform_install(
     manage_knowledge_mcp = selected_policy.manages_knowledge_mcp
     prior_source: Path | None = None
     prior_source_mode: str | None = None
-    if args.source is None and prior_install:
+    if args.source is None and prior_install and args.source_mode == "auto":
         prior_source = prior_install.source_root
         prior_source_mode = prior_install.source_mode
         args.repo_url = prior_install.repo_url

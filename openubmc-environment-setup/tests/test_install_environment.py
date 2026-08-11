@@ -530,6 +530,103 @@ class EnvironmentSetupTests(unittest.TestCase):
         for link, target in untouched_targets.items():
             self.assertTrue(installer.same_target(link, target))
 
+    def test_explicit_managed_full_install_replaces_recorded_linked_target_source(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+
+        old_source = self.root / "old-target-runtime-source"
+        for _canonical, relative in EXPECTED_TARGET_RUNTIME_BUNDLE:
+            shutil.copytree(self.source / relative, old_source / relative)
+        state = installer.load_state(self.home)
+        state["source_root"] = str(old_source)
+        state["source_mode"] = "linked"
+        state["managed_checkout"] = False
+        state["skill_profile"] = "target-runtime"
+        installer.save_state(self.home, state, False)
+
+        managed_source = installer.managed_source_dir(self.home)
+
+        def clone_managed_source(
+            destination: Path,
+            repo_url: str,
+            ref: str,
+            dry_run: bool,
+            bundle: tuple[tuple[str, str], ...],
+        ) -> Path:
+            self.assertEqual(destination, managed_source)
+            self.assertEqual(repo_url, installer.DEFAULT_REPO_URL)
+            self.assertEqual(ref, installer.DEFAULT_REF)
+            self.assertFalse(dry_run)
+            self.assertEqual(bundle, EXPECTED_BUNDLE)
+            shutil.copytree(self.source, destination)
+            return installer.validate_source(destination, bundle)
+
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "managed",
+                "--skill-profile",
+                "full",
+                "--clients",
+                "codex",
+                "--skip-credentials",
+                "--skip-tool-install",
+                "--non-interactive",
+            ]
+        )
+        with (
+            mock.patch.object(
+                installer,
+                "clone_source",
+                side_effect=clone_managed_source,
+            ) as clone_source,
+            mock.patch.object(
+                installer,
+                "resolve_tool_dirs",
+                return_value=([str(self.bin_dir)], []),
+            ),
+            mock.patch.object(
+                installer,
+                "knowledge_mcp_health",
+                return_value=(
+                    True,
+                    "ok",
+                    [
+                        "openubmc_kb_query",
+                        "openubmc_kb_status",
+                        "openubmc_kb_list",
+                    ],
+                    False,
+                ),
+            ),
+        ):
+            self.assertEqual(installer.perform_install(args), 0)
+
+        clone_source.assert_called_once()
+        installed = installer.load_state(self.home)
+        self.assertEqual(installed["source_root"], str(managed_source))
+        self.assertEqual(installed["source_mode"], "managed")
+        self.assertEqual(installed["skill_profile"], "full")
+        skills_dir = installer.client_skills_dir(self.home, "codex")
+        for canonical, relative in EXPECTED_BUNDLE:
+            self.assertTrue(
+                installer.same_target(
+                    skills_dir / canonical,
+                    managed_source / relative,
+                )
+            )
+
     def test_target_profile_migrates_legacy_standalone_kb_name(self) -> None:
         self.prepare_credentials()
         codex = self.home / ".codex" / "config.toml"
