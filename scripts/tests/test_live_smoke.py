@@ -128,6 +128,39 @@ class LiveSmokeTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("--allow-insecure-tls", run.call_args.args[0])
 
+    def test_upgrade_preflight_supports_explicit_strict_tls(self) -> None:
+        ready = {
+            "ok": True,
+            "capabilities": {
+                "ssh_transport": True,
+                "mdbctl": True,
+                "remote_object": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "firmware.hpm"
+            artifact.write_bytes(b"fixture")
+            with (
+                mock.patch.object(
+                    live_smoke,
+                    "probe_target",
+                    side_effect=lambda target, **_: {"target": target, **ready},
+                ),
+                mock.patch.object(live_smoke, "run", return_value=0) as run,
+                redirect_stdout(io.StringIO()),
+            ):
+                result = live_smoke.main(
+                    [
+                        "--target", "10.0.0.1",
+                        "--target", "10.0.0.2",
+                        "--upgrade-artifact", str(artifact),
+                        "--product-version", "1.2.3",
+                        "--strict-tls",
+                    ]
+                )
+        self.assertEqual(result, 0)
+        self.assertNotIn("--allow-insecure-tls", run.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()
