@@ -2,6 +2,36 @@
 
 When another workflow routes into `openubmc-build`, prefer a structured handoff over `git diff`. The handoff records what was changed in the active session; it is not a dirty-worktree inventory.
 
+## Context Runtime Handoff
+
+When `workflow.next` returns `status: waiting_phase_record`, consume these fields directly:
+
+```json
+{
+  "required_skill": "openubmc-build",
+  "handoff_arguments": {
+    "case_id": "<case ID>",
+    "expected_revision": 12,
+    "phase_type": "build.artifact",
+    "source_revision": "<source revision>",
+    "changed_files": ["<task-owned changed file>"],
+    "changed_components": ["<component name>"],
+    "delivery_strategy": "build-upgrade"
+  },
+  "phase_record_contract": {
+    "phase_type": "build.artifact",
+    "producer_identity": "openubmc-build"
+  }
+}
+```
+
+Use `handoff_arguments` instead of reconstructing inputs from the dirty worktree. Preserve the
+returned `case_id`, revision, source identity, delivery route, and task-owned changed set. After the
+checked build, merge the artifact identity, status, evidence, commands, logs, and known gaps into
+the supplied `phase_record_contract`, submit it with `phase_record`, then call `workflow.next`
+again. If the Runtime handoff omits a field that the build genuinely requires, derive it from the
+active repository before asking the user.
+
 ## Minimal Handoff
 
 ```json

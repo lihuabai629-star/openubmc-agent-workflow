@@ -1,0 +1,51 @@
+{
+  "schema_version": "openubmc-agent-workflow.v1",
+  "version": "1.0.0",
+  "integrated_baseline": "ceb46e8ca5542a4273128b1a4aa8606b2f5eaee0",
+  "profiles": {
+    "full": [
+      "openubmc-environment-setup",
+      "openubmc-debug",
+      "openubmc-log-analyzer",
+      "openubmc-developer",
+      "openubmc-build",
+      "openubmc-upgrade",
+      "openubmc-live-patch",
+      "openubmc-dt-testing",
+      "openubmc-publish",
+      "openubmc-lua-component",
+      "openubmc-qemu-testing"
+    ],
+    "target-runtime": [
+      "openubmc-environment-setup",
+      "openubmc-debug",
+      "openubmc-log-analyzer",
+      "openubmc-developer",
+      "openubmc-build",
+      "openubmc-upgrade",
+      "openubmc-live-patch"
+    ]
+  },
+  "skills": [
+    {"name": "openubmc-environment-setup", "path": "openubmc-environment-setup"},
+    {"name": "openubmc-debug", "path": "openubmc-debug"},
+    {"name": "openubmc-log-analyzer", "path": "openubmc-log-analyzer"},
+    {"name": "openubmc-developer", "path": "openubmc-developer"},
+    {"name": "openubmc-build", "path": "openubmc-build"},
+    {"name": "openubmc-upgrade", "path": "openubmc-upgrade"},
+    {"name": "openubmc-live-patch", "path": "openubmc-live-patch"},
+    {"name": "openubmc-dt-testing", "path": "testing"},
+    {"name": "openubmc-publish", "path": "openubmc-publish"},
+    {"name": "openubmc-lua-component", "path": "lua-component"},
+    {"name": "openubmc-qemu-testing", "path": "qemu-testing"}
+  ],
+  "components": {
+    "target_runtime_api": "openubmc.target-runtime.v1",
+    "knowledge_mcp": "1.3.0"
+  },
+  "clients": {
+    "codex": {"skills": true, "mcp": true},
+    "claude": {"skills": true, "mcp": true},
+    "openclaw": {"skills": true, "mcp": false}
+  }
+}

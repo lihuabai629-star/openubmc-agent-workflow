@@ -1,11 +1,6 @@
 ---
 name: openubmc-dt-testing
-description: 编写和执行 openUBMC 组件的 UT/IT 测试，涵盖 LuaUnit 用例编写、Mock 打桩、集成测试配置、覆盖率分析和测试用例设计。Use when user asks to "编写单元测试", "编写集成测试", "运行UT", "运行IT", "bingo test", "测试覆盖率", "设计测试用例", "LuaUnit断言", "Mock打桩", "测试数据准备". Do NOT use for OpenBMC test frameworks or third-party test runners.
-metadata:
-  author: OpenUBMC Team
-  version: 2.0.0
-  compatibility: Requires openUBMC 1.0.0+, bingo-cli >= 1.0.0, luaunit >= 3.4
-  tags: [openubmc, testing, dt, unit-test, integration-test, coverage, luaunit, mock, case-guide]
+description: 为 openUBMC 组件设计、编写和执行 UT/IT 测试，包括 LuaUnit、Mock、测试数据、bingo test、集成测试配置与覆盖率分析。Use when the user asks to add or run unit tests, integration tests, coverage checks, assertions, mocks, or test fixtures for an openUBMC component. Do not use for OpenBMC test frameworks or unrelated third-party runners.
 ---
 
 # OpenUBMC DT 测试
@@ -440,8 +435,8 @@ UT 直接执行 Lua 脚本，无法调用 D-Bus 外部接口。使用 mock 打�
 
 ## Related Skills
 
-- **openubmc-lua-component** — Lua 组件开发：组件脚手架、MDS 建模、代码生成、业务逻辑实现。本 Skill 的 Step 7 直接引用此测试 Skill
-- **openubmc-qemu-testing** — QEMU 仿真测试：在仿真环境中进行端到端验证和冒烟测试
+- **openubmc-developer** — 当测试暴露出源码归属、生成链或跨层实现问题时，交给统一 Developer 工作流处理
+- **openubmc-qemu-testing** — 需要仓库 launcher、镜像、串口、端口和 guest readiness 证据时，转入 QEMU 分层验证
 
 ## References
 

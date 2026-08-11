@@ -1,0 +1,42 @@
+<evaluation>
+  <qa_pair>
+    <question>Locate the time-jump report caused by changing the Web time zone and corroborate it with the time-management handbook. Write the three recovery stages in their documented order, using lowercase rtc/ntp and the arrow character →.</question>
+    <answer>出厂时间→rtc时间→ntp时间</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>When a BMC briefly shows the Unix epoch after restart, identify the handbook check that reports both whether network time is enabled and whether synchronization succeeded. Return the complete command only.</question>
+    <answer>ipmcget -d ntp</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>After proving that a configured network time server address is valid, the troubleshooting handbook says to verify that the address was written to one trusted-data configuration file. Return its absolute path only.</question>
+    <answer>/data/trust/ntp/ntp.conf</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In the time-management handbook section whose example is ipmitool sel time set "06/13/2025 08:35:00", what exact strftime-style input format is required? Return the format string only.</question>
+    <answer>%m/%d/%Y %H:%M:%S</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Follow the no-NTP RTC diagnosis path from the time-management handbook to its CpuBoard MDB BlockIO Read example. What decimal address is passed between the context argument 0 and the read length 8?</question>
+    <answer>201327872</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Find the OpenUBMC2509 KVM custom-shortcut report where Alt+F2 was intended to switch pages. Which function key was the KVM page already bound to by default? Return the key name only.</question>
+    <answer>F1</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In the forum case where a V2-to-V3 upgrade was followed by SSL certificate failure and repeated restarts, which major version did the affected boards automatically return to? Return the version label only.</question>
+    <answer>V2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Find the DC-cycle case where the storage component sometimes missed a power-state transition, then cross-check the related property-subscription discussion. Which org.freedesktop.DBus.Properties signal member triggers the monitor? Preserve its capitalization.</question>
+    <answer>PropertiesChanged</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In the LPe32002 FC-card alarm conflict, one implementation was in vpd and the other also synchronized PCIe information. Return the other component's repository-style name only.</question>
+    <answer>component_drivers</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In the E810 optical-module temperature investigation, inspect the OpticalTemp Lua request definition. What exact value is assigned to its protocol field? Return the value without quotes.</question>
+    <answer>ncsi_standard</answer>
+  </qa_pair>
+</evaluation>

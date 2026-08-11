@@ -12,7 +12,10 @@
     "openubmc-build",
     "openubmc-upgrade",
     "openubmc-live-patch",
-    "openubmc-dt-testing"
+    "openubmc-dt-testing",
+    "openubmc-publish",
+    "openubmc-lua-component",
+    "openubmc-qemu-testing"
   ],
   "files": [
     "SKILL.md",
@@ -20,7 +23,8 @@
     "agents/openai.yaml",
     "assets/hw_ibmc_bmcgo-0.7.51-py3-none-any.whl",
     "scripts/install_environment.py",
-    "tests/test_install_environment.py"
+    "tests/test_install_environment.py",
+    "tests/test_bootstrap.py"
   ],
   "keywords": [
     "openubmc",
@@ -29,6 +33,7 @@
     "skills",
     "target-runtime",
     "mcp",
+    "knowledge-base",
     "wsl",
     "docker"
   ],

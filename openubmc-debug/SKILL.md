@@ -35,8 +35,10 @@ receipts, evidence references, and next action.
 - When the user says “继续” or “continue”, call `workflow.next` with the bound `case_id`; do not
   reparse the request or rebuild inputs already retained by the Case.
 - Treat `workflow.next` as the continuation loop, not as a one-step status read. When it returns
-  `waiting_phase_record`, run the named owning Skill, record that phase, and call `workflow.next`
-  again in the same user turn. Call it again after `budget_exhausted`; for
+  `waiting_phase_record`, load `required_skill` immediately and pass its `handoff_arguments`; do not
+  wait for the user to name Build or Developer again. Record the returned phase with the included
+  `phase_record_contract`, then call `workflow.next` again in the same user turn. Call it again
+  after `budget_exhausted`; for
   `operation_in_progress`, wait for and reuse the current operation rather than creating another.
   Return control only for a terminal Closeout or a concrete blocker that requires new input, new
   task-level authorization, an unavailable external capability, or unresolved mutation

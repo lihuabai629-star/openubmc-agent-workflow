@@ -27,39 +27,51 @@ import urllib.request
 
 DEFAULT_REPO_URL = "http://10.121.177.79/liqinghua/openubmc-agent-workflow.git"
 DEFAULT_REF = "main"
-DEFAULT_STUDIO_URL = "http://localhost:9876/mcp"
+LEGACY_STUDIO_HTTP_URL = "http://localhost:9876/mcp"
 KNOWLEDGE_MCP_NAME = "openubmc-kb"
-STUDIO_MCP_NAME = KNOWLEDGE_MCP_NAME
 LEGACY_STUDIO_MCP_NAME = "openubmc-studio"
+KNOWLEDGE_MCP_VERSION = "1.3.0"
+KNOWLEDGE_MCP_INSTALL_SCHEMA = "openubmc-kb.install.v1"
+_KNOWLEDGE_DIGEST_DOMAIN = b"openubmc-kb-content-v1\0"
 TARGET_RUNTIME_API_VERSION = "openubmc.target-runtime.v1"
 TARGET_RUNTIME_MCP_NAME = "openubmc-target-runtime"
 TARGET_RUNTIME_INSTALL_SCHEMA = "openubmc-target-runtime.install.v1"
 _RUNTIME_DIGEST_DOMAIN = b"openubmc-target-runtime-content-v1\0"
 STATE_VERSION = 1
-COMMANDS = ("install", "check", "repair", "update", "refresh", "credentials", "uninstall")
+COMMANDS = (
+    "install",
+    "check",
+    "repair",
+    "update",
+    "rollback",
+    "refresh",
+    "credentials",
+    "uninstall",
+)
 SkillBundle = tuple[tuple[str, str], ...]
 
 
 class SkillProfilePolicy(NamedTuple):
     bundle: SkillBundle
-    manages_studio: bool
+    manages_knowledge_mcp: bool
 
 
 class ResolvedSkillProfile(NamedTuple):
     name: str
     bundle: SkillBundle
-    manages_studio: bool
+    manages_knowledge_mcp: bool
 
 
 class RecordedInstall(NamedTuple):
     source_root: Path
     source_mode: str
     source_commit: str
+    rollback_commit: str
     repo_url: str
     ref: str
     clients: tuple[str, ...]
     profile: ResolvedSkillProfile
-    studio_url: str
+    knowledge_url: str
     target: str
     tool_dirs: tuple[str, ...]
     mcp: dict[str, Any]
@@ -90,6 +102,9 @@ SKILL_BUNDLE: SkillBundle = (
     ("openubmc-upgrade", "openubmc-upgrade"),
     ("openubmc-live-patch", "openubmc-live-patch"),
     ("openubmc-dt-testing", "testing"),
+    ("openubmc-publish", "openubmc-publish"),
+    ("openubmc-lua-component", "lua-component"),
+    ("openubmc-qemu-testing", "qemu-testing"),
 )
 DEFAULT_SKILL_PROFILE = "full"
 TARGET_RUNTIME_SKILL_PROFILE = "target-runtime"
@@ -110,18 +125,17 @@ TARGET_RUNTIME_SKILL_BUNDLE: SkillBundle = tuple(
 SKILL_PROFILES: dict[str, SkillProfilePolicy] = {
     DEFAULT_SKILL_PROFILE: SkillProfilePolicy(
         bundle=SKILL_BUNDLE,
-        manages_studio=True,
+        manages_knowledge_mcp=True,
     ),
     TARGET_RUNTIME_SKILL_PROFILE: SkillProfilePolicy(
         bundle=TARGET_RUNTIME_SKILL_BUNDLE,
-        manages_studio=False,
+        manages_knowledge_mcp=False,
     ),
 }
 
 # Compatibility wrappers remain in the repository for explicit path-based use,
 # but must not be present in the normal discovery catalog.
 RETIRED_SKILL_LINKS: tuple[tuple[str, str], ...] = (
-    ("openubmc-lua-component", "lua-component"),
     ("lua-component", "lua-component"),
     ("openubmc-mdb-interface-dev", "mdb-interface-dev"),
     ("mdb-interface-dev", "mdb-interface-dev"),
@@ -270,9 +284,14 @@ def add_install_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--kb-url",
         "--studio-url",
-        dest="studio_url",
+        dest="knowledge_url",
         default=None,
         help="knowledge MCP URL; --studio-url remains a compatibility alias",
+    )
+    parser.add_argument(
+        "--kb-config",
+        type=Path,
+        help="import a private openUBMC KB JSON configuration",
     )
     parser.add_argument("--configure-credentials", action="store_true")
     parser.add_argument("--import-credentials", type=Path)
@@ -289,6 +308,7 @@ def new_cli_parser() -> argparse.ArgumentParser:
     for command, help_text in (
         ("repair", "repair configuration without pulling source"),
         ("update", "fast-forward an installer-managed source"),
+        ("rollback", "restore the previous known-good managed revision"),
         ("refresh", "record and repair a linked source checkout"),
     ):
         child = subparsers.add_parser(command, help=help_text)
@@ -296,6 +316,8 @@ def new_cli_parser() -> argparse.ArgumentParser:
     credentials = subparsers.add_parser("credentials", help="configure private BMC and OS credentials")
     add_common_options(credentials)
     credentials.add_argument("--import-credentials", type=Path)
+    credentials.add_argument("--kb", action="store_true", help="configure openUBMC KB OneID credentials")
+    credentials.add_argument("--kb-config", type=Path, help="import a private openUBMC KB JSON configuration")
     uninstall = subparsers.add_parser("uninstall", help="remove installer-managed configuration")
     add_common_options(uninstall)
     uninstall.add_argument("--purge-credentials", action="store_true")
@@ -305,7 +327,7 @@ def new_cli_parser() -> argparse.ArgumentParser:
 def legacy_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group()
-    for command in ("install", "check", "repair", "update", "refresh", "uninstall"):
+    for command in ("install", "check", "repair", "update", "rollback", "refresh", "uninstall"):
         actions.add_argument(f"--{command}", action="store_true")
     add_install_options(parser)
     parser.add_argument("--purge-credentials", action="store_true")
@@ -323,7 +345,9 @@ def apply_argument_defaults(args: argparse.Namespace) -> argparse.Namespace:
         "target": "current",
         "skill_profile": None,
         "preserve_skills": None,
-        "studio_url": None,
+        "knowledge_url": None,
+        "kb_config": None,
+        "kb": False,
         "configure_credentials": False,
         "import_credentials": None,
         "skip_credentials": False,
@@ -400,6 +424,22 @@ def runtime_launcher_path(home: Path) -> Path:
 
 def runtime_manifest_path(home: Path) -> Path:
     return runtime_install_root(home) / "manifest.json"
+
+
+def knowledge_install_root(home: Path) -> Path:
+    return home / ".local" / "share" / "openubmc" / "kb-mcp"
+
+
+def knowledge_launcher_path(home: Path) -> Path:
+    return knowledge_install_root(home) / "openubmc-kb-mcp"
+
+
+def knowledge_manifest_path(home: Path) -> Path:
+    return knowledge_install_root(home) / "manifest.json"
+
+
+def knowledge_config_path(home: Path) -> Path:
+    return openubmc_config_dir(home) / "kb-mcp.json"
 
 
 def client_skills_dir(home: Path, client: str) -> Path:
@@ -484,7 +524,7 @@ def resolve_skill_profile(profile: str) -> ResolvedSkillProfile:
     return ResolvedSkillProfile(
         name=profile,
         bundle=policy.bundle,
-        manages_studio=policy.manages_studio,
+        manages_knowledge_mcp=policy.manages_knowledge_mcp,
     )
 
 
@@ -535,8 +575,11 @@ def materialize_skill_bundle(
 def bundle_git_paths(
     bundle: Iterable[tuple[str, str]] = SKILL_BUNDLE,
 ) -> tuple[str, ...]:
-    paths = [relative for _, relative in materialize_skill_bundle(bundle)]
+    resolved = materialize_skill_bundle(bundle)
+    paths = [relative for _, relative in resolved]
     paths.append("openubmc-target-runtime")
+    if resolved == SKILL_BUNDLE:
+        paths.append("openubmc-kb-mcp")
     return tuple(dict.fromkeys(paths))
 
 
@@ -823,6 +866,236 @@ def deploy_runtime(plan: dict[str, str], dry_run: bool) -> dict[str, str]:
     return dict(plan)
 
 
+def iter_knowledge_source_files(root: Path):
+    package_root = root.resolve()
+    required = (package_root / "package.json", package_root / "package-lock.json")
+    if not all(path.is_file() for path in required) or not (package_root / "src/server.js").is_file():
+        raise SetupError(f"canonical openUBMC KB MCP is unavailable: {package_root}")
+    paths = [*required, *sorted((package_root / "src").rglob("*.js"))]
+    for path in paths:
+        relative = path.relative_to(package_root)
+        if path.is_symlink() or not path.is_file():
+            raise SetupError(f"openUBMC KB MCP contains an invalid source path: {relative}")
+        yield path, relative
+
+
+def knowledge_content_digest(root: Path) -> str:
+    digest = hashlib.sha256(_KNOWLEDGE_DIGEST_DOMAIN)
+    for path, relative in iter_knowledge_source_files(root):
+        content = path.read_bytes()
+        encoded_path = relative.as_posix().encode("utf-8")
+        digest.update(len(encoded_path).to_bytes(8, "big"))
+        digest.update(encoded_path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def node_major(node: Path | str) -> int:
+    result = run_command([str(node), "--version"])
+    if result.returncode != 0:
+        return 0
+    match = re.fullmatch(r"v?(\d+)(?:\.\d+){1,2}", result.stdout.strip())
+    return int(match.group(1)) if match else 0
+
+
+def resolve_node(home: Path, tool_dirs: Iterable[str]) -> Path | None:
+    candidates = [home / ".local" / "bin" / "node"]
+    discovered = shutil.which("node", path=tool_search_path(tool_dirs))
+    if discovered:
+        candidates.append(Path(discovered))
+    return next((path for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
+
+
+def install_knowledge_dependencies(
+    home: Path,
+    source: Path,
+    tool_dirs: Iterable[str],
+    *,
+    dry_run: bool,
+) -> Path:
+    package_root = source / "openubmc-kb-mcp"
+    if dry_run and not source.exists():
+        print("would install openUBMC KB MCP Node.js dependencies")
+        return home / ".local" / "bin" / "node"
+    tuple(iter_knowledge_source_files(package_root))
+    node = resolve_node(home, tool_dirs)
+    if node is None:
+        raise SetupError("Node.js is unavailable after dependency installation")
+    if node_major(node) < 20:
+        npm = shutil.which("npm", path=tool_search_path(tool_dirs))
+        if not npm:
+            raise SetupError("Node.js 20 or newer is required and npm is unavailable")
+        if dry_run:
+            print(f"would install Node.js 20 under {home / '.local'}")
+            return home / ".local" / "bin" / "node"
+        command = [
+            npm,
+            "install",
+            "--global",
+            "--prefix",
+            str(home / ".local"),
+            "node@20",
+        ]
+        result = run_command(command, env={**os.environ, "HOME": str(home)})
+        if result.returncode != 0:
+            raise command_error(command, result)
+        node = resolve_node(home, tool_dirs)
+        if node is None or node_major(node) < 20:
+            raise SetupError("automatic Node.js 20 installation did not produce a usable runtime")
+        print(f"installed Node.js 20 under {home / '.local'}")
+    dependency = package_root / "node_modules" / "@modelcontextprotocol" / "sdk" / "package.json"
+    if dependency.is_file():
+        return node
+    if dry_run:
+        print(f"would install openUBMC KB MCP dependencies in {package_root}")
+        return node
+    npm = shutil.which("npm", path=tool_search_path(tool_dirs))
+    if not npm:
+        raise SetupError("npm is unavailable after dependency installation")
+    command = [npm, "ci", "--omit=dev", "--no-audit", "--no-fund"]
+    result = run_command(command, cwd=package_root, env={**os.environ, "HOME": str(home)})
+    if result.returncode != 0:
+        raise command_error(command, result)
+    if not dependency.is_file():
+        raise SetupError("openUBMC KB MCP dependency installation is incomplete")
+    print("installed openUBMC KB MCP dependencies")
+    return node
+
+
+def build_knowledge_plan(
+    home: Path,
+    source: Path,
+    node: Path,
+    *,
+    allow_missing_source: bool = False,
+) -> dict[str, str]:
+    package_root = source / "openubmc-kb-mcp"
+    digest = "planned" if allow_missing_source and not source.exists() else knowledge_content_digest(package_root)
+    return {
+        "schema_version": KNOWLEDGE_MCP_INSTALL_SCHEMA,
+        "version": KNOWLEDGE_MCP_VERSION,
+        "content_digest": digest,
+        "source_path": str(package_root),
+        "server_path": str(package_root / "src" / "server.js"),
+        "node_path": str(node),
+        "config_path": str(knowledge_config_path(home)),
+        "launcher_path": str(knowledge_launcher_path(home)),
+        "manifest_path": str(knowledge_manifest_path(home)),
+    }
+
+
+def render_knowledge_launcher(plan: Mapping[str, str]) -> str:
+    source = json.dumps(plan["source_path"])
+    server = json.dumps(plan["server_path"])
+    node = json.dumps(plan["node_path"])
+    config = json.dumps(plan["config_path"])
+    expected_digest = json.dumps(plan["content_digest"])
+    return f'''#!/usr/bin/env python3
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+
+SOURCE_ROOT = Path({source})
+SERVER = Path({server})
+NODE = Path({node})
+CONFIG = Path({config})
+EXPECTED_DIGEST = {expected_digest}
+DIGEST_DOMAIN = b"openubmc-kb-content-v1\\0"
+
+
+def fail(reason: str) -> None:
+    raise SystemExit(
+        "openUBMC KB MCP installation validation failed: "
+        + reason
+        + "; run openubmc-environment-setup repair"
+    )
+
+
+files = [SOURCE_ROOT / "package.json", SOURCE_ROOT / "package-lock.json", *sorted((SOURCE_ROOT / "src").rglob("*.js"))]
+if not files or any(path.is_symlink() or not path.is_file() for path in files):
+    fail("source files are missing or invalid")
+digest = hashlib.sha256(DIGEST_DOMAIN)
+for path in files:
+    relative = path.relative_to(SOURCE_ROOT).as_posix().encode("utf-8")
+    content = path.read_bytes()
+    digest.update(len(relative).to_bytes(8, "big"))
+    digest.update(relative)
+    digest.update(len(content).to_bytes(8, "big"))
+    digest.update(content)
+if "sha256:" + digest.hexdigest() != EXPECTED_DIGEST:
+    fail("content digest mismatch")
+if not NODE.is_file() or not os.access(NODE, os.X_OK):
+    fail("Node.js runtime is missing")
+os.environ.setdefault("OPENUBMC_KB_CONFIG", str(CONFIG))
+os.execv(str(NODE), [str(NODE), str(SERVER), "--config", str(CONFIG)])
+'''
+
+
+def deploy_knowledge_mcp(plan: dict[str, str], dry_run: bool) -> dict[str, str]:
+    launcher = Path(plan["launcher_path"])
+    manifest = Path(plan["manifest_path"])
+    if dry_run:
+        print(f"would write openUBMC KB MCP launcher {launcher}")
+        return dict(plan)
+    launcher.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    atomic_write(
+        manifest,
+        json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        0o600,
+    )
+    atomic_write(launcher, render_knowledge_launcher(plan), 0o755)
+    return dict(plan)
+
+
+def default_knowledge_config() -> dict[str, object]:
+    return {"username": "", "password": ""}
+
+
+def ensure_knowledge_config(home: Path, source: Path | None, dry_run: bool) -> str:
+    destination = knowledge_config_path(home)
+    configured_source = source
+    if configured_source is None:
+        environment_path = os.environ.get("OPENUBMC_KB_CONFIG", "").strip()
+        configured_source = Path(environment_path).expanduser() if environment_path else None
+    if configured_source is not None:
+        configured_source = configured_source.expanduser().absolute()
+        if configured_source.is_symlink() or not configured_source.is_file():
+            raise SetupError(f"openUBMC KB configuration must be a regular file: {configured_source}")
+        try:
+            document = json.loads(configured_source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise SetupError("openUBMC KB configuration must contain valid JSON") from error
+        if not isinstance(document, dict):
+            raise SetupError("openUBMC KB configuration must be a JSON object")
+        if dry_run:
+            print(f"would import openUBMC KB configuration to {destination}")
+        else:
+            atomic_write(
+                destination,
+                json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                0o600,
+            )
+        return "imported"
+    if destination.is_file() and not destination.is_symlink():
+        if not dry_run and stat.S_IMODE(destination.stat().st_mode) != 0o600:
+            os.chmod(destination, 0o600)
+        return "preserved"
+    if destination.exists():
+        raise SetupError(f"openUBMC KB configuration path is not a regular file: {destination}")
+    if dry_run:
+        print(f"would create openUBMC KB configuration {destination}")
+    else:
+        atomic_write(
+            destination,
+            json.dumps(default_knowledge_config(), ensure_ascii=False, indent=2) + "\n",
+            0o600,
+        )
+    return "created"
+
+
 def local_repository_from_script(
     bundle: Iterable[tuple[str, str]] = SKILL_BUNDLE,
 ) -> Path | None:
@@ -876,6 +1149,27 @@ def update_managed_source(
     merge = run_command(["git", "-C", str(root), "merge", "--ff-only", f"origin/{ref}"])
     if merge.returncode != 0:
         raise SetupError(merge.stderr.strip() or "unable to fast-forward skills repository")
+
+
+def checkout_managed_revision(
+    root: Path,
+    commit: str,
+    dry_run: bool,
+    bundle: Iterable[tuple[str, str]] = SKILL_BUNDLE,
+) -> None:
+    if not re.fullmatch(r"[0-9a-fA-F]{7,64}", commit):
+        raise SetupError("recorded rollback revision is invalid")
+    if git_dirty(root, paths=bundle_git_paths(bundle)):
+        raise SetupError(f"refusing to roll back dirty skills checkout: {root}")
+    verify = run_command(["git", "-C", str(root), "cat-file", "-e", f"{commit}^{{commit}}"])
+    if verify.returncode != 0:
+        raise SetupError(f"recorded rollback revision is unavailable: {commit}")
+    if dry_run:
+        print(f"would restore managed source {root} to {commit}")
+        return
+    checkout = run_command(["git", "-C", str(root), "checkout", "--detach", commit])
+    if checkout.returncode != 0:
+        raise SetupError(checkout.stderr.strip() or f"unable to restore revision {commit}")
 
 
 def source_mode_from_state(state: Mapping[str, object]) -> str:
@@ -1186,7 +1480,13 @@ def render_env(tool_dirs: Iterable[str]) -> str:
             'elif [ "${OPENUBMC_CREDENTIALS_FILE:-}" = "${_openubmc_credentials}" ]; then',
             "    unset OPENUBMC_CREDENTIALS_FILE",
             "fi",
-            "unset _openubmc_credentials _openubmc_meta _openubmc_uid _openubmc_mode",
+            '_openubmc_kb_config="${XDG_CONFIG_HOME:-$HOME/.config}/openubmc/kb-mcp.json"',
+            'if _openubmc_private_file "${_openubmc_kb_config}"; then',
+            '    export OPENUBMC_KB_CONFIG="${_openubmc_kb_config}"',
+            'elif [ "${OPENUBMC_KB_CONFIG:-}" = "${_openubmc_kb_config}" ]; then',
+            "    unset OPENUBMC_KB_CONFIG",
+            "fi",
+            "unset _openubmc_credentials _openubmc_kb_config _openubmc_meta _openubmc_uid _openubmc_mode",
             "unset -f _openubmc_private_file 2>/dev/null || true",
             "",
         )
@@ -1358,6 +1658,7 @@ def install_bootstrap_tools(
     tool_dirs: Iterable[str],
     *,
     dry_run: bool,
+    knowledge_mcp: bool = False,
 ) -> None:
     search_path = tool_search_path(tool_dirs)
     apt_packages = [
@@ -1373,6 +1674,11 @@ def install_bootstrap_tools(
     if "codex" in set(clients) and shutil.which("codex", path=search_path) is None:
         if shutil.which("npm", path=search_path) is None:
             apt_packages.extend(("nodejs", "npm"))
+    if knowledge_mcp:
+        if shutil.which("node", path=search_path) is None:
+            apt_packages.append("nodejs")
+        if shutil.which("npm", path=search_path) is None:
+            apt_packages.append("npm")
     install_apt_packages(apt_packages, dry_run=dry_run)
     if "codex" in set(clients):
         install_codex_client(home, tool_dirs, dry_run=dry_run)
@@ -1781,13 +2087,13 @@ def migrate_legacy_toml_mcp_name(
     original = path.read_text(encoding="utf-8", errors="strict")
     lines = original.splitlines()
     legacy_header = f"[mcp_servers.{LEGACY_STUDIO_MCP_NAME}]"
-    current_header = f"[mcp_servers.{STUDIO_MCP_NAME}]"
+    current_header = f"[mcp_servers.{KNOWLEDGE_MCP_NAME}]"
     legacy_bounds = toml_section_bounds(lines, legacy_header)
     if legacy_bounds is None:
         return False
     if toml_section_bounds(lines, current_header) is not None:
         raise SetupError(
-            f"both {LEGACY_STUDIO_MCP_NAME} and {STUDIO_MCP_NAME} MCP entries "
+            f"both {LEGACY_STUDIO_MCP_NAME} and {KNOWLEDGE_MCP_NAME} MCP entries "
             f"exist in {path}"
         )
     lines[legacy_bounds[0]] = current_header
@@ -1796,7 +2102,7 @@ def migrate_legacy_toml_mcp_name(
     if dry_run:
         print(
             f"would rename {LEGACY_STUDIO_MCP_NAME} to "
-            f"{STUDIO_MCP_NAME} in {path}"
+            f"{KNOWLEDGE_MCP_NAME} in {path}"
         )
     else:
         atomic_write(path, updated, None)
@@ -1817,18 +2123,18 @@ def migrate_legacy_json_mcp_name(
     servers = document.get("mcpServers")
     if not isinstance(servers, dict) or LEGACY_STUDIO_MCP_NAME not in servers:
         return False
-    if STUDIO_MCP_NAME in servers:
+    if KNOWLEDGE_MCP_NAME in servers:
         raise SetupError(
-            f"both {LEGACY_STUDIO_MCP_NAME} and {STUDIO_MCP_NAME} MCP entries "
+            f"both {LEGACY_STUDIO_MCP_NAME} and {KNOWLEDGE_MCP_NAME} MCP entries "
             f"exist in {path}"
         )
-    servers[STUDIO_MCP_NAME] = servers.pop(LEGACY_STUDIO_MCP_NAME)
+    servers[KNOWLEDGE_MCP_NAME] = servers.pop(LEGACY_STUDIO_MCP_NAME)
     updated = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     backup_config_file(path, backups, dry_run)
     if dry_run:
         print(
             f"would rename {LEGACY_STUDIO_MCP_NAME} to "
-            f"{STUDIO_MCP_NAME} in {path}"
+            f"{KNOWLEDGE_MCP_NAME} in {path}"
         )
     else:
         atomic_write(path, updated, None)
@@ -1871,11 +2177,11 @@ def toml_section_bounds(lines: list[str], header: str) -> tuple[int, int] | None
     return start, end
 
 
-def toml_studio_mcp_entry(path: Path) -> dict[str, str] | None:
+def toml_knowledge_mcp_entry(path: Path) -> dict[str, str] | None:
     if not path.is_file() or path.is_symlink():
         return None
     lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
-    bounds = toml_section_bounds(lines, f"[mcp_servers.{STUDIO_MCP_NAME}]")
+    bounds = toml_section_bounds(lines, f"[mcp_servers.{KNOWLEDGE_MCP_NAME}]")
     if bounds is None:
         return None
     start, end = bounds
@@ -1898,12 +2204,12 @@ def toml_studio_mcp_entry(path: Path) -> dict[str, str] | None:
     if len(commands) == 1 and not urls:
         return {"transport": "stdio", "command": commands[0]}
     raise SetupError(
-        f"{STUDIO_MCP_NAME} TOML section must contain one string URL or one string command"
+        f"{KNOWLEDGE_MCP_NAME} TOML section must contain one string URL or one string command"
     )
 
 
 def toml_mcp_url(path: Path) -> str | None:
-    entry = toml_studio_mcp_entry(path)
+    entry = toml_knowledge_mcp_entry(path)
     if entry is None or entry.get("transport") != "http":
         return None
     return entry["url"]
@@ -1921,7 +2227,7 @@ def upsert_toml_mcp(
     file_existed = path.exists()
     original = path.read_text(encoding="utf-8") if path.exists() else ""
     lines = original.splitlines()
-    header = f"[mcp_servers.{STUDIO_MCP_NAME}]"
+    header = f"[mcp_servers.{KNOWLEDGE_MCP_NAME}]"
     bounds = toml_section_bounds(lines, header)
     created_entry = record_created_entry(prior)
     if bounds is None:
@@ -1931,7 +2237,7 @@ def upsert_toml_mcp(
         created_entry = True
     else:
         start, end = bounds
-        existing = toml_studio_mcp_entry(path)
+        existing = toml_knowledge_mcp_entry(path)
         if existing is not None and existing.get("transport") == "stdio":
             if not created_entry:
                 return {
@@ -1945,14 +2251,14 @@ def upsert_toml_mcp(
         if existing is None or existing.get("transport") != "http" or current != url:
             if not created_entry:
                 raise SetupError(
-                    f"existing {STUDIO_MCP_NAME} MCP URL differs in {path}: {current!r}"
+                    f"existing {KNOWLEDGE_MCP_NAME} MCP URL differs in {path}: {current!r}"
                 )
             lines[start:end] = (header, f"url = {json.dumps(url)}")
     updated = "\n".join(lines).rstrip() + "\n"
     if updated != original:
         backup_config_file(path, backups, dry_run)
         if dry_run:
-            print(f"would register {STUDIO_MCP_NAME} in {path}")
+            print(f"would register {KNOWLEDGE_MCP_NAME} in {path}")
         else:
             atomic_write(path, updated, None)
     return {
@@ -1969,12 +2275,12 @@ def remove_toml_mcp(
     if not record_created_entry(record) or not path.exists() or path.is_symlink():
         return
     lines = path.read_text(encoding="utf-8").splitlines()
-    header = f"[mcp_servers.{STUDIO_MCP_NAME}]"
+    header = f"[mcp_servers.{KNOWLEDGE_MCP_NAME}]"
     bounds = toml_section_bounds(lines, header)
     if bounds is None:
         return
     if toml_mcp_url(path) != record.get("url"):
-        print(f"warning: preserving changed {STUDIO_MCP_NAME} MCP entry in {path}")
+        print(f"warning: preserving changed {KNOWLEDGE_MCP_NAME} MCP entry in {path}")
         return
     start, end = bounds
     updated_lines = lines[:start] + lines[end:]
@@ -1982,7 +2288,7 @@ def remove_toml_mcp(
     updated = updated + "\n" if updated else ""
     backup_config_file(path, backups, dry_run)
     if dry_run:
-        print(f"would remove {STUDIO_MCP_NAME} from {path}")
+        print(f"would remove {KNOWLEDGE_MCP_NAME} from {path}")
     elif not updated and record_created_file(record):
         path.unlink()
     else:
@@ -1999,11 +2305,11 @@ def json_mcp_entry(path: Path) -> dict[str, Any] | None:
     servers = document.get("mcpServers", {})
     if not isinstance(servers, dict):
         raise SetupError(f"mcpServers must be an object: {path}")
-    entry = servers.get(STUDIO_MCP_NAME)
+    entry = servers.get(KNOWLEDGE_MCP_NAME)
     if entry is None:
         return None
     if not isinstance(entry, dict):
-        raise SetupError(f"{STUDIO_MCP_NAME} MCP entry must be an object: {path}")
+        raise SetupError(f"{KNOWLEDGE_MCP_NAME} MCP entry must be an object: {path}")
     return entry
 
 
@@ -2027,10 +2333,10 @@ def upsert_json_mcp(
     servers = document.setdefault("mcpServers", {})
     if not isinstance(servers, dict):
         raise SetupError(f"mcpServers must be an object: {path}")
-    existing = servers.get(STUDIO_MCP_NAME)
+    existing = servers.get(KNOWLEDGE_MCP_NAME)
     created_entry = record_created_entry(prior)
     if existing is None:
-        servers[STUDIO_MCP_NAME] = http_mcp_entry(url)
+        servers[KNOWLEDGE_MCP_NAME] = http_mcp_entry(url)
         created_entry = True
     elif isinstance(existing, dict) and existing.get("url") == url:
         return {
@@ -2040,17 +2346,17 @@ def upsert_json_mcp(
             "created_file": record_created_file(prior),
         }
     elif created_entry:
-        servers[STUDIO_MCP_NAME] = http_mcp_entry(url)
+        servers[KNOWLEDGE_MCP_NAME] = http_mcp_entry(url)
     elif not isinstance(existing, dict):
-        raise SetupError(f"{STUDIO_MCP_NAME} MCP entry must be an object: {path}")
+        raise SetupError(f"{KNOWLEDGE_MCP_NAME} MCP entry must be an object: {path}")
     else:
         raise SetupError(
-            f"existing {STUDIO_MCP_NAME} MCP URL differs in {path}: {existing.get('url')!r}"
+            f"existing {KNOWLEDGE_MCP_NAME} MCP URL differs in {path}: {existing.get('url')!r}"
         )
     updated = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     backup_config_file(path, backups, dry_run)
     if dry_run:
-        print(f"would register {STUDIO_MCP_NAME} in {path}")
+        print(f"would register {KNOWLEDGE_MCP_NAME} in {path}")
     else:
         atomic_write(path, updated, None)
     return {
@@ -2071,17 +2377,81 @@ def remove_json_mcp(
     except (OSError, json.JSONDecodeError):
         return
     servers = document.get("mcpServers")
-    if not isinstance(servers, dict) or STUDIO_MCP_NAME not in servers:
+    if not isinstance(servers, dict) or KNOWLEDGE_MCP_NAME not in servers:
         return
-    entry = servers.get(STUDIO_MCP_NAME)
+    entry = servers.get(KNOWLEDGE_MCP_NAME)
     if not isinstance(entry, dict) or entry.get("url") != record.get("url"):
-        print(f"warning: preserving changed {STUDIO_MCP_NAME} MCP entry in {path}")
+        print(f"warning: preserving changed {KNOWLEDGE_MCP_NAME} MCP entry in {path}")
         return
-    servers.pop(STUDIO_MCP_NAME, None)
+    servers.pop(KNOWLEDGE_MCP_NAME, None)
     updated = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     backup_config_file(path, backups, dry_run)
     if dry_run:
-        print(f"would remove {STUDIO_MCP_NAME} from {path}")
+        print(f"would remove {KNOWLEDGE_MCP_NAME} from {path}")
+    elif record_created_file(record) and document == {"mcpServers": {}}:
+        path.unlink()
+    else:
+        atomic_write(path, updated, None)
+
+
+def remove_toml_knowledge_mcp(
+    path: Path, record: dict[str, Any], backups: Path, dry_run: bool
+) -> None:
+    if not record_created_entry(record) or not path.exists() or path.is_symlink():
+        return
+    try:
+        current = toml_knowledge_mcp_entry(path)
+    except SetupError:
+        current = None
+    expected = (
+        {"transport": "stdio", "command": record.get("command")}
+        if record.get("command")
+        else {"transport": "http", "url": record.get("url")}
+    )
+    if current != expected:
+        print(f"warning: preserving changed {KNOWLEDGE_MCP_NAME} MCP entry in {path}")
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    bounds = toml_section_bounds(lines, f"[mcp_servers.{KNOWLEDGE_MCP_NAME}]")
+    if bounds is None:
+        return
+    start, end = bounds
+    updated = "\n".join(lines[:start] + lines[end:]).strip()
+    updated = updated + "\n" if updated else ""
+    backup_config_file(path, backups, dry_run)
+    if dry_run:
+        print(f"would remove {KNOWLEDGE_MCP_NAME} from {path}")
+    elif not updated and record_created_file(record):
+        path.unlink()
+    else:
+        atomic_write(path, updated, None)
+
+
+def remove_json_knowledge_mcp(
+    path: Path, record: dict[str, Any], backups: Path, dry_run: bool
+) -> None:
+    if not record_created_entry(record) or not path.exists() or path.is_symlink():
+        return
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    servers = document.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+    expected = (
+        stdio_mcp_entry(str(record.get("command")))
+        if record.get("command")
+        else http_mcp_entry(str(record.get("url")))
+    )
+    if servers.get(KNOWLEDGE_MCP_NAME) != expected:
+        print(f"warning: preserving changed {KNOWLEDGE_MCP_NAME} MCP entry in {path}")
+        return
+    servers.pop(KNOWLEDGE_MCP_NAME, None)
+    updated = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    backup_config_file(path, backups, dry_run)
+    if dry_run:
+        print(f"would remove {KNOWLEDGE_MCP_NAME} from {path}")
     elif record_created_file(record) and document == {"mcpServers": {}}:
         path.unlink()
     else:
@@ -2373,20 +2743,200 @@ def configure_mcp(
     return managed
 
 
+def upsert_toml_knowledge_stdio_mcp(
+    path: Path,
+    launcher: Path,
+    backups: Path,
+    dry_run: bool,
+    prior: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if path.is_symlink():
+        raise SetupError(f"refusing to replace symbolic link: {path}")
+    file_existed = path.exists()
+    original = path.read_text(encoding="utf-8") if file_existed else ""
+    lines = original.splitlines()
+    header = f"[mcp_servers.{KNOWLEDGE_MCP_NAME}]"
+    bounds = toml_section_bounds(lines, header)
+    created_entry = record_created_entry(prior)
+    expected_command = str(launcher)
+    if bounds is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend((header, f"command = {json.dumps(expected_command)}", "args = []"))
+        created_entry = True
+    else:
+        existing = toml_knowledge_mcp_entry(path)
+        if existing == {"transport": "stdio", "command": expected_command}:
+            return {
+                "path": str(path),
+                "transport": "stdio",
+                "command": expected_command,
+                "args": [],
+                "created_entry": created_entry,
+                "created_file": record_created_file(prior),
+            }
+        if (
+            not created_entry
+            and existing is not None
+            and existing.get("transport") == "http"
+            and existing.get("url") == LEGACY_STUDIO_HTTP_URL
+        ):
+            created_entry = True
+        elif not created_entry:
+            return {
+                "path": str(path),
+                "ownership": "external",
+                "transport": str(existing.get("transport", "unknown")) if existing else "unknown",
+                "created_entry": False,
+                "created_file": False,
+            }
+        start, end = bounds
+        lines[start:end] = (
+            header,
+            f"command = {json.dumps(expected_command)}",
+            "args = []",
+        )
+    updated = "\n".join(lines).rstrip() + "\n"
+    if updated != original:
+        backup_config_file(path, backups, dry_run)
+        if dry_run:
+            print(f"would register {KNOWLEDGE_MCP_NAME} in {path}")
+        else:
+            atomic_write(path, updated, None)
+    return {
+        "path": str(path),
+        "transport": "stdio",
+        "command": expected_command,
+        "args": [],
+        "created_entry": created_entry,
+        "created_file": record_created_file(prior) or not file_existed,
+    }
+
+
+def upsert_json_knowledge_stdio_mcp(
+    path: Path,
+    launcher: Path,
+    backups: Path,
+    dry_run: bool,
+    prior: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if path.is_symlink():
+        raise SetupError(f"refusing to replace symbolic link: {path}")
+    file_existed = path.exists()
+    if file_existed:
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise SetupError(f"invalid JSON client configuration: {path}") from error
+    else:
+        document = {}
+    servers = document.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise SetupError(f"mcpServers must be an object: {path}")
+    expected = stdio_mcp_entry(launcher)
+    existing = servers.get(KNOWLEDGE_MCP_NAME)
+    created_entry = record_created_entry(prior)
+    if existing is None:
+        servers[KNOWLEDGE_MCP_NAME] = expected
+        created_entry = True
+    elif existing == expected:
+        return {
+            "path": str(path),
+            "transport": "stdio",
+            "command": str(launcher),
+            "args": [],
+            "created_entry": created_entry,
+            "created_file": record_created_file(prior),
+        }
+    elif (
+        not created_entry
+        and isinstance(existing, dict)
+        and existing.get("url") == LEGACY_STUDIO_HTTP_URL
+    ):
+        created_entry = True
+        servers[KNOWLEDGE_MCP_NAME] = expected
+    elif not created_entry:
+        return {
+            "path": str(path),
+            "ownership": "external",
+            "transport": "stdio" if isinstance(existing, dict) and "command" in existing else "http",
+            "created_entry": False,
+            "created_file": False,
+        }
+    else:
+        servers[KNOWLEDGE_MCP_NAME] = expected
+    updated = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    backup_config_file(path, backups, dry_run)
+    if dry_run:
+        print(f"would register {KNOWLEDGE_MCP_NAME} in {path}")
+    else:
+        atomic_write(path, updated, None)
+    return {
+        "path": str(path),
+        "transport": "stdio",
+        "command": str(launcher),
+        "args": [],
+        "created_entry": created_entry,
+        "created_file": record_created_file(prior) or not file_existed,
+    }
+
+
+def configure_knowledge_mcp(
+    home: Path,
+    clients: Iterable[str],
+    launcher: Path,
+    backups: Path,
+    dry_run: bool,
+    prior: dict[str, Any] | None = None,
+    *,
+    url: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    if url:
+        return configure_mcp(home, clients, url, backups, dry_run, prior)
+    managed: dict[str, dict[str, Any]] = {}
+    prior = prior or {}
+    for client in clients:
+        previous = prior.get(client)
+        if not isinstance(previous, dict):
+            previous = None
+        if client == "codex":
+            managed[client] = upsert_toml_knowledge_stdio_mcp(
+                home / ".codex" / "config.toml",
+                launcher,
+                backups,
+                dry_run,
+                previous,
+            )
+        elif client == "claude":
+            managed[client] = upsert_json_knowledge_stdio_mcp(
+                home / ".claude.json",
+                launcher,
+                backups,
+                dry_run,
+                previous,
+            )
+        elif client == "openclaw":
+            managed[client] = {"adapter_available": False, "command": str(launcher)}
+    return managed
+
+
 def knowledge_mcp_transport_summary(
     clients: Iterable[str], records: Mapping[str, object]
-) -> tuple[list[str], list[str]]:
-    external_stdio: list[str] = []
+) -> tuple[list[str], list[str], list[str]]:
+    external: list[str] = []
+    managed_stdio: list[str] = []
     managed_http: list[str] = []
     for client in clients:
         if client not in SUPPORTED_MCP_CLIENTS:
             continue
         record = records.get(client)
         if isinstance(record, Mapping) and record.get("ownership") == "external":
-            external_stdio.append(client)
+            external.append(client)
+        elif isinstance(record, Mapping) and record.get("command"):
+            managed_stdio.append(client)
         else:
             managed_http.append(client)
-    return external_stdio, managed_http
+    return external, managed_stdio, managed_http
 
 
 def inherit_created_file_ownership(
@@ -2463,7 +3013,7 @@ def validate_mcp_configuration(
                 raise SetupError(f"refusing to replace symbolic link: {path}")
             if path.exists() and not path.is_file():
                 raise SetupError(f"client configuration is not a regular file: {path}")
-            entry = toml_studio_mcp_entry(path)
+            entry = toml_knowledge_mcp_entry(path)
             current = entry.get("url") if entry is not None else None
             if (
                 entry is not None
@@ -2472,7 +3022,7 @@ def validate_mcp_configuration(
                 and not managed_entry
             ):
                 raise SetupError(
-                    f"existing {STUDIO_MCP_NAME} MCP URL differs in {path}: {current!r}"
+                    f"existing {KNOWLEDGE_MCP_NAME} MCP URL differs in {path}: {current!r}"
                 )
         elif client == "claude":
             path = home / ".claude.json"
@@ -2481,14 +3031,60 @@ def validate_mcp_configuration(
             if path.exists() and not path.is_file():
                 raise SetupError(f"client configuration is not a regular file: {path}")
             current = json_mcp_entry(path)
+            if current is not None and current.get("url") != url and not managed_entry:
+                raise SetupError(
+                    f"existing {KNOWLEDGE_MCP_NAME} MCP URL differs in {path}: "
+                    f"{current.get('url')!r}"
+                )
+
+
+def validate_knowledge_mcp_configuration(
+    home: Path,
+    clients: Iterable[str],
+    launcher: Path,
+    prior: Mapping[str, object] | None = None,
+    *,
+    url: str | None = None,
+) -> None:
+    if url:
+        validate_mcp_configuration(home, clients, url, prior)
+        return
+    del launcher
+    prior = prior or {}
+    for client in clients:
+        previous = prior.get(client)
+        managed_entry = record_created_entry(previous) if isinstance(previous, Mapping) else False
+        if client == "codex":
+            path = home / ".codex" / "config.toml"
+            if path.is_symlink():
+                raise SetupError(f"refusing to replace symbolic link: {path}")
+            if path.exists() and not path.is_file():
+                raise SetupError(f"client configuration is not a regular file: {path}")
+            entry = toml_knowledge_mcp_entry(path)
             if (
-                current is not None
-                and current.get("url") != url
+                entry is not None
+                and entry.get("transport") == "http"
+                and entry.get("url") != LEGACY_STUDIO_HTTP_URL
                 and not managed_entry
             ):
                 raise SetupError(
-                    f"existing {STUDIO_MCP_NAME} MCP URL differs in {path}: "
-                    f"{current.get('url')!r}"
+                    f"existing {KNOWLEDGE_MCP_NAME} MCP URL differs in {path}: {entry.get('url')!r}"
+                )
+        elif client == "claude":
+            path = home / ".claude.json"
+            if path.is_symlink():
+                raise SetupError(f"refusing to replace symbolic link: {path}")
+            if path.exists() and not path.is_file():
+                raise SetupError(f"client configuration is not a regular file: {path}")
+            entry = json_mcp_entry(path)
+            if (
+                isinstance(entry, Mapping)
+                and "url" in entry
+                and entry.get("url") != LEGACY_STUDIO_HTTP_URL
+                and not managed_entry
+            ):
+                raise SetupError(
+                    f"existing {KNOWLEDGE_MCP_NAME} MCP URL differs in {path}: {entry.get('url')!r}"
                 )
 
 
@@ -2550,7 +3146,7 @@ def validate_link_plan(
                     raise SetupError(f"conflicting Skill path cannot be backed up: {link}")
 
 
-def studio_health(url: str, timeout: float = 2.0) -> tuple[bool, str]:
+def knowledge_http_health(url: str, timeout: float = 2.0) -> tuple[bool, str]:
     health_url = url[:-4] + "/health" if url.endswith("/mcp") else url.rstrip("/") + "/health"
     request = urllib.request.Request(health_url, headers={"Accept": "application/json"})
     try:
@@ -2664,11 +3260,14 @@ def decode_recorded_install(state: Mapping[str, object]) -> RecordedInstall:
         source_root=source_root_from_state(state),
         source_mode=source_mode_from_state(state),
         source_commit=str(state.get("source_commit", "")),
+        rollback_commit=str(state.get("rollback_commit", "")),
         repo_url=str(state.get("repo_url", DEFAULT_REPO_URL)),
         ref=str(state.get("ref", DEFAULT_REF)),
         clients=recorded_string_list(state, "clients"),
         profile=profile,
-        studio_url=str(state.get("studio_url", DEFAULT_STUDIO_URL)),
+        knowledge_url=str(
+            state.get("knowledge_url", state.get("studio_url", ""))
+        ),
         target=str(state.get("target", "current")),
         tool_dirs=recorded_string_list(state, "tool_dirs"),
         mcp=recorded_client_records(state, "mcp"),
@@ -2688,7 +3287,7 @@ def missing_client_ownership_records(
         if client not in SUPPORTED_MCP_CLIENTS:
             continue
         if (
-            recorded.profile.manages_studio
+            recorded.profile.manages_knowledge_mcp
             and not valid_client_ownership_record(recorded.mcp.get(client))
         ):
             missing.append(f"mcp.{client}")
@@ -2715,12 +3314,9 @@ def perform_install(
             if prior_document is not None
             else None
         )
-    if args.studio_url is None:
-        args.studio_url = (
-            prior_install.studio_url
-            if prior_install is not None
-            else DEFAULT_STUDIO_URL
-        )
+    if args.knowledge_url is None:
+        prior_url = prior_install.knowledge_url if prior_install is not None else ""
+        args.knowledge_url = prior_url if prior_url and prior_url != LEGACY_STUDIO_HTTP_URL else None
     if args.skill_profile is not None:
         selected_policy = resolve_skill_profile(str(args.skill_profile))
     elif prior_install is not None:
@@ -2742,7 +3338,7 @@ def perform_install(
     else:
         preserved_skills = ()
     args.skill_profile = selected_profile
-    manage_studio = selected_policy.manages_studio
+    manage_knowledge_mcp = selected_policy.manages_knowledge_mcp
     prior_source: Path | None = None
     prior_source_mode: str | None = None
     if args.source is None and prior_install:
@@ -2765,12 +3361,13 @@ def perform_install(
         else {}
     )
     validate_environment_paths(home)
-    if manage_studio:
-        validate_mcp_configuration(
+    if manage_knowledge_mcp:
+        validate_knowledge_mcp_configuration(
             home,
             clients,
-            args.studio_url,
+            knowledge_launcher_path(home),
             prior_mcp,
+            url=args.knowledge_url,
         )
     validate_runtime_mcp_configuration(
         home,
@@ -2789,6 +3386,7 @@ def perform_install(
             clients,
             tool_dirs,
             dry_run=args.dry_run,
+            knowledge_mcp=manage_knowledge_mcp,
         )
 
     if prior_source is not None and prior_source_mode is not None:
@@ -2818,6 +3416,17 @@ def perform_install(
             tool_dirs,
             dry_run=args.dry_run,
         )
+    knowledge_node: Path | None = None
+    if manage_knowledge_mcp:
+        if args.skip_tool_install:
+            knowledge_node = resolve_node(home, tool_dirs) or (home / ".local" / "bin" / "node")
+        else:
+            knowledge_node = install_knowledge_dependencies(
+                home,
+                source,
+                tool_dirs,
+                dry_run=args.dry_run,
+            )
     tool_dirs, missing_tools = resolve_tool_dirs(
         args.non_interactive,
         tool_dirs,
@@ -2846,6 +3455,16 @@ def perform_install(
         home,
         source,
         allow_missing_source=planned_missing_source,
+    )
+    knowledge_plan = (
+        build_knowledge_plan(
+            home,
+            source,
+            knowledge_node or (home / ".local" / "bin" / "node"),
+            allow_missing_source=planned_missing_source,
+        )
+        if manage_knowledge_mcp
+        else {}
     )
     validate_link_plan(
         home,
@@ -2877,11 +3496,22 @@ def perform_install(
     profiles = install_environment_files(home, tool_dirs, backups, args.dry_run)
     credential_result = apply_credentials_plan(credential_plan, args.dry_run)
     runtime_state = deploy_runtime(runtime_plan, args.dry_run)
+    if manage_knowledge_mcp:
+        ensure_knowledge_config(home, args.kb_config, args.dry_run)
+        knowledge_state = deploy_knowledge_mcp(knowledge_plan, args.dry_run)
+    else:
+        knowledge_state = {}
     mcp_state = (
-        configure_mcp(
-            home, clients, args.studio_url, backups, args.dry_run, prior_mcp
+        configure_knowledge_mcp(
+            home,
+            clients,
+            Path(knowledge_state["launcher_path"]),
+            backups,
+            args.dry_run,
+            prior_mcp,
+            url=args.knowledge_url,
         )
-        if manage_studio
+        if manage_knowledge_mcp
         else dict(prior_mcp)
     )
     runtime_mcp_state = inherit_created_file_ownership(
@@ -2905,12 +3535,22 @@ def perform_install(
         )
         else current_source_commit
     )
+    rollback_commit = (
+        prior_install.source_commit
+        if (
+            prior_install is not None
+            and source_commit != prior_install.source_commit
+            and args.command in {"update", "rollback"}
+        )
+        else (prior_install.rollback_commit if prior_install is not None else "")
+    )
     state = {
         "version": STATE_VERSION,
         "repo_url": args.repo_url,
         "ref": args.ref,
         "source_root": str(source),
         "source_commit": source_commit,
+        "rollback_commit": rollback_commit,
         "source_dirty": (
             git_dirty(source, paths=bundle_git_paths(selected_bundle))
             if source.exists()
@@ -2925,9 +3565,10 @@ def perform_install(
         "profiles": profiles,
         "tool_dirs": tool_dirs,
         "mcp": mcp_state,
+        "knowledge_mcp": knowledge_state,
         "runtime": runtime_state,
         "runtime_mcp": runtime_mcp_state,
-        "studio_url": args.studio_url,
+        "knowledge_url": args.knowledge_url or "",
         "target": args.target,
     }
     setattr(args, "_planned_workflow_state", state)
@@ -2957,25 +3598,39 @@ def perform_install(
             f"({credential_detail}); run the credentials command"
         )
     knowledge_report: dict[str, object]
-    if manage_studio:
-        external_stdio, managed_http = knowledge_mcp_transport_summary(
+    if manage_knowledge_mcp:
+        external_clients, managed_stdio, managed_http = knowledge_mcp_transport_summary(
             clients,
             mcp_state,
         )
-        if managed_http:
-            healthy, detail = studio_health(args.studio_url)
+        if managed_stdio:
+            healthy, detail, tools, configured = knowledge_mcp_health(
+                Path(knowledge_state["launcher_path"]), home
+            ) if not args.dry_run else (True, "planned", [], False)
+            knowledge_report = {
+                "managed": True,
+                "healthy": healthy,
+                "configured": configured,
+                "transport": "stdio",
+                "detail": detail,
+                "tools": tools,
+                "clients": managed_stdio,
+            }
+            print(f"{KNOWLEDGE_MCP_NAME}: {detail}")
+        elif managed_http:
+            healthy, detail = knowledge_http_health(str(args.knowledge_url))
             knowledge_report = {
                 "managed": True,
                 "healthy": healthy,
                 "transport": "http",
                 "detail": detail,
-                "url": args.studio_url,
+                "url": args.knowledge_url,
             }
             if healthy:
-                print(f"{STUDIO_MCP_NAME}: {detail}")
+                print(f"{KNOWLEDGE_MCP_NAME}: {detail}")
             else:
-                print(f"warning: {STUDIO_MCP_NAME} is unavailable: {detail}")
-        elif external_stdio:
+                print(f"warning: {KNOWLEDGE_MCP_NAME} is unavailable: {detail}")
+        elif external_clients:
             knowledge_report = {
                 "managed": True,
                 "healthy": True,
@@ -2984,10 +3639,10 @@ def perform_install(
                     "external stdio configuration preserved; the client starts it "
                     "on demand"
                 ),
-                "clients": external_stdio,
+                "clients": external_clients,
             }
             print(
-                f"{STUDIO_MCP_NAME}: external stdio configuration preserved; "
+                f"{KNOWLEDGE_MCP_NAME}: external stdio configuration preserved; "
                 "the client starts it on demand"
             )
         else:
@@ -2998,7 +3653,7 @@ def perform_install(
                 "detail": "no supported MCP client adapter",
             }
             print(
-                f"warning: {STUDIO_MCP_NAME} has no supported MCP client adapter"
+                f"warning: {KNOWLEDGE_MCP_NAME} has no supported MCP client adapter"
             )
     else:
         knowledge_report = {
@@ -3007,7 +3662,7 @@ def perform_install(
             "transport": "external",
             "detail": f"not managed by {selected_profile} profile",
         }
-        print(f"{STUDIO_MCP_NAME}: not managed by {selected_profile} profile")
+        print(f"{KNOWLEDGE_MCP_NAME}: not managed by {selected_profile} profile")
     setattr(args, "_knowledge_mcp_report", knowledge_report)
     completed_action = {
         "install": "installed",
@@ -3039,11 +3694,13 @@ def check_toml_mcp(
     path: Path, url: str, record: dict[str, Any] | None = None
 ) -> bool:
     try:
-        entry = toml_studio_mcp_entry(path)
+        entry = toml_knowledge_mcp_entry(path)
     except (OSError, UnicodeError, SetupError):
         return False
     if record and record.get("ownership") == "external":
-        return entry is not None and entry.get("transport") == "stdio"
+        return entry is not None
+    if record and record.get("command"):
+        return entry == {"transport": "stdio", "command": record.get("command")}
     return (
         entry is not None
         and entry.get("transport") == "http"
@@ -3051,12 +3708,20 @@ def check_toml_mcp(
     )
 
 
-def check_json_mcp(path: Path, url: str) -> bool:
+def check_json_mcp(
+    path: Path, url: str, record: dict[str, Any] | None = None
+) -> bool:
     try:
         entry = json_mcp_entry(path)
     except SetupError:
         return False
-    return isinstance(entry, dict) and entry.get("url") == url
+    if not isinstance(entry, dict):
+        return False
+    if record and record.get("ownership") == "external":
+        return True
+    if record and record.get("command"):
+        return entry == stdio_mcp_entry(str(record.get("command")))
+    return entry.get("url") == url
 
 
 def check_toml_runtime_mcp(path: Path, launcher: Path) -> bool:
@@ -3231,6 +3896,74 @@ def runtime_mcp_health(
     return True, f"ok ({len(tools_found)} domain tools)", tools_found
 
 
+def knowledge_mcp_health(
+    launcher: Path,
+    home: Path,
+    timeout: float = 8.0,
+) -> tuple[bool, str, list[str], bool]:
+    if not launcher.is_file() or launcher.is_symlink() or not os.access(launcher, os.X_OK):
+        return False, "launcher is missing or not executable", [], False
+    requests = (
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+        '{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":'
+        '{"name":"openubmc-environment-setup","version":"1"}}}\n'
+        '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
+        '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n'
+        '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":'
+        '{"name":"openubmc_kb_status","arguments":{}}}\n'
+    )
+    environment = {**os.environ, "HOME": str(home)}
+    try:
+        result = subprocess.run(
+            [str(launcher)],
+            input=requests,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return False, str(error), [], False
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "launcher failed"
+        return False, detail, [], False
+    responses: dict[object, dict[str, object]] = {}
+    try:
+        for line in result.stdout.splitlines():
+            document = json.loads(line)
+            if isinstance(document, dict):
+                responses[document.get("id")] = document
+    except json.JSONDecodeError:
+        return False, "MCP launcher returned invalid JSON", [], False
+    initialize = responses.get(1, {}).get("result", {})
+    tools_result = responses.get(2, {}).get("result", {})
+    status_result = responses.get(3, {}).get("result", {})
+    if not all(isinstance(value, dict) for value in (initialize, tools_result, status_result)):
+        return False, "MCP initialize, tools/list, or status response is missing", [], False
+    server = initialize.get("serverInfo", {})
+    if not isinstance(server, dict) or server.get("version") != KNOWLEDGE_MCP_VERSION:
+        return False, "openUBMC KB MCP version mismatch", [], False
+    entries = tools_result.get("tools", [])
+    if not isinstance(entries, list):
+        return False, "openUBMC KB MCP tools/list result is invalid", [], False
+    tools_found = sorted(
+        str(entry.get("name"))
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    )
+    required = {"openubmc_kb_query", "openubmc_kb_status", "openubmc_kb_list"}
+    if not required.issubset(tools_found):
+        return False, "openUBMC KB MCP tools are incomplete", tools_found, False
+    if status_result.get("isError") is True:
+        return False, "openUBMC KB status call failed", tools_found, False
+    structured = status_result.get("structuredContent")
+    payload = structured.get("result") if isinstance(structured, Mapping) else None
+    configured = bool(payload.get("configured")) if isinstance(payload, Mapping) else False
+    return True, f"ok ({len(tools_found)} read-only tools; configured={str(configured).lower()})", tools_found, configured
+
+
 def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
     home = args.home.expanduser().absolute()
     checks: list[dict[str, Any]] = []
@@ -3319,7 +4052,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             str(error),
             f"Skill profile: invalid ({error})",
         )
-    manage_studio = selected_policy.manages_studio
+    manage_knowledge_mcp = selected_policy.manages_knowledge_mcp
     try:
         preserved_skills = parse_preserved_skills(
             ",".join(recorded_string_list(state, "preserved_skills")),
@@ -3652,17 +4385,18 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             record(key, False, str(error), f"{label} state: invalid ({error})")
             return {}
 
-    url = str(state.get("studio_url", DEFAULT_STUDIO_URL))
-    studio_mcp_state = state_record_map("mcp", "openUBMC KB MCP")
+    url = str(state.get("knowledge_url", state.get("studio_url", "")))
+    knowledge_mcp_state = state_record_map("mcp", "openUBMC KB MCP")
     runtime_mcp_state = state_record_map("runtime_mcp", "Target Runtime MCP")
-    configured_external_stdio: list[str] = []
+    configured_external: list[str] = []
+    configured_managed_stdio: list[str] = []
     configured_managed_http: list[str] = []
-    if manage_studio:
+    if manage_knowledge_mcp:
         for client in clients:
             if (
                 client in SUPPORTED_MCP_CLIENTS
                 and not valid_client_ownership_record(
-                    studio_mcp_state.get(client)
+                    knowledge_mcp_state.get(client)
                 )
             ):
                 detail = "ownership missing or invalid in installer state; run repair"
@@ -3673,7 +4407,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
                     f"mcp {client}: {detail}",
                 )
                 continue
-            client_record = studio_mcp_state.get(client, {})
+            client_record = knowledge_mcp_state.get(client, {})
             if not isinstance(client_record, dict):
                 client_record = {}
             if client == "codex":
@@ -3681,7 +4415,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
                     home / ".codex" / "config.toml", url, client_record
                 )
             elif client == "claude":
-                configured = check_json_mcp(home / ".claude.json", url)
+                configured = check_json_mcp(home / ".claude.json", url, client_record)
             else:
                 record(
                     "mcp:openclaw",
@@ -3697,19 +4431,21 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             )
             record(f"mcp:{client}", configured, detail, f"mcp {client}: {detail}")
             if configured and external:
-                configured_external_stdio.append(client)
+                configured_external.append(client)
+            elif configured and client_record.get("command"):
+                configured_managed_stdio.append(client)
             elif configured and client in SUPPORTED_MCP_CLIENTS:
                 configured_managed_http.append(client)
     else:
         record(
-            "studio_configuration",
+            "knowledge_configuration",
             True,
             "not managed by this profile",
             (
-                f"{STUDIO_MCP_NAME} configuration: not managed by "
+                f"{KNOWLEDGE_MCP_NAME} configuration: not managed by "
                 f"{selected_profile} profile"
             ),
-            category="studio",
+            category="knowledge",
             blocking=False,
         )
 
@@ -3797,9 +4533,31 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
         f"Target Runtime Context CLI: {context_cli_detail}",
     )
     engine_ready = runtime_mcp_ready or context_cli_ready
-    if manage_studio:
-        if configured_managed_http:
-            healthy, detail = studio_health(url)
+    if manage_knowledge_mcp:
+        if configured_managed_stdio:
+            knowledge_state = state.get("knowledge_mcp", {})
+            knowledge_launcher = Path(
+                str(
+                    knowledge_state.get("launcher_path", knowledge_launcher_path(home))
+                    if isinstance(knowledge_state, Mapping)
+                    else knowledge_launcher_path(home)
+                )
+            )
+            healthy, detail, knowledge_tools, configured_credentials = knowledge_mcp_health(
+                knowledge_launcher, home
+            )
+            health_text = detail if healthy else "unavailable (non-blocking): " + detail
+            knowledge_report = {
+                "managed": True,
+                "healthy": healthy,
+                "configured": configured_credentials,
+                "transport": "stdio",
+                "detail": detail,
+                "tools": knowledge_tools,
+                "clients": configured_managed_stdio,
+            }
+        elif configured_managed_http:
+            healthy, detail = knowledge_http_health(url)
             health_text = detail if healthy else "unavailable (non-blocking): " + detail
             knowledge_report: dict[str, object] = {
                 "url": url,
@@ -3808,11 +4566,11 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
                 "transport": "http",
                 "detail": detail,
             }
-        elif configured_external_stdio:
+        elif configured_external:
             healthy = True
             detail = (
                 "external stdio configuration preserved for "
-                + ", ".join(configured_external_stdio)
+                + ", ".join(configured_external)
                 + "; the client starts it on demand"
             )
             health_text = detail
@@ -3822,7 +4580,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
                 "healthy": True,
                 "transport": "external-stdio",
                 "detail": detail,
-                "clients": configured_external_stdio,
+                "clients": configured_external,
             }
         else:
             healthy = False
@@ -3836,11 +4594,11 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
                 "detail": detail,
             }
         record(
-            "studio_health",
+            "knowledge_health",
             healthy,
             detail,
-            f"{STUDIO_MCP_NAME} health: {health_text}",
-            category="studio",
+            f"{KNOWLEDGE_MCP_NAME} health: {health_text}",
+            category="knowledge",
             blocking=False,
         )
     else:
@@ -3929,13 +4687,13 @@ def restore_recorded_lifecycle(
 ) -> RecordedInstall:
     home = args.home.expanduser().absolute()
     recorded = decode_recorded_install(load_state(home))
-    if args.command == "update" and recorded.source_mode != "managed":
+    if args.command in {"update", "rollback"} and recorded.source_mode != "managed":
         raise SetupError(
-            "source is linked; use refresh after updating the checkout yourself"
+            "source is linked; update or restore the checkout yourself, then use refresh"
         )
     if args.command == "refresh" and recorded.source_mode != "linked":
         raise SetupError("source is installer-managed; use update instead of refresh")
-    if args.command not in {"repair", "update", "refresh"}:
+    if args.command not in {"repair", "update", "rollback", "refresh"}:
         raise SetupError(f"unsupported recorded lifecycle command: {args.command}")
 
     args.home = home
@@ -3944,7 +4702,7 @@ def restore_recorded_lifecycle(
     args.ref = recorded.ref
     args.clients = ",".join(recorded.clients or ("codex",))
     args.skill_profile = recorded.profile.name
-    args.studio_url = recorded.studio_url
+    args.knowledge_url = recorded.knowledge_url
     args.target = recorded.target
     args.skip_credentials = True
     return recorded
@@ -3952,6 +4710,15 @@ def restore_recorded_lifecycle(
 
 def perform_recorded_lifecycle(args: argparse.Namespace) -> int:
     recorded = restore_recorded_lifecycle(args)
+    if args.command == "rollback":
+        if not recorded.rollback_commit:
+            raise SetupError("no previous known-good managed revision is recorded")
+        checkout_managed_revision(
+            recorded.source_root,
+            recorded.rollback_commit,
+            args.dry_run,
+            recorded.profile.bundle,
+        )
     return perform_install(
         args,
         update=args.command == "update",
@@ -3968,6 +4735,10 @@ def perform_update(args: argparse.Namespace) -> int:
     return perform_recorded_lifecycle(args)
 
 
+def perform_rollback(args: argparse.Namespace) -> int:
+    return perform_recorded_lifecycle(args)
+
+
 def perform_refresh(args: argparse.Namespace) -> int:
     return perform_recorded_lifecycle(args)
 
@@ -3976,6 +4747,42 @@ def perform_credentials(args: argparse.Namespace) -> int:
     home = args.home.expanduser().absolute()
     args.home = home
     validate_openubmc_config_dir(home)
+    if args.kb or args.kb_config is not None:
+        if args.kb_config is not None:
+            result = ensure_knowledge_config(home, args.kb_config, args.dry_run)
+        else:
+            if args.non_interactive or not sys.stdin.isatty():
+                raise SetupError("openUBMC KB credential configuration requires a TTY or --kb-config")
+            path = knowledge_config_path(home)
+            document = default_knowledge_config()
+            if path.is_file() and not path.is_symlink():
+                try:
+                    current = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    raise SetupError(f"invalid openUBMC KB configuration: {path}") from error
+                if isinstance(current, dict):
+                    document.update(current)
+            current_username = str(document.get("username", "")).strip()
+            prompt = "openUBMC OneID username"
+            if current_username:
+                prompt += f" [{current_username}]"
+            username = input(prompt + ": ").strip() or current_username
+            password = getpass.getpass("openUBMC OneID password: ")
+            if not username or not password:
+                raise SetupError("openUBMC KB username and password are required")
+            document["username"] = username
+            document["password"] = password
+            if args.dry_run:
+                print(f"would update openUBMC KB credentials in {path}")
+            else:
+                atomic_write(
+                    path,
+                    json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                    0o600,
+                )
+            result = "configured"
+        print(f"openUBMC KB credentials: {result}")
+        return 0
     result = apply_credentials_plan(prepare_credentials(args), args.dry_run)
     print(f"credentials: {result}")
     return 0
@@ -4039,8 +4846,8 @@ def perform_uninstall(args: argparse.Namespace) -> int:
         record = recorded.mcp.get(client, {})
         runtime_record = recorded.runtime_mcp.get(client, {})
         if client == "codex":
-            if recorded.profile.manages_studio:
-                remove_toml_mcp(
+            if recorded.profile.manages_knowledge_mcp:
+                remove_toml_knowledge_mcp(
                     home / ".codex" / "config.toml",
                     record,
                     backups,
@@ -4053,8 +4860,8 @@ def perform_uninstall(args: argparse.Namespace) -> int:
                 args.dry_run,
             )
         elif client == "claude":
-            if recorded.profile.manages_studio:
-                remove_json_mcp(
+            if recorded.profile.manages_knowledge_mcp:
+                remove_json_knowledge_mcp(
                     home / ".claude.json",
                     record,
                     backups,
@@ -4079,13 +4886,29 @@ def perform_uninstall(args: argparse.Namespace) -> int:
                     print(f"would remove Target Runtime installation {install_root}")
                 else:
                     shutil.rmtree(install_root)
+    if recorded.profile.manages_knowledge_mcp:
+        install_root = knowledge_install_root(home)
+        knowledge_state = state.get("knowledge_mcp", {})
+        recorded_launcher = Path(
+            str(knowledge_state.get("launcher_path", ""))
+            if isinstance(knowledge_state, Mapping)
+            else ""
+        )
+        if recorded_launcher == knowledge_launcher_path(home):
+            if install_root.is_symlink():
+                print(f"warning: preserving unexpected openUBMC KB MCP symlink {install_root}")
+            elif install_root.exists():
+                if args.dry_run:
+                    print(f"would remove openUBMC KB MCP installation {install_root}")
+                else:
+                    shutil.rmtree(install_root)
     if args.purge_credentials:
-        path = credentials_path(home)
-        if path.is_file() and not path.is_symlink():
-            if args.dry_run:
-                print(f"would remove credentials {path}")
-            else:
-                path.unlink()
+        for path in (credentials_path(home), knowledge_config_path(home)):
+            if path.is_file() and not path.is_symlink():
+                if args.dry_run:
+                    print(f"would remove credentials {path}")
+                else:
+                    path.unlink()
     source = recorded.source_root
     if (
         recorded.source_mode == "managed"
@@ -4152,12 +4975,17 @@ def workflow_json_summary(
             "path": str(recorded.source_root),
             "mode": recorded.source_mode,
             "commit": recorded.source_commit,
+            "rollback_commit": recorded.rollback_commit,
         },
         "runtime": {
             "api_version": str(recorded.runtime.get("api_version", "")),
             "content_digest": str(recorded.runtime.get("content_digest", "")),
         },
-        "openubmc_kb_managed": recorded.profile.manages_studio,
+        "openubmc_kb_managed": recorded.profile.manages_knowledge_mcp,
+        "openubmc_kb": {
+            "version": str(recorded_object(state, "knowledge_mcp").get("version", "")),
+            "launcher": str(recorded_object(state, "knowledge_mcp").get("launcher_path", "")),
+        },
     }
 
 
@@ -4251,6 +5079,7 @@ def main(argv: list[str] | None = None) -> int:
             "check": perform_check,
             "repair": perform_repair,
             "update": perform_update,
+            "rollback": perform_rollback,
             "refresh": perform_refresh,
             "credentials": perform_credentials,
             "uninstall": perform_uninstall,

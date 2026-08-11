@@ -19,6 +19,7 @@ Important validation rule: `bmcgo` can return exit code 0 even when the log cont
 
 1. **Identify changed components**
    - Primary source is the current conversation: components/files just changed by the agent, user-named components, or a structured handoff from any upstream workflow.
+   - When `workflow.next` returns `status: waiting_phase_record` for `build.artifact`, load this Skill immediately. Treat its `handoff_arguments` as the normalized build input and its `phase_record_contract` as the exact result shape to submit; do not ask the user to restate the build request.
    - Prefer the structured handoff in `references/handoff-contract.md`; do not assume the caller is only `openubmc-developer` or `openubmc-debug`.
    - Use git status only as a fallback candidate scan because dirty worktrees may contain unrelated old files; filter it against the active task before building.
    - When file paths are known, map them directly:

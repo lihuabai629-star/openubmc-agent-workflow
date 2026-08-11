@@ -6,9 +6,9 @@ description: Automatically install, inspect, repair, update, or uninstall the sh
 # openUBMC Environment Setup
 
 Use the bundled installer as the only writer for this workflow. It installs
-Skill links, the standalone Target Runtime and its MCP launcher, a small shell
-hook, private credential-file selection, client MCP configuration, and
-installer state.
+Skill links, the standalone Target Runtime, the bundled `openubmc-kb` stdio
+MCP, their launchers, a small shell hook, private credential-file selection,
+client MCP configuration, and installer state.
 
 The installed `openubmc-target-runtime` MCP exposes the domain tools plus `case_read`,
 `evidence_read`, `case_close`, `case_forget`, `phase_record`, `workflow.advance`, and
@@ -28,7 +28,16 @@ SDK, create or enter a container, or configure Conan remotes.
 
 ## Install
 
-Run from a checkout of the Skills repository:
+On a new Debian/Ubuntu or WSL machine, bootstrap the managed installation
+without cloning first:
+
+~~~bash
+curl -fsSL \
+  http://10.121.177.79/liqinghua/openubmc-agent-workflow/-/raw/main/bootstrap.py \
+  | python3 -
+~~~
+
+For development against an existing checkout, link that checkout explicitly:
 
 ~~~bash
 python3 <skills-repository>/openubmc-environment-setup/scripts/install_environment.py \
@@ -60,8 +69,9 @@ This profile links only `openubmc-environment-setup`, `openubmc-debug`,
 `openubmc-log-analyzer`, `openubmc-developer`, `openubmc-build`,
 `openubmc-upgrade`, and `openubmc-live-patch`. It deploys and registers the
 Target Runtime MCP, but leaves `openubmc-dt-testing` and openubmc-kb
-configuration untouched. The default `full` profile retains the complete
-openUBMC bundle. The selected profile is persisted; check, repair, update,
+configuration untouched. The default `full` profile installs those seven plus
+`openubmc-dt-testing`, `openubmc-publish`, `openubmc-lua-component`, and
+`openubmc-qemu-testing`, for 11 Skills in total. The selected profile is persisted; check, repair, update,
 refresh, reinstall, and uninstall use the recorded profile automatically.
 
 When switching the Environment Setup or Runtime source, preserve a Skill that
@@ -111,15 +121,15 @@ container from this Skill.
 Claude or OpenClaw links when those clients are detected. Use `--clients all`
 or a comma-separated list for an explicit selection.
 
-The `full` profile registers `openubmc-kb` for Codex and Claude when no
-entry exists. A pre-existing standalone Codex stdio entry is external
-configuration and is preserved; the client starts it on demand, so health
-checks do not probe the legacy localhost HTTP endpoint for that entry. The
-`target-runtime` profile leaves the KB entry external and untouched. The legacy
-`openubmc-studio` entry name is renamed in place without changing its command,
-arguments, or endpoint. OpenClaw Skill links are supported, but MCP registration
-remains a non-blocking warning until a reliable OpenClaw configuration adapter
-is available. KB health failure is also non-blocking.
+The `full` profile deploys the repository-bundled `openubmc-kb` package and
+registers its managed stdio launcher for Codex and Claude. The client starts it
+on demand; no Studio process or localhost service is required. A pre-existing
+external stdio entry is preserved. A legacy `openubmc-studio` entry is renamed
+to `openubmc-kb`; a legacy default localhost HTTP entry is migrated to the
+managed stdio launcher. An explicitly customized external endpoint remains
+external. The `target-runtime` profile leaves KB configuration untouched.
+OpenClaw receives Skill links and the deployed launchers, but no unsupported MCP
+configuration field is written. KB health failure is non-blocking.
 
 ## Credentials
 
@@ -155,9 +165,28 @@ python3 "$HOME/.agents/skills/openubmc-environment-setup/scripts/install_environ
 Do not place passwords in command arguments, profiles, logs, or ordinary
 environment variables.
 
+Configure the separate openUBMC KB OneID credentials with hidden TTY input:
+
+~~~bash
+python3 "$HOME/.agents/skills/openubmc-environment-setup/scripts/install_environment.py" \
+  credentials --kb
+~~~
+
+Or import an existing private JSON file:
+
+~~~bash
+chmod 600 <kb-config.json>
+python3 "$HOME/.agents/skills/openubmc-environment-setup/scripts/install_environment.py" \
+  credentials --kb --kb-config <kb-config.json>
+~~~
+
+The KB MCP can start before credentials are configured and reports that state
+through `openubmc_kb_status`.
+
 ## Tools and Conan
 
-The workflow requires `bmcgo`, Conan, Git, Python, and OpenSSH. On Debian and
+The workflow requires `bmcgo`, Conan, Git, Python, OpenSSH, and Node.js 20 or
+newer for the bundled KB MCP. On Debian and
 Ubuntu, install missing Git, OpenSSH, `sshpass`, ripgrep, pip, Node.js, and npm
 packages through non-interactive APT. Install the bundled verified `bmcgo`
 wheel, Conan, and Codex into `~/.local`; add `~/.local/bin` to the managed shell
@@ -194,6 +223,7 @@ python3 "$INSTALLER" check --json
 python3 "$INSTALLER" repair
 python3 "$INSTALLER" refresh
 python3 "$INSTALLER" update
+python3 "$INSTALLER" rollback
 python3 "$INSTALLER" credentials
 python3 "$INSTALLER" uninstall
 ~~~
@@ -216,6 +246,9 @@ source, Runtime, and credential-preservation state; check retains its detailed r
 - `update` fast-forwards only a clean installer-managed checkout. It rejects a
   linked checkout and directs the user to update it manually, then run
   `refresh`.
+- `rollback` restores the previous known-good revision of a clean managed
+  checkout. The displaced revision becomes the next rollback target, so a
+  second rollback toggles back when both revisions remain available.
 - `credentials` changes only the private credential file.
 - `uninstall` removes only installer-owned configuration and preserves the
   credentials file.

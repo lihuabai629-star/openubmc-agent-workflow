@@ -33,6 +33,9 @@ EXPECTED_BUNDLE = (
     ("openubmc-upgrade", "openubmc-upgrade"),
     ("openubmc-live-patch", "openubmc-live-patch"),
     ("openubmc-dt-testing", "testing"),
+    ("openubmc-publish", "openubmc-publish"),
+    ("openubmc-lua-component", "lua-component"),
+    ("openubmc-qemu-testing", "qemu-testing"),
 )
 EXPECTED_TARGET_RUNTIME_BUNDLE = (
     ("openubmc-environment-setup", "openubmc-environment-setup"),
@@ -73,6 +76,20 @@ class EnvironmentSetupTests(unittest.TestCase):
             REPO_ROOT / "openubmc-target-runtime" / "openubmc_target_runtime",
             self.source / "openubmc-target-runtime" / "openubmc_target_runtime",
         )
+        shutil.copytree(
+            REPO_ROOT / "openubmc-kb-mcp",
+            self.source / "openubmc-kb-mcp",
+            ignore=shutil.ignore_patterns("node_modules"),
+        )
+        kb_sdk = (
+            self.source
+            / "openubmc-kb-mcp"
+            / "node_modules"
+            / "@modelcontextprotocol"
+            / "sdk"
+        )
+        kb_sdk.mkdir(parents=True)
+        (kb_sdk / "package.json").write_text("{}\n", encoding="utf-8")
         debug_mcp = self.source / "openubmc-debug" / "scripts" / "target_runtime_mcp.py"
         debug_mcp.parent.mkdir(parents=True)
         debug_mcp.write_text(
@@ -155,7 +172,12 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
+            mock.patch.object(
+                installer,
+                "knowledge_mcp_health",
+                return_value=(True, "ok", ["openubmc_kb_query", "openubmc_kb_status", "openubmc_kb_list"], False),
+            ),
             redirect_stdout(output),
         ):
             result = installer.perform_install(self.args("--install", *extra))
@@ -165,13 +187,18 @@ class EnvironmentSetupTests(unittest.TestCase):
         output = io.StringIO()
         args = installer.parse_args(["--home", str(self.home), "--check"])
         with (
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
+            mock.patch.object(
+                installer,
+                "knowledge_mcp_health",
+                return_value=(True, "ok", ["openubmc_kb_query", "openubmc_kb_status", "openubmc_kb_list"], False),
+            ),
             redirect_stdout(output),
         ):
             result = installer.perform_check(args)
         return result, output.getvalue()
 
-    def test_bundle_manifest_has_eight_canonical_mappings(self) -> None:
+    def test_bundle_manifest_has_eleven_canonical_mappings(self) -> None:
         self.assertEqual(installer.SKILL_BUNDLE, EXPECTED_BUNDLE)
         self.assertEqual(
             installer.TARGET_RUNTIME_SKILL_BUNDLE,
@@ -180,10 +207,20 @@ class EnvironmentSetupTests(unittest.TestCase):
         full = installer.resolve_skill_profile("full")
         target_runtime = installer.resolve_skill_profile("target-runtime")
         self.assertEqual(full.bundle, EXPECTED_BUNDLE)
-        self.assertTrue(full.manages_studio)
+        self.assertTrue(full.manages_knowledge_mcp)
         self.assertEqual(target_runtime.bundle, EXPECTED_TARGET_RUNTIME_BUNDLE)
-        self.assertFalse(target_runtime.manages_studio)
+        self.assertFalse(target_runtime.manages_knowledge_mcp)
         self.assertEqual(installer.validate_source(self.source), self.source.absolute())
+
+    def test_bundle_git_paths_materializes_iterators_once(self) -> None:
+        paths = installer.bundle_git_paths(iter(EXPECTED_TARGET_RUNTIME_BUNDLE))
+        self.assertIn("openubmc-target-runtime", paths)
+        self.assertNotIn("openubmc-kb-mcp", paths)
+        self.assertEqual(
+            paths[: len(EXPECTED_TARGET_RUNTIME_BUNDLE)],
+            tuple(path for _, path in EXPECTED_TARGET_RUNTIME_BUNDLE),
+        )
+        self.assertIn("openubmc-kb-mcp", installer.bundle_git_paths(EXPECTED_BUNDLE))
 
     def test_bootstrap_tools_install_all_missing_debian_dependencies(self) -> None:
         with (
@@ -478,7 +515,7 @@ class EnvironmentSetupTests(unittest.TestCase):
 
         (skills_dir / "openubmc-debug").unlink()
         repair_args = installer.parse_args(["repair", "--home", str(self.home)])
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         self.assertTrue(
             installer.same_target(
@@ -566,7 +603,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_install(install_args), 0)
 
@@ -586,7 +623,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(state["links"][str(debug_link)], str(updated_debug))
 
         check_args = installer.parse_args(["check", "--home", str(self.home)])
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             report = installer.collect_check_report(check_args)
         preserved_check = next(
             item
@@ -605,7 +642,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         self.assertTrue(installer.same_target(debug_link, updated_debug))
@@ -615,7 +652,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         self.assertTrue(installer.same_target(debug_link, updated_debug))
@@ -720,7 +757,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         for client, link in links.items():
@@ -791,7 +828,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         self.assertEqual(installer.load_state(self.home)["preserved_skills"], [])
@@ -839,7 +876,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertTrue(installer.same_target(debug_link, expected_target))
         self.assertTrue(installer.state_path(self.home).is_file())
 
-    def test_target_profile_uninstall_preserves_studio_but_removes_runtime(self) -> None:
+    def test_target_profile_uninstall_preserves_knowledge_mcp_but_removes_runtime(self) -> None:
         self.prepare_credentials()
         codex = self.home / ".codex" / "config.toml"
         codex.parent.mkdir(parents=True)
@@ -865,7 +902,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertIn("openubmc-kb", remaining)
         self.assertNotIn("openubmc-target-runtime", remaining)
 
-    def test_full_target_full_roundtrip_preserves_studio_ownership(self) -> None:
+    def test_full_target_full_roundtrip_preserves_knowledge_mcp_ownership(self) -> None:
         self.prepare_credentials()
         codex = self.home / ".codex" / "config.toml"
         codex.parent.mkdir(parents=True)
@@ -892,7 +929,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         repair_args = installer.parse_args(
             ["repair", "--home", str(self.home)]
         )
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         self.assertEqual(codex.read_text(encoding="utf-8"), full_text)
 
@@ -942,7 +979,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                     "resolve_tool_dirs",
                     return_value=([str(self.bin_dir)], []),
                 ),
-                mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+                mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
             ):
                 return installer.perform_install(args)
 
@@ -1106,8 +1143,17 @@ class EnvironmentSetupTests(unittest.TestCase):
         combined_output = first_output + second_output
         for secret in ("fixture-bmc-password", "fixture-os-password"):
             self.assertNotIn(secret, combined_output)
-        self.assertTrue(installer.check_toml_mcp(self.home / ".codex/config.toml", installer.DEFAULT_STUDIO_URL))
-        self.assertTrue(installer.check_json_mcp(self.home / ".claude.json", installer.DEFAULT_STUDIO_URL))
+        state = installer.load_state(self.home)
+        self.assertTrue(
+            installer.check_toml_mcp(
+                self.home / ".codex/config.toml", "", state["mcp"]["codex"]
+            )
+        )
+        self.assertTrue(
+            installer.check_json_mcp(
+                self.home / ".claude.json", "", state["mcp"]["claude"]
+            )
+        )
 
     def test_install_deploys_runtime_launcher_and_registers_stdio_mcp(self) -> None:
         self.prepare_credentials()
@@ -1204,6 +1250,34 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertFalse(installer.state_path(self.home).exists())
         self.assertFalse((self.home / ".bashrc").exists())
 
+    def test_credentials_subcommand_imports_private_kb_config_only(self) -> None:
+        source = self.root / "kb-config.json"
+        source.write_text(
+            json.dumps({"username": "fixture-user", "password": "fixture-secret"}),
+            encoding="utf-8",
+        )
+        source.chmod(0o600)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = installer.main(
+                [
+                    "credentials",
+                    "--home",
+                    str(self.home),
+                    "--kb",
+                    "--kb-config",
+                    str(source),
+                    "--non-interactive",
+                ]
+            )
+        self.assertEqual(result, 0)
+        self.assertIn("openUBMC KB credentials: imported", output.getvalue())
+        destination = installer.knowledge_config_path(self.home)
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+        self.assertEqual(json.loads(destination.read_text(encoding="utf-8"))["username"], "fixture-user")
+        self.assertFalse(installer.state_path(self.home).exists())
+        self.assertFalse((self.home / ".bashrc").exists())
+
     def test_mcp_upsert_remove_and_preexisting_ownership(self) -> None:
         backups = installer.backup_path(self.home)
         codex = self.home / ".codex" / "config.toml"
@@ -1215,14 +1289,14 @@ class EnvironmentSetupTests(unittest.TestCase):
         state = installer.configure_mcp(
             self.home,
             ("codex", "claude"),
-            installer.DEFAULT_STUDIO_URL,
+            installer.LEGACY_STUDIO_HTTP_URL,
             backups,
             False,
         )
         state = installer.configure_mcp(
             self.home,
             ("codex", "claude"),
-            installer.DEFAULT_STUDIO_URL,
+            installer.LEGACY_STUDIO_HTTP_URL,
             backups,
             False,
             state,
@@ -1237,11 +1311,11 @@ class EnvironmentSetupTests(unittest.TestCase):
             encoding="utf-8",
         )
         preexisting = installer.upsert_toml_mcp(
-            codex, installer.DEFAULT_STUDIO_URL, backups, False
+            codex, installer.LEGACY_STUDIO_HTTP_URL, backups, False
         )
         self.assertFalse(preexisting["created_entry"])
         installer.remove_toml_mcp(codex, preexisting, backups, False)
-        self.assertTrue(installer.check_toml_mcp(codex, installer.DEFAULT_STUDIO_URL))
+        self.assertTrue(installer.check_toml_mcp(codex, installer.LEGACY_STUDIO_HTTP_URL))
 
         with self.assertRaises(installer.SetupError):
             installer.upsert_toml_mcp(
@@ -1271,13 +1345,36 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(self.check()[0], 0)
 
         repair_args = installer.parse_args(["repair", "--home", str(self.home)])
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         self.assertTrue(codex.read_text(encoding="utf-8").startswith(migrated_kb))
 
         uninstall_args = installer.parse_args(["uninstall", "--home", str(self.home)])
         self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
         self.assertEqual(codex.read_text(encoding="utf-8"), migrated_kb)
+
+    def test_full_profile_migrates_legacy_http_kb_to_managed_stdio(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text(
+            '[mcp_servers.openubmc-studio]\nurl = "http://localhost:9876/mcp"\n',
+            encoding="utf-8",
+        )
+
+        result, output = self.install("--clients", "codex")
+
+        self.assertEqual(result, 0, output)
+        state = installer.load_state(self.home)
+        installed = codex.read_text(encoding="utf-8")
+        self.assertNotIn("openubmc-studio", installed)
+        self.assertNotIn("localhost:9876", installed)
+        self.assertIn("[mcp_servers.openubmc-kb]", installed)
+        self.assertIn(
+            f"command = {json.dumps(str(installer.knowledge_launcher_path(self.home)))}",
+            installed,
+        )
+        self.assertIs(state["mcp"]["codex"]["created_entry"], True)
 
     def test_external_codex_kb_stdio_skips_legacy_http_health_probe(self) -> None:
         self.prepare_credentials()
@@ -1298,7 +1395,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             ),
             mock.patch.object(
                 installer,
-                "studio_health",
+                "knowledge_http_health",
                 side_effect=AssertionError("legacy HTTP health must not be probed"),
             ),
             redirect_stdout(install_output),
@@ -1313,7 +1410,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         with (
             mock.patch.object(
                 installer,
-                "studio_health",
+                "knowledge_http_health",
                 side_effect=AssertionError("legacy HTTP health must not be probed"),
             ),
             redirect_stdout(check_output),
@@ -1328,22 +1425,20 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(document["knowledge_mcp"]["transport"], "external-stdio")
         self.assertIn("external stdio", document["knowledge_mcp"]["detail"])
 
-    def test_repair_restores_installer_owned_studio_entries(self) -> None:
+    def test_repair_restores_installer_owned_knowledge_mcp_entries(self) -> None:
         self.prepare_credentials()
         self.assertEqual(self.install("--clients", "codex,claude")[0], 0)
         codex = self.home / ".codex" / "config.toml"
         claude = self.home / ".claude.json"
         codex.write_text(
             codex.read_text(encoding="utf-8").replace(
-                installer.DEFAULT_STUDIO_URL,
-                "http://localhost:9999/mcp",
+                str(installer.knowledge_launcher_path(self.home)),
+                "/tmp/broken-openubmc-kb",
             ),
             encoding="utf-8",
         )
         claude_document = json.loads(claude.read_text(encoding="utf-8"))
-        claude_document["mcpServers"][installer.STUDIO_MCP_NAME]["url"] = (
-            "http://localhost:9999/mcp"
-        )
+        claude_document["mcpServers"][installer.KNOWLEDGE_MCP_NAME]["command"] = "/tmp/broken-openubmc-kb"
         claude.write_text(
             json.dumps(claude_document, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -1351,15 +1446,12 @@ class EnvironmentSetupTests(unittest.TestCase):
 
         self.assertEqual(self.check()[0], 1)
         repair_args = installer.parse_args(["repair", "--home", str(self.home)])
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             self.assertEqual(installer.perform_repair(repair_args), 0)
 
-        self.assertTrue(
-            installer.check_toml_mcp(codex, installer.DEFAULT_STUDIO_URL)
-        )
-        self.assertTrue(
-            installer.check_json_mcp(claude, installer.DEFAULT_STUDIO_URL)
-        )
+        repaired = installer.load_state(self.home)
+        self.assertTrue(installer.check_toml_mcp(codex, "", repaired["mcp"]["codex"]))
+        self.assertTrue(installer.check_json_mcp(claude, "", repaired["mcp"]["claude"]))
 
     def test_non_boolean_mcp_ownership_never_authorizes_replacement_or_removal(self) -> None:
         codex = self.home / ".codex" / "config.toml"
@@ -1419,7 +1511,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
             self.assertRaises(installer.SetupError),
         ):
             installer.perform_install(self.args("--install", "--clients", "codex"))
@@ -1455,7 +1547,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertIn("expected 0600", output)
 
         repair_args = installer.parse_args(["--home", str(self.home), "--repair"])
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         self.assertTrue(damaged_link.is_symlink())
         self.assertEqual(credentials.read_bytes(), original_credentials)
@@ -1475,13 +1567,13 @@ class EnvironmentSetupTests(unittest.TestCase):
         codex.write_text(
             "[other]\nvalue = 1\n\n"
             "[mcp_servers.openubmc-kb]\n"
-            f"url = {json.dumps(installer.DEFAULT_STUDIO_URL)}\n",
+            f"url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}\n",
             encoding="utf-8",
         )
 
         self.assertEqual(self.check()[0], 1)
         repair_args = installer.parse_args(["repair", "--home", str(self.home)])
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             self.assertEqual(installer.perform_repair(repair_args), 0)
 
         self.assertIn("[other]", codex.read_text(encoding="utf-8"))
@@ -1504,7 +1596,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         installer.save_state(self.home, state, False)
 
         repair_args = installer.parse_args(["repair", "--home", str(self.home)])
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             self.assertEqual(installer.perform_repair(repair_args), 0)
 
         repaired = installer.load_state(self.home)
@@ -1569,7 +1661,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
         ):
             self.assertEqual(installer.perform_install(args), 0)
         state = installer.load_state(self.home)
@@ -1594,6 +1686,19 @@ class EnvironmentSetupTests(unittest.TestCase):
                 "runtime_status",
             }.issubset(tools)
         )
+        knowledge = state["knowledge_mcp"]
+        kb_healthy, kb_detail, kb_tools, kb_configured = installer.knowledge_mcp_health(
+            Path(knowledge["launcher_path"]), self.home
+        )
+        self.assertTrue(kb_healthy, kb_detail)
+        self.assertFalse(kb_configured)
+        self.assertEqual(
+            kb_tools,
+            ["openubmc_kb_list", "openubmc_kb_query", "openubmc_kb_status"],
+        )
+        kb_config = installer.knowledge_config_path(self.home)
+        self.assertTrue(kb_config.is_file())
+        self.assertEqual(stat.S_IMODE(kb_config.stat().st_mode), 0o600)
         persistent_root = (
             self.home / ".local" / "state" / "openubmc-target-runtime"
         )
@@ -1606,6 +1711,11 @@ class EnvironmentSetupTests(unittest.TestCase):
         )
         self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
         self.assertEqual(marker.read_text(encoding="utf-8"), "case-history\n")
+        self.assertFalse(installer.knowledge_install_root(self.home).exists())
+        self.assertTrue(kb_config.is_file())
+        codex = self.home / ".codex" / "config.toml"
+        if codex.exists():
+            self.assertNotIn("openubmc-kb", codex.read_text(encoding="utf-8"))
 
     def test_uninstall_preserves_credentials_and_unrelated_client_config(self) -> None:
         credentials = self.prepare_credentials()
@@ -1723,7 +1833,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
             redirect_stdout(output),
         ):
             self.assertEqual(installer.perform_install(args), 0)
@@ -1751,18 +1861,18 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
             redirect_stdout(output),
         ):
             self.assertEqual(installer.perform_install(args), 0)
         self.assertFalse(self.home.exists())
         self.assertIn("would clone", output.getvalue())
 
-    def test_reinstall_with_explicit_source_restores_recorded_studio_url(self) -> None:
+    def test_reinstall_with_explicit_source_restores_recorded_knowledge_url(self) -> None:
         self.prepare_credentials()
         custom_url = "http://localhost:9988/mcp"
         self.assertEqual(
-            self.install("--clients", "codex", "--studio-url", custom_url)[0],
+            self.install("--clients", "codex", "--kb-url", custom_url)[0],
             0,
         )
         args = installer.parse_args(
@@ -1781,10 +1891,27 @@ class EnvironmentSetupTests(unittest.TestCase):
             mock.patch.object(
                 installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
             ),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_install(args), 0)
-        self.assertEqual(installer.load_state(self.home)["studio_url"], custom_url)
+        self.assertEqual(installer.load_state(self.home)["knowledge_url"], custom_url)
+
+    def test_legacy_studio_url_state_and_cli_alias_remain_readable(self) -> None:
+        custom_url = "http://localhost:9988/mcp"
+        args = installer.parse_args(
+            ["install", "--home", str(self.home), "--studio-url", custom_url]
+        )
+        self.assertEqual(args.knowledge_url, custom_url)
+
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex", "--kb-url", custom_url)[0], 0)
+        state = installer.load_state(self.home)
+        state["studio_url"] = state.pop("knowledge_url")
+        installer.save_state(self.home, state, False)
+        self.assertEqual(
+            installer.decode_recorded_install(installer.load_state(self.home)).knowledge_url,
+            custom_url,
+        )
 
     def test_legacy_link_and_profile_markers_are_migrated(self) -> None:
         self.prepare_credentials()
@@ -1829,7 +1956,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         args = installer.parse_args(["--home", str(self.home), "--update"])
         with (
             mock.patch.object(installer, "update_managed_source") as update_source,
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_update(args), 0)
         update_source.assert_called_once_with(
@@ -1842,6 +1969,58 @@ class EnvironmentSetupTests(unittest.TestCase):
         updated = installer.load_state(self.home)
         self.assertTrue(updated["managed_checkout"])
         self.assertIs(updated["runtime_mcp"]["codex"]["created_entry"], True)
+
+    def test_rollback_toggles_between_the_last_two_managed_revisions(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        state["managed_checkout"] = True
+        state["source_mode"] = "managed"
+        state["source_commit"] = "a" * 40
+        state["rollback_commit"] = "b" * 40
+        installer.save_state(self.home, state, False)
+
+        args = installer.parse_args(["rollback", "--home", str(self.home)])
+        with (
+            mock.patch.object(installer, "checkout_managed_revision") as checkout,
+            mock.patch.object(installer, "git_commit", return_value="b" * 40),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_rollback(args), 0)
+        checkout.assert_called_once_with(
+            self.source,
+            "b" * 40,
+            False,
+            EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+        rolled_back = installer.load_state(self.home)
+        self.assertEqual(rolled_back["source_commit"], "b" * 40)
+        self.assertEqual(rolled_back["rollback_commit"], "a" * 40)
+
+        args = installer.parse_args(["rollback", "--home", str(self.home)])
+        with (
+            mock.patch.object(installer, "checkout_managed_revision") as checkout,
+            mock.patch.object(installer, "git_commit", return_value="a" * 40),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
+        ):
+            self.assertEqual(installer.perform_rollback(args), 0)
+        checkout.assert_called_once_with(
+            self.source,
+            "a" * 40,
+            False,
+            EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+        restored = installer.load_state(self.home)
+        self.assertEqual(restored["source_commit"], "a" * 40)
+        self.assertEqual(restored["rollback_commit"], "b" * 40)
 
     def test_update_managed_source_uses_the_selected_bundle_dirty_scope(self) -> None:
         with (
@@ -1876,7 +2055,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             installer.perform_update(update_args)
 
         refresh_args = installer.parse_args(["refresh", "--home", str(self.home)])
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             self.assertEqual(installer.perform_refresh(refresh_args), 0)
         self.assertEqual(installer.load_state(self.home)["source_mode"], "linked")
 
@@ -1890,7 +2069,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         repair_args = installer.parse_args(["repair", "--home", str(self.home)])
         with (
             mock.patch.object(installer, "git_commit", return_value="current-commit"),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         self.assertEqual(
@@ -1901,7 +2080,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         refresh_args = installer.parse_args(["refresh", "--home", str(self.home)])
         with (
             mock.patch.object(installer, "git_commit", return_value="current-commit"),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_refresh(refresh_args), 0)
         self.assertEqual(
@@ -1930,7 +2109,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         refresh_args = installer.parse_args(
             ["refresh", "--home", str(self.home)]
         )
-        with mock.patch.object(installer, "studio_health", return_value=(True, "ok")):
+        with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
             self.assertEqual(installer.perform_refresh(refresh_args), 0)
         refreshed = installer.load_state(self.home)
         self.assertEqual(refreshed["source_mode"], "linked")
@@ -1964,7 +2143,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                 "load_state",
                 wraps=original_load_state,
             ) as load_state,
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_repair(repair_args), 0)
         self.assertEqual(load_state.call_count, 1)
@@ -1978,7 +2157,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(self.install("--clients", "codex")[0], 0)
         output = io.StringIO()
         with (
-            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
             redirect_stdout(output),
         ):
             result = installer.main(["check", "--home", str(self.home), "--json"])
@@ -2015,7 +2194,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                 "resolve_tool_dirs",
                 return_value=([str(self.bin_dir)], []),
             ),
-            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
             redirect_stdout(output),
         ):
             result = installer.main(
@@ -2043,11 +2222,9 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(document["workflow"]["skill_profile"], "target-runtime")
         self.assertEqual(document["workflow"]["skill_count"], 7)
         self.assertEqual(document["planned_workflow"]["skill_profile"], "full")
-        self.assertEqual(document["planned_workflow"]["skill_count"], 8)
+        self.assertEqual(document["planned_workflow"]["skill_count"], 11)
         self.assertTrue(document["planned_workflow"]["openubmc_kb_managed"])
-        self.assertEqual(document["knowledge_mcp"]["transport"], "http")
-        action_codes = {action["code"] for action in document["next_actions"]}
-        self.assertIn("configure_openubmc_kb", action_codes)
+        self.assertEqual(document["knowledge_mcp"]["transport"], "stdio")
 
     def test_tooling_report_distinguishes_required_optional_and_client_tools(self) -> None:
         required_bin = self.root / "required-bin"
@@ -2078,7 +2255,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch.object(installer, "inspect_tooling", return_value=tooling),
-            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
             redirect_stdout(output),
         ):
             result = installer.main(["check", "--home", str(self.home), "--json"])
@@ -2142,7 +2319,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                 "resolve_tool_dirs",
                 return_value=([str(self.bin_dir)], []),
             ),
-            mock.patch.object(installer, "studio_health", return_value=(True, "ok")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             for command, argv in commands:
                 with self.subTest(command=command):
@@ -2177,7 +2354,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         output = io.StringIO()
 
         with (
-            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
             redirect_stdout(output),
         ):
             result = installer.main(["check", "--home", str(self.home), "--json"])
@@ -2202,7 +2379,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         output = io.StringIO()
 
         with (
-            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
             redirect_stdout(output),
         ):
             result = installer.main(["check", "--home", str(self.home), "--json"])
@@ -2250,7 +2427,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                 with (
                     mock.patch.object(
                         installer,
-                        "studio_health",
+                        "knowledge_http_health",
                         return_value=(False, "offline"),
                     ),
                     redirect_stdout(output),
@@ -2272,7 +2449,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(self.install("--clients", "codex")[0], 0)
         output = io.StringIO()
         with (
-            mock.patch.object(installer, "studio_health", return_value=(False, "offline")),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
             redirect_stdout(output),
         ):
             result = installer.main(["check", "--home", str(self.home), "--json"])

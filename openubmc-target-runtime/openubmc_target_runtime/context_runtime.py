@@ -145,6 +145,10 @@ _TARGET_VERSION_ARGUMENTS = frozenset(
         "redfish_port",
     }
 )
+_PHASE_SKILL_OWNERS = {
+    "developer.change": "openubmc-developer",
+    "build.artifact": "openubmc-build",
+}
 _DEBUG_DOMAIN_ARGUMENTS = {
     "alarm_call_args",
     "alarm_call_signature",
@@ -4594,7 +4598,7 @@ class ContextRuntime:
                 if required_kind == "phase"
                 else f"run {required_name}"
             )
-        return {
+        continuation = {
             "intent": str(projection.get("intent", "")),
             "delivery_strategy": str(projection.get("delivery_strategy", "")),
             "targets": [
@@ -4626,6 +4630,51 @@ class ContextRuntime:
             ),
             "status": str(projection.get("status", "open")),
             "next_action": next_action,
+        }
+        if required_kind == "phase":
+            continuation.update(
+                cls._phase_handoff(
+                    projection,
+                    phase_type=required_name,
+                    workflow_step_id=required_step_id,
+                )
+            )
+        return continuation
+
+    @classmethod
+    def _phase_handoff(
+        cls,
+        projection: Mapping[str, object],
+        *,
+        phase_type: str,
+        workflow_step_id: str,
+    ) -> dict[str, object]:
+        required_skill = _PHASE_SKILL_OWNERS.get(phase_type, "")
+        if not required_skill:
+            return {}
+        workflow_inputs = projection.get("workflow_inputs", {})
+        completed_phases = cls._completed_phases(projection)
+        cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
+        arguments = {
+            "case_id": str(projection.get("case_id", "")),
+            "intent": str(projection.get("intent", "")),
+            "final_purpose": str(projection.get("final_purpose", "")),
+            "change_boundary": str(projection.get("change_boundary", "")),
+            "delivery_strategy": str(projection.get("delivery_strategy", "")),
+            "targets": projection.get("targets", []),
+            "workflow_inputs": workflow_inputs if isinstance(workflow_inputs, Mapping) else {},
+            "completed_phases": completed_phases,
+            "phase_record_contract": {
+                "case_id": str(projection.get("case_id", "")),
+                "expected_revision": int(projection.get("revision", 0)),
+                "idempotency_key": f"{cycle_id}:{workflow_step_id}:result",
+                "phase_type": phase_type,
+                "producer_identity": required_skill,
+            },
+        }
+        return {
+            "required_skill": required_skill,
+            "handoff_arguments": _sanitize(arguments),
         }
 
     @classmethod
@@ -5259,6 +5308,11 @@ class ContextRuntime:
                         ),
                         "steps_run": steps_run,
                         "next_action": f"submit phase_record for {name}",
+                        **self._phase_handoff(
+                            projection,
+                            phase_type=name,
+                            workflow_step_id=step_id,
+                        ),
                     }
                     status = "waiting_phase_record"
                     break

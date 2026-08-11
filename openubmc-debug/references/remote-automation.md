@@ -303,6 +303,11 @@ the bounded Agent Envelope, and the bundle indexes `closeout.json`, `closeout.md
 and artifacts. Use `case_read` for the recoverable projection and `evidence_read` for a bounded
 verified body; do not reconstruct completion from the human summary or from phase status alone.
 
+An external phase gate includes `required_skill` and sanitized `handoff_arguments`, including a
+ready `phase_record_contract`. Load that Skill automatically, execute it against the frozen Case
+inputs, record the result, and continue the loop. The user does not need to repeat the build stage,
+target, or final verification purpose.
+
 ## Common JSON envelope
 
 Agent automation should use `--json --compact-json`. Every public helper returns:

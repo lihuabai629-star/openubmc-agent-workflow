@@ -1,4 +1,5 @@
 {
+  "manifestVersion": 1,
   "name": "openubmc-dt-testing",
   "version": "2.0.0",
   "description": "编写和执行 openUBMC 组件的 UT/IT 测试，涵盖 LuaUnit 用例编写、Mock 打桩、集成测试配置、覆盖率分析和测试用例设计。",
@@ -14,12 +15,13 @@
     "luaunit": ">=3.4"
   },
   "relatedSkills": [
-    "openubmc-lua-component",
+    "openubmc-developer",
     "openubmc-qemu-testing"
   ],
   "files": [
     "SKILL.md",
     "skill.json",
+    "agents/openai.yaml",
     "evals/evals.json"
   ],
   "keywords": [

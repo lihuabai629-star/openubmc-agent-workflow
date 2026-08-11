@@ -256,10 +256,61 @@ class WorkflowNextTests(unittest.TestCase):
         assert response is not None
         structured = response["result"]["structuredContent"]
         self.assertEqual(structured["status"], "waiting_phase_record")
+        self.assertEqual(structured["required_skill"], "openubmc-developer")
+        self.assertEqual(
+            structured["handoff_arguments"]["phase_record_contract"]["phase_type"],
+            "developer.change",
+        )
         self.assertEqual(
             structured["agent_envelope"]["operation"]["name"],
             "workflow.next",
         )
+
+    def test_build_gate_returns_a_ready_skill_handoff_without_user_reprompt(self) -> None:
+        self.open_case("case-build-handoff", delivery_strategy="build-upgrade")
+        first = self.call_next(
+            {"case_id": "case-build-handoff"},
+            task_id="build-handoff-task",
+            operation_id="build-handoff-debug",
+        )
+        self.assertEqual(first["required_skill"], "openubmc-developer")
+        current = self.repository.load("case-build-handoff")
+        assert current is not None
+        self.service.call_tool(
+            "phase_record",
+            {
+                "case_id": "case-build-handoff",
+                "expected_revision": current["revision"],
+                "idempotency_key": "build-handoff-developer",
+                "phase_type": "developer.change",
+                "producer_identity": "openubmc-developer",
+                "status": "completed",
+                "source_revision": "source-revision",
+                "summary": "source change completed",
+                "authored_files": ["src/fix.lua"],
+                "verification_plan": ["unit regression"],
+            },
+            task_id="build-handoff-task",
+            operation_id="build-handoff-developer",
+        )
+
+        waiting = self.call_next(
+            {},
+            task_id="build-handoff-task",
+            operation_id="build-handoff-next",
+        )
+
+        self.assertEqual(waiting["status"], "waiting_phase_record")
+        self.assertEqual(waiting["required_phase_type"], "build.artifact")
+        self.assertEqual(waiting["required_skill"], "openubmc-build")
+        handoff = waiting["handoff_arguments"]
+        self.assertEqual(handoff["case_id"], "case-build-handoff")
+        self.assertEqual(handoff["delivery_strategy"], "build-upgrade")
+        self.assertEqual(
+            handoff["phase_record_contract"]["producer_identity"],
+            "openubmc-build",
+        )
+        self.assertIn("developer.change", handoff["completed_phases"])
 
     def test_case_and_derived_domains_reuse_one_frozen_authorization_policy(self) -> None:
         self.service.call_tool(
