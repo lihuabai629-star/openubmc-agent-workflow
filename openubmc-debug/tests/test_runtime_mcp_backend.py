@@ -65,6 +65,135 @@ class FakeLease:
 
 
 class RuntimeMcpBackendTests(unittest.TestCase):
+    def test_workflow_argv_accepts_runtime_direct_passwords_without_legacy_projection(
+        self,
+    ) -> None:
+        module = load_script("target_runtime_mcp")
+
+        argv = module._workflow_argv(
+            {
+                "ip": "target.example",
+                "ssh_password": "ssh-secret",
+                "telnet_password": "telnet-secret",
+            }
+        )
+        parsed = module.workflow_remote.parse_args(argv)
+
+        self.assertEqual(parsed.ssh_password, "ssh-secret")
+        self.assertEqual(parsed.telnet_password, "telnet-secret")
+
+        legacy_args = module.workflow_remote.build_parser().parse_args(
+            [
+                "--ip",
+                "target.example",
+                "--ssh-password",
+                "ssh-secret",
+                "--telnet-password",
+                "telnet-secret",
+            ]
+        )
+        projected = module.workflow_arguments_from_namespace(legacy_args)
+        self.assertNotIn("ssh_password", projected)
+        self.assertNotIn("telnet_password", projected)
+
+    def test_orchestrated_debug_restores_direct_passwords_for_case_continuation(
+        self,
+    ) -> None:
+        module = load_script("target_runtime_mcp")
+        runtime = module._load_runtime_module()
+        runtime_mcp = sys.modules[runtime.OrchestratedMcpBackend.__module__]
+        observed_passwords: list[tuple[str, str]] = []
+
+        def execute(args, **kwargs):
+            observed_passwords.append(
+                (str(args.ssh_password), str(args.telnet_password))
+            )
+            kwargs["output_handler"](
+                {
+                    "schema": "openubmc-debug.v1",
+                    "returncode": 0,
+                    "ok": True,
+                    "code": "ok",
+                    "result": {},
+                }
+            )
+            return 0
+
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "ssh-secret", "port": 22},
+                    "telnet": None,
+                },
+            ),
+            mock.patch.object(
+                module,
+                "open_debug_runtime_lease",
+                return_value=FakeLease("direct-password-case-task"),
+            ),
+            mock.patch.object(module.workflow_remote, "_execute_workflow", execute),
+            mock.patch.object(module, "resolve_source_root", return_value=(None, "none")),
+            mock.patch.object(
+                module.workflow_remote,
+                "build_typed_debug_tool_runner",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                runtime_mcp,
+                "load_selected_credentials_file",
+                return_value={},
+            ),
+        ):
+            service = runtime.RuntimeMcpService(
+                runtime.OrchestratedMcpBackend(
+                    {"debug_run": module.DebugMcpBackend()}
+                )
+            )
+            try:
+                first = service.call_tool(
+                    "debug_run",
+                    {
+                        "ip": "target.example",
+                        "ssh_user": "root",
+                        "ssh_password": "ssh-secret",
+                        "telnet_user": "root",
+                        "telnet_password": "telnet-secret",
+                        "deadline": 2,
+                        "mdb_only": True,
+                    },
+                    task_id="direct-password-case-task",
+                    operation_id="first",
+                )
+                case_id = str(first.envelope["case_id"])
+                second = service.call_tool(
+                    "debug_run",
+                    {
+                        "case_id": case_id,
+                        "deadline": 2,
+                        "mdb_only": True,
+                    },
+                    task_id="direct-password-case-task",
+                    operation_id="continue",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(
+            observed_passwords,
+            [
+                ("ssh-secret", "telnet-secret"),
+                ("ssh-secret", "telnet-secret"),
+            ],
+        )
+        self.assertEqual(second.envelope["case_id"], case_id)
+        public_result = json.dumps(
+            [first.envelope, second.envelope], ensure_ascii=False
+        )
+        self.assertNotIn("ssh-secret", public_result)
+        self.assertNotIn("telnet-secret", public_result)
+
     def test_runtime_entrypoint_selects_default_credentials_file(self) -> None:
         module = load_script("target_runtime_mcp")
         with tempfile.TemporaryDirectory() as raw:
