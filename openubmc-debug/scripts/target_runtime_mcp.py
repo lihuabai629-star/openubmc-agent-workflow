@@ -59,10 +59,10 @@ _STRING_OPTIONS = {
     "telnet_user": "--telnet-user",
     "telnet_user_env": "--telnet-user-env",
 }
-_MCP_DIRECT_PASSWORD_OPTIONS = {
-    "ssh_password": "--ssh-password",
-    "telnet_password": "--telnet-password",
-}
+_MCP_DIRECT_CREDENTIAL_OPTIONS = (
+    ("ssh_password", "--ssh-password"),
+    ("telnet_password", "--telnet-password"),
+)
 _POLICY_OPTIONS = {
     "mdb_concurrency": "--mdb-concurrency",
 }
@@ -127,7 +127,7 @@ def _boolean_argument(
 def _workflow_argv(arguments: Mapping[str, object]) -> list[str]:
     unknown = set(arguments) - (
         set(_STRING_OPTIONS)
-        | set(_MCP_DIRECT_PASSWORD_OPTIONS)
+        | {name for name, _option in _MCP_DIRECT_CREDENTIAL_OPTIONS}
         | set(_POLICY_OPTIONS)
         | set(_INTEGER_OPTIONS)
         | set(_BOOLEAN_OPTIONS)
@@ -148,7 +148,7 @@ def _workflow_argv(arguments: Mapping[str, object]) -> list[str]:
         if not isinstance(value, str):
             raise TypeError(f"{name} must be a string")
         argv.extend([option, value])
-    for name, option in _MCP_DIRECT_PASSWORD_OPTIONS.items():
+    for name, option in _MCP_DIRECT_CREDENTIAL_OPTIONS:
         if name not in arguments:
             continue
         value = arguments[name]
