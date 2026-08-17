@@ -1,0 +1,41 @@
+{
+  "manifestVersion": 1,
+  "name": "openubmc-build",
+  "version": "1.0.0",
+  "description": "构建 openUBMC 组件、Conan 包和产品固件制品。",
+  "author": "OpenUBMC Team",
+  "license": "MulanPSL-2.0",
+  "relatedSkills": [
+    "openubmc-developer",
+    "openubmc-upgrade",
+    "openubmc-publish"
+  ],
+  "files": [
+    "SKILL.md",
+    "skill.json",
+    "agents/openai.yaml",
+    "references/2630-wsl-profile.md",
+    "references/build-flow.md",
+    "references/conan-auth.md",
+    "references/handoff-contract.md",
+    "references/product-build-pitfalls.md",
+    "references/redfish-upgrade.md",
+    "scripts/bump_openubmc_versions.py",
+    "scripts/detect_changed_components.py",
+    "scripts/preflight_build_env.sh",
+    "scripts/run_bmcgo_background.sh",
+    "scripts/run_bmcgo_checked.py",
+    "scripts/update_manifest_conan_ref.py"
+  ],
+  "keywords": [
+    "openubmc",
+    "build",
+    "bmcgo",
+    "conan",
+    "firmware"
+  ],
+  "categories": [
+    "development",
+    "delivery"
+  ]
+}

@@ -32,9 +32,10 @@ On a new Debian/Ubuntu or WSL machine, bootstrap the managed installation
 without cloning first:
 
 ~~~bash
+WORKFLOW_REF="vX.Y.Z" # published release tag or full commit
 curl -fsSL \
-  http://10.121.177.79/liqinghua/openubmc-agent-workflow/-/raw/main/bootstrap.py \
-  | python3 -
+  "https://raw.githubusercontent.com/lihuabai629-star/openubmc-agent-workflow/${WORKFLOW_REF}/bootstrap.py" \
+  | python3 - --ref "${WORKFLOW_REF}"
 ~~~
 
 For development against an existing checkout, link that checkout explicitly:
@@ -51,13 +52,15 @@ python3 "$HOME/.agents/skills/openubmc-environment-setup/scripts/install_environ
 ~~~
 
 The default source repository is
-`http://10.121.177.79/liqinghua/openubmc-agent-workflow.git`, branch `main`. A
-managed clone is created only when no valid local repository is available. The
-installed state records the exact source commit.
+`https://github.com/lihuabai629-star/openubmc-agent-workflow.git`. Managed installation requires
+an explicit release tag or full commit and checks out the resolved commit in detached-HEAD mode.
+A managed clone is created only when no valid local repository is available. The installed state
+records the requested ref, whether it is a tag or commit, and the exact resolved commit.
 
 Use `--source <skills-repository>` or `--source-mode linked` for a checkout
 owned and updated by the user. Use `--source-mode managed` to require an
-installer-owned clone. The selected mode is persisted in installer state.
+installer-owned clone, together with `--ref <release-tag-or-full-commit>`. The selected mode is
+persisted in installer state.
 
 For a Runtime-focused rollout, add:
 
@@ -247,8 +250,10 @@ source, Runtime, and credential-preservation state; check retains its detailed r
   recorded external targets.
 - `refresh` records the current commit of a linked checkout and repairs its
   configuration without running Git operations.
-- `update` fast-forwards only a clean installer-managed checkout. It rejects a
-  linked checkout and directs the user to update it manually, then run
+- `update` re-fetches and verifies the recorded tag or full commit for a clean
+  installer-managed checkout. Rerun bootstrap with a new immutable ref to move
+  to another release. Legacy branch-based state retains fast-forward
+  compatibility. A linked checkout must be updated manually, followed by
   `refresh`.
 - `rollback` restores the previous known-good revision of a clean managed
   checkout. The displaced revision becomes the next rollback target, so a
