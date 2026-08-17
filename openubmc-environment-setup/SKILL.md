@@ -252,9 +252,9 @@ source, Runtime, and credential-preservation state; check retains its detailed r
   configuration without running Git operations.
 - `update` re-fetches and verifies the recorded tag or full commit for a clean
   installer-managed checkout. Rerun bootstrap with a new immutable ref to move
-  to another release. Legacy branch-based state retains fast-forward
-  compatibility. A linked checkout must be updated manually, followed by
-  `refresh`.
+  to another release. Legacy branch-based state fails check, install, repair,
+  and update until it is migrated by rerunning bootstrap with an immutable ref.
+  A linked checkout must be updated manually, followed by `refresh`.
 - `rollback` restores the previous known-good revision of a clean managed
   checkout. The displaced revision becomes the next rollback target, so a
   second rollback toggles back when both revisions remain available.

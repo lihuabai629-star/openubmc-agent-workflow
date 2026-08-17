@@ -107,6 +107,19 @@ class WorkflowManifestValidationTests(unittest.TestCase):
         ):
             validator.validate_manifest()
 
+    def test_manifest_rejects_duplicate_and_out_of_root_entries(self) -> None:
+        for extra, message in (
+            ("SKILL.md", "duplicate skill.json files entry"),
+            ("../workflow.json", "invalid skill.json file path"),
+        ):
+            with self.subTest(extra=extra):
+                self.write_manifest(extra)
+                with (
+                    mock.patch.object(validator, "ROOT", self.root),
+                    self.assertRaisesRegex(SystemExit, message),
+                ):
+                    validator.validate_manifest()
+
 
 if __name__ == "__main__":
     unittest.main()

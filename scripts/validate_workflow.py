@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -86,6 +86,19 @@ def validate_skill_manifest(skill_root: Path, name: str) -> None:
     files = document.get("files")
     if not isinstance(files, list) or any(not isinstance(item, str) for item in files):
         raise SystemExit(f"invalid skill.json files list: {path.relative_to(ROOT)}")
+    if len(files) != len(set(files)):
+        raise SystemExit(f"duplicate skill.json files entry: {path.relative_to(ROOT)}")
+    for relative in files:
+        package_path = PurePosixPath(relative)
+        if (
+            not relative
+            or package_path.is_absolute()
+            or "\\" in relative
+            or any(part in {"", ".", ".."} for part in package_path.parts)
+        ):
+            raise SystemExit(
+                f"invalid skill.json file path ({relative}): {path.relative_to(ROOT)}"
+            )
     required = {"SKILL.md", "agents/openai.yaml"}
     if not required.issubset(files):
         missing = ", ".join(sorted(required - set(files)))

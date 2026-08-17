@@ -63,8 +63,9 @@ python3 "$INSTALLER" uninstall
 
 For tag/commit installations, `update` revalidates the recorded immutable ref. To move to a newer
 release, rerun the bootstrap with the new tag or full commit; the previous commit becomes the
-rollback target. Legacy branch-based installations retain fast-forward compatibility. `rollback`
-restores the previous known-good revision and keeps the displaced revision available for another
+rollback target. Legacy branch-based installations fail check, install, repair, and update until
+they are migrated by rerunning bootstrap with an immutable ref. `rollback` restores the previous
+known-good revision as an exact commit and keeps the displaced revision available for another
 rollback. JSON install and check output reports `requested_ref`, `ref_kind`, and `resolved_commit`.
 
 ## Validation

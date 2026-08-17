@@ -19,6 +19,9 @@ RAW_INSTALLER_TEMPLATE = (
 )
 FULL_COMMIT = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 MUTABLE_REFS = frozenset({"head", "main", "master", "develop", "development", "trunk"})
+FORBIDDEN_FORWARDED_OPTIONS = frozenset(
+    {"--installer-url", "--ref", "--repo-url", "--source", "--source-mode"}
+)
 
 
 def release_ref(value: str) -> str:
@@ -44,14 +47,35 @@ def release_ref(value: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-url", default=DEFAULT_REPO_URL)
+    parser.add_argument("--repo-url", default=DEFAULT_REPO_URL, help=argparse.SUPPRESS)
     parser.add_argument("--ref", type=release_ref)
-    parser.add_argument("--installer-url")
+    parser.add_argument("--installer-url", help=argparse.SUPPRESS)
     parser.add_argument("--interactive", action="store_true")
     known, remaining = parser.parse_known_args(argv)
     if known.ref is None:
         parser.error("--ref must name an explicit release tag or full commit")
-    installer_url = known.installer_url or RAW_INSTALLER_TEMPLATE.format(ref=known.ref)
+    if known.repo_url != DEFAULT_REPO_URL or known.installer_url is not None:
+        parser.error(
+            "bootstrap must use the primary GitHub release source; "
+            "--repo-url and --installer-url overrides are unsupported"
+        )
+    blocked = next(
+        (
+            argument.split("=", 1)[0]
+            for argument in remaining
+            if (
+                argument.split("=", 1)[0] in FORBIDDEN_FORWARDED_OPTIONS
+                or argument.split("=", 1)[0].startswith("--source-")
+            )
+        ),
+        None,
+    )
+    if blocked is not None:
+        parser.error(
+            "bootstrap must use the primary GitHub release source; "
+            f"forwarding {blocked} is unsupported"
+        )
+    installer_url = RAW_INSTALLER_TEMPLATE.format(ref=known.ref)
     try:
         with urllib.request.urlopen(installer_url, timeout=30) as response:
             installer = response.read()
