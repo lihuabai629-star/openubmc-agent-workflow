@@ -138,6 +138,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         )
         self.environment_patch.start()
         installer.os.environ.pop("XDG_CONFIG_HOME", None)
+        installer.os.environ.pop("OPENUBMC_KB_CONFIG", None)
 
     def tearDown(self) -> None:
         self.environment_patch.stop()
