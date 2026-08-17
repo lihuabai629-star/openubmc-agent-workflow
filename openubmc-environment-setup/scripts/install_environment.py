@@ -25,8 +25,10 @@ import urllib.error
 import urllib.request
 
 
-DEFAULT_REPO_URL = "http://10.121.177.79/liqinghua/openubmc-agent-workflow.git"
+DEFAULT_REPO_URL = "https://github.com/lihuabai629-star/openubmc-agent-workflow.git"
 DEFAULT_REF = "main"
+FULL_COMMIT = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
+MUTABLE_REFS = frozenset({"head", "main", "master", "develop", "development", "trunk"})
 LEGACY_STUDIO_HTTP_URL = "http://localhost:9876/mcp"
 KNOWLEDGE_MCP_NAME = "openubmc-kb"
 LEGACY_STUDIO_MCP_NAME = "openubmc-studio"
@@ -66,9 +68,12 @@ class RecordedInstall(NamedTuple):
     source_root: Path
     source_mode: str
     source_commit: str
+    resolved_commit: str
     rollback_commit: str
     repo_url: str
     ref: str
+    requested_ref: str
+    ref_kind: str
     clients: tuple[str, ...]
     profile: ResolvedSkillProfile
     knowledge_url: str
@@ -249,7 +254,11 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
 def add_source_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source", type=Path, help="existing skills repository checkout")
     parser.add_argument("--repo-url", default=DEFAULT_REPO_URL, help="skills Git repository")
-    parser.add_argument("--ref", default=DEFAULT_REF, help="Git branch for a managed checkout")
+    parser.add_argument(
+        "--ref",
+        default=DEFAULT_REF,
+        help="release tag or full commit for a managed checkout",
+    )
     parser.add_argument(
         "--source-mode",
         choices=("auto", "linked", "managed"),
@@ -307,7 +316,7 @@ def new_cli_parser() -> argparse.ArgumentParser:
     check.add_argument("--deep", action="store_true", help="include a full-worktree dirty check")
     for command, help_text in (
         ("repair", "repair configuration without pulling source"),
-        ("update", "fast-forward an installer-managed source"),
+        ("update", "revalidate an installer-managed immutable release"),
         ("rollback", "restore the previous known-good managed revision"),
         ("refresh", "record and repair a linked source checkout"),
     ):
@@ -381,6 +390,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
         args.legacy_cli = True
     args = apply_argument_defaults(args)
+    args.ref_explicit = any(
+        argument == "--ref" or argument.startswith("--ref=") for argument in raw
+    )
+    args.repo_url_explicit = any(
+        argument == "--repo-url" or argument.startswith("--repo-url=")
+        for argument in raw
+    )
     if args.import_credentials and args.skip_credentials:
         parser.error("--import-credentials and --skip-credentials are mutually exclusive")
     return args
@@ -650,6 +666,41 @@ def validate_source(
     if errors:
         raise SetupError("invalid skills source: " + "; ".join(errors))
     return root
+
+
+def validate_release_source(root: Path, dry_run: bool) -> None:
+    validator = root / "scripts" / "validate_workflow.py"
+    if not validator.is_file():
+        raise SetupError(f"release validator is missing: {validator}")
+    if dry_run:
+        print(f"would validate release contract in {root}")
+        return
+    result = run_command(
+        [sys.executable, str(validator), "--release-contract-only"],
+        cwd=root,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise SetupError(detail or "release contract validation failed")
+
+
+def release_ref_kind(value: object) -> Literal["tag", "commit"]:
+    candidate = str(value).strip() if value is not None else ""
+    lowered = candidate.lower()
+    if FULL_COMMIT.fullmatch(candidate):
+        return "commit"
+    if (
+        not candidate
+        or lowered in MUTABLE_REFS
+        or lowered.startswith("refs/heads/")
+        or candidate.startswith("-")
+        or candidate.endswith(("/", ".", ".lock"))
+        or ".." in candidate
+        or "@{" in candidate
+        or any(character.isspace() or character in "~^:?*[\\" for character in candidate)
+    ):
+        raise SetupError("--ref must name an explicit release tag or full commit")
+    return "tag"
 
 
 def iter_runtime_source_files(package_root: Path):
@@ -1106,6 +1157,38 @@ def local_repository_from_script(
         return None
 
 
+def fetch_immutable_release(root: Path, ref: str) -> tuple[Literal["tag", "commit"], str]:
+    ref_kind = release_ref_kind(ref)
+    fetch_ref = ref if ref_kind == "commit" else f"refs/tags/{ref}"
+    fetched = run_command(
+        [
+            "git",
+            "-C",
+            str(root),
+            "fetch",
+            "--no-tags",
+            "--depth",
+            "1",
+            "origin",
+            fetch_ref,
+        ]
+    )
+    if fetched.returncode != 0:
+        label = "full commit" if ref_kind == "commit" else "release tag"
+        detail = fetched.stderr.strip() or fetched.stdout.strip()
+        suffix = f": {detail}" if detail else ""
+        raise SetupError(f"unable to fetch {label} {ref}{suffix}")
+    return ref_kind, git_output(root, "rev-parse", "FETCH_HEAD^{commit}")
+
+
+def checkout_detached_release(root: Path, commit: str) -> None:
+    checkout = run_command(["git", "-C", str(root), "checkout", "--detach", commit])
+    if checkout.returncode != 0:
+        raise SetupError(
+            checkout.stderr.strip() or f"unable to checkout release revision {commit}"
+        )
+
+
 def clone_source(
     destination: Path,
     repo_url: str,
@@ -1113,42 +1196,56 @@ def clone_source(
     dry_run: bool,
     bundle: Iterable[tuple[str, str]] = SKILL_BUNDLE,
 ) -> Path:
+    release_ref_kind(ref)
     if dry_run:
         print(f"would clone {repo_url}@{ref} to {destination}")
         return destination
+    if destination.exists():
+        raise SetupError(f"managed source destination already exists: {destination}")
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    result = run_command(
-        ["git", "clone", "--branch", ref, "--single-branch", repo_url, str(destination)]
-    )
-    if result.returncode != 0:
-        raise SetupError(result.stderr.strip() or "unable to clone skills repository")
-    return validate_source(destination, bundle)
+    initialized = run_command(["git", "init", "--quiet", str(destination)])
+    if initialized.returncode != 0:
+        raise SetupError(initialized.stderr.strip() or "unable to initialize skills repository")
+    try:
+        remote = run_command(
+            ["git", "-C", str(destination), "remote", "add", "origin", repo_url]
+        )
+        if remote.returncode != 0:
+            raise SetupError(remote.stderr.strip() or "unable to configure skills repository")
+        _ref_kind, resolved = fetch_immutable_release(destination, ref)
+        checkout_detached_release(destination, resolved)
+        return validate_source(destination, bundle)
+    except (OSError, SetupError):
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
 
 
-def update_managed_source(
+def checkout_managed_release(
     root: Path,
     repo_url: str,
     ref: str,
     dry_run: bool,
     bundle: Iterable[tuple[str, str]] = SKILL_BUNDLE,
-) -> None:
+    *,
+    expected_commit: str | None = None,
+) -> str:
+    release_ref_kind(ref)
     remote = git_output(root, "remote", "get-url", "origin")
     if normalized_repo_url(remote) != normalized_repo_url(repo_url):
         raise SetupError(f"managed source origin differs from configured repository: {remote}")
     if git_dirty(root, paths=bundle_git_paths(bundle)):
         raise SetupError(f"refusing to update dirty skills checkout: {root}")
     if dry_run:
-        print(f"would fast-forward {root} from origin/{ref}")
-        return
-    fetch = run_command(["git", "-C", str(root), "fetch", "origin", ref])
-    if fetch.returncode != 0:
-        raise SetupError(fetch.stderr.strip() or "unable to fetch skills repository")
-    checkout = run_command(["git", "-C", str(root), "checkout", ref])
-    if checkout.returncode != 0:
-        raise SetupError(checkout.stderr.strip() or f"unable to checkout {ref}")
-    merge = run_command(["git", "-C", str(root), "merge", "--ff-only", f"origin/{ref}"])
-    if merge.returncode != 0:
-        raise SetupError(merge.stderr.strip() or "unable to fast-forward skills repository")
+        print(f"would checkout immutable release {repo_url}@{ref} in {root}")
+        return "planned"
+    ref_kind, resolved = fetch_immutable_release(root, ref)
+    if expected_commit and resolved.lower() != expected_commit.lower():
+        label = "release tag moved" if ref_kind == "tag" else "release commit changed"
+        raise SetupError(
+            f"{label}: requested={ref}, recorded={expected_commit}, remote={resolved}"
+        )
+    checkout_detached_release(root, resolved)
+    return resolved
 
 
 def checkout_managed_revision(
@@ -1181,11 +1278,20 @@ def source_mode_from_state(state: Mapping[str, object]) -> str:
     return "managed" if state.get("managed_checkout") is True else "linked"
 
 
+def ref_kind_from_state(state: Mapping[str, object], source_mode: str) -> str:
+    value = state.get("ref_kind")
+    if value is None:
+        return "legacy-branch" if source_mode == "managed" else "linked"
+    if isinstance(value, str) and value in {"tag", "commit", "legacy-branch", "linked"}:
+        return value
+    raise SetupError(f"unsupported ref kind in installer state: {value!r}")
+
+
 def resolve_source(
     args: argparse.Namespace,
     *,
-    update: bool = False,
     bundle: Iterable[tuple[str, str]] = SKILL_BUNDLE,
+    expected_commit: str | None = None,
 ) -> tuple[Path, str]:
     resolved_bundle = materialize_skill_bundle(bundle)
     requested_mode = args.source_mode
@@ -1200,17 +1306,20 @@ def resolve_source(
             return local, "linked"
         if requested_mode == "linked":
             raise SetupError("linked source mode requires --source or a valid local repository")
+    if not args.ref_explicit:
+        raise SetupError("managed installation requires --ref with a release tag or full commit")
+    release_ref_kind(args.ref)
     destination = managed_source_dir(args.home)
     if destination.exists():
         root = validate_source(destination, resolved_bundle)
-        if update:
-            update_managed_source(
-                root,
-                args.repo_url,
-                args.ref,
-                args.dry_run,
-                bundle=resolved_bundle,
-            )
+        checkout_managed_release(
+            root,
+            args.repo_url,
+            args.ref,
+            args.dry_run,
+            bundle=resolved_bundle,
+            expected_commit=expected_commit,
+        )
         return root, "managed"
     return (
         clone_source(
@@ -3328,17 +3437,23 @@ def source_root_from_state(state: Mapping[str, object]) -> Path:
 
 def decode_recorded_install(state: Mapping[str, object]) -> RecordedInstall:
     profile = skill_profile_from_state(state)
+    source_mode = source_mode_from_state(state)
+    source_commit = str(state.get("source_commit", ""))
+    requested_ref = str(state.get("requested_ref", state.get("ref", "")))
     preserved_skills = parse_preserved_skills(
         ",".join(recorded_string_list(state, "preserved_skills")),
         profile.bundle,
     )
     return RecordedInstall(
         source_root=source_root_from_state(state),
-        source_mode=source_mode_from_state(state),
-        source_commit=str(state.get("source_commit", "")),
+        source_mode=source_mode,
+        source_commit=source_commit,
+        resolved_commit=str(state.get("resolved_commit", source_commit)),
         rollback_commit=str(state.get("rollback_commit", "")),
         repo_url=str(state.get("repo_url", DEFAULT_REPO_URL)),
-        ref=str(state.get("ref", DEFAULT_REF)),
+        ref=str(state.get("ref", requested_ref or DEFAULT_REF)),
+        requested_ref=requested_ref,
+        ref_kind=ref_kind_from_state(state, source_mode),
         clients=recorded_string_list(state, "clients"),
         profile=profile,
         knowledge_url=str(
@@ -3390,6 +3505,19 @@ def perform_install(
             if prior_document is not None
             else None
         )
+    if (
+        args.command == "install"
+        and prior_install is not None
+        and prior_install.source_mode == "managed"
+        and prior_install.ref_kind == "legacy-branch"
+        and args.source is None
+        and args.source_mode == "auto"
+        and not args.ref_explicit
+    ):
+        raise SetupError(
+            "managed source uses a mutable legacy branch; "
+            "rerun bootstrap with an immutable --ref"
+        )
     if args.knowledge_url is None:
         prior_url = prior_install.knowledge_url if prior_install is not None else ""
         args.knowledge_url = prior_url if prior_url and prior_url != LEGACY_STUDIO_HTTP_URL else None
@@ -3417,6 +3545,16 @@ def perform_install(
     manage_knowledge_mcp = selected_policy.manages_knowledge_mcp
     prior_source: Path | None = None
     prior_source_mode: str | None = None
+    if (
+        args.source is None
+        and prior_install is not None
+        and prior_install.source_mode == "managed"
+        and args.source_mode == "auto"
+        and args.ref_explicit
+    ):
+        args.source_mode = "managed"
+        if not args.repo_url_explicit:
+            args.repo_url = prior_install.repo_url
     if args.source is None and prior_install and args.source_mode == "auto":
         prior_source = prior_install.source_root
         prior_source_mode = prior_install.source_mode
@@ -3469,19 +3607,41 @@ def perform_install(
         source = validate_source(prior_source, selected_bundle)
         source_mode = prior_source_mode
         if update and source_mode == "managed":
-            update_managed_source(
-                source,
-                args.repo_url,
-                args.ref,
-                args.dry_run,
-                bundle=selected_bundle,
-            )
+            if prior_install is not None and prior_install.ref_kind in {"tag", "commit"}:
+                checkout_managed_release(
+                    source,
+                    args.repo_url,
+                    args.ref,
+                    args.dry_run,
+                    bundle=selected_bundle,
+                    expected_commit=prior_install.resolved_commit,
+                )
+            else:
+                raise SetupError(
+                    "managed source is not pinned to an immutable release; "
+                    "rerun bootstrap with an immutable --ref"
+                )
     else:
+        expected_release_commit = (
+            prior_install.resolved_commit
+            if (
+                prior_install is not None
+                and prior_install.source_mode == "managed"
+                and prior_install.ref_kind in {"tag", "commit"}
+                and args.ref_explicit
+                and str(args.ref) == prior_install.requested_ref
+            )
+            else None
+        )
         source, source_mode = resolve_source(
-            args, update=update, bundle=selected_bundle
+            args,
+            bundle=selected_bundle,
+            expected_commit=expected_release_commit,
         )
     if update and source_mode == "managed" and source.exists() and not args.dry_run:
         source = validate_source(source, selected_bundle)
+    if source_mode == "managed" and source.exists():
+        validate_release_source(source, args.dry_run)
     planned_missing_source = (
         args.dry_run and source_mode == "managed" and not source.exists()
     )
@@ -3616,16 +3776,35 @@ def perform_install(
         if (
             prior_install is not None
             and source_commit != prior_install.source_commit
-            and args.command in {"update", "rollback"}
+            and source_mode == "managed"
+            and args.command in {"install", "update", "rollback"}
         )
         else (prior_install.rollback_commit if prior_install is not None else "")
     )
+    if source_mode == "managed" and args.command == "rollback":
+        ref_kind = "commit"
+        requested_ref = source_commit
+    else:
+        ref_kind = (
+            release_ref_kind(args.ref)
+            if source_mode == "managed" and (args.ref_explicit or prior_install is None)
+            else (
+                prior_install.ref_kind
+                if source_mode == "managed" and prior_install is not None
+                else "linked"
+            )
+        )
+        requested_ref = str(args.ref) if source_mode == "managed" else ""
+    state_ref = requested_ref if source_mode == "managed" else args.ref
     state = {
         "version": STATE_VERSION,
         "repo_url": args.repo_url,
-        "ref": args.ref,
+        "ref": state_ref,
+        "requested_ref": requested_ref,
+        "ref_kind": ref_kind,
         "source_root": str(source),
         "source_commit": source_commit,
+        "resolved_commit": source_commit,
         "rollback_commit": rollback_commit,
         "source_dirty": (
             git_dirty(source, paths=bundle_git_paths(selected_bundle))
@@ -4176,6 +4355,42 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             str(error),
             f"source mode: invalid ({error})",
         )
+    expected_commit = str(state.get("source_commit", ""))
+    requested_ref = str(state.get("requested_ref", state.get("ref", "")))
+    resolved_commit = str(
+        state.get("resolved_commit", state.get("source_commit", ""))
+    )
+    ref_kind = "unknown"
+    try:
+        ref_kind = ref_kind_from_state(state, source_mode)
+        if source_mode == "managed" and ref_kind == "legacy-branch":
+            raise SetupError(
+                "mutable legacy branch source; rerun bootstrap with an immutable --ref"
+            )
+        if source_mode == "managed" and ref_kind in {"tag", "commit"}:
+            if release_ref_kind(requested_ref) != ref_kind:
+                raise SetupError(
+                    "recorded requested ref does not match its immutable ref kind"
+                )
+            if not FULL_COMMIT.fullmatch(resolved_commit):
+                raise SetupError("recorded resolved release commit is not complete")
+            if resolved_commit.lower() != expected_commit.lower():
+                raise SetupError(
+                    "recorded resolved commit does not match source commit"
+                )
+        record(
+            "source_revision",
+            True,
+            f"{ref_kind} {requested_ref or resolved_commit}",
+            f"source revision: {ref_kind} {requested_ref or resolved_commit}",
+        )
+    except SetupError as error:
+        record(
+            "source_revision",
+            False,
+            str(error),
+            f"source revision: invalid ({error})",
+        )
     try:
         validate_source(source, selected_bundle)
         source_valid = True
@@ -4184,7 +4399,6 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
         source_valid = False
         record("source", False, str(error), f"source: failed ({error})")
 
-    expected_commit = str(state.get("source_commit", ""))
     actual_commit = git_commit(source) if source.exists() else "missing"
     commit_ok = not expected_commit or actual_commit == expected_commit
     if not commit_ok:
@@ -4712,6 +4926,9 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             "path": str(source),
             "mode": source_mode,
             "valid": source_valid,
+            "requested_ref": requested_ref,
+            "ref_kind": ref_kind,
+            "resolved_commit": resolved_commit,
             "expected_commit": expected_commit,
             "current_commit": actual_commit,
             "dirty": dirty,
@@ -4766,6 +4983,11 @@ def restore_recorded_lifecycle(
     if args.command in {"update", "rollback"} and recorded.source_mode != "managed":
         raise SetupError(
             "source is linked; update or restore the checkout yourself, then use refresh"
+        )
+    if args.command in {"repair", "update"} and recorded.ref_kind == "legacy-branch":
+        raise SetupError(
+            "managed source uses a mutable legacy branch; "
+            "rerun bootstrap with an immutable --ref"
         )
     if args.command == "refresh" and recorded.source_mode != "linked":
         raise SetupError("source is installer-managed; use update instead of refresh")
@@ -5051,6 +5273,9 @@ def workflow_json_summary(
             "path": str(recorded.source_root),
             "mode": recorded.source_mode,
             "commit": recorded.source_commit,
+            "requested_ref": recorded.requested_ref,
+            "ref_kind": recorded.ref_kind,
+            "resolved_commit": recorded.resolved_commit,
             "rollback_commit": recorded.rollback_commit,
         },
         "runtime": {

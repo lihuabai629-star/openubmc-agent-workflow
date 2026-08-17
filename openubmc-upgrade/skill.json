@@ -14,6 +14,7 @@
     "openubmc_upgrade/__init__.py",
     "openubmc_upgrade/runtime_backend.py",
     "scripts/artifact_identity.py",
+    "scripts/preflight_upgrade.py",
     "scripts/redfish_credentials.py",
     "scripts/target_runtime_adapter.py"
   ],

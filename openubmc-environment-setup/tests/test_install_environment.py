@@ -126,6 +126,13 @@ class EnvironmentSetupTests(unittest.TestCase):
             "workflow_remote.py",
         ):
             (debug_mcp.parent / helper).write_text("# test fixture\n", encoding="utf-8")
+        release_validator = self.source / "scripts" / "validate_workflow.py"
+        release_validator.parent.mkdir(parents=True)
+        release_validator.write_text(
+            "#!/usr/bin/env python3\nraise SystemExit(0)\n",
+            encoding="utf-8",
+        )
+        release_validator.chmod(0o755)
         self.environment_patch = mock.patch.dict(
             installer.os.environ, {"SHELL": "/bin/bash"}, clear=False
         )
@@ -153,6 +160,86 @@ class EnvironmentSetupTests(unittest.TestCase):
         path = installer.credentials_path(self.home)
         installer.write_credentials_file(path, self.credential_values(), False)
         return path
+
+    def create_release_remote(self) -> tuple[Path, str]:
+        source = self.root / "release-repository"
+        for canonical, relative in EXPECTED_TARGET_RUNTIME_BUNDLE:
+            directory = source / relative
+            directory.mkdir(parents=True)
+            (directory / "SKILL.md").write_text(
+                f"---\nname: {canonical}\ndescription: Release fixture.\n---\n",
+                encoding="utf-8",
+            )
+        subprocess.run(
+            ["git", "init", "--initial-branch", "main", str(source)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(source), "config", "user.name", "Workflow Tests"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source), "config", "user.email", "workflow@example.invalid"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(source), "commit", "-m", "release fixture"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        commit = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(source), "tag", "v1.2.3"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source), "branch", "release-v1"],
+            check=True,
+        )
+        remote = self.root / "release-repository.git"
+        subprocess.run(
+            ["git", "clone", "--bare", str(source), str(remote)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        return remote, commit
+
+    def publish_second_release(self, remote: Path, tag: str = "v1.2.4") -> str:
+        release_source = self.root / "release-repository"
+        skill = release_source / "openubmc-debug" / "SKILL.md"
+        skill.write_text(
+            skill.read_text(encoding="utf-8") + "\nSecond release.\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(release_source), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(release_source), "commit", "-m", "second release"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        commit = subprocess.run(
+            ["git", "-C", str(release_source), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(release_source), "tag", tag],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(release_source), "push", str(remote), "main", "--tags"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        return commit
 
     def args(self, *extra: str):
         return installer.parse_args(
@@ -221,6 +308,186 @@ class EnvironmentSetupTests(unittest.TestCase):
             tuple(path for _, path in EXPECTED_TARGET_RUNTIME_BUNDLE),
         )
         self.assertIn("openubmc-kb-mcp", installer.bundle_git_paths(EXPECTED_BUNDLE))
+
+    def test_managed_install_stops_before_links_when_release_validation_fails(self) -> None:
+        managed_source = installer.managed_source_dir(self.home)
+        shutil.copytree(self.source, managed_source)
+        validator = managed_source / "scripts" / "validate_workflow.py"
+        validator.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "print('manifest contract failed', file=sys.stderr)\n"
+            "raise SystemExit(17)\n",
+            encoding="utf-8",
+        )
+        validator.chmod(0o755)
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "managed",
+                "--ref",
+                "v1.2.3",
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+                "--skip-credentials",
+                "--skip-tool-install",
+                "--non-interactive",
+            ]
+        )
+
+        with (
+            mock.patch.object(
+                installer, "checkout_managed_release", return_value="a" * 40
+            ),
+            self.assertRaisesRegex(
+                installer.SetupError,
+                "manifest contract failed",
+            ),
+        ):
+            installer.perform_install(args)
+
+        skills_dir = installer.client_skills_dir(self.home, "codex")
+        self.assertFalse((skills_dir / "openubmc-debug").exists())
+
+    def test_clone_source_rejects_a_branch_as_a_release_tag(self) -> None:
+        remote, _commit = self.create_release_remote()
+        destination = self.root / "managed-release"
+
+        with self.assertRaisesRegex(installer.SetupError, "release tag"):
+            installer.clone_source(
+                destination,
+                str(remote),
+                "release-v1",
+                False,
+                EXPECTED_TARGET_RUNTIME_BUNDLE,
+            )
+
+        self.assertFalse(destination.exists())
+
+    def test_clone_source_resolves_tag_and_full_commit_to_detached_head(self) -> None:
+        remote, commit = self.create_release_remote()
+
+        for label, ref in (("tag", "v1.2.3"), ("commit", commit)):
+            with self.subTest(label=label):
+                destination = self.root / f"managed-{label}"
+                installed = installer.clone_source(
+                    destination,
+                    str(remote),
+                    ref,
+                    False,
+                    EXPECTED_TARGET_RUNTIME_BUNDLE,
+                )
+
+                self.assertEqual(installed, destination.absolute())
+                self.assertEqual(installer.git_commit(destination), commit)
+                detached = subprocess.run(
+                    ["git", "-C", str(destination), "symbolic-ref", "-q", "HEAD"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self.assertNotEqual(detached.returncode, 0)
+
+    def test_explicit_new_release_ref_updates_an_existing_managed_checkout(self) -> None:
+        remote, first_commit = self.create_release_remote()
+        destination = installer.managed_source_dir(self.home)
+        installer.clone_source(
+            destination,
+            str(remote),
+            "v1.2.3",
+            False,
+            EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+        self.assertEqual(installer.git_commit(destination), first_commit)
+
+        second_commit = self.publish_second_release(remote)
+
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "managed",
+                "--repo-url",
+                str(remote),
+                "--ref",
+                "v1.2.4",
+            ]
+        )
+        source, mode = installer.resolve_source(
+            args,
+            bundle=EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+
+        self.assertEqual(source, destination.absolute())
+        self.assertEqual(mode, "managed")
+        self.assertEqual(installer.git_commit(destination), second_commit)
+        detached = subprocess.run(
+            ["git", "-C", str(destination), "symbolic-ref", "-q", "HEAD"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.assertNotEqual(detached.returncode, 0)
+
+    def test_recorded_release_tag_fails_if_the_remote_tag_moves(self) -> None:
+        remote, first_commit = self.create_release_remote()
+        destination = installer.managed_source_dir(self.home)
+        installer.clone_source(
+            destination,
+            str(remote),
+            "v1.2.3",
+            False,
+            EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+        second_commit = self.publish_second_release(remote)
+        release_source = self.root / "release-repository"
+        subprocess.run(
+            ["git", "-C", str(release_source), "tag", "--force", "v1.2.3", second_commit],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(release_source),
+                "push",
+                "--force",
+                str(remote),
+                "refs/tags/v1.2.3",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "managed",
+                "--repo-url",
+                str(remote),
+                "--ref",
+                "v1.2.3",
+            ]
+        )
+        with self.assertRaisesRegex(installer.SetupError, "release tag moved"):
+            installer.resolve_source(
+                args,
+                bundle=EXPECTED_TARGET_RUNTIME_BUNDLE,
+                expected_commit=first_commit,
+            )
+
+        self.assertEqual(installer.git_commit(destination), first_commit)
 
     def test_bootstrap_tools_install_all_missing_debian_dependencies(self) -> None:
         with (
@@ -429,6 +696,8 @@ class EnvironmentSetupTests(unittest.TestCase):
                 str(self.home),
                 "--source-mode",
                 "auto",
+                "--ref",
+                "v1.2.3",
             ]
         )
 
@@ -563,7 +832,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         ) -> Path:
             self.assertEqual(destination, managed_source)
             self.assertEqual(repo_url, installer.DEFAULT_REPO_URL)
-            self.assertEqual(ref, installer.DEFAULT_REF)
+            self.assertEqual(ref, "v1.2.3")
             self.assertFalse(dry_run)
             self.assertEqual(bundle, EXPECTED_BUNDLE)
             shutil.copytree(self.source, destination)
@@ -576,6 +845,8 @@ class EnvironmentSetupTests(unittest.TestCase):
                 str(self.home),
                 "--source-mode",
                 "managed",
+                "--ref",
+                "v1.2.3",
                 "--skill-profile",
                 "full",
                 "--clients",
@@ -610,6 +881,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                     False,
                 ),
             ),
+            mock.patch.object(installer, "git_commit", return_value="a" * 40),
         ):
             self.assertEqual(installer.perform_install(args), 0)
 
@@ -618,6 +890,13 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(installed["source_root"], str(managed_source))
         self.assertEqual(installed["source_mode"], "managed")
         self.assertEqual(installed["skill_profile"], "full")
+        self.assertEqual(installed["requested_ref"], "v1.2.3")
+        self.assertEqual(installed["ref_kind"], "tag")
+        self.assertEqual(installed["resolved_commit"], "a" * 40)
+        summary = installer.workflow_json_summary(installed, installed=True)
+        self.assertEqual(summary["source"]["requested_ref"], "v1.2.3")
+        self.assertEqual(summary["source"]["ref_kind"], "tag")
+        self.assertEqual(summary["source"]["resolved_commit"], "a" * 40)
         skills_dir = installer.client_skills_dir(self.home, "codex")
         for canonical, relative in EXPECTED_BUNDLE:
             self.assertTrue(
@@ -1064,6 +1343,8 @@ class EnvironmentSetupTests(unittest.TestCase):
                     str(self.home),
                     "--source-mode",
                     "managed",
+                    "--ref",
+                    "v1.2.3",
                     "--clients",
                     "codex",
                     "--non-interactive",
@@ -1077,6 +1358,9 @@ class EnvironmentSetupTests(unittest.TestCase):
                     return_value=([str(self.bin_dir)], []),
                 ),
                 mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
+                mock.patch.object(
+                    installer, "checkout_managed_release", return_value="a" * 40
+                ),
             ):
                 return installer.perform_install(args)
 
@@ -1122,6 +1406,8 @@ class EnvironmentSetupTests(unittest.TestCase):
                 str(self.home),
                 "--source-mode",
                 "managed",
+                "--ref",
+                "v1.2.3",
                 "--clients",
                 "codex",
                 "--skill-profile",
@@ -1133,6 +1419,8 @@ class EnvironmentSetupTests(unittest.TestCase):
             installer,
             "resolve_tool_dirs",
             return_value=([str(self.bin_dir)], []),
+        ), mock.patch.object(
+            installer, "checkout_managed_release", return_value="a" * 40
         ):
             self.assertEqual(installer.perform_install(install_args), 0)
 
@@ -1796,7 +2084,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(installer.perform_install(args), 0)
         state = installer.load_state(self.home)
         healthy, detail, tools = installer.runtime_mcp_health(
-            Path(state["runtime"]["launcher_path"]), self.home
+            Path(state["runtime"]["launcher_path"]), self.home, timeout=45.0
         )
         self.assertTrue(healthy, detail)
         self.assertTrue(
@@ -1979,6 +2267,8 @@ class EnvironmentSetupTests(unittest.TestCase):
                 str(self.home),
                 "--source-mode",
                 "managed",
+                "--ref",
+                "v1.2.3",
                 "--clients",
                 "codex",
                 "--skip-credentials",
@@ -1997,6 +2287,37 @@ class EnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(installer.perform_install(args), 0)
         self.assertFalse(self.home.exists())
         self.assertIn("would clone", output.getvalue())
+
+    def test_new_managed_install_requires_an_explicit_immutable_ref(self) -> None:
+        base = [
+            "install",
+            "--home",
+            str(self.home),
+            "--source-mode",
+            "managed",
+            "--clients",
+            "codex",
+            "--skill-profile",
+            "target-runtime",
+            "--skip-credentials",
+            "--skip-tool-install",
+            "--non-interactive",
+            "--dry-run",
+        ]
+        for extra in ([], ["--ref", "main"]):
+            with self.subTest(extra=extra):
+                stderr = io.StringIO()
+                with (
+                    mock.patch.object(
+                        installer, "local_repository_from_script", return_value=None
+                    ),
+                    redirect_stderr(stderr),
+                ):
+                    result = installer.main([*base, *extra])
+
+                self.assertEqual(result, 2)
+                self.assertIn("release tag or full commit", stderr.getvalue())
+                self.assertFalse(self.home.exists())
 
     def test_reinstall_with_explicit_source_restores_recorded_knowledge_url(self) -> None:
         self.prepare_credentials()
@@ -2065,7 +2386,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertIn("before", content)
         self.assertIn("after", content)
 
-    def test_update_preserves_managed_checkout_ownership(self) -> None:
+    def test_legacy_branch_install_requires_immutable_reinstall_before_update(self) -> None:
         self.prepare_credentials()
         self.assertEqual(
             self.install(
@@ -2080,25 +2401,175 @@ class EnvironmentSetupTests(unittest.TestCase):
         state["managed_checkout"] = True
         state["source_mode"] = "managed"
         state["repo_url"] = installer.DEFAULT_REPO_URL
-        state.pop("runtime_mcp")
+        state.pop("requested_ref", None)
+        state.pop("resolved_commit", None)
+        state.pop("ref_kind", None)
         installer.save_state(self.home, state, False)
 
         args = installer.parse_args(["--home", str(self.home), "--update"])
         with (
-            mock.patch.object(installer, "update_managed_source") as update_source,
+            mock.patch.object(installer, "checkout_managed_release") as checkout_release,
+            self.assertRaisesRegex(installer.SetupError, "mutable legacy branch"),
+        ):
+            installer.perform_update(args)
+        checkout_release.assert_not_called()
+
+        reinstall = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--clients",
+                "codex",
+                "--skip-credentials",
+                "--skip-tool-install",
+                "--non-interactive",
+            ]
+        )
+        with self.assertRaisesRegex(installer.SetupError, "mutable legacy branch"):
+            installer.perform_install(reinstall)
+
+        repair = installer.parse_args(["repair", "--home", str(self.home)])
+        with self.assertRaisesRegex(installer.SetupError, "mutable legacy branch"):
+            installer.perform_repair(repair)
+
+        output = io.StringIO()
+        with (
+            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+        self.assertEqual(result, 1)
+        document = json.loads(output.getvalue())
+        self.assertEqual(document["source"]["ref_kind"], "legacy-branch")
+        revision = next(
+            check for check in document["checks"] if check["name"] == "source_revision"
+        )
+        self.assertFalse(revision["ok"])
+        self.assertIn("mutable legacy branch", revision["detail"])
+
+    def test_update_revalidates_recorded_immutable_release_without_branch_merge(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        state.update(
+            {
+                "managed_checkout": True,
+                "source_mode": "managed",
+                "repo_url": installer.DEFAULT_REPO_URL,
+                "ref": "v1.2.3",
+                "requested_ref": "v1.2.3",
+                "ref_kind": "tag",
+                "source_commit": "a" * 40,
+                "resolved_commit": "a" * 40,
+            }
+        )
+        installer.save_state(self.home, state, False)
+
+        args = installer.parse_args(["update", "--home", str(self.home)])
+        with (
+            mock.patch.object(
+                installer,
+                "checkout_managed_release",
+                return_value="a" * 40,
+            ) as checkout_release,
+            mock.patch.object(installer, "git_commit", return_value="a" * 40),
             mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
         ):
             self.assertEqual(installer.perform_update(args), 0)
-        update_source.assert_called_once_with(
+
+        checkout_release.assert_called_once_with(
             self.source,
             installer.DEFAULT_REPO_URL,
-            installer.DEFAULT_REF,
+            "v1.2.3",
             False,
             bundle=EXPECTED_TARGET_RUNTIME_BUNDLE,
+            expected_commit="a" * 40,
         )
         updated = installer.load_state(self.home)
-        self.assertTrue(updated["managed_checkout"])
-        self.assertIs(updated["runtime_mcp"]["codex"]["created_entry"], True)
+        self.assertEqual(updated["requested_ref"], "v1.2.3")
+        self.assertEqual(updated["ref_kind"], "tag")
+        self.assertEqual(updated["resolved_commit"], "a" * 40)
+
+    def test_explicit_release_upgrade_records_revision_and_public_check(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        state.update(
+            {
+                "source_mode": "managed",
+                "managed_checkout": True,
+                "ref": "v1.2.3",
+                "requested_ref": "v1.2.3",
+                "ref_kind": "tag",
+                "source_commit": "a" * 40,
+                "resolved_commit": "a" * 40,
+            }
+        )
+        installer.save_state(self.home, state, False)
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "managed",
+                "--ref",
+                "v1.2.4",
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+                "--skip-credentials",
+                "--skip-tool-install",
+                "--non-interactive",
+            ]
+        )
+        with (
+            mock.patch.object(installer, "resolve_source", return_value=(self.source, "managed")),
+            mock.patch.object(installer, "git_commit", return_value="b" * 40),
+            mock.patch.object(
+                installer,
+                "resolve_tool_dirs",
+                return_value=([str(self.bin_dir)], []),
+            ),
+        ):
+            self.assertEqual(installer.perform_install(args), 0)
+
+        upgraded = installer.load_state(self.home)
+        self.assertEqual(upgraded["requested_ref"], "v1.2.4")
+        self.assertEqual(upgraded["ref_kind"], "tag")
+        self.assertEqual(upgraded["resolved_commit"], "b" * 40)
+        self.assertEqual(upgraded["rollback_commit"], "a" * 40)
+
+        output = io.StringIO()
+        with (
+            mock.patch.object(installer, "git_commit", return_value="b" * 40),
+            mock.patch.object(installer, "git_dirty", return_value=False),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+        self.assertEqual(result, 0)
+        document = json.loads(output.getvalue())
+        self.assertEqual(document["source"]["requested_ref"], "v1.2.4")
+        self.assertEqual(document["source"]["ref_kind"], "tag")
+        self.assertEqual(document["source"]["resolved_commit"], "b" * 40)
 
     def test_rollback_toggles_between_the_last_two_managed_revisions(self) -> None:
         self.prepare_credentials()
@@ -2112,10 +2583,18 @@ class EnvironmentSetupTests(unittest.TestCase):
             0,
         )
         state = installer.load_state(self.home)
-        state["managed_checkout"] = True
-        state["source_mode"] = "managed"
-        state["source_commit"] = "a" * 40
-        state["rollback_commit"] = "b" * 40
+        state.update(
+            {
+                "managed_checkout": True,
+                "source_mode": "managed",
+                "ref": "v1.2.3",
+                "requested_ref": "v1.2.3",
+                "ref_kind": "tag",
+                "source_commit": "a" * 40,
+                "resolved_commit": "a" * 40,
+                "rollback_commit": "b" * 40,
+            }
+        )
         installer.save_state(self.home, state, False)
 
         args = installer.parse_args(["rollback", "--home", str(self.home)])
@@ -2133,6 +2612,9 @@ class EnvironmentSetupTests(unittest.TestCase):
         )
         rolled_back = installer.load_state(self.home)
         self.assertEqual(rolled_back["source_commit"], "b" * 40)
+        self.assertEqual(rolled_back["resolved_commit"], "b" * 40)
+        self.assertEqual(rolled_back["requested_ref"], "b" * 40)
+        self.assertEqual(rolled_back["ref_kind"], "commit")
         self.assertEqual(rolled_back["rollback_commit"], "a" * 40)
 
         args = installer.parse_args(["rollback", "--home", str(self.home)])
@@ -2150,29 +2632,10 @@ class EnvironmentSetupTests(unittest.TestCase):
         )
         restored = installer.load_state(self.home)
         self.assertEqual(restored["source_commit"], "a" * 40)
+        self.assertEqual(restored["resolved_commit"], "a" * 40)
+        self.assertEqual(restored["requested_ref"], "a" * 40)
+        self.assertEqual(restored["ref_kind"], "commit")
         self.assertEqual(restored["rollback_commit"], "b" * 40)
-
-    def test_update_managed_source_uses_the_selected_bundle_dirty_scope(self) -> None:
-        with (
-            mock.patch.object(
-                installer,
-                "git_output",
-                return_value=installer.DEFAULT_REPO_URL,
-            ),
-            mock.patch.object(installer, "git_dirty", return_value=False) as dirty,
-        ):
-            installer.update_managed_source(
-                self.source,
-                installer.DEFAULT_REPO_URL,
-                installer.DEFAULT_REF,
-                True,
-                bundle=EXPECTED_TARGET_RUNTIME_BUNDLE,
-            )
-
-        dirty.assert_called_once_with(
-            self.source,
-            paths=installer.bundle_git_paths(EXPECTED_TARGET_RUNTIME_BUNDLE),
-        )
 
     def test_linked_source_uses_refresh_instead_of_update(self) -> None:
         self.prepare_credentials()
@@ -2229,12 +2692,8 @@ class EnvironmentSetupTests(unittest.TestCase):
         update_args = installer.parse_args(
             ["update", "--home", str(self.home)]
         )
-        with (
-            mock.patch.object(installer, "update_managed_source") as update_source,
-            self.assertRaisesRegex(installer.SetupError, "source is linked"),
-        ):
+        with self.assertRaisesRegex(installer.SetupError, "source is linked"):
             installer.perform_update(update_args)
-        update_source.assert_not_called()
 
         refresh_args = installer.parse_args(
             ["refresh", "--home", str(self.home)]
@@ -2299,6 +2758,54 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertFalse(document["readiness"]["knowledge"])
         self.assertFalse(document["readiness"]["studio"])
         self.assertEqual(document["source"]["mode"], "linked")
+        self.assertEqual(document["source"]["requested_ref"], "")
+        self.assertEqual(document["source"]["ref_kind"], "linked")
+        self.assertEqual(
+            document["source"]["resolved_commit"],
+            document["source"]["expected_commit"],
+        )
+
+    def test_check_json_rejects_inconsistent_immutable_revision_state(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        state.update(
+            {
+                "source_mode": "managed",
+                "managed_checkout": True,
+                "ref": "v1.2.3",
+                "requested_ref": "v1.2.3",
+                "ref_kind": "tag",
+                "source_commit": "a" * 40,
+                "resolved_commit": "b" * 40,
+            }
+        )
+        installer.save_state(self.home, state, False)
+        output = io.StringIO()
+
+        with (
+            mock.patch.object(installer, "git_commit", return_value="a" * 40),
+            mock.patch.object(installer, "git_dirty", return_value=False),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+
+        self.assertEqual(result, 1)
+        document = json.loads(output.getvalue())
+        self.assertEqual(document["source"]["ref_kind"], "tag")
+        revision = next(
+            check for check in document["checks"] if check["name"] == "source_revision"
+        )
+        self.assertFalse(revision["ok"])
+        self.assertIn("resolved commit does not match source commit", revision["detail"])
 
     def test_noninteractive_dry_run_does_not_plan_tty_credentials(self) -> None:
         args = self.args("--install", "--dry-run")
