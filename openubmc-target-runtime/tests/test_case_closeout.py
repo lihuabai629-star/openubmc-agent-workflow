@@ -90,6 +90,59 @@ class RuntimeVerificationBackend(PlanObservingBackend):
         }
 
 
+class StrictRuntimeVerificationBackend(RuntimeVerificationBackend):
+    def __init__(
+        self,
+        repository: InMemoryRuntimeRepository,
+        *,
+        business_status: str = "passed",
+    ) -> None:
+        super().__init__(repository)
+        self.business_status = business_status
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        metadata = {"mode": "644", "uid": 0, "gid": 0}
+        return {
+            "ok": True,
+            "summary": "runtime file replaced and verified",
+            "target_epoch": 2,
+            "journal": {
+                "stage": "verified",
+                "epoch_before": 1,
+                "epoch_after": 2,
+                "expected_checksum": "b" * 64,
+                "observed_checksum": "b" * 64,
+                "root_mount_restored": True,
+            },
+            "mutation": {
+                "local_sha256": "b" * 64,
+                "remote_after_sha256": "b" * 64,
+                "remote_after_metadata": metadata,
+                "root_mount_restored": True,
+            },
+            "verification": {
+                "remote_sha256": "b" * 64,
+                "remote_metadata": metadata,
+                "target_epoch": 2,
+            },
+        }
+
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        title = "Redfish health is green"
+        return {
+            "ok": self.business_status != "failed",
+            "summary": "business acceptance evaluated",
+            "profile": "freshness",
+            "target_epoch": 2,
+            "business_acceptance": self.business_status,
+            "acceptance_results": [
+                {"title": title, "status": self.business_status}
+            ],
+        }
+
+
 class RecordingTerminalBackend:
     def __init__(self, *, mutation_stage: str = "verified") -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
@@ -548,7 +601,7 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             [name for name, _ in domain.calls],
-            ["live_patch_run", "debug_run"],
+            ["live_patch_run", "debug_collect"],
         )
         self.assertTrue(
             all(
@@ -642,6 +695,7 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
                     "idempotency_key": "development-result",
                     "phase_type": "developer.change",
                     "producer_identity": "openubmc-developer",
+                    "status": "completed",
                     "status": "completed",
                     "source_revision": "abc123",
                     "summary": "implemented the bounded source fix",
@@ -800,6 +854,7 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
                     "phase_type": "build.artifact",
                     "producer_identity": "openubmc-build",
                     "status": "completed",
+                    "status": "completed",
                     "source_revision": "abc123",
                     "summary": "built the product image",
                     "artifact_path": "/tmp/product.hpm",
@@ -929,6 +984,162 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             [receipt["stage"] for receipt in closeout["receipts"]],
             ["live_patch", "verification"],
         )
+
+    def test_live_patch_acceptance_items_are_frozen_and_individually_evaluated(self) -> None:
+        repository = InMemoryRuntimeRepository()
+        service = RuntimeMcpService(
+            StrictRuntimeVerificationBackend(repository),
+            context_repository=repository,
+        )
+        try:
+            final = service.call_tool(
+                "workflow.advance",
+                {
+                    "ip": "192.0.2.43",
+                    "intent": "live-patch",
+                    "delivery_strategy": "live-patch",
+                    "local_path": "/tmp/unit.lua",
+                    "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                    "verification_checks": ["Redfish health is green"],
+                },
+                task_id="strict-live-patch-acceptance",
+                operation_id="strict-live-patch-acceptance",
+            )
+        finally:
+            service.close()
+
+        plan = final["closeout"]["acceptance_plan"]
+        items = {
+            item["requirement_id"]: item for item in plan["requirements"]
+        }
+        business_id = next(
+            requirement_id
+            for requirement_id in items
+            if requirement_id.startswith("acceptance.business.")
+        )
+        self.assertEqual(
+            items["acceptance.live-patch.integrity"]["verification_method"],
+            "mutation-integrity",
+        )
+        self.assertTrue(items[business_id]["required"])
+        self.assertEqual(items[business_id]["target"], "candidate")
+        checks = {
+            item["requirement_id"]: item
+            for item in final["closeout"]["checks"]
+        }
+        self.assertEqual(checks["acceptance.live-patch.integrity"]["status"], "passed")
+        self.assertEqual(checks["acceptance.live-patch.metadata"]["status"], "passed")
+        self.assertEqual(checks[business_id]["status"], "passed")
+        self.assertEqual(final["closeout"]["closure_status"], "verified")
+
+    def test_required_business_acceptance_failure_prevents_success(self) -> None:
+        repository = InMemoryRuntimeRepository()
+        service = RuntimeMcpService(
+            StrictRuntimeVerificationBackend(
+                repository,
+                business_status="failed",
+            ),
+            context_repository=repository,
+        )
+        try:
+            final = service.call_tool(
+                "workflow.advance",
+                {
+                    "ip": "192.0.2.44",
+                    "intent": "live-patch",
+                    "delivery_strategy": "live-patch",
+                    "local_path": "/tmp/unit.lua",
+                    "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                    "verification_checks": ["Redfish health is green"],
+                },
+                task_id="failed-live-patch-acceptance",
+                operation_id="failed-live-patch-acceptance",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(final["closeout"]["closure_status"], "failed")
+        business_check = next(
+            item
+            for item in final["closeout"]["checks"]
+            if item["requirement_id"].startswith("acceptance.business.")
+        )
+        self.assertEqual(business_check["status"], "failed")
+
+    def test_build_upgrade_closeout_contains_an_immutable_delivery_record(self) -> None:
+        backend = RecordingTerminalBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            waiting = service.call_tool(
+                "workflow.advance",
+                {
+                    "ip": "192.0.2.48",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                    "final_purpose": "repair, build, deploy, and verify",
+                },
+                task_id="delivery-record-task",
+                operation_id="delivery-record-start",
+            )
+            case_id = waiting.envelope["case_id"]
+            developer = service.call_tool(
+                "phase_record",
+                {
+                    "case_id": case_id,
+                    "expected_revision": waiting.envelope["revision"],
+                    "idempotency_key": "delivery-record-developer",
+                    "phase_type": "developer.change",
+                    "producer_identity": "openubmc-developer",
+                    "status": "completed",
+                    "source_revision": "source-abc123",
+                    "summary": "source change completed",
+                    "authored_files": ["src/unit.lua"],
+                    "verification_plan": ["focused test"],
+                },
+                task_id="delivery-record-task",
+                operation_id="delivery-record-developer",
+            )
+            build = service.call_tool(
+                "phase_record",
+                {
+                    "case_id": case_id,
+                    "expected_revision": developer.envelope["revision"],
+                    "idempotency_key": "delivery-record-build",
+                    "phase_type": "build.artifact",
+                    "producer_identity": "openubmc-build",
+                    "status": "completed",
+                    "source_revision": "source-abc123",
+                    "summary": "build completed",
+                    "artifact_path": "/tmp/openubmc.hpm",
+                    "artifact_sha256": "c" * 64,
+                    "product_version": "2.0.0",
+                },
+                task_id="delivery-record-task",
+                operation_id="delivery-record-build",
+            )
+            final = service.call_tool(
+                "workflow.advance",
+                {
+                    "case_id": case_id,
+                    "expected_revision": build.envelope["revision"],
+                },
+                task_id="delivery-record-task",
+                operation_id="delivery-record-finish",
+            )
+        finally:
+            service.close()
+
+        records = final["closeout"]["delivery_records"]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertTrue(record["record_id"].startswith("delivery-"))
+        self.assertEqual(record["artifact"]["source_revision"], "source-abc123")
+        self.assertEqual(record["artifact"]["sha256"], "c" * 64)
+        self.assertEqual(record["deployment"]["requested_version"], "2.0.0")
+        self.assertEqual(record["deployment"]["active_version"], "2.0.0")
+        self.assertEqual(record["deployment"]["target_epoch"], 8)
+        self.assertEqual(record["outcome"]["deployment_integrity"], "passed")
+        self.assertEqual(record["outcome"]["active_identity"], "passed")
 
     def test_public_json_rpc_exposes_terminal_closeout_case_and_evidence(self) -> None:
         repository = InMemoryRuntimeRepository()

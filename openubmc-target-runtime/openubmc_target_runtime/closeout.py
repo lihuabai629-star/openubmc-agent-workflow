@@ -12,8 +12,16 @@ import hashlib
 import json
 
 from .contracts import RUNTIME_API_VERSION
+from .delivery import (
+    ArtifactIdentity,
+    DeliveryOutcome,
+    DeliveryRecord,
+    DeploymentIdentity,
+)
 from .mutation import TaskAuthorizationPolicy, mutation_journal_operation_status
+from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 from .redaction import is_secret_key, redact_text
+from .workflow import DEFAULT_PHASE_REGISTRY
 
 
 ACCEPTANCE_PLAN_SCHEMA = f"{RUNTIME_API_VERSION}/acceptance-plan"
@@ -25,6 +33,22 @@ CLOSEOUT_BUNDLE_SCHEMA = f"{RUNTIME_API_VERSION}/case-closeout-bundle"
 MAX_CLOSEOUT_TEXT_BYTES = 4096
 MAX_CLOSEOUT_COLLECTION_ITEMS = 64
 MAX_CLOSEOUT_MARKDOWN_BYTES = 16_384
+_WORKFLOW_CONTROL_OPERATIONS = frozenset({"workflow.advance", "workflow.next"})
+
+
+def case_terminal_status(projection: Mapping[str, object]) -> str:
+    """Return the canonical terminal status from the latest business operation."""
+
+    for operation in reversed(projection.get("operations", [])):
+        if not isinstance(operation, Mapping):
+            continue
+        if str(operation.get("operation", "")) in _WORKFLOW_CONTROL_OPERATIONS:
+            continue
+        status = str(operation.get("status", "")).strip().lower()
+        if status in {"completed", "failed", "cancelled", "blocked"}:
+            return status
+    return "completed"
+
 
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
@@ -95,16 +119,32 @@ class AcceptanceRequirement:
     title: str
     stage: str
     criticality: str = "required"
+    source: str = "runtime-derived"
+    target: str = "case"
+    verification_method: str = "stage-receipt"
+    expected_result: str = "completed"
 
     def __post_init__(self) -> None:
-        if not self.requirement_id or not self.requirement_id.startswith("stage."):
-            raise ValueError("stage requirement_id must start with stage.")
+        if not self.requirement_id or not self.requirement_id.startswith(
+            ("stage.", "acceptance.")
+        ):
+            raise ValueError(
+                "acceptance requirement_id must start with stage. or acceptance."
+            )
         if not self.title.strip():
             raise ValueError("acceptance requirement title is required")
         if not self.stage.strip():
             raise ValueError("acceptance requirement stage is required")
         if self.criticality not in {"required", "optional"}:
             raise ValueError("acceptance criticality must be required or optional")
+        for name, value in (
+            ("source", self.source),
+            ("target", self.target),
+            ("verification_method", self.verification_method),
+            ("expected_result", self.expected_result),
+        ):
+            if not str(value).strip():
+                raise ValueError(f"acceptance {name} is required")
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -113,6 +153,11 @@ class AcceptanceRequirement:
             "title": self.title,
             "stage": self.stage,
             "criticality": self.criticality,
+            "required": self.criticality == "required",
+            "source": self.source,
+            "target": self.target,
+            "verification_method": self.verification_method,
+            "expected_result": self.expected_result,
         }
 
     @classmethod
@@ -124,6 +169,12 @@ class AcceptanceRequirement:
             title=str(value.get("title", "")),
             stage=str(value.get("stage", "")),
             criticality=str(value.get("criticality", "required")),
+            source=str(value.get("source", "runtime-derived")),
+            target=str(value.get("target", "case")),
+            verification_method=str(
+                value.get("verification_method", "stage-receipt")
+            ),
+            expected_result=str(value.get("expected_result", "completed")),
         )
 
 
@@ -213,6 +264,58 @@ class AcceptancePlan:
             )
             for stage in _required_stages(intent, delivery, entry_domain)
         )
+        additional: list[AcceptanceRequirement] = []
+        if delivery == "live-patch" or intent in {"live-patch", "rollback"}:
+            additional.extend(
+                (
+                    AcceptanceRequirement(
+                        requirement_id="acceptance.live-patch.integrity",
+                        title="部署完整性验证通过",
+                        stage="live_patch",
+                        target="candidate",
+                        verification_method="mutation-integrity",
+                        expected_result="checksum-match-and-mount-restored",
+                    ),
+                    AcceptanceRequirement(
+                        requirement_id="acceptance.live-patch.metadata",
+                        title="部署文件 metadata 与预期一致",
+                        stage="live_patch",
+                        target="candidate",
+                        verification_method="metadata-match",
+                        expected_result="mode-uid-gid-match",
+                    ),
+                )
+            )
+        raw_checks = arguments.get("verification_checks", [])
+        workflow = arguments.get("workflow")
+        if isinstance(workflow, Mapping):
+            verification = workflow.get("verification")
+            if isinstance(verification, Mapping):
+                raw_checks = verification.get(
+                    "checks", verification.get("verification_checks", raw_checks)
+                )
+        if isinstance(raw_checks, Sequence) and not isinstance(
+            raw_checks, (str, bytes, bytearray)
+        ):
+            for raw_check in raw_checks:
+                title = _safe_text(raw_check, limit=512)
+                if not title:
+                    continue
+                additional.append(
+                    AcceptanceRequirement(
+                        requirement_id=(
+                            "acceptance.business."
+                            + _fingerprint({"title": title})[:16]
+                        ),
+                        title=title,
+                        stage="verification",
+                        source="user-declared",
+                        target="candidate",
+                        verification_method="business-check",
+                        expected_result="passed",
+                    )
+                )
+        requirements = requirements + tuple(additional)
         identity = {
             "intent": intent,
             "delivery_strategy": delivery,
@@ -269,8 +372,23 @@ class AcceptancePlan:
             "requirements": [item.to_public_dict() for item in requirements],
             "source": plan.source,
         }
-        if plan.plan_id != "acceptance-" + _fingerprint(identity):
-            raise ValueError("acceptance plan fingerprint mismatch")
+        expected = "acceptance-" + _fingerprint(identity)
+        if plan.plan_id != expected:
+            legacy_identity = {
+                **identity,
+                "requirements": [
+                    {
+                        "schema": ACCEPTANCE_REQUIREMENT_SCHEMA,
+                        "requirement_id": item.requirement_id,
+                        "title": item.title,
+                        "stage": item.stage,
+                        "criticality": item.criticality,
+                    }
+                    for item in requirements
+                ],
+            }
+            if plan.plan_id != "acceptance-" + _fingerprint(legacy_identity):
+                raise ValueError("acceptance plan fingerprint mismatch")
         return plan
 
 
@@ -388,6 +506,7 @@ class CaseCloseout:
     targets: tuple[Mapping[str, object], ...]
     checks: tuple[CloseoutCheck, ...]
     receipts: tuple[StageReceipt, ...]
+    delivery_records: tuple[DeliveryRecord, ...]
     reasons: tuple[str, ...]
 
     @property
@@ -409,6 +528,9 @@ class CaseCloseout:
             "targets": [dict(item) for item in self.targets],
             "checks": [item.to_public_dict() for item in self.checks],
             "receipts": [item.to_public_dict() for item in self.receipts],
+            "delivery_records": [
+                item.to_public_dict() for item in self.delivery_records
+            ],
             "reasons": list(self.reasons),
         }
         if include_fingerprint:
@@ -417,15 +539,12 @@ class CaseCloseout:
 
 
 _OPERATION_STAGES = {
-    "log_bundle_collect": "bundle",
-    "debug_run": "diagnosis",
-    "live_patch_run": "live_patch",
-    "upgrade_run": "upgrade",
-    "debug_collect": "verification",
+    contract.name: contract.closeout_stage
+    for contract in DEFAULT_OPERATION_CONTRACTS.domain_contracts()
 }
 _PHASE_STAGES = {
-    "developer.change": "development",
-    "build.artifact": "build",
+    name: str(descriptor["closeout_stage"])
+    for name, descriptor in DEFAULT_PHASE_REGISTRY.to_public_dict().items()
 }
 _STAGE_ORDER = {
     "bundle": 10,
@@ -561,6 +680,8 @@ def _selected_facts(
                     "root_mount_restored",
                     "restart_state",
                     "verification_state",
+                    "operation_id",
+                    "request_fingerprint",
                 )
                 if name in journal
             }
@@ -575,6 +696,53 @@ def _selected_facts(
                 )
                 if name in verification
             }
+        if stage == "live_patch":
+            mutation = _mapping(value.get("mutation"))
+            expected_sha = str(
+                mutation.get(
+                    "local_sha256",
+                    _mapping(value.get("journal")).get("expected_checksum", ""),
+                )
+            ).lower()
+            observed_sha = str(
+                verification.get(
+                    "remote_sha256",
+                    mutation.get(
+                        "remote_after_sha256",
+                        _mapping(value.get("journal")).get("observed_checksum", ""),
+                    ),
+                )
+            ).lower()
+            root_mount_restored = mutation.get(
+                "root_mount_restored",
+                _mapping(value.get("journal")).get("root_mount_restored"),
+            )
+            facts["deployment_integrity"] = (
+                "passed"
+                if expected_sha
+                and expected_sha == observed_sha
+                and root_mount_restored is not False
+                else "failed" if expected_sha or observed_sha else "not_run"
+            )
+            expected_metadata = _mapping(mutation.get("remote_after_metadata"))
+            observed_metadata = _mapping(verification.get("remote_metadata"))
+            facts["metadata_status"] = (
+                "passed"
+                if expected_metadata
+                and observed_metadata
+                and all(
+                    observed_metadata.get(name) == expected_metadata.get(name)
+                    for name in ("mode", "uid", "gid")
+                )
+                else (
+                    "not_applicable"
+                    if not expected_metadata
+                    and not observed_metadata
+                    and str(_mapping(value.get("journal")).get("stage", ""))
+                    in {"verified", "rollback_verified"}
+                    else "not_run"
+                )
+            )
     elif stage == "verification":
         for name in ("profile", "normalized_code", "code", "ok"):
             if name in value:
@@ -584,6 +752,11 @@ def _selected_facts(
             business = business.get("status")
         if isinstance(business, str) and business.strip():
             facts["business_acceptance"] = business.strip().lower()
+        acceptance_results = value.get("acceptance_results")
+        if isinstance(acceptance_results, Sequence) and not isinstance(
+            acceptance_results, (str, bytes, bytearray)
+        ):
+            facts["acceptance_results"] = _bounded_public(acceptance_results)
         epoch = _target_epoch(value)
         if epoch is not None:
             facts["target_epoch"] = epoch
@@ -727,6 +900,118 @@ def _business_acceptance(receipts: Sequence[StageReceipt]) -> str:
     return "unverified"
 
 
+def _delivery_records(
+    projection: Mapping[str, object],
+    receipts: Sequence[StageReceipt],
+    *,
+    business_acceptance: str,
+) -> tuple[DeliveryRecord, ...]:
+    builds = [receipt for receipt in receipts if receipt.stage == "build"]
+    upgrades = [receipt for receipt in receipts if receipt.stage == "upgrade"]
+    verifications = [
+        receipt for receipt in receipts if receipt.stage == "verification"
+    ]
+    if not builds or not upgrades:
+        return ()
+    build = builds[-1]
+    records: list[DeliveryRecord] = []
+    for upgrade in upgrades:
+        path = str(build.facts.get("artifact_path", ""))
+        digest = str(build.facts.get("artifact_sha256", "")).lower()
+        version = str(build.facts.get("product_version", ""))
+        source_revision = str(build.facts.get("source_revision", ""))
+        try:
+            artifact = ArtifactIdentity(
+                source_revision=source_revision,
+                path=path,
+                sha256=digest,
+                product_version=version,
+            )
+        except ValueError:
+            continue
+        upgrade_digest = str(upgrade.facts.get("artifact_sha256", "")).lower()
+        integrity = (
+            "passed" if digest and digest == upgrade_digest else "failed"
+        )
+        verification = _mapping(upgrade.facts.get("verification"))
+        active_version = str(
+            verification.get(
+                "installed_version", upgrade.facts.get("active_version", "")
+            )
+        )
+        requested_version = str(
+            upgrade.facts.get("product_version", version)
+        )
+        active_identity = (
+            "passed"
+            if requested_version and active_version == requested_version
+            else "not_run" if not active_version else "failed"
+        )
+        overall = "passed"
+        if "failed" in {integrity, active_identity, business_acceptance}:
+            overall = "failed"
+        elif any(
+            item not in {"passed", "not_applicable"}
+            for item in (integrity, active_identity, business_acceptance)
+        ):
+            overall = "not_run"
+        journal = _mapping(upgrade.facts.get("journal"))
+        action = str(journal.get("action", ""))
+        rollback_identity = (
+            "rollback-" + _fingerprint(
+                {
+                    "operation_id": upgrade.operation_id,
+                    "target_id": upgrade.facts.get("target_id", "candidate"),
+                    "artifact_sha256": digest,
+                }
+            )[:24]
+            if action == "rollback"
+            else ""
+        )
+        deployment = DeploymentIdentity(
+            operation_id=upgrade.operation_id,
+            target_id=str(upgrade.facts.get("target_id", "candidate")),
+            requested_version=requested_version,
+            active_version=active_version,
+            target_epoch=upgrade.target_epoch,
+            status=upgrade.status,
+            mutation_journal_id=str(
+                journal.get("operation_id", upgrade.operation_id)
+            ),
+            rollback_identity=rollback_identity,
+        )
+        workflow_inputs = _mapping(projection.get("workflow_inputs"))
+        evidence_ids = tuple(
+            dict.fromkeys(
+                (*build.evidence_ids, *upgrade.evidence_ids)
+                + tuple(
+                    evidence_id
+                    for receipt in verifications
+                    for evidence_id in receipt.evidence_ids
+                )
+            )
+        )
+        records.append(
+            DeliveryRecord.create(
+                case_id=str(projection.get("case_id", "")),
+                strategy="build-upgrade",
+                artifact=artifact,
+                deployment=deployment,
+                outcome=DeliveryOutcome(
+                    deployment_integrity=integrity,
+                    active_identity=active_identity,
+                    business_validation=business_acceptance,
+                    overall=overall,
+                ),
+                evidence_ids=evidence_ids,
+                rollback_of=str(
+                    workflow_inputs.get("rollback_of_delivery_record_id", "")
+                ),
+            )
+        )
+    return tuple(records)
+
+
 _RECEIPT_STATUS_PRIORITY = {
     "failed": 50,
     "blocked": 40,
@@ -763,6 +1048,68 @@ def _representative_receipts(
 def _receipt_target_key(receipt: StageReceipt) -> str:
     target_id = receipt.facts.get("target_id")
     return str(target_id).strip() if isinstance(target_id, str) else ""
+
+
+def _special_acceptance_result(
+    requirement: AcceptanceRequirement,
+    candidates: Sequence[StageReceipt],
+) -> tuple[str, str, str] | None:
+    method = requirement.verification_method
+    if method == "stage-receipt":
+        return None
+    if not candidates:
+        return "not_run", "未形成验证回执", "验收项未执行。"
+    if method in {"mutation-integrity", "metadata-match"}:
+        fact_name = (
+            "deployment_integrity"
+            if method == "mutation-integrity"
+            else "metadata_status"
+        )
+        statuses = [
+            str(receipt.facts.get(fact_name, "not_run"))
+            for receipt in candidates
+        ]
+        if "failed" in statuses:
+            return "failed", f"{fact_name}=failed", "部署验收失败。"
+        if statuses and all(status == "passed" for status in statuses):
+            return "passed", f"{fact_name}=passed", ""
+        if statuses and all(status == "not_applicable" for status in statuses):
+            return "not_applicable", f"{fact_name}=not_applicable", ""
+        return "not_run", f"{fact_name}=not_run", "部署验收未形成结论。"
+    if method == "business-check":
+        explicit: list[str] = []
+        overall: list[str] = []
+        for receipt in candidates:
+            business = receipt.facts.get("business_acceptance")
+            if isinstance(business, str) and business:
+                overall.append(business)
+            raw_results = receipt.facts.get("acceptance_results", [])
+            if not isinstance(raw_results, Sequence) or isinstance(
+                raw_results, (str, bytes, bytearray)
+            ):
+                continue
+            for item in raw_results:
+                if not isinstance(item, Mapping):
+                    continue
+                if str(item.get("requirement_id", "")) == requirement.requirement_id or str(
+                    item.get("title", "")
+                ).strip() == requirement.title:
+                    explicit.append(str(item.get("status", "not_run")).lower())
+        statuses = explicit or overall
+        normalized = [
+            status
+            if status in {"passed", "failed", "not_run", "not_applicable"}
+            else "not_run"
+            for status in statuses
+        ]
+        if "failed" in normalized:
+            return "failed", requirement.title, "业务验收失败。"
+        if normalized and all(status == "passed" for status in normalized):
+            return "passed", requirement.title, ""
+        if normalized and all(status == "not_applicable" for status in normalized):
+            return "not_applicable", requirement.title, ""
+        return "not_run", requirement.title, "业务验收未执行或没有可信结果。"
+    return "not_run", "未知验证方法", f"不支持验证方法 {method}。"
 
 
 def _source_delivery(receipts: Sequence[StageReceipt]) -> str:
@@ -956,9 +1303,11 @@ def aggregate_case_closeout(
             if isinstance(item, str)
         ]
         if evidence_ids:
-            reference = evidence_refs.get(evidence_ids[-1])
+            reference = evidence_refs.get(
+                evidence_ids[-1], {"evidence_id": evidence_ids[-1]}
+            )
             try:
-                loaded = evidence_reader(reference) if reference is not None else None
+                loaded = evidence_reader(reference)
             except Exception:
                 loaded = None
             if isinstance(loaded, Mapping):
@@ -1062,6 +1411,32 @@ def aggregate_case_closeout(
     reasons: list[str] = []
     for requirement in plan.requirements:
         candidates = stage_receipts.get(requirement.stage, [])
+        special = _special_acceptance_result(requirement, candidates)
+        if special is not None:
+            status, actual, reason = special
+            source_receipt_id = ",".join(
+                receipt.receipt_id for receipt in candidates
+            )
+            evidence_ids = tuple(
+                dict.fromkeys(
+                    evidence_id
+                    for receipt in candidates
+                    for evidence_id in receipt.evidence_ids
+                )
+            )
+            if reason and requirement.criticality == "required":
+                reasons.append(reason)
+            checks.append(
+                CloseoutCheck(
+                    requirement_id=requirement.requirement_id,
+                    status=status,
+                    actual=_safe_text(actual, limit=2048),
+                    reason=reason,
+                    source_receipt_id=source_receipt_id,
+                    evidence_ids=evidence_ids,
+                )
+            )
+            continue
         if not candidates:
             status = "not_run"
             actual = "未形成阶段回执"
@@ -1128,6 +1503,11 @@ def aggregate_case_closeout(
         )
 
     business = _business_acceptance(receipts)
+    delivery_records = _delivery_records(
+        projection,
+        receipts,
+        business_acceptance=business,
+    )
     requires_business = (
         plan.intent in {"live-patch", "rollback", "upgrade-and-verify"}
         or plan.delivery_strategy in {"live-patch", "build-upgrade"}
@@ -1211,18 +1591,24 @@ def aggregate_case_closeout(
         or identity == "mismatched"
         or freshness == "stale"
         or unauthorized_exception_used
+        or any(record.outcome.overall == "failed" for record in delivery_records)
     )
     if definitive_failure:
         closure_status = "failed"
     elif terminal_status == "cancelled" or "blocked" in required_statuses:
         closure_status = "blocked"
-    elif any(status != "passed" for status in required_statuses):
+    elif any(
+        status not in {"passed", "not_applicable"}
+        for status in required_statuses
+    ):
         closure_status = "partial"
     elif requires_business and business != "passed":
         closure_status = "partial"
     elif freshness not in {"fresh", "not_applicable"}:
         closure_status = "partial"
     elif identity not in {"matched", "not_applicable"}:
+        closure_status = "partial"
+    elif any(record.outcome.overall != "passed" for record in delivery_records):
         closure_status = "partial"
     elif freshness == "fresh":
         closure_status = "verified"
@@ -1269,6 +1655,7 @@ def aggregate_case_closeout(
         targets=targets,
         checks=tuple(checks),
         receipts=tuple(receipts),
+        delivery_records=delivery_records,
         reasons=tuple(dict.fromkeys(reasons)),
     )
 

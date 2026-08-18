@@ -24,6 +24,13 @@ from .contracts import (
     _fingerprint,
 )
 from .catalog import OperationCatalog, OperationDescriptor
+from .capability import (
+    CallableDomainAdapter,
+    CapabilityDescriptor,
+    CapabilityRegistry,
+    RuntimeSDK,
+    RuntimeSDKContext,
+)
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     BlobRepository,
@@ -31,6 +38,12 @@ from .context_runtime import (
     ContextRuntime,
     ContextToolResult,
     RuntimeRepository,
+)
+from .replay import CaseReplayService
+from .session_outcome import (
+    InMemorySessionOutcomeRepository,
+    SessionOutcomeRepository,
+    SessionOutcomeService,
 )
 from .credential_file import load_selected_credentials_file
 from .lifecycle import OperationContext, TaskRunRegistry
@@ -40,6 +53,7 @@ from .mutation import (
     TargetLeaseCoordinator,
     mutation_journal_operation_status,
 )
+from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 from .task_context import TaskContextStore
 from .orchestration import (
     DeliveryStrategy,
@@ -54,6 +68,7 @@ from .orchestration import (
     TaskWorkflowOrchestrator,
     WorkflowStep,
 )
+from .workflow import DEFAULT_PHASE_REGISTRY
 
 
 TaskT = TypeVar("TaskT")
@@ -84,70 +99,14 @@ class DebugMcpBackend(Protocol[TaskT]):
     ) -> dict[str, object]: ...
 
 
-@dataclass(frozen=True)
-class _OperationBinding:
-    name: str
-    domain: str = ""
-    lifecycle: str = "invoke"
-    handler_name: str | None = None
-    mutation: bool = False
-    workflow_entry: bool = False
-    credential_values: bool = False
-
-
-_OPERATION_BINDINGS = (
-    _OperationBinding(
-        "debug_run",
-        domain="debug",
-        handler_name="debug_run",
-        workflow_entry=True,
-        credential_values=True,
-    ),
-    _OperationBinding(
-        "debug_collect",
-        domain="debug",
-        handler_name="debug_collect",
-        credential_values=True,
-    ),
-    _OperationBinding(
-        "log_bundle_collect",
-        domain="log_analyzer",
-        handler_name="log_bundle_collect",
-        workflow_entry=True,
-        credential_values=True,
-    ),
-    _OperationBinding(
-        "live_patch_run",
-        domain="live_patch",
-        handler_name="live_patch_run",
-        mutation=True,
-        workflow_entry=True,
-        credential_values=True,
-    ),
-    _OperationBinding(
-        "upgrade_run",
-        domain="upgrade",
-        handler_name="upgrade_run",
-        mutation=True,
-        workflow_entry=True,
-        credential_values=True,
-    ),
-    _OperationBinding("case_read", lifecycle="read"),
-    _OperationBinding("evidence_read", lifecycle="read"),
-    _OperationBinding("case_close", lifecycle="close"),
-    _OperationBinding("case_forget", lifecycle="close"),
-    _OperationBinding("phase_record"),
-    _OperationBinding("workflow.advance"),
-    _OperationBinding("workflow.next"),
-    _OperationBinding("runtime_status", lifecycle="status"),
-)
-_OPERATION_BINDING_BY_NAME = {
-    binding.name: binding for binding in _OPERATION_BINDINGS
+_OPERATION_CONTRACTS = DEFAULT_OPERATION_CONTRACTS.contracts()
+_OPERATION_CONTRACT_BY_NAME = {
+    contract.name: contract for contract in _OPERATION_CONTRACTS
 }
 _TOOL_DOMAINS = {
-    binding.name: binding.domain
-    for binding in _OPERATION_BINDINGS
-    if binding.domain
+    contract.name: contract.domain
+    for contract in _OPERATION_CONTRACTS
+    if contract.domain
 }
 _ORCHESTRATION_ARGUMENTS = frozenset(
     {
@@ -171,28 +130,15 @@ _INTERNAL_TASK_ARGUMENTS = frozenset(
         "_credential_values",
     }
 )
-_DOMAIN_TO_TOOL = {
-    binding.domain: binding.name
-    for binding in _OPERATION_BINDINGS
-    if binding.domain and binding.workflow_entry
-}
+_DOMAIN_TO_TOOL = DEFAULT_OPERATION_CONTRACTS.domain_to_entry_operation()
 _CREDENTIAL_VALUE_TOOLS = frozenset(
-    binding.name for binding in _OPERATION_BINDINGS if binding.credential_values
+    contract.name
+    for contract in _OPERATION_CONTRACTS
+    if contract.credential_values
 )
 _MUTATION_TOOLS = frozenset(
-    binding.name for binding in _OPERATION_BINDINGS if binding.mutation
+    contract.name for contract in _OPERATION_CONTRACTS if contract.mutation
 )
-_CONTEXT_OPERATION_LIFECYCLES = {
-    "case_read": "read",
-    "evidence_read": "read",
-    "case_close": "close",
-    "case_forget": "close",
-    "phase_record": "invoke",
-    "workflow.advance": "invoke",
-    "workflow.next": "invoke",
-    "runtime_status": "status",
-}
-_EXTERNAL_WORKFLOW_DOMAINS = frozenset({"developer", "build"})
 _MAX_ORCHESTRATION_HISTORY = 16
 _MAX_WORKFLOW_SUMMARIES = 16
 _MAX_MUTATION_OUTCOMES = 32
@@ -1499,6 +1445,7 @@ class OrchestratedMcpBackend:
         tool_backends: Mapping[str, object],
         *,
         state_store: TaskContextStore | None = None,
+        phase_adapters: Mapping[str, object] | None = None,
     ) -> None:
         if not tool_backends:
             raise ValueError("at least one domain tool backend is required")
@@ -1512,6 +1459,25 @@ class OrchestratedMcpBackend:
                 raise TypeError(f"backend for {tool_name} does not implement that tool")
         self.tool_backends = dict(tool_backends)
         self.state_store = state_store
+        self.phase_adapters = dict(
+            phase_adapters
+            or {
+                "developer.change": self._developer_outcome,
+                "build.artifact": lambda raw: self._provided_domain_outcome(
+                    "build", raw
+                ),
+            }
+        )
+        invalid_phase_adapters = [
+            name
+            for name, adapter in self.phase_adapters.items()
+            if not callable(adapter)
+        ]
+        if invalid_phase_adapters:
+            raise TypeError(
+                "workflow phase adapters must be callable: "
+                + ", ".join(sorted(invalid_phase_adapters))
+            )
 
     def open_task(self, task_id: str) -> _OrchestratedMcpTask:
         return _OrchestratedMcpTask(
@@ -1568,12 +1534,12 @@ class OrchestratedMcpBackend:
             return False
         assert task.orchestration is not None
         steps = task.orchestration.intent.steps
-        if len(steps) <= 1 or _DOMAIN_TO_TOOL.get(steps[0].domain) != tool_name:
+        if len(steps) <= 1 or steps[0].canonical_name != tool_name:
             return False
         required_tools = {
-            _DOMAIN_TO_TOOL[step.domain]
+            step.canonical_name
             for step in steps
-            if step.domain in _DOMAIN_TO_TOOL
+            if step.kind == "operation"
         }
         if not required_tools.issubset(self.tool_backends):
             return False
@@ -1583,14 +1549,20 @@ class OrchestratedMcpBackend:
         ):
             sections = self._workflow_sections(arguments)
             for step in steps:
-                if step.domain in _EXTERNAL_WORKFLOW_DOMAINS and not isinstance(
+                if step.kind == "phase" and not isinstance(
                     sections.get(step.domain), Mapping
                 ):
                     return False
-            if any(step.domain == "live_patch" for step in steps) and not isinstance(
-                sections.get("live_patch"), Mapping
-            ):
-                return False
+                if step.kind == "operation":
+                    contract = DEFAULT_OPERATION_CONTRACTS.require(
+                        step.canonical_name
+                    )
+                    if (
+                        contract.mutation
+                        and step.canonical_name != tool_name
+                        and not isinstance(sections.get(step.domain), Mapping)
+                    ):
+                        return False
         return True
 
     @staticmethod
@@ -1914,17 +1886,16 @@ class OrchestratedMcpBackend:
             )
             handlers = {}
             for step in workflow_context.intent.steps:
-                if step.domain == "developer":
-                    handlers[step.key] = lambda _execution, raw=sections.get(
-                        "developer"
-                    ): self._developer_outcome(raw)
+                if step.kind == "phase":
+                    adapter = self.phase_adapters.get(step.canonical_name)
+                    if adapter is not None:
+                        handlers[step.key] = (
+                            lambda _execution, selected=adapter, raw=sections.get(
+                                step.domain
+                            ): selected(raw)
+                        )
                     continue
-                if step.domain == "build":
-                    handlers[step.key] = lambda _execution, raw=sections.get(
-                        "build"
-                    ): self._provided_domain_outcome("build", raw)
-                    continue
-                tool_name = _DOMAIN_TO_TOOL.get(step.domain)
+                tool_name = step.canonical_name
                 if tool_name is None or tool_name not in self.tool_backends:
                     continue
 
@@ -2050,6 +2021,7 @@ class RuntimeMcpService:
         *,
         context_repository: RuntimeRepository | None = None,
         blob_repository: BlobRepository | None = None,
+        session_outcome_repository: SessionOutcomeRepository | None = None,
         context_runtime: ContextRuntime | None = None,
         envelope_max_bytes: int = AGENT_ENVELOPE_MAX_BYTES,
         context_max_cached_projections: int = 64,
@@ -2080,35 +2052,38 @@ class RuntimeMcpService:
         definitions = self._build_tool_definitions()
         definition_names = tuple(str(definition["name"]) for definition in definitions)
         definition_name_set = set(definition_names)
-        binding_names = tuple(
-            binding.name
-            for binding in _OPERATION_BINDINGS
-            if binding.name in definition_name_set
+        contract_names = tuple(
+            contract.name
+            for contract in _OPERATION_CONTRACTS
+            if contract.name in definition_name_set
         )
-        if definition_names != binding_names or definition_name_set - set(
-            _OPERATION_BINDING_BY_NAME
+        if definition_names != contract_names or definition_name_set - set(
+            _OPERATION_CONTRACT_BY_NAME
         ):
             raise RuntimeError(
-                "operation definitions and binding metadata are out of sync"
+                "operation definitions and contract metadata are out of sync"
             )
         self.catalog = OperationCatalog(
             (
-                OperationDescriptor.from_tool_definition(
-                    definition,
-                    lifecycle=_OPERATION_BINDING_BY_NAME[
-                        str(definition["name"])
-                    ].lifecycle,
-                    handler_name=_OPERATION_BINDING_BY_NAME[
-                        str(definition["name"])
-                    ].handler_name,
-                    mutation=_OPERATION_BINDING_BY_NAME[
-                        str(definition["name"])
-                    ].mutation,
-                )
+                _OPERATION_CONTRACT_BY_NAME[
+                    str(definition["name"])
+                ].operation_descriptor(definition)
                 for definition in definitions
             ),
             backend=backend,
         )
+        capability_descriptors: list[CapabilityDescriptor] = []
+        for operation_descriptor in self.catalog.descriptors():
+            contract = _OPERATION_CONTRACT_BY_NAME[operation_descriptor.name]
+            if not contract.domain:
+                continue
+            capability_descriptors.append(
+                contract.capability_descriptor(
+                    operation_descriptor.input_schema,
+                )
+            )
+        self.capability_registry = CapabilityRegistry(capability_descriptors)
+        self.runtime_sdk = RuntimeSDK(self.capability_registry)
         self.context_runtime = context_runtime or ContextRuntime(
             self.catalog,
             repository=context_repository,
@@ -2118,6 +2093,10 @@ class RuntimeMcpService:
             max_cached_projection_bytes=context_max_cached_projection_bytes,
             retention_seconds=context_retention_seconds,
             storage_soft_limit_bytes=context_storage_soft_limit_bytes,
+        )
+        self.replay_service = CaseReplayService(self.context_runtime.repository)
+        self.session_outcome_service = SessionOutcomeService(
+            session_outcome_repository or InMemorySessionOutcomeRepository()
         )
         if context_maintenance_interval_seconds < 0:
             raise ValueError("context maintenance interval must not be negative")
@@ -2608,6 +2587,131 @@ class RuntimeMcpService:
                     },
                 },
                 {
+                    "name": "case_replay_export",
+                    "description": (
+                        "Export one redacted, versioned, portable Case Replay Bundle."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["case_id"],
+                        "properties": {
+                            "case_id": {"type": "string", "minLength": 1}
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                {
+                    "name": "case_replay_run",
+                    "description": (
+                        "Deterministically replay a Case Bundle without network, "
+                        "target resources, or mutations."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["bundle"],
+                        "properties": {
+                            "bundle": {
+                                "type": "object",
+                                "additionalProperties": True,
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                {
+                    "name": "session_outcome_record",
+                    "description": (
+                        "Record one redacted Session Outcome linked to a Case and Replay."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "required": [
+                            "session_id",
+                            "case_id",
+                            "replay_fingerprint",
+                            "workflow",
+                            "domain",
+                            "outcome",
+                            "summary",
+                        ],
+                        "properties": {
+                            "session_id": {"type": "string", "minLength": 1},
+                            "case_id": {"type": "string", "minLength": 1},
+                            "replay_fingerprint": {"type": "string", "minLength": 1},
+                            "workflow": {"type": "string", "minLength": 1},
+                            "domain": {"type": "string", "minLength": 1},
+                            "outcome": {
+                                "type": "string",
+                                "enum": [
+                                    "completed",
+                                    "partial",
+                                    "failed",
+                                    "user-corrected",
+                                    "false-success",
+                                    "evidence-gap",
+                                    "contract-gap",
+                                ],
+                            },
+                            "gap_type": {"type": "string"},
+                            "summary": {"type": "string", "minLength": 1},
+                            "details": {"type": "object", "additionalProperties": True},
+                            "architecture_decision": {"type": "boolean", "default": False},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                {
+                    "name": "session_outcome_summary",
+                    "description": (
+                        "Aggregate reviewed and pending Session Outcomes by workflow, "
+                        "domain, outcome, and gap type."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                },
+                {
+                    "name": "session_outcome_transition",
+                    "description": (
+                        "Review, independently approve, or reject a redacted Session Outcome."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["outcome_id", "action", "actor"],
+                        "properties": {
+                            "outcome_id": {"type": "string", "minLength": 1},
+                            "action": {
+                                "type": "string",
+                                "enum": ["review", "approve", "reject"],
+                            },
+                            "actor": {"type": "string", "minLength": 1},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                {
+                    "name": "session_outcome_promote",
+                    "description": (
+                        "Promote an approved Outcome to an inert Golden Scenario, "
+                        "knowledge item, or ADR artifact."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["outcome_id", "target", "payload"],
+                        "properties": {
+                            "outcome_id": {"type": "string", "minLength": 1},
+                            "target": {
+                                "type": "string",
+                                "enum": ["golden-scenario", "knowledge", "adr"],
+                            },
+                            "payload": {"type": "object", "additionalProperties": True},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                {
                     "name": "case_close",
                     "description": "Seal one resolved Case while retaining readable history.",
                     "inputSchema": {
@@ -2655,7 +2759,7 @@ class RuntimeMcpService:
                             "idempotency_key": {"type": "string", "minLength": 1},
                             "phase_type": {
                                 "type": "string",
-                                "enum": ["developer.change", "build.artifact"],
+                                "enum": list(DEFAULT_PHASE_REGISTRY.names()),
                             },
                             "producer_identity": {"type": "string", "minLength": 1},
                             "status": {
@@ -2878,6 +2982,23 @@ class RuntimeMcpService:
             canonical["_context_defaults_inferred"] = True
         return canonical
 
+    @staticmethod
+    def _validate_boolean_argument_types(
+        descriptor: OperationDescriptor,
+        arguments: Mapping[str, object],
+    ) -> None:
+        properties = descriptor.input_schema.get("properties", {})
+        if not isinstance(properties, Mapping):
+            return
+        for field, schema in properties.items():
+            if (
+                field in arguments
+                and isinstance(schema, Mapping)
+                and schema.get("type") == "boolean"
+                and not isinstance(arguments[field], bool)
+            ):
+                raise TypeError(f"{field} must be a boolean")
+
     def call_tool(
         self,
         name: str,
@@ -2906,8 +3027,8 @@ class RuntimeMcpService:
             arguments.pop(internal_name, None)
         arguments.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
         arguments = self._canonicalize_tool_arguments(name, arguments)
-        if descriptor.handler_name is None:
-            self.catalog.validate_arguments(name, arguments)
+        self._validate_boolean_argument_types(descriptor, arguments)
+        self.catalog.validate_arguments(name, arguments)
         if _context_workflow_step:
             arguments[CONTEXT_WORKFLOW_STEP_ARGUMENT] = True
         if descriptor.lifecycle == "status":
@@ -2920,6 +3041,10 @@ class RuntimeMcpService:
             if callable(persistent_status):
                 status["persistent_task_contexts"] = persistent_status()
             status["context_runtime"] = self.context_runtime.status()
+            status["capability_registry"] = (
+                self.capability_registry.to_public_dict()
+            )
+            status["session_outcomes"] = self.session_outcome_service.status()
             status["context_maintenance"] = {
                 "attempts": self._context_maintenance_attempts,
                 "failures": self._context_maintenance_failures,
@@ -2957,6 +3082,86 @@ class RuntimeMcpService:
                     operation=name,
                     operation_id=operation_id,
                     case_id=case_id,
+                )
+            if name == "case_replay_export":
+                case_id = str(arguments.get("case_id", "")).strip()
+                value = self.replay_service.export(case_id).to_public_dict()
+                return self.context_runtime.wrap_read(
+                    value,
+                    operation=name,
+                    operation_id=operation_id,
+                    case_id=case_id,
+                )
+            if name == "case_replay_run":
+                bundle = arguments.get("bundle")
+                if not isinstance(bundle, Mapping):
+                    raise TypeError("bundle must be an object")
+                value = self.replay_service.replay(bundle).to_public_dict()
+                return self.context_runtime.wrap_read(
+                    value,
+                    operation=name,
+                    operation_id=operation_id,
+                    case_id=str(bundle.get("case_id", "")),
+                )
+            if name == "session_outcome_record":
+                details = arguments.get("details", {})
+                if not isinstance(details, Mapping):
+                    raise TypeError("details must be an object")
+                record = self.session_outcome_service.record(
+                    session_id=str(arguments.get("session_id", "")),
+                    case_id=str(arguments.get("case_id", "")),
+                    replay_fingerprint=str(arguments.get("replay_fingerprint", "")),
+                    workflow=str(arguments.get("workflow", "")),
+                    domain=str(arguments.get("domain", "")),
+                    outcome=str(arguments.get("outcome", "")),
+                    gap_type=str(arguments.get("gap_type", "")),
+                    summary=str(arguments.get("summary", "")),
+                    details=details,
+                    architecture_decision=bool(
+                        arguments.get("architecture_decision", False)
+                    ),
+                )
+                return self.context_runtime.wrap_read(
+                    record.to_public_dict(),
+                    operation=name,
+                    operation_id=operation_id,
+                    case_id=record.case_id,
+                )
+            if name == "session_outcome_summary":
+                return self.context_runtime.wrap_read(
+                    self.session_outcome_service.summary(),
+                    operation=name,
+                    operation_id=operation_id,
+                    case_id="",
+                )
+            if name == "session_outcome_transition":
+                record = self.session_outcome_service.transition(
+                    str(arguments.get("outcome_id", "")),
+                    action=str(arguments.get("action", "")),
+                    actor=str(arguments.get("actor", "")),
+                )
+                return self.context_runtime.wrap_read(
+                    record.to_public_dict(),
+                    operation=name,
+                    operation_id=operation_id,
+                    case_id=record.case_id,
+                )
+            if name == "session_outcome_promote":
+                payload = arguments.get("payload")
+                if not isinstance(payload, Mapping):
+                    raise TypeError("payload must be an object")
+                value = self.session_outcome_service.promote(
+                    str(arguments.get("outcome_id", "")),
+                    target=str(arguments.get("target", "")),
+                    payload=payload,
+                )
+                return self.context_runtime.wrap_read(
+                    value,
+                    operation=name,
+                    operation_id=operation_id,
+                    case_id=str(value.get("case_reference", "")).removeprefix(
+                        "case://"
+                    ),
                 )
             if name == "case_close":
                 case_id = str(arguments.get("case_id", "")).strip()
@@ -3024,7 +3229,10 @@ class RuntimeMcpService:
             raise RuntimeError(
                 f"operation catalog handler became unavailable: {descriptor.name}"
             )
-        timeout = self._timeout(arguments)
+        capability_descriptor = self.capability_registry.require(name)
+        timeout = min(
+            self._timeout(arguments), capability_descriptor.timeout_seconds
+        )
         context_arguments = arguments
         domain_arguments = {
             key: value
@@ -3052,14 +3260,31 @@ class RuntimeMcpService:
                     "_minimum_target_epoch",
                     minimum_target_epoch,
                 )
-        executor = lambda: self.registry.execute(
-                task_id=task_id,
-                operation_id=operation_id,
-                timeout_seconds=timeout,
-                callback=lambda task, context: callback(
-                    task, domain_arguments, context
+        executor = lambda: dict(
+            self.runtime_sdk.execute(
+                name,
+                context=RuntimeSDKContext(
+                    task_id=task_id,
+                    operation_id=operation_id,
+                    timeout_seconds=timeout,
+                    target_id=str(domain_arguments.get("target_id", "")),
+                    minimum_target_epoch=int(
+                        domain_arguments.get("_minimum_target_epoch", 0)
+                    ),
                 ),
-            )
+                arguments=domain_arguments,
+                adapter=CallableDomainAdapter(
+                    lambda _sdk_context, _sdk_arguments: self.registry.execute(
+                        task_id=task_id,
+                        operation_id=operation_id,
+                        timeout_seconds=timeout,
+                        callback=lambda task, context: callback(
+                            task, domain_arguments, context
+                        ),
+                    )
+                ),
+            ).value
+        )
         if self.context_mode == "shadow":
             legacy_value = executor()
             if not isinstance(legacy_value, Mapping):

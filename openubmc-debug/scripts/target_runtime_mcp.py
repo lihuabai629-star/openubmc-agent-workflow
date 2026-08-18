@@ -756,6 +756,9 @@ def create_service():
         context_repository=runtime.SQLiteRuntimeRepository(
             state_dir / "context-runtime.sqlite3"
         ),
+        session_outcome_repository=runtime.SQLiteSessionOutcomeRepository(
+            state_dir / "session-outcomes.sqlite3"
+        ),
         blob_repository=runtime.FilesystemBlobRepository(
             state_dir / "evidence-blobs"
         ),

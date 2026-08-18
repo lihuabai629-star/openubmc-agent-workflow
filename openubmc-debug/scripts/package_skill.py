@@ -87,7 +87,7 @@ INLINE_LABELED_CASE_VALUE_RE = re.compile(
 INLINE_ALARM_LITERAL_RE = re.compile(
     r"\b(?:[A-Z][A-Za-z0-9]*[a-z0-9][A-Z][A-Za-z0-9]*|"
     r"[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+)\s+(?:alarm|event)\b|"
-    r"\b(?:alarm|event)\s+(?:named\s+|called\s+)?"
+    r"\b(?:alarm|event)\s+(?:named\s+|called\s+)"
     r"(?:[A-Z][A-Za-z0-9]*[a-z0-9][A-Z][A-Za-z0-9]*|"
     r"[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+)\b"
 )

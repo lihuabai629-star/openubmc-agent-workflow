@@ -271,6 +271,12 @@ class WorkflowRegressionTests(unittest.TestCase):
                 task_id="narrow-debug",
                 operation_id="advance-narrow",
             )
+            case = service.call_tool(
+                "case_read",
+                {"case_id": collected.envelope["case_id"]},
+                task_id="narrow-debug",
+                operation_id="read-narrow",
+            )
         finally:
             service.close()
 
@@ -279,6 +285,117 @@ class WorkflowRegressionTests(unittest.TestCase):
             [name for name, _arguments in backend.calls],
             ["debug_collect"],
         )
+        definition = case["workflow_definition"]
+        self.assertEqual(
+            [step["name"] for step in definition["steps"]],
+            ["debug_collect"],
+        )
+        self.assertEqual(
+            case["capsule"]["workflow_definition"]["fingerprint"],
+            definition["fingerprint"],
+        )
+        self.assertEqual(
+            case["operations"][0]["workflow_definition_fingerprint"],
+            definition["fingerprint"],
+        )
+
+    def test_changed_existing_workflow_input_starts_a_new_cycle(self) -> None:
+        backend = _DomainBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            first = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.14", "profile": "standard"},
+                task_id="changed-input-cycle",
+                operation_id="debug-standard",
+            )
+            second = service.call_tool(
+                "debug_run",
+                {
+                    "case_id": first.envelope["case_id"],
+                    "profile": "freshness",
+                },
+                task_id="changed-input-cycle",
+                operation_id="debug-freshness",
+            )
+            case = service.call_tool(
+                "case_read",
+                {"case_id": first.envelope["case_id"]},
+                task_id="changed-input-cycle",
+                operation_id="read-changed-input-cycle",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(case["workflow_cycle_id"], "cycle-2")
+        self.assertEqual(case["workflow_cycle_number"], 2)
+        operations = [
+            item for item in case["operations"] if item["operation"] == "debug_run"
+        ]
+        self.assertEqual(len(operations), 2)
+        self.assertEqual(
+            [item["workflow_cycle_id"] for item in operations],
+            ["cycle-1", "cycle-2"],
+        )
+        self.assertNotEqual(
+            operations[0]["workflow_execution_id"],
+            operations[1]["workflow_execution_id"],
+        )
+        self.assertTrue(second.envelope["continuation"]["workflow_complete"])
+
+    def test_source_only_phase_receipt_uses_the_versioned_step_identity(self) -> None:
+        backend = _DomainBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            waiting = service.call_tool(
+                "workflow.advance",
+                {
+                    "ip": "192.0.2.16",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="typed-source-only",
+                operation_id="advance-source-only",
+            )
+            case_id = waiting.envelope["case_id"]
+            recorded = service.call_tool(
+                "phase_record",
+                {
+                    "case_id": case_id,
+                    "expected_revision": waiting.envelope["revision"],
+                    "idempotency_key": "developer-receipt",
+                    "phase_type": "developer.change",
+                    "producer_identity": "openubmc-developer",
+                    "status": "completed",
+                    "source_revision": "abc123",
+                    "summary": "implemented the source fix",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["run focused tests"],
+                },
+                task_id="typed-source-only",
+                operation_id="developer-receipt",
+            )
+            case = service.call_tool(
+                "case_read",
+                {"case_id": case_id},
+                task_id="typed-source-only",
+                operation_id="read-source-only",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(recorded["workflow_step_id"], "step-02-developer-change")
+        self.assertEqual(recorded["workflow_attempt"], 1)
+        self.assertTrue(recorded["workflow_execution_id"].startswith("step-"))
+        self.assertEqual(
+            recorded["workflow_definition_fingerprint"],
+            case["workflow_definition"]["fingerprint"],
+        )
+        self.assertEqual(
+            [name for name, _arguments in backend.calls],
+            ["debug_run"],
+        )
+        self.assertEqual(case["status"], "terminal")
 
     def test_failed_narrow_debug_collect_retries_the_same_operation(self) -> None:
         backend = _FailingCollectBackend()
