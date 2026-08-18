@@ -9,18 +9,23 @@ Codex, Claude, and OpenClaw. The integrated Skills baseline is
 The bootstrap downloads the installer and leaves only the managed checkout:
 
 ```bash
+WORKFLOW_REF="vX.Y.Z" # published release tag or full commit
 curl -fsSL \
-  http://10.121.177.79/liqinghua/openubmc-agent-workflow/-/raw/main/bootstrap.py \
-  | python3 -
+  "https://raw.githubusercontent.com/lihuabai629-star/openubmc-agent-workflow/${WORKFLOW_REF}/bootstrap.py" \
+  | python3 - --ref "${WORKFLOW_REF}"
 ```
+
+Use the same immutable ref in the bootstrap URL and `--ref`. Managed installation rejects a
+missing ref, a branch such as `main`, or a name that does not resolve as an exact remote tag.
 
 The default `full` profile installs 11 Skills, the Target Runtime, and the standalone
 `openubmc-kb` stdio MCP. The smaller runtime profile keeps the seven runtime-path Skills:
 
 ```bash
+WORKFLOW_REF="vX.Y.Z" # published release tag or full commit
 curl -fsSL \
-  http://10.121.177.79/liqinghua/openubmc-agent-workflow/-/raw/main/bootstrap.py \
-  | python3 - --skill-profile target-runtime
+  "https://raw.githubusercontent.com/lihuabai629-star/openubmc-agent-workflow/${WORKFLOW_REF}/bootstrap.py" \
+  | python3 - --ref "${WORKFLOW_REF}" --skill-profile target-runtime
 ```
 
 Codex and Claude receive managed stdio MCP entries. OpenClaw receives the same Skill links; its
@@ -56,8 +61,12 @@ python3 "$INSTALLER" rollback
 python3 "$INSTALLER" uninstall
 ```
 
-`update` fast-forwards a clean managed checkout. `rollback` restores the previous known-good
-revision and keeps the displaced revision available for another rollback.
+For tag/commit installations, `update` revalidates the recorded immutable ref. To move to a newer
+release, rerun the bootstrap with the new tag or full commit; the previous commit becomes the
+rollback target. Legacy branch-based installations fail check, install, repair, and update until
+they are migrated by rerunning bootstrap with an immutable ref. `rollback` restores the previous
+known-good revision as an exact commit and keeps the displaced revision available for another
+rollback. JSON install and check output reports `requested_ref`, `ref_kind`, and `resolved_commit`.
 
 ## Validation
 

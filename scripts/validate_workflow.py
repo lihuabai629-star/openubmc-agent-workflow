@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -18,6 +18,9 @@ EXECUTABLES = (
     ROOT / "bootstrap.py",
     ROOT / "scripts" / "validate_workflow.py",
     ROOT / "scripts" / "live_smoke.py",
+)
+SKILL_PACKAGE_IGNORED_PARTS = frozenset(
+    {"tests", "__pycache__", ".pytest_cache"}
 )
 
 
@@ -74,7 +77,7 @@ def validate_agent_metadata(skill_root: Path, name: str) -> None:
 def validate_skill_manifest(skill_root: Path, name: str) -> None:
     path = skill_root / "skill.json"
     if not path.is_file():
-        return
+        raise SystemExit(f"missing skill.json: {skill_root.relative_to(ROOT)}")
     document = json.loads(path.read_text(encoding="utf-8"))
     if document.get("manifestVersion") != 1:
         raise SystemExit(f"unsupported skill.json manifestVersion: {path.relative_to(ROOT)}")
@@ -83,6 +86,19 @@ def validate_skill_manifest(skill_root: Path, name: str) -> None:
     files = document.get("files")
     if not isinstance(files, list) or any(not isinstance(item, str) for item in files):
         raise SystemExit(f"invalid skill.json files list: {path.relative_to(ROOT)}")
+    if len(files) != len(set(files)):
+        raise SystemExit(f"duplicate skill.json files entry: {path.relative_to(ROOT)}")
+    for relative in files:
+        package_path = PurePosixPath(relative)
+        if (
+            not relative
+            or package_path.is_absolute()
+            or "\\" in relative
+            or any(part in {"", ".", ".."} for part in package_path.parts)
+        ):
+            raise SystemExit(
+                f"invalid skill.json file path ({relative}): {path.relative_to(ROOT)}"
+            )
     required = {"SKILL.md", "agents/openai.yaml"}
     if not required.issubset(files):
         missing = ", ".join(sorted(required - set(files)))
@@ -90,6 +106,23 @@ def validate_skill_manifest(skill_root: Path, name: str) -> None:
     for relative in files:
         if not (skill_root / relative).is_file():
             raise SystemExit(f"skill.json lists missing file: {skill_root.relative_to(ROOT) / relative}")
+    declared = set(files)
+    package_files = {
+        path.relative_to(skill_root).as_posix()
+        for path in skill_root.rglob("*")
+        if path.is_file()
+        and path.suffix != ".pyc"
+        and not SKILL_PACKAGE_IGNORED_PARTS.intersection(
+            path.relative_to(skill_root).parts
+        )
+    }
+    omitted = sorted(package_files - declared)
+    if omitted:
+        raise SystemExit(
+            "skill.json omits package files ("
+            + ", ".join(omitted)
+            + f"): {path.relative_to(ROOT)}"
+        )
 
 
 def assigned_expression(tree: ast.Module, name: str) -> ast.expr:
@@ -216,9 +249,17 @@ def validate_release_metadata(document: dict[str, object]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quick", action="store_true", help="skip unit and Node.js tests")
+    parser.add_argument(
+        "--release-contract-only",
+        action="store_true",
+        help="validate release manifests and metadata without compiling or testing",
+    )
     args = parser.parse_args(argv)
     document = validate_manifest()
     validate_release_metadata(document)
+    if args.release_contract_only:
+        print("release contract validation passed")
+        return 0
     run([sys.executable, "-m", "compileall", "-q", "."])
     if args.quick:
         print("workflow validation passed")
