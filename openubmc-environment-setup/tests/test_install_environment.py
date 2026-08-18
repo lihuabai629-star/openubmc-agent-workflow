@@ -560,6 +560,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(commit, "a" * 40)
         command = run.call_args.args[0]
         environment = run.call_args.kwargs["env"]
+        self.assertEqual(command[command.index("--depth") + 1], "2")
         self.assertNotIn("fixture-github-token", command)
         self.assertEqual(environment["GIT_CONFIG_COUNT"], "2")
         self.assertEqual(environment["GIT_CONFIG_KEY_0"], "credential.helper")
@@ -596,6 +597,28 @@ class EnvironmentSetupTests(unittest.TestCase):
                     stderr=subprocess.DEVNULL,
                 )
                 self.assertNotEqual(detached.returncode, 0)
+
+    def test_clone_source_keeps_the_lock_commit_parent_available(self) -> None:
+        remote, _first_commit = self.create_release_remote()
+        second_commit = self.publish_second_release(remote)
+        destination = self.root / "managed-lock-release"
+
+        installer.clone_source(
+            destination,
+            str(remote),
+            "v1.2.4",
+            False,
+            EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+
+        self.assertEqual(
+            installer.git_output(destination, "rev-parse", "HEAD^{commit}"),
+            second_commit,
+        )
+        parent = installer.git_output(
+            destination, "rev-parse", "HEAD^1^{commit}"
+        )
+        self.assertRegex(parent, r"^[0-9a-f]{40}$")
 
     def test_explicit_new_release_ref_updates_an_existing_managed_checkout(self) -> None:
         remote, first_commit = self.create_release_remote()
