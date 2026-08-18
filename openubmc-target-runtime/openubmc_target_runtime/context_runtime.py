@@ -38,6 +38,11 @@ from .mutation import (
     mutation_journal_operation_status,
 )
 from .redaction import is_secret_key, redact_text
+from .workflow import (
+    DEFAULT_PHASE_REGISTRY,
+    DEFAULT_WORKFLOW_KERNEL,
+    WorkflowStepDefinition,
+)
 
 
 CONTEXT_RUNTIME_SCHEMA = f"{RUNTIME_API_VERSION}/context-runtime"
@@ -123,6 +128,13 @@ _CONTEXT_CONTROL_ARGUMENTS = frozenset(
         "_workflow_step_kind",
         "_workflow_target_version",
         "_workflow_request_fingerprint",
+        "_workflow_definition_id",
+        "_workflow_definition_version",
+        "_workflow_definition_fingerprint",
+        "_workflow_execution_id",
+        "_workflow_attempt",
+        "_workflow_input_fingerprint",
+        "_workflow_target_epoch",
         "_context_entry_operation",
     }
 )
@@ -145,10 +157,6 @@ _TARGET_VERSION_ARGUMENTS = frozenset(
         "redfish_port",
     }
 )
-_PHASE_SKILL_OWNERS = {
-    "developer.change": "openubmc-developer",
-    "build.artifact": "openubmc-build",
-}
 _DEBUG_DOMAIN_ARGUMENTS = {
     "alarm_call_args",
     "alarm_call_signature",
@@ -629,6 +637,7 @@ def _empty_projection(case_id: str) -> dict[str, object]:
         "targets": [],
         "target_version": 1,
         "workflow_inputs": {},
+        "workflow_definition": {},
         "workflow_cycle_id": "cycle-1",
         "workflow_cycle_number": 1,
         "workflow_step_states": {},
@@ -699,6 +708,9 @@ def project_case(
                     "targets": list(payload.get("targets", [])),
                     "target_version": int(payload.get("target_version", 1)),
                     "workflow_inputs": workflow_inputs,
+                    "workflow_definition": dict(
+                        payload.get("workflow_definition", {})
+                    ),
                     "workflow_cycle_id": str(
                         payload.get("workflow_cycle_id", "cycle-1")
                     ),
@@ -731,6 +743,9 @@ def project_case(
                     **dict(projection.get("workflow_inputs", {})),
                     **dict(workflow_inputs),
                 }
+            workflow_definition = payload.get("workflow_definition")
+            if isinstance(workflow_definition, Mapping):
+                projection["workflow_definition"] = dict(workflow_definition)
             projection["closeout"] = {}
             projection["closeout_markdown"] = ""
             projection["closeout_bundle"] = None
@@ -750,6 +765,9 @@ def project_case(
                 projection["workflow_inputs"] = dict(
                     payload.get("workflow_inputs", {})
                 )
+            workflow_definition = payload.get("workflow_definition")
+            if isinstance(workflow_definition, Mapping):
+                projection["workflow_definition"] = dict(workflow_definition)
             task_policy = payload.get(_TASK_POLICY_FIELD)
             if isinstance(task_policy, Mapping):
                 projection[_TASK_POLICY_FIELD] = dict(task_policy)
@@ -866,6 +884,13 @@ def project_case(
                 "workflow_step_kind",
                 "target_version",
                 "target_id",
+                "workflow_definition_id",
+                "workflow_definition_version",
+                "workflow_definition_fingerprint",
+                "workflow_execution_id",
+                "workflow_attempt",
+                "workflow_input_fingerprint",
+                "workflow_target_epoch",
             ):
                 if name in payload:
                     operation[name] = payload[name]
@@ -926,6 +951,34 @@ def project_case(
                         "name": str(phase_public.get("phase_type", "")),
                         "status": str(phase_public.get("status", "")),
                         "workflow_cycle_id": cycle_id,
+                        "target_version": int(
+                            phase_public.get(
+                                "target_version", projection.get("target_version", 1)
+                            )
+                        ),
+                        "target_id": "",
+                        "operation_id": str(phase_public.get("operation_id", "")),
+                        "workflow_execution_id": str(
+                            phase_public.get("workflow_execution_id", "")
+                        ),
+                        "workflow_definition_id": str(
+                            phase_public.get("workflow_definition_id", "")
+                        ),
+                        "workflow_definition_version": int(
+                            phase_public.get("workflow_definition_version", 0)
+                        ),
+                        "workflow_input_fingerprint": str(
+                            phase_public.get("workflow_input_fingerprint", "")
+                        ),
+                        "workflow_attempt": int(
+                            phase_public.get(
+                                "workflow_attempt",
+                                phase_public.get("phase_attempt", 0),
+                            )
+                        ),
+                        "target_epoch": int(
+                            phase_public.get("workflow_target_epoch", 0)
+                        ),
                     }
                     workflow_phase_values[
                         str(phase_public.get("phase_type", ""))
@@ -963,6 +1016,21 @@ def project_case(
                     "target_version": int(operation.get("target_version", 0)),
                     "target_id": str(operation.get("target_id", "")),
                     "operation_id": operation_id,
+                    "workflow_execution_id": str(
+                        operation.get("workflow_execution_id", "")
+                    ),
+                    "workflow_definition_id": str(
+                        operation.get("workflow_definition_id", "")
+                    ),
+                    "workflow_definition_version": int(
+                        operation.get("workflow_definition_version", 0)
+                    ),
+                    "workflow_input_fingerprint": str(
+                        operation.get("workflow_input_fingerprint", "")
+                    ),
+                    "workflow_attempt": int(
+                        operation.get("workflow_attempt", 0)
+                    ),
                 }
                 if "target_epoch" in operation:
                     workflow_step_states[step_id]["target_epoch"] = operation[
@@ -2051,6 +2119,7 @@ class ContextRuntime:
             for item in projection.get("evidence_refs", [])
             if isinstance(item, Mapping)
         ]
+        workflow_definition = DEFAULT_WORKFLOW_KERNEL.definition_for(projection)
         capsule = {
             "schema": f"{CONTEXT_RUNTIME_SCHEMA}/capsule",
             "case_id": case_id,
@@ -2078,6 +2147,10 @@ class ContextRuntime:
             "workflow_cycle_number": int(
                 projection.get("workflow_cycle_number", 1)
             ),
+            "workflow_definition": workflow_definition.to_public_dict(),
+            "workflow_plan": [
+                step.to_public_dict() for step in workflow_definition.steps
+            ],
             "target_generations": sorted(
                 {
                     f"{item.get('target_id', '')}:{item.get('generation', '')}"
@@ -2250,6 +2323,12 @@ class ContextRuntime:
             },
             frozen_at=self.clock(),
         )
+        revised_workflow = DEFAULT_WORKFLOW_KERNEL.registry.resolve(
+            intent=intent,
+            entry_domain=_case_entry_domain(projection),
+            entry_operation=str(projection.get("entry_operation", "")),
+            delivery_strategy=selected,
+        )
         current_policy_raw = projection.get(_TASK_POLICY_FIELD)
         if isinstance(current_policy_raw, Mapping) and current_policy_raw:
             current_policy = TaskAuthorizationPolicy.from_public_dict(
@@ -2301,6 +2380,7 @@ class ContextRuntime:
                         _TASK_POLICY_FIELD: revised_policy.to_public_dict(),
                         "previous_plan_id": plan.plan_id if plan is not None else "",
                         "acceptance_plan": revised_plan.to_public_dict(),
+                        "workflow_definition": revised_workflow.to_public_dict(),
                         "reason": _safe_identifier(
                             reason,
                             fallback="explicit-task-selection",
@@ -2376,6 +2456,11 @@ class ContextRuntime:
                 payload["targets"] = updated_targets
             if workflow_inputs != previous_input_map:
                 payload["workflow_inputs"] = workflow_inputs
+            changed_input_keys = {
+                name
+                for name in set(previous_input_map) | set(workflow_inputs)
+                if previous_input_map.get(name) != workflow_inputs.get(name)
+            }
             binding_changed = bool(
                 replaces_target and updated_targets != existing.get("targets", [])
             )
@@ -2406,6 +2491,23 @@ class ContextRuntime:
                     revised_arguments,
                     frozen_at=self.clock(),
                 ).to_public_dict()
+                payload["workflow_definition"] = (
+                    DEFAULT_WORKFLOW_KERNEL.registry.resolve(
+                        intent=str(revised_arguments["intent"]),
+                        entry_domain=str(
+                            payload.get(
+                                "entry_domain",
+                                existing.get("entry_domain", ""),
+                            )
+                        ),
+                        entry_operation=str(
+                            existing.get("entry_operation", "")
+                        ),
+                        delivery_strategy=str(
+                            revised_arguments.get("delivery_strategy", "")
+                        ),
+                    ).to_public_dict()
+                )
                 payload[_TASK_POLICY_FIELD] = (
                     TaskAuthorizationPolicy.from_task_intent(
                         str(revised_arguments["intent"]),
@@ -2422,13 +2524,47 @@ class ContextRuntime:
                         ),
                     ).to_public_dict()
                 )
-            if payload and (intent_changed or binding_changed):
+            workflow_input_changed = any(
+                name in previous_input_map
+                and name
+                not in (
+                    _TARGET_REPLACEMENT_RESET_ARGUMENTS
+                    | _TARGET_VERSION_ARGUMENTS
+                )
+                for name in changed_input_keys
+            )
+            workflow_cycle_required = intent_changed or workflow_input_changed
+            if payload and (intent_changed or binding_changed or workflow_cycle_required):
+                events: list[PendingCaseEvent] = [
+                    PendingCaseEvent("CaseUpdated", payload)
+                ]
+                if workflow_cycle_required:
+                    next_cycle_number = int(
+                        existing.get("workflow_cycle_number", 1)
+                    ) + 1
+                    events.append(
+                        PendingCaseEvent(
+                            "WorkflowCycleStarted",
+                            {
+                                "workflow_cycle_number": next_cycle_number,
+                                "workflow_cycle_id": f"cycle-{next_cycle_number}",
+                                "reason": (
+                                    "workflow definition changed"
+                                    if intent_changed or delivery_changed
+                                    else "workflow inputs changed"
+                                ),
+                                "changed_input_keys": sorted(changed_input_keys),
+                            },
+                        )
+                    )
                 updated = self.repository.commit(
                     case_id,
                     expected_revision=int(existing["revision"]),
-                    events=(PendingCaseEvent("CaseUpdated", payload),),
+                    events=events,
                 )
-                return self._cache(updated)
+                cached = self._cache(updated)
+                cached["_update_base_revision"] = int(existing["revision"])
+                return cached
             if "delivery_strategy" in arguments:
                 expected = arguments.get("expected_revision")
                 if expected is not None:
@@ -2487,6 +2623,16 @@ class ContextRuntime:
             authorized_exceptions=opened_arguments.get("authorized_exceptions"),
             allow_insecure_tls=allow_insecure_tls,
         )
+        workflow_definition = DEFAULT_WORKFLOW_KERNEL.registry.resolve(
+            intent=str(opened_arguments.get("intent", "diagnosis-only")),
+            entry_domain=str(opened_arguments.get("entry_domain", "")),
+            entry_operation=str(
+                opened_arguments.get("_context_entry_operation", "")
+            ),
+            delivery_strategy=str(
+                opened_arguments.get("delivery_strategy", "")
+            ),
+        )
         event = PendingCaseEvent(
             "CaseOpened",
             {
@@ -2516,6 +2662,7 @@ class ContextRuntime:
                 "target_version": 1,
                 "workflow_cycle_id": "cycle-1",
                 "workflow_cycle_number": 1,
+                "workflow_definition": workflow_definition.to_public_dict(),
                 "workflow_inputs": _sanitize_runtime_inputs(
                     {
                         key: value
@@ -3247,6 +3394,7 @@ class ContextRuntime:
                 if expected not in {
                     int(projection["revision"]),
                     int(projection.get("_selection_base_revision", -1)),
+                    int(projection.get("_update_base_revision", -1)),
                 }:
                     raise RevisionConflict(
                         f"case {case_id} revision is {projection['revision']}, "
@@ -3280,6 +3428,27 @@ class ContextRuntime:
                     )
                 ),
                 "target_id": execution_target_id,
+                "workflow_definition_id": str(
+                    arguments.get("_workflow_definition_id", "")
+                ),
+                "workflow_definition_version": int(
+                    arguments.get("_workflow_definition_version", 0)
+                ),
+                "workflow_definition_fingerprint": str(
+                    arguments.get("_workflow_definition_fingerprint", "")
+                ),
+                "workflow_execution_id": str(
+                    arguments.get("_workflow_execution_id", "")
+                ),
+                "workflow_attempt": int(
+                    arguments.get("_workflow_attempt", 0)
+                ),
+                "workflow_input_fingerprint": str(
+                    arguments.get("_workflow_input_fingerprint", "")
+                ),
+                "workflow_target_epoch": int(
+                    arguments.get("_workflow_target_epoch", 0)
+                ),
             }
             if not workflow_metadata["workflow_step_id"]:
                 workflow_metadata.update(
@@ -3289,6 +3458,56 @@ class ContextRuntime:
                         execution_target_id=execution_target_id,
                     )
                 )
+            workflow_step_id = str(workflow_metadata["workflow_step_id"])
+            if workflow_step_id and not workflow_metadata["workflow_execution_id"]:
+                definition = DEFAULT_WORKFLOW_KERNEL.definition_for(projection)
+                step_definition = next(
+                    (
+                        step
+                        for step in definition.steps
+                        if step.step_id == workflow_step_id
+                    ),
+                    None,
+                )
+                if step_definition is not None:
+                    attempt = self._workflow_attempt(
+                        projection,
+                        kind=str(
+                            workflow_metadata.get(
+                                "workflow_step_kind", step_definition.kind
+                            )
+                        ),
+                        step_id=workflow_step_id,
+                    ) + 1
+                    target_epoch = self._target_epoch_floor(
+                        projection,
+                        target_id=execution_target_id,
+                    )
+                    workflow_input_fingerprint = (
+                        self._workflow_operation_input_fingerprint(
+                            projection,
+                            descriptor.name,
+                            target_id=execution_target_id,
+                        )
+                    )
+                    identity = DEFAULT_WORKFLOW_KERNEL.step_identity(
+                        projection,
+                        step=step_definition,
+                        attempt=attempt,
+                        input_fingerprint=workflow_input_fingerprint,
+                        target_epoch=target_epoch,
+                    )
+                    workflow_metadata.update(
+                        {
+                            "workflow_definition_id": identity.workflow_definition_id,
+                            "workflow_definition_version": identity.workflow_version,
+                            "workflow_definition_fingerprint": identity.workflow_fingerprint,
+                            "workflow_execution_id": identity.execution_id,
+                            "workflow_attempt": identity.attempt,
+                            "workflow_input_fingerprint": identity.input_fingerprint,
+                            "workflow_target_epoch": identity.target_epoch,
+                        }
+                    )
             try:
                 projection = self.repository.commit(
                     case_id,
@@ -3823,15 +4042,11 @@ class ContextRuntime:
             "build:package": "build.artifact",
         }
         phase_type = aliases.get(phase_type, phase_type)
-        if phase_type not in {"developer.change", "build.artifact"}:
-            raise ValueError("phase_type must be developer.change or build.artifact")
+        phase_descriptor = DEFAULT_PHASE_REGISTRY.require(phase_type)
         producer = str(arguments.get("producer_identity", "")).strip()
         if not producer:
             raise ValueError("producer_identity is required")
-        expected_producer = {
-            "developer.change": "openubmc-developer",
-            "build.artifact": "openubmc-build",
-        }[phase_type]
+        expected_producer = phase_descriptor.owner
         compatible_producers = {
             "developer.change": {
                 "openubmc-developer",
@@ -3855,6 +4070,7 @@ class ContextRuntime:
         record: dict[str, object] = {
             "phase_type": phase_type,
             "producer_identity": producer,
+            "receipt_schema": phase_descriptor.receipt_schema,
             "operation_id": operation_id,
             "status": status,
             "source_revision": str(arguments.get("source_revision", "")).strip(),
@@ -3968,6 +4184,12 @@ class ContextRuntime:
                     "known_gaps": list(known_gaps),
                 }
             )
+        if status == "completed":
+            DEFAULT_PHASE_REGISTRY.validate_receipt(
+                phase_type,
+                producer=producer,
+                receipt=record,
+            )
         sanitized_record = _sanitize(record)
         if not isinstance(sanitized_record, Mapping):
             raise TypeError("phase record could not be sanitized")
@@ -4064,11 +4286,48 @@ class ContextRuntime:
         cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
         record["workflow_cycle_id"] = cycle_id
         record["workflow_step_id"] = step_id
-        record["phase_attempt"] = self._workflow_attempt(
+        phase_attempt = self._workflow_attempt(
             projection,
             kind="phase",
             step_id=step_id,
         ) + 1
+        definition = DEFAULT_WORKFLOW_KERNEL.definition_for(projection)
+        step_definition = next(
+            (step for step in definition.steps if step.step_id == step_id),
+            None,
+        )
+        if step_definition is None:
+            step_definition = WorkflowStepDefinition(
+                step_id=step_id,
+                kind="phase",
+                name=phase_type,
+                owner=phase_descriptor.owner,
+                receipt_schema=phase_descriptor.receipt_schema,
+            )
+            record["workflow_auxiliary_phase"] = True
+        elif step_definition.kind != "phase":
+            self.repository.abandon_idempotency(case_id, key)
+            raise ValueError(f"workflow step {step_id} is not a phase")
+        phase_identity = DEFAULT_WORKFLOW_KERNEL.step_identity(
+            projection,
+            step=step_definition,
+            attempt=phase_attempt,
+            input_fingerprint=fingerprint,
+            target_epoch=0,
+        )
+        record.update(
+            {
+                "phase_attempt": phase_attempt,
+                "target_version": phase_identity.target_version,
+                "workflow_definition_id": phase_identity.workflow_definition_id,
+                "workflow_definition_version": phase_identity.workflow_version,
+                "workflow_definition_fingerprint": phase_identity.workflow_fingerprint,
+                "workflow_execution_id": phase_identity.execution_id,
+                "workflow_attempt": phase_identity.attempt,
+                "workflow_input_fingerprint": phase_identity.input_fingerprint,
+                "workflow_target_epoch": phase_identity.target_epoch,
+            }
+        )
         prior_running_operation_ids = [
             str(item.get("operation_id", ""))
             for item in projection.get("operations", [])
@@ -4091,9 +4350,15 @@ class ContextRuntime:
             "name": phase_type,
             "status": status,
             "workflow_cycle_id": cycle_id,
-            "target_version": 0,
+            "target_version": phase_identity.target_version,
             "target_id": "",
             "operation_id": operation_id,
+            "workflow_execution_id": phase_identity.execution_id,
+            "workflow_definition_id": phase_identity.workflow_definition_id,
+            "workflow_definition_version": phase_identity.workflow_version,
+            "workflow_input_fingerprint": phase_identity.input_fingerprint,
+            "workflow_attempt": phase_identity.attempt,
+            "target_epoch": phase_identity.target_epoch,
         }
         simulated_projection["workflow_step_states"] = simulated_states
         phase_case_status = (
@@ -4134,6 +4399,14 @@ class ContextRuntime:
                         "workflow_cycle_id": cycle_id,
                         "workflow_step_id": step_id,
                         "workflow_step_kind": "phase",
+                        "target_version": phase_identity.target_version,
+                        "workflow_definition_id": phase_identity.workflow_definition_id,
+                        "workflow_definition_version": phase_identity.workflow_version,
+                        "workflow_definition_fingerprint": phase_identity.workflow_fingerprint,
+                        "workflow_execution_id": phase_identity.execution_id,
+                        "workflow_attempt": phase_identity.attempt,
+                        "workflow_input_fingerprint": phase_identity.input_fingerprint,
+                        "workflow_target_epoch": phase_identity.target_epoch,
                     },
                     operation_id,
                 ),
@@ -4409,43 +4682,9 @@ class ContextRuntime:
     def _context_workflow_plan(
         projection: Mapping[str, object]
     ) -> list[tuple[str, str, str]]:
-        intent = _effective_case_intent(projection)
-        delivery = str(projection.get("delivery_strategy", "source-only")) or "source-only"
-        if intent == "bundle-and-diagnose":
-            raw = [("operation", "log_bundle_collect"), ("operation", "debug_run")]
-        elif intent in {"live-patch", "rollback"}:
-            raw = [("operation", "live_patch_run"), ("operation", "debug_collect")]
-        elif intent == "upgrade-and-verify":
-            raw = [("operation", "upgrade_run"), ("operation", "debug_collect")]
-        elif intent == "diagnose-and-fix":
-            raw = [("operation", "debug_run"), ("phase", "developer.change")]
-            if delivery == "build-upgrade":
-                raw.extend(
-                    [
-                        ("phase", "build.artifact"),
-                        ("operation", "upgrade_run"),
-                        ("operation", "debug_collect"),
-                    ]
-                )
-            elif delivery == "live-patch":
-                raw.extend(
-                    [("operation", "live_patch_run"), ("operation", "debug_collect")]
-                )
-        elif (
-            intent == "diagnosis-only"
-            and projection.get("entry_operation") == "debug_collect"
-        ):
-            raw = [("operation", "debug_collect")]
-        elif (
-            intent == "diagnosis-only"
-            and _case_entry_domain(projection) == "log_analyzer"
-        ):
-            raw = [("operation", "log_bundle_collect")]
-        else:
-            raw = [("operation", "debug_run")]
         return [
-            (kind, name, f"step-{index:02d}-{name.replace('.', '-')}")
-            for index, (kind, name) in enumerate(raw, start=1)
+            (step.kind, step.name, step.step_id)
+            for step in DEFAULT_WORKFLOW_KERNEL.plan(projection)
         ]
 
     @classmethod
@@ -4684,9 +4923,11 @@ class ContextRuntime:
         phase_type: str,
         workflow_step_id: str,
     ) -> dict[str, object]:
-        required_skill = _PHASE_SKILL_OWNERS.get(phase_type, "")
-        if not required_skill:
+        try:
+            phase_descriptor = DEFAULT_PHASE_REGISTRY.require(phase_type)
+        except ValueError:
             return {}
+        required_skill = phase_descriptor.owner
         workflow_inputs = projection.get("workflow_inputs", {})
         completed_phases = cls._completed_phases(projection)
         cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
@@ -4700,6 +4941,7 @@ class ContextRuntime:
             "workflow_inputs": workflow_inputs if isinstance(workflow_inputs, Mapping) else {},
             "completed_phases": completed_phases,
             "phase_record_contract": {
+                "receipt_schema": phase_descriptor.receipt_schema,
                 "case_id": str(projection.get("case_id", "")),
                 "expected_revision": int(projection.get("revision", 0)),
                 "idempotency_key": f"{cycle_id}:{workflow_step_id}:result",
@@ -4784,41 +5026,10 @@ class ContextRuntime:
 
     @staticmethod
     def _workflow_plan(projection: Mapping[str, object]) -> list[tuple[str, str]]:
-        intent = _effective_case_intent(projection)
-        delivery = (
-            str(projection.get("delivery_strategy", "source-only"))
-            or "source-only"
-        )
-        if intent == "bundle-and-diagnose":
-            return [("operation", "log_bundle_collect"), ("operation", "debug_run")]
-        if intent in {"live-patch", "rollback"}:
-            return [("operation", "live_patch_run"), ("operation", "debug_collect")]
-        if intent == "upgrade-and-verify":
-            return [("operation", "upgrade_run"), ("operation", "debug_collect")]
-        if intent == "diagnose-and-fix":
-            plan = [("operation", "debug_run"), ("phase", "developer.change")]
-            if delivery == "build-upgrade":
-                plan.extend(
-                    [
-                        ("phase", "build.artifact"),
-                        ("operation", "upgrade_run"),
-                        ("operation", "debug_collect"),
-                    ]
-                )
-            elif delivery == "live-patch":
-                plan.extend(
-                    [
-                        ("operation", "live_patch_run"),
-                        ("operation", "debug_collect"),
-                    ]
-                )
-            return plan
-        if (
-            intent == "diagnosis-only"
-            and _case_entry_domain(projection) == "log_analyzer"
-        ):
-            return [("operation", "log_bundle_collect")]
-        return [("operation", "debug_run")]
+        return [
+            (step.kind, step.name)
+            for step in DEFAULT_WORKFLOW_KERNEL.plan(projection)
+        ]
 
     @staticmethod
     def _operation_records(
@@ -4912,21 +5123,17 @@ class ContextRuntime:
             )
         raw_plan = projection.get("acceptance_plan", {})
         plan = raw_plan if isinstance(raw_plan, Mapping) else {}
-        return _fingerprint(
-            {
-                "schema": f"{CONTEXT_RUNTIME_SCHEMA}/workflow-cursor-v1",
+        return DEFAULT_WORKFLOW_KERNEL.semantic_cursor(
+            projection,
+            nodes=nodes,
+            acceptance_plan_id=str(plan.get("plan_id", "")),
+            context_facts={
                 "case_id": str(projection.get("case_id", "")),
-                "plan_id": str(plan.get("plan_id", "")),
-                "intent": str(projection.get("intent", "")),
-                "delivery_strategy": str(
-                    projection.get("delivery_strategy", "")
-                ),
                 _TASK_POLICY_FIELD: _sanitize(
                     projection.get(_TASK_POLICY_FIELD, {})
                 ),
                 "targets": _sanitize(projection.get("targets", [])),
-                "nodes": nodes,
-            }
+            },
         )
 
     def _terminal_workflow_result(
@@ -5119,6 +5326,48 @@ class ContextRuntime:
                 if name in build:
                     arguments[name] = build[name]
         return arguments
+
+    @classmethod
+    def _workflow_operation_input_fingerprint(
+        cls,
+        projection: Mapping[str, object],
+        operation: str,
+        *,
+        target_id: str,
+    ) -> str:
+        arguments = cls._domain_arguments(
+            projection,
+            operation,
+            cls._completed_phases(projection),
+        )
+        if target_id:
+            arguments["target_id"] = target_id
+            for target in projection.get("targets", []):
+                if (
+                    isinstance(target, Mapping)
+                    and str(target.get("target_id", "")) == target_id
+                    and str(target.get("address", "")).strip()
+                ):
+                    arguments["ip"] = str(target["address"])
+                    break
+        return _fingerprint(
+            {
+                "operation": operation,
+                "arguments": _sanitize(
+                    {
+                        key: value
+                        for key, value in arguments.items()
+                        if key
+                        not in {
+                            "case_id",
+                            "expected_revision",
+                            "idempotency_key",
+                        }
+                        and not str(key).startswith("_")
+                    }
+                ),
+            }
+        )
 
     def workflow_advance(
         self,
@@ -5402,6 +5651,21 @@ class ContextRuntime:
                     domain_arguments["_minimum_target_epoch"] = target_epoch_floor
                 cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
                 target_version = int(projection.get("target_version", 1))
+                workflow_definition = DEFAULT_WORKFLOW_KERNEL.definition_for(
+                    projection
+                )
+                step_definition = next(
+                    step
+                    for step in workflow_definition.steps
+                    if step.step_id == step_id
+                )
+                workflow_input_fingerprint = (
+                    self._workflow_operation_input_fingerprint(
+                        projection,
+                        name,
+                        target_id=required_target_id,
+                    )
+                )
                 resumable_operation = next(
                     (
                         item
@@ -5412,6 +5676,14 @@ class ContextRuntime:
                         and str(item.get("workflow_step_id", "")) == step_id
                         and int(item.get("target_version", 0)) == target_version
                         and str(item.get("target_id", "")) == required_target_id
+                        and str(
+                            item.get("workflow_definition_fingerprint", "")
+                        )
+                        == workflow_definition.fingerprint
+                        and str(item.get("workflow_input_fingerprint", ""))
+                        == workflow_input_fingerprint
+                        and int(item.get("workflow_target_epoch", -1))
+                        == target_epoch_floor
                         and str(item.get("status", "")) in {"accepted", "running"}
                     ),
                     None,
@@ -5427,26 +5699,55 @@ class ContextRuntime:
                         domain_arguments["_workflow_request_fingerprint"] = (
                             resumed_request_fingerprint
                         )
+                    attempt = int(
+                        resumable_operation.get(
+                            "workflow_attempt",
+                            self._workflow_attempt(
+                                projection,
+                                kind=kind,
+                                step_id=step_id,
+                            ),
+                        )
+                    )
                 else:
                     attempt = self._workflow_attempt(
                         projection,
                         kind=kind,
                         step_id=step_id,
                     ) + 1
+                step_identity = DEFAULT_WORKFLOW_KERNEL.step_identity(
+                    projection,
+                    step=step_definition,
+                    attempt=attempt,
+                    input_fingerprint=workflow_input_fingerprint,
+                    target_epoch=target_epoch_floor,
+                )
+                if not isinstance(resumable_operation, Mapping):
                     derived_operation_id = (
-                        "op-advance-"
-                        + hashlib.sha256(
-                            (
-                                f"{case_id}:{cycle_id}:{target_version}:"
-                                f"{step_id}:attempt-{attempt}"
-                            ).encode("utf-8")
-                        ).hexdigest()[:24]
+                        "op-advance-" + step_identity.execution_id[5:29]
                     )
                 domain_arguments["idempotency_key"] = derived_operation_id
                 domain_arguments["_workflow_cycle_id"] = cycle_id
                 domain_arguments["_workflow_step_id"] = step_id
                 domain_arguments["_workflow_step_kind"] = kind
                 domain_arguments["_workflow_target_version"] = target_version
+                domain_arguments["_workflow_definition_id"] = (
+                    step_identity.workflow_definition_id
+                )
+                domain_arguments["_workflow_definition_version"] = (
+                    step_identity.workflow_version
+                )
+                domain_arguments["_workflow_definition_fingerprint"] = (
+                    step_identity.workflow_fingerprint
+                )
+                domain_arguments["_workflow_execution_id"] = (
+                    step_identity.execution_id
+                )
+                domain_arguments["_workflow_attempt"] = attempt
+                domain_arguments["_workflow_input_fingerprint"] = (
+                    workflow_input_fingerprint
+                )
+                domain_arguments["_workflow_target_epoch"] = target_epoch_floor
                 try:
                     domain_result = domain_invoker(
                         name, domain_arguments, derived_operation_id

@@ -180,6 +180,20 @@ from .orchestration import (
     TaskWorkflowResult,
     WorkflowStep,
 )
+from .workflow import (
+    WORKFLOW_DEFINITION_SCHEMA,
+    WORKFLOW_DEFINITION_VERSION,
+    DEFAULT_PHASE_REGISTRY,
+    DEFAULT_WORKFLOW_KERNEL,
+    DEFAULT_WORKFLOW_REGISTRY,
+    PhaseDescriptor,
+    PhaseRegistry,
+    StepIdentity,
+    WorkflowDefinition,
+    WorkflowKernel,
+    WorkflowRegistry,
+    WorkflowStepDefinition,
+)
 from .telnet import (
     FRAME_TOKEN_BYTES,
     MAX_TELNET_COMMAND_OUTPUT_BYTES,
@@ -202,6 +216,18 @@ from .telnet import (
 
 __all__ = [
     "RUNTIME_API_VERSION",
+    "WORKFLOW_DEFINITION_SCHEMA",
+    "WORKFLOW_DEFINITION_VERSION",
+    "DEFAULT_PHASE_REGISTRY",
+    "DEFAULT_WORKFLOW_KERNEL",
+    "DEFAULT_WORKFLOW_REGISTRY",
+    "PhaseDescriptor",
+    "PhaseRegistry",
+    "StepIdentity",
+    "WorkflowDefinition",
+    "WorkflowKernel",
+    "WorkflowRegistry",
+    "WorkflowStepDefinition",
     "ALLOWED_CREDENTIAL_KEYS",
     "CREDENTIALS_FILE_MAX_BYTES",
     "DEBUG_CREDENTIALS_FILE_ENV",
