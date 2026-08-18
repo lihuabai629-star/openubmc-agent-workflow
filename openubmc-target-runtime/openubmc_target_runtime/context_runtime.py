@@ -5562,7 +5562,8 @@ class ContextRuntime:
                 for name in ("concurrency", "reference_role", "targets"):
                     arguments.pop(name, None)
         if operation == "debug_collect":
-            arguments.setdefault("profile", "freshness")
+            arguments.setdefault("profile", "standard")
+            arguments.setdefault("no_freshness", False)
         if operation == "live_patch_run":
             developer = completed_phases.get("developer.change", {})
             for source, destination in (
@@ -6265,6 +6266,13 @@ class ContextRuntime:
                 )
         projection["capsule"] = self._capsule(projection)
         return projection
+
+    def continuation_for(
+        self, projection: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Return the semantic continuation without exposing event mechanics."""
+
+        return self._continuation_for(projection)
 
     def read_evidence(
         self,

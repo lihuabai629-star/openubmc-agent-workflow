@@ -93,6 +93,21 @@ def gate_commands(
             ),
         ),
         (
+            "agent_interface",
+            (
+                (
+                    sys.executable,
+                    "-m",
+                    "unittest",
+                    "discover",
+                    "-s",
+                    "openubmc-target-runtime/tests",
+                    "-p",
+                    "test_agent_gateway.py",
+                ),
+            ),
+        ),
+        (
             "replay_smoke",
             (
                 (

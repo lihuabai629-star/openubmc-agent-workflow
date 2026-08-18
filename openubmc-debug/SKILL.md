@@ -25,69 +25,38 @@ For a problem already narrowed to Systemd, Skynet, MDB/D-Bus mechanics, coroutin
 or openUBMC naming, read `references/mechanism-debugging.md` without abandoning this multi-surface
 orchestration entrypoint.
 
-## Case Continuation
+## Agent Gateway
 
-Prefer the `openubmc-target-runtime` MCP for work that may continue across calls or Skills. The
-first domain operation opens or resumes a persistent Case automatically. Keep its `case_id` and let
-the Runtime retain the original intent, final purpose, change boundary, target roles, operation
-receipts, evidence references, and next action.
+Use the default `openubmc-target-runtime` MCP through its semantic Interface:
 
-- When the user says “继续” or “continue”, call `workflow.next` with the bound `case_id`; do not
-  reparse the request or rebuild inputs already retained by the Case.
-- Treat `workflow.next` as the continuation loop, not as a one-step status read. When it returns
-  `waiting_phase_record`, load `required_skill` immediately and pass its `handoff_arguments`; do not
-  wait for the user to name Build or Developer again. Record the returned phase with the included
-  `phase_record_contract`, then call `workflow.next` again in the same user turn. Call it again
-  after `budget_exhausted`; for
-  `operation_in_progress`, wait for and reuse the current operation rather than creating another.
-  Return control only for a terminal Closeout or a concrete blocker that requires new input, new
-  task-level authorization, an unavailable external capability, or unresolved mutation
-  reconciliation.
-- Treat target bindings, credential selectors, artifact identities, delivery strategy, mutation
-  authorization, and authorized exceptions as Case facts. Reuse them while their identity still
-  matches; do not ask the user to repeat or reconfirm them at each Skill boundary.
-- Target Runtime's typed authorization decision is authoritative. A named Live Patch, Upgrade, or
-  rollback request authorizes only that action; Apply or Upgrade never implies rollback. Internal
-  BMC workflows authorize insecure TLS by default and may explicitly set it to `false` for a trusted
-  certificate. The Live Patch exceptions `force_path`, `no_backup`, and `no_remount` remain explicit
-  task facts, while the minimum required `skynet` restart is announced rather than reconfirmed.
-  Reuse every matching decision already carried by the Case.
-- A mutation outcome unknown is a reconciliation blocker, not a confirmation question: reconcile
-  the same durable journal before continuing. If recovery requires rollback that the Case does not
-  authorize, preserve the original operation as `recovery_blocked`.
-- A failed read or delivery step remains incomplete. The next `workflow.advance` creates the next
-  numbered attempt and executes it again; it does not replay the failed receipt forever. Keep an
-  unknown mutation outcome blocked until its durable journal is reconciled.
-- Use `case_read` to recover the bounded Case projection after a task or MCP restart.
-  Its `structuredContent` includes the typed continuation (intent, delivery route, targets,
-  workflow cycle, required phase/operation, blocker, target epoch floor, and next action) plus the
-  bounded Capsule, so resume from that contract instead of reconstructing the task from chat. A
-  direct domain retry with the same `case_id` automatically rebuilds the retained target binding;
-  do not ask for or resend the IP unless the target is intentionally changing.
-- Use `evidence_read` only for the evidence slice needed now; do not pull every raw result back into
-  context.
-- Task completion closes TargetRun connections and transient leases but keeps the Case. Explicit
-  `case_close` seals completed work; `case_forget` removes an ordinary terminal Case.
-- A target switch or comparison remains in the same Case. Keep target identity, epoch, role, scope,
-  and freshness separate; switching back may rebuild or reuse only the matching target lease.
-- When the Case reaches a terminal state, Target Runtime automatically derives and persists
-  `closeout`, `closeout_markdown`, and, by default, `closeout_bundle` from the Case event stream.
-  `workflow.next` returns the Closeout Markdown as the user-facing first screen and exposes the
-  structured Closeout plus its document, evidence, and artifact index for later retrieval.
-- Explicit target-set or port changes advance `target_version` and invalidate old target-bound
-  workflow steps. Selecting an existing multi-target entry with `target_id` changes only the active
-  selector and does not invalidate the comparison or advance the version.
-- A second completed `developer.change` starts the next workflow cycle. Replacing a downstream
-  Build record keeps the current cycle but invalidates Upgrade and verification steps after it.
-- Context Runtime is the authoritative sequencer. A direct domain operation that matches the next
-  workflow step satisfies that step, so later `workflow.advance` continues forward instead of
-  repeating Debug. A legacy nested `workflow` object may remain as compatibility input, but the
-  domain backend must not start a second automatic end-to-end workflow in authoritative mode.
+- Call `observe` for exact read-only questions. Declare only the required selectors. A narrow MDB
+  or capability query should complete in one call and return an inline `ObservationReceipt`.
+- Call `execute` for work that may cross diagnosis, Developer, Build, Live Patch, Upgrade,
+  verification, recovery, or acceptance phases.
+- When the user says “继续” or “continue”, call `execute` with `kind: resume` and the retained
+  `run_id`. Do not reconstruct the original request.
+- When a Turn has `state: waiting_response`, load the Skill named by the Gate owner, execute the
+  requested phase, and call `execute` with `kind: respond`. Put the phase receipt fields in
+  `response.payload`; the Gateway supplies Runtime sequencing identity internally.
+- Use `kind: control` with `command: reconcile` for an unknown mutation outcome. Use `cancel` only
+  at a returned phase Gate. Mutation authorization remains frozen in the Run and is not broadened
+  by continuation.
+- Return control only for a terminal Outcome or a concrete blocker requiring new input, new
+  authorization, an unavailable external capability, or unresolved mutation reconciliation.
 
-`workflow_remote.py` and `compare_remote.py` remain input-compatible CLI entrypoints, but both call
-the same OperationCatalog and Context Runtime as MCP. Their process-local TargetRun closes on exit;
-pass the returned `case_id` back with `--case-id` to resume persistent receipts and evidence from a
-later CLI or MCP task. Use `--idempotency-key` when retrying the same completed operation.
+Treat freshness as an evidence time property. The Agent Interface accepts live evidence with
+`max_age_seconds: 0`; do not use `freshness` as a profile. Capability conclusions are tri-state:
+`available`, `unavailable`, or `not_checked`. Never claim availability for an unobserved capability,
+and bind every conclusion to the current Receipt and its coverage.
+
+Do not call `case_read`, `evidence_read`, `workflow.advance`, `workflow.next`, `phase_record`, Replay,
+Session Outcome governance, or Runtime status from the default Agent profile. Those operations are
+available only in explicit `compatibility` or `operator` profiles. Raw Evidence and governance are
+for operators and CI, not ordinary diagnostic reasoning.
+
+`workflow_remote.py` and `compare_remote.py` remain input-compatible CLI baselines. The generic CLI
+uses the same `observe/execute` Gateway as MCP; select the compatibility profile only for migration
+or controlled performance comparison.
 
 ## Environment and Inputs
 
@@ -104,10 +73,9 @@ host-key verification defaults to `insecure`, sensitive path/member reads are pe
 diagnostic evidence is returned without automatic redaction. This replaceable-target policy does
 not apply to an OS host: `doctor.py --os-check` keeps OS SSH host-key verification `strict`.
 
-The active task keeps direct credential values for later domain calls. Context Runtime also keeps
-the Case workflow inputs used by `workflow.advance`, including direct values in internal
-development mode; the separate restartable TaskContext snapshot remains secret-free. Forgetting or
-expiring the Case removes that continuation state.
+The active task keeps direct credential values for later Runtime operations. A stateful `execute`
+Run keeps its workflow inputs internally; the separate restartable TaskContext snapshot remains
+secret-free. Ordinary `observe` calls do not create that persistent workflow state.
 
 ## Workflow
 
@@ -179,15 +147,13 @@ from a class, use repeatable `--mdb-expand-class`; it performs `lsobj` and the d
 reads in the same workflow. Query count is not fixed; `--mdb-concurrency auto` applies per-target
 backpressure while preserving every requested read.
 
-For a narrow interactive “show the current object/alarm state” request through MCP, use
-`debug_collect` with `profile: object-alarm`. It performs one fresh SSH-backed snapshot and skips
-the end freshness pass, Telnet lane, and source correlation. Use the full `debug_run` workflow when
-the result must support a causal claim, cross-surface correlation, or post-change verification.
+For a narrow interactive MDB or capability query through MCP, call `observe` with only the required
+selectors. Use `assurance: auto` unless the task explicitly requires a start/end freshness boundary.
+The returned Receipt carries the exact values and coverage inline. Object/alarm and bounded log
+selectors remain CLI or compatibility paths until their internal `observe` Adapters are available.
 
-For a narrow interactive MDB query through MCP, use `debug_collect` with `profile: mdb`, or pass
-`mdb_only: true` without selecting another profile. It reuses the task TargetRun and capability
-gate, immediately recollects the requested MDB values, and skips Telnet, source correlation, and
-the end freshness pass. `debug_run --mdb-only` deliberately retains full freshness semantics.
+Use `execute` when the result must support a causal claim, cross-surface correlation, post-change
+verification, mutation recovery, or a terminal acceptance Outcome.
 
 For two or more environments, use `compare_remote.py` to collect the same typed request on every
 target and compare either one reference against all candidates or all targets symmetrically. Do
@@ -216,20 +182,15 @@ python "$HOME/.agents/skills/openubmc-debug/scripts/preflight_remote.py" \
   --ip <ip> --json --compact-json
 ```
 
-Inside one MCP task, the TargetRun retains the capability snapshot per evidence profile and target/
-lane epoch. A follow-up workflow reuses that snapshot but still refreshes the current SSH/Telnet
-time anchors and recollects the requested evidence. A target epoch change or connection rebuild
-invalidates the snapshot automatically. Do not treat this as result caching; object values, alarms,
-logs, and files remain fresh reads.
+Inside one MCP task, the TargetRun may retain capability readiness per declared scope and target/
+lane epoch. A follow-up observation still recollects the requested values. A target epoch change or
+connection rebuild invalidates readiness automatically. Do not treat this as result caching.
 
-If the local MCP stdio process disconnects, reuse the same task ID. Target Runtime restores the
-typed intent, target bindings and credential selectors, bounded workflow summaries, and mutation
-journal identities. It never restores an SSH/Telnet/Redfish connection or a previous evidence
-result; the next domain call lazily rebuilds its connection and performs fresh reads. The default
-MCP text content is a concise Chinese summary during active work. At terminal Closeout, it becomes
-the Closeout Markdown report. `structuredContent` contains the real Context result plus the bounded
-Agent Envelope; read full raw JSON, logs, journals, or detailed diffs through `evidence_read` only
-when needed.
+If the local MCP stdio process disconnects, reuse the same task ID and `run_id`. Target Runtime
+restores typed intent, target bindings, bounded workflow summaries, and mutation journal identities.
+It never restores a live connection or treats a previous observation as fresh. The default MCP
+`structuredContent` is an `ObservationReceipt` or `Turn`; raw Evidence remains in the operator
+profile and must not be pulled into ordinary Agent context.
 
 The same task may replace one target, expand into a comparison set, select a different target by
 `target_id`, or change connection and evidence parameters. Preserve the original purpose and typed

@@ -249,7 +249,9 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 error.mutation_effects_started = True
                 raise error
 
-        service = RuntimeMcpService(RollbackFailedBackend())
+        service = RuntimeMcpService(
+            RollbackFailedBackend(), interface_profile="compatibility"
+        )
         endpoint = JsonRpcMcpEndpoint(
             service,
             session_task_id="rollback-failed-task",
@@ -629,7 +631,9 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
 
     def test_password_env_selector_is_preserved_and_affects_idempotency(self) -> None:
         backend = FullFakeBackend()
-        service = RuntimeMcpService(backend)
+        service = RuntimeMcpService(
+            backend, interface_profile="compatibility"
+        )
         arguments = {
             "ip": "192.0.2.28",
             "intent": "diagnosis-only",
@@ -661,7 +665,9 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
 
     def test_large_result_is_blob_backed_and_mcp_envelope_is_bounded(self) -> None:
         backend = FullFakeBackend(large_bytes=1024 * 1024 + 123)
-        service = RuntimeMcpService(backend)
+        service = RuntimeMcpService(
+            backend, interface_profile="compatibility"
+        )
         endpoint = JsonRpcMcpEndpoint(service, session_task_id="large-task")
         try:
             response = endpoint.handle(
@@ -863,7 +869,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
             verification = [
                 args for name, args in backend.calls if name == "debug_collect"
             ]
-            self.assertEqual(verification[-1]["profile"], "freshness")
+            self.assertEqual(verification[-1]["profile"], "standard")
         finally:
             service.close()
 

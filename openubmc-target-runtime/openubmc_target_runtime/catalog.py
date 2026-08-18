@@ -223,6 +223,11 @@ class OperationDescriptor:
     handler_name: str | None = None
     lifecycle: str = "invoke"
     mutation: bool = False
+    exposure: str = "compatibility"
+    audience: str = "internal"
+    cost_hint: str = "unbounded"
+    scope_contract: str = ""
+    result_projector: str = ""
 
     def __post_init__(self) -> None:
         name = self.name.strip()
@@ -238,6 +243,18 @@ class OperationDescriptor:
         if self.lifecycle not in {"invoke", "read", "close", "status"}:
             raise OperationCatalogError(
                 f"operation {name} has unsupported lifecycle {self.lifecycle}"
+            )
+        if self.exposure not in {"agent", "compatibility", "operator", "internal"}:
+            raise OperationCatalogError(
+                f"operation {name} has unsupported exposure {self.exposure}"
+            )
+        if self.audience not in {"agent", "operator", "internal"}:
+            raise OperationCatalogError(
+                f"operation {name} has unsupported audience {self.audience}"
+            )
+        if self.cost_hint not in {"small", "medium", "large", "unbounded"}:
+            raise OperationCatalogError(
+                f"operation {name} has unsupported cost hint {self.cost_hint}"
             )
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "description", self.description.strip())
@@ -258,6 +275,11 @@ class OperationDescriptor:
         lifecycle: str = "invoke",
         handler_name: str | None = None,
         mutation: bool = False,
+        exposure: str = "compatibility",
+        audience: str = "internal",
+        cost_hint: str = "unbounded",
+        scope_contract: str = "",
+        result_projector: str = "",
     ) -> "OperationDescriptor":
         name = definition.get("name")
         description = definition.get("description")
@@ -279,7 +301,24 @@ class OperationDescriptor:
             handler_name=handler_name,
             lifecycle=lifecycle,
             mutation=mutation,
+            exposure=exposure,
+            audience=audience,
+            cost_hint=cost_hint,
+            scope_contract=scope_contract,
+            result_projector=result_projector,
         )
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            **self.to_tool_definition(),
+            "lifecycle": self.lifecycle,
+            "mutation": self.mutation,
+            "exposure": self.exposure,
+            "audience": self.audience,
+            "cost_hint": self.cost_hint,
+            "scope_contract": self.scope_contract,
+            "result_projector": self.result_projector,
+        }
 
     def to_tool_definition(self) -> dict[str, object]:
         return {

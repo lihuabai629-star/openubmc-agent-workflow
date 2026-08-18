@@ -37,13 +37,10 @@ For a genuinely narrow model-only question, add `--mdb-only`. It retains start/e
 checks only the MDB capability at preflight, and does not enumerate D-Bus, active alarms, the bus
 tree, logs, or live files.
 
-For a narrow interactive object/alarm read through MCP, select `debug_collect` with
-`profile: object-alarm`. This is intentionally a single fresh SSH snapshot: it skips Telnet,
-source correlation, and the end freshness pass. On an epoch-valid follow-up, the cached MDB gate
-may release that read while the start SSH anchor refresh runs; D-Bus/alarm reads still wait for the
-refreshed anchor. An anchor failure fails the workflow and invalidates the cache. It is not a
-replacement for `debug_run` when the task needs change-boundary verification or a multi-surface
-causal conclusion.
+For a narrow interactive MDB or capability read through MCP, use `observe` with exact selectors.
+Object/alarm collection remains a CLI or explicit compatibility path until its selector Adapter is
+available behind `observe`. Use `execute` when the task needs change-boundary verification or a
+multi-surface causal conclusion.
 
 ## Contents
 
@@ -78,13 +75,10 @@ The workflow starts with preflight and consumes `result.capabilities`:
 
 The current helper implementation uses SSH for object tools and Telnet for log/file tools. A failed transport skips only the capability it supports; an optional helper that preflight already marked unavailable is skipped and does not disable another usable capability. A helper that was declared usable but then fails during the snapshot remains a real workflow partial failure.
 
-Within one MCP task, a TargetRun reuses the last capability snapshot only when the evidence profile,
-exact selector, target epoch, and relevant lane epochs still match. The start of every follow-up
-workflow still performs the lightweight time-anchor refresh, and the end refresh remains mandatory.
-Requested MDB properties, D-Bus objects, alarms, logs, and files are always recollected. A CLI
-process releases its TargetRun on exit, but its operation, compact result, and evidence remain in the
-shared Context Runtime. Resume them with the returned `case_id`; the next fresh collection rebuilds
-the connection instead of pretending that a previous process's capability snapshot is live.
+Within one MCP task, a TargetRun reuses capability readiness only when the immutable ScopeContract,
+target epoch, and relevant lane epochs still match. Requested values are always recollected. An
+`observe` call does not open a Case. Stateful work returns a `run_id`; resume it through `execute`
+instead of reconstructing Runtime operations.
 
 During a cold typed preflight, capability checks publish readiness independently. The MDB plan may
 start after SSH and MDB are ready while D-Bus and Telnet checks continue; busctl/alarm collection

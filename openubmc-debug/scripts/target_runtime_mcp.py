@@ -463,6 +463,135 @@ class DebugMcpBackend:
     def task_status(task: DebugMcpTask) -> dict[str, object]:
         return task.status()
 
+    def observe_query(
+        self,
+        task: DebugMcpTask,
+        arguments: Mapping[str, object],
+        context,
+    ) -> dict[str, object]:
+        """Collect full capability truth plus exact MDB values without a Case."""
+
+        context.raise_if_stopped()
+        bounded = dict(arguments)
+        bounded.pop("_context_authoritative", None)
+        capability_names = bounded.pop("capability_names", [])
+        if not isinstance(capability_names, list) or not all(
+            isinstance(item, str) for item in capability_names
+        ):
+            raise TypeError("capability_names must be an array of strings")
+        assured = bounded.pop("assured", False)
+        if not isinstance(assured, bool):
+            raise TypeError("assured must be a boolean")
+        credential_values = bounded.pop("_credential_values", None)
+        minimum_target_epoch = bounded.pop("_minimum_target_epoch", 0)
+        wide_capabilities = any(
+            name not in {"ssh", "mdbctl"} for name in capability_names
+        )
+        bounded["mdb_only"] = not wide_capabilities
+        bounded["skip_telnet"] = "telnet" not in capability_names
+        bounded["no_freshness"] = True
+        bounded["no_source_correlation"] = True
+        bounded["deadline"] = max(
+            1,
+            min(
+                int(bounded.get("deadline", 180)),
+                int(math.ceil(context.remaining())),
+            ),
+        )
+        args = workflow_remote.parse_args(_workflow_argv(bounded))
+        for name in _TRANSPORT_STRING_OPTIONS:
+            setattr(args, name, str(bounded.get(name, "")))
+        for name in _TRANSPORT_BOOLEAN_OPTIONS:
+            setattr(args, name, _boolean_argument(bounded, name))
+        args.fast_snapshot = True
+        workflow_remote._validate_numeric_args(args)
+        workflow_remote.validate_workflow_inputs(args)
+        deadline = workflow_remote.WorkflowDeadline(args.deadline)
+        environment = os.environ.copy()
+        with task.lease_scope(
+            args,
+            credential_values=(
+                dict(credential_values)
+                if isinstance(credential_values, Mapping)
+                else None
+            ),
+        ) as lease:
+            if minimum_target_epoch:
+                lease.task_run.ensure_target_epoch(
+                    lease.target,
+                    int(minimum_target_epoch),
+                    reason="agent-observation",
+                )
+            runner = workflow_remote.build_typed_debug_tool_runner(lease)
+            preflight = runner(
+                "preflight_start",
+                workflow_remote._preflight_command(args),
+                environment,
+                args.timeout,
+                deadline=deadline,
+            )
+            capabilities = workflow_remote.preflight_capabilities(preflight)
+            requested_queries = list(getattr(args, "mdb_queries", []))
+            if requested_queries and capabilities.get("mdbctl") is True:
+                mdb_results = workflow_remote._run_mdb_plan(
+                    args,
+                    environment,
+                    deadline,
+                    tool_runner=runner,
+                )
+            else:
+                reason = "mdbctl capability was unavailable"
+                mdb_results = {
+                    ("mdbctl" if index == 0 else f"mdbctl_{index + 1}"): (
+                        workflow_remote.skipped_result(
+                            "mdbctl" if index == 0 else f"mdbctl_{index + 1}",
+                            reason,
+                        )
+                    )
+                    for index, _query in enumerate(requested_queries)
+                }
+            preflight_end = None
+            if assured:
+                preflight_end = runner(
+                    "preflight_end",
+                    workflow_remote._preflight_command(args),
+                    environment,
+                    args.timeout,
+                    deadline=deadline,
+                )
+                capabilities = workflow_remote.preflight_capabilities(preflight_end)
+            runtime_status = lease.runtime_status()
+        context.raise_if_stopped()
+        freshness_anchor = preflight_end or preflight
+        preflight_payload = freshness_anchor.get("payload", {})
+        observed_at = (
+            str(preflight_payload.get("observed_at", ""))
+            if isinstance(preflight_payload, Mapping)
+            else ""
+        )
+        return {
+            "schema_version": "openubmc-debug.v1",
+            "tool": "agent_observe",
+            "ip": str(args.ip),
+            "observed_at": observed_at,
+            "ok": bool(preflight.get("ok")) and (
+                preflight_end is None or bool(preflight_end.get("ok"))
+            ),
+            "code": str(freshness_anchor.get("code", "ok")),
+            "returncode": int(freshness_anchor.get("returncode", 0)),
+            "result": {
+                "capabilities": capabilities,
+                "preflight_start": preflight,
+                **(
+                    {"preflight_end": preflight_end}
+                    if preflight_end is not None
+                    else {}
+                ),
+                "lanes": {"ssh": mdb_results},
+                "runtime": {"engine": self.engine_name, "status": runtime_status},
+            },
+        }
+
     def _run_single(
         self,
         task: DebugMcpTask,
@@ -493,6 +622,10 @@ class DebugMcpBackend:
             ),
         )
         profile = str(bounded.get("profile", "standard"))
+        if profile not in {"standard", "mdb", "object-alarm"}:
+            raise ValueError(
+                "profile must describe evidence scope: standard, mdb, or object-alarm"
+            )
         fast_object_alarm = collect_only and profile == "object-alarm"
         fast_mdb = collect_only and (
             profile == "mdb"
@@ -753,6 +886,9 @@ def create_service():
     )
     return runtime.RuntimeMcpService(
         orchestrated_backend,
+        interface_profile=os.environ.get(
+            "OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE", "agent"
+        ),
         context_repository=runtime.SQLiteRuntimeRepository(
             state_dir / "context-runtime.sqlite3"
         ),

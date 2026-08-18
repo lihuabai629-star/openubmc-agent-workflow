@@ -61,7 +61,7 @@ class _DomainBackend:
         context.raise_if_stopped()
         value = self._capture("debug_run", arguments)
         minimum = arguments.get("_minimum_target_epoch", 0)
-        if arguments.get("profile") == "freshness":
+        if arguments.get("mdb_only") is True:
             value["target_epoch"] = int(minimum)
         return value
 
@@ -305,7 +305,7 @@ class WorkflowRegressionTests(unittest.TestCase):
         try:
             first = service.call_tool(
                 "debug_run",
-                {"ip": "192.0.2.14", "profile": "standard"},
+                {"ip": "192.0.2.14", "mdb_only": False},
                 task_id="changed-input-cycle",
                 operation_id="debug-standard",
             )
@@ -313,7 +313,7 @@ class WorkflowRegressionTests(unittest.TestCase):
                 "debug_run",
                 {
                     "case_id": first.envelope["case_id"],
-                    "profile": "freshness",
+                    "mdb_only": True,
                 },
                 task_id="changed-input-cycle",
                 operation_id="debug-freshness",
@@ -452,7 +452,7 @@ class WorkflowRegressionTests(unittest.TestCase):
                         "live_patch": {
                             "remote_path": "/opt/bmc/fix.lua",
                         },
-                        "verification": {"profile": "freshness"},
+                        "verification": {"profile": "standard"},
                     },
                 },
                 task_id="authoritative-routing",
@@ -657,7 +657,9 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertFalse(retained.envelope["continuation"]["workflow_complete"])
 
     def test_json_rpc_case_read_returns_typed_continuation_and_capsule(self) -> None:
-        service = RuntimeMcpService(_DomainBackend())
+        service = RuntimeMcpService(
+            _DomainBackend(), interface_profile="compatibility"
+        )
         endpoint = JsonRpcMcpEndpoint(service, session_task_id="continuation-task")
         try:
             waiting = service.call_tool(
@@ -839,7 +841,7 @@ class WorkflowRegressionTests(unittest.TestCase):
                 ):
                     interrupted.call_tool(
                         "debug_collect",
-                        {"case_id": case_id, "profile": "freshness"},
+                        {"case_id": case_id, "profile": "standard"},
                         task_id="interrupted-collect",
                         operation_id="interrupted-verification",
                     )
@@ -1244,7 +1246,7 @@ class WorkflowRegressionTests(unittest.TestCase):
                 "debug_collect",
                 {
                     "case_id": patched.envelope["case_id"],
-                    "profile": "freshness",
+                    "profile": "standard",
                 },
                 task_id="implicit-candidate-epoch",
                 operation_id="verify-implicit-candidate",
@@ -1321,7 +1323,7 @@ class WorkflowRegressionTests(unittest.TestCase):
                 {
                     "case_id": patched.envelope["case_id"],
                     "target_id": "reference",
-                    "profile": "freshness",
+                    "profile": "standard",
                 },
                 task_id="cross-target-verification",
                 operation_id="collect-reference",
@@ -1377,7 +1379,7 @@ class WorkflowRegressionTests(unittest.TestCase):
                 "debug_collect",
                 {
                     "case_id": patched.envelope["case_id"],
-                    "profile": "freshness",
+                    "profile": "standard",
                 },
                 task_id="stale-direct-collect",
                 operation_id="stale-read",

@@ -171,7 +171,7 @@ class TargetRuntimeCliTests(unittest.TestCase):
     def test_catalog_cli_lists_the_same_operation_names_as_the_service(self) -> None:
         service = self.create_service()
         try:
-            expected = list(service.catalog.names())
+            expected = list(service.interface_catalog.names())
         finally:
             service.close()
         output = io.StringIO()
@@ -179,6 +179,30 @@ class TargetRuntimeCliTests(unittest.TestCase):
             returncode = self.module._generic_main(["--list-operations"])
         self.assertEqual(returncode, 0)
         self.assertEqual(json.loads(output.getvalue()), expected)
+
+    def test_agent_cli_maps_legacy_case_id_to_execute_run_id_only(self) -> None:
+        parser = self.module._generic_parser(("observe", "execute"))
+        args = parser.parse_args(
+            [
+                "--operation",
+                "execute",
+                "--case-id",
+                "run-123",
+                "--expected-revision",
+                "9",
+                "--idempotency-key",
+                "transport-operation",
+            ]
+        )
+
+        arguments = self.module._generic_arguments(
+            {"kind": "resume"},
+            args,
+            operation="execute",
+            interface_profile="agent",
+        )
+
+        self.assertEqual(arguments, {"kind": "resume", "run_id": "run-123"})
 
     def test_legacy_cli_emits_json_for_a_validation_failure(self) -> None:
         with tempfile.TemporaryDirectory() as raw_state:

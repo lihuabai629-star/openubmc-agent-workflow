@@ -84,7 +84,7 @@ class RuntimeVerificationBackend(PlanObservingBackend):
         return {
             "ok": True,
             "summary": "business behavior is healthy",
-            "profile": "freshness",
+            "profile": "standard",
             "target_epoch": 2,
             "business_acceptance": "passed",
         }
@@ -134,7 +134,7 @@ class StrictRuntimeVerificationBackend(RuntimeVerificationBackend):
         return {
             "ok": self.business_status != "failed",
             "summary": "business acceptance evaluated",
-            "profile": "freshness",
+            "profile": "standard",
             "target_epoch": 2,
             "business_acceptance": self.business_status,
             "acceptance_results": [
@@ -232,7 +232,7 @@ class RecordingTerminalBackend:
         return {
             "ok": True,
             "summary": "business behavior is healthy after delivery",
-            "profile": "freshness",
+            "profile": "standard",
             "target_epoch": 8,
             "business_acceptance": "passed",
         }
@@ -654,6 +654,7 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         service = RuntimeMcpService(
             PlanObservingBackend(repository),
             context_repository=repository,
+            interface_profile="compatibility",
         )
         try:
             first = service.call_tool(
@@ -1146,6 +1147,7 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         service = RuntimeMcpService(
             PlanObservingBackend(repository),
             context_repository=repository,
+            interface_profile="compatibility",
         )
         endpoint = JsonRpcMcpEndpoint(
             service,

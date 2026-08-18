@@ -45,6 +45,22 @@ def _with_case_controls(
     return result
 
 
+def _generic_arguments(
+    arguments: Mapping[str, object],
+    args: argparse.Namespace,
+    *,
+    operation: str,
+    interface_profile: str,
+) -> dict[str, object]:
+    if interface_profile != "agent":
+        return _with_case_controls(arguments, args)
+    result = dict(arguments)
+    legacy_run_id = str(getattr(args, "case_id", "")).strip()
+    if operation == "execute" and legacy_run_id and "run_id" not in result:
+        result["run_id"] = legacy_run_id
+    return result
+
+
 @contextmanager
 def _direct_password_environment(
     args: argparse.Namespace, arguments: dict[str, object]
@@ -166,8 +182,8 @@ def run_compare_legacy(argv: list[str] | None = None) -> int:
 
 def _generic_parser(operation_names: tuple[str, ...]) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Call any openUBMC Target Runtime operation through its shared Catalog.",
-        epilog="Catalog operations: " + ", ".join(operation_names),
+        description="Call an openUBMC Target Runtime operation through its active Interface.",
+        epilog="Interface operations: " + ", ".join(operation_names),
     )
     parser.add_argument("--operation", choices=operation_names)
     parser.add_argument(
@@ -187,7 +203,7 @@ def _generic_parser(operation_names: tuple[str, ...]) -> argparse.ArgumentParser
 def _generic_main(argv: list[str]) -> int:
     service = target_runtime_mcp.create_service()
     try:
-        operation_names = service.catalog.names()
+        operation_names = service.interface_catalog.names()
         args = _generic_parser(operation_names).parse_args(argv)
         if args.list_operations:
             print(json.dumps(list(operation_names), ensure_ascii=False, indent=2))
@@ -200,15 +216,38 @@ def _generic_main(argv: list[str]) -> int:
             raise SystemExit(f"--arguments-json is not valid JSON: {exc}") from exc
         if not isinstance(raw, dict):
             raise SystemExit("--arguments-json must decode to an object")
-        arguments = _with_case_controls(raw, args)
-        return _call(
-            args.operation,
-            arguments,
+        arguments = _generic_arguments(
+            raw,
             args,
-            json_output=True,
-            prefix="catalog-cli",
-            service=service,
+            operation=args.operation,
+            interface_profile=service.interface_profile,
         )
+        task_id, operation_id = _transport_identity(args, prefix="catalog-cli")
+        try:
+            value = service.call_exposed_tool(
+                args.operation,
+                arguments,
+                task_id=task_id,
+                operation_id=operation_id,
+            )
+            envelope = getattr(value, "envelope", value)
+            if not isinstance(envelope, Mapping):
+                raise TypeError("Target Runtime returned a non-object result")
+            _emit(envelope, json_output=True)
+            return _legacy_returncode(value, envelope)
+        except Exception as exc:
+            error = service.error_result(
+                exc,
+                name=args.operation,
+                arguments=arguments,
+                task_id=task_id,
+                operation_id=operation_id,
+            )
+            envelope = getattr(error, "envelope", error)
+            _emit(envelope, json_output=True)
+            return 1
+        finally:
+            service.complete_task(task_id)
     finally:
         service.close()
 

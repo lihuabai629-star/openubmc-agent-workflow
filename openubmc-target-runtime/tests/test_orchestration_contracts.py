@@ -1238,7 +1238,7 @@ class OrchestrationContractTests(unittest.TestCase):
                 "artifact_path": "/tmp/openubmc.hpm",
                 "artifact_sha256": "a" * 64,
                 "product_version": "2.0",
-                "workflow": {"verification": {"profile": "freshness"}},
+                "workflow": {"verification": {"profile": "standard"}},
             },
             self.operation_context("selected-mutation-handoff"),
         )
@@ -1302,7 +1302,7 @@ class OrchestrationContractTests(unittest.TestCase):
                 "product_version": "2.0",
                 "workflow": {
                     "verification": {
-                        "profile": "freshness",
+                        "profile": "standard",
                         "ip": "203.0.113.99",
                         "target_id": "reference",
                         "target_role": "reference",
@@ -1452,7 +1452,8 @@ class OrchestrationContractTests(unittest.TestCase):
         service = RuntimeMcpService(
             OrchestratedMcpBackend(
                 {"live_patch_run": domain, "upgrade_run": domain}
-            )
+            ),
+            interface_profile="compatibility",
         )
         try:
             definitions = service.tool_definitions()
@@ -2450,7 +2451,7 @@ class OrchestrationContractTests(unittest.TestCase):
                 calls.append(("debug", dict(arguments)))
                 return {
                     "ok": True,
-                    "target_epoch": 4 if arguments.get("profile") == "freshness" else 0,
+                    "target_epoch": int(arguments.get("_minimum_target_epoch", 0)),
                     "evidence_ids": ["debug-evidence"],
                 }
 

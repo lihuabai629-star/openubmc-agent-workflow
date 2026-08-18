@@ -65,6 +65,188 @@ class FakeLease:
 
 
 class RuntimeMcpBackendTests(unittest.TestCase):
+    def test_agent_observe_runs_one_preflight_and_only_exact_mdb_queries(self) -> None:
+        module = load_script("target_runtime_mcp")
+        runtime = module._load_runtime_module()
+        calls: list[str] = []
+
+        def runner(name, _command, _environment, _timeout, **_kwargs):
+            calls.append(name)
+            if name == "preflight_start":
+                return {
+                    "name": name,
+                    "ok": True,
+                    "code": "ok",
+                    "returncode": 0,
+                    "payload": {
+                        "observed_at": "2026-08-19T00:00:00Z",
+                        "result": {
+                            "capabilities": {
+                                "ssh_transport": True,
+                                "remote_log_file": True,
+                                "dbus_env": True,
+                                "mdbctl": True,
+                                "busctl": False,
+                            }
+                        },
+                    },
+                }
+            return {
+                "name": name,
+                "ok": True,
+                "code": "ok",
+                "returncode": 0,
+                "payload": {
+                    "result": {
+                        "properties": {name: {"Value": name}},
+                    }
+                },
+            }
+
+        lease = FakeLease("agent-observe-task")
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "secret", "port": 22},
+                    "telnet": {"user": "root", "password": "secret", "port": 23},
+                },
+            ),
+            mock.patch.object(module, "open_debug_runtime_lease", return_value=lease),
+            mock.patch.object(
+                module.workflow_remote,
+                "build_typed_debug_tool_runner",
+                return_value=runner,
+            ),
+        ):
+            backend = module.DebugMcpBackend()
+            service = runtime.RuntimeMcpService(
+                runtime.OrchestratedMcpBackend(
+                    {"debug_collect": backend, "debug_run": backend}
+                )
+            )
+            try:
+                receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["ssh", "telnet", "mdbctl", "busctl"],
+                            },
+                            {
+                                "id": "mdb",
+                                "kind": "mdb",
+                                "queries": ["lsprop Object0", "lsprop Object1"],
+                            },
+                        ],
+                    },
+                    task_id="agent-observe-task",
+                    operation_id="agent-observe-operation",
+                )
+                combined_calls = list(calls)
+                calls.clear()
+                mdb_only_receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "mdb",
+                                "kind": "mdb",
+                                "queries": ["lsprop Object2"],
+                            }
+                        ],
+                    },
+                    task_id="agent-observe-mdb-only",
+                    operation_id="agent-observe-mdb-only-operation",
+                )
+                mdb_only_calls = list(calls)
+                calls.clear()
+                capability_only_receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["ssh", "telnet", "mdbctl", "busctl"],
+                            }
+                        ],
+                    },
+                    task_id="agent-observe-capability-only",
+                    operation_id="agent-observe-capability-only-operation",
+                )
+                capability_only_calls = list(calls)
+                calls.clear()
+                assured_receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["ssh", "busctl"],
+                            },
+                            {
+                                "id": "mdb",
+                                "kind": "mdb",
+                                "queries": ["lsprop Object3"],
+                            },
+                        ],
+                        "assurance": "assured",
+                    },
+                    task_id="agent-observe-assured",
+                    operation_id="agent-observe-assured-operation",
+                )
+                assured_calls = list(calls)
+                case_ids = [
+                    service.context_runtime.repository.case_for_task(task_id)
+                    for task_id in (
+                        "agent-observe-task",
+                        "agent-observe-mdb-only",
+                        "agent-observe-capability-only",
+                        "agent-observe-assured",
+                    )
+                ]
+            finally:
+                service.close()
+
+        self.assertEqual(case_ids, [None, None, None, None])
+        self.assertEqual(
+            set(combined_calls), {"preflight_start", "mdbctl", "mdbctl_2"}
+        )
+        self.assertEqual(len(combined_calls), 3)
+        self.assertEqual(mdb_only_calls, ["preflight_start", "mdbctl"])
+        self.assertEqual(capability_only_calls, ["preflight_start"])
+        self.assertEqual(
+            assured_calls,
+            ["preflight_start", "mdbctl", "preflight_end"],
+        )
+        states = {
+            item["name"]: item["status"]
+            for item in receipt["results"]["caps"]["values"]
+        }
+        self.assertEqual(
+            states,
+            {
+                "ssh": "available",
+                "telnet": "available",
+                "mdbctl": "available",
+                "busctl": "unavailable",
+            },
+        )
+        self.assertTrue(receipt["coverage"]["complete"])
+        self.assertTrue(mdb_only_receipt["coverage"]["complete"])
+        self.assertTrue(capability_only_receipt["coverage"]["complete"])
+        self.assertEqual(assured_receipt["assurance"], "assured")
+        self.assertTrue(assured_receipt["coverage"]["complete"])
+
     def test_workflow_argv_accepts_runtime_direct_passwords_without_legacy_projection(
         self,
     ) -> None:
@@ -906,12 +1088,6 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             },
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {"name": "runtime_status", "arguments": {}},
-            },
         ]
         with tempfile.TemporaryDirectory() as raw_state:
             completed = subprocess.run(
@@ -936,34 +1112,11 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 if line.strip()
             )
         }
-        self.assertEqual(set(responses), {1, 2, 3})
+        self.assertEqual(set(responses), {1, 2})
         self.assertEqual(
             [tool["name"] for tool in responses[2]["result"]["tools"]],
-            [
-                "debug_run",
-                "debug_collect",
-                "log_bundle_collect",
-                "live_patch_run",
-                "upgrade_run",
-                "case_read",
-                "evidence_read",
-                "case_replay_export",
-                "case_replay_run",
-                "session_outcome_record",
-                "session_outcome_summary",
-                "session_outcome_transition",
-                "session_outcome_promote",
-                "case_close",
-                "case_forget",
-                "phase_record",
-                "workflow.advance",
-                "workflow.next",
-                "runtime_status",
-            ],
+            ["observe", "execute"],
         )
-        status_envelope = responses[3]["result"]["structuredContent"]
-        self.assertEqual(status_envelope["operation"]["name"], "runtime_status")
-        self.assertEqual(status_envelope["status"], "completed")
 
     def test_stdio_validation_failure_returns_an_error_and_keeps_serving(self) -> None:
         requests = [
@@ -1003,6 +1156,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     **os.environ,
                     "CODEX_TASK_ID": "validation-failure-task",
                     "OPENUBMC_TARGET_RUNTIME_STATE_DIR": raw_state,
+                    "OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE": "compatibility",
                 },
             )
 

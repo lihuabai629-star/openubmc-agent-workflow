@@ -40,6 +40,12 @@ Codex and Claude receive managed stdio MCP entries. OpenClaw receives the same S
 current upstream configuration has no native MCP adapter, so no unsupported configuration key is
 written.
 
+The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
+queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,
+and Runtime status are available only through the explicit `operator` profile. The previous tool
+set remains available through the explicit `compatibility` profile for migration and measurement.
+See [Agent Semantic Gateway](docs/agent-semantic-gateway.md).
+
 ## Credentials
 
 BMC and OS credentials:
@@ -144,9 +150,10 @@ python3 scripts/release_gate.py \
   --output release-gate.json
 ```
 
-The gate requires clean installation, previous-to-current upgrade, rollback, and deterministic Case
-Replay smoke in that order. A failed gate skips all later gates and prevents promotion. The GitHub
-Release workflow applies the same ordering and only creates a release after the gate job succeeds.
+The gate requires clean installation, previous-to-current upgrade, rollback, Agent Interface
+contracts, and deterministic Case Replay smoke in that order. A failed gate skips all later gates
+and prevents promotion. The GitHub Release workflow applies the same ordering and only creates a
+release after the gate job succeeds.
 
 ## Session Outcome governance
 

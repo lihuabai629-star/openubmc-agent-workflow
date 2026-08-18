@@ -155,6 +155,10 @@ Compatibility fields `ssh_object`, `telnet_files`, and `telnet_logs` may remain 
 
 ## Orchestration Entrypoints
 
+The default MCP Interface exposes only `observe` and `execute`. The domain operation names in this
+section describe internal Runtime adapters and the explicit compatibility profile; ordinary Agents
+must not orchestrate them directly.
+
 `workflow_remote.py` is the canonical combined-snapshot CLI. It preserves the established input
 flags, then enters `debug_run` through the same OperationCatalog, Case repository, evidence store,
 and idempotency path as MCP. Its DomainAdapter performs preflight, gates each helper by the reported
@@ -162,19 +166,20 @@ fine-grained capability, collects the bounded snapshot, and computes freshness u
 deadline. The package intentionally contains no terminal-multiplexer or detached-pane launcher.
 Starting a shell session is neither collection completion nor evidence.
 
-The MCP `debug_collect` entrypoint accepts `profile: object-alarm` for a single current SSH-backed
+The compatibility `debug_collect` entrypoint accepts `profile: object-alarm` for a single current SSH-backed
 object/alarm snapshot. That profile skips Telnet, source correlation, and the end freshness pass.
 On an epoch-valid follow-up, its cached MDB gate can release that read concurrently with the start
 SSH anchor refresh; D-Bus/alarm reads still wait for the refreshed anchor. A failed refresh still
 fails the result and invalidates the cache. Use `debug_run` for the full freshness and correlation
 workflow.
 
-For a current MDB-only answer, `debug_collect` accepts `profile: mdb`. Supplying `mdb_only: true`
+For a current MDB-only answer, default MCP callers use an `observe` MDB selector. Compatibility
+`debug_collect` accepts `profile: mdb`. Supplying `mdb_only: true`
 with the default profile selects the same fast path. It forces the MDB-only capability profile,
 skips Telnet/source correlation/end freshness, and enables the cached capability gate to release
 fresh MDB reads during the SSH anchor refresh. This is not result caching: every requested MDB
-query is executed again. An explicit `profile: freshness` or `debug_run --mdb-only` keeps the full
-freshness boundary.
+query is executed again. `debug_run --mdb-only` keeps the full start/end freshness boundary.
+`freshness` is not a profile and is rejected.
 
 Use `openubmc-debug-dev/tools/benchmark_fast_mdb.py --target <ip> --iterations 2 --json` to record
 one cold and one epoch-valid warm snapshot in the same task. Repeat `--target` for a small
@@ -292,21 +297,11 @@ than the active concurrency budget, and Runtime status exposes the active/peak l
 in-flight submission counts. Context maintenance attempts, failures, and the last failure are also
 visible in Runtime status.
 
-During active work, MCP tool responses put a concise Chinese status, recovery state, and next
-action in text `content`. When a Case becomes terminal, Target Runtime automatically persists
-`closeout`, `closeout_markdown`, and the default `closeout_bundle`. Use `workflow.advance` only for
-first execution or an explicit delivery-strategy selection; use the strict `workflow.next` entry
-for every later bare “continue” request. `workflow.next` reuses the Case's frozen context, creates no
-Case when none exists, and returns a terminal Closeout without adding another control event. Its
-`structuredContent` contains the real operation result plus
-the bounded Agent Envelope, and the bundle indexes `closeout.json`, `closeout.md`, stage evidence,
-and artifacts. Use `case_read` for the recoverable projection and `evidence_read` for a bounded
-verified body; do not reconstruct completion from the human summary or from phase status alone.
-
-An external phase gate includes `required_skill` and sanitized `handoff_arguments`, including a
-ready `phase_record_contract`. Load that Skill automatically, execute it against the frozen Case
-inputs, record the result, and continue the loop. The user does not need to repeat the build stage,
-target, or final verification purpose.
+During active work, default MCP `structuredContent` is an `ObservationReceipt` or `Turn`. Start a
+stateful Run with `execute(kind=start)`, continue it with `resume`, and satisfy a returned phase Gate
+with `respond`. The Gateway wraps `workflow.advance`, `workflow.next`, and phase recording
+internally. Terminal Runs persist Closeout and a redacted Session Outcome, while raw Evidence,
+Replay, Case inspection, review, approval, and promotion stay in the operator profile.
 
 ## Common JSON envelope
 
