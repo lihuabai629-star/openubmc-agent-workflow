@@ -139,7 +139,7 @@ release ref:
 
 ```bash
 python3 scripts/release_gate.py \
-  --current-ref v1.2.1 \
+  --current-ref v1.2.2 \
   --previous-ref v1.1.1 \
   --output release-gate.json
 ```
