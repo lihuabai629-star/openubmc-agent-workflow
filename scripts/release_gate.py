@@ -88,6 +88,7 @@ def gate_commands(
                     "--home",
                     str(lifecycle_home),
                     "--non-interactive",
+                    "--skip-tool-install",
                 ),
             ),
         ),

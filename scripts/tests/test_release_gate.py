@@ -87,6 +87,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(upgrade[1][upgrade[1].index("--ref") + 1], "v1.2.0")
         rollback = gates["rollback"][0]
         self.assertIn("rollback", rollback)
+        self.assertIn("--skip-tool-install", rollback)
 
 
 if __name__ == "__main__":
