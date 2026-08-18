@@ -2,7 +2,7 @@
   "schema": "openubmc-agent-workflow.release-lock.v1",
   "lock_version": 1,
   "release_version": "1.2.2",
-  "source_commit": "92a597a9f73631ba6d970cd90b75455369b2c0f4",
+  "source_commit": "07f36dc9dd4af42e3fc3e78d5cd81a4f6556ecfb",
   "source_commit_policy": "lock-finalization-parent-v1",
   "workflow_digest": "sha256:906697f419c93b2420198da6a762e3e74c123aaf1e79bc23c18d71ece1d2fd6a",
   "skills": [
@@ -11,14 +11,14 @@
       "path": "openubmc-environment-setup",
       "version": "2.6.0",
       "manifest_version": 1,
-      "digest": "sha256:f8dbf4ef7bf09acbf82cb291b9e87e2334a378a0e52d2fea66fd6fff7a7f2ca7"
+      "digest": "sha256:668ca043d9778929301b6a72effb78a66c6c7eeca0c6599906be9ab32f2240ec"
     },
     {
       "name": "openubmc-debug",
       "path": "openubmc-debug",
       "version": "1.0.0",
       "manifest_version": 1,
-      "digest": "sha256:72a4f2277659a228ec31f5213d1885db8fe806ddc4809f24e5af2f833bc240c2"
+      "digest": "sha256:8e4ecdabdaf150a5c9977564fd3d16269402bd8282febc750096b660c8400654"
     },
     {
       "name": "openubmc-log-analyzer",
@@ -86,7 +86,7 @@
   ],
   "runtime": {
     "api_version": "openubmc.target-runtime.v1",
-    "content_digest": "sha256:ba736049b6c421aade7b6a7ae1d6448147143c3b0717a29713e89bb7efc1d356"
+    "content_digest": "sha256:a3f1e2ea0516c0aa2b841a33aa2db6fa1eaeda6851364b9a9ac6c5f60cb127e2"
   },
   "schemas": {
     "workflow_schema": "openubmc-agent-workflow.v1",
@@ -149,6 +149,6 @@
       "openubmc-live-patch"
     ]
   },
-  "source_tree_digest": "sha256:0e638ef51eafb1129127ea06a6e0a78cef119861e19063c97f67cebb222a5fcf",
-  "lock_digest": "sha256:c940b0fe88f8444613e1f034acf7b4f0f08b5281bf9364c2ed9a5fe2ae018603"
+  "source_tree_digest": "sha256:f98c68130ab5ca4eddf97d692cf36604ac1670fca8dafafe5c111a0fefafa421",
+  "lock_digest": "sha256:610645ba38b25ecb4db0ab0d4259a5658002ea05168fd6faf0ae57138df32c21"
 }
