@@ -1309,7 +1309,7 @@ def fetch_immutable_release(root: Path, ref: str) -> tuple[Literal["tag", "commi
             "fetch",
             "--no-tags",
             "--depth",
-            "1",
+            "2",
             "origin",
             fetch_ref,
         ],
