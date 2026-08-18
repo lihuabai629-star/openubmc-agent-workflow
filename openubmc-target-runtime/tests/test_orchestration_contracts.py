@@ -1459,6 +1459,8 @@ class OrchestrationContractTests(unittest.TestCase):
                     "upgrade_run",
                     "case_read",
                     "evidence_read",
+                    "case_replay_export",
+                    "case_replay_run",
                     "case_close",
                     "case_forget",
                     "phase_record",

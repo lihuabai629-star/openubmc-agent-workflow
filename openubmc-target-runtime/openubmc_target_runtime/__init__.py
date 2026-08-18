@@ -199,6 +199,15 @@ from .orchestration import (
     TaskWorkflowResult,
     WorkflowStep,
 )
+from .replay import (
+    CASE_REPLAY_BUNDLE_SCHEMA,
+    CASE_REPLAY_BUNDLE_VERSION,
+    CASE_REPLAY_RESULT_SCHEMA,
+    CaseReplayBundle,
+    CaseReplayResult,
+    CaseReplayService,
+    redact_replay_value,
+)
 from .workflow import (
     WORKFLOW_DEFINITION_SCHEMA,
     WORKFLOW_DEFINITION_VERSION,
@@ -211,6 +220,7 @@ from .workflow import (
     WorkflowDefinition,
     WorkflowKernel,
     WorkflowRegistry,
+    WorkflowRoute,
     WorkflowStepDefinition,
 )
 from .telnet import (
@@ -251,7 +261,15 @@ __all__ = [
     "WorkflowDefinition",
     "WorkflowKernel",
     "WorkflowRegistry",
+    "WorkflowRoute",
     "WorkflowStepDefinition",
+    "CASE_REPLAY_BUNDLE_SCHEMA",
+    "CASE_REPLAY_BUNDLE_VERSION",
+    "CASE_REPLAY_RESULT_SCHEMA",
+    "CaseReplayBundle",
+    "CaseReplayResult",
+    "CaseReplayService",
+    "redact_replay_value",
     "ALLOWED_CREDENTIAL_KEYS",
     "CREDENTIALS_FILE_MAX_BYTES",
     "DEBUG_CREDENTIALS_FILE_ENV",

@@ -39,6 +39,7 @@ from .context_runtime import (
     ContextToolResult,
     RuntimeRepository,
 )
+from .replay import CaseReplayService
 from .credential_file import load_selected_credentials_file
 from .lifecycle import OperationContext, TaskRunRegistry
 from .mutation import (
@@ -141,6 +142,8 @@ _OPERATION_BINDINGS = (
     ),
     _OperationBinding("case_read", lifecycle="read"),
     _OperationBinding("evidence_read", lifecycle="read"),
+    _OperationBinding("case_replay_export", lifecycle="read"),
+    _OperationBinding("case_replay_run", lifecycle="read"),
     _OperationBinding("case_close", lifecycle="close"),
     _OperationBinding("case_forget", lifecycle="close"),
     _OperationBinding("phase_record"),
@@ -224,6 +227,8 @@ _CAPABILITY_CONTRACTS = {
 _CONTEXT_OPERATION_LIFECYCLES = {
     "case_read": "read",
     "evidence_read": "read",
+    "case_replay_export": "read",
+    "case_replay_run": "read",
     "case_close": "close",
     "case_forget": "close",
     "phase_record": "invoke",
@@ -2178,6 +2183,7 @@ class RuntimeMcpService:
             retention_seconds=context_retention_seconds,
             storage_soft_limit_bytes=context_storage_soft_limit_bytes,
         )
+        self.replay_service = CaseReplayService(self.context_runtime.repository)
         if context_maintenance_interval_seconds < 0:
             raise ValueError("context maintenance interval must not be negative")
         self._context_maintenance_interval_seconds = float(
@@ -2667,6 +2673,38 @@ class RuntimeMcpService:
                     },
                 },
                 {
+                    "name": "case_replay_export",
+                    "description": (
+                        "Export one redacted, versioned, portable Case Replay Bundle."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["case_id"],
+                        "properties": {
+                            "case_id": {"type": "string", "minLength": 1}
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                {
+                    "name": "case_replay_run",
+                    "description": (
+                        "Deterministically replay a Case Bundle without network, "
+                        "target resources, or mutations."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["bundle"],
+                        "properties": {
+                            "bundle": {
+                                "type": "object",
+                                "additionalProperties": True,
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                {
                     "name": "case_close",
                     "description": "Seal one resolved Case while retaining readable history.",
                     "inputSchema": {
@@ -3036,6 +3074,26 @@ class RuntimeMcpService:
                     operation=name,
                     operation_id=operation_id,
                     case_id=case_id,
+                )
+            if name == "case_replay_export":
+                case_id = str(arguments.get("case_id", "")).strip()
+                value = self.replay_service.export(case_id).to_public_dict()
+                return self.context_runtime.wrap_read(
+                    value,
+                    operation=name,
+                    operation_id=operation_id,
+                    case_id=case_id,
+                )
+            if name == "case_replay_run":
+                bundle = arguments.get("bundle")
+                if not isinstance(bundle, Mapping):
+                    raise TypeError("bundle must be an object")
+                value = self.replay_service.replay(bundle).to_public_dict()
+                return self.context_runtime.wrap_read(
+                    value,
+                    operation=name,
+                    operation_id=operation_id,
+                    case_id=str(bundle.get("case_id", "")),
                 )
             if name == "case_close":
                 case_id = str(arguments.get("case_id", "")).strip()

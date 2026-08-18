@@ -1192,6 +1192,8 @@ def project_case(
 class RuntimeRepository(Protocol):
     def load(self, case_id: str) -> dict[str, object] | None: ...
 
+    def events(self, case_id: str) -> tuple[dict[str, object], ...]: ...
+
     def current_revision(self, case_id: str) -> int | None: ...
 
     def commit(
@@ -1225,6 +1227,10 @@ class RuntimeRepository(Protocol):
     def evidence_reference(
         self, case_id: str, evidence_id: str
     ) -> dict[str, object] | None: ...
+
+    def evidence_references(
+        self, case_id: str
+    ) -> tuple[dict[str, object], ...]: ...
 
     def delete_case(self, case_id: str) -> tuple[dict[str, object], ...]: ...
 
@@ -1262,6 +1268,12 @@ class InMemoryRuntimeRepository:
         with self._lock:
             projection = self._load_locked(case_id)
             return json.loads(json.dumps(projection)) if projection is not None else None
+
+    def events(self, case_id: str) -> tuple[dict[str, object], ...]:
+        with self._lock:
+            if case_id not in self._events:
+                raise CaseNotFound(case_id)
+            return tuple(json.loads(json.dumps(self._events[case_id])))
 
     def current_revision(self, case_id: str) -> int | None:
         with self._lock:
@@ -1387,6 +1399,25 @@ class InMemoryRuntimeRepository:
                 if reference is not None
                 else None
             )
+
+    def evidence_references(
+        self, case_id: str
+    ) -> tuple[dict[str, object], ...]:
+        with self._lock:
+            if case_id not in self._events:
+                raise CaseNotFound(case_id)
+            references = [
+                reference
+                for (indexed_case_id, _evidence_id), reference in self._evidence_index.items()
+                if indexed_case_id == case_id
+            ]
+            references.sort(
+                key=lambda item: (
+                    float(item.get("observed_at", 0.0)),
+                    str(item.get("evidence_id", "")),
+                )
+            )
+            return tuple(json.loads(json.dumps(references)))
 
     def delete_case(self, case_id: str) -> tuple[dict[str, object], ...]:
         with self._lock:
@@ -1657,6 +1688,26 @@ class SQLiteRuntimeRepository:
         with self._lock, self._connect() as connection:
             return self._load_from_connection(connection, case_id)
 
+    def events(self, case_id: str) -> tuple[dict[str, object], ...]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT revision, kind, operation_id, payload_json, created_at "
+                "FROM case_events WHERE case_id = ? ORDER BY revision",
+                (case_id,),
+            ).fetchall()
+            if not rows:
+                raise CaseNotFound(case_id)
+            return tuple(
+                {
+                    "revision": int(row["revision"]),
+                    "kind": str(row["kind"]),
+                    "operation_id": str(row["operation_id"]),
+                    "payload": json.loads(row["payload_json"]),
+                    "created_at": float(row["created_at"]),
+                }
+                for row in rows
+            )
+
     def current_revision(self, case_id: str) -> int | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
@@ -1894,6 +1945,23 @@ class SQLiteRuntimeRepository:
                 (case_id, evidence_id),
             ).fetchone()
             return json.loads(row["reference_json"]) if row is not None else None
+
+    def evidence_references(
+        self, case_id: str
+    ) -> tuple[dict[str, object], ...]:
+        with self._lock, self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM case_events WHERE case_id = ? LIMIT 1",
+                (case_id,),
+            ).fetchone()
+            if exists is None:
+                raise CaseNotFound(case_id)
+            rows = connection.execute(
+                "SELECT reference_json FROM evidence_index WHERE case_id = ? "
+                "ORDER BY observed_at, evidence_id",
+                (case_id,),
+            ).fetchall()
+            return tuple(json.loads(row["reference_json"]) for row in rows)
 
     def delete_case(self, case_id: str) -> tuple[dict[str, object], ...]:
         with self._lock, self._connect() as connection:
