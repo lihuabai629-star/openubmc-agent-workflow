@@ -1206,9 +1206,11 @@ class OrchestrationContractTests(unittest.TestCase):
                 self._capture("debug_run", arguments)
                 return {"ok": True, "target_epoch": 2}
 
+            debug_collect = debug_run
+
         domain = Backend()
         backend = OrchestratedMcpBackend(
-            {"upgrade_run": domain, "debug_run": domain}
+            {"upgrade_run": domain, "debug_run": domain, "debug_collect": domain}
         )
         task = backend.open_task("selected-mutation-handoff")
 
@@ -1266,9 +1268,11 @@ class OrchestrationContractTests(unittest.TestCase):
                 self._capture("debug_run", arguments)
                 return {"ok": True, "target_epoch": 2}
 
+            debug_collect = debug_run
+
         domain = Backend()
         backend = OrchestratedMcpBackend(
-            {"upgrade_run": domain, "debug_run": domain}
+            {"upgrade_run": domain, "debug_run": domain, "debug_collect": domain}
         )
         task = backend.open_task("verification-target-rebinding")
 
@@ -1461,6 +1465,10 @@ class OrchestrationContractTests(unittest.TestCase):
                     "evidence_read",
                     "case_replay_export",
                     "case_replay_run",
+                    "session_outcome_record",
+                    "session_outcome_summary",
+                    "session_outcome_transition",
+                    "session_outcome_promote",
                     "case_close",
                     "case_forget",
                     "phase_record",
@@ -1854,10 +1862,13 @@ class OrchestrationContractTests(unittest.TestCase):
                     },
                 }
 
+            debug_collect = debug_run
+
         backend = OrchestratedMcpBackend(
             {
                 "upgrade_run": UpgradeBackend(),
                 "debug_run": DebugBackend(),
+                "debug_collect": DebugBackend(),
             }
         )
         task = backend.open_task("upgrade-workflow")
@@ -1936,6 +1947,8 @@ class OrchestrationContractTests(unittest.TestCase):
                     "evidence_ids": [evidence_id],
                 }
 
+            debug_collect = debug_run
+
             @staticmethod
             def live_patch_run(_task, _arguments, context):
                 mutation_operation_ids.append(context.operation_id)
@@ -1947,7 +1960,11 @@ class OrchestrationContractTests(unittest.TestCase):
 
         domain = DomainBackend()
         backend = OrchestratedMcpBackend(
-            {"debug_run": domain, "live_patch_run": domain}
+            {
+                "debug_run": domain,
+                "debug_collect": domain,
+                "live_patch_run": domain,
+            }
         )
         task = backend.open_task("fresh-repeated-debug-workflow")
         arguments = {
@@ -2074,6 +2091,8 @@ class OrchestrationContractTests(unittest.TestCase):
                     "evidence_ids": ["debug-evidence"],
                 }
 
+            debug_collect = debug_run
+
             @staticmethod
             def live_patch_run(_task, arguments, context):
                 calls.append(("live_patch", context.operation_id, dict(arguments)))
@@ -2085,7 +2104,11 @@ class OrchestrationContractTests(unittest.TestCase):
 
         domain = DomainBackend()
         backend = OrchestratedMcpBackend(
-            {"debug_run": domain, "live_patch_run": domain}
+            {
+                "debug_run": domain,
+                "debug_collect": domain,
+                "live_patch_run": domain,
+            }
         )
         task = backend.open_task("diagnose-fix-workflow")
         arguments = {
@@ -2431,6 +2454,8 @@ class OrchestrationContractTests(unittest.TestCase):
                     "evidence_ids": ["debug-evidence"],
                 }
 
+            debug_collect = debug_run
+
             @staticmethod
             def upgrade_run(_task, arguments, _context):
                 calls.append(("upgrade", dict(arguments)))
@@ -2442,7 +2467,11 @@ class OrchestrationContractTests(unittest.TestCase):
 
         domain = DomainBackend()
         backend = OrchestratedMcpBackend(
-            {"debug_run": domain, "upgrade_run": domain}
+            {
+                "debug_run": domain,
+                "debug_collect": domain,
+                "upgrade_run": domain,
+            }
         )
         task = backend.open_task("build-upgrade-workflow")
         result = backend.debug_run(
@@ -2527,9 +2556,11 @@ class OrchestrationContractTests(unittest.TestCase):
                     "payload": "workflow-result-body-must-not-enter-status",
                 }
 
+            debug_collect = debug_run
+
         domain = DomainBackend()
         backend = OrchestratedMcpBackend(
-            {"upgrade_run": domain, "debug_run": domain}
+            {"upgrade_run": domain, "debug_run": domain, "debug_collect": domain}
         )
         task = backend.open_task("iterative-upgrade-workflow")
         base = {
@@ -2595,9 +2626,11 @@ class OrchestrationContractTests(unittest.TestCase):
             def debug_run(_task, _arguments, _context):
                 return {"ok": True, "target_epoch": 2}
 
+            debug_collect = debug_run
+
         domain = DomainBackend()
         backend = OrchestratedMcpBackend(
-            {"upgrade_run": domain, "debug_run": domain}
+            {"upgrade_run": domain, "debug_run": domain, "debug_collect": domain}
         )
         base = {
             "intent": "upgrade-and-verify",
@@ -2658,9 +2691,11 @@ class OrchestrationContractTests(unittest.TestCase):
             def debug_run(_task, _arguments, _context):
                 return {"ok": True, "target_epoch": 3}
 
+            debug_collect = debug_run
+
         domain = Backend()
         backend = OrchestratedMcpBackend(
-            {"upgrade_run": domain, "debug_run": domain}
+            {"upgrade_run": domain, "debug_run": domain, "debug_collect": domain}
         )
         task = backend.open_task("stale-verification-workflow")
 

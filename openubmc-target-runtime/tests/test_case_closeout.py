@@ -601,7 +601,7 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             [name for name, _ in domain.calls],
-            ["live_patch_run", "debug_run"],
+            ["live_patch_run", "debug_collect"],
         )
         self.assertTrue(
             all(

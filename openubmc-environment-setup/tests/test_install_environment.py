@@ -133,6 +133,16 @@ class EnvironmentSetupTests(unittest.TestCase):
             encoding="utf-8",
         )
         release_validator.chmod(0o755)
+        (self.source / "workflow.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "openubmc-agent-workflow.v1",
+                    "version": "1.1.1",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         self.environment_patch = mock.patch.dict(
             installer.os.environ, {"SHELL": "/bin/bash"}, clear=False
         )
@@ -354,6 +364,157 @@ class EnvironmentSetupTests(unittest.TestCase):
 
         skills_dir = installer.client_skills_dir(self.home, "codex")
         self.assertFalse((skills_dir / "openubmc-debug").exists())
+
+    def test_managed_v1_2_release_requires_lock_before_links(self) -> None:
+        managed_source = installer.managed_source_dir(self.home)
+        shutil.copytree(self.source, managed_source)
+        (managed_source / "workflow.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "openubmc-agent-workflow.v1",
+                    "version": "1.2.0",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "managed",
+                "--ref",
+                "v1.2.0",
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+                "--skip-credentials",
+                "--skip-tool-install",
+                "--non-interactive",
+            ]
+        )
+
+        with (
+            mock.patch.object(
+                installer, "checkout_managed_release", return_value="a" * 40
+            ),
+            self.assertRaisesRegex(installer.SetupError, "release lock is missing"),
+        ):
+            installer.perform_install(args)
+
+        skills_dir = installer.client_skills_dir(self.home, "codex")
+        self.assertFalse((skills_dir / "openubmc-debug").exists())
+
+    def test_linked_source_without_workflow_records_development_identity(self) -> None:
+        (self.source / "workflow.json").unlink()
+        self.prepare_credentials()
+
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+
+        release = installer.load_state(self.home)["release"]
+        self.assertEqual(release["schema"], "linked-development-source")
+        self.assertFalse(release["immutable"])
+
+    def test_linked_source_with_valid_lock_remains_mutable(self) -> None:
+        lock_path = self.source / "release-lock.json"
+        lock_path.write_text("{}\n", encoding="utf-8")
+        verifier = (
+            self.source
+            / "openubmc-target-runtime"
+            / "openubmc_target_runtime"
+            / "release.py"
+        )
+        verifier.parent.mkdir(parents=True, exist_ok=True)
+        verifier.write_text("# fixture\n", encoding="utf-8")
+        verified = {
+            "schema": "openubmc-agent-workflow.release-lock.v1",
+            "release_version": "1.1.1",
+            "source_commit": "a" * 40,
+            "lock_digest": "sha256:" + "b" * 64,
+        }
+
+        with mock.patch.object(
+            installer,
+            "run_command",
+            return_value=subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps(verified), stderr=""
+            ),
+        ):
+            identity = installer.release_identity(
+                self.source,
+                source_mode="linked",
+                dry_run=False,
+            )
+
+        self.assertEqual(identity["schema"], "linked-development-source")
+        self.assertFalse(identity["immutable"])
+        self.assertEqual(identity["verified_release_lock"], verified)
+
+    def test_check_json_displays_immutable_release_identity(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        identity = {
+            "schema": "openubmc-agent-workflow.release-lock.v1",
+            "release_version": "1.2.0",
+            "source_commit": "a" * 40,
+            "lock_digest": "sha256:" + "b" * 64,
+            "immutable": True,
+        }
+        state = installer.load_state(self.home)
+        state["source_mode"] = "managed"
+        state["managed_checkout"] = True
+        state["ref"] = "v1.2.0"
+        state["requested_ref"] = "v1.2.0"
+        state["ref_kind"] = "tag"
+        state["source_commit"] = "a" * 40
+        state["resolved_commit"] = "a" * 40
+        state["release"] = identity
+        installer.save_state(self.home, state, False)
+        output = io.StringIO()
+
+        with (
+            mock.patch.object(installer, "git_commit", return_value="a" * 40),
+            mock.patch.object(installer, "git_dirty", return_value=False),
+            mock.patch.object(installer, "release_identity", return_value=identity),
+            mock.patch.object(
+                installer, "knowledge_http_health", return_value=(False, "offline")
+            ),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+
+        self.assertEqual(result, 0, output.getvalue())
+        document = json.loads(output.getvalue())
+        self.assertEqual(
+            document["release"]["lock_digest"],
+            identity["lock_digest"],
+        )
+        release_check = next(
+            check
+            for check in document["checks"]
+            if check["name"] == "release_identity"
+        )
+        self.assertTrue(release_check["ok"])
+        self.assertIn(identity["lock_digest"], release_check["detail"])
 
     def test_clone_source_rejects_a_branch_as_a_release_tag(self) -> None:
         remote, _commit = self.create_release_remote()

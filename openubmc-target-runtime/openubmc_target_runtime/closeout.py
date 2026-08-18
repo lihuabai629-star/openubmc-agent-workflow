@@ -19,7 +19,9 @@ from .delivery import (
     DeploymentIdentity,
 )
 from .mutation import TaskAuthorizationPolicy, mutation_journal_operation_status
+from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 from .redaction import is_secret_key, redact_text
+from .workflow import DEFAULT_PHASE_REGISTRY
 
 
 ACCEPTANCE_PLAN_SCHEMA = f"{RUNTIME_API_VERSION}/acceptance-plan"
@@ -31,6 +33,22 @@ CLOSEOUT_BUNDLE_SCHEMA = f"{RUNTIME_API_VERSION}/case-closeout-bundle"
 MAX_CLOSEOUT_TEXT_BYTES = 4096
 MAX_CLOSEOUT_COLLECTION_ITEMS = 64
 MAX_CLOSEOUT_MARKDOWN_BYTES = 16_384
+_WORKFLOW_CONTROL_OPERATIONS = frozenset({"workflow.advance", "workflow.next"})
+
+
+def case_terminal_status(projection: Mapping[str, object]) -> str:
+    """Return the canonical terminal status from the latest business operation."""
+
+    for operation in reversed(projection.get("operations", [])):
+        if not isinstance(operation, Mapping):
+            continue
+        if str(operation.get("operation", "")) in _WORKFLOW_CONTROL_OPERATIONS:
+            continue
+        status = str(operation.get("status", "")).strip().lower()
+        if status in {"completed", "failed", "cancelled", "blocked"}:
+            return status
+    return "completed"
+
 
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
@@ -521,15 +539,12 @@ class CaseCloseout:
 
 
 _OPERATION_STAGES = {
-    "log_bundle_collect": "bundle",
-    "debug_run": "diagnosis",
-    "live_patch_run": "live_patch",
-    "upgrade_run": "upgrade",
-    "debug_collect": "verification",
+    contract.name: contract.closeout_stage
+    for contract in DEFAULT_OPERATION_CONTRACTS.domain_contracts()
 }
 _PHASE_STAGES = {
-    "developer.change": "development",
-    "build.artifact": "build",
+    name: str(descriptor["closeout_stage"])
+    for name, descriptor in DEFAULT_PHASE_REGISTRY.to_public_dict().items()
 }
 _STAGE_ORDER = {
     "bundle": 10,

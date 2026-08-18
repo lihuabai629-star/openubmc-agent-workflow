@@ -27,6 +27,7 @@ from .closeout import (
     AcceptancePlan,
     aggregate_case_closeout,
     build_closeout_bundle,
+    case_terminal_status,
     render_markdown,
 )
 from .contracts import RUNTIME_API_VERSION
@@ -37,6 +38,7 @@ from .mutation import (
     TaskAuthorizationPolicy,
     mutation_journal_operation_status,
 )
+from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 from .redaction import is_secret_key, redact_text
 from .workflow import (
     DEFAULT_PHASE_REGISTRY,
@@ -67,13 +69,7 @@ _INTENT_ENTRY_DOMAINS = {
     "rollback": "live_patch",
     "upgrade-and-verify": "upgrade",
 }
-_OPERATION_ENTRY_DOMAINS = {
-    "debug_run": "debug",
-    "debug_collect": "debug",
-    "log_bundle_collect": "log_analyzer",
-    "live_patch_run": "live_patch",
-    "upgrade_run": "upgrade",
-}
+_OPERATION_ENTRY_DOMAINS = DEFAULT_OPERATION_CONTRACTS.operation_domains()
 _WORKFLOW_CONTROL_OPERATIONS = frozenset({"workflow.advance", "workflow.next"})
 _WORKFLOW_NEXT_ARGUMENTS = frozenset(
     {"case_id", "max_steps", "include_closeout_bundle"}
@@ -3374,18 +3370,6 @@ class ContextRuntime:
         return payload, markdown, bundle
 
     @staticmethod
-    def _terminal_status_from_projection(projection: Mapping[str, object]) -> str:
-        for operation in reversed(projection.get("operations", [])):
-            if not isinstance(operation, Mapping):
-                continue
-            if str(operation.get("operation", "")) in _WORKFLOW_CONTROL_OPERATIONS:
-                continue
-            status = str(operation.get("status", "")).strip().lower()
-            if status in {"completed", "failed", "cancelled", "blocked"}:
-                return status
-        return "completed"
-
-    @staticmethod
     def _closeout_bundle_enabled(
         projection: Mapping[str, object],
         arguments: Mapping[str, object] | None = None,
@@ -3498,7 +3482,7 @@ class ContextRuntime:
             return dict(projection)
         updated, _payload, _markdown, _bundle = self._record_closeout(
             projection,
-            terminal_status=self._terminal_status_from_projection(projection),
+            terminal_status=case_terminal_status(projection),
             include_bundle=self._closeout_bundle_enabled(projection),
             operation_id="case-closeout-recovery",
         )
@@ -4321,38 +4305,16 @@ class ContextRuntime:
         if projection.get("closed"):
             raise CaseClosed(f"case {case_id} is closed")
         expected = arguments.get("expected_revision", projection["revision"])
-        phase_type = str(arguments.get("phase_type", "")).strip().lower()
-        aliases = {
-            "developer": "developer.change",
-            "developer.edit": "developer.change",
-            "developer:edit": "developer.change",
-            "build": "build.artifact",
-            "build.package": "build.artifact",
-            "build:package": "build.artifact",
-        }
-        phase_type = aliases.get(phase_type, phase_type)
-        phase_descriptor = DEFAULT_PHASE_REGISTRY.require(phase_type)
+        phase_descriptor = DEFAULT_PHASE_REGISTRY.require(
+            str(arguments.get("phase_type", ""))
+        )
+        phase_type = phase_descriptor.name
         producer = str(arguments.get("producer_identity", "")).strip()
         if not producer:
             raise ValueError("producer_identity is required")
-        expected_producer = phase_descriptor.owner
-        compatible_producers = {
-            "developer.change": {
-                "openubmc-developer",
-                "developer",
-                "developer-skill",
-            },
-            "build.artifact": {
-                "openubmc-build",
-                "build",
-                "build-skill",
-            },
-        }[phase_type]
-        if producer not in compatible_producers:
-            raise ValueError(
-                f"{phase_type} producer_identity must be {expected_producer}"
-            )
-        producer = expected_producer
+        producer = DEFAULT_PHASE_REGISTRY.canonical_producer(
+            phase_type, producer
+        )
         status = str(arguments.get("status", "completed")).strip().lower()
         if status not in {"running", "completed", "failed", "cancelled"}:
             raise ValueError("unsupported phase status")
@@ -4973,7 +4935,7 @@ class ContextRuntime:
     ) -> list[tuple[str, str, str]]:
         return [
             (step.kind, step.name, step.step_id)
-            for step in DEFAULT_WORKFLOW_KERNEL.plan(projection)
+            for step in DEFAULT_WORKFLOW_KERNEL.definition_for(projection).steps
         ]
 
     @classmethod
@@ -5317,7 +5279,7 @@ class ContextRuntime:
     def _workflow_plan(projection: Mapping[str, object]) -> list[tuple[str, str]]:
         return [
             (step.kind, step.name)
-            for step in DEFAULT_WORKFLOW_KERNEL.plan(projection)
+            for step in DEFAULT_WORKFLOW_KERNEL.definition_for(projection).steps
         ]
 
     @staticmethod
@@ -5432,7 +5394,7 @@ class ContextRuntime:
         *,
         operation_id: str,
     ) -> ContextToolResult:
-        terminal_status = self._terminal_status_from_projection(projection)
+        terminal_status = case_terminal_status(projection)
         closeout = projection.get("closeout")
         value: dict[str, object] = {
             "completed": terminal_status == "completed",

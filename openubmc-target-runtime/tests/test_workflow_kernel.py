@@ -95,7 +95,7 @@ class WorkflowKernelTests(unittest.TestCase):
             "workflow_cycle_id": "cycle-1",
             "target_version": 1,
         }
-        step = DEFAULT_WORKFLOW_KERNEL.plan(projection)[0]
+        step = DEFAULT_WORKFLOW_KERNEL.definition_for(projection).steps[0]
         base = DEFAULT_WORKFLOW_KERNEL.step_identity(
             projection,
             step=step,

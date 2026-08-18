@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      current_ref:
+        description: Immutable release tag to validate and publish
+        required: true
+        type: string
+      previous_ref:
+        description: Previous immutable release tag used for upgrade and rollback
+        required: true
+        type: string
+      promote:
+        description: Create the GitHub Release after every gate passes
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.current_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run immutable release gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/release_gate.py
+          --current-ref "${{ inputs.current_ref }}"
+          --previous-ref "${{ inputs.previous_ref }}"
+          --output release-gate.json
+
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-${{ inputs.current_ref }}
+          path: release-gate.json
+          if-no-files-found: error
+
+  promote:
+    if: ${{ inputs.promote }}
+    needs: release-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.current_ref }}
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_REF: ${{ inputs.current_ref }}
+        run: gh release view "$CURRENT_REF" >/dev/null 2>&1 || gh release create "$CURRENT_REF" --verify-tag --generate-notes

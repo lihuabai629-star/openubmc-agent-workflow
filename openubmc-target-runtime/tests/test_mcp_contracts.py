@@ -167,28 +167,28 @@ class RuntimeMcpServiceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.service.close()
 
-    def test_catalog_metadata_is_derived_from_one_operation_binding_table(self) -> None:
-        bindings = runtime_mcp._OPERATION_BINDINGS
+    def test_catalog_metadata_is_derived_from_one_operation_contract_registry(self) -> None:
+        contracts = runtime_mcp._OPERATION_CONTRACTS
         descriptors = self.service.catalog.descriptors()
         descriptor_names = {descriptor.name for descriptor in descriptors}
-        active_bindings = tuple(
-            binding for binding in bindings if binding.name in descriptor_names
+        active_contracts = tuple(
+            contract for contract in contracts if contract.name in descriptor_names
         )
 
         self.assertEqual(
             tuple(descriptor.name for descriptor in descriptors),
-            tuple(binding.name for binding in active_bindings),
+            tuple(contract.name for contract in active_contracts),
         )
-        for descriptor, binding in zip(descriptors, active_bindings, strict=True):
-            self.assertEqual(descriptor.lifecycle, binding.lifecycle)
-            self.assertEqual(descriptor.handler_name, binding.handler_name)
-            self.assertEqual(descriptor.mutation, binding.mutation)
+        for descriptor, contract in zip(descriptors, active_contracts, strict=True):
+            self.assertEqual(descriptor.lifecycle, contract.lifecycle)
+            self.assertEqual(descriptor.handler_name, contract.handler_name)
+            self.assertEqual(descriptor.mutation, contract.mutation)
         self.assertEqual(
             runtime_mcp._DOMAIN_TO_TOOL,
             {
-                binding.domain: binding.name
-                for binding in bindings
-                if binding.domain and binding.workflow_entry
+                contract.domain: contract.name
+                for contract in contracts
+                if contract.domain and contract.workflow_entry
             },
         )
 
@@ -205,6 +205,10 @@ class RuntimeMcpServiceTests(unittest.TestCase):
                 "evidence_read",
                 "case_replay_export",
                 "case_replay_run",
+                "session_outcome_record",
+                "session_outcome_summary",
+                "session_outcome_transition",
+                "session_outcome_promote",
                 "case_close",
                 "case_forget",
                 "phase_record",
@@ -253,6 +257,10 @@ class RuntimeMcpServiceTests(unittest.TestCase):
                 "evidence_read",
                 "case_replay_export",
                 "case_replay_run",
+                "session_outcome_record",
+                "session_outcome_summary",
+                "session_outcome_transition",
+                "session_outcome_promote",
                 "case_close",
                 "case_forget",
                 "phase_record",
@@ -898,6 +906,10 @@ class JsonRpcEndpointTests(unittest.TestCase):
                 "evidence_read",
                 "case_replay_export",
                 "case_replay_run",
+                "session_outcome_record",
+                "session_outcome_summary",
+                "session_outcome_transition",
+                "session_outcome_promote",
                 "case_close",
                 "case_forget",
                 "phase_record",

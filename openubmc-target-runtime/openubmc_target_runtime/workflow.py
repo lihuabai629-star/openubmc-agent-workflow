@@ -9,6 +9,7 @@ import json
 import re
 
 from .contracts import RUNTIME_API_VERSION
+from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 
 
 WORKFLOW_DEFINITION_SCHEMA = f"{RUNTIME_API_VERSION}/workflow-definition-v1"
@@ -33,6 +34,11 @@ class PhaseDescriptor:
     owner: str
     receipt_schema: str
     required_fields: tuple[str, ...]
+    orchestration_domain: str = ""
+    orchestration_phase: str = ""
+    closeout_stage: str = ""
+    aliases: tuple[str, ...] = ()
+    producer_aliases: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not _SAFE_ID.fullmatch(self.name):
@@ -43,6 +49,20 @@ class PhaseDescriptor:
             raise ValueError("phase receipt_schema must not be empty")
         if len(self.required_fields) != len(set(self.required_fields)):
             raise ValueError(f"phase {self.name} has duplicate required fields")
+        if len(self.aliases) != len(set(self.aliases)):
+            raise ValueError(f"phase {self.name} has duplicate aliases")
+        if self.name in self.aliases:
+            raise ValueError(f"phase {self.name} must not alias itself")
+        if any(_SAFE_ID.fullmatch(alias) is None for alias in self.aliases):
+            raise ValueError(f"phase {self.name} has an invalid alias")
+        if len(self.producer_aliases) != len(set(self.producer_aliases)):
+            raise ValueError(f"phase {self.name} has duplicate producer aliases")
+        if self.owner in self.producer_aliases:
+            raise ValueError(f"phase {self.name} must not alias its owner")
+        if any(
+            _SAFE_ID.fullmatch(alias) is None for alias in self.producer_aliases
+        ):
+            raise ValueError(f"phase {self.name} has an invalid producer alias")
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -50,6 +70,11 @@ class PhaseDescriptor:
             "owner": self.owner,
             "receipt_schema": self.receipt_schema,
             "required_fields": list(self.required_fields),
+            "orchestration_domain": self.orchestration_domain,
+            "orchestration_phase": self.orchestration_phase,
+            "closeout_stage": self.closeout_stage,
+            "aliases": list(self.aliases),
+            "producer_aliases": list(self.producer_aliases),
         }
 
 
@@ -58,17 +83,44 @@ class PhaseRegistry:
 
     def __init__(self, descriptors: Sequence[PhaseDescriptor]) -> None:
         registered: dict[str, PhaseDescriptor] = {}
+        aliases: dict[str, str] = {}
         for descriptor in descriptors:
             if descriptor.name in registered:
                 raise ValueError(f"duplicate phase descriptor: {descriptor.name}")
+            if descriptor.name in aliases:
+                raise ValueError(
+                    f"phase name conflicts with alias: {descriptor.name}"
+                )
             registered[descriptor.name] = descriptor
+            for alias in descriptor.aliases:
+                if alias in registered or alias in aliases:
+                    raise ValueError(f"duplicate phase alias: {alias}")
+                aliases[alias] = descriptor.name
         self._descriptors = registered
+        self._aliases = aliases
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._descriptors))
+
+    def canonical_name(self, name: str) -> str:
+        normalized = str(name).strip().lower()
+        return self._aliases.get(normalized, normalized)
 
     def require(self, name: str) -> PhaseDescriptor:
+        canonical = self.canonical_name(name)
         try:
-            return self._descriptors[name]
+            return self._descriptors[canonical]
         except KeyError as exc:
             raise ValueError(f"unregistered workflow phase: {name}") from exc
+
+    def canonical_producer(self, name: str, producer: str) -> str:
+        descriptor = self.require(name)
+        selected = str(producer).strip()
+        if selected == descriptor.owner or selected in descriptor.producer_aliases:
+            return descriptor.owner
+        raise ValueError(
+            f"{descriptor.name} producer_identity must be {descriptor.owner}"
+        )
 
     def validate_receipt(
         self,
@@ -78,8 +130,7 @@ class PhaseRegistry:
         receipt: Mapping[str, object],
     ) -> PhaseDescriptor:
         descriptor = self.require(name)
-        if producer != descriptor.owner:
-            raise ValueError(f"{name} producer_identity must be {descriptor.owner}")
+        self.canonical_producer(descriptor.name, producer)
         missing = []
         for field in descriptor.required_fields:
             value = receipt.get(field)
@@ -500,9 +551,6 @@ class WorkflowKernel:
             delivery_strategy=str(projection.get("delivery_strategy", "")),
         )
 
-    def plan(self, projection: Mapping[str, object]) -> tuple[WorkflowStepDefinition, ...]:
-        return self.definition_for(projection).steps
-
     def step_identity(
         self,
         projection: Mapping[str, object],
@@ -558,6 +606,11 @@ DEFAULT_PHASE_REGISTRY = PhaseRegistry(
             "openubmc-developer",
             f"{RUNTIME_API_VERSION}/developer-change-receipt-v1",
             ("source_revision", "summary", "authored_files", "verification_plan"),
+            "developer",
+            "edit",
+            "development",
+            ("developer", "developer.edit", "developer:edit"),
+            ("developer", "developer-skill"),
         ),
         PhaseDescriptor(
             "build.artifact",
@@ -570,19 +623,18 @@ DEFAULT_PHASE_REGISTRY = PhaseRegistry(
                 "artifact_sha256",
                 "product_version",
             ),
+            "build",
+            "package",
+            "build",
+            ("build", "build.package", "build:package"),
+            ("build", "build-skill"),
         ),
     )
 )
 
 DEFAULT_WORKFLOW_REGISTRY = WorkflowRegistry(
     phases=DEFAULT_PHASE_REGISTRY,
-    operation_owners={
-        "debug_run": "openubmc-debug",
-        "debug_collect": "openubmc-debug",
-        "log_bundle_collect": "openubmc-log-analyzer",
-        "live_patch_run": "openubmc-live-patch",
-        "upgrade_run": "openubmc-upgrade",
-    },
+    operation_owners=DEFAULT_OPERATION_CONTRACTS.operation_owners(),
     routes=(
         WorkflowRoute(
             "bundle-and-diagnose",

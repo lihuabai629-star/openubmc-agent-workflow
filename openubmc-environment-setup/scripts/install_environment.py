@@ -86,6 +86,7 @@ class RecordedInstall(NamedTuple):
     preserved_skills: tuple[str, ...]
     profiles: tuple[str, ...]
     runtime: dict[str, Any]
+    release: dict[str, Any]
 
 
 class HttpMcpEntry(TypedDict):
@@ -693,13 +694,13 @@ def validate_source(
     return root
 
 
-def validate_release_source(root: Path, dry_run: bool) -> None:
+def validate_release_source(root: Path, dry_run: bool) -> dict[str, object]:
     validator = root / "scripts" / "validate_workflow.py"
     if not validator.is_file():
         raise SetupError(f"release validator is missing: {validator}")
     if dry_run:
         print(f"would validate release contract in {root}")
-        return
+        return release_identity(root, source_mode="managed", dry_run=True)
     result = run_command(
         [sys.executable, str(validator), "--release-contract-only"],
         cwd=root,
@@ -707,6 +708,120 @@ def validate_release_source(root: Path, dry_run: bool) -> None:
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
         raise SetupError(detail or "release contract validation failed")
+    return release_identity(root, source_mode="managed", dry_run=False)
+
+
+def _release_version(value: object) -> tuple[int, int, int]:
+    match = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)", str(value).strip())
+    if match is None:
+        raise SetupError(f"workflow release version is invalid: {value!r}")
+    return tuple(int(part) for part in match.groups())
+
+
+def workflow_release_metadata(
+    root: Path,
+    *,
+    required: bool,
+) -> dict[str, object] | None:
+    workflow = root / "workflow.json"
+    try:
+        document = json.loads(workflow.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if not required:
+            return None
+        raise SetupError(f"workflow release metadata is unavailable: {workflow}")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SetupError(f"workflow release metadata is unavailable: {workflow}") from exc
+    if not isinstance(document, Mapping):
+        raise SetupError("workflow release metadata must be an object")
+    _release_version(document.get("version", ""))
+    return dict(document)
+
+
+def release_identity(
+    root: Path,
+    *,
+    source_mode: Literal["managed", "linked"],
+    dry_run: bool,
+) -> dict[str, object]:
+    if source_mode not in {"managed", "linked"}:
+        raise SetupError(f"unsupported source mode for release identity: {source_mode}")
+    managed = source_mode == "managed"
+    try:
+        workflow = workflow_release_metadata(root, required=managed)
+    except SetupError as error:
+        if managed:
+            raise
+        return {
+            "schema": "linked-development-source",
+            "immutable": False,
+            "validation_error": str(error),
+        }
+    if workflow is None:
+        return {
+            "schema": "linked-development-source",
+            "immutable": False,
+        }
+
+    release_version = str(workflow.get("version", ""))
+    lock_path = root / "release-lock.json"
+    if not lock_path.is_file():
+        if managed and _release_version(release_version) >= (1, 2, 0):
+            raise SetupError(f"immutable release lock is missing: {lock_path}")
+        return {
+            "schema": (
+                "legacy-release-without-lock"
+                if managed
+                else "linked-development-source"
+            ),
+            "release_version": release_version,
+            "immutable": False,
+        }
+    verifier = (
+        root
+        / "openubmc-target-runtime"
+        / "openubmc_target_runtime"
+        / "release.py"
+    )
+    if not verifier.is_file():
+        raise SetupError(f"release lock verifier is missing: {verifier}")
+    if dry_run:
+        print(f"would verify immutable release lock in {root}")
+        return {
+            "schema": "planned-release-lock",
+            "release_version": release_version,
+            "immutable": managed,
+        }
+    result = run_command(
+        [sys.executable, str(verifier), "verify", "--root", str(root)],
+        cwd=root,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        error = SetupError(detail or "immutable release lock validation failed")
+        if managed:
+            raise error
+        return {
+            "schema": "linked-development-source",
+            "release_version": release_version,
+            "immutable": False,
+            "validation_error": str(error),
+        }
+    try:
+        identity = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SetupError("release lock verifier returned invalid JSON") from exc
+    if not isinstance(identity, dict):
+        raise SetupError("release lock verifier returned an invalid identity")
+    if managed:
+        identity["immutable"] = True
+        return identity
+    return {
+        "schema": "linked-development-source",
+        "release_version": release_version,
+        "immutable": False,
+        "verified_release_lock": identity,
+    }
 
 
 def release_ref_kind(value: object) -> Literal["tag", "commit"]:
@@ -3494,6 +3609,7 @@ def decode_recorded_install(state: Mapping[str, object]) -> RecordedInstall:
         preserved_skills=preserved_skills,
         profiles=recorded_string_list(state, "profiles"),
         runtime=recorded_object(state, "runtime"),
+        release=recorded_object(state, "release"),
     )
 
 
@@ -3668,7 +3784,18 @@ def perform_install(
     if update and source_mode == "managed" and source.exists() and not args.dry_run:
         source = validate_source(source, selected_bundle)
     if source_mode == "managed" and source.exists():
-        validate_release_source(source, args.dry_run)
+        release_state = validate_release_source(source, args.dry_run)
+    elif source.exists():
+        release_state = release_identity(
+            source,
+            source_mode="linked",
+            dry_run=args.dry_run,
+        )
+    else:
+        release_state = {
+            "schema": "planned-release-lock",
+            "immutable": source_mode == "managed",
+        }
     planned_missing_source = (
         args.dry_run and source_mode == "managed" and not source.exists()
     )
@@ -3849,6 +3976,7 @@ def perform_install(
         "mcp": mcp_state,
         "knowledge_mcp": knowledge_state,
         "runtime": runtime_state,
+        "release": release_state,
         "runtime_mcp": runtime_mcp_state,
         "knowledge_url": args.knowledge_url or "",
         "target": args.target,
@@ -4469,6 +4597,52 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             "source worktree: clean",
         )
 
+    release_report: dict[str, object] = {}
+    try:
+        actual_release = release_identity(
+            source,
+            source_mode=("managed" if source_mode == "managed" else "linked"),
+            dry_run=False,
+        )
+        release_report = dict(actual_release)
+        recorded_release = recorded_object(state, "release")
+        expected_lock = str(recorded_release.get("lock_digest", ""))
+        actual_lock = str(actual_release.get("lock_digest", ""))
+        if expected_lock and actual_lock != expected_lock:
+            raise SetupError(
+                "installed release lock identity changed: "
+                f"expected={expected_lock}, actual={actual_lock or 'missing'}"
+            )
+        immutable = bool(actual_release.get("immutable"))
+        legacy_managed = (
+            source_mode == "managed"
+            and actual_release.get("schema") == "legacy-release-without-lock"
+        )
+        release_detail = (
+            f"{actual_release.get('release_version', '')} "
+            f"{actual_release.get('lock_digest', actual_release.get('schema', ''))}"
+        ).strip()
+        record(
+            "release_identity",
+            immutable or legacy_managed,
+            release_detail,
+            "release identity: " + release_detail,
+            blocking=source_mode == "managed",
+        )
+    except SetupError as error:
+        release_report = {
+            "schema": "invalid-release-identity",
+            "immutable": False,
+            "validation_error": str(error),
+        }
+        record(
+            "release_identity",
+            False,
+            str(error),
+            f"release identity: invalid ({error})",
+            blocking=source_mode == "managed",
+        )
+
     runtime_report = inspect_runtime_installation(state)
     runtime_ok = bool(runtime_report.get("healthy"))
     record(
@@ -4965,6 +5139,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
         "preserved_skills": list(preserved_skills),
         "clients": [str(client) for client in clients],
         "runtime": runtime_report,
+        "release": release_report,
         "runtime_mcp": {
             "healthy": runtime_mcp_ready,
             "configured": runtime_mcp_configured,
@@ -5309,6 +5484,7 @@ def workflow_json_summary(
             "api_version": str(recorded.runtime.get("api_version", "")),
             "content_digest": str(recorded.runtime.get("content_digest", "")),
         },
+        "release": dict(recorded.release),
         "openubmc_kb_managed": recorded.profile.manages_knowledge_mcp,
         "openubmc_kb": {
             "version": str(recorded_object(state, "knowledge_mcp").get("version", "")),

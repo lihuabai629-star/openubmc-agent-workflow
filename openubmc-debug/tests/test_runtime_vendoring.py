@@ -30,6 +30,26 @@ def load_script(name: str):
 
 
 class RuntimeVendoringTests(unittest.TestCase):
+    def test_case_literal_scanner_distinguishes_code_types_from_named_alarms(self) -> None:
+        package_skill = load_script("package_skill")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "runtime.py"
+            source.write_text(
+                "def apply(event):\n"
+                "    if event == WorkflowDefinition:\n"
+                "        return AcceptancePlan\n",
+                encoding="utf-8",
+            )
+            package_skill.scan_forbidden_literals(root)
+            source.write_text(
+                'description = "FanFailure alarm"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(SystemExit, "inline-alarm-literal"):
+                package_skill.scan_forbidden_literals(root)
+
     def test_packaging_generates_matching_runtime_and_records_contract(self) -> None:
         package_skill = load_script("package_skill")
         distribution = load_script("_runtime_distribution")

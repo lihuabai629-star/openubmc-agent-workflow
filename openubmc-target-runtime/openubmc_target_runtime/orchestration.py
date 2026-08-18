@@ -15,13 +15,13 @@ from .contracts import (
     _fingerprint,
 )
 from .mutation import TaskAuthorizationPolicy
+from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
+from .workflow import DEFAULT_WORKFLOW_REGISTRY
 
 
 ORCHESTRATION_SCHEMA = f"{RUNTIME_API_VERSION}/task-orchestration"
 _TARGET_ROLES = frozenset({"reference", "candidate", "symmetric"})
-_DOMAINS = frozenset(
-    {"developer", "debug", "live_patch", "log_analyzer", "upgrade"}
-)
+_DOMAINS = frozenset(DEFAULT_OPERATION_CONTRACTS.domain_to_entry_operation())
 _OUTCOME_STATUSES = frozenset(
     {"succeeded", "modified", "verified", "failed", "not_executed"}
 )
@@ -33,6 +33,8 @@ ValueT = TypeVar("ValueT")
 class WorkflowStep:
     domain: str
     phase: str
+    canonical_name: str = ""
+    kind: str = "operation"
 
     @property
     def key(self) -> str:
@@ -136,51 +138,38 @@ class DeliveryStrategy(str, Enum):
         return [strategy.value for strategy in cls]
 
 
-def _workflow_steps(
+def _canonical_workflow_steps(
     intent: TaskIntentKind,
     entry_domain: str,
     delivery_strategy: DeliveryStrategy | None = None,
 ) -> tuple[WorkflowStep, ...]:
-    if intent is TaskIntentKind.DIAGNOSIS_ONLY:
-        phase = "bundle" if entry_domain == "log_analyzer" else "diagnosis"
-        return (WorkflowStep(entry_domain, phase),)
-    if intent is TaskIntentKind.DIAGNOSE_AND_FIX:
-        strategy = delivery_strategy or DeliveryStrategy.SOURCE_ONLY
-        if strategy is DeliveryStrategy.SOURCE_ONLY:
-            return (
-                WorkflowStep("debug", "diagnosis"),
-                WorkflowStep("developer", "edit"),
+    definition = DEFAULT_WORKFLOW_REGISTRY.resolve(
+        intent=intent.value,
+        entry_domain=entry_domain,
+        delivery_strategy=(
+            delivery_strategy.value if delivery_strategy is not None else ""
+        ),
+    )
+    steps: list[WorkflowStep] = []
+    for step in definition.steps:
+        if step.kind == "operation":
+            contract = DEFAULT_OPERATION_CONTRACTS.require(step.name)
+            steps.append(
+                WorkflowStep(
+                    contract.domain,
+                    contract.orchestration_phase,
+                    step.name,
+                    step.kind,
+                )
             )
-        if strategy is DeliveryStrategy.BUILD_UPGRADE:
-            return (
-                WorkflowStep("debug", "diagnosis"),
-                WorkflowStep("developer", "edit"),
-                WorkflowStep("build", "package"),
-                WorkflowStep("upgrade", "mutation"),
-                WorkflowStep("debug", "fresh_verification"),
-            )
-        return (
-            WorkflowStep("debug", "diagnosis"),
-            WorkflowStep("developer", "edit"),
-            WorkflowStep("live_patch", "mutation"),
-            WorkflowStep("debug", "fresh_verification"),
+            continue
+        phase = DEFAULT_WORKFLOW_REGISTRY.phases.require(step.name)
+        domain = phase.orchestration_domain or step.name.partition(".")[0]
+        orchestration_phase = phase.orchestration_phase or step.name.partition(".")[2]
+        steps.append(
+            WorkflowStep(domain, orchestration_phase, step.name, step.kind)
         )
-    if intent in {TaskIntentKind.LIVE_PATCH, TaskIntentKind.ROLLBACK}:
-        return (
-            WorkflowStep("live_patch", "mutation"),
-            WorkflowStep("debug", "fresh_verification"),
-        )
-    if intent is TaskIntentKind.UPGRADE_AND_VERIFY:
-        return (
-            WorkflowStep("upgrade", "mutation"),
-            WorkflowStep("debug", "fresh_verification"),
-        )
-    if intent is TaskIntentKind.BUNDLE_AND_DIAGNOSE:
-        return (
-            WorkflowStep("log_analyzer", "bundle"),
-            WorkflowStep("debug", "diagnosis"),
-        )
-    raise ValueError(f"unsupported task intent: {intent.value}")
+    return tuple(steps)
 
 
 @dataclass(frozen=True)
@@ -247,7 +236,7 @@ class TaskIntent:
             raise ValueError(
                 "delivery_strategy is supported only for diagnose-and-fix"
             )
-        steps = _workflow_steps(normalized, domain, strategy)
+        steps = _canonical_workflow_steps(normalized, domain, strategy)
         if steps[0].domain != domain:
             raise ValueError(
                 f"intent {normalized.value} must enter through {steps[0].domain}, not {domain}"
@@ -269,7 +258,7 @@ class TaskIntent:
 
     @property
     def steps(self) -> tuple[WorkflowStep, ...]:
-        return _workflow_steps(
+        return _canonical_workflow_steps(
             self.original_intent,
             self.entry_domain,
             self.delivery_strategy,
