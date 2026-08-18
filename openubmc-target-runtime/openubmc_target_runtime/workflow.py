@@ -260,9 +260,27 @@ class WorkflowRegistry:
         *,
         phases: PhaseRegistry,
         operation_owners: Mapping[str, str],
+        routes: Sequence["WorkflowRoute"] = (),
     ) -> None:
         self.phases = phases
         self.operation_owners = dict(operation_owners)
+        registered: dict[tuple[str, str, str], WorkflowRoute] = {}
+        for route in routes:
+            key = route.selector
+            if key in registered:
+                raise ValueError(
+                    "duplicate workflow route: " + "/".join(part or "*" for part in key)
+                )
+            for kind, name in route.steps:
+                if kind == "phase":
+                    self.phases.require(name)
+                elif kind == "operation":
+                    if name not in self.operation_owners:
+                        raise ValueError(f"workflow operation has no owner: {name}")
+                else:
+                    raise ValueError(f"unsupported workflow step kind: {kind}")
+            registered[key] = route
+        self._routes = tuple(routes)
 
     def _step(self, index: int, kind: str, name: str) -> WorkflowStepDefinition:
         step_id = f"step-{index:02d}-{name.replace('.', '-')}"
@@ -298,41 +316,19 @@ class WorkflowRegistry:
             .lower()
             .replace("_", "-")
         )
-        if normalized_intent == "bundle-and-diagnose":
-            raw = (("operation", "log_bundle_collect"), ("operation", "debug_run"))
-        elif normalized_intent in {"live-patch", "rollback"}:
-            raw = (("operation", "live_patch_run"), ("operation", "debug_collect"))
-        elif normalized_intent == "upgrade-and-verify":
-            raw = (("operation", "upgrade_run"), ("operation", "debug_collect"))
-        elif normalized_intent == "diagnose-and-fix":
-            items: list[tuple[str, str]] = [
-                ("operation", "debug_run"),
-                ("phase", "developer.change"),
-            ]
-            if delivery == "build-upgrade":
-                items.extend(
-                    (
-                        ("phase", "build.artifact"),
-                        ("operation", "upgrade_run"),
-                        ("operation", "debug_collect"),
-                    )
-                )
-            elif delivery == "live-patch":
-                items.extend(
-                    (
-                        ("operation", "live_patch_run"),
-                        ("operation", "debug_collect"),
-                    )
-                )
-            raw = tuple(items)
-        elif normalized_intent == "diagnosis-only" and operation:
+        if normalized_intent == "diagnosis-only" and operation:
             if operation not in self.operation_owners:
                 raise ValueError(f"workflow operation has no owner: {operation}")
             raw = (("operation", operation),)
-        elif normalized_intent == "diagnosis-only" and domain == "log_analyzer":
-            raw = (("operation", "log_bundle_collect"),)
         else:
-            raw = (("operation", "debug_run"),)
+            route = self._resolve_route(
+                intent=normalized_intent,
+                entry_domain=domain,
+                delivery_strategy=(
+                    delivery if normalized_intent == "diagnose-and-fix" else ""
+                ),
+            )
+            raw = route.steps
         steps = tuple(
             self._step(index, kind, name)
             for index, (kind, name) in enumerate(raw, start=1)
@@ -359,6 +355,129 @@ class WorkflowRegistry:
             steps=steps,
         )
 
+    def _resolve_route(
+        self,
+        *,
+        intent: str,
+        entry_domain: str,
+        delivery_strategy: str,
+    ) -> "WorkflowRoute":
+        candidates = [
+            route
+            for route in self._routes
+            if route.matches(
+                intent=intent,
+                entry_domain=entry_domain,
+                delivery_strategy=delivery_strategy,
+            )
+        ]
+        if not candidates:
+            raise ValueError(
+                "workflow route is unavailable: "
+                f"intent={intent}, entry_domain={entry_domain or '*'}, "
+                f"delivery_strategy={delivery_strategy or '*'}"
+            )
+        return max(candidates, key=lambda route: route.specificity)
+
+    def infer_legacy_intent(
+        self,
+        projection: Mapping[str, object],
+    ) -> str:
+        operations = tuple(
+            item
+            for item in projection.get("operations", ())
+            if isinstance(item, Mapping)
+        )
+        operation_names = frozenset(
+            str(item.get("operation", "")) for item in operations
+        )
+        candidates = [
+            route
+            for route in self._routes
+            if route.legacy_matches(operations, operation_names)
+        ]
+        if not candidates:
+            return ""
+        return max(candidates, key=lambda route: route.legacy_specificity).intent
+
+
+@dataclass(frozen=True)
+class WorkflowRoute:
+    """Declarative selector and ordered steps for one workflow route."""
+
+    intent: str
+    steps: tuple[tuple[str, str], ...]
+    entry_domain: str = ""
+    delivery_strategy: str = ""
+    legacy_operations: frozenset[str] = frozenset()
+    legacy_input_equals: tuple[tuple[str, str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        normalized_intent = self.intent.strip().lower().replace("_", "-")
+        if not normalized_intent:
+            raise ValueError("workflow route intent is required")
+        if not self.steps:
+            raise ValueError(f"workflow route {normalized_intent} requires steps")
+        object.__setattr__(self, "intent", normalized_intent)
+        object.__setattr__(
+            self,
+            "entry_domain",
+            self.entry_domain.strip().lower().replace("-", "_"),
+        )
+        object.__setattr__(
+            self,
+            "delivery_strategy",
+            self.delivery_strategy.strip().lower().replace("_", "-"),
+        )
+
+    @property
+    def selector(self) -> tuple[str, str, str]:
+        return (self.intent, self.entry_domain, self.delivery_strategy)
+
+    @property
+    def specificity(self) -> int:
+        return 1 + bool(self.entry_domain) + bool(self.delivery_strategy)
+
+    @property
+    def legacy_specificity(self) -> tuple[int, int]:
+        return (len(self.legacy_input_equals), len(self.legacy_operations))
+
+    def matches(
+        self,
+        *,
+        intent: str,
+        entry_domain: str,
+        delivery_strategy: str,
+    ) -> bool:
+        return (
+            self.intent == intent
+            and (not self.entry_domain or self.entry_domain == entry_domain)
+            and (
+                not self.delivery_strategy
+                or self.delivery_strategy == delivery_strategy
+            )
+        )
+
+    def legacy_matches(
+        self,
+        operations: Sequence[Mapping[str, object]],
+        operation_names: frozenset[str],
+    ) -> bool:
+        if not self.legacy_operations or not self.legacy_operations.issubset(
+            operation_names
+        ):
+            return False
+        for operation_name, input_name, expected in self.legacy_input_equals:
+            if not any(
+                str(operation.get("operation", "")) == operation_name
+                and isinstance(operation.get("inputs"), Mapping)
+                and str(operation["inputs"].get(input_name, "")).strip().lower()
+                == expected
+                for operation in operations
+            ):
+                return False
+        return True
+
 
 class WorkflowKernel:
     """Deep module that owns workflow definition and step identity semantics."""
@@ -373,26 +492,7 @@ class WorkflowKernel:
         intent = str(projection.get("intent", "diagnosis-only"))
         normalized_intent = intent.strip().lower().replace("_", "-")
         if normalized_intent in {"", "diagnosis-only"}:
-            operations = projection.get("operations", ())
-            operation_names = {
-                str(item.get("operation", ""))
-                for item in operations
-                if isinstance(item, Mapping)
-            }
-            if "upgrade_run" in operation_names:
-                intent = "upgrade-and-verify"
-            elif "live_patch_run" in operation_names:
-                rollback = any(
-                    isinstance(item, Mapping)
-                    and item.get("operation") == "live_patch_run"
-                    and isinstance(item.get("inputs"), Mapping)
-                    and str(item["inputs"].get("action", "")).strip().lower()
-                    == "rollback"
-                    for item in operations
-                )
-                intent = "rollback" if rollback else "live-patch"
-            elif {"log_bundle_collect", "debug_run"}.issubset(operation_names):
-                intent = "bundle-and-diagnose"
+            intent = self.registry.infer_legacy_intent(projection) or intent
         return self.registry.resolve(
             intent=intent,
             entry_domain=str(projection.get("entry_domain", "")),
@@ -483,6 +583,64 @@ DEFAULT_WORKFLOW_REGISTRY = WorkflowRegistry(
         "live_patch_run": "openubmc-live-patch",
         "upgrade_run": "openubmc-upgrade",
     },
+    routes=(
+        WorkflowRoute(
+            "bundle-and-diagnose",
+            (("operation", "log_bundle_collect"), ("operation", "debug_run")),
+            legacy_operations=frozenset({"log_bundle_collect", "debug_run"}),
+        ),
+        WorkflowRoute(
+            "live-patch",
+            (("operation", "live_patch_run"), ("operation", "debug_collect")),
+            legacy_operations=frozenset({"live_patch_run"}),
+        ),
+        WorkflowRoute(
+            "rollback",
+            (("operation", "live_patch_run"), ("operation", "debug_collect")),
+            legacy_operations=frozenset({"live_patch_run"}),
+            legacy_input_equals=(("live_patch_run", "action", "rollback"),),
+        ),
+        WorkflowRoute(
+            "upgrade-and-verify",
+            (("operation", "upgrade_run"), ("operation", "debug_collect")),
+            legacy_operations=frozenset({"upgrade_run"}),
+        ),
+        WorkflowRoute(
+            "diagnose-and-fix",
+            (("operation", "debug_run"), ("phase", "developer.change")),
+            delivery_strategy="source-only",
+        ),
+        WorkflowRoute(
+            "diagnose-and-fix",
+            (
+                ("operation", "debug_run"),
+                ("phase", "developer.change"),
+                ("operation", "live_patch_run"),
+                ("operation", "debug_collect"),
+            ),
+            delivery_strategy="live-patch",
+        ),
+        WorkflowRoute(
+            "diagnose-and-fix",
+            (
+                ("operation", "debug_run"),
+                ("phase", "developer.change"),
+                ("phase", "build.artifact"),
+                ("operation", "upgrade_run"),
+                ("operation", "debug_collect"),
+            ),
+            delivery_strategy="build-upgrade",
+        ),
+        WorkflowRoute(
+            "diagnosis-only",
+            (("operation", "log_bundle_collect"),),
+            entry_domain="log_analyzer",
+        ),
+        WorkflowRoute(
+            "diagnosis-only",
+            (("operation", "debug_run"),),
+        ),
+    ),
 )
 
 DEFAULT_WORKFLOW_KERNEL = WorkflowKernel(DEFAULT_WORKFLOW_REGISTRY)

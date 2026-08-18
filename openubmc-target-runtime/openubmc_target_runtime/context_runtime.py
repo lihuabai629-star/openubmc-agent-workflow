@@ -3509,6 +3509,14 @@ class ContextRuntime:
         case_arguments.setdefault("_context_entry_operation", descriptor.name)
         case_id = self._case_id(task_id, case_arguments)
         existing = self._load(case_id)
+        if (
+            descriptor.mutation
+            and existing is None
+            and not self._targets(case_arguments)
+        ):
+            raise ValueError(
+                "the first mutation domain call must provide ip or targets"
+            )
         infer_domain_defaults = existing is None or descriptor.mutation
         if (
             infer_domain_defaults
@@ -5453,11 +5461,13 @@ class ContextRuntime:
             )
         frozen_arguments: dict[str, object] = {
             "intent": task_policy.original_intent,
-            "final_purpose": str(projection.get("final_purpose", "")),
             "authorized_exceptions": task_policy.authorized_exceptions.to_public_dict(),
             "allow_insecure_tls": task_policy.allow_insecure_tls,
         }
-        if not recovered_legacy_intent:
+        final_purpose = str(projection.get("final_purpose", "")).strip()
+        if final_purpose:
+            frozen_arguments["final_purpose"] = final_purpose
+        if not recovered_legacy_intent and task_policy.delivery_strategy:
             frozen_arguments["delivery_strategy"] = task_policy.delivery_strategy
         entry_domain = _case_entry_domain(projection)
         if entry_domain:

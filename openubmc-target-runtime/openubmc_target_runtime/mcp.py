@@ -2937,6 +2937,23 @@ class RuntimeMcpService:
             canonical["_context_defaults_inferred"] = True
         return canonical
 
+    @staticmethod
+    def _validate_boolean_argument_types(
+        descriptor: OperationDescriptor,
+        arguments: Mapping[str, object],
+    ) -> None:
+        properties = descriptor.input_schema.get("properties", {})
+        if not isinstance(properties, Mapping):
+            return
+        for field, schema in properties.items():
+            if (
+                field in arguments
+                and isinstance(schema, Mapping)
+                and schema.get("type") == "boolean"
+                and not isinstance(arguments[field], bool)
+            ):
+                raise TypeError(f"{field} must be a boolean")
+
     def call_tool(
         self,
         name: str,
@@ -2965,8 +2982,8 @@ class RuntimeMcpService:
             arguments.pop(internal_name, None)
         arguments.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
         arguments = self._canonicalize_tool_arguments(name, arguments)
-        if descriptor.handler_name is None:
-            self.catalog.validate_arguments(name, arguments)
+        self._validate_boolean_argument_types(descriptor, arguments)
+        self.catalog.validate_arguments(name, arguments)
         if _context_workflow_step:
             arguments[CONTEXT_WORKFLOW_STEP_ARGUMENT] = True
         if descriptor.lifecycle == "status":

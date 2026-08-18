@@ -265,6 +265,8 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                         "arguments": {
                             "ip": "192.0.2.20",
                             "intent": "live-patch",
+                            "local_path": "/tmp/unit.lua",
+                            "remote_path": "/opt/bmc/apps/demo/unit.lua",
                             "deadline": 10,
                         },
                     },
@@ -299,6 +301,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                     {
                         "ip": "192.0.2.45",
                         "intent": "live-patch",
+                        "local_path": "/tmp/unit.lua",
                         "remote_path": "/opt/bmc/apps/demo/unit.lua",
                         "deadline": 10,
                     },
@@ -465,6 +468,9 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         )
         arguments = {
             "ip": "192.0.2.24",
+            "artifact_path": "/tmp/openubmc.hpm",
+            "artifact_sha256": "a" * 64,
+            "product_version": "2.0.0",
             "deadline": 10,
             "idempotency_key": "commit-failure",
         }
