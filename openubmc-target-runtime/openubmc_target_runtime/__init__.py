@@ -17,6 +17,18 @@ from .catalog import (
     OperationCatalog,
     OperationCatalogError,
     OperationDescriptor,
+    validate_json_schema,
+)
+from .capability import (
+    CAPABILITY_REGISTRY_SCHEMA,
+    DOMAIN_RECEIPT_SCHEMA,
+    CallableDomainAdapter,
+    CapabilityDescriptor,
+    CapabilityRegistry,
+    DomainAdapter,
+    DomainReceipt,
+    RuntimeSDK,
+    RuntimeSDKContext,
 )
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
@@ -76,6 +88,13 @@ from .distribution import (
     read_runtime_api_version,
     runtime_content_digest,
     runtime_distribution_contract,
+)
+from .delivery import (
+    DELIVERY_RECORD_SCHEMA,
+    ArtifactIdentity,
+    DeliveryOutcome,
+    DeliveryRecord,
+    DeploymentIdentity,
 )
 from .runtime import (
     CredentialResolver,
@@ -216,6 +235,11 @@ from .telnet import (
 
 __all__ = [
     "RUNTIME_API_VERSION",
+    "DELIVERY_RECORD_SCHEMA",
+    "ArtifactIdentity",
+    "DeliveryOutcome",
+    "DeliveryRecord",
+    "DeploymentIdentity",
     "WORKFLOW_DEFINITION_SCHEMA",
     "WORKFLOW_DEFINITION_VERSION",
     "DEFAULT_PHASE_REGISTRY",
@@ -276,6 +300,16 @@ __all__ = [
     "OperationCatalog",
     "OperationCatalogError",
     "OperationDescriptor",
+    "validate_json_schema",
+    "CAPABILITY_REGISTRY_SCHEMA",
+    "DOMAIN_RECEIPT_SCHEMA",
+    "CallableDomainAdapter",
+    "CapabilityDescriptor",
+    "CapabilityRegistry",
+    "DomainAdapter",
+    "DomainReceipt",
+    "RuntimeSDK",
+    "RuntimeSDKContext",
     "iter_runtime_source_files",
     "read_runtime_api_version",
     "runtime_content_digest",

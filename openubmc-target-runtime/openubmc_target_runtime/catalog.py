@@ -92,6 +92,13 @@ def _validate_schema(schema: Mapping[str, object], *, path: str = "$") -> None:
             raise OperationCatalogError(f"schema {path}.pattern is invalid: {exc}") from exc
 
 
+def validate_json_schema(schema: Mapping[str, object], *, path: str = "$") -> None:
+    """Validate the supported JSON Schema subset used by Runtime contracts."""
+
+    if not isinstance(schema, Mapping) or not schema:
+        raise OperationCatalogError(f"schema {path} must be a non-empty object")
+    _validate_schema(schema, path=path)
+
 def _matches_type(value: object, expected: str) -> bool:
     if expected == "null":
         return value is None

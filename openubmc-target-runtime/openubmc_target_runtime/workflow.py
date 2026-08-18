@@ -325,8 +325,10 @@ class WorkflowRegistry:
                     )
                 )
             raw = tuple(items)
-        elif normalized_intent == "diagnosis-only" and operation == "debug_collect":
-            raw = (("operation", "debug_collect"),)
+        elif normalized_intent == "diagnosis-only" and operation:
+            if operation not in self.operation_owners:
+                raise ValueError(f"workflow operation has no owner: {operation}")
+            raw = (("operation", operation),)
         elif normalized_intent == "diagnosis-only" and domain == "log_analyzer":
             raw = (("operation", "log_bundle_collect"),)
         else:

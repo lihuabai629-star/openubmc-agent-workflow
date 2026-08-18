@@ -484,6 +484,16 @@ class EvidenceRef:
     generation: str
     provenance: str
     observed_at: float
+    case_id: str = ""
+    producer: str = ""
+    target_epoch: int | None = None
+    workflow_definition_id: str = ""
+    workflow_definition_version: int = 0
+    workflow_definition_fingerprint: str = ""
+    workflow_cycle_id: str = ""
+    workflow_step_id: str = ""
+    workflow_attempt: int = 0
+    parent_evidence_ids: tuple[str, ...] = ()
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -495,6 +505,16 @@ class EvidenceRef:
             "generation": self.generation,
             "provenance": self.provenance,
             "observed_at": self.observed_at,
+            "case_id": self.case_id,
+            "producer": self.producer,
+            "target_epoch": self.target_epoch,
+            "workflow_definition_id": self.workflow_definition_id,
+            "workflow_definition_version": self.workflow_definition_version,
+            "workflow_definition_fingerprint": self.workflow_definition_fingerprint,
+            "workflow_cycle_id": self.workflow_cycle_id,
+            "workflow_step_id": self.workflow_step_id,
+            "workflow_attempt": self.workflow_attempt,
+            "parent_evidence_ids": list(self.parent_evidence_ids),
         }
 
 
@@ -506,6 +526,8 @@ class BlobRepository(Protocol):
     def delete(self, blob_id: str) -> bool: ...
 
     def size_bytes(self) -> int: ...
+
+    def blob_ids(self) -> tuple[str, ...]: ...
 
 
 class InMemoryBlobRepository:
@@ -539,6 +561,10 @@ class InMemoryBlobRepository:
     def size_bytes(self) -> int:
         with self._lock:
             return sum(len(body) for body in self._blobs.values())
+
+    def blob_ids(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(sorted(self._blobs))
 
 
 class FilesystemBlobRepository:
@@ -611,6 +637,15 @@ class FilesystemBlobRepository:
             path.stat().st_size
             for path in self.root.glob("*/*.json.gz")
             if path.is_file()
+        )
+
+    def blob_ids(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                path.name.removesuffix(".json.gz")
+                for path in self.root.glob("*/*.json.gz")
+                if path.is_file()
+            )
         )
 
 
@@ -1205,6 +1240,7 @@ class RuntimeRepository(Protocol):
 class InMemoryRuntimeRepository:
     def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
         self._events: dict[str, list[dict[str, object]]] = {}
+        self._evidence_index: dict[tuple[str, str], dict[str, object]] = {}
         self._idempotency: dict[tuple[str, str], dict[str, object]] = {}
         self._bindings: dict[str, str] = {}
         self._meta: dict[str, dict[str, object]] = {}
@@ -1264,6 +1300,14 @@ class InMemoryRuntimeRepository:
                         "created_at": now,
                     }
                 )
+                if item.kind == "EvidenceAttached":
+                    reference = item.payload.get("evidence")
+                    if isinstance(reference, Mapping):
+                        evidence_id = str(reference.get("evidence_id", ""))
+                        if evidence_id:
+                            indexed = dict(reference)
+                            indexed.setdefault("case_id", case_id)
+                            self._evidence_index[(case_id, evidence_id)] = indexed
             projection = self._load_locked(case_id)
             assert projection is not None
             self._meta[case_id] = {
@@ -1337,26 +1381,27 @@ class InMemoryRuntimeRepository:
         self, case_id: str, evidence_id: str
     ) -> dict[str, object] | None:
         with self._lock:
-            for event in reversed(self._events.get(case_id, [])):
-                if event.get("kind") != "EvidenceAttached":
-                    continue
-                payload = event.get("payload", {})
-                reference = (
-                    payload.get("evidence") if isinstance(payload, Mapping) else None
-                )
-                if (
-                    isinstance(reference, Mapping)
-                    and str(reference.get("evidence_id", "")) == evidence_id
-                ):
-                    return json.loads(json.dumps(reference))
-            return None
+            reference = self._evidence_index.get((case_id, evidence_id))
+            return (
+                json.loads(json.dumps(reference))
+                if reference is not None
+                else None
+            )
 
     def delete_case(self, case_id: str) -> tuple[dict[str, object], ...]:
         with self._lock:
-            projection = self._load_locked(case_id)
-            if projection is None:
+            if case_id not in self._events:
                 return ()
-            refs = tuple(dict(item) for item in projection["evidence_refs"])
+            refs = tuple(
+                dict(reference)
+                for (indexed_case_id, _evidence_id), reference in self._evidence_index.items()
+                if indexed_case_id == case_id
+            )
+            self._evidence_index = {
+                identity: reference
+                for identity, reference in self._evidence_index.items()
+                if identity[0] != case_id
+            }
             self._events.pop(case_id, None)
             self._meta.pop(case_id, None)
             self._idempotency = {
@@ -1386,10 +1431,7 @@ class InMemoryRuntimeRepository:
         with self._lock:
             return sum(
                 1
-                for case_id in self._events
-                for reference in (self._load_locked(case_id) or {}).get(
-                    "evidence_refs", []
-                )
+                for reference in self._evidence_index.values()
                 if reference.get("blob_id") == blob_id
             )
 
@@ -1399,6 +1441,10 @@ class InMemoryRuntimeRepository:
                 _json_bytes(
                     {
                         "events": self._events,
+                        "evidence_index": {
+                            f"{case_id}:{evidence_id}": reference
+                            for (case_id, evidence_id), reference in self._evidence_index.items()
+                        },
                         "idempotency": {
                             f"{case_id}:{key}": value
                             for (case_id, key), value in self._idempotency.items()
@@ -1416,6 +1462,7 @@ class InMemoryRuntimeRepository:
                 "case_count": len(self._events),
                 "idempotency_count": len(self._idempotency),
                 "task_binding_count": len(self._bindings),
+                "evidence_index_count": len(self._evidence_index),
             }
 
 
@@ -1489,8 +1536,53 @@ class SQLiteRuntimeRepository:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS evidence_index (
+                    case_id TEXT NOT NULL,
+                    evidence_id TEXT NOT NULL,
+                    blob_id TEXT NOT NULL,
+                    reference_json TEXT NOT NULL,
+                    observed_at REAL NOT NULL,
+                    PRIMARY KEY (case_id, evidence_id)
+                );
+                CREATE INDEX IF NOT EXISTS evidence_index_blob
+                    ON evidence_index(blob_id);
                 """
             )
+            indexed = {
+                (str(row["case_id"]), str(row["evidence_id"]))
+                for row in connection.execute(
+                    "SELECT case_id, evidence_id FROM evidence_index"
+                )
+            }
+            for event_row in connection.execute(
+                "SELECT case_id, payload_json, created_at FROM case_events "
+                "WHERE kind = 'EvidenceAttached' ORDER BY case_id, revision"
+            ):
+                payload = json.loads(event_row["payload_json"])
+                reference = (
+                    payload.get("evidence") if isinstance(payload, Mapping) else None
+                )
+                if not isinstance(reference, Mapping):
+                    continue
+                evidence_id = str(reference.get("evidence_id", ""))
+                identity = (str(event_row["case_id"]), evidence_id)
+                if not evidence_id or identity in indexed:
+                    continue
+                public = dict(reference)
+                public.setdefault("case_id", identity[0])
+                connection.execute(
+                    "INSERT INTO evidence_index "
+                    "(case_id, evidence_id, blob_id, reference_json, observed_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        identity[0],
+                        evidence_id,
+                        str(public.get("blob_id", "")),
+                        _json_bytes(public).decode("utf-8"),
+                        float(public.get("observed_at", event_row["created_at"])),
+                    ),
+                )
+                indexed.add(identity)
             idempotency_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(idempotency)")
@@ -1609,6 +1701,29 @@ class SQLiteRuntimeRepository:
                         now,
                     ),
                 )
+                if item.kind == "EvidenceAttached":
+                    reference = item.payload.get("evidence")
+                    if isinstance(reference, Mapping):
+                        evidence_id = str(reference.get("evidence_id", ""))
+                        if evidence_id:
+                            public = dict(reference)
+                            public.setdefault("case_id", case_id)
+                            connection.execute(
+                                "INSERT INTO evidence_index "
+                                "(case_id, evidence_id, blob_id, reference_json, observed_at) "
+                                "VALUES (?, ?, ?, ?, ?) "
+                                "ON CONFLICT(case_id, evidence_id) DO UPDATE SET "
+                                "blob_id = excluded.blob_id, "
+                                "reference_json = excluded.reference_json, "
+                                "observed_at = excluded.observed_at",
+                                (
+                                    case_id,
+                                    evidence_id,
+                                    str(public.get("blob_id", "")),
+                                    _json_bytes(public).decode("utf-8"),
+                                    float(public.get("observed_at", now)),
+                                ),
+                            )
             projection = self._load_from_connection(connection, case_id)
             if projection is None:
                 raise CaseNotFound(case_id)
@@ -1773,31 +1888,32 @@ class SQLiteRuntimeRepository:
         self, case_id: str, evidence_id: str
     ) -> dict[str, object] | None:
         with self._lock, self._connect() as connection:
-            for row in connection.execute(
-                "SELECT payload_json FROM case_events "
-                "WHERE case_id = ? AND kind = 'EvidenceAttached' "
-                "ORDER BY revision DESC",
-                (case_id,),
-            ):
-                payload = json.loads(row["payload_json"])
-                reference = (
-                    payload.get("evidence") if isinstance(payload, Mapping) else None
-                )
-                if (
-                    isinstance(reference, Mapping)
-                    and str(reference.get("evidence_id", "")) == evidence_id
-                ):
-                    return dict(reference)
-            return None
+            row = connection.execute(
+                "SELECT reference_json FROM evidence_index "
+                "WHERE case_id = ? AND evidence_id = ?",
+                (case_id, evidence_id),
+            ).fetchone()
+            return json.loads(row["reference_json"]) if row is not None else None
 
     def delete_case(self, case_id: str) -> tuple[dict[str, object], ...]:
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            projection = self._load_from_connection(connection, case_id)
-            if projection is None:
+            exists = connection.execute(
+                "SELECT 1 FROM case_events WHERE case_id = ? LIMIT 1", (case_id,)
+            ).fetchone()
+            if exists is None:
                 connection.rollback()
                 return ()
-            refs = tuple(dict(item) for item in projection["evidence_refs"])
+            refs = tuple(
+                json.loads(row["reference_json"])
+                for row in connection.execute(
+                    "SELECT reference_json FROM evidence_index WHERE case_id = ?",
+                    (case_id,),
+                )
+            )
+            connection.execute(
+                "DELETE FROM evidence_index WHERE case_id = ?", (case_id,)
+            )
             connection.execute("DELETE FROM case_events WHERE case_id = ?", (case_id,))
             connection.execute("DELETE FROM cases WHERE case_id = ?", (case_id,))
             connection.execute("DELETE FROM idempotency WHERE case_id = ?", (case_id,))
@@ -1813,17 +1929,12 @@ class SQLiteRuntimeRepository:
             return tuple(dict(row) for row in rows)
 
     def blob_reference_count(self, blob_id: str) -> int:
-        count = 0
-        for meta in self.metadata():
-            projection = self.load(str(meta["case_id"]))
-            if projection is None:
-                continue
-            count += sum(
-                1
-                for reference in projection["evidence_refs"]
-                if reference.get("blob_id") == blob_id
-            )
-        return count
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM evidence_index WHERE blob_id = ?",
+                (blob_id,),
+            ).fetchone()
+            return int(row["count"])
 
     def size_bytes(self) -> int:
         total = 0
@@ -1844,11 +1955,15 @@ class SQLiteRuntimeRepository:
             binding_count = connection.execute(
                 "SELECT COUNT(*) AS count FROM task_bindings"
             ).fetchone()["count"]
+            evidence_index_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM evidence_index"
+            ).fetchone()["count"]
         return {
             "adapter": "sqlite",
             "case_count": int(case_count),
             "idempotency_count": int(idempotency_count),
             "task_binding_count": int(binding_count),
+            "evidence_index_count": int(evidence_index_count),
             "database_bytes": self.size_bytes(),
         }
 
@@ -2705,6 +2820,43 @@ class ContextRuntime:
             )
         )
         provenance = f"{descriptor.name}:{operation_id}"
+        projection = self._load(case_id) or {}
+        definition = projection.get("workflow_definition", {})
+        definition = definition if isinstance(definition, Mapping) else {}
+        operation = next(
+            (
+                item
+                for item in reversed(list(projection.get("operations", [])))
+                if isinstance(item, Mapping)
+                and str(item.get("operation_id", "")) == operation_id
+            ),
+            {},
+        )
+        operation = operation if isinstance(operation, Mapping) else {}
+        raw_parents = value.get(
+            "parent_evidence_ids", arguments.get("parent_evidence_ids", [])
+        )
+        parent_evidence_ids = (
+            tuple(
+                dict.fromkeys(
+                    str(item)
+                    for item in raw_parents
+                    if isinstance(item, str) and item
+                )
+            )
+            if isinstance(raw_parents, list)
+            else ()
+        )
+        target_epoch_value = value.get(
+            "target_epoch", value.get("epoch_after", value.get("generation"))
+        )
+        target_epoch = (
+            int(target_epoch_value)
+            if isinstance(target_epoch_value, int)
+            and not isinstance(target_epoch_value, bool)
+            and target_epoch_value >= 0
+            else None
+        )
         evidence_id = _fingerprint(
             {
                 "blob_id": blob_id,
@@ -2723,6 +2875,58 @@ class ContextRuntime:
             generation=generation,
             provenance=provenance,
             observed_at=self.clock(),
+            case_id=case_id,
+            producer=str(value.get("producer_identity", descriptor.name)),
+            target_epoch=target_epoch,
+            workflow_definition_id=str(
+                value.get(
+                    "workflow_definition_id",
+                    operation.get(
+                        "workflow_definition_id",
+                        definition.get("definition_id", ""),
+                    ),
+                )
+            ),
+            workflow_definition_version=int(
+                value.get(
+                    "workflow_definition_version",
+                    operation.get(
+                        "workflow_definition_version", definition.get("version", 0)
+                    ),
+                )
+            ),
+            workflow_definition_fingerprint=str(
+                value.get(
+                    "workflow_definition_fingerprint",
+                    operation.get(
+                        "workflow_definition_fingerprint",
+                        definition.get("fingerprint", ""),
+                    ),
+                )
+            ),
+            workflow_cycle_id=str(
+                value.get(
+                    "workflow_cycle_id",
+                    operation.get(
+                        "workflow_cycle_id",
+                        projection.get("workflow_cycle_id", ""),
+                    ),
+                )
+            ),
+            workflow_step_id=str(
+                value.get(
+                    "workflow_step_id", operation.get("workflow_step_id", "")
+                )
+            ),
+            workflow_attempt=int(
+                value.get(
+                    "workflow_attempt",
+                    value.get(
+                        "phase_attempt", operation.get("workflow_attempt", 0)
+                    ),
+                )
+            ),
+            parent_evidence_ids=parent_evidence_ids,
         )
 
     def _envelope(
@@ -3074,8 +3278,17 @@ class ContextRuntime:
         def read_closeout_evidence(
             reference: Mapping[str, object],
         ) -> Mapping[str, object] | None:
+            resolved = reference
+            if not str(reference.get("blob_id", "")):
+                evidence_id = str(reference.get("evidence_id", ""))
+                indexed = self.repository.evidence_reference(
+                    str(projection.get("case_id", "")), evidence_id
+                )
+                if not isinstance(indexed, Mapping):
+                    return None
+                resolved = indexed
             raw = self.blob_repository.read(
-                str(reference.get("blob_id", "")),
+                str(resolved.get("blob_id", "")),
                 offset=0,
                 limit=-1,
             )
@@ -5605,6 +5818,11 @@ class ContextRuntime:
                         "completed": False,
                         "status": "waiting_external",
                         "required_operation": name,
+                        "outcome": {
+                            "status": "unavailable",
+                            "operation": name,
+                            "reason": "Runtime capability adapter is unavailable",
+                        },
                         "steps_run": steps_run,
                         "next_action": f"install or provide operation {name}",
                     }
@@ -6027,14 +6245,7 @@ class ContextRuntime:
         projection = self._load(case_id, touch=True)
         if projection is None:
             raise CaseNotFound(case_id)
-        reference = next(
-            (
-                item
-                for item in projection["evidence_refs"]
-                if item.get("evidence_id") == evidence_id
-            ),
-            None,
-        )
+        reference = self.repository.evidence_reference(case_id, evidence_id)
         if not isinstance(reference, Mapping):
             raise EvidenceUnavailable(
                 f"evidence {evidence_id} does not belong to case {case_id}"
@@ -6104,11 +6315,14 @@ class ContextRuntime:
         if not self._continuation_for(projection)["workflow_complete"]:
             raise CaseNotForgettable(f"case {case_id} workflow is not complete")
         references = self.repository.delete_case(case_id)
-        deleted_blobs = 0
-        for reference in references:
-            blob_id = str(reference.get("blob_id", ""))
-            if blob_id and self.repository.blob_reference_count(blob_id) == 0:
-                deleted_blobs += int(self.blob_repository.delete(blob_id))
+        candidate_blob_ids = tuple(
+            dict.fromkeys(
+                str(reference.get("blob_id", ""))
+                for reference in references
+                if str(reference.get("blob_id", ""))
+            )
+        )
+        gc_result = self.garbage_collect_evidence(blob_ids=candidate_blob_ids)
         with self._lock:
             if self._projection_cache.pop(case_id, None) is not None:
                 self._projection_cache_bytes -= self._projection_cache_sizes.pop(
@@ -6118,7 +6332,51 @@ class ContextRuntime:
         return {
             "case_id": case_id,
             "forgotten": True,
-            "deleted_blobs": deleted_blobs,
+            "deleted_blobs": gc_result["deleted"],
+            "evidence_gc": gc_result,
+        }
+
+    def garbage_collect_evidence(
+        self,
+        *,
+        blob_ids: Iterable[str] | None = None,
+    ) -> dict[str, object]:
+        candidates = tuple(
+            dict.fromkeys(
+                str(blob_id)
+                for blob_id in (
+                    self.blob_repository.blob_ids()
+                    if blob_ids is None
+                    else blob_ids
+                )
+                if str(blob_id)
+            )
+        )
+        retained: list[str] = []
+        deleted: list[str] = []
+        failed: list[dict[str, str]] = []
+        for blob_id in candidates:
+            try:
+                if self.repository.blob_reference_count(blob_id) > 0:
+                    retained.append(blob_id)
+                    continue
+                if self.blob_repository.delete(blob_id):
+                    deleted.append(blob_id)
+            except Exception as exc:
+                failed.append(
+                    {
+                        "blob_id": blob_id,
+                        "error": redact_text(f"{type(exc).__name__}: {exc}"),
+                    }
+                )
+        return {
+            "scanned": len(candidates),
+            "retained": len(retained),
+            "deleted": len(deleted),
+            "failed": len(failed),
+            "retained_blob_ids": retained,
+            "deleted_blob_ids": deleted,
+            "failures": failed,
         }
 
     def maintain(self) -> dict[str, object]:
@@ -6160,8 +6418,9 @@ class ContextRuntime:
                     continue
                 self.forget_case(str(meta["case_id"]))
                 evicted_cases += 1
+        gc_result = self.garbage_collect_evidence()
         self._metrics["maintenance_evictions"] += evicted_cases
-        return {"evicted_cases": evicted_cases}
+        return {"evicted_cases": evicted_cases, "evidence_gc": gc_result}
 
     def status(self) -> dict[str, object]:
         with self._lock:

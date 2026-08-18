@@ -24,6 +24,13 @@ from .contracts import (
     _fingerprint,
 )
 from .catalog import OperationCatalog, OperationDescriptor
+from .capability import (
+    CallableDomainAdapter,
+    CapabilityDescriptor,
+    CapabilityRegistry,
+    RuntimeSDK,
+    RuntimeSDKContext,
+)
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     BlobRepository,
@@ -182,6 +189,38 @@ _CREDENTIAL_VALUE_TOOLS = frozenset(
 _MUTATION_TOOLS = frozenset(
     binding.name for binding in _OPERATION_BINDINGS if binding.mutation
 )
+_CAPABILITY_CONTRACTS = {
+    "debug_run": (
+        "openubmc.debug.diagnose",
+        "openubmc-debug",
+        300.0,
+        ("diagnosis", "runtime-observation"),
+    ),
+    "debug_collect": (
+        "openubmc.debug.verify",
+        "openubmc-debug",
+        180.0,
+        ("runtime-verification", "acceptance-outcome"),
+    ),
+    "log_bundle_collect": (
+        "openubmc.logs.bundle",
+        "openubmc-log-analyzer",
+        600.0,
+        ("diagnostic-bundle", "collection-outcome"),
+    ),
+    "live_patch_run": (
+        "openubmc.delivery.live-patch",
+        "openubmc-live-patch",
+        600.0,
+        ("mutation-journal", "deployment-verification"),
+    ),
+    "upgrade_run": (
+        "openubmc.delivery.upgrade",
+        "openubmc-upgrade",
+        1800.0,
+        ("mutation-journal", "deployment-identity"),
+    ),
+}
 _CONTEXT_OPERATION_LIFECYCLES = {
     "case_read": "read",
     "evidence_read": "read",
@@ -2109,6 +2148,26 @@ class RuntimeMcpService:
             ),
             backend=backend,
         )
+        capability_descriptors: list[CapabilityDescriptor] = []
+        for operation_descriptor in self.catalog.descriptors():
+            contract = _CAPABILITY_CONTRACTS.get(operation_descriptor.name)
+            if contract is None:
+                continue
+            capability, owner_skill, timeout_seconds, evidence_types = contract
+            capability_descriptors.append(
+                CapabilityDescriptor(
+                    operation=operation_descriptor.name,
+                    capability=capability,
+                    owner_skill=owner_skill,
+                    input_schema=operation_descriptor.input_schema,
+                    output_schema={"type": "object", "additionalProperties": True},
+                    timeout_seconds=timeout_seconds,
+                    evidence_types=evidence_types,
+                    mutation=operation_descriptor.mutation,
+                )
+            )
+        self.capability_registry = CapabilityRegistry(capability_descriptors)
+        self.runtime_sdk = RuntimeSDK(self.capability_registry)
         self.context_runtime = context_runtime or ContextRuntime(
             self.catalog,
             repository=context_repository,
@@ -2920,6 +2979,9 @@ class RuntimeMcpService:
             if callable(persistent_status):
                 status["persistent_task_contexts"] = persistent_status()
             status["context_runtime"] = self.context_runtime.status()
+            status["capability_registry"] = (
+                self.capability_registry.to_public_dict()
+            )
             status["context_maintenance"] = {
                 "attempts": self._context_maintenance_attempts,
                 "failures": self._context_maintenance_failures,
@@ -3024,7 +3086,10 @@ class RuntimeMcpService:
             raise RuntimeError(
                 f"operation catalog handler became unavailable: {descriptor.name}"
             )
-        timeout = self._timeout(arguments)
+        capability_descriptor = self.capability_registry.require(name)
+        timeout = min(
+            self._timeout(arguments), capability_descriptor.timeout_seconds
+        )
         context_arguments = arguments
         domain_arguments = {
             key: value
@@ -3052,14 +3117,31 @@ class RuntimeMcpService:
                     "_minimum_target_epoch",
                     minimum_target_epoch,
                 )
-        executor = lambda: self.registry.execute(
-                task_id=task_id,
-                operation_id=operation_id,
-                timeout_seconds=timeout,
-                callback=lambda task, context: callback(
-                    task, domain_arguments, context
+        executor = lambda: dict(
+            self.runtime_sdk.execute(
+                name,
+                context=RuntimeSDKContext(
+                    task_id=task_id,
+                    operation_id=operation_id,
+                    timeout_seconds=timeout,
+                    target_id=str(domain_arguments.get("target_id", "")),
+                    minimum_target_epoch=int(
+                        domain_arguments.get("_minimum_target_epoch", 0)
+                    ),
                 ),
-            )
+                arguments=domain_arguments,
+                adapter=CallableDomainAdapter(
+                    lambda _sdk_context, _sdk_arguments: self.registry.execute(
+                        task_id=task_id,
+                        operation_id=operation_id,
+                        timeout_seconds=timeout,
+                        callback=lambda task, context: callback(
+                            task, domain_arguments, context
+                        ),
+                    )
+                ),
+            ).value
+        )
         if self.context_mode == "shadow":
             legacy_value = executor()
             if not isinstance(legacy_value, Mapping):
