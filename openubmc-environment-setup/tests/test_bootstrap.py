@@ -58,6 +58,7 @@ class BootstrapTests(unittest.TestCase):
     def test_bootstrap_downloads_installer_and_forwards_managed_install_options(self) -> None:
         completed = subprocess.CompletedProcess([], 0)
         with (
+            mock.patch.dict(bootstrap.os.environ, {"GH_TOKEN": "fixture-token"}, clear=True),
             mock.patch.object(bootstrap.urllib.request, "urlopen", return_value=_Response()) as urlopen,
             mock.patch.object(bootstrap.subprocess, "run", return_value=completed) as run,
         ):
@@ -73,11 +74,15 @@ class BootstrapTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        urlopen.assert_called_once_with(
-            bootstrap.RAW_INSTALLER_TEMPLATE.format(ref="release-v1"),
-            timeout=30,
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            bootstrap.INSTALLER_API_TEMPLATE.format(ref="release-v1"),
         )
+        self.assertEqual(request.get_header("Authorization"), "Bearer fixture-token")
+        self.assertEqual(urlopen.call_args.kwargs, {"timeout": 30})
         command = run.call_args.args[0]
+        self.assertNotIn("fixture-token", command)
         self.assertEqual(command[2:8], [
             "install",
             "--source-mode",
@@ -98,17 +103,20 @@ class BootstrapTests(unittest.TestCase):
     def test_bootstrap_defaults_to_the_github_primary_release_source(self) -> None:
         completed = subprocess.CompletedProcess([], 0)
         with (
+            mock.patch.dict(bootstrap.os.environ, {}, clear=True),
             mock.patch.object(bootstrap.urllib.request, "urlopen", return_value=_Response()) as urlopen,
             mock.patch.object(bootstrap.subprocess, "run", return_value=completed) as run,
         ):
             self.assertEqual(bootstrap.main(["--ref", "v1.2.3"]), 0)
 
-        urlopen.assert_called_once_with(
-            "https://raw.githubusercontent.com/lihuabai629-star/"
-            "openubmc-agent-workflow/v1.2.3/"
-            "openubmc-environment-setup/scripts/install_environment.py",
-            timeout=30,
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://api.github.com/repos/lihuabai629-star/openubmc-agent-workflow/"
+            "contents/openubmc-environment-setup/scripts/install_environment.py?ref=v1.2.3",
         )
+        self.assertIsNone(request.get_header("Authorization"))
+        self.assertEqual(urlopen.call_args.kwargs, {"timeout": 30})
         command = run.call_args.args[0]
         repo_index = command.index("--repo-url") + 1
         ref_index = command.index("--ref") + 1

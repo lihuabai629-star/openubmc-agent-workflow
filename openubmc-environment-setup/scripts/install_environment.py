@@ -632,6 +632,29 @@ def normalized_repo_url(value: str) -> str:
     return value.rstrip("/").removesuffix(".git")
 
 
+def github_token() -> str | None:
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        token = os.environ.get(name, "").strip()
+        if token:
+            return token
+    return None
+
+
+def git_auth_environment(repo_url: str) -> dict[str, str] | None:
+    token = github_token()
+    if token is None or normalized_repo_url(repo_url) != normalized_repo_url(DEFAULT_REPO_URL):
+        return None
+    environment = dict(os.environ)
+    count_text = environment.get("GIT_CONFIG_COUNT", "0")
+    if not count_text.isdecimal():
+        raise SetupError("GIT_CONFIG_COUNT must be a non-negative integer")
+    count = int(count_text)
+    environment["GIT_CONFIG_COUNT"] = str(count + 1)
+    environment[f"GIT_CONFIG_KEY_{count}"] = "http.https://github.com/.extraheader"
+    environment[f"GIT_CONFIG_VALUE_{count}"] = f"Authorization: Bearer {token}"
+    return environment
+
+
 def read_skill_name(skill_file: Path) -> str:
     text = skill_file.read_text(encoding="utf-8")
     if not text.startswith("---\n"):
@@ -1160,6 +1183,7 @@ def local_repository_from_script(
 def fetch_immutable_release(root: Path, ref: str) -> tuple[Literal["tag", "commit"], str]:
     ref_kind = release_ref_kind(ref)
     fetch_ref = ref if ref_kind == "commit" else f"refs/tags/{ref}"
+    remote = git_output(root, "remote", "get-url", "origin")
     fetched = run_command(
         [
             "git",
@@ -1171,7 +1195,8 @@ def fetch_immutable_release(root: Path, ref: str) -> tuple[Literal["tag", "commi
             "1",
             "origin",
             fetch_ref,
-        ]
+        ],
+        env=git_auth_environment(remote),
     )
     if fetched.returncode != 0:
         label = "full commit" if ref_kind == "commit" else "release tag"

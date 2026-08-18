@@ -10,22 +10,30 @@ The bootstrap downloads the installer and leaves only the managed checkout:
 
 ```bash
 WORKFLOW_REF="vX.Y.Z" # published release tag or full commit
-curl -fsSL \
-  "https://raw.githubusercontent.com/lihuabai629-star/openubmc-agent-workflow/${WORKFLOW_REF}/bootstrap.py" \
+export GH_TOKEN="$(gh auth token)"
+gh api \
+  "repos/lihuabai629-star/openubmc-agent-workflow/contents/bootstrap.py?ref=${WORKFLOW_REF}" \
+  --header "Accept: application/vnd.github.raw" \
   | python3 - --ref "${WORKFLOW_REF}"
+unset GH_TOKEN
 ```
 
 Use the same immutable ref in the bootstrap URL and `--ref`. Managed installation rejects a
 missing ref, a branch such as `main`, or a name that does not resolve as an exact remote tag.
+Private GitHub access uses `GH_TOKEN` or `GITHUB_TOKEN` only for authenticated downloads and Git
+fetches; the installer does not write the token to the checkout remote, installer state, or logs.
 
 The default `full` profile installs 11 Skills, the Target Runtime, and the standalone
 `openubmc-kb` stdio MCP. The smaller runtime profile keeps the seven runtime-path Skills:
 
 ```bash
 WORKFLOW_REF="vX.Y.Z" # published release tag or full commit
-curl -fsSL \
-  "https://raw.githubusercontent.com/lihuabai629-star/openubmc-agent-workflow/${WORKFLOW_REF}/bootstrap.py" \
+export GH_TOKEN="$(gh auth token)"
+gh api \
+  "repos/lihuabai629-star/openubmc-agent-workflow/contents/bootstrap.py?ref=${WORKFLOW_REF}" \
+  --header "Accept: application/vnd.github.raw" \
   | python3 - --ref "${WORKFLOW_REF}" --skill-profile target-runtime
+unset GH_TOKEN
 ```
 
 Codex and Claude receive managed stdio MCP entries. OpenClaw receives the same Skill links; its

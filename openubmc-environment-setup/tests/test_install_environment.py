@@ -370,6 +370,48 @@ class EnvironmentSetupTests(unittest.TestCase):
 
         self.assertFalse(destination.exists())
 
+    def test_primary_github_fetch_uses_an_ephemeral_bearer_header(self) -> None:
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with (
+            mock.patch.dict(
+                installer.os.environ,
+                {
+                    "GH_TOKEN": "fixture-github-token",
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "credential.helper",
+                    "GIT_CONFIG_VALUE_0": "cache",
+                },
+                clear=True,
+            ),
+            mock.patch.object(
+                installer,
+                "git_output",
+                side_effect=[installer.DEFAULT_REPO_URL, "a" * 40],
+            ),
+            mock.patch.object(installer, "run_command", return_value=completed) as run,
+        ):
+            ref_kind, commit = installer.fetch_immutable_release(
+                self.root / "managed-release",
+                "v1.2.3",
+            )
+
+        self.assertEqual(ref_kind, "tag")
+        self.assertEqual(commit, "a" * 40)
+        command = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        self.assertNotIn("fixture-github-token", command)
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(environment["GIT_CONFIG_KEY_0"], "credential.helper")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_0"], "cache")
+        self.assertEqual(
+            environment["GIT_CONFIG_KEY_1"],
+            "http.https://github.com/.extraheader",
+        )
+        self.assertEqual(
+            environment["GIT_CONFIG_VALUE_1"],
+            "Authorization: Bearer fixture-github-token",
+        )
+
     def test_clone_source_resolves_tag_and_full_commit_to_detached_head(self) -> None:
         remote, commit = self.create_release_remote()
 

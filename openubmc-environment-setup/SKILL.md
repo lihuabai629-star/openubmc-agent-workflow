@@ -33,10 +33,16 @@ without cloning first:
 
 ~~~bash
 WORKFLOW_REF="vX.Y.Z" # published release tag or full commit
-curl -fsSL \
-  "https://raw.githubusercontent.com/lihuabai629-star/openubmc-agent-workflow/${WORKFLOW_REF}/bootstrap.py" \
+export GH_TOKEN="$(gh auth token)"
+gh api \
+  "repos/lihuabai629-star/openubmc-agent-workflow/contents/bootstrap.py?ref=${WORKFLOW_REF}" \
+  --header "Accept: application/vnd.github.raw" \
   | python3 - --ref "${WORKFLOW_REF}"
+unset GH_TOKEN
 ~~~
+
+Private GitHub access uses `GH_TOKEN` or `GITHUB_TOKEN` only for authenticated downloads and Git
+fetches. The installer does not persist the token in the checkout remote, installer state, or logs.
 
 For development against an existing checkout, link that checkout explicitly:
 
