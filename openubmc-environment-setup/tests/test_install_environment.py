@@ -370,7 +370,7 @@ class EnvironmentSetupTests(unittest.TestCase):
 
         self.assertFalse(destination.exists())
 
-    def test_primary_github_fetch_uses_an_ephemeral_bearer_header(self) -> None:
+    def test_primary_github_fetch_uses_an_ephemeral_auth_header(self) -> None:
         completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with (
             mock.patch.dict(
@@ -409,7 +409,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         )
         self.assertEqual(
             environment["GIT_CONFIG_VALUE_1"],
-            "Authorization: Bearer fixture-github-token",
+            "Authorization: Basic eC1hY2Nlc3MtdG9rZW46Zml4dHVyZS1naXRodWItdG9rZW4=",
         )
 
     def test_clone_source_resolves_tag_and_full_commit_to_detached_head(self) -> None:

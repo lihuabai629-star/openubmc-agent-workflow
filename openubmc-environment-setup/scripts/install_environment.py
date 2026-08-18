@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 from contextlib import redirect_stdout
 import getpass
 import hashlib
@@ -649,9 +650,10 @@ def git_auth_environment(repo_url: str) -> dict[str, str] | None:
     if not count_text.isdecimal():
         raise SetupError("GIT_CONFIG_COUNT must be a non-negative integer")
     count = int(count_text)
+    basic_token = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
     environment["GIT_CONFIG_COUNT"] = str(count + 1)
     environment[f"GIT_CONFIG_KEY_{count}"] = "http.https://github.com/.extraheader"
-    environment[f"GIT_CONFIG_VALUE_{count}"] = f"Authorization: Bearer {token}"
+    environment[f"GIT_CONFIG_VALUE_{count}"] = f"Authorization: Basic {basic_token}"
     return environment
 
 
