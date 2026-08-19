@@ -47,6 +47,17 @@ Legacy domain and workflow operations remain available through the explicit `com
 profile for migration and measurement; that profile does not expose operator operations. See
 [Agent Semantic Gateway](docs/agent-semantic-gateway.md).
 
+## Architecture and evolution
+
+The stable product boundary, vocabulary, accepted decisions, market comparison, and phased roadmap
+are maintained in the following records:
+
+- [Domain context](CONTEXT.md)
+- [Architecture Decision Records](docs/adr/README.md)
+- [Architecture arbitration](docs/workflow-architecture-arbitration.md)
+- [Market workflow design research](docs/workflow-design-market-research.md)
+- [Evolution roadmap](docs/workflow-evolution-roadmap.md)
+
 ## Credentials
 
 BMC and OS credentials:
