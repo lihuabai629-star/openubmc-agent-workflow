@@ -59,6 +59,7 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
 | [Agent Semantic Gateway](agent-semantic-gateway.md) | 当前 `observe/execute` Interface、profile、预算与恢复能力 | 已实现基线 |
 | [领域上下文](../CONTEXT.md) | 产品边界、统一术语、事实所有权和跨版本不变量 | 完成 |
 | [架构决策记录](adr/README.md) | 三项难以逆转的已接受决策及其触发条件 | 完成 |
+| [外部深度研究对照](external-workflow-research-reconciliation.md) | 对 ChatGPT Share 深度报告逐项裁决，区分直接采纳、改造采纳和延后项 | 完成 |
 | 本文档 | 连接事实、决策、阶段路线和后续讨论 | 持续更新 |
 
 ### 2.2 实验工件
@@ -84,6 +85,14 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
 - session index：`/mnt/d/Obsidian/vaults/obsidian/Codex Sessions/Session Index.md`。
 
 原始会话和工具活动保存在 JSON artifact 中；仓库文档只保留可复核结论，不复制巨量原始输出。
+
+### 2.4 外部深度研究报告
+
+- 来源：<https://chatgpt.com/share/6a85aeb3-472c-83ea-b5b1-0c3d2fd42478>；
+- 结论：产品边界、安全原则、Artifact、Gate、模型职责和测试方法与当前路线高度一致；
+- 分歧：报告过早引入 Agent 可见 CommandAck/polling、v2.1 Outbox/Inbox、强制多 Run Case 聚合，并把状态权威放到与当前职责不符的 Workflow Kernel；
+- 裁决：保持当前 `RunEngine` 唯一权威和 Turn 语义，Outbox/Inbox 等待真实进程 seam；吸收 Effect class、必要版本 pin、执行总预算、受限 PlanProposal 与扩展 Benchmark；
+- 详细对照见[外部深度研究报告与当前架构裁决对照](external-workflow-research-reconciliation.md)。
 
 ## 3. 已确认事实
 
@@ -218,6 +227,8 @@ Interface 的目标不是减少方法数字本身，而是让调用方无需理�
 7. Session Outcome 改为 terminal Run 的治理投影；
 8. 用行为测试替换源码字符串测试；
 9. 完成旧 event/schema 的 upcaster 与兼容读取。
+10. 为 Domain Action 建立 Effect class 与默认 retry/reconcile/approval policy。
+11. 固定恢复和审计真正依赖的 Action、Workflow、Policy、DomainExecutor 与 Projector version。
 
 迁移原则是 move-and-delete，不在旧逻辑外永久叠一层新状态机。
 
@@ -279,6 +290,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 5. D-Bus、active alarm、bounded log search 等按真实调用缺口增加；
 6. compatibility profile 使用遥测与退役；
 7. capacity、soak、property-based 和 network fault injection。
+8. 原型验证 `ModelInvocationRecord` 与受限 `PlanProposal -> PlanRevision`，模型只生成 Proposal。
 
 ### P3：v3 分布式执行
 

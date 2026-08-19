@@ -56,6 +56,7 @@ are maintained in the following records:
 - [Architecture Decision Records](docs/adr/README.md)
 - [Architecture arbitration](docs/workflow-architecture-arbitration.md)
 - [Market workflow design research](docs/workflow-design-market-research.md)
+- [External research reconciliation](docs/external-workflow-research-reconciliation.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)
 
 ## Credentials
