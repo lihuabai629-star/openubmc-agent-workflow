@@ -351,6 +351,17 @@ class RunConfig:
     interface_profile: str
 
 
+def prepare_arm_home(home: Path, source_root: Path) -> None:
+    """Install the selected arm's Skill into the isolated benchmark home."""
+    skill_source = source_root / "openubmc-debug"
+    if not skill_source.is_dir():
+        raise FileNotFoundError(f"openubmc-debug Skill not found: {skill_source}")
+    for client_root in (".agents", ".codex"):
+        link = home / client_root / "skills" / "openubmc-debug"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(skill_source, target_is_directory=True)
+
+
 def run_benchmark(args: argparse.Namespace) -> int:
     repo = args.repo.resolve()
     work_root = args.work_root.resolve()
@@ -383,6 +394,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
             home = run_dir / "home"
             run_dir.mkdir(parents=True)
             home.mkdir()
+            prepare_arm_home(home, config.source_root)
             prompt = _prompt(config.source_root / "openubmc-debug" / "SKILL.md")
             (run_dir / "prompt.md").write_text(prompt, encoding="utf-8")
             final_path = run_dir / "final.md"

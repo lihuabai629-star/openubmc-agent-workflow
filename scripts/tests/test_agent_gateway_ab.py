@@ -18,6 +18,22 @@ SPEC.loader.exec_module(module)
 
 
 class AgentGatewayAbTests(unittest.TestCase):
+    def test_prepare_arm_home_links_selected_skill_for_supported_clients(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            skill_source = source_root / "openubmc-debug"
+            skill_source.mkdir(parents=True)
+            home = root / "home"
+            home.mkdir()
+
+            module.prepare_arm_home(home, source_root)
+
+            for client_root in (".agents", ".codex"):
+                link = home / client_root / "skills" / "openubmc-debug"
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(link.resolve(), skill_source.resolve())
+
     def test_schedule_is_balanced_and_deterministic(self) -> None:
         first = module.balanced_schedule(10, seed=7)
         second = module.balanced_schedule(10, seed=7)
