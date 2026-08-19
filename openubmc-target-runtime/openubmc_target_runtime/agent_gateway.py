@@ -291,6 +291,9 @@ class ScopeContract:
             SelectorContract.from_value(_mapping(value), index)
             for index, value in enumerate(raw_selectors, start=1)
         )
+        selector_ids = [selector.selector_id for selector in selectors]
+        if len(set(selector_ids)) != len(selector_ids):
+            raise ScopeViolation("selector ids must be unique")
         freshness = _mapping(query.get("freshness"))
         if set(freshness) - {"mode", "max_age_seconds"}:
             raise ScopeViolation("freshness contains undeclared fields")

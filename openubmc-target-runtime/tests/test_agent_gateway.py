@@ -365,6 +365,31 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "incomplete")
         self.assertTrue(receipt["content_compacted"])
 
+    def test_observe_hard_limit_survives_maximum_legal_scope_and_large_result(self) -> None:
+        service = RuntimeMcpService(LargeObservationBackend())
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "t" * 512,
+                    "selectors": [
+                        {
+                            "id": "s" * 64,
+                            "kind": "mdb",
+                            "queries": ["q" * 1024],
+                        }
+                    ],
+                },
+                task_id="observe-maximum-scope",
+                operation_id="observe-maximum-scope-1",
+            )
+        finally:
+            service.close()
+
+        self.assertLessEqual(encoded_size(receipt), OBSERVATION_MAX_BYTES)
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertTrue(receipt["content_compacted"])
+
     def test_scope_contract_fails_closed_for_undeclared_surface_or_freshness(self) -> None:
         with self.assertRaises(ScopeViolation):
             ScopeContract.from_query(
@@ -385,6 +410,22 @@ class AgentGatewayTests(unittest.TestCase):
                 },
                 task_id="oversized-scope",
                 operation_id="oversized-scope-1",
+            )
+
+    def test_scope_contract_rejects_duplicate_selector_ids(self) -> None:
+        with self.assertRaisesRegex(ScopeViolation, "selector ids must be unique"):
+            ScopeContract.from_query(
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"id": "duplicate", "kind": "capability", "names": ["ssh"]},
+                        {
+                            "id": "duplicate",
+                            "kind": "mdb",
+                            "queries": ["lsprop Object0"],
+                        },
+                    ],
+                }
             )
 
     def test_assured_observation_fails_closed_without_a_precise_adapter(self) -> None:
@@ -622,6 +663,35 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertEqual(final["state"], "failed")
         self.assertEqual(final["outcome"]["status"], "failed")
+        self.assertTrue(final["outcome_recorded"])
+
+    def test_control_cancel_without_response_terminates_the_run(self) -> None:
+        first = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.61",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="cancel-run",
+            operation_id="cancel-run-start",
+        )
+
+        final = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "control",
+                "run_id": first["run_id"],
+                "command": "cancel",
+            },
+            task_id="cancel-run",
+            operation_id="cancel-run-control",
+        )
+
+        self.assertEqual(final["state"], "cancelled")
+        self.assertIsNone(final["gate"])
+        self.assertEqual(final["outcome"]["status"], "cancelled")
         self.assertTrue(final["outcome_recorded"])
 
     def test_execute_live_patch_runs_diagnosis_mutation_and_fresh_verification(self) -> None:
