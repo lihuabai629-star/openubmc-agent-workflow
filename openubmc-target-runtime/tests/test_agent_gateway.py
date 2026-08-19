@@ -422,6 +422,30 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertTrue(response["result"]["isError"])
 
+    def test_agent_endpoint_renders_observation_values_in_bounded_text_content(self) -> None:
+        endpoint = JsonRpcMcpEndpoint(self.service, session_task_id="observe-session")
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "observe",
+                    "arguments": {
+                        "target": "192.0.2.10",
+                        "selectors": [
+                            {"kind": "mdb", "queries": ["lsprop Object0"]}
+                        ],
+                    },
+                },
+            }
+        )
+
+        text = response["result"]["content"][0]["text"]
+        self.assertIn("lsprop Object0", text)
+        self.assertIn("Value", text)
+        self.assertLessEqual(len(text.encode("utf-8")), OBSERVATION_MAX_BYTES)
+
     def test_legacy_freshness_profile_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "profile"):
             self.service.call_tool(

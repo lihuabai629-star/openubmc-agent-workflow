@@ -54,6 +54,11 @@ transport projection.
 `capability` and `mdb`. An Adapter cannot add evidence surfaces that were not declared in the
 query.
 
+All selectors needed for one answer belong in one `observe` call. Capability is not a separate
+Agent preflight step: the internal Adapter performs capability discovery and the exact MDB reads in
+the same observation. Callers split a query only after an explicit incomplete Receipt requests a
+narrower scope.
+
 Freshness is a time property. The Agent Interface currently accepts only live evidence with
 `max_age_seconds=0`; the old `freshness` and `log-file` profiles are rejected because profiles
 describe evidence scope, not evidence age.

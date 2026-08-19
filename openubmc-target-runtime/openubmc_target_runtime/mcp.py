@@ -26,6 +26,7 @@ from .contracts import (
 from .catalog import OperationCatalog, OperationDescriptor
 from .agent_gateway import (
     AgentGateway,
+    OBSERVATION_MAX_BYTES,
     agent_operation_descriptors,
 )
 from .capability import (
@@ -3652,6 +3653,75 @@ class JsonRpcMcpEndpoint:
                 return candidate.strip()
         return ""
 
+    @staticmethod
+    def _observation_text(value: Mapping[str, object]) -> str:
+        scope = _mapping_or_empty(value.get("scope"))
+        selectors = scope.get("selectors", [])
+        selector_queries: dict[str, list[str]] = {}
+        if isinstance(selectors, list):
+            for selector_value in selectors:
+                selector = _mapping_or_empty(selector_value)
+                selector_id = str(selector.get("id", ""))
+                queries = selector.get("queries", [])
+                if selector_id and isinstance(queries, list):
+                    selector_queries[selector_id] = [str(query) for query in queries]
+        freshness = _mapping_or_empty(value.get("freshness"))
+        coverage = _mapping_or_empty(value.get("coverage"))
+        lines = [
+            (
+                f"ObservationReceipt {value.get('receipt_id', '')} "
+                f"status={value.get('status', 'unknown')} "
+                f"observed_at={freshness.get('observed_at', '')}"
+            )
+        ]
+        results = _mapping_or_empty(value.get("results"))
+        for selector_id, raw_result in results.items():
+            result = _mapping_or_empty(raw_result)
+            values = result.get("values", [])
+            if not isinstance(values, list):
+                continue
+            if result.get("kind") == "capability":
+                rendered = ", ".join(
+                    f"{item.get('name', '')}={item.get('status', 'not_checked')}"
+                    for raw_item in values
+                    if (item := _mapping_or_empty(raw_item))
+                )
+                lines.append(f"capability[{selector_id}]: {rendered}")
+                continue
+            queries = selector_queries.get(str(selector_id), [])
+            for raw_item in values:
+                item = _mapping_or_empty(raw_item)
+                index = item.get("query_index", 0)
+                query = (
+                    queries[index]
+                    if isinstance(index, int) and 0 <= index < len(queries)
+                    else f"query[{index}]"
+                )
+                rendered_value = json.dumps(
+                    item.get("value"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                lines.append(
+                    f"mdb[{selector_id}] {query} => {rendered_value} "
+                    f"status={item.get('status', 'not_checked')}"
+                )
+        lines.append(
+            "coverage: "
+            f"requested={coverage.get('requested', 0)} "
+            f"available={coverage.get('available', 0)} "
+            f"unavailable={coverage.get('unavailable', 0)} "
+            f"not_checked={coverage.get('not_checked', 0)}"
+        )
+        text = "\n".join(lines)
+        encoded = text.encode("utf-8")
+        if len(encoded) <= OBSERVATION_MAX_BYTES:
+            return text
+        return encoded[: OBSERVATION_MAX_BYTES - 3].decode(
+            "utf-8", errors="ignore"
+        ) + "..."
+
     @classmethod
     def _human_summary(
         cls,
@@ -3695,14 +3765,7 @@ class JsonRpcMcpEndpoint:
         if not isinstance(value, Mapping):
             return str(value)
         if tool_name == "observe":
-            coverage = value.get("coverage")
-            coverage = coverage if isinstance(coverage, Mapping) else {}
-            return (
-                f"openUBMC 观察{value.get('status', 'completed')}："
-                f"{coverage.get('available', 0)} 项可用，"
-                f"{coverage.get('unavailable', 0)} 项不可用，"
-                f"{coverage.get('not_checked', 0)} 项未检查。"
-            )
+            return cls._observation_text(value)
         if tool_name == "execute":
             gate = value.get("gate")
             gate = gate if isinstance(gate, Mapping) else {}

@@ -866,7 +866,11 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
     return (
         OperationDescriptor(
             name="observe",
-            description="Return one bounded live ObservationReceipt for exact read-only selectors.",
+            description=(
+                "Return one bounded live ObservationReceipt for all exact read-only selectors "
+                "needed by the current answer; combine capability and MDB selectors because "
+                "preflight is internal."
+            ),
             input_schema=observe_schema,
             lifecycle="read",
             exposure="agent",

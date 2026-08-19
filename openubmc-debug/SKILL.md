@@ -31,6 +31,10 @@ Use the default `openubmc-target-runtime` MCP through its semantic Interface:
 
 - Call `observe` for exact read-only questions. Declare only the required selectors. A narrow MDB
   or capability query should complete in one call and return an inline `ObservationReceipt`.
+- Treat one answer as one observation: combine capability and exact MDB selectors needed for the
+  current answer in the same `observe` call. Do not run a separate capability preflight; the
+  internal observation Adapter performs it. Split selectors only when the returned Receipt is
+  explicitly incomplete and asks for a narrower scope.
 - Call `execute` for work that may cross diagnosis, Developer, Build, Live Patch, Upgrade,
   verification, recovery, or acceptance phases.
 - When the user says “继续” or “continue”, call `execute` with `kind: resume` and the retained
