@@ -9,6 +9,7 @@ from .catalog import OperationDescriptor
 from .contracts import RUNTIME_API_VERSION
 from .semantic_runtime import (
     AgentGatewayError,
+    GATE_SCHEMA_MAX_BYTES,
     ObservationQuery,
     ObservationRef,
     RunTurn,
@@ -488,7 +489,12 @@ class ResultProjector:
                 }
             )
         requested = sum(counts.values())
-        gaps = []
+        raw_gaps = raw.get("gaps", [])
+        gaps = (
+            [_bounded_text(item, 256) for item in raw_gaps[:8]]
+            if isinstance(raw_gaps, list)
+            else []
+        )
         if counts["not_checked"]:
             gaps.append(f"{counts['not_checked']} requested observations were not checked")
         document = {

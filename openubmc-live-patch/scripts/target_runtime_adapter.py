@@ -262,6 +262,25 @@ class LivePatchRuntimeAdapter(Generic[MutationValueT, VerificationValueT]):
         self.telnet_transport = telnet_transport
         self.ssh_transport = ssh_transport
 
+    def mutation_request(
+        self,
+        *,
+        operation_id: str,
+        restart_scope: str,
+        operation: Mapping[str, object],
+        action: str = "live_patch",
+    ) -> MutationRequest:
+        return MutationRequest.create(
+            operation_id=operation_id,
+            target=self.target,
+            credential_selector=self.credential_selector,
+            action=action,
+            operation={
+                **dict(operation),
+                "restart_scope": restart_scope,
+            },
+        )
+
     def run(
         self,
         *,
@@ -279,15 +298,11 @@ class LivePatchRuntimeAdapter(Generic[MutationValueT, VerificationValueT]):
             restart_scope=restart_scope,
             action=action,
         )
-        request = MutationRequest.create(
+        request = self.mutation_request(
             operation_id=operation_id,
-            target=self.target,
-            credential_selector=self.credential_selector,
+            restart_scope=restart_scope,
+            operation=operation,
             action=action,
-            operation={
-                **dict(operation),
-                "restart_scope": restart_scope,
-            },
         )
 
         def apply_under_live_patch_lease(
@@ -321,6 +336,34 @@ class LivePatchRuntimeAdapter(Generic[MutationValueT, VerificationValueT]):
             request,
             authorization=authorization,
             apply=apply_under_live_patch_lease,
+            verify=verify,
+            operation_context=operation_context,
+        )
+
+    def recover(
+        self,
+        *,
+        operation_id: str,
+        authorization: MutationAuthorization,
+        restart_scope: str,
+        operation: Mapping[str, object],
+        inspect: Callable[[object], Mapping[str, object]],
+        verify: Callable[[FreshVerificationContext], VerificationValueT],
+        action: str = "live_patch",
+        operation_context: object | None = None,
+    ):
+        """Reconcile one uncertain Live Patch before any possible re-apply."""
+
+        request = self.mutation_request(
+            operation_id=operation_id,
+            restart_scope=restart_scope,
+            operation=operation,
+            action=action,
+        )
+        return self.task_run.recover_mutation(
+            request,
+            authorization=authorization,
+            inspect=inspect,
             verify=verify,
             operation_context=operation_context,
         )

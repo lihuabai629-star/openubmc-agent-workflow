@@ -33,7 +33,7 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
 | M5 Domain Pack | 未开始 | 只从 Live Patch 与 Upgrade 已证明的共同 seam 抽取 contract/conformance suite |
 | M6 证据驱动扩展 | 未开始 | 根据真实调用缺口决定 selector、受限动态计划或分布式化 |
 
-当前分支的本地 Runtime 测试为 318 项全部通过，openUBMC Debug Runtime backend 为
+当前分支的本地 Runtime 测试为 333 项全部通过，openUBMC Debug Runtime backend 为
 16 项全部通过。正式 v2 仍需完成 M2/M3 的扩展 fault matrix、完整 execute A/B、release
 gate，并在最终 source commit 上重新生成
 `release-lock.json`；本分支不创建 v2 tag。
@@ -118,6 +118,8 @@ gate，并在最终 source commit 上重新生成
 - 默认 Agent profile 已只暴露 `observe` 和 `execute`；
 - compatibility 与 operator profile 已分离；
 - Observation scope、Receipt、Turn 和 Gate schema 已有输出预算；
+- Debug Observation 只执行 selector 声明的 preflight surface 及其必要传输依赖，
+  cache 与 assurance refresh 不扩大采集范围；
 - `execute` 支持 `start | respond | resume | control`；
 - Observation A/B 已证明两个语义入口的方向正确；
 - 当前真正风险不在工具数量，而在 compatibility 写入路径的收口、完整 execute
@@ -293,7 +295,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 | Observation handle 化 | Runtime 可从 handle/digest 重建；篡改、跨 target、GC 后 fail closed |
 | Gate 持久身份 | 重复提交幂等；并发单赢家；旧版本、错误 Gate 和不同输入 conflict |
 | Mutation 恢复证明 | Live Patch/Upgrade 每个切点不重复危险 Effect |
-| 发布证据 | 当前 318 项 Runtime 与 16 项 Debug backend 测试通过；正式发布前仍需完整 execute fault matrix、A/B 与 release gate |
+| 发布证据 | 当前 333 项 Runtime 与 16 项 Debug backend 测试通过；正式发布前仍需完整 execute fault matrix、A/B 与 release gate |
 | ADR | 产品 Interface、状态权威、Effect、Gate、Artifact 和分布式触发条件落盘 |
 
 ### P1：v2.1 内部架构收敛

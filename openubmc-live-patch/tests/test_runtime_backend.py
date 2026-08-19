@@ -103,6 +103,25 @@ class FakeTelnetTransport:
             stdout = "live_patch_codec_ready"
         elif "/proc/mounts" in command:
             stdout = "rw,relatime"
+        elif "live_patch_recovery_inspected" in command:
+            stdout = (
+                f"remote_sha256={self.digest}\n"
+                f"remote_mode={self.current_mode}\n"
+                f"remote_uid={self.current_uid}\n"
+                f"remote_gid={self.current_gid}\n"
+                "remote_exists\nlive_patch_recovery_inspected"
+                if self.target_exists
+                else "remote_missing\nlive_patch_recovery_inspected"
+            )
+        elif "backup_exists" in command:
+            stdout = (
+                f"backup_sha256={self.digest}\n"
+                f"backup_mode={self.target_mode}\n"
+                f"backup_uid={self.target_uid}\n"
+                f"backup_gid={self.target_gid}\nbackup_exists"
+            )
+        elif "live_patch_restart_observed" in command:
+            stdout = "live_patch_restart_observed"
         elif "target_exists" in command:
             stdout = (
                 f"{self.digest}  /opt/bmc/apps/demo/unit.lua\n"
@@ -146,6 +165,7 @@ class FakeTelnetTransport:
             script = decoded_shell_script(command)
             mode = re.search(r"chmod ([0-7]{3,4}) ", script)
             owner = re.search(r"chown ([0-9]+):([0-9]+) ", script)
+            self.target_exists = True
             self.current_mode = mode.group(1) if mode else "644"
             if owner:
                 self.current_uid = int(owner.group(1))
@@ -185,7 +205,76 @@ class FakeTelnetTransport:
         return None
 
 
+class FailRestartOnceTelnetTransport(FakeTelnetTransport):
+    def __init__(self, digest: str, **kwargs) -> None:
+        super().__init__(digest, **kwargs)
+        self.failed_restart = False
+
+    def run_command(self, session, command: str, **kwargs):
+        if "restart_ok" in command and not self.failed_restart:
+            self.commands.append(command)
+            self.failed_restart = True
+            raise OSError("connection lost after Live Patch install")
+        return super().run_command(session, command, **kwargs)
+
+
+class MissingBackupTelnetTransport(FakeTelnetTransport):
+    def run_command(self, session, command: str, **kwargs):
+        if "backup_exists" in command:
+            self.commands.append(command)
+            return TelnetCommandResult(
+                stdout="backup_missing",
+                returncode=0,
+                framing_complete=True,
+                timed_out=False,
+                connection_closed=False,
+                raw=b"backup_missing",
+            )
+        return super().run_command(session, command, **kwargs)
+
+
 class LivePatchRuntimeBackendTests(unittest.TestCase):
+    def test_artifact_digest_mismatch_is_rejected_before_remote_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            ssh = FakeSshTransport()
+            telnet = FakeTelnetTransport("a" * 64)
+            service = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=MutationJournalStore(root / "journals"),
+                    credential_loader=lambda _arguments: {
+                        "ssh": {"user": "root", "password": "ssh-secret"},
+                        "telnet": {"user": "root", "password": "telnet-secret"},
+                    },
+                    ssh_transport_factory=lambda _arguments: ssh,
+                    telnet_transport_factory=lambda _arguments: telnet,
+                )
+            )
+            try:
+                with self.assertRaisesRegex(ValueError, "SHA-256 does not match"):
+                    service.call_tool(
+                        "live_patch_run",
+                        {
+                            "intent": "diagnose-and-fix",
+                            "delivery_strategy": "live-patch",
+                            "ip": "bmc.example",
+                            "local_path": str(local),
+                            "artifact_sha256": "0" * 64,
+                            "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                            "restart_scope": "none",
+                            "deadline": TEST_DEADLINE_SECONDS,
+                        },
+                        task_id="task-live-patch-artifact-mismatch",
+                        operation_id="apply-artifact-mismatch",
+                    )
+            finally:
+                service.close()
+
+        self.assertEqual(ssh.uploads, [])
+        self.assertEqual(telnet.commands, [])
+
     def test_high_risk_flags_require_task_authorized_exceptions(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -448,6 +537,253 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
         self.assertEqual(telnet.opens, 2)
         self.assertTrue(replayed["idempotent_replay"])
         self.assertEqual(len(ssh.uploads), 1)
+
+    def test_unknown_live_patch_is_reconciled_read_first_without_reupload(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            first_telnet = FailRestartOnceTelnetTransport(digest)
+            first_ssh = FakeSshTransport()
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "live-patch",
+                "ip": "bmc.example",
+                "local_path": str(local),
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: first_ssh,
+                    telnet_transport_factory=lambda _arguments: first_telnet,
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-live-patch-recovery",
+                        operation_id="apply-recovery",
+                    )
+            finally:
+                first.close()
+            local.unlink()
+
+            second_telnet = FakeTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+                target_uid=0,
+                target_gid=0,
+            )
+            second_ssh = FakeSshTransport()
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: second_ssh,
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    arguments,
+                    task_id="task-live-patch-recovery",
+                    operation_id="apply-recovery",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(len(first_ssh.uploads), 1)
+        self.assertEqual(second_ssh.uploads, [])
+        self.assertEqual(recovered["journal"]["stage"], "verified")
+        self.assertEqual(recovered["mutation"]["recovery"]["decision"], "verify")
+        inspection_index = next(
+            index
+            for index, command in enumerate(second_telnet.commands)
+            if "live_patch_recovery_inspected" in command
+        )
+        verification_index = next(
+            index
+            for index, command in enumerate(second_telnet.commands)
+            if "verify_sha256" in command
+        )
+        self.assertLess(inspection_index, verification_index)
+
+    def test_unknown_live_patch_with_backup_reconciles_without_reupload(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            first_telnet = FailRestartOnceTelnetTransport(
+                digest,
+                target_exists=True,
+            )
+            first_ssh = FakeSshTransport()
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "live-patch",
+                "ip": "bmc.example",
+                "local_path": str(local),
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: first_ssh,
+                    telnet_transport_factory=lambda _arguments: first_telnet,
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-live-patch-backup-recovery",
+                        operation_id="apply-backup-recovery",
+                    )
+            finally:
+                first.close()
+            local.unlink()
+
+            second_telnet = FakeTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+            )
+            second_ssh = FakeSshTransport()
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: second_ssh,
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    arguments,
+                    task_id="task-live-patch-backup-recovery",
+                    operation_id="apply-backup-recovery",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(len(first_ssh.uploads), 1)
+        self.assertEqual(second_ssh.uploads, [])
+        self.assertEqual(recovered["journal"]["stage"], "verified")
+        self.assertEqual(recovered["mutation"]["recovery"]["decision"], "verify")
+        backup_index = next(
+            index
+            for index, command in enumerate(second_telnet.commands)
+            if "backup_exists" in command
+        )
+        verification_index = next(
+            index
+            for index, command in enumerate(second_telnet.commands)
+            if "verify_sha256" in command
+        )
+        self.assertLess(backup_index, verification_index)
+
+    def test_unknown_live_patch_blocks_when_durable_backup_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "live-patch",
+                "ip": "bmc.example",
+                "local_path": str(local),
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first_ssh = FakeSshTransport()
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: first_ssh,
+                    telnet_transport_factory=lambda _arguments: (
+                        FailRestartOnceTelnetTransport(
+                            digest,
+                            target_exists=True,
+                        )
+                    ),
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-live-patch-missing-backup",
+                        operation_id="apply-missing-backup",
+                    )
+            finally:
+                first.close()
+            local.unlink()
+
+            second_telnet = MissingBackupTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+            )
+            second_ssh = FakeSshTransport()
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: second_ssh,
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    arguments,
+                    task_id="task-live-patch-missing-backup",
+                    operation_id="apply-missing-backup",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(len(first_ssh.uploads), 1)
+        self.assertEqual(second_ssh.uploads, [])
+        self.assertEqual(recovered["journal"]["stage"], "recovery_blocked")
+        self.assertEqual(recovered["mutation"]["recovery"]["decision"], "manual")
+        self.assertFalse(
+            any("verify_sha256" in command for command in second_telnet.commands)
+        )
 
     def test_backend_rolls_back_without_upload_and_freshly_verifies_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

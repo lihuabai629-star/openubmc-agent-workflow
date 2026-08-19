@@ -54,17 +54,42 @@ class RuntimeContractionContracts(unittest.TestCase):
         self.assertNotIn("step.domain ==", workflow_body)
         self.assertIn("step.canonical_name", workflow_body)
 
-    def test_workflow_plan_and_cursor_have_one_canonical_interface(self) -> None:
-        workflow_source = (
-            RUNTIME_ROOT / "openubmc_target_runtime/workflow.py"
-        ).read_text(encoding="utf-8")
-        runtime_source = (
-            RUNTIME_ROOT / "openubmc_target_runtime/context_runtime.py"
-        ).read_text(encoding="utf-8")
+    def test_workflow_definitions_expose_one_deterministic_cursor(self) -> None:
+        sys.path.insert(0, str(RUNTIME_ROOT))
+        try:
+            from openubmc_target_runtime.workflow import (
+                DEFAULT_WORKFLOW_DEFINITIONS,
+            )
 
-        self.assertNotIn("def plan(", workflow_source)
-        self.assertEqual(workflow_source.count("def semantic_cursor("), 1)
-        self.assertIn("DEFAULT_WORKFLOW_DEFINITIONS.semantic_cursor(", runtime_source)
+            projection = {
+                "intent": "diagnose-and-fix",
+                "entry_domain": "debug",
+                "entry_operation": "debug_run",
+                "delivery_strategy": "source-only",
+                "workflow_cycle_id": "cycle-1",
+                "target_version": 1,
+            }
+            nodes = [{"step_id": "step-01-debug-run", "status": "completed"}]
+            first = DEFAULT_WORKFLOW_DEFINITIONS.semantic_cursor(
+                projection,
+                nodes=nodes,
+                acceptance_plan_id="acceptance-1",
+            )
+            replayed = DEFAULT_WORKFLOW_DEFINITIONS.semantic_cursor(
+                projection,
+                nodes=nodes,
+                acceptance_plan_id="acceptance-1",
+            )
+            changed = DEFAULT_WORKFLOW_DEFINITIONS.semantic_cursor(
+                projection,
+                nodes=[{"step_id": "step-01-debug-run", "status": "failed"}],
+                acceptance_plan_id="acceptance-1",
+            )
+        finally:
+            sys.path.remove(str(RUNTIME_ROOT))
+
+        self.assertEqual(replayed, first)
+        self.assertNotEqual(changed, first)
 
     def test_agent_gateway_routes_requests_through_typed_runtime_values(self) -> None:
         sys.path.insert(0, str(RUNTIME_ROOT))

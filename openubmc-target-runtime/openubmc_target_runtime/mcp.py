@@ -54,7 +54,6 @@ from .capability import (
     CapabilityRegistry,
     DomainExecutor,
     EffectClass,
-    RuntimeSDK,
     RuntimeSDKContext,
 )
 from .context_runtime import (
@@ -63,6 +62,7 @@ from .context_runtime import (
     CONTEXT_WORKFLOW_STEP_ARGUMENT,
     ContextRuntime,
     ContextToolResult,
+    IdempotencyConflict,
     OperationAlreadyInProgress,
     RevisionConflict,
     RuntimeRepository,
@@ -2047,6 +2047,47 @@ class _RuntimeSemanticAdapter:
     def __init__(self, service: "RuntimeMcpService") -> None:
         self.service = service
 
+    @staticmethod
+    def _reattach_gate_submission(
+        snapshot: Mapping[str, object],
+        command: SubmitGate | CancelRun,
+        *,
+        gate: Gate,
+        submission_digest: str,
+    ) -> bool:
+        projection = _mapping_or_empty(snapshot.get("projection"))
+        submissions = projection.get("gate_submissions", [])
+        prior = (
+            next(
+                (
+                    item
+                    for item in reversed(submissions)
+                    if isinstance(item, Mapping)
+                    and str(item.get("submission_id", ""))
+                    == command.submission_id
+                ),
+                None,
+            )
+            if isinstance(submissions, list)
+            else None
+        )
+        if not isinstance(prior, Mapping):
+            return False
+        if (
+            str(prior.get("gate_id", "")) != gate.gate_id
+            or int(prior.get("gate_version", 0)) != gate.version
+            or str(prior.get("schema_digest", "")).removeprefix("sha256:")
+            != gate.schema_digest
+        ):
+            raise GateConflict(
+                "concurrent submission targets a different Gate binding"
+            )
+        if str(prior.get("submission_digest", "")) != submission_digest:
+            raise CommandConflict(
+                "submission_id was concurrently used with different Gate input"
+            )
+        return True
+
     def observe_once(
         self,
         query: ObservationQuery,
@@ -2095,6 +2136,39 @@ class _RuntimeSemanticAdapter:
         task_id: str,
         operation_id: str,
     ) -> Mapping[str, object]:
+        start_input = {
+            "schema": "openubmc.semantic-runtime/start-input-v1",
+            "target": command.target,
+            "intent": command.intent,
+            "purpose": command.purpose,
+            "delivery_strategy": command.delivery_strategy,
+            "observation_ref": (
+                command.observation_ref.to_public_dict()
+                if command.observation_ref is not None
+                else None
+            ),
+        }
+        run_id = "run-" + hashlib.sha256(
+            json.dumps(
+                {
+                    "schema": "openubmc.semantic-runtime/start-command-identity-v1",
+                    "command_id": command.command_id,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+        try:
+            existing = self.service.context_runtime.reattach_semantic_run(
+                run_id,
+                task_id=task_id,
+                start_command_id=command.command_id,
+                start_input_digest=command.input_digest,
+            )
+        except IdempotencyConflict as exc:
+            raise CommandConflict(str(exc)) from exc
+        if existing is not None:
+            return self.run_snapshot(run_id)
         arguments: dict[str, object] = {
             "ip": command.target,
             "intent": command.intent,
@@ -2144,11 +2218,17 @@ class _RuntimeSemanticAdapter:
                     raise ValueError("ObservationReceipt failed source reconstruction")
             seeded_raw = raw
 
-        projection = self.service.context_runtime.open_semantic_run(
-            arguments,
-            task_id=task_id,
-        )
-        run_id = str(projection.get("case_id", ""))
+        try:
+            projection = self.service.context_runtime.open_semantic_run(
+                arguments,
+                task_id=task_id,
+                run_id=run_id,
+                start_command_id=command.command_id,
+                start_input_digest=command.input_digest,
+                start_input=start_input,
+            )
+        except IdempotencyConflict as exc:
+            raise CommandConflict(str(exc)) from exc
         if seeded_raw is not None:
             prepared, derived_id = (
                 self.service.context_runtime.prepare_semantic_run_operation(
@@ -2164,7 +2244,7 @@ class _RuntimeSemanticAdapter:
             self.service.context_runtime.invoke_domain(
                 self.service.catalog.require("debug_run"),
                 prepared,
-                task_id=task_id,
+                task_id=run_id,
                 operation_id=derived_id,
                 executor=lambda: seeded_raw,
             )
@@ -2194,7 +2274,7 @@ class _RuntimeSemanticAdapter:
 
     def record_gate_response(
         self,
-        command: SubmitGate | CancelRun,
+        command: SubmitGate,
         *,
         gate: Gate,
         response: Mapping[str, object],
@@ -2203,6 +2283,13 @@ class _RuntimeSemanticAdapter:
         operation_id: str,
     ) -> Mapping[str, object]:
         snapshot = self.run_snapshot(command.run_id)
+        if self._reattach_gate_submission(
+            snapshot,
+            command,
+            gate=gate,
+            submission_digest=submission_digest,
+        ):
+            return snapshot
         continuation = _mapping_or_empty(snapshot.get("continuation"))
         handoff = _mapping_or_empty(continuation.get("handoff_arguments"))
         contract = dict(_mapping_or_empty(handoff.get("phase_record_contract")))
@@ -2229,41 +2316,33 @@ class _RuntimeSemanticAdapter:
             )
         except RevisionConflict as exc:
             snapshot = self.run_snapshot(command.run_id)
-            projection = _mapping_or_empty(snapshot.get("projection"))
-            submissions = projection.get("gate_submissions", [])
-            prior = (
-                next(
-                    (
-                        item
-                        for item in reversed(submissions)
-                        if isinstance(item, Mapping)
-                        and str(item.get("submission_id", ""))
-                        == command.submission_id
-                    ),
-                    None,
-                )
-                if isinstance(submissions, list)
-                else None
-            )
-            if not isinstance(prior, Mapping):
+            if not self._reattach_gate_submission(
+                snapshot,
+                command,
+                gate=gate,
+                submission_digest=submission_digest,
+            ):
                 raise GateConflict(
                     "Gate was submitted concurrently by a different submission"
                 ) from exc
-            if (
-                str(prior.get("gate_id", "")) != gate.gate_id
-                or int(prior.get("gate_version", 0)) != gate.version
-                or str(prior.get("schema_digest", "")).removeprefix("sha256:")
-                != gate.schema_digest
-            ):
-                raise GateConflict(
-                    "concurrent submission targets a different Gate binding"
-                ) from exc
-            if str(prior.get("submission_digest", "")) != submission_digest:
-                raise CommandConflict(
-                    "submission_id was concurrently used with different Gate input"
-                ) from exc
             return snapshot
         return self.run_snapshot(command.run_id)
+
+    def cancel_run(
+        self,
+        command: CancelRun,
+        *,
+        gate: Gate,
+        submission_digest: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        return self.service.context_runtime.record_run_cancelled(
+            command.run_id,
+            gate=gate.to_public_dict(),
+            submission_id=command.submission_id,
+            submission_digest=submission_digest,
+            operation_id=operation_id,
+        )
 
     def execute_step(
         self,
@@ -2285,7 +2364,7 @@ class _RuntimeSemanticAdapter:
             self.service.call_tool(
                 operation,
                 arguments,
-                task_id=task_id,
+                task_id=run_id,
                 operation_id=derived_id,
                 _context_workflow_step=True,
             )
@@ -2321,15 +2400,16 @@ class _RuntimeSemanticAdapter:
         if not blocked_operation_id:
             raise ValueError("unknown mutation is missing its durable operation id")
         recovered = self.service.context_runtime.restore_domain_arguments(
-            f"{task_id}-agent-reconcile",
+            run_id,
             blocked_operation,
             {"case_id": run_id},
+            force=True,
         )
         recovered["idempotency_key"] = blocked_operation_id
         self.service.call_tool(
             blocked_operation,
             recovered,
-            task_id=task_id,
+            task_id=run_id,
             operation_id=blocked_operation_id,
         )
         return self.run_snapshot(run_id)
@@ -2525,7 +2605,6 @@ class RuntimeMcpService:
                 )
             )
         self.capability_registry = CapabilityRegistry(capability_descriptors)
-        self.runtime_sdk = RuntimeSDK(self.capability_registry)
         self.domain_executor = DomainExecutor(
             self.capability_registry,
             {
@@ -2910,6 +2989,13 @@ class RuntimeMcpService:
                                 "type": "string",
                                 "minLength": 1,
                                 "description": "Absolute local runtime artifact path.",
+                            },
+                            "artifact_sha256": {
+                                "type": "string",
+                                "pattern": "^[0-9a-fA-F]{64}$",
+                                "description": (
+                                    "Expected SHA-256 bound by the Runtime ArtifactRef."
+                                ),
                             },
                             "backup_path": {
                                 "type": "string",
@@ -3454,12 +3540,54 @@ class RuntimeMcpService:
         arguments: Mapping[str, object],
     ) -> Mapping[str, object]:
         descriptor = self.catalog.require(operation)
+        bounded_arguments = dict(arguments)
+        observation_mode = bounded_arguments.pop("_agent_observation", False)
+        capability_names = bounded_arguments.pop("_agent_capability_names", [])
+        assured = bounded_arguments.pop("_agent_assured", False)
+        prior_observation = bounded_arguments.pop(
+            "_agent_prior_observation", None
+        )
+        if observation_mode:
+            observed_arguments = dict(bounded_arguments)
+            observed_arguments["capability_names"] = list(capability_names)
+            observed_arguments["assured"] = assured
+            if isinstance(prior_observation, Mapping):
+                observed_arguments["prior_observation"] = dict(prior_observation)
+            if isinstance(self.backend, OrchestratedMcpBackend):
+                debug_backend = self.backend.tool_backends.get(operation)
+                specialized = getattr(debug_backend, "observe_query", None)
+                if operation == "debug_collect" and callable(specialized):
+                    return self.registry.execute(
+                        task_id=sdk_context.task_id,
+                        operation_id=sdk_context.operation_id,
+                        timeout_seconds=sdk_context.timeout_seconds,
+                        callback=lambda task, context: (
+                            lambda backend, resource: backend.observe_query(
+                                resource,
+                                observed_arguments,
+                                context,
+                            )
+                        )(*task.resource_for("debug_collect")),
+                    )
+            specialized = getattr(self.backend, "observe_query", None)
+            if operation == "debug_collect" and callable(specialized):
+                return self.registry.execute(
+                    task_id=sdk_context.task_id,
+                    operation_id=sdk_context.operation_id,
+                    timeout_seconds=sdk_context.timeout_seconds,
+                    callback=lambda task, context: specialized(
+                        task, observed_arguments, context
+                    ),
+                )
+            if assured:
+                raise AssuranceUnavailable(
+                    "assured observation requires a scope-preserving observation adapter"
+                )
         callback = getattr(self.backend, str(descriptor.handler_name), None)
         if not callable(callback):
             raise RuntimeError(
                 f"operation catalog handler became unavailable: {descriptor.name}"
             )
-        bounded_arguments = dict(arguments)
         return self.registry.execute(
             task_id=sdk_context.task_id,
             operation_id=sdk_context.operation_id,
@@ -3541,50 +3669,12 @@ class RuntimeMcpService:
         domain_arguments.pop(_WORKFLOW_ARGUMENT, None)
         if isinstance(self.backend, OrchestratedMcpBackend):
             domain_arguments["_context_authoritative"] = True
-            debug_backend = self.backend.tool_backends.get("debug_collect")
-            specialized = getattr(debug_backend, "observe_query", None)
-            if name == "debug_collect" and callable(specialized):
-                timeout = self._timeout(domain_arguments)
-                observed_arguments = dict(domain_arguments)
-                observed_arguments["capability_names"] = list(capability_names)
-                observed_arguments["assured"] = assured
-                if isinstance(prior_observation, Mapping):
-                    observed_arguments["prior_observation"] = dict(prior_observation)
-                return dict(
-                    self.registry.execute(
-                        task_id=task_id,
-                        operation_id=operation_id,
-                        timeout_seconds=timeout,
-                        callback=lambda task, context: (
-                            lambda backend, resource: backend.observe_query(
-                                resource,
-                                observed_arguments,
-                                context,
-                            )
-                        )(*task.resource_for("debug_collect")),
-                    )
-                )
-        specialized = getattr(self.backend, "observe_query", None)
-        if name == "debug_collect" and callable(specialized):
-            timeout = self._timeout(domain_arguments)
-            observed_arguments = dict(domain_arguments)
-            observed_arguments["capability_names"] = list(capability_names)
-            observed_arguments["assured"] = assured
-            if isinstance(prior_observation, Mapping):
-                observed_arguments["prior_observation"] = dict(prior_observation)
-            return dict(
-                self.registry.execute(
-                    task_id=task_id,
-                    operation_id=operation_id,
-                    timeout_seconds=timeout,
-                    callback=lambda task, context: specialized(
-                        task, observed_arguments, context
-                    ),
-                )
-            )
-        if assured:
-            raise AssuranceUnavailable(
-                "assured observation requires a scope-preserving observation adapter"
+        domain_arguments["_agent_observation"] = True
+        domain_arguments["_agent_capability_names"] = list(capability_names)
+        domain_arguments["_agent_assured"] = assured
+        if isinstance(prior_observation, Mapping):
+            domain_arguments["_agent_prior_observation"] = dict(
+                prior_observation
             )
         return self._execute_domain_value(
             name,
@@ -4023,6 +4113,29 @@ class JsonRpcMcpEndpoint:
                     return value.strip()
         return self.session_task_id
 
+    def operation_id_for_params(
+        self,
+        params: object,
+        request_id: object,
+    ) -> str:
+        if isinstance(params, Mapping):
+            metadata = params.get("_meta")
+            if isinstance(metadata, Mapping):
+                for key in (
+                    "openubmc/operationId",
+                    "operationId",
+                    "operation_id",
+                ):
+                    value = metadata.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+        return "mcp-" + _fingerprint(
+            {
+                "session": self.session_task_id,
+                "request_id": request_id,
+            }
+        )[:32]
+
     @staticmethod
     def _response(message_id: object, result: object) -> dict[str, object]:
         return {"jsonrpc": "2.0", "id": message_id, "result": result}
@@ -4370,7 +4483,10 @@ class JsonRpcMcpEndpoint:
             task_id = self.task_id_for_params(params)
             request_id = params.get("requestId") if isinstance(params, Mapping) else None
             if request_id is not None:
-                self.service.cancel_operation(task_id, str(request_id))
+                self.service.cancel_operation(
+                    task_id,
+                    self.operation_id_for_params(params, request_id),
+                )
             return None
         if method == "tools/list":
             return self._response(
@@ -4391,14 +4507,16 @@ class JsonRpcMcpEndpoint:
                     self._tool_result("tool name and arguments are required", error=True),
                 )
             try:
+                operation_id = self.operation_id_for_params(params, message_id)
                 value = self.service.call_exposed_tool(
                     name,
                     arguments,
                     task_id=self.task_id_for_params(params),
-                    operation_id=str(message_id),
+                    operation_id=operation_id,
                 )
             except Exception as exc:
                 task_id = self.task_id_for_params(params)
+                operation_id = self.operation_id_for_params(params, message_id)
                 return self._response(
                     message_id,
                     self._tool_result(
@@ -4407,7 +4525,7 @@ class JsonRpcMcpEndpoint:
                             name=name,
                             arguments=arguments,
                             task_id=task_id,
-                            operation_id=str(message_id),
+                            operation_id=operation_id,
                         ),
                         tool_name=name,
                         error=True,
@@ -4443,7 +4561,7 @@ class StdioMcpServer:
         inflight_lock = threading.Lock()
         executor = ThreadPoolExecutor(max_workers=self.max_workers)
         futures: set[Future[dict[str, object] | None]] = set()
-        inflight: dict[str, str] = {}
+        inflight: dict[str, tuple[str, str]] = {}
 
         def write_response(response: dict[str, object] | None) -> None:
             if response is None:
@@ -4505,20 +4623,27 @@ class StdioMcpServer:
                         else None
                     )
                     if request_id is not None:
-                        operation_id = str(request_id)
+                        request_key = str(request_id)
                         with inflight_lock:
-                            task_id = inflight.get(operation_id)
-                        if task_id is not None:
+                            tracked = inflight.get(request_key)
+                        if tracked is not None:
+                            task_id, operation_id = tracked
                             self.endpoint.service.cancel_operation(
                                 task_id, operation_id
                             )
+                    continue
                 if message.get("method") == "tools/call":
-                    operation_id = str(message.get("id"))
+                    request_key = str(message.get("id"))
+                    params = message.get("params", {})
                     task_id = self.endpoint.task_id_for_params(
-                        message.get("params", {})
+                        params
+                    )
+                    operation_id = self.endpoint.operation_id_for_params(
+                        params,
+                        message.get("id"),
                     )
                     with inflight_lock:
-                        inflight[operation_id] = task_id
+                        inflight[request_key] = (task_id, operation_id)
                     future = executor.submit(self.endpoint.handle, message)
                     futures.add(future)
 
@@ -4526,11 +4651,11 @@ class StdioMcpServer:
                         item: Future[dict[str, object] | None],
                         *,
                         request_id: object = message.get("id"),
-                        tracked_operation_id: str = operation_id,
+                        tracked_request_key: str = request_key,
                     ) -> None:
                         futures.discard(item)
                         with inflight_lock:
-                            inflight.pop(tracked_operation_id, None)
+                            inflight.pop(tracked_request_key, None)
                         try:
                             write_response(item.result())
                         except Exception as exc:

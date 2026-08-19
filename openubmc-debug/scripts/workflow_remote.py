@@ -325,11 +325,8 @@ class TypedDebugToolRunner:
         args: argparse.Namespace,
         checks: dict[str, dict[str, object]],
     ) -> bool:
-        required = ["SSH"]
-        if not bool(getattr(args, "skip_telnet", False)) and not bool(
-            getattr(args, "mdb_only", False)
-        ):
-            required.append("TELNET")
+        selected = preflight_remote._selected_preflight_checks(args)
+        required = [name for name in ("SSH", "TELNET") if name in selected]
         return all(bool(checks.get(name, {}).get("ok")) for name in required)
 
     def _record_phase(self, name: str) -> None:
@@ -805,6 +802,11 @@ def _preflight_command(args: argparse.Namespace) -> list[str]:
         *telnet_flags(args),
         *(["--skip-telnet"] if getattr(args, "skip_telnet", False) else []),
         *(["--mdb-only"] if getattr(args, "mdb_only", False) else []),
+        *(
+            item
+            for name in getattr(args, "preflight_checks", [])
+            for item in ("--check", str(name))
+        ),
         *child_timeout_flags("preflight_remote.py", args),
         "--json",
         "--compact-json",

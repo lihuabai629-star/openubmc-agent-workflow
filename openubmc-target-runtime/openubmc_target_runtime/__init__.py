@@ -186,15 +186,11 @@ from .mcp import (
     RuntimeMcpService,
     StdioMcpServer,
 )
-from .run_engine import (
-    GATE_SCHEMA_MAX_BYTES,
-    ObservationEngine,
-    RunEngine,
-    SemanticRuntime,
-)
+from .run_engine import ObservationEngine, RunEngine, SemanticRuntime
 from .semantic_runtime import (
     AGENT_REQUEST_MAX_BYTES,
     ARTIFACT_REF_SCHEMA,
+    GATE_SCHEMA_MAX_BYTES,
     OBSERVATION_REF_SCHEMA,
     SEMANTIC_RUNTIME_SCHEMA,
     ArtifactRef,

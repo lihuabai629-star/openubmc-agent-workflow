@@ -223,6 +223,21 @@ class CallableDomainAdapter:
         return self.callback(context, arguments)
 
 
+def _validated_domain_receipt(
+    operation: str,
+    descriptor: CapabilityDescriptor,
+    raw: DomainReceipt | Mapping[str, object],
+) -> DomainReceipt:
+    receipt = (
+        raw
+        if isinstance(raw, DomainReceipt)
+        else DomainReceipt.from_value(operation, raw)
+    )
+    if receipt.operation != descriptor.operation:
+        raise ValueError("domain receipt operation does not match capability")
+    return receipt
+
+
 class RuntimeSDK:
     """Deep module routing typed domain execution through one registry seam."""
 
@@ -241,14 +256,7 @@ class RuntimeSDK:
         if context.timeout_seconds <= 0:
             raise ValueError("Runtime SDK execution timeout must be positive")
         raw = adapter.execute(context, arguments)
-        receipt = (
-            raw
-            if isinstance(raw, DomainReceipt)
-            else DomainReceipt.from_value(operation, raw)
-        )
-        if receipt.operation != descriptor.operation:
-            raise ValueError("domain receipt operation does not match capability")
-        return receipt
+        return _validated_domain_receipt(operation, descriptor, raw)
 
 
 class EffectClass(str, Enum):
@@ -327,16 +335,7 @@ class DomainExecutor:
         for attempt in range(1, policy.max_attempts + 1):
             try:
                 raw = adapter.execute(context, arguments)
-                receipt = (
-                    raw
-                    if isinstance(raw, DomainReceipt)
-                    else DomainReceipt.from_value(operation, raw)
-                )
-                if receipt.operation != descriptor.operation:
-                    raise ValueError(
-                        "domain receipt operation does not match capability"
-                    )
-                return receipt
+                return _validated_domain_receipt(operation, descriptor, raw)
             except (ConnectionError, OSError, TimeoutError) as exc:
                 last_error = exc
                 if attempt >= policy.max_attempts:

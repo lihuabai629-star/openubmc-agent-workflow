@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -23,6 +24,8 @@ from openubmc_target_runtime import (  # noqa: E402
     OBSERVATION_MAX_BYTES,
     RevisionConflict,
     ReferenceViolation,
+    ResumeRun,
+    RunEngine,
     STDIO_FRAME_MAX_BYTES,
     TOOLS_LIST_MAX_BYTES,
     TURN_MAX_BYTES,
@@ -146,7 +149,7 @@ class SemanticBackend:
                     }
                 },
             }
-        return {
+        value = {
             "ok": True,
             "observed_at": "2026-08-19T00:00:00Z",
             "result": {
@@ -161,6 +164,11 @@ class SemanticBackend:
                 "lanes": {"ssh": ssh},
             },
         }
+        if arguments.get("profile") == "freshness" or arguments.get(
+            "_minimum_target_epoch"
+        ):
+            value["business_acceptance"] = "passed"
+        return value
 
     def debug_run(self, task, arguments, context) -> dict[str, object]:
         if arguments.get("mdb_only"):
@@ -177,20 +185,41 @@ class SemanticBackend:
     def live_patch_run(self, task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
         self.calls.append(("live_patch_run", dict(arguments)))
+        artifact_sha256 = str(arguments.get("artifact_sha256", ""))
         return {
             "ok": True,
             "summary": "live patch verified",
             "target_epoch": 1,
-            "journal": {"stage": "verified", "action": "live_patch"},
+            "mutation": {
+                "local_sha256": artifact_sha256,
+                "remote_after_sha256": artifact_sha256,
+                "root_mount_restored": True,
+            },
+            "verification": {
+                "remote_sha256": artifact_sha256,
+                "target_epoch": 1,
+            },
+            "journal": {
+                "stage": "verified",
+                "action": "live_patch",
+                "expected_checksum": artifact_sha256,
+                "observed_checksum": artifact_sha256,
+                "root_mount_restored": True,
+            },
         }
 
     def upgrade_run(self, task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
         self.calls.append(("upgrade_run", dict(arguments)))
+        product_version = str(arguments.get("product_version", ""))
         return {
             "ok": True,
             "summary": "upgrade verified",
             "target_epoch": 1,
+            "verification": {
+                "installed_version": product_version,
+                "target_epoch": 1,
+            },
             "journal": {"stage": "verified", "action": "upgrade"},
         }
 
@@ -240,6 +269,10 @@ class FailOnceUpgradeSemanticBackend(SemanticBackend):
             "ok": True,
             "summary": "upgrade reconciled and verified",
             "target_epoch": 1,
+            "verification": {
+                "installed_version": str(arguments.get("product_version", "")),
+                "target_epoch": 1,
+            },
             "journal": {"stage": "verified", "action": "upgrade"},
         }
 
@@ -249,6 +282,23 @@ class FailLivePatchSemanticBackend(SemanticBackend):
         context.raise_if_stopped()
         self.calls.append(("live_patch_run", dict(arguments)))
         raise OSError("live patch connection lost")
+
+
+class IncompleteAcceptanceSemanticBackend(SemanticBackend):
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value.pop("business_acceptance", None)
+        return value
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("live_patch_run", dict(arguments)))
+        return {
+            "ok": True,
+            "summary": "live patch returned without integrity evidence",
+            "target_epoch": 1,
+            "journal": {"stage": "verified", "action": "live_patch"},
+        }
 
 
 class DeferredVerificationSemanticBackend(SemanticBackend):
@@ -287,6 +337,10 @@ class RunningUpgradeSemanticBackend(SemanticBackend):
             "ok": True,
             "summary": "upgrade reattached and verified",
             "target_epoch": 1,
+            "verification": {
+                "installed_version": str(arguments.get("product_version", "")),
+                "target_epoch": 1,
+            },
             "journal": {"stage": "verified", "action": "upgrade"},
         }
 
@@ -313,6 +367,14 @@ class AutoAssuranceSemanticBackend(SemanticBackend):
         return value
 
 
+class FailingAssuranceSemanticBackend(AutoAssuranceSemanticBackend):
+    def observe_query(self, task, arguments, context) -> dict[str, object]:
+        if arguments.get("assured"):
+            self.assurance_calls.append(True)
+            raise OSError("assurance transport is temporarily unavailable")
+        return super().observe_query(task, arguments, context)
+
+
 class OversizedTurnRuntime:
     def execute(self, command, *, task_id, operation_id):
         return RunTurn(
@@ -327,6 +389,64 @@ class OversizedTurnRuntime:
             gaps=("gap-" + "g" * 20_000,),
             next_action="next-" + "n" * 20_000,
         )
+
+
+class OversizedGateTurnRuntime:
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        return RunTurn(
+            run_id="case-oversized-gate",
+            state="waiting_response",
+            gate={
+                "kind": "phase",
+                "gate_id": "gate-oversized",
+                "gate_version": 1,
+                "schema_digest": "sha256:" + "a" * 64,
+                "name": "developer.change",
+                "owner": "openubmc-developer",
+                "input_schema": {
+                    "type": "object",
+                    "description": "x" * 20_000,
+                },
+            },
+        )
+
+
+class PersistentUnknownRunDriver:
+    def __init__(self) -> None:
+        self.reconcile_calls = 0
+        self.incident = None
+
+    def _snapshot(self) -> dict[str, object]:
+        projection: dict[str, object] = {
+            "case_id": "run-persistent-unknown",
+            "status": "incident" if self.incident is not None else "open",
+            "operations": [
+                {
+                    "operation": "live_patch_run",
+                    "operation_id": "mutation-unknown-1",
+                    "status": "mutation_outcome_unknown",
+                }
+            ],
+            "workflow_step_states": {},
+            "current_incident": (
+                self.incident.to_public_dict() if self.incident is not None else {}
+            ),
+        }
+        return {"projection": projection, "continuation": {}}
+
+    def run_snapshot(self, _run_id: str) -> dict[str, object]:
+        return self._snapshot()
+
+    def reconcile_run(self, _run_id: str, *, task_id: str, operation_id: str):
+        del task_id, operation_id
+        self.reconcile_calls += 1
+        return self._snapshot()
+
+    def record_incident(self, _run_id: str, incident, *, operation_id: str):
+        del operation_id
+        self.incident = incident
+        return self._snapshot()
 
 
 class AgentGatewayTests(unittest.TestCase):
@@ -639,6 +759,37 @@ class AgentGatewayTests(unittest.TestCase):
                 }
             )
 
+    def test_auto_assurance_transport_failure_preserves_the_fast_observation(self) -> None:
+        backend = FailingAssuranceSemanticBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"id": "caps", "kind": "capability", "names": ["telnet"]},
+                        {"id": "mdb", "kind": "mdb", "queries": ["lsprop Object0"]},
+                    ],
+                },
+                task_id="assurance-fallback",
+                operation_id="assurance-fallback-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(backend.assurance_calls, [False, True, True])
+        self.assertEqual(backend.mdb_collections, 1)
+        self.assertIn(
+            "Object0",
+            receipt["results"]["mdb"]["values"][0]["value"]["properties"],
+        )
+        self.assertTrue(
+            any("automatic assurance failed" in gap for gap in receipt["gaps"]),
+            receipt["gaps"],
+        )
+
     def test_execute_hides_runtime_mechanics_and_records_terminal_outcome(self) -> None:
         first = self.service.call_exposed_tool(
             "execute",
@@ -654,6 +805,15 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(first["state"], "waiting_response")
         self.assertEqual(first["gate"]["name"], "developer.change")
+        self.assertTrue(
+            any(
+                fact.get("kind") == "operation"
+                and fact.get("name") == "debug_run"
+                and fact.get("status") == "completed"
+                for fact in first["facts"]
+            ),
+            first["facts"],
+        )
         self.assertLessEqual(encoded_size(first), TURN_MAX_BYTES)
         rendered = json.dumps(first, ensure_ascii=False)
         for hidden in ("phase_record", "workflow.next", "offset"):
@@ -694,6 +854,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIsNotNone(final["outcome"])
         self.assertTrue(final["outcome_recorded"])
         self.assertLessEqual(encoded_size(final), TURN_MAX_BYTES)
+        self.assertNotIn("phase_record", json.dumps(final, ensure_ascii=False))
         self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
         replayed = self.service.call_exposed_tool(
             "execute",
@@ -711,6 +872,205 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
 
+    def test_start_command_identity_reattaches_across_task_ids(self) -> None:
+        action = {
+            "kind": "start",
+            "target": "192.0.2.59",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+            "purpose": "repair one source defect",
+        }
+        first = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="start-command-first-task",
+            operation_id="start-command-shared-id",
+        )
+        replay = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="start-command-second-task",
+            operation_id="start-command-shared-id",
+        )
+        projection = self.service.context_runtime.read_case(first["run_id"])
+        events = self.service.context_runtime.repository.events(first["run_id"])
+
+        self.assertEqual(replay["run_id"], first["run_id"])
+        self.assertEqual(replay["gate"], first["gate"])
+        self.assertEqual(projection["start_command_id"], "start-command-shared-id")
+        self.assertEqual(len(projection["start_input_digest"]), 64)
+        self.assertEqual(sum(event["kind"] == "CaseOpened" for event in events), 1)
+        self.assertEqual(
+            [name for name, _arguments in self.backend.calls].count("debug_run"),
+            1,
+        )
+
+    def test_start_command_identity_rejects_conflicting_input_without_mutating_the_run(self) -> None:
+        action = {
+            "kind": "start",
+            "target": "192.0.2.60",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+            "purpose": "repair the original source defect",
+        }
+        first = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="start-command-conflict",
+            operation_id="start-command-conflict-id",
+        )
+        before = self.service.context_runtime.read_case(first["run_id"])
+
+        conflicting = dict(action)
+        conflicting["target"] = "192.0.2.61"
+        conflicting["purpose"] = "replace the original command input"
+        with self.assertRaises(CommandConflict):
+            self.service.call_exposed_tool(
+                "execute",
+                conflicting,
+                task_id="start-command-conflict",
+                operation_id="start-command-conflict-id",
+            )
+
+        after = self.service.context_runtime.read_case(first["run_id"])
+        self.assertEqual(after["revision"], before["revision"])
+        self.assertEqual(after["targets"], before["targets"])
+        self.assertEqual(after["final_purpose"], before["final_purpose"])
+
+    def test_start_command_identity_reattaches_after_sqlite_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "start-command.sqlite3"
+            blobs = root / "start-command-blobs"
+            action = {
+                "kind": "start",
+                "target": "192.0.2.66",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "purpose": "persist the Run command identity",
+            }
+            first_backend = SemanticBackend()
+            first_service = RuntimeMcpService(
+                first_backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                first = first_service.call_exposed_tool(
+                    "execute",
+                    action,
+                    task_id="start-command-sqlite-first",
+                    operation_id="start-command-sqlite-id",
+                )
+            finally:
+                first_service.close()
+
+            second_backend = SemanticBackend()
+            second_service = RuntimeMcpService(
+                second_backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                replay = second_service.call_exposed_tool(
+                    "execute",
+                    action,
+                    task_id="start-command-sqlite-second",
+                    operation_id="start-command-sqlite-id",
+                )
+                events = second_service.context_runtime.repository.events(
+                    first["run_id"]
+                )
+            finally:
+                second_service.close()
+
+        self.assertEqual(replay["run_id"], first["run_id"])
+        self.assertEqual(replay["gate"], first["gate"])
+        self.assertEqual(sum(event["kind"] == "CaseOpened" for event in events), 1)
+        self.assertEqual(second_backend.calls, [])
+
+    def test_start_command_conflict_survives_sqlite_restart_without_run_update(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "start-conflict.sqlite3"
+            blobs = root / "start-conflict-blobs"
+            action = {
+                "kind": "start",
+                "target": "192.0.2.67",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "purpose": "preserve the original persisted input",
+            }
+            first_service = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                first = first_service.call_exposed_tool(
+                    "execute",
+                    action,
+                    task_id="start-conflict-sqlite-first",
+                    operation_id="start-conflict-sqlite-id",
+                )
+                before = first_service.context_runtime.read_case(first["run_id"])
+            finally:
+                first_service.close()
+
+            second_service = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            conflicting = dict(action)
+            conflicting["target"] = "192.0.2.68"
+            conflicting["purpose"] = "replace the persisted input"
+            try:
+                with self.assertRaises(CommandConflict):
+                    second_service.call_exposed_tool(
+                        "execute",
+                        conflicting,
+                        task_id="start-conflict-sqlite-second",
+                        operation_id="start-conflict-sqlite-id",
+                    )
+                after = second_service.context_runtime.read_case(first["run_id"])
+            finally:
+                second_service.close()
+
+        self.assertEqual(after["revision"], before["revision"])
+        self.assertEqual(after["targets"], before["targets"])
+        self.assertEqual(after["final_purpose"], before["final_purpose"])
+
+    def test_different_start_command_on_the_same_task_creates_an_independent_run(self) -> None:
+        first = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.62",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="start-command-two-runs",
+            operation_id="start-command-first-id",
+        )
+        first_before = self.service.context_runtime.read_case(first["run_id"])
+        second = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.63",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="start-command-two-runs",
+            operation_id="start-command-second-id",
+        )
+        first_after = self.service.context_runtime.read_case(first["run_id"])
+
+        self.assertNotEqual(second["run_id"], first["run_id"])
+        self.assertEqual(first_after["revision"], first_before["revision"])
+        self.assertEqual(first_after["targets"], first_before["targets"])
+
     def test_execute_turn_hard_limit_survives_oversized_blocker_details(self) -> None:
         turn = AgentGateway(OversizedTurnRuntime()).execute(
             {
@@ -726,6 +1086,23 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(turn["run_id"], "case-oversized-turn")
         self.assertEqual(turn["state"], "blocked")
         self.assertEqual(turn["gate"]["kind"], "blocker")
+        self.assertTrue(turn["content_compacted"])
+
+    def test_execute_turn_replaces_an_oversized_gate_schema_with_a_blocker(self) -> None:
+        turn = AgentGateway(OversizedGateTurnRuntime()).execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "delivery_strategy": "source-only",
+            },
+            task_id="oversized-gate",
+            operation_id="oversized-gate-1",
+        )
+
+        self.assertLessEqual(encoded_size(turn), TURN_MAX_BYTES)
+        self.assertEqual(turn["run_id"], "case-oversized-gate")
+        self.assertEqual(turn["gate"]["kind"], "blocker")
+        self.assertEqual(turn["gate"]["name"], "gate_schema_exceeds_budget")
         self.assertTrue(turn["content_compacted"])
 
     def test_execute_start_reuses_a_complete_observation_receipt(self) -> None:
@@ -1055,6 +1432,90 @@ class AgentGatewayTests(unittest.TestCase):
                 event["kind"] == "RunGateSubmitted"
                 for event in repository.events(waiting["run_id"])
             ),
+            1,
+        )
+
+    def test_gate_submission_reattaches_when_an_equivalent_request_wins_the_race(self) -> None:
+        service = RuntimeMcpService(SemanticBackend())
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.57",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="gate-race-window",
+                operation_id="gate-race-window-start",
+            )
+            response = {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "submission_id": "gate-race-window-submission",
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "gate-race-window-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["run tests"],
+                    },
+                },
+            }
+            driver = service.semantic_runtime.run_engine.driver
+            original = driver.record_gate_response
+            raced = False
+
+            def record_after_competitor(
+                command,
+                *,
+                gate,
+                response,
+                submission_digest,
+                task_id,
+                operation_id,
+            ):
+                nonlocal raced
+                if not raced:
+                    raced = True
+                    original(
+                        command,
+                        gate=gate,
+                        response=response,
+                        submission_digest=submission_digest,
+                        task_id=task_id,
+                        operation_id=f"{operation_id}-winner",
+                    )
+                return original(
+                    command,
+                    gate=gate,
+                    response=response,
+                    submission_digest=submission_digest,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                )
+
+            with patch.object(
+                driver,
+                "record_gate_response",
+                side_effect=record_after_competitor,
+            ):
+                final = service.call_exposed_tool(
+                    "execute",
+                    response,
+                    task_id="gate-race-window",
+                    operation_id="gate-race-window-response",
+                )
+            events = service.context_runtime.repository.events(waiting["run_id"])
+        finally:
+            service.close()
+
+        self.assertTrue(raced)
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(
+            sum(event["kind"] == "RunGateSubmitted" for event in events),
             1,
         )
 
@@ -1474,6 +1935,84 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertEqual(final["state"], "completed")
 
+    def test_live_patch_artifact_is_revalidated_immediately_before_effect_dispatch(self) -> None:
+        backend = SemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "dispatch-boundary-fix.lua"
+        patch_file.write_bytes(b"return 'validated-content'\n")
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.58",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="artifact-dispatch-boundary",
+                operation_id="artifact-dispatch-boundary-start",
+            )
+            driver = service.semantic_runtime.run_engine.driver
+            original = driver.record_gate_response
+
+            def replace_after_persist(*args, **kwargs):
+                snapshot = original(*args, **kwargs)
+                patch_file.write_bytes(b"return 'replaced-after-gate'\n")
+                return snapshot
+
+            with patch.object(
+                driver,
+                "record_gate_response",
+                side_effect=replace_after_persist,
+            ):
+                blocked = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": "artifact-dispatch-boundary-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh verification"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.58",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/fix.lua",
+                                "restart_scope": "skynet",
+                            },
+                        },
+                    },
+                    task_id="artifact-dispatch-boundary",
+                    operation_id="artifact-dispatch-boundary-response",
+                )
+            projection = service.context_runtime.read_case(waiting["run_id"])
+        finally:
+            service.close()
+
+        developer = next(
+            record
+            for record in projection["phase_records"]
+            if record.get("phase_type") == "developer.change"
+        )
+        self.assertTrue(developer["artifact_ref"])
+        self.assertEqual(
+            developer["artifact_sha256"],
+            str(developer["artifact_ref"]["digest"]).removeprefix("sha256:"),
+        )
+        self.assertEqual(blocked["state"], "incident")
+        self.assertEqual(blocked["incident"]["code"], "artifact_reference_invalid")
+        self.assertNotIn(
+            "live_patch_run",
+            [name for name, _arguments in backend.calls],
+        )
+
     def test_observation_receipt_reconstructs_after_process_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -1585,6 +2124,68 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIsNone(final["gate"])
         self.assertEqual(final["outcome"]["status"], "cancelled")
         self.assertTrue(final["outcome_recorded"])
+        events = self.service.context_runtime.repository.events(first["run_id"])
+        self.assertEqual(
+            [event["kind"] for event in events].count("RunCancelled"), 1
+        )
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationProgressed"
+                and isinstance(event["payload"].get("phase_record"), dict)
+                and event["payload"]["phase_record"].get("status")
+                == "cancelled"
+                for event in events
+            )
+        )
+
+    def test_cancel_reattaches_after_a_concurrent_commit(self) -> None:
+        repository = CommitThenConflictRepository("RunCancelled")
+        service = RuntimeMcpService(
+            SemanticBackend(),
+            context_repository=repository,
+        )
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.64",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="cancel-concurrent-commit",
+                operation_id="cancel-concurrent-start",
+            )
+            cancellation = {
+                "kind": "control",
+                "run_id": waiting["run_id"],
+                "command": "cancel",
+                "submission_id": "cancel-concurrent-submission",
+                **gate_binding(waiting),
+            }
+            final = service.call_exposed_tool(
+                "execute",
+                cancellation,
+                task_id="cancel-concurrent-commit",
+                operation_id="cancel-concurrent-control",
+            )
+            replayed = service.call_exposed_tool(
+                "execute",
+                cancellation,
+                task_id="cancel-concurrent-replay",
+                operation_id="cancel-concurrent-replay",
+            )
+            events = repository.events(waiting["run_id"])
+        finally:
+            service.close()
+
+        self.assertTrue(repository.conflicted)
+        self.assertEqual(final["state"], "cancelled")
+        self.assertEqual(replayed["outcome"], final["outcome"])
+        self.assertEqual(
+            sum(event["kind"] == "RunCancelled" for event in events),
+            1,
+        )
 
     def test_execute_live_patch_runs_diagnosis_mutation_and_fresh_verification(self) -> None:
         first = self.service.call_exposed_tool(
@@ -1638,9 +2239,87 @@ class AgentGatewayTests(unittest.TestCase):
             [name for name, _arguments in self.backend.calls],
             ["debug_run", "live_patch_run", "debug_collect"],
         )
+        live_patch_arguments = self.backend.calls[1][1]
+        self.assertEqual(
+            live_patch_arguments["artifact_sha256"],
+            hashlib.sha256(patch.read_bytes()).hexdigest(),
+        )
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
+
+    def test_incomplete_live_patch_acceptance_cannot_report_completed_success(self) -> None:
+        backend = IncompleteAcceptanceSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "incomplete-acceptance-fix.lua"
+        patch_file.write_bytes(b"return 'incomplete-acceptance'\n")
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.67",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="incomplete-live-patch-acceptance",
+                operation_id="incomplete-live-patch-start",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair ready",
+                        "payload": {
+                            "source_revision": "incomplete-acceptance-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh target verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.67",
+                                run_id=waiting["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
+                    },
+                },
+                task_id="incomplete-live-patch-acceptance",
+                operation_id="incomplete-live-patch-response",
+            )
+            projection = service.context_runtime.read_case(waiting["run_id"])
+            replayed = service.context_runtime.record_run_outcome(
+                waiting["run_id"],
+                status="completed",
+                summary="workflow completed",
+                operation_id="incomplete-live-patch-outcome-replay",
+            )
+            events = service.context_runtime.repository.events(waiting["run_id"])
+        finally:
+            service.close()
+
+        closeout = projection["closeout"]
+        integrity = next(
+            check
+            for check in closeout["checks"]
+            if check["requirement_id"] == "acceptance.live-patch.integrity"
+        )
+        self.assertEqual(final["state"], "failed")
+        self.assertEqual(final["outcome"]["status"], "failed")
+        self.assertEqual(projection["run_outcome"]["status"], "failed")
+        self.assertEqual(replayed["run_outcome"], projection["run_outcome"])
+        self.assertEqual(closeout["closure_status"], "partial")
+        self.assertEqual(closeout["business_acceptance"], "unverified")
+        self.assertEqual(integrity["status"], "not_run")
+        self.assertEqual(
+            sum(event["kind"] == "RunOutcomeRecorded" for event in events),
+            1,
+        )
 
     def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
         first = self.service.call_exposed_tool(
@@ -1715,6 +2394,19 @@ class AgentGatewayTests(unittest.TestCase):
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
+
+    def test_automatic_reconcile_attempts_an_unknown_mutation_only_once(self) -> None:
+        driver = PersistentUnknownRunDriver()
+        turn = RunEngine(driver).execute(
+            ResumeRun("run-persistent-unknown"),
+            task_id="persistent-unknown",
+            operation_id="persistent-unknown-resume",
+        )
+
+        self.assertEqual(driver.reconcile_calls, 1)
+        self.assertEqual(turn.state, "incident")
+        self.assertIsNotNone(turn.incident)
+        self.assertEqual(turn.incident.code, "mutation_outcome_unknown")
 
     def test_execute_automatically_reconciles_an_unknown_mutation(self) -> None:
         backend = FailOnceUpgradeSemanticBackend()
@@ -2247,6 +2939,98 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertTrue(response["result"]["isError"])
 
+    def test_json_rpc_request_ids_are_scoped_to_the_mcp_session(self) -> None:
+        first_endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="start-client-a",
+        )
+        second_endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="start-client-b",
+        )
+        first = first_endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "192.0.2.64",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                    },
+                },
+            }
+        )
+        second = second_endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "192.0.2.65",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                    },
+                },
+            }
+        )
+
+        self.assertFalse(first["result"]["isError"])
+        self.assertFalse(second["result"]["isError"])
+        self.assertNotEqual(
+            first["result"]["structuredContent"]["run_id"],
+            second["result"]["structuredContent"]["run_id"],
+        )
+
+    def test_explicit_operation_identity_reattaches_across_mcp_sessions(self) -> None:
+        first_endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="reattach-client-a",
+        )
+        second_endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="reattach-client-b",
+        )
+        action = {
+            "name": "execute",
+            "arguments": {
+                "kind": "start",
+                "target": "192.0.2.66",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            "_meta": {"openubmc/operationId": "mcp-stable-start-1"},
+        }
+        first = first_endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": action,
+            }
+        )
+        replayed = second_endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tools/call",
+                "params": action,
+            }
+        )
+
+        self.assertFalse(first["result"]["isError"])
+        self.assertFalse(replayed["result"]["isError"])
+        self.assertEqual(
+            replayed["result"]["structuredContent"]["run_id"],
+            first["result"]["structuredContent"]["run_id"],
+        )
+
     def test_agent_endpoint_renders_observation_values_in_bounded_text_content(self) -> None:
         endpoint = JsonRpcMcpEndpoint(self.service, session_task_id="observe-session")
         response = endpoint.handle(
@@ -2293,6 +3077,88 @@ class AgentGatewayTests(unittest.TestCase):
             [tool["name"] for tool in responses[1]["result"]["tools"]],
             ["observe", "execute"],
         )
+
+    def test_stdio_cancellation_uses_the_same_derived_operation_identity(self) -> None:
+        started = threading.Event()
+        released = threading.Event()
+        cancellations: list[tuple[str, str]] = []
+
+        class FakeService:
+            def cancel_operation(self, task_id: str, operation_id: str) -> bool:
+                cancellations.append((task_id, operation_id))
+                released.set()
+                return True
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        class FakeEndpoint:
+            service = FakeService()
+
+            @staticmethod
+            def task_id_for_params(_params) -> str:
+                return "stdio-cancel-task"
+
+            @staticmethod
+            def operation_id_for_params(_params, _request_id) -> str:
+                return "stable-operation-id"
+
+            @staticmethod
+            def handle(message):
+                if message.get("method") == "notifications/cancelled":
+                    raise AssertionError(
+                        "stdio cancellation should use the tracked operation"
+                    )
+                started.set()
+                if not released.wait(timeout=2):
+                    raise AssertionError("stdio cancellation did not release the call")
+                return {
+                    "jsonrpc": "2.0",
+                    "id": message.get("id"),
+                    "result": {"cancelled": True},
+                }
+
+        class CancellationReader(io.StringIO):
+            def __init__(self) -> None:
+                call = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 7,
+                        "method": "tools/call",
+                        "params": {
+                            "_meta": {
+                                "openubmc/operationId": "stable-operation-id"
+                            },
+                            "name": "execute",
+                            "arguments": {"kind": "resume", "run_id": "run-x"},
+                        },
+                    }
+                )
+                cancelled = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/cancelled",
+                        "params": {"requestId": 7},
+                    }
+                )
+                super().__init__(call + "\n" + cancelled + "\n")
+                self._reads = 0
+
+            def readline(self, size: int = -1) -> str:
+                self._reads += 1
+                if self._reads == 2 and not started.wait(timeout=2):
+                    raise AssertionError("stdio tool call did not start")
+                return super().readline(size)
+
+        output = io.StringIO()
+        StdioMcpServer(FakeEndpoint()).serve(CancellationReader(), output)
+
+        self.assertEqual(
+            cancellations,
+            [("stdio-cancel-task", "stable-operation-id")],
+        )
+        self.assertTrue(json.loads(output.getvalue())["result"]["cancelled"])
 
     def test_stdio_reader_never_uses_an_unbounded_readline(self) -> None:
         class BoundedReader(io.StringIO):

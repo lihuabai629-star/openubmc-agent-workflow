@@ -21,6 +21,7 @@ AGENT_REQUEST_MAX_CONTAINER_ITEMS = 1024
 AGENT_REQUEST_MAX_NODES = 8192
 AGENT_REQUEST_MAX_STRING_BYTES = 128 * 1024
 AGENT_REQUEST_MAX_KEY_BYTES = 256
+GATE_SCHEMA_MAX_BYTES = 4 * 1024
 OBSERVATION_SCOPE_MAX_BYTES = 2 * 1024
 TARGET_MAX_BYTES = 512
 SELECTOR_ID_MAX_BYTES = 64
@@ -485,6 +486,8 @@ class StartRun:
     intent: str
     purpose: str
     delivery_strategy: str
+    command_id: str
+    input_digest: str
     observation_ref: ObservationRef | None = None
     legacy_observation_receipt: Mapping[str, object] | None = None
 
@@ -551,10 +554,14 @@ def _submission_id(value: object, *, binding: Mapping[str, object]) -> str:
 def decode_run_command(
     action: Mapping[str, object], *, operation_id: str
 ) -> RunCommand:
-    del operation_id
     bounded_request(action)
     kind = _text(action.get("kind")).lower()
     if kind == "start":
+        command_id = _text(operation_id)
+        if _SAFE_ID.fullmatch(command_id) is None:
+            raise AgentGatewayError(
+                "StartRun operation_id must be a safe 1-128 character identifier"
+            )
         if isinstance(action.get("workflow"), Mapping):
             raise AgentGatewayError(
                 "dynamic workflow objects are not supported; choose intent and delivery_strategy"
@@ -588,11 +595,26 @@ def decode_run_command(
                 or legacy_receipt.get("source")
             )
             observation_ref = ObservationRef.from_public_dict(source)
+        purpose = _text(action.get("purpose") or "complete the requested workflow")
+        semantic_input = {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
+            "target": target,
+            "intent": intent,
+            "purpose": purpose,
+            "delivery_strategy": delivery,
+            "observation_ref": (
+                observation_ref.to_public_dict()
+                if observation_ref is not None
+                else None
+            ),
+        }
         return StartRun(
             target=target,
             intent=intent,
-            purpose=_text(action.get("purpose") or "complete the requested workflow"),
+            purpose=purpose,
             delivery_strategy=delivery,
+            command_id=command_id,
+            input_digest=fingerprint(semantic_input),
             observation_ref=observation_ref,
             legacy_observation_receipt=(
                 dict(legacy_receipt) if isinstance(legacy_receipt, Mapping) else None

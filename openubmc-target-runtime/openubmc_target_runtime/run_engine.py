@@ -14,11 +14,13 @@ from .semantic_runtime import (
     CommandConflict,
     Gate,
     GateConflict,
+    GATE_SCHEMA_MAX_BYTES,
     Incident,
     ObservationQuery,
     ObservationRef,
     ObservationResult,
     Outcome,
+    ReferenceViolation,
     ReconcileRun,
     ResumeRun,
     RunCommand,
@@ -32,7 +34,6 @@ from .workflow import DEFAULT_PHASE_REGISTRY
 
 
 WORKFLOW_INTERNAL_MAX_STEPS = 64
-GATE_SCHEMA_MAX_BYTES = 4 * 1024
 _CAPABILITY_KEYS = {
     "ssh": "ssh_transport",
     "telnet": "remote_log_file",
@@ -224,12 +225,21 @@ class RunDriver(Protocol):
 
     def record_gate_response(
         self,
-        command: SubmitGate | CancelRun,
+        command: SubmitGate,
         *,
         gate: Gate,
         response: Mapping[str, object],
         submission_digest: str,
         task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]: ...
+
+    def cancel_run(
+        self,
+        command: CancelRun,
+        *,
+        gate: Gate,
+        submission_digest: str,
         operation_id: str,
     ) -> Mapping[str, object]: ...
 
@@ -354,6 +364,16 @@ class ObservationEngine:
                 )
             except AssuranceUnavailable:
                 pass
+            except (ConnectionError, OSError, TimeoutError) as exc:
+                fallback = dict(raw)
+                raw_gaps = fallback.get("gaps", [])
+                gaps = list(raw_gaps) if isinstance(raw_gaps, list) else []
+                gaps.append(
+                    "automatic assurance failed; preserved the fast observation "
+                    f"({type(exc).__name__})"
+                )
+                fallback["gaps"] = gaps
+                raw = fallback
             else:
                 assurance = "assured"
         source = self.driver.persist_observation(
@@ -570,17 +590,11 @@ class RunEngine:
 
     def _normalized_response(
         self,
-        command: SubmitGate | CancelRun,
+        command: SubmitGate,
         *,
         gate: Gate,
         projection: Mapping[str, object],
     ) -> dict[str, object]:
-        if isinstance(command, CancelRun):
-            return {
-                "status": "cancelled",
-                "summary": "run cancelled at the current gate",
-                "payload": {},
-            }
         response = _mapping(command.response)
         self._validate_schema_value(response, gate.input_schema, path="response")
         status = _text(response.get("status")).lower()
@@ -661,6 +675,74 @@ class RunEngine:
         )
 
     @staticmethod
+    def _facts(projection: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+        cycle_id = _text(projection.get("workflow_cycle_id") or "cycle-1")
+        facts: list[dict[str, object]] = []
+        operations = projection.get("operations", [])
+        if isinstance(operations, list):
+            for operation in operations:
+                if not isinstance(operation, Mapping):
+                    continue
+                status = _text(operation.get("status"))
+                if status not in {"completed", "succeeded", "verified"}:
+                    continue
+                operation_name = _text(operation.get("operation"))
+                if operation_name in {
+                    "phase_record",
+                    "workflow.advance",
+                    "workflow.next",
+                }:
+                    continue
+                operation_cycle = _text(operation.get("workflow_cycle_id"))
+                if operation_cycle and operation_cycle != cycle_id:
+                    continue
+                fact: dict[str, object] = {
+                    "kind": "operation",
+                    "name": operation_name,
+                    "status": status,
+                    "summary": _text(operation.get("summary")),
+                }
+                evidence_ids = operation.get("evidence_ids", [])
+                if isinstance(evidence_ids, list) and evidence_ids:
+                    fact["evidence_ids"] = [
+                        _text(item) for item in evidence_ids[:8] if _text(item)
+                    ]
+                target_epoch = operation.get("target_epoch")
+                if isinstance(target_epoch, int) and not isinstance(
+                    target_epoch, bool
+                ):
+                    fact["target_epoch"] = target_epoch
+                facts.append(fact)
+        phases = projection.get("phase_records", [])
+        if isinstance(phases, list):
+            for phase in phases:
+                if (
+                    not isinstance(phase, Mapping)
+                    or _text(phase.get("status")) != "completed"
+                    or (
+                        _text(phase.get("workflow_cycle_id"))
+                        and _text(phase.get("workflow_cycle_id")) != cycle_id
+                    )
+                ):
+                    continue
+                fact = {
+                    "kind": "phase",
+                    "name": _text(phase.get("phase_type")),
+                    "status": "completed",
+                    "summary": _text(phase.get("summary")),
+                }
+                for name in (
+                    "source_revision",
+                    "artifact_sha256",
+                    "product_version",
+                ):
+                    value = _text(phase.get(name))
+                    if value:
+                        fact[name] = value
+                facts.append(fact)
+        return tuple(facts[-8:])
+
+    @staticmethod
     def _unknown_mutation(
         projection: Mapping[str, object]
     ) -> Mapping[str, object] | None:
@@ -704,6 +786,59 @@ class RunEngine:
             and _text(state.get("status")) in {"completed", "verified", "succeeded"}
             for state in states.values()
         )
+
+    def _validate_step_artifact(
+        self,
+        snapshot: Mapping[str, object],
+        *,
+        operation: str,
+    ) -> None:
+        artifact_contract = {
+            "live_patch_run": ("developer.change", "openubmc-live-patch"),
+            "upgrade_run": ("build.artifact", "openubmc-hpm"),
+        }.get(operation)
+        if artifact_contract is None:
+            return
+        phase_type, artifact_kind = artifact_contract
+        projection = _projection(snapshot)
+        phase = next(
+            (
+                record
+                for record in reversed(list(projection.get("phase_records", [])))
+                if isinstance(record, Mapping)
+                and _text(record.get("phase_type")) == phase_type
+                and _text(record.get("status")) == "completed"
+            ),
+            None,
+        )
+        if not isinstance(phase, Mapping):
+            return
+        raw_reference = phase.get("artifact_ref")
+        if not isinstance(raw_reference, Mapping) or not raw_reference:
+            return
+        reference = ArtifactRef.from_public_dict(raw_reference)
+        targets = projection.get("targets", [])
+        expected_target = ""
+        if isinstance(targets, list) and targets and isinstance(targets[0], Mapping):
+            expected_target = _text(targets[0].get("address"))
+        path = self.artifact_store.resolve(
+            reference,
+            expected_kinds=(artifact_kind,),
+            expected_target=expected_target,
+            expected_run_id=self._run_id(snapshot),
+        )
+        persisted_digest = _text(phase.get("artifact_sha256")).removeprefix(
+            "sha256:"
+        )
+        if persisted_digest and persisted_digest != reference.digest:
+            raise ReferenceViolation(
+                "persisted artifact digest does not match the ArtifactRef"
+            )
+        persisted_path = _text(phase.get("artifact_path"))
+        if persisted_path and persisted_path != str(path):
+            raise ReferenceViolation(
+                "persisted artifact path does not match the ArtifactRef"
+            )
 
     @staticmethod
     def _step_summary(
@@ -751,6 +886,7 @@ class RunEngine:
             state=selected_state,
             gate=gate,
             incident=incident,
+            facts=self._facts(projection),
             gaps=gaps,
             outcome=outcome,
             next_action=next_action,
@@ -808,6 +944,7 @@ class RunEngine:
         observation_ref: ObservationRef | None = None,
         allow_auto_reconcile: bool = True,
     ) -> RunTurn:
+        auto_reconcile_attempted = False
         for _step_index in range(WORKFLOW_INTERNAL_MAX_STEPS):
             projection = _projection(snapshot)
             outcome = self._outcome(projection)
@@ -816,9 +953,22 @@ class RunEngine:
                     self._turn(snapshot, observation_ref=observation_ref),
                     task_id=task_id,
                 )
+            if _text(projection.get("status")) == "cancelled":
+                snapshot = self.driver.record_outcome(
+                    self._run_id(snapshot),
+                    status="cancelled",
+                    summary="run cancelled at the current gate",
+                    operation_id=f"{operation_id}-cancelled-outcome",
+                )
+                continue
             current_incident = self._current_incident(projection)
             unknown = self._unknown_mutation(projection)
-            if unknown is not None and allow_auto_reconcile:
+            if (
+                unknown is not None
+                and allow_auto_reconcile
+                and not auto_reconcile_attempted
+            ):
+                auto_reconcile_attempted = True
                 try:
                     snapshot = self.driver.reconcile_run(
                         self._run_id(snapshot),
@@ -838,13 +988,17 @@ class RunEngine:
                         )
                         return self._turn(snapshot, state="incident")
                 else:
-                    if current_incident is not None:
+                    projection = _projection(snapshot)
+                    unknown = self._unknown_mutation(projection)
+                    current_incident = self._current_incident(projection)
+                    if unknown is None and current_incident is not None:
                         snapshot = self.driver.resolve_incident(
                             self._run_id(snapshot),
                             current_incident.incident_id,
                             operation_id=f"{operation_id}-incident-resolved",
                         )
-                    continue
+                    if unknown is None:
+                        continue
             if unknown is not None:
                 snapshot = self._record_incident(
                     snapshot,
@@ -912,6 +1066,20 @@ class RunEngine:
             )
             if required_operation:
                 try:
+                    self._validate_step_artifact(
+                        snapshot,
+                        operation=required_operation,
+                    )
+                except (OSError, ReferenceViolation) as exc:
+                    snapshot = self._record_incident(
+                        snapshot,
+                        code="artifact_reference_invalid",
+                        message=f"{type(exc).__name__}: {exc}",
+                        effect_id=required_operation,
+                        operation_id=f"{operation_id}-incident",
+                    )
+                    return self._turn(snapshot, state="incident")
+                try:
                     snapshot = self.driver.execute_step(
                         self._run_id(snapshot),
                         operation=required_operation,
@@ -965,7 +1133,7 @@ class RunEngine:
 
     def _submit_gate(
         self,
-        command: SubmitGate | CancelRun,
+        command: SubmitGate,
         *,
         task_id: str,
         operation_id: str,
@@ -1022,6 +1190,51 @@ class RunEngine:
             operation_id=operation_id,
         )
 
+    def _cancel_run(
+        self,
+        command: CancelRun,
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> RunTurn:
+        snapshot = self.driver.run_snapshot(command.run_id)
+        response = {
+            "status": "cancelled",
+            "summary": "run cancelled at the current gate",
+            "payload": {},
+        }
+        submission_digest = fingerprint(response)
+        prior = self._submission_record(snapshot, command.submission_id)
+        if prior is not None:
+            self._validate_duplicate_gate(command, prior)
+            if _text(prior.get("submission_digest")) != submission_digest:
+                raise CommandConflict(
+                    "submission_id was already used with different Gate input"
+                )
+        else:
+            gate = self._current_gate(
+                snapshot, operation_id=f"{operation_id}-gate"
+            )
+            if gate is None:
+                raise GateConflict("Run is not waiting at a Gate")
+            self._validate_gate(command, gate)
+            snapshot = self.driver.cancel_run(
+                command,
+                gate=gate,
+                submission_digest=submission_digest,
+                operation_id=f"{operation_id}-cancel",
+            )
+        snapshot = self.driver.record_outcome(
+            command.run_id,
+            status="cancelled",
+            summary="run cancelled at the current gate",
+            operation_id=f"{operation_id}-outcome",
+        )
+        return self._project_terminal(
+            self._turn(snapshot, state="cancelled"),
+            task_id=task_id,
+        )
+
     def execute(
         self,
         command: RunCommand,
@@ -1041,7 +1254,13 @@ class RunEngine:
                 operation_id=operation_id,
                 observation_ref=command.observation_ref,
             )
-        if isinstance(command, (SubmitGate, CancelRun)):
+        if isinstance(command, CancelRun):
+            return self._cancel_run(
+                command,
+                task_id=task_id,
+                operation_id=operation_id,
+            )
+        if isinstance(command, SubmitGate):
             return self._submit_gate(
                 command,
                 task_id=task_id,
