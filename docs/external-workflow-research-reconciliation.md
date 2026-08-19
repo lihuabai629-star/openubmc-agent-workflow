@@ -14,7 +14,7 @@
 - Agent 默认只看到 `observe/execute`；
 - `observe/execute` 是外部协议，内部立即解码为 typed Query/Command；
 - `RunEngine` 是 Run、Gate、Incident 和 Outcome 的唯一状态转换权威；
-- `WorkflowKernel` 按当前真实职责校正为 `WorkflowDefinitions`；
+- `WorkflowDefinitions` 只负责 definition、step identity 和 semantic cursor；
 - `execute` 对普通 Agent 返回下一 actionable Turn，不暴露 Ack/polling；
 - v2/v2.1 保持单进程 inline dispatch，不预先引入 Outbox/Inbox；
 - Mutation 使用稳定 identity、至少一次语义、fail-closed unknown 和 reconcile；
@@ -49,13 +49,13 @@
 
 ## 必须改写的关键分歧
 
-### 1. 状态权威应叫 `RunEngine`，不是扩张当前 `WorkflowKernel`
+### 1. 状态权威应叫 `RunEngine`，不是扩张迁移前的 `WorkflowKernel`
 
 报告建议让 `Workflow Kernel` 成为唯一状态权威，并把 `RunEngine` 改成无状态的 `RunCoordinator`。其原则——禁止双状态机——正确，但名称和落点不符合当前代码事实：
 
-- 当前 `WorkflowKernel` 负责 definition、step identity 和 semantic cursor；
-- 真正的状态推进位于 `ContextRuntime.workflow_advance`；
-- Gateway 还参与 Gate response、continuation 和 terminal Outcome；
+- 迁移前 `WorkflowKernel` 负责 definition、step identity 和 semantic cursor；
+- 迁移前真正的状态推进位于 `ContextRuntime.workflow_advance`；
+- 迁移前 Gateway 还参与 Gate response、continuation 和 terminal Outcome；
 - 因此当前要解决的是把分散写入收进新的唯一权威，而不是把 definition registry 扩张成另一个含义完全不同的 Kernel。
 
 最终裁决保持：
@@ -68,6 +68,13 @@ MutationJournal      -> durable Mutation truth and reconcile
 ```
 
 `RunCoordinator` 可以是 `RunEngine` 实现内部的协调用语，但不能形成第二个外部 seam 或第二份状态权威。
+
+当前 Agent 主路径已按这一裁决迁移：生产代码使用 `WorkflowDefinitions`，Gateway 只依赖
+typed `SemanticRuntimePort.observe/execute`，`RunEngine` 处理 Gate、推进、reconcile、
+Incident 和 Outcome。M4 尚未完成；Gate submission 仍通过
+`record_gate_submission -> phase_record` bridge 写入兼容事件，显式 old-event upcaster 和
+compatibility telemetry 也仍待补齐。因此这里的“唯一权威”是目标不变量和 Agent 主路径
+事实，不能解读为所有旧持久化写入已经删除。
 
 ### 2. 普通 Agent 不使用 `CommandAck + poll`
 

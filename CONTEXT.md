@@ -30,7 +30,7 @@ operation identities, retry safety, target fencing, or terminal success.
 | **ObservationResult** | The Runtime-owned result of an ObservationQuery before Agent projection. |
 | **ObservationReceipt** | A bounded Agent projection of an ObservationResult. It is not Run state or mutation evidence. |
 | **ObservationRef** | A stable handle and digest that lets the Runtime reconstruct and validate persisted observation content. |
-| **ArtifactRef** | A bounded handle, digest, type, size, provenance, and retention description for content stored outside Run state. |
+| **ArtifactRef** | A bounded handle, digest, type, size, provenance, retention, target, and Run binding for content stored outside Run state. |
 | **Run** | One durable execution of a pinned workflow definition for a target and intent. |
 | **RunCommand** | A typed request to start, respond to, resume, or control a Run. |
 | **RunEngine** | The only Module allowed to commit Run, Gate, Incident, Effect-reference, and Outcome transitions. |
@@ -38,7 +38,7 @@ operation identities, retry safety, target fencing, or terminal success.
 | **DomainExecutor** | The Module that invokes registered Domain Adapters and returns typed Domain results using stable Effect identity. |
 | **Turn** | A bounded Agent projection at the next actionable Gate, Incident, running reattach point, or terminal Outcome. It is not the source of truth. |
 | **Gate** | A durable, versioned request for external input with a one-time submission protocol. |
-| **GateSubmission** | An audited response bound to one Run, Gate identity, Gate version, token, actor, and submission identity. |
+| **GateSubmission** | An audited response bound to one Run, Gate identity, Gate version, schema digest, submission identity, and input digest. Actor and time are derived by the Adapter or Runtime. |
 | **Blocker** | A bounded reason the current call cannot advance safely. A Blocker is not automatically a durable Incident. |
 | **Incident** | A durable state requiring operator attention after automatic execution cannot continue safely. |
 | **Effect** | A potentially failing or repeat-delivered interaction with a domain or target. Model calls become Effects if the Runtime manages them in the future. |
@@ -72,6 +72,8 @@ commands and records, but it must delegate the authoritative transition to the o
 ## Domain invariants
 
 - The default Agent Interface remains `observe` and `execute`.
+- The Runtime exposes one developer-friendly default behavior. Legacy assurance hints are accepted
+  only for compatibility and are normalized to automatic Runtime policy.
 - `observe` is read-only and never doubles as Run-status polling.
 - `execute` advances to the next semantic yield; transport acknowledgements are not Agent domain
   concepts.
@@ -93,6 +95,7 @@ commands and records, but it must delegate the authoritative transition to the o
 - [ADR-0001: Runtime Core and semantic Agent Interface](docs/adr/0001-runtime-core-and-semantic-agent-interface.md)
 - [ADR-0002: Single Run authority and external Effect recovery](docs/adr/0002-single-run-authority-and-effect-recovery.md)
 - [ADR-0003: Turn, Gate, Artifact, and distribution boundaries](docs/adr/0003-turn-gate-artifact-and-distribution-boundaries.md)
+- [ADR-0004: Developer-friendly default execution and Gate submissions](docs/adr/0004-developer-default-and-gate-submissions.md)
 - [Architecture arbitration](docs/workflow-architecture-arbitration.md)
 - [Market workflow design research](docs/workflow-design-market-research.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)

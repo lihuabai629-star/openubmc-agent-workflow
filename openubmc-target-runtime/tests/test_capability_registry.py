@@ -12,7 +12,9 @@ from openubmc_target_runtime import (  # noqa: E402
     CallableDomainAdapter,
     CapabilityDescriptor,
     CapabilityRegistry,
+    DomainExecutor,
     DomainReceipt,
+    EffectClass,
     OperationCatalogError,
     RUNTIME_API_VERSION,
     RuntimeMcpService,
@@ -131,6 +133,71 @@ class CapabilityRegistryTests(unittest.TestCase):
             for item in status["capability_registry"]["capabilities"]
         }
         self.assertIn("debug_run", operations)
+
+    def test_domain_executor_retries_transient_read_failures(self) -> None:
+        attempts = 0
+
+        def transient_read(_context, arguments):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("temporary transport failure")
+            return {"ok": True, "value": arguments["value"]}
+
+        registry = CapabilityRegistry((_descriptor(),))
+        executor = DomainExecutor(
+            registry,
+            {"test_probe": CallableDomainAdapter(transient_read)},
+            read_attempts=2,
+        )
+
+        receipt = executor.execute(
+            "test_probe",
+            context=RuntimeSDKContext(
+                task_id="read-retry",
+                operation_id="read-retry-1",
+                timeout_seconds=5,
+            ),
+            arguments={"value": 42},
+        )
+
+        self.assertEqual(receipt.value["value"], 42)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(
+            executor.policy_for("test_probe").effect_class,
+            EffectClass.READ_ONLY,
+        )
+
+    def test_domain_executor_never_blindly_retries_a_mutation(self) -> None:
+        attempts = 0
+
+        def interrupted_mutation(_context, _arguments):
+            nonlocal attempts
+            attempts += 1
+            raise TimeoutError("mutation result is unknown")
+
+        descriptor = _descriptor(operation="test_mutation", mutation=True)
+        executor = DomainExecutor(
+            CapabilityRegistry((descriptor,)),
+            {"test_mutation": CallableDomainAdapter(interrupted_mutation)},
+            read_attempts=3,
+        )
+
+        with self.assertRaises(TimeoutError):
+            executor.execute(
+                "test_mutation",
+                context=RuntimeSDKContext(
+                    task_id="mutation-once",
+                    operation_id="mutation-once-1",
+                    timeout_seconds=5,
+                ),
+                arguments={"value": 42},
+            )
+
+        self.assertEqual(attempts, 1)
+        policy = executor.policy_for("test_mutation")
+        self.assertEqual(policy.effect_class, EffectClass.RECONCILABLE_MUTATION)
+        self.assertEqual(policy.max_attempts, 1)
 
 
 if __name__ == "__main__":

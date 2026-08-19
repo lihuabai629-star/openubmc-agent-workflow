@@ -3,32 +3,30 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-import hashlib
 import json
-from typing import Protocol
 
 from .catalog import OperationDescriptor
 from .contracts import RUNTIME_API_VERSION
-from .workflow import DEFAULT_PHASE_REGISTRY
+from .semantic_runtime import (
+    AgentGatewayError,
+    ObservationQuery,
+    ObservationRef,
+    RunTurn,
+    ScopeContract,
+    ScopeViolation,
+    SelectorContract,
+    SemanticRuntimePort,
+    decode_run_command,
+    fingerprint,
+)
 
 
 AGENT_GATEWAY_SCHEMA = f"{RUNTIME_API_VERSION}/agent-gateway-v1"
 OBSERVATION_RECEIPT_SCHEMA = f"{AGENT_GATEWAY_SCHEMA}/observation-receipt"
 TURN_SCHEMA = f"{AGENT_GATEWAY_SCHEMA}/turn"
 OBSERVATION_MAX_BYTES = 4 * 1024
-OBSERVATION_SCOPE_MAX_BYTES = 2 * 1024
 TURN_MAX_BYTES = 8 * 1024
 TOOLS_LIST_MAX_BYTES = 8 * 1024
-GATE_SCHEMA_MAX_BYTES = 2 * 1024
-WORKFLOW_INTERNAL_MAX_STEPS = 64
-TARGET_MAX_BYTES = 512
-SELECTOR_ID_MAX_BYTES = 64
-SELECTOR_MAX_ITEMS = 16
-CAPABILITY_NAME_MAX_BYTES = 64
-CAPABILITY_MAX_ITEMS = 16
-MDB_QUERY_MAX_BYTES = 1024
-MDB_QUERY_MAX_ITEMS = 32
 
 _CAPABILITY_ALIASES = {
     "ssh": "ssh_transport",
@@ -39,83 +37,6 @@ _CAPABILITY_ALIASES = {
     "alarms": "active_alarm_endpoint_verified",
 }
 _CAPABILITY_STATES = frozenset({"available", "unavailable", "not_checked"})
-_ASSURANCE_LEVELS = frozenset({"auto", "fast", "assured"})
-
-
-class AgentGatewayError(ValueError):
-    """Base error for the semantic Agent interface."""
-
-
-class ScopeViolation(AgentGatewayError):
-    """Raised when an observation requests an undeclared evidence surface."""
-
-
-class AgentGatewayRuntimePort(Protocol):
-    """Internal seam implemented by the Runtime service and test adapters."""
-
-    def observe_operation(
-        self,
-        operation: str,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
-
-    def assure_observation(
-        self,
-        prior: Mapping[str, object],
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
-
-    def run_operation(
-        self,
-        operation: str,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
-
-    def run_snapshot(self, run_id: str) -> Mapping[str, object]: ...
-
-    def persist_observation(
-        self,
-        raw: Mapping[str, object],
-        *,
-        scope: Mapping[str, object],
-        assurance: str,
-    ) -> Mapping[str, object]: ...
-
-    def start_run(
-        self,
-        arguments: Mapping[str, object],
-        observation_receipt: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
-
-    def reconcile_run(
-        self,
-        run_id: str,
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
-
-    def record_run_outcome(
-        self,
-        *,
-        task_id: str,
-        run_id: str,
-        outcome: str,
-        summary: str,
-        details: Mapping[str, object],
-    ) -> Mapping[str, object]: ...
 
 
 def _json_bytes(value: object) -> bytes:
@@ -128,7 +49,7 @@ def _json_bytes(value: object) -> bytes:
 
 
 def _fingerprint(value: object) -> str:
-    return hashlib.sha256(_json_bytes(value)).hexdigest()
+    return fingerprint(value)
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -189,175 +110,6 @@ def _compact_value(
     return str(value)
 
 
-@dataclass(frozen=True)
-class SelectorContract:
-    selector_id: str
-    kind: str
-    names: tuple[str, ...] = ()
-    queries: tuple[str, ...] = ()
-
-    @classmethod
-    def from_value(cls, value: Mapping[str, object], index: int) -> "SelectorContract":
-        unexpected = set(value) - {"id", "kind", "names", "queries"}
-        if unexpected:
-            raise ScopeViolation(
-                "selector contains undeclared fields: " + ", ".join(sorted(unexpected))
-            )
-        kind = _text(value.get("kind")).lower()
-        selector_id = _text(value.get("id")) or f"selector-{index}"
-        if len(selector_id.encode("utf-8")) > SELECTOR_ID_MAX_BYTES:
-            raise ScopeViolation("selector id exceeds the 64-byte limit")
-        if kind == "capability":
-            raw_names = value.get("names", [])
-            if not isinstance(raw_names, list) or not raw_names:
-                raise ScopeViolation("capability selector requires a non-empty names array")
-            if len(raw_names) > CAPABILITY_MAX_ITEMS:
-                raise ScopeViolation("capability selector exceeds the 16-name limit")
-            if not all(isinstance(item, str) and item.strip() for item in raw_names):
-                raise ScopeViolation("capability names must be non-empty strings")
-            if any(
-                len(item.strip().encode("utf-8")) > CAPABILITY_NAME_MAX_BYTES
-                for item in raw_names
-            ):
-                raise ScopeViolation("capability name exceeds the 64-byte limit")
-            names = tuple(dict.fromkeys(_text(item).lower() for item in raw_names))
-            unsupported = sorted(set(names) - set(_CAPABILITY_ALIASES))
-            if unsupported:
-                raise ScopeViolation(
-                    "unsupported capability selectors: " + ", ".join(unsupported)
-                )
-            return cls(selector_id=selector_id, kind=kind, names=names)
-        if kind == "mdb":
-            raw_queries = value.get("queries", [])
-            if not isinstance(raw_queries, list) or not raw_queries:
-                raise ScopeViolation("mdb selector requires a non-empty queries array")
-            if len(raw_queries) > MDB_QUERY_MAX_ITEMS:
-                raise ScopeViolation("mdb selector exceeds the 32-query limit")
-            if not all(isinstance(item, str) for item in raw_queries):
-                raise ScopeViolation("mdb queries must be strings")
-            queries = tuple(_text(item) for item in raw_queries)
-            if any(not query for query in queries):
-                raise ScopeViolation("mdb queries must not be empty")
-            if any(
-                len(query.encode("utf-8")) > MDB_QUERY_MAX_BYTES
-                for query in queries
-            ):
-                raise ScopeViolation("mdb query exceeds the 1024-byte limit")
-            return cls(selector_id=selector_id, kind=kind, queries=queries)
-        raise ScopeViolation(f"unsupported selector kind: {kind or '<empty>'}")
-
-    def to_public_dict(self) -> dict[str, object]:
-        result: dict[str, object] = {"id": self.selector_id, "kind": self.kind}
-        if self.names:
-            result["names"] = list(self.names)
-        if self.queries:
-            result["queries"] = list(self.queries)
-        return result
-
-
-@dataclass(frozen=True)
-class ScopeContract:
-    target: str
-    selectors: tuple[SelectorContract, ...]
-    freshness_mode: str
-    max_age_seconds: int
-    assurance: str
-    deadline: float
-
-    @classmethod
-    def from_query(cls, query: Mapping[str, object]) -> "ScopeContract":
-        unexpected = set(query) - {
-            "target",
-            "selectors",
-            "freshness",
-            "assurance",
-            "deadline",
-        }
-        if unexpected:
-            raise ScopeViolation(
-                "query contains undeclared fields: " + ", ".join(sorted(unexpected))
-            )
-        target = _text(query.get("target"))
-        if not target:
-            raise ScopeViolation("target is required")
-        if len(target.encode("utf-8")) > TARGET_MAX_BYTES:
-            raise ScopeViolation("target exceeds the 512-byte limit")
-        raw_selectors = query.get("selectors")
-        if not isinstance(raw_selectors, list) or not raw_selectors:
-            raise ScopeViolation("selectors must be a non-empty array")
-        if len(raw_selectors) > SELECTOR_MAX_ITEMS:
-            raise ScopeViolation("selectors exceed the 16-item limit")
-        selectors = tuple(
-            SelectorContract.from_value(_mapping(value), index)
-            for index, value in enumerate(raw_selectors, start=1)
-        )
-        selector_ids = [selector.selector_id for selector in selectors]
-        if len(set(selector_ids)) != len(selector_ids):
-            raise ScopeViolation("selector ids must be unique")
-        freshness = _mapping(query.get("freshness"))
-        if set(freshness) - {"mode", "max_age_seconds"}:
-            raise ScopeViolation("freshness contains undeclared fields")
-        freshness_mode = _text(freshness.get("mode") or "live").lower()
-        max_age = freshness.get("max_age_seconds", 0)
-        if freshness_mode != "live":
-            raise ScopeViolation("only live evidence is supported by the Agent interface")
-        if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age != 0:
-            raise ScopeViolation("live evidence requires max_age_seconds=0")
-        assurance = _text(query.get("assurance") or "auto").lower()
-        if assurance not in _ASSURANCE_LEVELS:
-            raise ScopeViolation("assurance must be auto, fast, or assured")
-        deadline = query.get("deadline", 180)
-        if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
-            raise ScopeViolation("deadline must be a positive number")
-        if float(deadline) <= 0:
-            raise ScopeViolation("deadline must be a positive number")
-        contract = cls(
-            target=target,
-            selectors=selectors,
-            freshness_mode=freshness_mode,
-            max_age_seconds=max_age,
-            assurance=assurance,
-            deadline=float(deadline),
-        )
-        if len(_json_bytes(contract.to_public_dict())) > OBSERVATION_SCOPE_MAX_BYTES:
-            raise ScopeViolation("observation scope exceeds the 2KB budget")
-        return contract
-
-    def runtime_arguments(self, *, assured: bool) -> dict[str, object]:
-        queries = [
-            query
-            for selector in self.selectors
-            if selector.kind == "mdb"
-            for query in selector.queries
-        ]
-        result: dict[str, object] = {
-            "ip": self.target,
-            "deadline": self.deadline,
-            "mdb_queries": queries,
-            "mdb_only": True,
-            "_agent_capability_names": [
-                name
-                for selector in self.selectors
-                if selector.kind == "capability"
-                for name in selector.names
-            ],
-            "_agent_assured": assured,
-        }
-        result["profile"] = "mdb"
-        return result
-
-    def to_public_dict(self) -> dict[str, object]:
-        return {
-            "target": self.target,
-            "selectors": [selector.to_public_dict() for selector in self.selectors],
-            "freshness": {
-                "mode": self.freshness_mode,
-                "max_age_seconds": self.max_age_seconds,
-            },
-            "assurance": self.assurance,
-        }
-
-
 class CostGovernor:
     """Enforce model-visible result budgets without exposing raw Evidence."""
 
@@ -377,6 +129,9 @@ class CostGovernor:
                 }
             return {
                 "kind": kind,
+                "gate_id": _bounded_text(gate.get("gate_id"), 128),
+                "gate_version": gate.get("gate_version", 0),
+                "schema_digest": _bounded_text(gate.get("schema_digest"), 80),
                 "name": _bounded_text(gate.get("name"), 128),
                 "owner": _bounded_text(gate.get("owner"), 128),
                 "input_schema": input_schema,
@@ -412,6 +167,19 @@ class CostGovernor:
         }
 
     @staticmethod
+    def _turn_incident(value: object) -> dict[str, object] | None:
+        incident = _mapping(value)
+        if not incident:
+            return None
+        return {
+            "incident_id": _bounded_text(incident.get("incident_id"), 128),
+            "code": _bounded_text(incident.get("code"), 128),
+            "message": _bounded_text(incident.get("message"), 512),
+            "effect_id": _bounded_text(incident.get("effect_id"), 128),
+            "recoverable": bool(incident.get("recoverable", True)),
+        }
+
+    @staticmethod
     def observation(document: Mapping[str, object]) -> dict[str, object]:
         result = dict(document)
         if len(_json_bytes(result)) <= OBSERVATION_MAX_BYTES:
@@ -436,7 +204,12 @@ class CostGovernor:
             "receipt_id": _bounded_text(result.get("receipt_id"), 128),
             "status": "incomplete",
             "scope": result.get("scope", {}),
-            "assurance": _bounded_text(result.get("assurance") or "fast", 32),
+            "observation_ref": _compact_value(
+                result.get("observation_ref", {}),
+                max_depth=2,
+                max_items=8,
+                max_string=128,
+            ),
             "freshness": _compact_value(
                 result.get("freshness", {}),
                 max_depth=2,
@@ -472,7 +245,12 @@ class CostGovernor:
                 "fingerprint": _fingerprint(result.get("scope", {})),
                 "content_compacted": True,
             },
-            "assurance": _bounded_text(result.get("assurance") or "fast", 32),
+            "observation_ref": _compact_value(
+                result.get("observation_ref", {}),
+                max_depth=2,
+                max_items=8,
+                max_string=128,
+            ),
             "freshness": {"status": "unknown"},
             "target": {},
             "results": {},
@@ -508,15 +286,19 @@ class CostGovernor:
             "run_id": _bounded_text(result.get("run_id"), 512),
             "state": _bounded_text(result.get("state") or "blocked", 64),
             "gate": CostGovernor._turn_gate(result.get("gate")),
+            "incident": CostGovernor._turn_incident(result.get("incident")),
             "facts": [],
             "gaps": CostGovernor._turn_gaps(result.get("gaps")),
             "outcome": CostGovernor._turn_outcome(result.get("outcome")),
             "next": _bounded_text(result.get("next"), 512),
             "content_compacted": True,
         }
-        if "observation_receipt_id" in result:
-            fallback["observation_receipt_id"] = _bounded_text(
-                result.get("observation_receipt_id"), 128
+        if "observation_ref" in result:
+            fallback["observation_ref"] = _compact_value(
+                result.get("observation_ref"),
+                max_depth=2,
+                max_items=8,
+                max_string=128,
             )
         if "outcome_recorded" in result:
             fallback["outcome_recorded"] = bool(result.get("outcome_recorded"))
@@ -531,6 +313,7 @@ class CostGovernor:
                 "name": "output_budget",
                 "message": "Turn details exceeded the 8KB Agent budget",
             },
+            "incident": CostGovernor._turn_incident(result.get("incident")),
             "facts": [],
             "gaps": ["turn_exceeds_8kb_budget"],
             "outcome": CostGovernor._turn_outcome(result.get("outcome")),
@@ -678,11 +461,16 @@ class ResultProjector:
             or _text(result.get("started_at"))
         )
         target_detail = self._target_identity(result)
+        observation_ref = (
+            ObservationRef.from_public_dict(source).to_public_dict()
+            if source
+            else {}
+        )
         receipt_seed = {
             "scope": scope.to_public_dict(),
             "observed_at": observed_at,
             "results": observations,
-            "source": dict(source or {}),
+            "observation_ref": observation_ref,
         }
         receipt_id = "observation-" + _fingerprint(receipt_seed)[:24]
         for claim in claims:
@@ -707,9 +495,8 @@ class ResultProjector:
             "schema": OBSERVATION_RECEIPT_SCHEMA,
             "receipt_id": receipt_id,
             "status": "complete" if counts["not_checked"] == 0 else "incomplete",
-            "source": dict(source or {}),
+            "observation_ref": observation_ref,
             "scope": scope.to_public_dict(),
-            "assurance": assurance,
             "freshness": {
                 "mode": scope.freshness_mode,
                 "max_age_seconds": scope.max_age_seconds,
@@ -731,121 +518,10 @@ class ResultProjector:
         }
         return CostGovernor.observation(document)
 
-    @staticmethod
-    def _gate_schema(phase_type: str) -> dict[str, object]:
-        descriptor = DEFAULT_PHASE_REGISTRY.require(phase_type)
-        required = [
-            field
-            for field in descriptor.required_fields
-            if field
-            not in {
-                "case_id",
-                "expected_revision",
-                "idempotency_key",
-                "phase_type",
-                "producer_identity",
-                "status",
-                "summary",
-            }
-        ]
-        properties = {
-            "status": {
-                "type": "string",
-                "enum": ["completed", "failed", "cancelled"],
-            },
-            "summary": {"type": "string", "minLength": 1},
-            "payload": {
-                "type": "object",
-                "description": "Phase receipt fields named by required_fields.",
-                "additionalProperties": True,
-            },
-        }
-        schema = {
-            "type": "object",
-            "required": ["status", "summary", "payload"],
-            "properties": properties,
-            "additionalProperties": False,
-            "required_fields": required,
-            "receipt_schema": descriptor.receipt_schema,
-        }
-        if len(_json_bytes(schema)) > GATE_SCHEMA_MAX_BYTES:
-            raise AgentGatewayError("gate schema exceeds the 2KB budget")
-        return schema
-
-    def turn(self, raw: Mapping[str, object]) -> dict[str, object]:
-        envelope = _mapping(getattr(raw, "envelope", {}))
-        runtime_state = _text(
-            raw.get("status") or envelope.get("status") or "completed"
+    def turn(self, turn: RunTurn) -> dict[str, object]:
+        return CostGovernor.turn(
+            {"schema": TURN_SCHEMA, **turn.to_public_dict()}
         )
-        state = {
-            "waiting_phase_record": "waiting_response",
-            "budget_exhausted": "blocked",
-        }.get(runtime_state, runtime_state)
-        run_id = _text(envelope.get("case_id") or raw.get("case_id"))
-        facts = envelope.get("facts", [])
-        gaps = list(envelope.get("gaps", [])) if isinstance(envelope.get("gaps"), list) else []
-        gate = None
-        if runtime_state == "waiting_phase_record":
-            phase_type = _text(raw.get("required_phase_type"))
-            gate = {
-                "kind": "phase",
-                "name": phase_type,
-                "owner": _text(raw.get("required_skill")),
-                "input_schema": self._gate_schema(phase_type),
-            }
-        elif runtime_state in {
-            "waiting_external",
-            "blocked",
-            "mutation_outcome_unknown",
-            "budget_exhausted",
-        }:
-            gate = {
-                "kind": "blocker",
-                "name": _text(
-                    raw.get("required_operation") or raw.get("blocked_operation_id")
-                ) or ("internal_step_limit" if runtime_state == "budget_exhausted" else ""),
-                "message": (
-                    "workflow exceeded the internal step limit"
-                    if runtime_state == "budget_exhausted"
-                    else _text(raw.get("next_action"))
-                ),
-            }
-        outcome = None
-        if bool(raw.get("completed")) or runtime_state in {
-            "completed",
-            "failed",
-            "cancelled",
-        }:
-            closeout = _mapping(raw.get("closeout"))
-            outcome = {
-                "status": state,
-                "summary": _text(
-                    closeout.get("summary")
-                    or raw.get("summary")
-                    or envelope.get("summary")
-                ),
-                "acceptance": _compact_value(
-                    closeout.get("checks", closeout.get("acceptance", [])),
-                    max_depth=3,
-                    max_items=16,
-                    max_string=256,
-                ),
-            }
-        document = {
-            "schema": TURN_SCHEMA,
-            "run_id": run_id,
-            "state": state,
-            "gate": gate,
-            "facts": facts if isinstance(facts, list) else [],
-            "gaps": gaps,
-            "outcome": outcome,
-            "next": (
-                "respond to the current phase gate"
-                if runtime_state == "waiting_phase_record"
-                else _text(raw.get("next_action"))
-            ),
-        }
-        return CostGovernor.turn(document)
 
 
 class AgentGateway:
@@ -853,7 +529,7 @@ class AgentGateway:
 
     def __init__(
         self,
-        runtime: AgentGatewayRuntimePort,
+        runtime: SemanticRuntimePort,
         *,
         projector: ResultProjector | None = None,
     ) -> None:
@@ -867,91 +543,17 @@ class AgentGateway:
         task_id: str,
         operation_id: str,
     ) -> dict[str, object]:
-        scope = ScopeContract.from_query(query)
-        assured = scope.assurance == "assured"
-        actual_assurance = "assured" if assured else "fast"
-        operation = "debug_collect"
-        raw = self.runtime.observe_operation(
-            operation,
-            scope.runtime_arguments(assured=assured),
+        observation_query = ObservationQuery.from_query(query)
+        result = self.runtime.observe(
+            observation_query,
             task_id=task_id,
             operation_id=operation_id,
         )
-        preview = self.projector.observation(
-            raw,
-            scope,
-            assurance=actual_assurance,
-        )
-        if (
-            scope.assurance == "auto"
-            and not preview.get("content_compacted")
-            and (
-                preview.get("status") == "incomplete"
-                or _mapping(preview.get("freshness")).get("status") != "live"
-            )
-        ):
-            try:
-                raw = self.runtime.assure_observation(
-                    raw,
-                    scope.runtime_arguments(assured=True),
-                    task_id=task_id,
-                    operation_id=f"{operation_id}-assured",
-                )
-            except RuntimeError as exc:
-                if "scope-preserving observation adapter" not in _text(exc):
-                    raise
-            else:
-                actual_assurance = "assured"
-        source = self.runtime.persist_observation(
-            raw,
-            scope=scope.to_public_dict(),
-            assurance=actual_assurance,
-        )
         return self.projector.observation(
-            raw,
-            scope,
-            assurance=actual_assurance,
-            source=source,
-        )
-
-    def _record_phase_response(
-        self,
-        action: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-        cancelled: bool = False,
-    ) -> Mapping[str, object]:
-        run_id = _text(action.get("run_id"))
-        snapshot = self.runtime.run_snapshot(run_id)
-        continuation = _mapping(snapshot.get("continuation"))
-        handoff = _mapping(continuation.get("handoff_arguments"))
-        contract = dict(_mapping(handoff.get("phase_record_contract")))
-        if not contract:
-            raise AgentGatewayError("run is not waiting at a phase response gate")
-        response = _mapping(action.get("response"))
-        payload = _mapping(response.get("payload"))
-        contract.update(payload)
-        contract["status"] = "cancelled" if cancelled else _text(response.get("status"))
-        contract["summary"] = (
-            _text(response.get("summary"))
-            or ("run cancelled at the current gate" if cancelled else "")
-        )
-        self.runtime.run_operation(
-            "phase_record",
-            contract,
-            task_id=task_id,
-            operation_id=f"{operation_id}-response",
-        )
-        return self.runtime.run_operation(
-            "workflow.next",
-            {
-                "case_id": run_id,
-                "max_steps": WORKFLOW_INTERNAL_MAX_STEPS,
-                "include_closeout_bundle": False,
-            },
-            task_id=task_id,
-            operation_id=f"{operation_id}-next",
+            result.raw,
+            result.query,
+            assurance=result.assurance,
+            source=result.observation_ref.to_source_dict(),
         )
 
     def execute(
@@ -961,102 +563,13 @@ class AgentGateway:
         task_id: str,
         operation_id: str,
     ) -> dict[str, object]:
-        kind = _text(action.get("kind")).lower()
-        if kind == "start":
-            arguments: dict[str, object] = {
-                "ip": _text(action.get("target")),
-                "intent": _text(action.get("intent") or "diagnosis-only"),
-                "final_purpose": _text(action.get("purpose") or "complete the requested workflow"),
-                "max_steps": WORKFLOW_INTERNAL_MAX_STEPS,
-                "include_closeout_bundle": False,
-            }
-            delivery = _text(action.get("delivery_strategy"))
-            if delivery:
-                arguments["delivery_strategy"] = delivery
-            workflow = action.get("workflow")
-            if isinstance(workflow, Mapping):
-                arguments["workflow"] = dict(workflow)
-            observation_receipt = action.get("observation_receipt")
-            if isinstance(observation_receipt, Mapping):
-                raw = self.runtime.start_run(
-                    arguments,
-                    observation_receipt,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-            else:
-                raw = self.runtime.run_operation(
-                    "workflow.advance",
-                    arguments,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-        elif kind == "respond":
-            raw = self._record_phase_response(
-                action, task_id=task_id, operation_id=operation_id
-            )
-        elif kind == "resume":
-            raw = self.runtime.run_operation(
-                "workflow.next",
-                {
-                    "case_id": _text(action.get("run_id")),
-                    "max_steps": WORKFLOW_INTERNAL_MAX_STEPS,
-                    "include_closeout_bundle": False,
-                },
-                task_id=task_id,
-                operation_id=operation_id,
-            )
-        elif kind == "control":
-            command = _text(action.get("command")).lower()
-            if command == "cancel":
-                raw = self._record_phase_response(
-                    action,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                    cancelled=True,
-                )
-            elif command == "reconcile":
-                raw = self.runtime.reconcile_run(
-                    _text(action.get("run_id")),
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-            elif command == "continue":
-                raw = self.runtime.run_operation(
-                    "workflow.next",
-                    {
-                        "case_id": _text(action.get("run_id")),
-                        "max_steps": WORKFLOW_INTERNAL_MAX_STEPS,
-                        "include_closeout_bundle": False,
-                    },
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-            else:
-                raise AgentGatewayError("control command must be continue, reconcile, or cancel")
-        else:
-            raise AgentGatewayError("execute kind must be start, respond, resume, or control")
-        turn = self.projector.turn(raw)
-        observation_receipt = action.get("observation_receipt")
-        if isinstance(observation_receipt, Mapping):
-            turn["observation_receipt_id"] = _text(
-                observation_receipt.get("receipt_id")
-            )
-        if turn.get("outcome") is not None and turn.get("run_id"):
-            outcome = _mapping(turn["outcome"])
-            recorded = self.runtime.record_run_outcome(
-                task_id=task_id,
-                run_id=_text(turn["run_id"]),
-                outcome=(
-                    "completed"
-                    if turn.get("state") == "completed"
-                    else "failed"
-                ),
-                summary=_text(outcome.get("summary")) or "workflow completed",
-                details={"state": turn.get("state"), "gaps": turn.get("gaps", [])},
-            )
-            turn["outcome_recorded"] = bool(recorded)
-        return CostGovernor.turn(turn)
+        command = decode_run_command(action, operation_id=operation_id)
+        turn = self.runtime.execute(
+            command,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+        return self.projector.turn(turn)
 
     @staticmethod
     def error(operation: str, exc: Exception) -> dict[str, object]:
@@ -1116,6 +629,10 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                 "type": "string",
                 "enum": ["auto", "fast", "assured"],
                 "default": "auto",
+                "deprecated": True,
+                "description": (
+                    "Compatibility input only; Runtime always selects assurance automatically."
+                ),
             },
             "deadline": {"type": "number", "exclusiveMinimum": 0, "default": 180},
         },
@@ -1134,13 +651,58 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                 "type": "string",
                 "enum": ["source-only", "live-patch", "build-upgrade"],
             },
-            "workflow": {"type": "object", "additionalProperties": {"type": "object"}},
+            "observation_ref": {
+                "type": "object",
+                "required": [
+                    "handle",
+                    "digest",
+                    "kind",
+                    "size",
+                    "provenance",
+                    "retention_hint",
+                    "target",
+                    "scope_digest",
+                    "observed_at",
+                ],
+                "properties": {
+                    "schema": {"type": "string"},
+                    "handle": {"type": "string", "minLength": 1},
+                    "digest": {"type": "string", "minLength": 64},
+                    "kind": {"type": "string", "enum": ["observation"]},
+                    "size": {"type": "integer", "minimum": 0},
+                    "provenance": {"type": "string"},
+                    "retention_hint": {"type": "string"},
+                    "target": {"type": "string", "minLength": 1},
+                    "scope_digest": {"type": "string", "minLength": 64},
+                    "observed_at": {"type": "string", "minLength": 1},
+                    "target_fingerprint": {"type": "string"},
+                    "target_epoch": {"type": "integer", "minimum": 0},
+                },
+                "additionalProperties": False,
+            },
             "observation_receipt": {
                 "type": "object",
-                "required": ["receipt_id", "status", "source", "scope"],
+                "required": ["receipt_id", "status", "observation_ref", "scope"],
+                "deprecated": True,
                 "additionalProperties": True,
             },
-            "response": {"type": "object", "additionalProperties": True},
+            "gate_id": {"type": "string", "minLength": 1},
+            "gate_version": {"type": "integer", "minimum": 1},
+            "schema_digest": {"type": "string", "minLength": 64},
+            "submission_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "response": {
+                "type": "object",
+                "required": ["status", "summary", "payload"],
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["completed", "failed", "cancelled"],
+                    },
+                    "summary": {"type": "string", "minLength": 1},
+                    "payload": {"type": "object", "additionalProperties": True},
+                },
+                "additionalProperties": False,
+            },
             "command": {
                 "type": "string",
                 "enum": ["continue", "reconcile", "cancel"],

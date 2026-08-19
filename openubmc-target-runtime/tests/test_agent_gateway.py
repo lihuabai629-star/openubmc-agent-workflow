@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1]
@@ -12,15 +15,25 @@ sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
     AgentGateway,
+    AgentGatewayError,
+    CommandConflict,
+    EvidenceUnavailable,
+    GateConflict,
+    InMemoryRuntimeRepository,
     OBSERVATION_MAX_BYTES,
+    RevisionConflict,
+    ReferenceViolation,
+    STDIO_FRAME_MAX_BYTES,
     TOOLS_LIST_MAX_BYTES,
     TURN_MAX_BYTES,
     JsonRpcMcpEndpoint,
     FilesystemBlobRepository,
+    RunTurn,
     RuntimeMcpService,
     SQLiteRuntimeRepository,
     ScopeContract,
     ScopeViolation,
+    StdioMcpServer,
 )
 
 
@@ -35,9 +48,66 @@ def encoded_size(value: object) -> int:
     )
 
 
+def gate_binding(turn: dict[str, object]) -> dict[str, object]:
+    gate = turn["gate"]
+    assert isinstance(gate, dict)
+    return {
+        "gate_id": gate["gate_id"],
+        "gate_version": gate["gate_version"],
+        "schema_digest": gate["schema_digest"],
+    }
+
+
+def artifact_ref(
+    path: Path,
+    *,
+    kind: str,
+    target: str,
+    run_id: str,
+    version: str = "",
+) -> dict[str, object]:
+    body = path.read_bytes()
+    reference: dict[str, object] = {
+        "handle": str(path),
+        "digest": "sha256:" + hashlib.sha256(body).hexdigest(),
+        "kind": kind,
+        "size": len(body),
+        "provenance": "test-build",
+        "retention_hint": "run-lifetime",
+        "target": target,
+        "run_id": run_id,
+    }
+    if version:
+        reference["version"] = version
+    return reference
+
+
 class FakeTask:
     def __init__(self, task_id: str) -> None:
         self.task_id = task_id
+
+
+class CommitThenConflictRepository(InMemoryRuntimeRepository):
+    """Simulate a competing writer winning immediately before our commit returns."""
+
+    def __init__(self, conflict_kind: str) -> None:
+        super().__init__()
+        self.conflict_kind = conflict_kind
+        self.conflicted = False
+
+    def commit(self, case_id, *, expected_revision, events):
+        pending = tuple(events)
+        projection = super().commit(
+            case_id,
+            expected_revision=expected_revision,
+            events=pending,
+        )
+        if not self.conflicted and any(
+            event.kind == self.conflict_kind for event in pending
+        ):
+            self.conflicted = True
+            raise RevisionConflict("simulated concurrent commit")
+        return projection
 
 
 class SemanticBackend:
@@ -181,6 +251,46 @@ class FailLivePatchSemanticBackend(SemanticBackend):
         raise OSError("live patch connection lost")
 
 
+class DeferredVerificationSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.verification_attempts = 0
+
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.verification_attempts += 1
+        if self.verification_attempts <= 2:
+            self.calls.append(("debug_collect", dict(arguments)))
+            raise OSError("verification transport is temporarily unavailable")
+        return super().debug_collect(task, arguments, context)
+
+
+class RunningUpgradeSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.upgrade_attempts = 0
+        self.upgrade_operation_ids: list[str] = []
+
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.upgrade_attempts += 1
+        self.upgrade_operation_ids.append(str(context.operation_id))
+        self.calls.append(("upgrade_run", dict(arguments)))
+        if self.upgrade_attempts == 1:
+            return {
+                "ok": True,
+                "status": "running",
+                "summary": "firmware upload accepted",
+                "target_epoch": 1,
+            }
+        return {
+            "ok": True,
+            "summary": "upgrade reattached and verified",
+            "target_epoch": 1,
+            "journal": {"stage": "verified", "action": "upgrade"},
+        }
+
+
 class AutoAssuranceSemanticBackend(SemanticBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -204,32 +314,33 @@ class AutoAssuranceSemanticBackend(SemanticBackend):
 
 
 class OversizedTurnRuntime:
-    def run_operation(self, operation, arguments, *, task_id, operation_id):
-        result = {
-            "status": "blocked",
-            "next_action": "next-" + "n" * 20_000,
-        }
-
-        class RuntimeResult(dict):
-            pass
-
-        runtime_result = RuntimeResult(result)
-        runtime_result.envelope = {
-                "case_id": "case-oversized-turn",
-                "status": "blocked",
-                "facts": [{"value": "f" * 20_000}],
-                "gaps": ["gap-" + "g" * 20_000],
-        }
-        return runtime_result
+    def execute(self, command, *, task_id, operation_id):
+        return RunTurn(
+            run_id="case-oversized-turn",
+            state="blocked",
+            gate={
+                "kind": "blocker",
+                "name": "oversized-blocker",
+                "message": "message-" + "m" * 20_000,
+            },
+            facts=({"value": "f" * 20_000},),
+            gaps=("gap-" + "g" * 20_000,),
+            next_action="next-" + "n" * 20_000,
+        )
 
 
 class AgentGatewayTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.artifact_directory = tempfile.TemporaryDirectory()
+        self.artifact_root = Path(self.artifact_directory.name)
         self.backend = SemanticBackend()
         self.service = RuntimeMcpService(self.backend)
 
     def tearDown(self) -> None:
-        self.service.close()
+        try:
+            self.service.close()
+        finally:
+            self.artifact_directory.cleanup()
 
     def test_default_interface_has_two_small_semantic_tools(self) -> None:
         definitions = self.service.tool_definitions()
@@ -428,20 +539,72 @@ class AgentGatewayTests(unittest.TestCase):
                 }
             )
 
-    def test_assured_observation_fails_closed_without_a_precise_adapter(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "scope-preserving"):
+    def test_agent_request_shape_budgets_apply_before_schema_validation(self) -> None:
+        nested: dict[str, object] = {}
+        cursor = nested
+        for _index in range(40):
+            child: dict[str, object] = {}
+            cursor["nested"] = child
+            cursor = child
+        with self.assertRaisesRegex(AgentGatewayError, "nesting"):
             self.service.call_exposed_tool(
-                "observe",
+                "execute",
                 {
+                    "kind": "start",
                     "target": "192.0.2.10",
-                    "selectors": [
-                        {"kind": "mdb", "queries": ["lsprop Object0"]}
-                    ],
-                    "assurance": "assured",
+                    "purpose": nested,
                 },
-                task_id="assured-without-adapter",
-                operation_id="assured-without-adapter-1",
+                task_id="shape-budget",
+                operation_id="shape-budget-depth",
             )
+
+        with self.assertRaisesRegex(AgentGatewayError, "1024-field"):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": "run-shape-budget",
+                    "response": {
+                        "status": "completed",
+                        "summary": "wide payload",
+                        "payload": {
+                            f"field_{index}": index for index in range(1025)
+                        },
+                    },
+                },
+                task_id="shape-budget",
+                operation_id="shape-budget-width",
+            )
+
+        with self.assertRaisesRegex(AgentGatewayError, "128 KiB"):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "purpose": "x" * (128 * 1024 + 1),
+                },
+                task_id="shape-budget",
+                operation_id="shape-budget-string",
+            )
+
+    def test_legacy_assurance_hint_uses_the_runtime_default_policy(self) -> None:
+        receipt = self.service.call_exposed_tool(
+            "observe",
+            {
+                "target": "192.0.2.10",
+                "selectors": [
+                    {"kind": "mdb", "queries": ["lsprop Object0"]}
+                ],
+                "assurance": "assured",
+            },
+            task_id="assured-without-adapter",
+            operation_id="assured-without-adapter-1",
+        )
+
+        self.assertEqual(receipt["status"], "complete")
+        self.assertNotIn("assurance", receipt)
+        self.assertIn("observation_ref", receipt)
 
     def test_auto_assurance_upgrades_and_reuses_the_fast_observation(self) -> None:
         backend = AutoAssuranceSemanticBackend()
@@ -463,8 +626,8 @@ class AgentGatewayTests(unittest.TestCase):
         finally:
             service.close()
 
-        self.assertEqual(receipt["assurance"], "assured")
         self.assertEqual(receipt["status"], "complete")
+        self.assertNotIn("assurance", receipt)
         self.assertEqual(backend.assurance_calls, [False, True])
         self.assertEqual(backend.mdb_collections, 1)
         with self.assertRaises(ScopeViolation):
@@ -513,6 +676,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "respond",
                 "run_id": first["run_id"],
+                **gate_binding(first),
                 "response": {
                     "status": "completed",
                     "summary": "source repair completed",
@@ -530,6 +694,21 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIsNotNone(final["outcome"])
         self.assertTrue(final["outcome_recorded"])
         self.assertLessEqual(encoded_size(final), TURN_MAX_BYTES)
+        self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
+        replayed = self.service.call_exposed_tool(
+            "execute",
+            {"kind": "resume", "run_id": first["run_id"]},
+            task_id="execute-task-replay",
+            operation_id="execute-3",
+        )
+        events = self.service.context_runtime.repository.events(first["run_id"])
+        self.assertEqual(replayed["outcome"], final["outcome"])
+        self.assertEqual(
+            [event["kind"] for event in events].count("RunOutcomeRecorded"), 1
+        )
+        self.assertEqual(
+            [event["kind"] for event in events].count("CloseoutRecorded"), 1
+        )
         self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
 
     def test_execute_turn_hard_limit_survives_oversized_blocker_details(self) -> None:
@@ -578,11 +757,722 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertEqual(first["state"], "waiting_response")
         self.assertEqual(first["gate"]["name"], "developer.change")
-        self.assertEqual(first["observation_receipt_id"], receipt["receipt_id"])
+        self.assertEqual(first["observation_ref"], receipt["observation_ref"])
         self.assertEqual(
             [name for name, _arguments in self.backend.calls],
             ["debug_collect"],
         )
+
+    def test_observation_ref_rejects_digest_tamper_and_target_mismatch(self) -> None:
+        receipt = self.service.call_exposed_tool(
+            "observe",
+            {
+                "target": "192.0.2.41",
+                "selectors": [
+                    {"id": "facts", "kind": "mdb", "queries": ["lsprop Object0"]}
+                ],
+            },
+            task_id="observation-ref-validation",
+            operation_id="observation-ref-observe",
+        )
+        tampered_ref = dict(receipt["observation_ref"])
+        tampered_ref["digest"] = "sha256:" + "0" * 64
+
+        with self.assertRaises(EvidenceUnavailable):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.41",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "observation_ref": tampered_ref,
+                },
+                task_id="observation-ref-validation",
+                operation_id="observation-ref-tampered",
+            )
+        self.assertIsNone(
+            self.service.context_runtime.repository.case_for_task(
+                "observation-ref-validation"
+            )
+        )
+
+        metadata_tampering = {
+            "scope_digest": "sha256:" + "1" * 64,
+            "observed_at": "2026-08-20T23:59:59Z",
+            "target_fingerprint": "wrong-target-fingerprint",
+            "target_epoch": 99,
+        }
+        for field, value in metadata_tampering.items():
+            with self.subTest(field=field):
+                changed = dict(receipt["observation_ref"])
+                changed[field] = value
+                task_id = f"observation-ref-{field}"
+                with self.assertRaises(EvidenceUnavailable):
+                    self.service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "start",
+                            "target": "192.0.2.41",
+                            "intent": "diagnose-and-fix",
+                            "delivery_strategy": "source-only",
+                            "observation_ref": changed,
+                        },
+                        task_id=task_id,
+                        operation_id=f"{task_id}-start",
+                    )
+                self.assertIsNone(
+                    self.service.context_runtime.repository.case_for_task(task_id)
+                )
+
+        with self.assertRaisesRegex(ValueError, "target does not match"):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.99",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "observation_ref": receipt["observation_ref"],
+                },
+                task_id="observation-ref-validation",
+                operation_id="observation-ref-wrong-target",
+            )
+        self.assertIsNone(
+            self.service.context_runtime.repository.case_for_task(
+                "observation-ref-validation"
+            )
+        )
+
+    def test_expired_observation_ref_is_rejected_before_a_run_is_opened(self) -> None:
+        receipt = self.service.call_exposed_tool(
+            "observe",
+            {
+                "target": "192.0.2.42",
+                "selectors": [
+                    {"id": "facts", "kind": "mdb", "queries": ["lsprop Object0"]}
+                ],
+            },
+            task_id="observation-expiry-observe",
+            operation_id="observation-expiry-observe-1",
+        )
+        observed_clock = self.service.context_runtime.clock()
+        self.service.context_runtime.clock = lambda: observed_clock + 16 * 60
+
+        with self.assertRaisesRegex(ValueError, "older than"):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.42",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "observation_ref": receipt["observation_ref"],
+                },
+                task_id="observation-expiry-run",
+                operation_id="observation-expiry-run-1",
+            )
+        self.assertIsNone(
+            self.service.context_runtime.repository.case_for_task(
+                "observation-expiry-run"
+            )
+        )
+
+    def test_gate_identity_and_submission_idempotency_survive_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "gate.sqlite3"
+            blobs = root / "gate-blobs"
+            first = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.43",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                    },
+                    task_id="gate-restart",
+                    operation_id="gate-restart-start",
+                )
+            finally:
+                first.close()
+
+            second = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                recovered = second.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": waiting["run_id"]},
+                    task_id="gate-restart-resumed",
+                    operation_id="gate-restart-resume",
+                )
+                for field in ("gate_id", "gate_version", "schema_digest"):
+                    self.assertEqual(recovered["gate"][field], waiting["gate"][field])
+
+                with self.assertRaises(GateConflict):
+                    second.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "respond",
+                            "run_id": waiting["run_id"],
+                            "gate_id": recovered["gate"]["gate_id"],
+                            "gate_version": recovered["gate"]["gate_version"] + 1,
+                            "schema_digest": recovered["gate"]["schema_digest"],
+                            "submission_id": "source-repair-1",
+                            "response": {
+                                "status": "completed",
+                                "summary": "source repair completed",
+                                "payload": {
+                                    "source_revision": "gate-restart",
+                                    "authored_files": ["src/fix.lua"],
+                                    "verification_plan": ["run regression tests"],
+                                },
+                            },
+                        },
+                        task_id="gate-restart-resumed",
+                        operation_id="gate-restart-stale",
+                    )
+
+                response = {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    "gate_id": recovered["gate"]["gate_id"],
+                    "gate_version": recovered["gate"]["gate_version"],
+                    "schema_digest": recovered["gate"]["schema_digest"],
+                    "submission_id": "source-repair-1",
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "gate-restart",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["run regression tests"],
+                        },
+                    },
+                }
+                final = second.call_exposed_tool(
+                    "execute",
+                    response,
+                    task_id="gate-restart-resumed",
+                    operation_id="gate-restart-submit",
+                )
+                duplicate = second.call_exposed_tool(
+                    "execute",
+                    response,
+                    task_id="gate-restart-resumed",
+                    operation_id="gate-restart-duplicate",
+                )
+                wrong_gate = json.loads(json.dumps(response))
+                wrong_gate["gate_id"] = "gate-wrong-replay"
+                with self.assertRaises(GateConflict):
+                    second.call_exposed_tool(
+                        "execute",
+                        wrong_gate,
+                        task_id="gate-restart-resumed",
+                        operation_id="gate-restart-wrong-gate",
+                    )
+                conflicting = json.loads(json.dumps(response))
+                conflicting["response"]["summary"] = "different source result"
+                with self.assertRaises(CommandConflict):
+                    second.call_exposed_tool(
+                        "execute",
+                        conflicting,
+                        task_id="gate-restart-resumed",
+                        operation_id="gate-restart-conflict",
+                    )
+                projection = second.context_runtime.read_case(waiting["run_id"])
+            finally:
+                second.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(duplicate["state"], "completed")
+        self.assertEqual(final["outcome"], duplicate["outcome"])
+        self.assertEqual(
+            len(
+                [
+                    record
+                    for record in projection["phase_records"]
+                    if record.get("submission_id") == "source-repair-1"
+                ]
+            ),
+            1,
+        )
+
+    def test_gate_submission_reattaches_after_a_concurrent_commit(self) -> None:
+        repository = CommitThenConflictRepository("RunGateSubmitted")
+        service = RuntimeMcpService(
+            SemanticBackend(),
+            context_repository=repository,
+        )
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.47",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="gate-concurrent-commit",
+                operation_id="gate-concurrent-start",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "submission_id": "gate-concurrent-submission",
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "concurrent-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["run tests"],
+                        },
+                    },
+                },
+                task_id="gate-concurrent-commit",
+                operation_id="gate-concurrent-response",
+            )
+        finally:
+            service.close()
+
+        self.assertTrue(repository.conflicted)
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(
+            sum(
+                event["kind"] == "RunGateSubmitted"
+                for event in repository.events(waiting["run_id"])
+            ),
+            1,
+        )
+
+    def test_gate_open_reattaches_after_a_concurrent_commit(self) -> None:
+        repository = CommitThenConflictRepository("RunGateOpened")
+        service = RuntimeMcpService(
+            SemanticBackend(),
+            context_repository=repository,
+        )
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.50",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="gate-open-concurrent-commit",
+                operation_id="gate-open-concurrent-start",
+            )
+            resumed = service.call_exposed_tool(
+                "execute",
+                {"kind": "resume", "run_id": waiting["run_id"]},
+                task_id="gate-open-concurrent-commit",
+                operation_id="gate-open-concurrent-resume",
+            )
+        finally:
+            service.close()
+
+        self.assertTrue(repository.conflicted)
+        self.assertEqual(waiting["state"], "waiting_response")
+        self.assertEqual(resumed["gate"], waiting["gate"])
+        self.assertEqual(
+            sum(
+                event["kind"] == "RunGateOpened"
+                for event in repository.events(waiting["run_id"])
+            ),
+            1,
+        )
+
+    def test_terminal_outcome_reattaches_after_a_concurrent_commit(self) -> None:
+        repository = CommitThenConflictRepository("RunOutcomeRecorded")
+        service = RuntimeMcpService(
+            SemanticBackend(),
+            context_repository=repository,
+        )
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.48",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="outcome-concurrent-commit",
+                operation_id="outcome-concurrent-start",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "submission_id": "outcome-concurrent-submission",
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "concurrent-outcome-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["run tests"],
+                        },
+                    },
+                },
+                task_id="outcome-concurrent-commit",
+                operation_id="outcome-concurrent-response",
+            )
+        finally:
+            service.close()
+
+        self.assertTrue(repository.conflicted)
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(
+            sum(
+                event["kind"] == "RunOutcomeRecorded"
+                for event in repository.events(waiting["run_id"])
+            ),
+            1,
+        )
+
+    def test_gate_submission_requires_the_complete_persisted_binding(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.45",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="gate-binding",
+            operation_id="gate-binding-start",
+        )
+        response = {
+            "kind": "respond",
+            "run_id": waiting["run_id"],
+            **gate_binding(waiting),
+            "response": {
+                "status": "completed",
+                "summary": "source repair completed",
+                "payload": {
+                    "source_revision": "gate-binding",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["run regression tests"],
+                },
+            },
+        }
+
+        for field in ("gate_id", "gate_version", "schema_digest"):
+            with self.subTest(missing=field):
+                incomplete = dict(response)
+                incomplete.pop(field)
+                with self.assertRaises(AgentGatewayError):
+                    self.service.call_exposed_tool(
+                        "execute",
+                        incomplete,
+                        task_id="gate-binding",
+                        operation_id=f"gate-binding-missing-{field}",
+                    )
+
+        wrong_digest = dict(response)
+        wrong_digest["schema_digest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(GateConflict, "schema digest"):
+            self.service.call_exposed_tool(
+                "execute",
+                wrong_digest,
+                task_id="gate-binding",
+                operation_id="gate-binding-wrong-digest",
+            )
+
+        undeclared = json.loads(json.dumps(response))
+        undeclared["response"]["payload"]["unexpected"] = True
+        with self.assertRaisesRegex(GateConflict, "undeclared fields"):
+            self.service.call_exposed_tool(
+                "execute",
+                undeclared,
+                task_id="gate-binding",
+                operation_id="gate-binding-undeclared",
+            )
+
+    def test_persisted_gate_schema_survives_restart_and_code_schema_change(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "gate-schema.sqlite3"
+            blobs = root / "gate-schema-blobs"
+            first = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.46",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                    },
+                    task_id="gate-schema-restart",
+                    operation_id="gate-schema-start",
+                )
+            finally:
+                first.close()
+
+            second = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                with patch(
+                    "openubmc_target_runtime.run_engine.gate_input_schema",
+                    side_effect=AssertionError(
+                        "persisted Gate must not be rebuilt from current code"
+                    ),
+                ):
+                    recovered = second.call_exposed_tool(
+                        "execute",
+                        {"kind": "resume", "run_id": waiting["run_id"]},
+                        task_id="gate-schema-restart-resume",
+                        operation_id="gate-schema-resume",
+                    )
+            finally:
+                second.close()
+
+        self.assertEqual(recovered["gate"], waiting["gate"])
+
+    def test_artifact_ref_is_bound_to_content_kind_target_run_and_provenance(self) -> None:
+        developer_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.44",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+            },
+            task_id="artifact-ref-validation",
+            operation_id="artifact-ref-start",
+        )
+        build_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": developer_gate["run_id"],
+                **gate_binding(developer_gate),
+                "submission_id": "artifact-source-1",
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "artifact-ref-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["build and verify"],
+                    },
+                },
+            },
+            task_id="artifact-ref-validation",
+            operation_id="artifact-ref-source",
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            artifact = Path(raw) / "product.hpm"
+            artifact.write_bytes(b"verified firmware bytes")
+            valid = artifact_ref(
+                artifact,
+                kind="openubmc-hpm",
+                target="192.0.2.44",
+                run_id=developer_gate["run_id"],
+                version="2.0.0",
+            )
+            tampered = dict(valid)
+            tampered["digest"] = "sha256:" + "0" * 64
+            missing = dict(valid)
+            missing["handle"] = str(Path(raw) / "missing.hpm")
+            wrong_kind = dict(valid)
+            wrong_kind["kind"] = "openubmc-live-patch"
+            wrong_target = dict(valid)
+            wrong_target["target"] = "192.0.2.99"
+            wrong_run = dict(valid)
+            wrong_run["run_id"] = "run-other"
+            wrong_size = dict(valid)
+            wrong_size["size"] = int(valid["size"]) + 1
+            missing_target = dict(valid)
+            missing_target.pop("target")
+            missing_run = dict(valid)
+            missing_run.pop("run_id")
+            missing_provenance = dict(valid)
+            missing_provenance["provenance"] = ""
+
+            invalid_cases = (
+                (
+                    "missing-content",
+                    missing,
+                    ReferenceViolation,
+                    "content is unavailable",
+                ),
+                ("wrong-kind", wrong_kind, GateConflict, "allowed value"),
+                (
+                    "wrong-target",
+                    wrong_target,
+                    ReferenceViolation,
+                    "target does not match",
+                ),
+                (
+                    "wrong-run",
+                    wrong_run,
+                    ReferenceViolation,
+                    "run_id does not match",
+                ),
+                (
+                    "wrong-size",
+                    wrong_size,
+                    ReferenceViolation,
+                    "size does not match stored content",
+                ),
+                (
+                    "tampered-content",
+                    tampered,
+                    ReferenceViolation,
+                    "digest does not match stored content",
+                ),
+                ("missing-target", missing_target, GateConflict, "required fields"),
+                ("missing-run", missing_run, GateConflict, "required fields"),
+                (
+                    "missing-provenance",
+                    missing_provenance,
+                    GateConflict,
+                    "must not be empty",
+                ),
+            )
+            for name, reference, error, message in invalid_cases:
+                with self.subTest(name=name), self.assertRaisesRegex(error, message):
+                    self.service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "respond",
+                            "run_id": developer_gate["run_id"],
+                            **gate_binding(build_gate),
+                            "submission_id": f"artifact-build-{name}",
+                            "response": {
+                                "status": "completed",
+                                "summary": "artifact built",
+                                "payload": {
+                                    "source_revision": "artifact-ref-source",
+                                    "artifact_ref": reference,
+                                },
+                            },
+                        },
+                        task_id="artifact-ref-validation",
+                        operation_id=f"artifact-ref-{name}",
+                    )
+
+            final = self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(build_gate),
+                    "submission_id": "artifact-build-valid",
+                    "response": {
+                        "status": "completed",
+                        "summary": "artifact built",
+                        "payload": {
+                            "source_revision": "artifact-ref-source",
+                            "artifact_ref": valid,
+                        },
+                    },
+                },
+                task_id="artifact-ref-validation",
+                operation_id="artifact-ref-valid",
+            )
+
+        self.assertEqual(final["state"], "completed")
+
+    def test_file_uri_artifact_uses_the_verified_decoded_path(self) -> None:
+        developer_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.49",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+            },
+            task_id="artifact-file-uri",
+            operation_id="artifact-file-uri-start",
+        )
+        build_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": developer_gate["run_id"],
+                **gate_binding(developer_gate),
+                "submission_id": "artifact-file-uri-source",
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "artifact-file-uri-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["build and verify"],
+                    },
+                },
+            },
+            task_id="artifact-file-uri",
+            operation_id="artifact-file-uri-source",
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            artifact = Path(raw) / "product image.hpm"
+            artifact.write_bytes(b"verified firmware bytes")
+            reference = artifact_ref(
+                artifact,
+                kind="openubmc-hpm",
+                target="192.0.2.49",
+                run_id=developer_gate["run_id"],
+                version="2.0.0",
+            )
+            reference["handle"] = artifact.as_uri()
+            final = self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(build_gate),
+                    "submission_id": "artifact-file-uri-build",
+                    "response": {
+                        "status": "completed",
+                        "summary": "artifact built",
+                        "payload": {
+                            "source_revision": "artifact-file-uri-source",
+                            "artifact_ref": reference,
+                        },
+                    },
+                },
+                task_id="artifact-file-uri",
+                operation_id="artifact-file-uri-build",
+            )
+
+            upgrade_arguments = next(
+                arguments
+                for name, arguments in reversed(self.backend.calls)
+                if name == "upgrade_run"
+            )
+            self.assertEqual(upgrade_arguments["artifact_path"], str(artifact))
+
+        self.assertEqual(final["state"], "completed")
 
     def test_observation_receipt_reconstructs_after_process_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -651,6 +1541,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "respond",
                 "run_id": first["run_id"],
+                **gate_binding(first),
                 "response": {
                     "status": "failed",
                     "summary": "source repair validation failed",
@@ -684,6 +1575,7 @@ class AgentGatewayTests(unittest.TestCase):
                 "kind": "control",
                 "run_id": first["run_id"],
                 "command": "cancel",
+                **gate_binding(first),
             },
             task_id="cancel-run",
             operation_id="cancel-run-control",
@@ -709,12 +1601,15 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(first["state"], "waiting_response")
         self.assertEqual(first["gate"]["name"], "developer.change")
+        patch = self.artifact_root / "execute-live-patch-fix.lua"
+        patch.write_bytes(b"return 'fixed'\n")
 
         final = self.service.call_exposed_tool(
             "execute",
             {
                 "kind": "respond",
                 "run_id": first["run_id"],
+                **gate_binding(first),
                 "response": {
                     "status": "completed",
                     "summary": "source repair is ready for live patching",
@@ -722,7 +1617,12 @@ class AgentGatewayTests(unittest.TestCase):
                         "source_revision": "live-patch-source",
                         "authored_files": ["src/fix.lua"],
                         "verification_plan": ["fresh target verification"],
-                        "artifact_path": "/tmp/fix.lua",
+                        "artifact_ref": artifact_ref(
+                            patch,
+                            kind="openubmc-live-patch",
+                            target="192.0.2.21",
+                            run_id=first["run_id"],
+                        ),
                         "remote_path": "/opt/bmc/apps/fix.lua",
                         "restart_scope": "skynet",
                     },
@@ -762,6 +1662,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "respond",
                 "run_id": first["run_id"],
+                **gate_binding(first),
                 "response": {
                     "status": "completed",
                     "summary": "source repair completed",
@@ -777,20 +1678,27 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(build_gate["state"], "waiting_response")
         self.assertEqual(build_gate["gate"]["name"], "build.artifact")
+        product = self.artifact_root / "execute-build-upgrade-product.hpm"
+        product.write_bytes(b"firmware-1.2.3")
 
         final = self.service.call_exposed_tool(
             "execute",
             {
                 "kind": "respond",
                 "run_id": first["run_id"],
+                **gate_binding(build_gate),
                 "response": {
                     "status": "completed",
                     "summary": "firmware artifact completed",
                     "payload": {
                         "source_revision": "upgrade-source",
-                        "artifact_path": "/tmp/product.hpm",
-                        "artifact_sha256": "a" * 64,
-                        "product_version": "1.2.3",
+                        "artifact_ref": artifact_ref(
+                            product,
+                            kind="openubmc-hpm",
+                            target="192.0.2.22",
+                            run_id=first["run_id"],
+                            version="1.2.3",
+                        ),
                     },
                 },
             },
@@ -808,7 +1716,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
 
-    def test_execute_reconcile_resumes_the_unknown_mutation_journal(self) -> None:
+    def test_execute_automatically_reconciles_an_unknown_mutation(self) -> None:
         backend = FailOnceUpgradeSemanticBackend()
         service = RuntimeMcpService(backend)
         try:
@@ -829,6 +1737,7 @@ class AgentGatewayTests(unittest.TestCase):
                 {
                     "kind": "respond",
                     "run_id": first["run_id"],
+                    **gate_binding(first),
                     "response": {
                         "status": "completed",
                         "summary": "source repair completed",
@@ -843,43 +1752,202 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="reconcile-developer",
             )
             self.assertEqual(build_gate["gate"]["name"], "build.artifact")
-            blocked = service.call_exposed_tool(
+            product = self.artifact_root / "execute-reconcile-product.hpm"
+            product.write_bytes(b"firmware-2.0.0")
+            final = service.call_exposed_tool(
                 "execute",
                 {
                     "kind": "respond",
                     "run_id": first["run_id"],
+                    **gate_binding(build_gate),
                     "response": {
                         "status": "completed",
                         "summary": "firmware artifact completed",
                         "payload": {
                             "source_revision": "reconcile-source",
-                            "artifact_path": "/tmp/product.hpm",
-                            "artifact_sha256": "b" * 64,
-                            "product_version": "2.0.0",
+                            "artifact_ref": artifact_ref(
+                                product,
+                                kind="openubmc-hpm",
+                                target="192.0.2.30",
+                                run_id=first["run_id"],
+                                version="2.0.0",
+                            ),
                         },
                     },
                 },
                 task_id="execute-reconcile",
                 operation_id="reconcile-build",
             )
-            self.assertEqual(blocked["state"], "mutation_outcome_unknown")
+        finally:
+            service.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertIsNone(final["incident"])
+        self.assertTrue(final["outcome_recorded"])
+        self.assertEqual(backend.upgrade_attempts, 2)
+
+    def test_running_effect_reattaches_with_the_same_operation_identity(self) -> None:
+        backend = RunningUpgradeSemanticBackend()
+        service = RuntimeMcpService(backend)
+        product = self.artifact_root / "running-upgrade-product.hpm"
+        product.write_bytes(b"running-upgrade-firmware")
+        try:
+            developer_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.31",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                },
+                task_id="running-upgrade",
+                operation_id="running-upgrade-start",
+            )
+            build_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(developer_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "running-upgrade-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["build and verify"],
+                        },
+                    },
+                },
+                task_id="running-upgrade",
+                operation_id="running-upgrade-source",
+            )
+            running = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(build_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "firmware artifact completed",
+                        "payload": {
+                            "source_revision": "running-upgrade-source",
+                            "artifact_ref": artifact_ref(
+                                product,
+                                kind="openubmc-hpm",
+                                target="192.0.2.31",
+                                run_id=developer_gate["run_id"],
+                                version="3.0.0",
+                            ),
+                        },
+                    },
+                },
+                task_id="running-upgrade",
+                operation_id="running-upgrade-build",
+            )
+            self.assertEqual(running["state"], "running")
+            self.assertIn("reattach", running["next"])
+            running_projection = service.context_runtime.read_case(
+                developer_gate["run_id"]
+            )
 
             final = service.call_exposed_tool(
                 "execute",
-                {
-                    "kind": "control",
-                    "run_id": first["run_id"],
-                    "command": "reconcile",
-                },
-                task_id="execute-reconcile",
-                operation_id="reconcile-control",
+                {"kind": "resume", "run_id": developer_gate["run_id"]},
+                task_id="running-upgrade-resume",
+                operation_id="running-upgrade-resume-1",
             )
         finally:
             service.close()
 
         self.assertEqual(final["state"], "completed")
-        self.assertTrue(final["outcome_recorded"])
         self.assertEqual(backend.upgrade_attempts, 2)
+        self.assertEqual(len(backend.upgrade_operation_ids), 2)
+        self.assertEqual(
+            len(set(backend.upgrade_operation_ids)),
+            1,
+            (backend.upgrade_operation_ids, running_projection["operations"]),
+        )
+
+    def test_verification_failure_is_deferred_and_resumed_without_reapplying(self) -> None:
+        backend = DeferredVerificationSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "deferred-verification-fix.lua"
+        patch_file.write_bytes(b"return 'verified-later'\n")
+        try:
+            developer_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.32",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="deferred-verification",
+                operation_id="deferred-verification-start",
+            )
+            running = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(developer_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair ready",
+                        "payload": {
+                            "source_revision": "deferred-verification-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.32",
+                                run_id=developer_gate["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
+                    },
+                },
+                task_id="deferred-verification",
+                operation_id="deferred-verification-source",
+            )
+            projection = service.context_runtime.read_case(developer_gate["run_id"])
+            deferred_events = [
+                event
+                for event in service.context_runtime.repository.events(
+                    developer_gate["run_id"]
+                )
+                if event["kind"] == "RunVerificationDeferred"
+            ]
+            self.assertEqual(running["state"], "running")
+            self.assertIn("retry fresh target verification", running["next"])
+            self.assertEqual(len(deferred_events), 1)
+            self.assertTrue(
+                any(
+                    state.get("name") == "debug_collect"
+                    and state.get("status") == "pending_retry"
+                    for state in projection["workflow_step_states"].values()
+                )
+            )
+
+            final = service.call_exposed_tool(
+                "execute",
+                {"kind": "resume", "run_id": developer_gate["run_id"]},
+                task_id="deferred-verification-resume",
+                operation_id="deferred-verification-resume-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(backend.verification_attempts, 3)
+        self.assertEqual(
+            [name for name, _arguments in backend.calls].count("live_patch_run"),
+            1,
+        )
 
     def test_execute_workflows_resume_after_process_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -917,6 +1985,7 @@ class AgentGatewayTests(unittest.TestCase):
                     {
                         "kind": "respond",
                         "run_id": source_gate["run_id"],
+                        **gate_binding(source_gate),
                         "response": {
                             "status": "completed",
                             "summary": "source repair completed after restart",
@@ -960,12 +2029,15 @@ class AgentGatewayTests(unittest.TestCase):
                 context_repository=SQLiteRuntimeRepository(live_database),
                 blob_repository=FilesystemBlobRepository(live_blobs),
             )
+            live_patch = root / "restart-live-fix.lua"
+            live_patch.write_bytes(b"return 'restart-fixed'\n")
             try:
                 live_final = live_second.call_exposed_tool(
                     "execute",
                     {
                         "kind": "respond",
                         "run_id": live_gate["run_id"],
+                        **gate_binding(live_gate),
                         "response": {
                             "status": "completed",
                             "summary": "source repair restored after restart",
@@ -973,7 +2045,12 @@ class AgentGatewayTests(unittest.TestCase):
                                 "source_revision": "restart-live",
                                 "authored_files": ["src/fix.lua"],
                                 "verification_plan": ["fresh verification"],
-                                "artifact_path": "/tmp/fix.lua",
+                                "artifact_ref": artifact_ref(
+                                    live_patch,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.52",
+                                    run_id=live_gate["run_id"],
+                                ),
                                 "remote_path": "/opt/bmc/apps/fix.lua",
                                 "restart_scope": "skynet",
                             },
@@ -1010,6 +2087,7 @@ class AgentGatewayTests(unittest.TestCase):
                     {
                         "kind": "respond",
                         "run_id": build_developer["run_id"],
+                        **gate_binding(build_developer),
                         "response": {
                             "status": "completed",
                             "summary": "source repair completed",
@@ -1030,20 +2108,27 @@ class AgentGatewayTests(unittest.TestCase):
                 context_repository=SQLiteRuntimeRepository(build_database),
                 blob_repository=FilesystemBlobRepository(build_blobs),
             )
+            build_product = root / "restart-build-product.hpm"
+            build_product.write_bytes(b"restart-firmware-2.0.0")
             try:
                 build_final = build_second.call_exposed_tool(
                     "execute",
                     {
                         "kind": "respond",
                         "run_id": build_gate["run_id"],
+                        **gate_binding(build_gate),
                         "response": {
                             "status": "completed",
                             "summary": "artifact restored after restart",
                             "payload": {
                                 "source_revision": "restart-build",
-                                "artifact_path": "/tmp/product.hpm",
-                                "artifact_sha256": "c" * 64,
-                                "product_version": "2.0.0",
+                                "artifact_ref": artifact_ref(
+                                    build_product,
+                                    kind="openubmc-hpm",
+                                    target="192.0.2.53",
+                                    run_id=build_gate["run_id"],
+                                    version="2.0.0",
+                                ),
                             },
                         },
                     },
@@ -1076,11 +2161,14 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="restart-live-failure",
                     operation_id="restart-live-failure-start",
                 )
+                patch = root / "restart-live-failure-fix.lua"
+                patch.write_bytes(b"return 'unknown-outcome'\n")
                 blocked = first.call_exposed_tool(
                     "execute",
                     {
                         "kind": "respond",
                         "run_id": gate["run_id"],
+                        **gate_binding(gate),
                         "response": {
                             "status": "completed",
                             "summary": "source repair ready",
@@ -1088,7 +2176,12 @@ class AgentGatewayTests(unittest.TestCase):
                                 "source_revision": "restart-live-failure",
                                 "authored_files": ["src/fix.lua"],
                                 "verification_plan": ["fresh verification"],
-                                "artifact_path": "/tmp/fix.lua",
+                                "artifact_ref": artifact_ref(
+                                    patch,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.54",
+                                    run_id=gate["run_id"],
+                                ),
                                 "remote_path": "/opt/bmc/apps/fix.lua",
                                 "restart_scope": "skynet",
                             },
@@ -1099,7 +2192,10 @@ class AgentGatewayTests(unittest.TestCase):
                 )
             finally:
                 first.close()
-            self.assertEqual(blocked["state"], "mutation_outcome_unknown")
+            self.assertEqual(blocked["state"], "incident")
+            self.assertEqual(
+                blocked["incident"]["code"], "mutation_outcome_unknown"
+            )
 
             second = RuntimeMcpService(
                 SemanticBackend(),
@@ -1174,6 +2270,80 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIn("lsprop Object0", text)
         self.assertIn("Value", text)
         self.assertLessEqual(len(text.encode("utf-8")), OBSERVATION_MAX_BYTES)
+
+    def test_stdio_rejects_an_oversized_frame_and_processes_the_next_request(self) -> None:
+        service = RuntimeMcpService(SemanticBackend())
+        endpoint = JsonRpcMcpEndpoint(service, session_task_id="stdio-session")
+        server = StdioMcpServer(endpoint)
+        oversized = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "padding": "x" * STDIO_FRAME_MAX_BYTES}
+        )
+        valid = json.dumps(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+        )
+        output = io.StringIO()
+
+        server.serve(io.StringIO(oversized + "\n" + valid + "\n"), output)
+
+        responses = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(responses[0]["error"]["code"], -32600)
+        self.assertEqual(responses[1]["id"], 2)
+        self.assertEqual(
+            [tool["name"] for tool in responses[1]["result"]["tools"]],
+            ["observe", "execute"],
+        )
+
+    def test_stdio_reader_never_uses_an_unbounded_readline(self) -> None:
+        class BoundedReader(io.StringIO):
+            def __init__(self, value: str) -> None:
+                super().__init__(value)
+                self.readline_limits: list[int] = []
+
+            def readline(self, size: int = -1) -> str:
+                self.readline_limits.append(size)
+                if size < 0:
+                    raise AssertionError("stdio reader attempted an unbounded readline")
+                return super().readline(size)
+
+        service = RuntimeMcpService(SemanticBackend())
+        try:
+            endpoint = JsonRpcMcpEndpoint(
+                service, session_task_id="stdio-bounded-session"
+            )
+            server = StdioMcpServer(endpoint, max_frame_bytes=2048)
+            reader = BoundedReader(
+                json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+                )
+                + "\n"
+            )
+            output = io.StringIO()
+
+            server.serve(reader, output)
+        finally:
+            service.close()
+
+        self.assertTrue(reader.readline_limits)
+        self.assertEqual(set(reader.readline_limits), {2049})
+        self.assertEqual(json.loads(output.getvalue())["id"], 1)
+
+    def test_stdio_recursion_error_does_not_stop_the_next_request(self) -> None:
+        service = RuntimeMcpService(SemanticBackend())
+        endpoint = JsonRpcMcpEndpoint(service, session_task_id="stdio-depth-session")
+        server = StdioMcpServer(endpoint)
+        pathological = '{"a":' * 10_000 + "0" + "}" * 10_000
+        valid = json.dumps(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+        )
+        output = io.StringIO()
+
+        server.serve(io.StringIO(pathological + "\n" + valid + "\n"), output)
+
+        responses = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(responses[0]["error"]["code"], -32700)
+        self.assertEqual(responses[1]["id"], 2)
 
     def test_legacy_freshness_profile_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "profile"):

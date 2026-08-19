@@ -28,13 +28,32 @@ from .agent_gateway import (
     AgentGateway,
     OBSERVATION_MAX_BYTES,
     ResultProjector,
-    ScopeContract,
     agent_operation_descriptors,
+)
+from .run_engine import (
+    ObservationEngine,
+    RunEngine,
+    SemanticRuntime,
+)
+from .semantic_runtime import (
+    AGENT_REQUEST_MAX_BYTES,
+    AssuranceUnavailable,
+    CancelRun,
+    CommandConflict,
+    Gate,
+    GateConflict,
+    ObservationQuery,
+    RunTurn,
+    StartRun,
+    SubmitGate,
+    bounded_request,
 )
 from .capability import (
     CallableDomainAdapter,
     CapabilityDescriptor,
     CapabilityRegistry,
+    DomainExecutor,
+    EffectClass,
     RuntimeSDK,
     RuntimeSDKContext,
 )
@@ -44,6 +63,8 @@ from .context_runtime import (
     CONTEXT_WORKFLOW_STEP_ARGUMENT,
     ContextRuntime,
     ContextToolResult,
+    OperationAlreadyInProgress,
+    RevisionConflict,
     RuntimeRepository,
 )
 from .replay import CaseReplayService
@@ -80,6 +101,7 @@ from .workflow import DEFAULT_PHASE_REGISTRY
 
 TaskT = TypeVar("TaskT")
 MCP_PROTOCOL_VERSION = "2025-06-18"
+STDIO_FRAME_MAX_BYTES = AGENT_REQUEST_MAX_BYTES
 
 
 class DebugMcpBackend(Protocol[TaskT]):
@@ -2019,54 +2041,26 @@ class OrchestratedMcpBackend:
 
         return call
 
-class _RuntimeGatewayAdapter:
-    """Keep Agent semantics independent from Runtime transport mechanics."""
+class _RuntimeSemanticAdapter:
+    """Adapt ContextRuntime storage and domain calls to RunEngine primitives."""
 
     def __init__(self, service: "RuntimeMcpService") -> None:
         self.service = service
 
-    def observe_operation(
+    def observe_once(
         self,
-        operation: str,
-        arguments: Mapping[str, object],
+        query: ObservationQuery,
         *,
+        assured: bool,
         task_id: str,
         operation_id: str,
+        prior: Mapping[str, object] | None = None,
     ) -> Mapping[str, object]:
-        return self.service._observe_domain_direct(
-            operation,
-            arguments,
-            task_id=task_id,
-            operation_id=operation_id,
-        )
-
-    def assure_observation(
-        self,
-        prior: Mapping[str, object],
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]:
-        reusable = dict(arguments)
-        reusable["_agent_prior_observation"] = dict(prior)
+        arguments = query.runtime_arguments(assured=assured)
+        if isinstance(prior, Mapping):
+            arguments["_agent_prior_observation"] = dict(prior)
         return self.service._observe_domain_direct(
             "debug_collect",
-            reusable,
-            task_id=task_id,
-            operation_id=operation_id,
-        )
-
-    def run_operation(
-        self,
-        operation: str,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]:
-        return self.service.call_tool(
-            operation,
             arguments,
             task_id=task_id,
             operation_id=operation_id,
@@ -2085,61 +2079,219 @@ class _RuntimeGatewayAdapter:
         self,
         raw: Mapping[str, object],
         *,
-        scope: Mapping[str, object],
+        query: ObservationQuery,
         assurance: str,
     ) -> Mapping[str, object]:
         return self.service.context_runtime.persist_observation(
             raw,
-            scope=scope,
+            scope=query.to_public_dict(),
             assurance=assurance,
         )
 
     def start_run(
         self,
-        arguments: Mapping[str, object],
-        observation_receipt: Mapping[str, object],
+        command: StartRun,
         *,
         task_id: str,
         operation_id: str,
     ) -> Mapping[str, object]:
-        if observation_receipt.get("status") != "complete":
-            raise ValueError("only a complete ObservationReceipt can seed a Run")
-        source = _mapping_or_empty(observation_receipt.get("source"))
-        stored = self.service.context_runtime.load_observation(source)
-        stored_scope = _mapping_or_empty(stored.get("scope"))
-        scope = ScopeContract.from_query(stored_scope)
-        if scope.target != str(arguments.get("ip", "")).strip():
-            raise ValueError("ObservationReceipt target does not match the Run target")
-        raw = _mapping_or_empty(stored.get("raw"))
-        expected = ResultProjector().observation(
-            raw,
-            scope,
-            assurance=str(stored.get("assurance", "fast")),
-            source=source,
-        )
-        if expected != dict(observation_receipt):
-            raise ValueError("ObservationReceipt failed source reconstruction")
-        descriptor = self.service.catalog.require("debug_run")
-        seeded = self.service.context_runtime.invoke_domain(
-            descriptor,
+        arguments: dict[str, object] = {
+            "ip": command.target,
+            "intent": command.intent,
+            "final_purpose": command.purpose,
+            "include_closeout_bundle": False,
+        }
+        if command.delivery_strategy:
+            arguments["delivery_strategy"] = command.delivery_strategy
+        seeded_raw: Mapping[str, object] | None = None
+        if command.observation_ref is not None:
+            source = command.observation_ref.to_source_dict()
+            stored = self.service.context_runtime.load_observation(source)
+            fresh_until = stored.get("fresh_until", 0)
+            if (
+                isinstance(fresh_until, bool)
+                or not isinstance(fresh_until, (int, float))
+                or float(fresh_until) < self.service.context_runtime.clock()
+            ):
+                raise ValueError(
+                    "ObservationRef is older than the Runtime reuse window"
+                )
+            stored_scope = _mapping_or_empty(stored.get("scope"))
+            query = ObservationQuery.from_query(stored_scope)
+            if query.target != command.target:
+                raise ValueError("ObservationRef target does not match the Run target")
+            if command.observation_ref.target != command.target:
+                raise ValueError("ObservationRef target metadata does not match the Run")
+            raw = _mapping_or_empty(stored.get("raw"))
+            expected = self.service.agent_projector.observation(
+                raw,
+                query,
+                assurance=str(stored.get("assurance", "fast")),
+                source=source,
+            )
+            if expected.get("status") != "complete":
+                raise ValueError("only a complete ObservationRef can seed a Run")
+            legacy_receipt = command.legacy_observation_receipt
+            if isinstance(legacy_receipt, Mapping):
+                comparable_expected = dict(expected)
+                comparable_legacy = dict(legacy_receipt)
+                for compatibility_field in ("assurance", "observation_ref"):
+                    if compatibility_field not in comparable_legacy:
+                        comparable_expected.pop(compatibility_field, None)
+                    if compatibility_field not in comparable_expected:
+                        comparable_legacy.pop(compatibility_field, None)
+                if comparable_expected != comparable_legacy:
+                    raise ValueError("ObservationReceipt failed source reconstruction")
+            seeded_raw = raw
+
+        projection = self.service.context_runtime.open_semantic_run(
             arguments,
             task_id=task_id,
-            operation_id=f"{operation_id}-observation",
-            executor=lambda: raw,
         )
-        run_id = str(seeded.envelope.get("case_id", ""))
-        if not run_id:
-            raise RuntimeError("observation-seeded Run did not open a Case")
-        return self.service.call_tool(
-            "workflow.next",
+        run_id = str(projection.get("case_id", ""))
+        if seeded_raw is not None:
+            prepared, derived_id = (
+                self.service.context_runtime.prepare_semantic_run_operation(
+                    projection,
+                    operation="debug_run",
+                    workflow_step_id=str(
+                        self.service.context_runtime.continuation_for(projection).get(
+                            "required_workflow_step_id", ""
+                        )
+                    ),
+                )
+            )
+            self.service.context_runtime.invoke_domain(
+                self.service.catalog.require("debug_run"),
+                prepared,
+                task_id=task_id,
+                operation_id=derived_id,
+                executor=lambda: seeded_raw,
+            )
+        return self.run_snapshot(run_id)
+
+    def persist_gate(
+        self,
+        run_id: str,
+        gate: Gate,
+        *,
+        workflow_cycle_id: str,
+        workflow_step_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        persisted = {
+            **gate.to_public_dict(),
+            "run_id": run_id,
+            "workflow_cycle_id": workflow_cycle_id,
+            "workflow_step_id": workflow_step_id,
+        }
+        self.service.context_runtime.persist_run_gate(
+            run_id,
+            persisted,
+            operation_id=operation_id,
+        )
+        return self.run_snapshot(run_id)
+
+    def record_gate_response(
+        self,
+        command: SubmitGate | CancelRun,
+        *,
+        gate: Gate,
+        response: Mapping[str, object],
+        submission_digest: str,
+        task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        snapshot = self.run_snapshot(command.run_id)
+        continuation = _mapping_or_empty(snapshot.get("continuation"))
+        handoff = _mapping_or_empty(continuation.get("handoff_arguments"))
+        contract = dict(_mapping_or_empty(handoff.get("phase_record_contract")))
+        if not contract:
+            raise GateConflict("Run is not waiting at a phase response Gate")
+        payload = _mapping_or_empty(response.get("payload"))
+        contract.update(payload)
+        contract.update(
             {
-                "case_id": run_id,
-                "max_steps": 64,
-                "include_closeout_bundle": False,
-            },
-            task_id=task_id,
-            operation_id=f"{operation_id}-next",
+                "status": str(response.get("status", "")),
+                "summary": str(response.get("summary", "")),
+                "gate_id": gate.gate_id,
+                "gate_version": gate.version,
+                "gate_schema_digest": gate.schema_digest,
+                "submission_id": command.submission_id,
+                "submission_digest": submission_digest,
+            }
         )
+        try:
+            self.service.context_runtime.record_gate_submission(
+                contract,
+                task_id=task_id,
+                operation_id=operation_id,
+            )
+        except RevisionConflict as exc:
+            snapshot = self.run_snapshot(command.run_id)
+            projection = _mapping_or_empty(snapshot.get("projection"))
+            submissions = projection.get("gate_submissions", [])
+            prior = (
+                next(
+                    (
+                        item
+                        for item in reversed(submissions)
+                        if isinstance(item, Mapping)
+                        and str(item.get("submission_id", ""))
+                        == command.submission_id
+                    ),
+                    None,
+                )
+                if isinstance(submissions, list)
+                else None
+            )
+            if not isinstance(prior, Mapping):
+                raise GateConflict(
+                    "Gate was submitted concurrently by a different submission"
+                ) from exc
+            if (
+                str(prior.get("gate_id", "")) != gate.gate_id
+                or int(prior.get("gate_version", 0)) != gate.version
+                or str(prior.get("schema_digest", "")).removeprefix("sha256:")
+                != gate.schema_digest
+            ):
+                raise GateConflict(
+                    "concurrent submission targets a different Gate binding"
+                ) from exc
+            if str(prior.get("submission_digest", "")) != submission_digest:
+                raise CommandConflict(
+                    "submission_id was concurrently used with different Gate input"
+                ) from exc
+            return snapshot
+        return self.run_snapshot(command.run_id)
+
+    def execute_step(
+        self,
+        run_id: str,
+        *,
+        operation: str,
+        workflow_step_id: str,
+        task_id: str,
+    ) -> Mapping[str, object]:
+        projection = self.service.context_runtime.read_case(run_id)
+        arguments, derived_id = (
+            self.service.context_runtime.prepare_semantic_run_operation(
+                projection,
+                operation=operation,
+                workflow_step_id=workflow_step_id,
+            )
+        )
+        try:
+            self.service.call_tool(
+                operation,
+                arguments,
+                task_id=task_id,
+                operation_id=derived_id,
+                _context_workflow_step=True,
+            )
+        except OperationAlreadyInProgress:
+            pass
+        return self.run_snapshot(run_id)
 
     def reconcile_run(
         self,
@@ -2180,41 +2332,101 @@ class _RuntimeGatewayAdapter:
             task_id=task_id,
             operation_id=blocked_operation_id,
         )
-        return self.service.call_tool(
-            "workflow.next",
-            {
-                "case_id": run_id,
-                "max_steps": 64,
-                "include_closeout_bundle": False,
-            },
-            task_id=task_id,
-            operation_id=f"{operation_id}-next",
-        )
+        return self.run_snapshot(run_id)
 
-    def record_run_outcome(
+    def record_incident(
         self,
+        run_id: str,
+        incident,
+        *,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        self.service.context_runtime.record_run_incident(
+            run_id,
+            incident.to_public_dict(),
+            operation_id=operation_id,
+        )
+        return self.run_snapshot(run_id)
+
+    def resolve_incident(
+        self,
+        run_id: str,
+        incident_id: str,
+        *,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        self.service.context_runtime.resolve_run_incident(
+            run_id,
+            incident_id,
+            operation_id=operation_id,
+        )
+        return self.run_snapshot(run_id)
+
+    def record_outcome(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        summary: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        self.service.context_runtime.record_run_outcome(
+            run_id,
+            status=status,
+            summary=summary,
+            operation_id=operation_id,
+        )
+        return self.run_snapshot(run_id)
+
+    def defer_verification(
+        self,
+        run_id: str,
+        *,
+        workflow_step_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        self.service.context_runtime.defer_run_verification(
+            run_id,
+            workflow_step_id=workflow_step_id,
+            operation_id=operation_id,
+        )
+        return self.run_snapshot(run_id)
+
+    def project_outcome(
+        self,
+        turn: RunTurn,
         *,
         task_id: str,
-        run_id: str,
-        outcome: str,
-        summary: str,
-        details: Mapping[str, object],
     ) -> Mapping[str, object]:
-        projection = self.service.context_runtime.read_case(run_id)
+        del task_id
+        if turn.outcome is None:
+            return {}
+        projection = self.service.context_runtime.read_case(turn.run_id)
+        persisted_outcome = _mapping_or_empty(projection.get("run_outcome"))
+        if not persisted_outcome:
+            return {}
+        projected_outcome = turn.outcome.to_public_dict()
+        if any(
+            projected_outcome.get(name) != persisted_outcome.get(name)
+            for name in ("status", "summary", "acceptance")
+        ):
+            raise RuntimeError("Session Outcome projection does not match Run Outcome")
+        closeout = _mapping_or_empty(projection.get("closeout"))
         replay_fingerprint = "sha256:" + hashlib.sha256(
             json.dumps(
                 {
-                    "run_id": run_id,
-                    "status": projection.get("status"),
-                    "revision": projection.get("revision"),
+                    "run_id": turn.run_id,
+                    "workflow": projection.get("workflow_definition", {}),
+                    "outcome": persisted_outcome,
+                    "closeout_fingerprint": closeout.get("fingerprint", ""),
                 },
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
         return self.service.session_outcome_service.record(
-            session_id=task_id,
-            case_id=run_id,
+            session_id=f"run:{turn.run_id}",
+            case_id=turn.run_id,
             replay_fingerprint=replay_fingerprint,
             workflow=str(
                 _mapping_or_empty(projection.get("workflow_definition")).get(
@@ -2222,9 +2434,18 @@ class _RuntimeGatewayAdapter:
                 )
             ),
             domain=str(projection.get("entry_domain", "runtime") or "runtime"),
-            outcome=outcome,
-            summary=summary,
-            details=details,
+            outcome=(
+                "completed"
+                if str(persisted_outcome.get("status", "")) == "completed"
+                else "failed"
+            ),
+            summary=str(persisted_outcome.get("summary", "")).strip()
+            or "workflow completed",
+            details={
+                "state": str(persisted_outcome.get("status", "")),
+                "run_outcome_id": str(persisted_outcome.get("outcome_id", "")),
+                "gaps": list(turn.gaps),
+            },
         ).to_public_dict()
 
 
@@ -2305,6 +2526,25 @@ class RuntimeMcpService:
             )
         self.capability_registry = CapabilityRegistry(capability_descriptors)
         self.runtime_sdk = RuntimeSDK(self.capability_registry)
+        self.domain_executor = DomainExecutor(
+            self.capability_registry,
+            {
+                descriptor.operation: CallableDomainAdapter(
+                    lambda sdk_context, sdk_arguments, operation=descriptor.operation: (
+                        self._invoke_registered_domain_adapter(
+                            operation,
+                            sdk_context,
+                            sdk_arguments,
+                        )
+                    )
+                )
+                for descriptor in self.capability_registry.descriptors()
+            },
+            effect_classes={
+                "live_patch_run": EffectClass.RECONCILABLE_MUTATION,
+                "upgrade_run": EffectClass.RECONCILABLE_MUTATION,
+            },
+        )
         self.context_runtime = context_runtime or ContextRuntime(
             self.catalog,
             repository=context_repository,
@@ -2329,7 +2569,16 @@ class RuntimeMcpService:
                 "interface_profile must be agent, compatibility, or operator"
             )
         self.interface_profile = selected_interface_profile
-        self.agent_gateway = AgentGateway(_RuntimeGatewayAdapter(self))
+        self.agent_projector = ResultProjector()
+        semantic_adapter = _RuntimeSemanticAdapter(self)
+        self.semantic_runtime = SemanticRuntime(
+            ObservationEngine(semantic_adapter),
+            RunEngine(semantic_adapter),
+        )
+        self.agent_gateway = AgentGateway(
+            self.semantic_runtime,
+            projector=self.agent_projector,
+        )
         if self.interface_profile == "agent":
             interface_descriptors = agent_operation_descriptors()
         elif self.interface_profile == "operator":
@@ -3174,6 +3423,8 @@ class RuntimeMcpService:
 
         if not isinstance(arguments, Mapping):
             raise TypeError("tool arguments must be an object")
+        if self.interface_profile == "agent":
+            bounded_request(arguments)
         self.interface_catalog.validate_arguments(name, arguments)
         if self.interface_profile == "agent":
             if name == "observe":
@@ -3196,6 +3447,30 @@ class RuntimeMcpService:
             operation_id=operation_id,
         )
 
+    def _invoke_registered_domain_adapter(
+        self,
+        operation: str,
+        sdk_context: RuntimeSDKContext,
+        arguments: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        descriptor = self.catalog.require(operation)
+        callback = getattr(self.backend, str(descriptor.handler_name), None)
+        if not callable(callback):
+            raise RuntimeError(
+                f"operation catalog handler became unavailable: {descriptor.name}"
+            )
+        bounded_arguments = dict(arguments)
+        return self.registry.execute(
+            task_id=sdk_context.task_id,
+            operation_id=sdk_context.operation_id,
+            timeout_seconds=sdk_context.timeout_seconds,
+            callback=lambda task, context: callback(
+                task,
+                bounded_arguments,
+                context,
+            ),
+        )
+
     def _execute_domain_value(
         self,
         name: str,
@@ -3205,18 +3480,13 @@ class RuntimeMcpService:
         task_id: str,
         operation_id: str,
     ) -> dict[str, object]:
-        callback = getattr(self.backend, str(descriptor.handler_name), None)
-        if not callable(callback):
-            raise RuntimeError(
-                f"operation catalog handler became unavailable: {descriptor.name}"
-            )
         capability_descriptor = self.capability_registry.require(name)
         timeout = min(
             self._timeout(domain_arguments), capability_descriptor.timeout_seconds
         )
         bounded_arguments = dict(domain_arguments)
         return dict(
-            self.runtime_sdk.execute(
+            self.domain_executor.execute(
                 name,
                 context=RuntimeSDKContext(
                     task_id=task_id,
@@ -3228,16 +3498,6 @@ class RuntimeMcpService:
                     ),
                 ),
                 arguments=bounded_arguments,
-                adapter=CallableDomainAdapter(
-                    lambda _sdk_context, _sdk_arguments: self.registry.execute(
-                        task_id=task_id,
-                        operation_id=operation_id,
-                        timeout_seconds=timeout,
-                        callback=lambda task, context: callback(
-                            task, bounded_arguments, context
-                        ),
-                    )
-                ),
             ).value
         )
 
@@ -3323,7 +3583,7 @@ class RuntimeMcpService:
                 )
             )
         if assured:
-            raise RuntimeError(
+            raise AssuranceUnavailable(
                 "assured observation requires a scope-preserving observation adapter"
             )
         return self._execute_domain_value(
@@ -4168,9 +4428,13 @@ class StdioMcpServer:
         endpoint: JsonRpcMcpEndpoint,
         *,
         max_workers: int = 8,
+        max_frame_bytes: int = STDIO_FRAME_MAX_BYTES,
     ) -> None:
+        if max_frame_bytes <= 1024:
+            raise ValueError("stdio frame limit must exceed 1 KiB")
         self.endpoint = endpoint
         self.max_workers = max_workers
+        self.max_frame_bytes = max_frame_bytes
 
     def serve(self, reader=None, writer=None) -> None:
         input_stream = sys.stdin if reader is None else reader
@@ -4189,13 +4453,41 @@ class StdioMcpServer:
                 output_stream.write(encoded + "\n")
                 output_stream.flush()
 
+        def read_frame() -> tuple[str, bool] | None:
+            fragment = input_stream.readline(self.max_frame_bytes + 1)
+            if fragment == "":
+                return None
+            encoded_size = len(fragment.encode("utf-8"))
+            complete = fragment.endswith("\n")
+            oversized = encoded_size > self.max_frame_bytes
+            if not complete and len(fragment) >= self.max_frame_bytes + 1:
+                oversized = True
+                while True:
+                    remainder = input_stream.readline(self.max_frame_bytes + 1)
+                    if remainder == "" or remainder.endswith("\n"):
+                        break
+            return fragment, oversized
+
         try:
-            for line in input_stream:
+            while True:
+                frame = read_frame()
+                if frame is None:
+                    break
+                line, oversized = frame
                 if not line.strip():
+                    continue
+                if oversized:
+                    write_response(
+                        JsonRpcMcpEndpoint._error(
+                            None,
+                            -32600,
+                            "request exceeds the 256 KiB stdio frame limit",
+                        )
+                    )
                     continue
                 try:
                     message = json.loads(line)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError):
                     write_response(
                         JsonRpcMcpEndpoint._error(None, -32700, "invalid JSON")
                     )

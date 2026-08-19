@@ -72,7 +72,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
 
         def runner(name, _command, _environment, _timeout, **_kwargs):
             calls.append(name)
-            if name == "preflight_start":
+            if name in {"preflight_start", "preflight_end"}:
                 return {
                     "name": name,
                     "ok": True,
@@ -87,6 +87,11 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                                 "dbus_env": True,
                                 "mdbctl": True,
                                 "busctl": False,
+                                **(
+                                    {"active_alarm_endpoint_verified": True}
+                                    if name == "preflight_end"
+                                    else {}
+                                ),
                             }
                         },
                     },
@@ -183,7 +188,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 )
                 capability_only_calls = list(calls)
                 calls.clear()
-                assured_receipt = service.call_exposed_tool(
+                legacy_assurance_receipt = service.call_exposed_tool(
                     "observe",
                     {
                         "target": "192.0.2.30",
@@ -204,7 +209,24 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     task_id="agent-observe-assured",
                     operation_id="agent-observe-assured-operation",
                 )
-                assured_calls = list(calls)
+                legacy_assurance_calls = list(calls)
+                calls.clear()
+                automatic_receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["alarms"],
+                            }
+                        ],
+                    },
+                    task_id="agent-observe-automatic-assurance",
+                    operation_id="agent-observe-automatic-assurance-operation",
+                )
+                automatic_calls = list(calls)
                 case_ids = [
                     service.context_runtime.repository.case_for_task(task_id)
                     for task_id in (
@@ -212,22 +234,21 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                         "agent-observe-mdb-only",
                         "agent-observe-capability-only",
                         "agent-observe-assured",
+                        "agent-observe-automatic-assurance",
                     )
                 ]
             finally:
                 service.close()
 
-        self.assertEqual(case_ids, [None, None, None, None])
+        self.assertEqual(case_ids, [None, None, None, None, None])
         self.assertEqual(
             set(combined_calls), {"preflight_start", "mdbctl", "mdbctl_2"}
         )
         self.assertEqual(len(combined_calls), 3)
         self.assertEqual(mdb_only_calls, ["preflight_start", "mdbctl"])
         self.assertEqual(capability_only_calls, ["preflight_start"])
-        self.assertEqual(
-            assured_calls,
-            ["preflight_start", "mdbctl", "preflight_end"],
-        )
+        self.assertEqual(legacy_assurance_calls, ["preflight_start", "mdbctl"])
+        self.assertEqual(automatic_calls, ["preflight_start", "preflight_end"])
         states = {
             item["name"]: item["status"]
             for item in receipt["results"]["caps"]["values"]
@@ -244,8 +265,10 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertTrue(receipt["coverage"]["complete"])
         self.assertTrue(mdb_only_receipt["coverage"]["complete"])
         self.assertTrue(capability_only_receipt["coverage"]["complete"])
-        self.assertEqual(assured_receipt["assurance"], "assured")
-        self.assertTrue(assured_receipt["coverage"]["complete"])
+        self.assertNotIn("assurance", legacy_assurance_receipt)
+        self.assertTrue(legacy_assurance_receipt["coverage"]["complete"])
+        self.assertNotIn("assurance", automatic_receipt)
+        self.assertTrue(automatic_receipt["coverage"]["complete"])
 
     def test_workflow_argv_accepts_runtime_direct_passwords_without_legacy_projection(
         self,

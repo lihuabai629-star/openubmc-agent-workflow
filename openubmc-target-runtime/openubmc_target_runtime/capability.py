@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 
 from .catalog import OperationCatalogError, validate_json_schema
@@ -17,6 +18,7 @@ _OUTCOME_STATUSES = frozenset(
         "succeeded",
         "modified",
         "verified",
+        "running",
         "skipped",
         "unavailable",
         "failed",
@@ -247,3 +249,97 @@ class RuntimeSDK:
         if receipt.operation != descriptor.operation:
             raise ValueError("domain receipt operation does not match capability")
         return receipt
+
+
+class EffectClass(str, Enum):
+    READ_ONLY = "read_only"
+    IDEMPOTENT_MUTATION = "idempotent_mutation"
+    RECONCILABLE_MUTATION = "reconcilable_mutation"
+    IRREVERSIBLE_MUTATION = "irreversible_mutation"
+
+
+@dataclass(frozen=True)
+class DomainExecutionPolicy:
+    effect_class: EffectClass
+    max_attempts: int
+
+    def __post_init__(self) -> None:
+        if self.max_attempts <= 0:
+            raise ValueError("Domain execution attempts must be positive")
+
+
+class DomainExecutor:
+    """Execute registered Domain Adapters with Runtime-owned Effect policy."""
+
+    def __init__(
+        self,
+        registry: CapabilityRegistry,
+        adapters: Mapping[str, DomainAdapter],
+        *,
+        effect_classes: Mapping[str, EffectClass] | None = None,
+        read_attempts: int = 2,
+    ) -> None:
+        if read_attempts <= 0:
+            raise ValueError("read_attempts must be positive")
+        self.registry = registry
+        self.adapters = dict(adapters)
+        self.effect_classes = dict(effect_classes or {})
+        self.read_attempts = read_attempts
+        missing = [
+            descriptor.operation
+            for descriptor in registry.descriptors()
+            if descriptor.operation not in self.adapters
+        ]
+        if missing:
+            raise ValueError(
+                "DomainExecutor is missing adapters: " + ", ".join(sorted(missing))
+            )
+
+    def policy_for(self, operation: str) -> DomainExecutionPolicy:
+        descriptor = self.registry.require(operation)
+        effect_class = self.effect_classes.get(operation)
+        if effect_class is None:
+            effect_class = (
+                EffectClass.RECONCILABLE_MUTATION
+                if descriptor.mutation
+                else EffectClass.READ_ONLY
+            )
+        return DomainExecutionPolicy(
+            effect_class=effect_class,
+            max_attempts=(
+                self.read_attempts
+                if effect_class is EffectClass.READ_ONLY
+                else 1
+            ),
+        )
+
+    def execute(
+        self,
+        operation: str,
+        *,
+        context: RuntimeSDKContext,
+        arguments: Mapping[str, object],
+    ) -> DomainReceipt:
+        descriptor = self.registry.require(operation)
+        adapter = self.adapters[operation]
+        policy = self.policy_for(operation)
+        last_error: BaseException | None = None
+        for attempt in range(1, policy.max_attempts + 1):
+            try:
+                raw = adapter.execute(context, arguments)
+                receipt = (
+                    raw
+                    if isinstance(raw, DomainReceipt)
+                    else DomainReceipt.from_value(operation, raw)
+                )
+                if receipt.operation != descriptor.operation:
+                    raise ValueError(
+                        "domain receipt operation does not match capability"
+                    )
+                return receipt
+            except (ConnectionError, OSError, TimeoutError) as exc:
+                last_error = exc
+                if attempt >= policy.max_attempts:
+                    raise
+        assert last_error is not None
+        raise last_error

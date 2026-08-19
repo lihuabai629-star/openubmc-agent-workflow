@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-08-19
 - Decision owners: openUBMC Agent Workflow maintainers
+- Superseded in part by: [ADR-0004](0004-developer-default-and-gate-submissions.md), which
+  removes the one-time secret Gate token requirement for the internal developer Runtime.
 
 ## Context
 

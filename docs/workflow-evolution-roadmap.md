@@ -1,8 +1,8 @@
 # openUBMC Agent Workflow 后续演进档案
 
 日期：2026-08-19
-评估分支：`refactor/agent-semantic-gateway`
-评估基线：`db38a4a`
+实现分支：`refactor/run-engine-core`
+实现基线：GitHub `main` 的 `4e6172f`
 用途：后续讨论入口、决策索引和实施路线；详细论证仍以链接文档为准。
 
 ## 1. 当前总体判断
@@ -21,7 +21,24 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
 
 现阶段已经证明“外部语义收缩”有效，下一阶段应证明“内部状态权威、危险副作用恢复和完整 execute 路径”可靠。功能扩张应暂时让位于架构收敛和资格验证。
 
-### 1.1 产品北极星
+### 1.1 当前实现检查点
+
+| 里程碑 | 当前状态 | 剩余工作 |
+| --- | --- | --- |
+| M0 资源边界与决策更新 | 256 KiB Agent request/stdio frame、有界 `readline`、后续请求恢复、ADR-0004 已完成 | 在正式发布配置上复核阈值 |
+| M1 typed seam 与 source-only | `SemanticRuntimePort.observe/execute`、RunEngine、持久 Gate、重启与提交幂等的纵向切片已完成 | 逐步删除仅服务旧调用方的输入形状 |
+| M2 Live Patch 可靠性 | DomainExecutor、Mutation 单次执行、自动 reconcile、Incident、deferred fresh verification 主路径已完成 | 补齐真实/仿真 target 的全部 effect-start cut points |
+| M3 Build-Upgrade Artifact flow | 强 target/run 绑定 ArtifactRef、build Gate、running reattach、upgrade reconcile 与重启主路径已完成 | 补 upload accepted 丢响应、activation/reboot 长任务矩阵 |
+| M4 权威收敛 | Agent 主路径 sequencing、Run Outcome 与 Session Outcome 投影已移入 RunEngine | 删除 `phase_record` persistence bridge，固化 Incident lifecycle、显式 old-event upcaster、compatibility telemetry 和剩余旧入口 |
+| M5 Domain Pack | 未开始 | 只从 Live Patch 与 Upgrade 已证明的共同 seam 抽取 contract/conformance suite |
+| M6 证据驱动扩展 | 未开始 | 根据真实调用缺口决定 selector、受限动态计划或分布式化 |
+
+当前分支的本地 Runtime 测试为 318 项全部通过，openUBMC Debug Runtime backend 为
+16 项全部通过。正式 v2 仍需完成 M2/M3 的扩展 fault matrix、完整 execute A/B、release
+gate，并在最终 source commit 上重新生成
+`release-lock.json`；本分支不创建 v2 tag。
+
+### 1.2 产品北极星
 
 目标不是建设一个通用 Agent 编排平台，而是形成 **openUBMC 的可信执行底座**：即使模型重复调用、进程中断、目标响应丢失或操作结果未知，系统仍能回答“观察依据是什么、当前 Run 在哪里、危险 Effect 是否执行过、下一步由谁决策、什么证据允许宣告成功”。
 
@@ -35,7 +52,7 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
 
 后续所有功能提案先判断它属于哪一层。需要 Agent 理解 Runtime 内部 sequencing 才能使用的能力，通常说明 Module 仍然过浅；需要 Runtime 相信模型自报状态才能保证安全的能力，必须否决。
 
-### 1.2 方向评价指标
+### 1.3 方向评价指标
 
 不能再只用“工具数”和单次调用延迟判断成败。后续采用四组指标：
 
@@ -58,7 +75,7 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
 | [架构裁决](workflow-architecture-arbitration.md) | WorkflowDefinitions/RunEngine、Turn/Ack、Outbox/Inbox、Incident、模型边界和故障切点的最终取舍 | 完成 |
 | [Agent Semantic Gateway](agent-semantic-gateway.md) | 当前 `observe/execute` Interface、profile、预算与恢复能力 | 已实现基线 |
 | [领域上下文](../CONTEXT.md) | 产品边界、统一术语、事实所有权和跨版本不变量 | 完成 |
-| [架构决策记录](adr/README.md) | 三项难以逆转的已接受决策及其触发条件 | 完成 |
+| [架构决策记录](adr/README.md) | 四项难以逆转的已接受决策及其触发条件 | 完成 |
 | [外部深度研究对照](external-workflow-research-reconciliation.md) | 对 ChatGPT Share 深度报告逐项裁决，区分直接采纳、改造采纳和延后项 | 完成 |
 | 本文档 | 连接事实、决策、阶段路线和后续讨论 | 持续更新 |
 
@@ -103,16 +120,25 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
 - Observation scope、Receipt、Turn 和 Gate schema 已有输出预算；
 - `execute` 支持 `start | respond | resume | control`；
 - Observation A/B 已证明两个语义入口的方向正确；
-- 当前真正风险不在工具数量，而在内部 JSON seam、输入无界和 Mutation 恢复证明不足。
+- 当前真正风险不在工具数量，而在 compatibility 写入路径的收口、完整 execute
+  fault matrix、配对 A/B 和正式 release lock 资格。
 
 ### 3.2 内部状态权威
 
-- 当前 `WorkflowKernel` 只负责 definition、step identity 和 semantic cursor；
-- 真正状态推进位于 `ContextRuntime.workflow_advance`；
-- `workflow.next` 是 continuation wrapper，而不是独立状态机；
-- `AgentGatewayRuntimePort` 仍暴露 8 个方法；
-- Gateway 当前参与 phase response、Run continuation 和 terminal Outcome 写入；
-- `RuntimeSDK` 每次调用接收临时 Adapter，尚未形成稳定 Domain execution seam。
+- `WorkflowDefinitions` 只负责 definition、step identity 和 semantic cursor；旧
+  `WorkflowKernel` 名称仅作为 import alias 保留；
+- `SemanticRuntimePort` 只暴露 typed `observe` 和 `execute`；
+- Gateway 只负责有界解码和投影，不再组合 `phase_record → workflow.next`、reconcile 或
+  terminal Session Outcome 写入；
+- `RunEngine` 统一处理 Gate、自动推进、unknown Mutation reconcile、Incident 和 terminal
+  Outcome 投影；
+- `DomainExecutor` 在 Runtime 构造时注册 Adapter，只读传输失败有限重试，Mutation 不盲目
+  重放；
+- `ContextRuntime` 继续作为兼容存储和底层执行 Adapter；Agent Gate response 当前仍通过
+  `record_gate_submission -> phase_record` bridge 写入既有 Case events。它不再决定 Agent
+  sequencing，但在 M4 完成前仍是待删除的过渡写入路径；
+- Session Outcome 只从持久 `RunOutcomeRecorded` 投影，terminal replay 不重复写 Run Outcome、
+  Closeout 或治理记录。
 
 ### 3.3 Mutation 与恢复
 
@@ -145,9 +171,9 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
 | Run 状态 | `RunEngine` 成为唯一状态转换权威 | 已确认 |
 | execute 结果 | 返回下一 Gate、Incident、running reattach point 或 Outcome 的 `Turn` | 已确认 |
 | CommandAck/polling | 不对普通 Agent 暴露；将来仅存在于 transport/worker Adapter 后 | 已确认 |
-| Gate | 变成有 ID、版本、token 和 submission identity 的持久对象 | 已确认 |
-| Incident | v2 fail closed，v2.1 形成正式领域对象 | 已确认 |
-| Artifact | 使用 handle + digest + metadata，Run state 不内联大对象 | 已确认 |
+| Gate | 使用 ID、版本、schema digest、submission identity 和输入 digest；内部研发不使用 secret token | 已实现 |
+| Incident | 自动 reconcile 仍无法收敛时形成明确 Turn | 已实现基线 |
+| Artifact | 使用 handle + digest + metadata，Run state 不内联大对象 | 已实现基线 |
 | Event model | 局部 event-backed ledger，不全面 Event Sourcing/CQRS | 已确认 |
 | Model invocation | 当前留在 Runtime 外；未来作为非确定性 Effect | 已确认 |
 | Outbox/Inbox | 当前不引入，跨进程或提前 Ack 时才强制采用 | 延后 |
@@ -168,7 +194,7 @@ Agent Gateway
 ┌──────────────── Runtime Core ────────────────┐
 │                                              │
 │ ObservationEngine       RunEngine            │
-│ selectors / assurance   sole state authority │
+│ selectors / auto policy sole state authority │
 │        │                    │                 │
 │ ArtifactStore          WorkflowDefinitions   │
 │                       Gate / Incident         │
@@ -187,15 +213,15 @@ Operator / CI Plane
 
 ```python
 class SemanticRuntimePort(Protocol):
-    def query(self, query: ObservationQuery, *, context: CallContext) -> ObservationResult: ...
-    def submit(self, command: RunCommand, *, context: CallContext) -> RunTurn: ...
+    def observe(self, query: ObservationQuery, *, task_id: str, operation_id: str) -> ObservationResult: ...
+    def execute(self, command: RunCommand, *, task_id: str, operation_id: str) -> RunTurn: ...
 ```
 
 `RunEngine` 自身进一步收敛为：
 
 ```python
 class RunEngine:
-    def handle(self, command: RunCommand, *, context: RunContext) -> RunTurn: ...
+    def execute(self, command: RunCommand, *, task_id: str, operation_id: str) -> RunTurn: ...
 ```
 
 Interface 的目标不是减少方法数字本身，而是让调用方无需理解 definition pinning、Gate lifecycle、事件提交、Effect 调度、reconcile 和 Outcome 形成过程。
@@ -219,16 +245,16 @@ Interface 的目标不是减少方法数字本身，而是让调用方无需理�
 ### 主线 B：Runtime 内部深化
 
 1. 先引入 typed Query/Command/Result 和两方法 Port；
-2. 用 compatibility Adapter 接住当前 8 方法 Port；
-3. Gateway 切换后，将状态逻辑从 Gateway 和 `ContextRuntime` 移入 `RunEngine`；
+2. 用 compatibility Adapter 接住旧 operations；
+3. Gateway 切换后，将状态协调移入 `RunEngine`；
 4. `WorkflowKernel` 改为 `WorkflowDefinitions`；
 5. Domain Adapter 构造时注册，形成 `DomainExecutor`；
-6. Gate、Submission、Effect、Incident 和 Outcome 统一由 RunEngine 提交；
+6. Gate、Submission、Incident 和 Outcome 统一由 RunEngine 提交；
 7. Session Outcome 改为 terminal Run 的治理投影；
-8. 用行为测试替换源码字符串测试；
-9. 完成旧 event/schema 的 upcaster 与兼容读取。
-10. 为 Domain Action 建立 Effect class 与默认 retry/reconcile/approval policy。
-11. 固定恢复和审计真正依赖的 Action、Workflow、Policy、DomainExecutor 与 Projector version。
+8. 用行为测试逐步替换源码字符串测试；
+9. 完成旧 event/schema 的 upcaster 与兼容读取；
+10. 为 Domain Action 建立 Effect class 与默认 retry/reconcile 行为；
+11. 固定恢复和审计真正依赖的 Action、Workflow、DomainExecutor 与 Projector version。
 
 迁移原则是 move-and-delete，不在旧逻辑外永久叠一层新状态机。
 
@@ -265,16 +291,16 @@ Worker result 跨进程    -> Inbox + result dedupe
 | --- | --- |
 | 输入与传输有界 | 超大输入在业务执行前拒绝；错误响应仍有界 |
 | Observation handle 化 | Runtime 可从 handle/digest 重建；篡改、跨 target、GC 后 fail closed |
-| Gate 持久身份 | 重复提交幂等；并发单赢家；旧版本和错误 token conflict |
+| Gate 持久身份 | 重复提交幂等；并发单赢家；旧版本、错误 Gate 和不同输入 conflict |
 | Mutation 恢复证明 | Live Patch/Upgrade 每个切点不重复危险 Effect |
-| 发布证据 | 68 项 Runtime/Gateway、6 项 A/B harness 继续通过；完整 execute fault matrix 通过 |
+| 发布证据 | 当前 318 项 Runtime 与 16 项 Debug backend 测试通过；正式发布前仍需完整 execute fault matrix、A/B 与 release gate |
 | ADR | 产品 Interface、状态权威、Effect、Gate、Artifact 和分布式触发条件落盘 |
 
 ### P1：v2.1 内部架构收敛
 
 | 目标 | 验收 |
 | --- | --- |
-| typed semantic seam | Gateway 只依赖 `query/submit` |
+| typed semantic seam | Gateway 只依赖 `observe/execute` typed seam |
 | 唯一 Run 状态权威 | `RunEngine` 是唯一 Run/Gate/Incident/Outcome 写入者 |
 | 定义与执行分离 | `WorkflowDefinitions` 不执行 I/O 或写状态 |
 | Domain locality | Adapter 预注册，execute/reconcile 经一个 DomainExecutor |
@@ -307,13 +333,15 @@ Mutation Worker 必须最后迁移，因为它需要最严格的 effect-start ha
 
 ## 8. 下一轮最值得讨论的设计点
 
-### 8.1 `RunEngine.handle` 的原子提交模型
+### 8.1 `RunEngine.execute` 的原子提交模型
 
 推荐默认答案：一次 command 只形成一次持久 Decision，包含 Run events、Gate/Incident 变化和 Effect intent；Domain Effect 的真实执行结果通过同一 effect identity 回到 RunEngine。需要进一步定稿 RunStore transaction 和旧 Case events 的 upcaster。
 
 ### 8.2 Gate 的最小安全协议
 
-推荐默认答案：`gate_id + gate_version + opaque token + submission identity`。schema digest 与 token 在 Runtime 内绑定，Agent 不负责生成 actor、时间戳或幂等 ID。
+已落地答案：`gate_id + gate_version + schema digest + submission identity + input digest`。
+内部研发流程不使用 one-time secret token；Agent 不负责生成 actor 或时间戳，缺省
+submission identity 由 Adapter 从持久 Run/Gate binding 派生。详见 ADR-0004。
 
 ### 8.3 Case 与 Run 的长期关系
 
@@ -329,7 +357,9 @@ Mutation Worker 必须最后迁移，因为它需要最严格的 effect-start ha
 
 ### 8.6 v2 与 v2.1 的发布边界
 
-推荐默认答案：如果 v2.0.0 已进入 release freeze，只在该版本完成安全阻断项；typed RunEngine 等结构性迁移进入 v2.1，避免在发布锁定阶段同时修改持久模型和主执行路径。
+当前 `v2.0.0` 尚未正式发布，因此本分支先完成 typed RunEngine 的候选实现，但不打 tag、
+不更新 release lock。只有 fault matrix、完整 execute A/B 和 release gate 在最终 source
+commit 上通过后，才重新生成发布锁；否则继续作为后续候选分支演进。
 
 ## 9. 需要持续验证的假设
 
