@@ -1462,20 +1462,9 @@ class OrchestrationContractTests(unittest.TestCase):
                 [
                     "live_patch_run",
                     "upgrade_run",
-                    "case_read",
-                    "evidence_read",
-                    "case_replay_export",
-                    "case_replay_run",
-                    "session_outcome_record",
-                    "session_outcome_summary",
-                    "session_outcome_transition",
-                    "session_outcome_promote",
-                    "case_close",
-                    "case_forget",
                     "phase_record",
                     "workflow.advance",
                     "workflow.next",
-                    "runtime_status",
                 ],
             )
             live_patch = definitions[0]["inputSchema"]

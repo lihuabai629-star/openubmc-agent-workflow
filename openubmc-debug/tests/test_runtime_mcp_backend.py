@@ -1141,8 +1141,8 @@ class RuntimeMcpBackendTests(unittest.TestCase):
             {
                 "jsonrpc": "2.0",
                 "id": 3,
-                "method": "tools/call",
-                "params": {"name": "runtime_status", "arguments": {}},
+                "method": "tools/list",
+                "params": {},
             },
         ]
         with tempfile.TemporaryDirectory() as raw_state:
@@ -1176,10 +1176,11 @@ class RuntimeMcpBackendTests(unittest.TestCase):
             failed["structuredContent"]["canonical_error"]["code"],
             "ValueError",
         )
-        self.assertEqual(
-            responses[3]["result"]["structuredContent"]["status"],
-            "completed",
-        )
+        exposed_tools = [
+            tool["name"] for tool in responses[3]["result"]["tools"]
+        ]
+        self.assertIn("debug_run", exposed_tools)
+        self.assertNotIn("runtime_status", exposed_tools)
 
 
 if __name__ == "__main__":

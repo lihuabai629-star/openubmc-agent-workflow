@@ -26,6 +26,19 @@ METRICS = (
     "noncached_input_plus_output",
     "duration_seconds",
 )
+BENCHMARK_TARGET = "10.121.136.200"
+BENCHMARK_CAPABILITIES = ("ssh", "telnet", "mdbctl", "busctl")
+BENCHMARK_MDB_QUERIES = (
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Protocol",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive ResourceId",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive SlotNumber",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Presence",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive TemperatureCelsius",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo Type",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo SocketId",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.DriveStatus Health",
+)
 
 
 def _json_object(value: object) -> Mapping[str, object]:
@@ -54,6 +67,114 @@ def _tool_output_bytes(item: Mapping[str, object]) -> int:
             separators=(",", ":"),
         ).encode("utf-8")
     )
+
+
+def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, object]:
+    errors: list[str] = []
+    calls = [
+        item
+        for item in tools
+        if item.get("type") == "mcp_tool_call"
+        and item.get("server") == "openubmc-target-runtime"
+    ]
+    if len(calls) != 1 or calls[0].get("tool") != "observe":
+        return {"passed": False, "errors": ["candidate must call observe exactly once"]}
+    if any(item.get("type") == "command_execution" for item in tools):
+        errors.append("candidate must not execute shell commands")
+    call = calls[0]
+    arguments = _json_object(call.get("arguments"))
+    if arguments.get("target") != BENCHMARK_TARGET:
+        errors.append("target does not match the benchmark target")
+    freshness = _json_object(arguments.get("freshness"))
+    if freshness != {"mode": "live", "max_age_seconds": 0}:
+        errors.append("freshness must request one live observation")
+    if str(arguments.get("assurance", "auto")).lower() != "auto":
+        errors.append("assurance must be auto")
+    selectors = arguments.get("selectors")
+    selector_values = selectors if isinstance(selectors, list) else []
+    capability_selectors = [
+        item
+        for item in selector_values
+        if isinstance(item, Mapping) and str(item.get("kind", "")).lower() == "capability"
+    ]
+    mdb_selectors = [
+        item
+        for item in selector_values
+        if isinstance(item, Mapping) and str(item.get("kind", "")).lower() == "mdb"
+    ]
+    if len(capability_selectors) != 1 or len(mdb_selectors) != 1 or len(selector_values) != 2:
+        errors.append("selectors must contain exactly one capability and one MDB selector")
+        capability = {}
+        mdb = {}
+    else:
+        capability = capability_selectors[0]
+        mdb = mdb_selectors[0]
+    names = capability.get("names", []) if isinstance(capability, Mapping) else []
+    normalized_names = (
+        tuple(str(item).strip().lower() for item in names)
+        if isinstance(names, list)
+        else ()
+    )
+    if normalized_names != BENCHMARK_CAPABILITIES:
+        errors.append("capability selector does not match the four required capabilities")
+    queries = mdb.get("queries", []) if isinstance(mdb, Mapping) else []
+    if not isinstance(queries, list) or tuple(queries) != BENCHMARK_MDB_QUERIES:
+        errors.append("MDB selector does not match the nine exact queries")
+
+    result = _json_object(call.get("result"))
+    receipt = _json_object(
+        result.get("structured_content") or result.get("structuredContent")
+    )
+    receipt_id = str(receipt.get("receipt_id", ""))
+    if not receipt_id or receipt.get("status") != "complete":
+        errors.append("candidate must return a complete ObservationReceipt")
+    coverage = _json_object(receipt.get("coverage"))
+    expected_coverage = {
+        "requested": 13,
+        "available": 13,
+        "unavailable": 0,
+        "not_checked": 0,
+        "complete": True,
+    }
+    if any(coverage.get(name) != value for name, value in expected_coverage.items()):
+        errors.append("receipt coverage is incomplete")
+    results = _json_object(receipt.get("results"))
+    capability_id = str(capability.get("id", "")) if isinstance(capability, Mapping) else ""
+    mdb_id = str(mdb.get("id", "")) if isinstance(mdb, Mapping) else ""
+    capability_result = _json_object(results.get(capability_id))
+    capability_values = capability_result.get("values", [])
+    observed_capabilities = {
+        str(item.get("name", "")).lower(): str(item.get("status", ""))
+        for item in capability_values
+        if isinstance(item, Mapping)
+    } if isinstance(capability_values, list) else {}
+    if observed_capabilities != {name: "available" for name in BENCHMARK_CAPABILITIES}:
+        errors.append("capability results are not fully available")
+    mdb_result = _json_object(results.get(mdb_id))
+    mdb_values = mdb_result.get("values", [])
+    if (
+        not isinstance(mdb_values, list)
+        or len(mdb_values) != len(BENCHMARK_MDB_QUERIES)
+        or any(
+            not isinstance(item, Mapping)
+            or item.get("query_index") != index
+            or item.get("status") != "available"
+            or "value" not in item
+            for index, item in enumerate(mdb_values)
+        )
+    ):
+        errors.append("MDB results do not contain nine available raw values")
+    claims = receipt.get("claims", [])
+    grounded_ids = {
+        str(item.get("selector_id", ""))
+        for item in claims
+        if isinstance(item, Mapping)
+        and item.get("status") == "grounded"
+        and item.get("receipt_id") == receipt_id
+    } if isinstance(claims, list) else set()
+    if grounded_ids != {capability_id, mdb_id}:
+        errors.append("receipt claims are not grounded to both selectors")
+    return {"passed": not errors, "errors": errors}
 
 
 def metric_from_run(
@@ -86,10 +207,12 @@ def metric_from_run(
     cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
     acceptance = semantic_acceptance(final)
-    scope_ok = (
-        arm != "B"
-        or mcp_tools == {"observe": 1}
+    scope_validation = (
+        {"passed": True, "errors": []}
+        if arm != "B"
+        else candidate_scope_acceptance(tools)
     )
+    scope_ok = bool(scope_validation["passed"])
     return {
         "arm": arm,
         "pair": pair,
@@ -117,6 +240,7 @@ def metric_from_run(
         "final_chars": len(final),
         "semantic_acceptance": acceptance,
         "scope_acceptance": scope_ok,
+        "scope_validation": scope_validation,
         "valid": (
             exit_code == 0
             and input_tokens + output_tokens > 0
@@ -325,19 +449,11 @@ def _prompt(skill_path: Path) -> str:
             "这是一次真实 BMC 环境下的 openubmc-debug 配对性能基准。",
             f"完整读取并严格遵循 {skill_path}。",
             "请使用该版本 Skill 的原生默认路径，不得人为禁用或改用另一版本机制。不得使用其他 Skill、知识库、网络搜索、源码或日志。",
-            "目标 BMC：10.121.136.200。凭据位于标准私有配置中，不得显示凭据值。",
+            f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
             "执行只读现场核验：",
             "1. 获取 live 能力快照，确认 SSH、Telnet、MDBCTL、BUSCTL。",
             "2. 对固定对象 Drive_1_010102 执行以下九条精确 MDB getprop，不得枚举其他对象或属性：",
-            "   - getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
-            "   - getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Protocol",
-            "   - getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive ResourceId",
-            "   - getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive SlotNumber",
-            "   - getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Presence",
-            "   - getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive TemperatureCelsius",
-            "   - getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo Type",
-            "   - getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo SocketId",
-            "   - getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.DriveStatus Health",
+            *(f"   - {query}" for query in BENCHMARK_MDB_QUERIES),
             "3. 报告原始值，并判断这些证据能否单独证明 ResourceId=0 异常，不得臆测源码语义。",
             "禁止写操作、状态变更、宽查询、日志和源码读取。中文回答，不超过 500 字。",
         )

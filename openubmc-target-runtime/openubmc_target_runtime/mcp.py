@@ -27,6 +27,8 @@ from .catalog import OperationCatalog, OperationDescriptor
 from .agent_gateway import (
     AgentGateway,
     OBSERVATION_MAX_BYTES,
+    ResultProjector,
+    ScopeContract,
     agent_operation_descriptors,
 )
 from .capability import (
@@ -2038,6 +2040,23 @@ class _RuntimeGatewayAdapter:
             operation_id=operation_id,
         )
 
+    def assure_observation(
+        self,
+        prior: Mapping[str, object],
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        reusable = dict(arguments)
+        reusable["_agent_prior_observation"] = dict(prior)
+        return self.service._observe_domain_direct(
+            "debug_collect",
+            reusable,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+
     def run_operation(
         self,
         operation: str,
@@ -2061,6 +2080,116 @@ class _RuntimeGatewayAdapter:
                 projection
             ),
         }
+
+    def persist_observation(
+        self,
+        raw: Mapping[str, object],
+        *,
+        scope: Mapping[str, object],
+        assurance: str,
+    ) -> Mapping[str, object]:
+        return self.service.context_runtime.persist_observation(
+            raw,
+            scope=scope,
+            assurance=assurance,
+        )
+
+    def start_run(
+        self,
+        arguments: Mapping[str, object],
+        observation_receipt: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        if observation_receipt.get("status") != "complete":
+            raise ValueError("only a complete ObservationReceipt can seed a Run")
+        source = _mapping_or_empty(observation_receipt.get("source"))
+        stored = self.service.context_runtime.load_observation(source)
+        stored_scope = _mapping_or_empty(stored.get("scope"))
+        scope = ScopeContract.from_query(stored_scope)
+        if scope.target != str(arguments.get("ip", "")).strip():
+            raise ValueError("ObservationReceipt target does not match the Run target")
+        raw = _mapping_or_empty(stored.get("raw"))
+        expected = ResultProjector().observation(
+            raw,
+            scope,
+            assurance=str(stored.get("assurance", "fast")),
+            source=source,
+        )
+        if expected != dict(observation_receipt):
+            raise ValueError("ObservationReceipt failed source reconstruction")
+        descriptor = self.service.catalog.require("debug_run")
+        seeded = self.service.context_runtime.invoke_domain(
+            descriptor,
+            arguments,
+            task_id=task_id,
+            operation_id=f"{operation_id}-observation",
+            executor=lambda: raw,
+        )
+        run_id = str(seeded.envelope.get("case_id", ""))
+        if not run_id:
+            raise RuntimeError("observation-seeded Run did not open a Case")
+        return self.service.call_tool(
+            "workflow.next",
+            {
+                "case_id": run_id,
+                "max_steps": 64,
+                "include_closeout_bundle": False,
+            },
+            task_id=task_id,
+            operation_id=f"{operation_id}-next",
+        )
+
+    def reconcile_run(
+        self,
+        run_id: str,
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        projection = self.service.context_runtime.read_case(run_id)
+        unknown = next(
+            (
+                item
+                for item in reversed(list(projection.get("operations", [])))
+                if isinstance(item, Mapping)
+                and item.get("status") == "mutation_outcome_unknown"
+                and str(item.get("operation", "")) in self.service.catalog.names()
+                and self.service.catalog.require(
+                    str(item.get("operation", ""))
+                ).mutation
+            ),
+            None,
+        )
+        if not isinstance(unknown, Mapping):
+            raise ValueError("run has no unknown mutation to reconcile")
+        blocked_operation = str(unknown.get("operation", ""))
+        blocked_operation_id = str(unknown.get("operation_id", ""))
+        if not blocked_operation_id:
+            raise ValueError("unknown mutation is missing its durable operation id")
+        recovered = self.service.context_runtime.restore_domain_arguments(
+            f"{task_id}-agent-reconcile",
+            blocked_operation,
+            {"case_id": run_id},
+        )
+        recovered["idempotency_key"] = blocked_operation_id
+        self.service.call_tool(
+            blocked_operation,
+            recovered,
+            task_id=task_id,
+            operation_id=blocked_operation_id,
+        )
+        return self.service.call_tool(
+            "workflow.next",
+            {
+                "case_id": run_id,
+                "max_steps": 64,
+                "include_closeout_bundle": False,
+            },
+            task_id=task_id,
+            operation_id=f"{operation_id}-next",
+        )
 
     def record_run_outcome(
         self,
@@ -2210,7 +2339,11 @@ class RuntimeMcpService:
                 if descriptor.exposure == "operator"
             )
         else:
-            interface_descriptors = self.catalog.descriptors()
+            interface_descriptors = tuple(
+                descriptor
+                for descriptor in self.catalog.descriptors()
+                if descriptor.exposure == "compatibility"
+            )
         self.interface_catalog = OperationCatalog(interface_descriptors)
         if context_maintenance_interval_seconds < 0:
             raise ValueError("context maintenance interval must not be negative")
@@ -2862,7 +2995,6 @@ class RuntimeMcpService:
                             "phase_type",
                             "producer_identity",
                             "status",
-                            "source_revision",
                             "summary",
                         ],
                         "properties": {
@@ -2945,6 +3077,15 @@ class RuntimeMcpService:
                             "remote_path": {"type": "string"},
                             "restart_scope": {"enum": ["none", "skynet"]},
                         },
+                        "allOf": [
+                            {
+                                "if": {
+                                    "properties": {"status": {"const": "completed"}},
+                                    "required": ["status"],
+                                },
+                                "then": {"required": ["source_revision"]},
+                            }
+                        ],
                         "additionalProperties": True,
                     },
                 },
@@ -3116,12 +3257,15 @@ class RuntimeMcpService:
         raw_arguments = dict(arguments)
         capability_names = raw_arguments.pop("_agent_capability_names", [])
         assured = raw_arguments.pop("_agent_assured", False)
+        prior_observation = raw_arguments.pop("_agent_prior_observation", None)
         if not isinstance(capability_names, list) or not all(
             isinstance(item, str) for item in capability_names
         ):
             raise TypeError("_agent_capability_names must be an array of strings")
         if not isinstance(assured, bool):
             raise TypeError("_agent_assured must be a boolean")
+        if prior_observation is not None and not isinstance(prior_observation, Mapping):
+            raise TypeError("_agent_prior_observation must be an object")
         canonical = self._canonicalize_tool_arguments(name, raw_arguments)
         for internal_name in _INTERNAL_TASK_ARGUMENTS:
             canonical.pop(internal_name, None)
@@ -3144,6 +3288,8 @@ class RuntimeMcpService:
                 observed_arguments = dict(domain_arguments)
                 observed_arguments["capability_names"] = list(capability_names)
                 observed_arguments["assured"] = assured
+                if isinstance(prior_observation, Mapping):
+                    observed_arguments["prior_observation"] = dict(prior_observation)
                 return dict(
                     self.registry.execute(
                         task_id=task_id,
@@ -3164,6 +3310,8 @@ class RuntimeMcpService:
             observed_arguments = dict(domain_arguments)
             observed_arguments["capability_names"] = list(capability_names)
             observed_arguments["assured"] = assured
+            if isinstance(prior_observation, Mapping):
+                observed_arguments["prior_observation"] = dict(prior_observation)
             return dict(
                 self.registry.execute(
                     task_id=task_id,

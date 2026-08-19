@@ -463,6 +463,39 @@ class DebugMcpBackend:
     def task_status(task: DebugMcpTask) -> dict[str, object]:
         return task.status()
 
+    @staticmethod
+    def _workflow_args(
+        bounded: dict[str, object],
+        context,
+        *,
+        default_deadline: int,
+        fast_snapshot: bool,
+    ):
+        bounded["deadline"] = max(
+            1,
+            min(
+                int(bounded.get("deadline", default_deadline)),
+                int(math.ceil(context.remaining())),
+            ),
+        )
+        try:
+            args = workflow_remote.parse_args(_workflow_argv(bounded))
+            for name in _TRANSPORT_STRING_OPTIONS:
+                setattr(args, name, str(bounded.get(name, "")))
+            for name in _TRANSPORT_BOOLEAN_OPTIONS:
+                setattr(args, name, _boolean_argument(bounded, name))
+            args.fast_snapshot = fast_snapshot
+            workflow_remote._validate_numeric_args(args)
+            workflow_remote.validate_workflow_inputs(args)
+        except SystemExit as exc:
+            message = (
+                str(exc.code).strip()
+                if isinstance(exc.code, str) and str(exc.code).strip()
+                else "Debug arguments failed validation"
+            )
+            raise ValueError(message) from None
+        return args
+
     def observe_query(
         self,
         task: DebugMcpTask,
@@ -482,6 +515,11 @@ class DebugMcpBackend:
         assured = bounded.pop("assured", False)
         if not isinstance(assured, bool):
             raise TypeError("assured must be a boolean")
+        prior_observation = bounded.pop("prior_observation", None)
+        if prior_observation is not None and not isinstance(prior_observation, Mapping):
+            raise TypeError("prior_observation must be an object")
+        if prior_observation is not None and not assured:
+            raise ValueError("prior_observation is only valid for assured upgrade")
         credential_values = bounded.pop("_credential_values", None)
         minimum_target_epoch = bounded.pop("_minimum_target_epoch", 0)
         wide_capabilities = any(
@@ -491,21 +529,12 @@ class DebugMcpBackend:
         bounded["skip_telnet"] = "telnet" not in capability_names
         bounded["no_freshness"] = True
         bounded["no_source_correlation"] = True
-        bounded["deadline"] = max(
-            1,
-            min(
-                int(bounded.get("deadline", 180)),
-                int(math.ceil(context.remaining())),
-            ),
+        args = self._workflow_args(
+            bounded,
+            context,
+            default_deadline=180,
+            fast_snapshot=True,
         )
-        args = workflow_remote.parse_args(_workflow_argv(bounded))
-        for name in _TRANSPORT_STRING_OPTIONS:
-            setattr(args, name, str(bounded.get(name, "")))
-        for name in _TRANSPORT_BOOLEAN_OPTIONS:
-            setattr(args, name, _boolean_argument(bounded, name))
-        args.fast_snapshot = True
-        workflow_remote._validate_numeric_args(args)
-        workflow_remote.validate_workflow_inputs(args)
         deadline = workflow_remote.WorkflowDeadline(args.deadline)
         environment = os.environ.copy()
         with task.lease_scope(
@@ -523,33 +552,50 @@ class DebugMcpBackend:
                     reason="agent-observation",
                 )
             runner = workflow_remote.build_typed_debug_tool_runner(lease)
-            preflight = runner(
-                "preflight_start",
-                workflow_remote._preflight_command(args),
-                environment,
-                args.timeout,
-                deadline=deadline,
-            )
-            capabilities = workflow_remote.preflight_capabilities(preflight)
-            requested_queries = list(getattr(args, "mdb_queries", []))
-            if requested_queries and capabilities.get("mdbctl") is True:
-                mdb_results = workflow_remote._run_mdb_plan(
-                    args,
-                    environment,
-                    deadline,
-                    tool_runner=runner,
+            if isinstance(prior_observation, Mapping):
+                prior_result = prior_observation.get("result", {})
+                if not isinstance(prior_result, Mapping):
+                    raise ValueError("prior observation result is invalid")
+                preflight = prior_result.get("preflight_start", {})
+                prior_lanes = prior_result.get("lanes", {})
+                ssh_lane = (
+                    prior_lanes.get("ssh", {})
+                    if isinstance(prior_lanes, Mapping)
+                    else {}
                 )
+                if not isinstance(preflight, Mapping) or not isinstance(ssh_lane, Mapping):
+                    raise ValueError("prior observation cannot be reused")
+                preflight = dict(preflight)
+                mdb_results = dict(ssh_lane)
+                capabilities = workflow_remote.preflight_capabilities(preflight)
             else:
-                reason = "mdbctl capability was unavailable"
-                mdb_results = {
-                    ("mdbctl" if index == 0 else f"mdbctl_{index + 1}"): (
-                        workflow_remote.skipped_result(
-                            "mdbctl" if index == 0 else f"mdbctl_{index + 1}",
-                            reason,
-                        )
+                preflight = runner(
+                    "preflight_start",
+                    workflow_remote._preflight_command(args),
+                    environment,
+                    args.timeout,
+                    deadline=deadline,
+                )
+                capabilities = workflow_remote.preflight_capabilities(preflight)
+                requested_queries = list(getattr(args, "mdb_queries", []))
+                if requested_queries and capabilities.get("mdbctl") is True:
+                    mdb_results = workflow_remote._run_mdb_plan(
+                        args,
+                        environment,
+                        deadline,
+                        tool_runner=runner,
                     )
-                    for index, _query in enumerate(requested_queries)
-                }
+                else:
+                    reason = "mdbctl capability was unavailable"
+                    mdb_results = {
+                        ("mdbctl" if index == 0 else f"mdbctl_{index + 1}"): (
+                            workflow_remote.skipped_result(
+                                "mdbctl" if index == 0 else f"mdbctl_{index + 1}",
+                                reason,
+                            )
+                        )
+                        for index, _query in enumerate(requested_queries)
+                    }
             preflight_end = None
             if assured:
                 preflight_end = runner(
@@ -614,13 +660,6 @@ class DebugMcpBackend:
             or minimum_target_epoch < 0
         ):
             raise TypeError("_minimum_target_epoch must be a non-negative integer")
-        bounded["deadline"] = max(
-            1,
-            min(
-                int(bounded.get("deadline", 600)),
-                int(math.ceil(context.remaining())),
-            ),
-        )
         profile = str(bounded.get("profile", "standard"))
         if profile not in {"standard", "mdb", "object-alarm"}:
             raise ValueError(
@@ -640,22 +679,12 @@ class DebugMcpBackend:
             bounded["skip_telnet"] = True
             bounded["no_freshness"] = True
             bounded["no_source_correlation"] = True
-        try:
-            args = workflow_remote.parse_args(_workflow_argv(bounded))
-            for name in _TRANSPORT_STRING_OPTIONS:
-                setattr(args, name, str(bounded.get(name, "")))
-            for name in _TRANSPORT_BOOLEAN_OPTIONS:
-                setattr(args, name, _boolean_argument(bounded, name))
-            args.fast_snapshot = fast_object_alarm or fast_mdb
-            workflow_remote._validate_numeric_args(args)
-            workflow_remote.validate_workflow_inputs(args)
-        except SystemExit as exc:
-            message = (
-                str(exc.code).strip()
-                if isinstance(exc.code, str) and str(exc.code).strip()
-                else "Debug arguments failed validation"
-            )
-            raise ValueError(message) from None
+        args = self._workflow_args(
+            bounded,
+            context,
+            default_deadline=600,
+            fast_snapshot=fast_object_alarm or fast_mdb,
+        )
         source_root, source_root_source = resolve_source_root(args.source_root)
         args.source_root = str(source_root) if source_root else ""
         with task.lease_scope(

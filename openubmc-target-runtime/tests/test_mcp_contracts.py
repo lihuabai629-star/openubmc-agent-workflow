@@ -203,20 +203,9 @@ class RuntimeMcpServiceTests(unittest.TestCase):
             [
                 "debug_run",
                 "debug_collect",
-                "case_read",
-                "evidence_read",
-                "case_replay_export",
-                "case_replay_run",
-                "session_outcome_record",
-                "session_outcome_summary",
-                "session_outcome_transition",
-                "session_outcome_promote",
-                "case_close",
-                "case_forget",
                 "phase_record",
                 "workflow.advance",
                 "workflow.next",
-                "runtime_status",
             ],
         )
         debug_run = next(
@@ -272,8 +261,18 @@ class RuntimeMcpServiceTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
+            self.service.interface_catalog.names(),
+            (
+                "debug_run",
+                "debug_collect",
+                "phase_record",
+                "workflow.advance",
+                "workflow.next",
+            ),
+        )
+        self.assertEqual(
             self.service.tool_definitions(),
-            self.service.catalog.tool_definitions(),
+            self.service.interface_catalog.tool_definitions(),
         )
         debug = self.service.catalog.require("debug_run")
         self.assertEqual(debug.handler_name, "debug_run")
@@ -906,20 +905,9 @@ class JsonRpcEndpointTests(unittest.TestCase):
             [
                 "debug_run",
                 "debug_collect",
-                "case_read",
-                "evidence_read",
-                "case_replay_export",
-                "case_replay_run",
-                "session_outcome_record",
-                "session_outcome_summary",
-                "session_outcome_transition",
-                "session_outcome_promote",
-                "case_close",
-                "case_forget",
                 "phase_record",
                 "workflow.advance",
                 "workflow.next",
-                "runtime_status",
             ],
         )
 

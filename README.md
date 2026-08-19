@@ -42,9 +42,10 @@ written.
 
 The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
 queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,
-and Runtime status are available only through the explicit `operator` profile. The previous tool
-set remains available through the explicit `compatibility` profile for migration and measurement.
-See [Agent Semantic Gateway](docs/agent-semantic-gateway.md).
+Case lifecycle, and Runtime status are available only through the explicit `operator` profile.
+Legacy domain and workflow operations remain available through the explicit `compatibility`
+profile for migration and measurement; that profile does not expose operator operations. See
+[Agent Semantic Gateway](docs/agent-semantic-gateway.md).
 
 ## Credentials
 
@@ -121,7 +122,7 @@ In short:
 
 ## Immutable releases
 
-Version 1.2 releases use a two-commit topology. The source commit contains the final code and the
+Managed releases use a two-commit topology. The source commit contains the final code and the
 following lock-only commit adds `release-lock.json`; the release tag points to the lock-only commit.
 The lock records the source commit, workflow and schema identities, every Skill package digest, the
 Target Runtime digest, and the supported client/profile compatibility matrix.
@@ -145,8 +146,8 @@ release ref:
 
 ```bash
 python3 scripts/release_gate.py \
-  --current-ref v1.2.2 \
-  --previous-ref v1.1.1 \
+  --current-ref v2.0.0 \
+  --previous-ref v1.2.2 \
   --output release-gate.json
 ```
 

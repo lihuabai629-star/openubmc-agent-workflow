@@ -14,6 +14,7 @@ from openubmc_target_runtime import (  # noqa: E402
     CaseNotForgettable,
     ContextRuntime,
     InMemoryBlobRepository,
+    InMemoryRuntimeRepository,
     JsonRpcMcpEndpoint,
     OrchestratedMcpBackend,
     PendingCaseEvent,
@@ -657,10 +658,23 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertFalse(retained.envelope["continuation"]["workflow_complete"])
 
     def test_json_rpc_case_read_returns_typed_continuation_and_capsule(self) -> None:
+        repository = InMemoryRuntimeRepository()
+        blobs = InMemoryBlobRepository()
         service = RuntimeMcpService(
-            _DomainBackend(), interface_profile="compatibility"
+            _DomainBackend(),
+            context_repository=repository,
+            blob_repository=blobs,
+            interface_profile="compatibility",
         )
-        endpoint = JsonRpcMcpEndpoint(service, session_task_id="continuation-task")
+        operator_service = RuntimeMcpService(
+            _DomainBackend(),
+            context_repository=repository,
+            blob_repository=blobs,
+            interface_profile="operator",
+        )
+        endpoint = JsonRpcMcpEndpoint(
+            operator_service, session_task_id="continuation-operator"
+        )
         try:
             waiting = service.call_tool(
                 "workflow.advance",
@@ -686,6 +700,7 @@ class WorkflowRegressionTests(unittest.TestCase):
             )
         finally:
             service.close()
+            operator_service.close()
 
         envelope = response["result"]["structuredContent"]
         continuation = envelope["continuation"]

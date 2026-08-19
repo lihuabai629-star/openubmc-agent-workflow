@@ -179,6 +179,21 @@ class RuntimeOperationContractRegistry:
         }
 
 
+def _operator_contract(
+    name: str,
+    *,
+    lifecycle: str = "invoke",
+) -> RuntimeOperationContract:
+    """Keep operator exposure and audience as one internal metadata invariant."""
+
+    return RuntimeOperationContract(
+        name,
+        lifecycle=lifecycle,
+        exposure="operator",
+        audience="operator",
+    )
+
+
 DEFAULT_OPERATION_CONTRACTS = RuntimeOperationContractRegistry(
     (
         RuntimeOperationContract(
@@ -247,41 +262,19 @@ DEFAULT_OPERATION_CONTRACTS = RuntimeOperationContractRegistry(
             orchestration_phase="mutation",
             closeout_stage="upgrade",
         ),
-        RuntimeOperationContract(
-            "case_read", lifecycle="read", exposure="operator", audience="operator"
-        ),
-        RuntimeOperationContract(
-            "evidence_read", lifecycle="read", exposure="operator", audience="operator"
-        ),
-        RuntimeOperationContract(
-            "case_replay_export", lifecycle="read", exposure="operator", audience="operator"
-        ),
-        RuntimeOperationContract(
-            "case_replay_run", lifecycle="read", exposure="operator", audience="operator"
-        ),
-        RuntimeOperationContract(
-            "session_outcome_record", exposure="operator", audience="operator"
-        ),
-        RuntimeOperationContract(
-            "session_outcome_summary", lifecycle="read", exposure="operator", audience="operator"
-        ),
-        RuntimeOperationContract(
-            "session_outcome_transition", exposure="operator", audience="operator"
-        ),
-        RuntimeOperationContract(
-            "session_outcome_promote", exposure="operator", audience="operator"
-        ),
-        RuntimeOperationContract(
-            "case_close", lifecycle="close", exposure="operator", audience="operator"
-        ),
-        RuntimeOperationContract(
-            "case_forget", lifecycle="close", exposure="operator", audience="operator"
-        ),
+        _operator_contract("case_read", lifecycle="read"),
+        _operator_contract("evidence_read", lifecycle="read"),
+        _operator_contract("case_replay_export", lifecycle="read"),
+        _operator_contract("case_replay_run", lifecycle="read"),
+        _operator_contract("session_outcome_record"),
+        _operator_contract("session_outcome_summary", lifecycle="read"),
+        _operator_contract("session_outcome_transition"),
+        _operator_contract("session_outcome_promote"),
+        _operator_contract("case_close", lifecycle="close"),
+        _operator_contract("case_forget", lifecycle="close"),
         RuntimeOperationContract("phase_record"),
         RuntimeOperationContract("workflow.advance"),
         RuntimeOperationContract("workflow.next"),
-        RuntimeOperationContract(
-            "runtime_status", lifecycle="status", exposure="operator", audience="operator"
-        ),
+        _operator_contract("runtime_status", lifecycle="status"),
     )
 )

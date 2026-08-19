@@ -1144,14 +1144,26 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
 
     def test_public_json_rpc_exposes_terminal_closeout_case_and_evidence(self) -> None:
         repository = InMemoryRuntimeRepository()
+        blobs = InMemoryBlobRepository()
         service = RuntimeMcpService(
             PlanObservingBackend(repository),
             context_repository=repository,
+            blob_repository=blobs,
             interface_profile="compatibility",
+        )
+        operator_service = RuntimeMcpService(
+            PlanObservingBackend(repository),
+            context_repository=repository,
+            blob_repository=blobs,
+            interface_profile="operator",
         )
         endpoint = JsonRpcMcpEndpoint(
             service,
             session_task_id="jsonrpc-closeout-task",
+        )
+        operator_endpoint = JsonRpcMcpEndpoint(
+            operator_service,
+            session_task_id="jsonrpc-closeout-operator",
         )
         try:
             first = self._rpc_call(
@@ -1168,7 +1180,7 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             )["structuredContent"]
             case_id = first["agent_envelope"]["case_id"]
             before = self._rpc_call(
-                endpoint,
+                operator_endpoint,
                 2,
                 "case_read",
                 {"case_id": case_id},
@@ -1203,14 +1215,14 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             )
             terminal = terminal_result["structuredContent"]
             projected = self._rpc_call(
-                endpoint,
+                operator_endpoint,
                 5,
                 "case_read",
                 {"case_id": case_id},
             )["structuredContent"]
             reference = projected["evidence_refs"][0]
             evidence = self._rpc_call(
-                endpoint,
+                operator_endpoint,
                 6,
                 "evidence_read",
                 {
@@ -1222,6 +1234,7 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             persisted = repository.load(case_id)
         finally:
             service.close()
+            operator_service.close()
 
         self.assertTrue(terminal["completed"])
         self.assertIn("closeout", terminal)
