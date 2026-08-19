@@ -4234,8 +4234,6 @@ def runtime_mcp_health(
         '{"name":"openubmc-environment-setup","version":"1"}}}\n'
         '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
         '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n'
-        '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":'
-        '{"name":"runtime_status","arguments":{}}}\n'
     )
     environment = os.environ.copy()
     environment["HOME"] = str(home)
@@ -4265,9 +4263,8 @@ def runtime_mcp_health(
         return False, "MCP launcher returned invalid JSON", []
     initialize = responses.get(1, {}).get("result", {})
     tools_result = responses.get(2, {}).get("result", {})
-    status_result = responses.get(3, {}).get("result", {})
-    if not all(isinstance(value, dict) for value in (initialize, tools_result, status_result)):
-        return False, "MCP initialize, tools/list, or runtime_status response is missing", []
+    if not all(isinstance(value, dict) for value in (initialize, tools_result)):
+        return False, "MCP initialize or tools/list response is missing", []
     server = initialize.get("serverInfo", {})
     if not isinstance(server, dict) or server.get("version") != TARGET_RUNTIME_API_VERSION:
         return False, "MCP Runtime API version mismatch", []
@@ -4279,31 +4276,12 @@ def runtime_mcp_health(
         for entry in tool_entries
         if isinstance(entry, dict) and isinstance(entry.get("name"), str)
     )
-    required = {
-        "debug_run",
-        "debug_collect",
-        "log_bundle_collect",
-        "live_patch_run",
-        "upgrade_run",
-        "case_read",
-        "evidence_read",
-        "case_close",
-        "case_forget",
-        "phase_record",
-        "workflow.advance",
-        "workflow.next",
-        "runtime_status",
-    }
-    if not required.issubset(tools_found):
-        return False, "MCP domain tools are incomplete", tools_found
-    if status_result.get("isError") is not False:
-        return False, "MCP runtime_status call failed", tools_found
-    structured = status_result.get("structuredContent")
-    if not isinstance(structured, dict):
-        return False, "MCP runtime_status structured result is missing", tools_found
-    if structured.get("api_version") != TARGET_RUNTIME_API_VERSION:
-        return False, "MCP runtime_status API version mismatch", tools_found
-    return True, f"ok ({len(tools_found)} domain tools)", tools_found
+    if tools_found != ["execute", "observe"]:
+        return False, "MCP semantic Agent tools are incomplete", tools_found
+    encoded_tools = json.dumps(tool_entries, separators=(",", ":")).encode("utf-8")
+    if len(encoded_tools) > 8 * 1024:
+        return False, "MCP tools/list exceeds the 8KB Agent budget", tools_found
+    return True, f"ok ({len(tools_found)} semantic tools)", tools_found
 
 
 def knowledge_mcp_health(

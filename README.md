@@ -40,6 +40,25 @@ Codex and Claude receive managed stdio MCP entries. OpenClaw receives the same S
 current upstream configuration has no native MCP adapter, so no unsupported configuration key is
 written.
 
+The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
+queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,
+Case lifecycle, and Runtime status are available only through the explicit `operator` profile.
+Legacy domain and workflow operations remain available through the explicit `compatibility`
+profile for migration and measurement; that profile does not expose operator operations. See
+[Agent Semantic Gateway](docs/agent-semantic-gateway.md).
+
+## Architecture and evolution
+
+The stable product boundary, vocabulary, accepted decisions, market comparison, and phased roadmap
+are maintained in the following records:
+
+- [Domain context](CONTEXT.md)
+- [Architecture Decision Records](docs/adr/README.md)
+- [Architecture arbitration](docs/workflow-architecture-arbitration.md)
+- [Market workflow design research](docs/workflow-design-market-research.md)
+- [External research reconciliation](docs/external-workflow-research-reconciliation.md)
+- [Evolution roadmap](docs/workflow-evolution-roadmap.md)
+
 ## Credentials
 
 BMC and OS credentials:
@@ -115,7 +134,7 @@ In short:
 
 ## Immutable releases
 
-Version 1.2 releases use a two-commit topology. The source commit contains the final code and the
+Managed releases use a two-commit topology. The source commit contains the final code and the
 following lock-only commit adds `release-lock.json`; the release tag points to the lock-only commit.
 The lock records the source commit, workflow and schema identities, every Skill package digest, the
 Target Runtime digest, and the supported client/profile compatibility matrix.
@@ -139,14 +158,15 @@ release ref:
 
 ```bash
 python3 scripts/release_gate.py \
-  --current-ref v1.2.2 \
-  --previous-ref v1.1.1 \
+  --current-ref v2.0.0 \
+  --previous-ref v1.2.2 \
   --output release-gate.json
 ```
 
-The gate requires clean installation, previous-to-current upgrade, rollback, and deterministic Case
-Replay smoke in that order. A failed gate skips all later gates and prevents promotion. The GitHub
-Release workflow applies the same ordering and only creates a release after the gate job succeeds.
+The gate requires clean installation, previous-to-current upgrade, rollback, Agent Interface
+contracts, and deterministic Case Replay smoke in that order. A failed gate skips all later gates
+and prevents promotion. The GitHub Release workflow applies the same ordering and only creates a
+release after the gate job succeeds.
 
 ## Session Outcome governance
 

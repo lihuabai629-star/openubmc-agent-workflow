@@ -337,26 +337,7 @@ class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
             finally:
                 service.close()
 
-        self.assertEqual(
-            names,
-            [
-                "log_bundle_collect",
-                "case_read",
-                "evidence_read",
-                "case_replay_export",
-                "case_replay_run",
-                "session_outcome_record",
-                "session_outcome_summary",
-                "session_outcome_transition",
-                "session_outcome_promote",
-                "case_close",
-                "case_forget",
-                "phase_record",
-                "workflow.advance",
-                "workflow.next",
-                "runtime_status",
-            ],
-        )
+        self.assertEqual(names, ["observe", "execute"])
         self.assertEqual(first["result"]["transport"], "redfish")
         self.assertEqual(second["result"]["transport"], "redfish")
         self.assertEqual(redfish.opens, 1)

@@ -15,7 +15,7 @@ SPEC.loader.exec_module(release_gate)
 
 
 class ReleaseGateTests(unittest.TestCase):
-    def test_all_four_gates_are_required_for_promotion(self) -> None:
+    def test_all_release_gates_are_required_for_promotion(self) -> None:
         calls: list[tuple[str, ...]] = []
 
         def succeed(command, *, cwd):
@@ -36,10 +36,16 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertTrue(report["promotable"])
         self.assertEqual(
             [item["name"] for item in report["gates"]],
-            ["clean_install", "upgrade", "rollback", "replay_smoke"],
+            [
+                "clean_install",
+                "upgrade",
+                "rollback",
+                "agent_interface",
+                "replay_smoke",
+            ],
         )
         self.assertTrue(all(item["status"] == "passed" for item in report["gates"]))
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 6)
 
     def test_failure_blocks_later_gates_and_promotion(self) -> None:
         call_count = 0
@@ -66,7 +72,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertFalse(report["promotable"])
         self.assertEqual(
             [item["status"] for item in report["gates"]],
-            ["passed", "failed", "skipped", "skipped"],
+            ["passed", "failed", "skipped", "skipped", "skipped"],
         )
         self.assertEqual(call_count, 3)
 

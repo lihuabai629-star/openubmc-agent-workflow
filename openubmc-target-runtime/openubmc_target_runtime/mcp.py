@@ -24,6 +24,13 @@ from .contracts import (
     _fingerprint,
 )
 from .catalog import OperationCatalog, OperationDescriptor
+from .agent_gateway import (
+    AgentGateway,
+    OBSERVATION_MAX_BYTES,
+    ResultProjector,
+    ScopeContract,
+    agent_operation_descriptors,
+)
 from .capability import (
     CallableDomainAdapter,
     CapabilityDescriptor,
@@ -2012,8 +2019,221 @@ class OrchestratedMcpBackend:
 
         return call
 
+class _RuntimeGatewayAdapter:
+    """Keep Agent semantics independent from Runtime transport mechanics."""
+
+    def __init__(self, service: "RuntimeMcpService") -> None:
+        self.service = service
+
+    def observe_operation(
+        self,
+        operation: str,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        return self.service._observe_domain_direct(
+            operation,
+            arguments,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+
+    def assure_observation(
+        self,
+        prior: Mapping[str, object],
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        reusable = dict(arguments)
+        reusable["_agent_prior_observation"] = dict(prior)
+        return self.service._observe_domain_direct(
+            "debug_collect",
+            reusable,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+
+    def run_operation(
+        self,
+        operation: str,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        return self.service.call_tool(
+            operation,
+            arguments,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+
+    def run_snapshot(self, run_id: str) -> Mapping[str, object]:
+        projection = self.service.context_runtime.read_case(run_id)
+        return {
+            "projection": projection,
+            "continuation": self.service.context_runtime.continuation_for(
+                projection
+            ),
+        }
+
+    def persist_observation(
+        self,
+        raw: Mapping[str, object],
+        *,
+        scope: Mapping[str, object],
+        assurance: str,
+    ) -> Mapping[str, object]:
+        return self.service.context_runtime.persist_observation(
+            raw,
+            scope=scope,
+            assurance=assurance,
+        )
+
+    def start_run(
+        self,
+        arguments: Mapping[str, object],
+        observation_receipt: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        if observation_receipt.get("status") != "complete":
+            raise ValueError("only a complete ObservationReceipt can seed a Run")
+        source = _mapping_or_empty(observation_receipt.get("source"))
+        stored = self.service.context_runtime.load_observation(source)
+        stored_scope = _mapping_or_empty(stored.get("scope"))
+        scope = ScopeContract.from_query(stored_scope)
+        if scope.target != str(arguments.get("ip", "")).strip():
+            raise ValueError("ObservationReceipt target does not match the Run target")
+        raw = _mapping_or_empty(stored.get("raw"))
+        expected = ResultProjector().observation(
+            raw,
+            scope,
+            assurance=str(stored.get("assurance", "fast")),
+            source=source,
+        )
+        if expected != dict(observation_receipt):
+            raise ValueError("ObservationReceipt failed source reconstruction")
+        descriptor = self.service.catalog.require("debug_run")
+        seeded = self.service.context_runtime.invoke_domain(
+            descriptor,
+            arguments,
+            task_id=task_id,
+            operation_id=f"{operation_id}-observation",
+            executor=lambda: raw,
+        )
+        run_id = str(seeded.envelope.get("case_id", ""))
+        if not run_id:
+            raise RuntimeError("observation-seeded Run did not open a Case")
+        return self.service.call_tool(
+            "workflow.next",
+            {
+                "case_id": run_id,
+                "max_steps": 64,
+                "include_closeout_bundle": False,
+            },
+            task_id=task_id,
+            operation_id=f"{operation_id}-next",
+        )
+
+    def reconcile_run(
+        self,
+        run_id: str,
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        projection = self.service.context_runtime.read_case(run_id)
+        unknown = next(
+            (
+                item
+                for item in reversed(list(projection.get("operations", [])))
+                if isinstance(item, Mapping)
+                and item.get("status") == "mutation_outcome_unknown"
+                and str(item.get("operation", "")) in self.service.catalog.names()
+                and self.service.catalog.require(
+                    str(item.get("operation", ""))
+                ).mutation
+            ),
+            None,
+        )
+        if not isinstance(unknown, Mapping):
+            raise ValueError("run has no unknown mutation to reconcile")
+        blocked_operation = str(unknown.get("operation", ""))
+        blocked_operation_id = str(unknown.get("operation_id", ""))
+        if not blocked_operation_id:
+            raise ValueError("unknown mutation is missing its durable operation id")
+        recovered = self.service.context_runtime.restore_domain_arguments(
+            f"{task_id}-agent-reconcile",
+            blocked_operation,
+            {"case_id": run_id},
+        )
+        recovered["idempotency_key"] = blocked_operation_id
+        self.service.call_tool(
+            blocked_operation,
+            recovered,
+            task_id=task_id,
+            operation_id=blocked_operation_id,
+        )
+        return self.service.call_tool(
+            "workflow.next",
+            {
+                "case_id": run_id,
+                "max_steps": 64,
+                "include_closeout_bundle": False,
+            },
+            task_id=task_id,
+            operation_id=f"{operation_id}-next",
+        )
+
+    def record_run_outcome(
+        self,
+        *,
+        task_id: str,
+        run_id: str,
+        outcome: str,
+        summary: str,
+        details: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        projection = self.service.context_runtime.read_case(run_id)
+        replay_fingerprint = "sha256:" + hashlib.sha256(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "status": projection.get("status"),
+                    "revision": projection.get("revision"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return self.service.session_outcome_service.record(
+            session_id=task_id,
+            case_id=run_id,
+            replay_fingerprint=replay_fingerprint,
+            workflow=str(
+                _mapping_or_empty(projection.get("workflow_definition")).get(
+                    "definition_id", "runtime-workflow"
+                )
+            ),
+            domain=str(projection.get("entry_domain", "runtime") or "runtime"),
+            outcome=outcome,
+            summary=summary,
+            details=details,
+        ).to_public_dict()
+
+
+def _mapping_or_empty(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
 class RuntimeMcpService:
-    """Bind the three domain tools to a reusable task lifecycle registry."""
+    """Bind Runtime Core operations to Agent, compatibility, or operator interfaces."""
 
     def __init__(
         self,
@@ -2030,6 +2250,7 @@ class RuntimeMcpService:
         context_storage_soft_limit_bytes: int = 1024 * 1024 * 1024,
         context_maintenance_interval_seconds: float = 60,
         context_mode: str = "authoritative",
+        interface_profile: str = "agent",
         **registry_options: object,
     ) -> None:
         selected_context_mode = str(context_mode).strip().lower()
@@ -2098,6 +2319,32 @@ class RuntimeMcpService:
         self.session_outcome_service = SessionOutcomeService(
             session_outcome_repository or InMemorySessionOutcomeRepository()
         )
+        selected_interface_profile = str(interface_profile).strip().lower()
+        if selected_interface_profile not in {
+            "agent",
+            "compatibility",
+            "operator",
+        }:
+            raise ValueError(
+                "interface_profile must be agent, compatibility, or operator"
+            )
+        self.interface_profile = selected_interface_profile
+        self.agent_gateway = AgentGateway(_RuntimeGatewayAdapter(self))
+        if self.interface_profile == "agent":
+            interface_descriptors = agent_operation_descriptors()
+        elif self.interface_profile == "operator":
+            interface_descriptors = tuple(
+                descriptor
+                for descriptor in self.catalog.descriptors()
+                if descriptor.exposure == "operator"
+            )
+        else:
+            interface_descriptors = tuple(
+                descriptor
+                for descriptor in self.catalog.descriptors()
+                if descriptor.exposure == "compatibility"
+            )
+        self.interface_catalog = OperationCatalog(interface_descriptors)
         if context_maintenance_interval_seconds < 0:
             raise ValueError("context maintenance interval must not be negative")
         self._context_maintenance_interval_seconds = float(
@@ -2350,10 +2597,8 @@ class RuntimeMcpService:
                             "type": "string",
                             "enum": [
                                 "standard",
-                                "freshness",
                                 "mdb",
                                 "object-alarm",
-                                "log-file",
                             ],
                             "default": "standard",
                             "description": (
@@ -2750,7 +2995,6 @@ class RuntimeMcpService:
                             "phase_type",
                             "producer_identity",
                             "status",
-                            "source_revision",
                             "summary",
                         ],
                         "properties": {
@@ -2833,6 +3077,15 @@ class RuntimeMcpService:
                             "remote_path": {"type": "string"},
                             "restart_scope": {"enum": ["none", "skynet"]},
                         },
+                        "allOf": [
+                            {
+                                "if": {
+                                    "properties": {"status": {"const": "completed"}},
+                                    "required": ["status"],
+                                },
+                                "then": {"required": ["source_revision"]},
+                            }
+                        ],
                         "additionalProperties": True,
                     },
                 },
@@ -2907,7 +3160,179 @@ class RuntimeMcpService:
         return definitions
 
     def tool_definitions(self) -> list[dict[str, object]]:
-        return self.catalog.tool_definitions()
+        return self.interface_catalog.tool_definitions()
+
+    def call_exposed_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Dispatch only operations selected by the active interface profile."""
+
+        if not isinstance(arguments, Mapping):
+            raise TypeError("tool arguments must be an object")
+        self.interface_catalog.validate_arguments(name, arguments)
+        if self.interface_profile == "agent":
+            if name == "observe":
+                return self.agent_gateway.observe(
+                    arguments,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                )
+            if name == "execute":
+                return self.agent_gateway.execute(
+                    arguments,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                )
+            raise ValueError(f"unknown Agent operation: {name}")
+        return self.call_tool(
+            name,
+            arguments,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+
+    def _execute_domain_value(
+        self,
+        name: str,
+        descriptor: OperationDescriptor,
+        domain_arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        callback = getattr(self.backend, str(descriptor.handler_name), None)
+        if not callable(callback):
+            raise RuntimeError(
+                f"operation catalog handler became unavailable: {descriptor.name}"
+            )
+        capability_descriptor = self.capability_registry.require(name)
+        timeout = min(
+            self._timeout(domain_arguments), capability_descriptor.timeout_seconds
+        )
+        bounded_arguments = dict(domain_arguments)
+        return dict(
+            self.runtime_sdk.execute(
+                name,
+                context=RuntimeSDKContext(
+                    task_id=task_id,
+                    operation_id=operation_id,
+                    timeout_seconds=timeout,
+                    target_id=str(bounded_arguments.get("target_id", "")),
+                    minimum_target_epoch=int(
+                        bounded_arguments.get("_minimum_target_epoch", 0)
+                    ),
+                ),
+                arguments=bounded_arguments,
+                adapter=CallableDomainAdapter(
+                    lambda _sdk_context, _sdk_arguments: self.registry.execute(
+                        task_id=task_id,
+                        operation_id=operation_id,
+                        timeout_seconds=timeout,
+                        callback=lambda task, context: callback(
+                            task, bounded_arguments, context
+                        ),
+                    )
+                ),
+            ).value
+        )
+
+    def _observe_domain_direct(
+        self,
+        name: str,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Run a precise read without opening a Case or producing a Closeout."""
+
+        if name not in {"debug_collect", "debug_run"}:
+            raise ValueError(f"unsupported observation adapter: {name}")
+        descriptor = self.catalog.require(name)
+        raw_arguments = dict(arguments)
+        capability_names = raw_arguments.pop("_agent_capability_names", [])
+        assured = raw_arguments.pop("_agent_assured", False)
+        prior_observation = raw_arguments.pop("_agent_prior_observation", None)
+        if not isinstance(capability_names, list) or not all(
+            isinstance(item, str) for item in capability_names
+        ):
+            raise TypeError("_agent_capability_names must be an array of strings")
+        if not isinstance(assured, bool):
+            raise TypeError("_agent_assured must be a boolean")
+        if prior_observation is not None and not isinstance(prior_observation, Mapping):
+            raise TypeError("_agent_prior_observation must be an object")
+        canonical = self._canonicalize_tool_arguments(name, raw_arguments)
+        for internal_name in _INTERNAL_TASK_ARGUMENTS:
+            canonical.pop(internal_name, None)
+        self._validate_boolean_argument_types(descriptor, canonical)
+        self.catalog.validate_arguments(name, canonical)
+        domain_arguments = {
+            key: value
+            for key, value in canonical.items()
+            if key not in {"case_id", "expected_revision", "idempotency_key"}
+            and not key.startswith("_workflow_")
+            and key != "_context_defaults_inferred"
+        }
+        domain_arguments.pop(_WORKFLOW_ARGUMENT, None)
+        if isinstance(self.backend, OrchestratedMcpBackend):
+            domain_arguments["_context_authoritative"] = True
+            debug_backend = self.backend.tool_backends.get("debug_collect")
+            specialized = getattr(debug_backend, "observe_query", None)
+            if name == "debug_collect" and callable(specialized):
+                timeout = self._timeout(domain_arguments)
+                observed_arguments = dict(domain_arguments)
+                observed_arguments["capability_names"] = list(capability_names)
+                observed_arguments["assured"] = assured
+                if isinstance(prior_observation, Mapping):
+                    observed_arguments["prior_observation"] = dict(prior_observation)
+                return dict(
+                    self.registry.execute(
+                        task_id=task_id,
+                        operation_id=operation_id,
+                        timeout_seconds=timeout,
+                        callback=lambda task, context: (
+                            lambda backend, resource: backend.observe_query(
+                                resource,
+                                observed_arguments,
+                                context,
+                            )
+                        )(*task.resource_for("debug_collect")),
+                    )
+                )
+        specialized = getattr(self.backend, "observe_query", None)
+        if name == "debug_collect" and callable(specialized):
+            timeout = self._timeout(domain_arguments)
+            observed_arguments = dict(domain_arguments)
+            observed_arguments["capability_names"] = list(capability_names)
+            observed_arguments["assured"] = assured
+            if isinstance(prior_observation, Mapping):
+                observed_arguments["prior_observation"] = dict(prior_observation)
+            return dict(
+                self.registry.execute(
+                    task_id=task_id,
+                    operation_id=operation_id,
+                    timeout_seconds=timeout,
+                    callback=lambda task, context: specialized(
+                        task, observed_arguments, context
+                    ),
+                )
+            )
+        if assured:
+            raise RuntimeError(
+                "assured observation requires a scope-preserving observation adapter"
+            )
+        return self._execute_domain_value(
+            name,
+            descriptor,
+            domain_arguments,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
 
     @staticmethod
     def _timeout(arguments: Mapping[str, object]) -> float:
@@ -3224,15 +3649,6 @@ class RuntimeMcpService:
                     ),
                 )
             raise RuntimeError(f"context operation is not implemented: {name}")
-        callback = getattr(self.backend, str(descriptor.handler_name), None)
-        if not callable(callback):
-            raise RuntimeError(
-                f"operation catalog handler became unavailable: {descriptor.name}"
-            )
-        capability_descriptor = self.capability_registry.require(name)
-        timeout = min(
-            self._timeout(arguments), capability_descriptor.timeout_seconds
-        )
         context_arguments = arguments
         domain_arguments = {
             key: value
@@ -3260,30 +3676,12 @@ class RuntimeMcpService:
                     "_minimum_target_epoch",
                     minimum_target_epoch,
                 )
-        executor = lambda: dict(
-            self.runtime_sdk.execute(
-                name,
-                context=RuntimeSDKContext(
-                    task_id=task_id,
-                    operation_id=operation_id,
-                    timeout_seconds=timeout,
-                    target_id=str(domain_arguments.get("target_id", "")),
-                    minimum_target_epoch=int(
-                        domain_arguments.get("_minimum_target_epoch", 0)
-                    ),
-                ),
-                arguments=domain_arguments,
-                adapter=CallableDomainAdapter(
-                    lambda _sdk_context, _sdk_arguments: self.registry.execute(
-                        task_id=task_id,
-                        operation_id=operation_id,
-                        timeout_seconds=timeout,
-                        callback=lambda task, context: callback(
-                            task, domain_arguments, context
-                        ),
-                    )
-                ),
-            ).value
+        executor = lambda: self._execute_domain_value(
+            name,
+            descriptor,
+            domain_arguments,
+            task_id=task_id,
+            operation_id=operation_id,
         )
         if self.context_mode == "shadow":
             legacy_value = executor()
@@ -3327,7 +3725,9 @@ class RuntimeMcpService:
         arguments: Mapping[str, object],
         task_id: str,
         operation_id: str,
-    ) -> ContextToolResult:
+    ) -> Mapping[str, object]:
+        if name in {"observe", "execute"}:
+            return self.agent_gateway.error(name, exc)
         return self.context_runtime.error_result(
             exc,
             operation=name,
@@ -3382,6 +3782,8 @@ class JsonRpcMcpEndpoint:
     @staticmethod
     def _tool_label(tool_name: str | None) -> str:
         return {
+            "observe": "openUBMC 观察",
+            "execute": "openUBMC 工作流",
             "debug_run": "openUBMC 诊断",
             "debug_collect": "openUBMC 实时采集",
             "log_bundle_collect": "日志包采集",
@@ -3398,6 +3800,75 @@ class JsonRpcMcpEndpoint:
             if isinstance(candidate, str) and candidate.strip():
                 return candidate.strip()
         return ""
+
+    @staticmethod
+    def _observation_text(value: Mapping[str, object]) -> str:
+        scope = _mapping_or_empty(value.get("scope"))
+        selectors = scope.get("selectors", [])
+        selector_queries: dict[str, list[str]] = {}
+        if isinstance(selectors, list):
+            for selector_value in selectors:
+                selector = _mapping_or_empty(selector_value)
+                selector_id = str(selector.get("id", ""))
+                queries = selector.get("queries", [])
+                if selector_id and isinstance(queries, list):
+                    selector_queries[selector_id] = [str(query) for query in queries]
+        freshness = _mapping_or_empty(value.get("freshness"))
+        coverage = _mapping_or_empty(value.get("coverage"))
+        lines = [
+            (
+                f"ObservationReceipt {value.get('receipt_id', '')} "
+                f"status={value.get('status', 'unknown')} "
+                f"observed_at={freshness.get('observed_at', '')}"
+            )
+        ]
+        results = _mapping_or_empty(value.get("results"))
+        for selector_id, raw_result in results.items():
+            result = _mapping_or_empty(raw_result)
+            values = result.get("values", [])
+            if not isinstance(values, list):
+                continue
+            if result.get("kind") == "capability":
+                rendered = ", ".join(
+                    f"{item.get('name', '')}={item.get('status', 'not_checked')}"
+                    for raw_item in values
+                    if (item := _mapping_or_empty(raw_item))
+                )
+                lines.append(f"capability[{selector_id}]: {rendered}")
+                continue
+            queries = selector_queries.get(str(selector_id), [])
+            for raw_item in values:
+                item = _mapping_or_empty(raw_item)
+                index = item.get("query_index", 0)
+                query = (
+                    queries[index]
+                    if isinstance(index, int) and 0 <= index < len(queries)
+                    else f"query[{index}]"
+                )
+                rendered_value = json.dumps(
+                    item.get("value"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                lines.append(
+                    f"mdb[{selector_id}] {query} => {rendered_value} "
+                    f"status={item.get('status', 'not_checked')}"
+                )
+        lines.append(
+            "coverage: "
+            f"requested={coverage.get('requested', 0)} "
+            f"available={coverage.get('available', 0)} "
+            f"unavailable={coverage.get('unavailable', 0)} "
+            f"not_checked={coverage.get('not_checked', 0)}"
+        )
+        text = "\n".join(lines)
+        encoded = text.encode("utf-8")
+        if len(encoded) <= OBSERVATION_MAX_BYTES:
+            return text
+        return encoded[: OBSERVATION_MAX_BYTES - 3].decode(
+            "utf-8", errors="ignore"
+        ) + "..."
 
     @classmethod
     def _human_summary(
@@ -3441,6 +3912,18 @@ class JsonRpcMcpEndpoint:
 
         if not isinstance(value, Mapping):
             return str(value)
+        if tool_name == "observe":
+            return cls._observation_text(value)
+        if tool_name == "execute":
+            gate = value.get("gate")
+            gate = gate if isinstance(gate, Mapping) else {}
+            state = str(value.get("state", "unknown"))
+            if gate:
+                return (
+                    f"openUBMC 工作流已推进到 {state}："
+                    f"{gate.get('kind', 'gate')} {gate.get('name', '')}。"
+                )
+            return f"openUBMC 工作流状态：{state}。"
         closeout_markdown = value.get("closeout_markdown")
         if isinstance(closeout_markdown, str) and closeout_markdown.strip():
             return closeout_markdown.strip()
@@ -3648,7 +4131,7 @@ class JsonRpcMcpEndpoint:
                     self._tool_result("tool name and arguments are required", error=True),
                 )
             try:
-                value = self.service.call_tool(
+                value = self.service.call_exposed_tool(
                     name,
                     arguments,
                     task_id=self.task_id_for_params(params),

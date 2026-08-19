@@ -75,7 +75,7 @@ class RecordingBackend:
         if name in {"live_patch_run", "upgrade_run"}:
             value["journal"] = {"stage": "verified"}
         if name == "debug_collect":
-            value["profile"] = arguments.get("profile", "freshness")
+            value["profile"] = arguments.get("profile", "standard")
         return value
 
     def debug_run(self, task, arguments, context) -> dict[str, object]:
@@ -113,6 +113,7 @@ class WorkflowNextTests(unittest.TestCase):
             self.backend,
             context_repository=self.repository,
             blob_repository=self.blobs,
+            interface_profile="compatibility",
         )
 
     def tearDown(self) -> None:

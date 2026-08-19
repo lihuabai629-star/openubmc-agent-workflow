@@ -28,6 +28,11 @@ class RuntimeOperationContract:
     evidence_types: tuple[str, ...] = ()
     orchestration_phase: str = ""
     closeout_stage: str = ""
+    exposure: str = "compatibility"
+    audience: str = "internal"
+    cost_hint: str = "unbounded"
+    scope_contract: str = "legacy-operation"
+    result_projector: str = "agent-envelope"
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -73,6 +78,11 @@ class RuntimeOperationContract:
             lifecycle=self.lifecycle,
             handler_name=self.handler_name,
             mutation=self.mutation,
+            exposure=self.exposure,
+            audience=self.audience,
+            cost_hint=self.cost_hint,
+            scope_contract=self.scope_contract,
+            result_projector=self.result_projector,
         )
 
     def capability_descriptor(
@@ -158,10 +168,30 @@ class RuntimeOperationContractRegistry:
                     "evidence_types": list(contract.evidence_types),
                     "orchestration_phase": contract.orchestration_phase,
                     "closeout_stage": contract.closeout_stage,
+                    "exposure": contract.exposure,
+                    "audience": contract.audience,
+                    "cost_hint": contract.cost_hint,
+                    "scope_contract": contract.scope_contract,
+                    "result_projector": contract.result_projector,
                 }
                 for contract in self._ordered
             ],
         }
+
+
+def _operator_contract(
+    name: str,
+    *,
+    lifecycle: str = "invoke",
+) -> RuntimeOperationContract:
+    """Keep operator exposure and audience as one internal metadata invariant."""
+
+    return RuntimeOperationContract(
+        name,
+        lifecycle=lifecycle,
+        exposure="operator",
+        audience="operator",
+    )
 
 
 DEFAULT_OPERATION_CONTRACTS = RuntimeOperationContractRegistry(
@@ -232,19 +262,19 @@ DEFAULT_OPERATION_CONTRACTS = RuntimeOperationContractRegistry(
             orchestration_phase="mutation",
             closeout_stage="upgrade",
         ),
-        RuntimeOperationContract("case_read", lifecycle="read"),
-        RuntimeOperationContract("evidence_read", lifecycle="read"),
-        RuntimeOperationContract("case_replay_export", lifecycle="read"),
-        RuntimeOperationContract("case_replay_run", lifecycle="read"),
-        RuntimeOperationContract("session_outcome_record"),
-        RuntimeOperationContract("session_outcome_summary", lifecycle="read"),
-        RuntimeOperationContract("session_outcome_transition"),
-        RuntimeOperationContract("session_outcome_promote"),
-        RuntimeOperationContract("case_close", lifecycle="close"),
-        RuntimeOperationContract("case_forget", lifecycle="close"),
+        _operator_contract("case_read", lifecycle="read"),
+        _operator_contract("evidence_read", lifecycle="read"),
+        _operator_contract("case_replay_export", lifecycle="read"),
+        _operator_contract("case_replay_run", lifecycle="read"),
+        _operator_contract("session_outcome_record"),
+        _operator_contract("session_outcome_summary", lifecycle="read"),
+        _operator_contract("session_outcome_transition"),
+        _operator_contract("session_outcome_promote"),
+        _operator_contract("case_close", lifecycle="close"),
+        _operator_contract("case_forget", lifecycle="close"),
         RuntimeOperationContract("phase_record"),
         RuntimeOperationContract("workflow.advance"),
         RuntimeOperationContract("workflow.next"),
-        RuntimeOperationContract("runtime_status", lifecycle="status"),
+        _operator_contract("runtime_status", lifecycle="status"),
     )
 )

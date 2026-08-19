@@ -102,18 +102,9 @@ class EnvironmentSetupTests(unittest.TestCase):
             "'openubmc.target-runtime.v1'}, 'capabilities': {'tools': {}}}\n"
             "    elif request.get('method') == 'tools/list':\n"
             "        result = {'tools': [{'name': name} for name in "
-            "('debug_run', 'debug_collect', 'log_bundle_collect', "
-            "'live_patch_run', 'upgrade_run', 'case_read', 'evidence_read', "
-            "'case_close', 'case_forget', 'phase_record', 'workflow.advance', "
-            "'workflow.next', 'runtime_status')]}\n"
+            "('observe', 'execute')]}\n"
             "    elif request.get('method') == 'notifications/initialized':\n"
             "        continue\n"
-            "    elif request.get('method') == 'tools/call' and "
-            "request.get('params', {}).get('name') == 'runtime_status':\n"
-            "        status = {'api_version': 'openubmc.target-runtime.v1'}\n"
-            "        result = {'content': [{'type': 'text', 'text': "
-            "json.dumps(status)}], 'isError': False, "
-            "'structuredContent': status}\n"
             "    else:\n"
             "        continue\n"
             "    print(json.dumps({'jsonrpc': '2.0', 'id': request.get('id'), "
@@ -2314,23 +2305,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             Path(state["runtime"]["launcher_path"]), self.home, timeout=45.0
         )
         self.assertTrue(healthy, detail)
-        self.assertTrue(
-            {
-                "debug_run",
-                "debug_collect",
-                "log_bundle_collect",
-                "live_patch_run",
-                "upgrade_run",
-                "case_read",
-                "evidence_read",
-                "case_close",
-                "case_forget",
-                "phase_record",
-                "workflow.advance",
-                "workflow.next",
-                "runtime_status",
-            }.issubset(tools)
-        )
+        self.assertEqual(tools, ["execute", "observe"])
         knowledge = state["knowledge_mcp"]
         kb_healthy, kb_detail, kb_tools, kb_configured = installer.knowledge_mcp_health(
             Path(knowledge["launcher_path"]), self.home
@@ -3334,21 +3309,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertTrue(document["runtime_mcp"]["healthy"])
         self.assertEqual(
             document["runtime_mcp"]["tools"],
-            [
-                "case_close",
-                "case_forget",
-                "case_read",
-                "debug_collect",
-                "debug_run",
-                "evidence_read",
-                "live_patch_run",
-                "log_bundle_collect",
-                "phase_record",
-                "runtime_status",
-                "upgrade_run",
-                "workflow.advance",
-                "workflow.next",
-            ],
+            ["execute", "observe"],
         )
         self.assertTrue(document["engines"]["mcp"])
         self.assertTrue(document["engines"]["cli"])

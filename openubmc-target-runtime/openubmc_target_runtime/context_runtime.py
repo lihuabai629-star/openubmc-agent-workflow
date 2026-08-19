@@ -48,6 +48,7 @@ from .workflow import (
 
 
 CONTEXT_RUNTIME_SCHEMA = f"{RUNTIME_API_VERSION}/context-runtime"
+OBSERVATION_SOURCE_SCHEMA = f"{RUNTIME_API_VERSION}/observation-source-v1"
 CONTEXT_RUNTIME_STORAGE_VERSION = 1
 AGENT_ENVELOPE_SCHEMA = f"{RUNTIME_API_VERSION}/agent-envelope"
 AGENT_ENVELOPE_MAX_BYTES = 24_576
@@ -59,6 +60,7 @@ DEFAULT_PROJECTION_CACHE_BYTES = 8 * 1024 * 1024
 MAX_PROJECTED_OPERATIONS = 128
 MAX_PROJECTED_PHASE_RECORDS = 32
 MAX_PROJECTED_EVIDENCE_REFS = 256
+MAX_OBSERVATION_SOURCE_BYTES = 8 * 1024 * 1024
 CONTEXT_WORKFLOW_STEP_ARGUMENT = "_context_workflow_step"
 _DELIVERY_STRATEGIES = {"source-only", "live-patch", "build-upgrade"}
 _TASK_POLICY_FIELD = "author" + "ization"
@@ -4328,7 +4330,7 @@ class ContextRuntime:
             "summary": str(arguments.get("summary", "")).strip(),
             "recorded_at": self.clock(),
         }
-        if not record["source_revision"]:
+        if status == "completed" and not record["source_revision"]:
             raise ValueError("source_revision is required")
         if not record["summary"]:
             raise ValueError("phase summary is required")
@@ -4898,6 +4900,58 @@ class ContextRuntime:
             projection,
             target_id=self._preferred_target_id(projection, arguments),
         )
+
+    def persist_observation(
+        self,
+        raw: Mapping[str, object],
+        *,
+        scope: Mapping[str, object],
+        assurance: str,
+    ) -> dict[str, object]:
+        """Persist redacted observation evidence without opening a Case."""
+
+        document = {
+            "schema": OBSERVATION_SOURCE_SCHEMA,
+            "scope": _sanitize(scope),
+            "assurance": str(assurance),
+            "raw": _sanitize(raw),
+        }
+        body = _json_bytes(document)
+        if len(body) > MAX_OBSERVATION_SOURCE_BYTES:
+            raise ValueError("observation source exceeds the 8 MiB persistence limit")
+        blob_id = self.blob_repository.put(body)
+        return {
+            "schema": OBSERVATION_SOURCE_SCHEMA,
+            "blob_id": blob_id,
+            "sha256": blob_id,
+            "uri": f"blob://{blob_id}",
+        }
+
+    def load_observation(
+        self,
+        source: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Load and verify one content-addressed observation source."""
+
+        blob_id = str(source.get("blob_id", "")).strip()
+        if (
+            len(blob_id) != 64
+            or any(character not in "0123456789abcdef" for character in blob_id)
+            or source.get("sha256") != blob_id
+            or source.get("uri") != f"blob://{blob_id}"
+        ):
+            raise EvidenceUnavailable("invalid observation source reference")
+        body = self.blob_repository.read(blob_id, offset=0, limit=-1)
+        if len(body) > MAX_OBSERVATION_SOURCE_BYTES:
+            raise EvidenceUnavailable("observation source exceeds the persistence limit")
+        value = json.loads(body.decode("utf-8"))
+        if not isinstance(value, Mapping) or value.get("schema") != OBSERVATION_SOURCE_SCHEMA:
+            raise EvidenceUnavailable("observation source schema is invalid")
+        scope = value.get("scope")
+        raw = value.get("raw")
+        if not isinstance(scope, Mapping) or not isinstance(raw, Mapping):
+            raise EvidenceUnavailable("observation source is incomplete")
+        return dict(value)
 
     def restore_domain_arguments(
         self,
@@ -5562,7 +5616,8 @@ class ContextRuntime:
                 for name in ("concurrency", "reference_role", "targets"):
                     arguments.pop(name, None)
         if operation == "debug_collect":
-            arguments.setdefault("profile", "freshness")
+            arguments.setdefault("profile", "standard")
+            arguments.setdefault("no_freshness", False)
         if operation == "live_patch_run":
             developer = completed_phases.get("developer.change", {})
             for source, destination in (
@@ -6265,6 +6320,13 @@ class ContextRuntime:
                 )
         projection["capsule"] = self._capsule(projection)
         return projection
+
+    def continuation_for(
+        self, projection: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Return the semantic continuation without exposing event mechanics."""
+
+        return self._continuation_for(projection)
 
     def read_evidence(
         self,

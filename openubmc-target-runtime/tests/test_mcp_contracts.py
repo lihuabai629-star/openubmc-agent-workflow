@@ -162,7 +162,9 @@ class CapturingOrchestratedMcpBackend(OrchestratedMcpBackend):
 class RuntimeMcpServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.backend = FakeDebugBackend()
-        self.service = RuntimeMcpService(self.backend)
+        self.service = RuntimeMcpService(
+            self.backend, interface_profile="compatibility"
+        )
 
     def tearDown(self) -> None:
         self.service.close()
@@ -201,20 +203,9 @@ class RuntimeMcpServiceTests(unittest.TestCase):
             [
                 "debug_run",
                 "debug_collect",
-                "case_read",
-                "evidence_read",
-                "case_replay_export",
-                "case_replay_run",
-                "session_outcome_record",
-                "session_outcome_summary",
-                "session_outcome_transition",
-                "session_outcome_promote",
-                "case_close",
-                "case_forget",
                 "phase_record",
                 "workflow.advance",
                 "workflow.next",
-                "runtime_status",
             ],
         )
         debug_run = next(
@@ -270,8 +261,18 @@ class RuntimeMcpServiceTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
+            self.service.interface_catalog.names(),
+            (
+                "debug_run",
+                "debug_collect",
+                "phase_record",
+                "workflow.advance",
+                "workflow.next",
+            ),
+        )
+        self.assertEqual(
             self.service.tool_definitions(),
-            self.service.catalog.tool_definitions(),
+            self.service.interface_catalog.tool_definitions(),
         )
         debug = self.service.catalog.require("debug_run")
         self.assertEqual(debug.handler_name, "debug_run")
@@ -367,7 +368,7 @@ class RuntimeMcpServiceTests(unittest.TestCase):
         )
         follow_up = self.service.call_tool(
             "debug_collect",
-            {"ip": "target.example", "profile": "freshness", "deadline": 2},
+            {"ip": "target.example", "profile": "standard", "deadline": 2},
             task_id="codex-task-a",
             operation_id="2",
         )
@@ -611,7 +612,7 @@ class PersistentTaskContextTests(unittest.TestCase):
                 clock.advance(11)
                 result = service.call_tool(
                     "debug_collect",
-                    {"profile": "freshness", "deadline": 2},
+                    {"profile": "standard", "deadline": 2},
                     task_id="long-running-task",
                     operation_id="second",
                 )
@@ -796,7 +797,7 @@ class PersistentTaskContextTests(unittest.TestCase):
                 )
                 follow_up = service.call_tool(
                     "debug_collect",
-                    {"profile": "freshness", "deadline": 2},
+                    {"profile": "standard", "deadline": 2},
                     task_id="oversized-switch-task",
                     operation_id="third",
                 )
@@ -849,7 +850,7 @@ class PersistentTaskContextTests(unittest.TestCase):
             try:
                 second_service.call_tool(
                     "debug_collect",
-                    {"profile": "freshness", "deadline": 2},
+                    {"profile": "standard", "deadline": 2},
                     task_id="mutation-task",
                     operation_id="second",
                 )
@@ -873,7 +874,9 @@ class PersistentTaskContextTests(unittest.TestCase):
 class JsonRpcEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.backend = FakeDebugBackend()
-        self.service = RuntimeMcpService(self.backend)
+        self.service = RuntimeMcpService(
+            self.backend, interface_profile="compatibility"
+        )
         self.endpoint = JsonRpcMcpEndpoint(
             self.service,
             session_task_id="stdio-session-task",
@@ -902,20 +905,9 @@ class JsonRpcEndpointTests(unittest.TestCase):
             [
                 "debug_run",
                 "debug_collect",
-                "case_read",
-                "evidence_read",
-                "case_replay_export",
-                "case_replay_run",
-                "session_outcome_record",
-                "session_outcome_summary",
-                "session_outcome_transition",
-                "session_outcome_promote",
-                "case_close",
-                "case_forget",
                 "phase_record",
                 "workflow.advance",
                 "workflow.next",
-                "runtime_status",
             ],
         )
 

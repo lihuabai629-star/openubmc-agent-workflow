@@ -306,7 +306,7 @@ class BuildWorkflowContractTests(BuildContractTestCase):
             case["workflow_phase_values"]["build.artifact"]["evidence_ids"],
             ["build-log", "artifact-checksum"],
         )
-        self.assertEqual(verification["profile"], "freshness")
+        self.assertEqual(verification["profile"], "standard")
         self.assertEqual(
             verification["_minimum_target_epoch"],
             self.backend.upgrade_epoch,
