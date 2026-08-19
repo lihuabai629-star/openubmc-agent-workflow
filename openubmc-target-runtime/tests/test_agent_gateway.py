@@ -163,6 +163,34 @@ class AgentGatewayTests(unittest.TestCase):
             self.service.context_runtime.repository.case_for_task("observe-task")
         )
 
+    def test_one_receipt_fits_four_capabilities_and_nine_exact_getprop_values(self) -> None:
+        queries = [
+            f"getprop Drive_1_010102 bmc.kepler.Interface Property{index}"
+            for index in range(9)
+        ]
+        receipt = self.service.call_exposed_tool(
+            "observe",
+            {
+                "target": "192.0.2.10",
+                "selectors": [
+                    {
+                        "id": "caps",
+                        "kind": "capability",
+                        "names": ["ssh", "telnet", "mdbctl", "busctl"],
+                    },
+                    {"id": "mdb", "kind": "mdb", "queries": queries},
+                ],
+            },
+            task_id="observe-nine-properties",
+            operation_id="observe-nine-properties-1",
+        )
+
+        self.assertLessEqual(encoded_size(receipt), OBSERVATION_MAX_BYTES)
+        self.assertNotIn("content_compacted", receipt)
+        self.assertEqual(receipt["coverage"]["requested"], 13)
+        self.assertEqual(len(receipt["results"]["mdb"]["values"]), 9)
+        self.assertEqual(len(receipt["claims"]), 2)
+
     def test_scope_contract_fails_closed_for_undeclared_surface_or_freshness(self) -> None:
         with self.assertRaises(ScopeViolation):
             ScopeContract.from_query(

@@ -349,9 +349,14 @@ class ResultProjector:
         return "available" if capabilities.get(runtime_name) is True else "unavailable"
 
     @staticmethod
-    def _mdb_value(child: Mapping[str, object]) -> object:
+    def _mdb_value(child: Mapping[str, object], query: str) -> object:
         payload = _mapping(child.get("payload"))
         result = _mapping(payload.get("result")) or _mapping(child.get("result"))
+        stdout_lines = result.get("stdout_lines")
+        if query.split(maxsplit=1)[0].lower() == "getprop" and isinstance(
+            stdout_lines, list
+        ):
+            return stdout_lines[0] if stdout_lines else None
         preferred = {
             key: result[key]
             for key in (
@@ -361,11 +366,32 @@ class ResultProjector:
                 "values",
                 "value",
                 "stdout_lines",
-                "stdout",
             )
             if key in result
         }
         return _compact_value(preferred or result, max_depth=5, max_items=24)
+
+    @staticmethod
+    def _target_identity(result: Mapping[str, object]) -> dict[str, object]:
+        runtime = _mapping(result.get("runtime"))
+        runtime_status = _mapping(runtime.get("status"))
+        targets = runtime_status.get("targets", [])
+        if not isinstance(targets, list) or not targets:
+            return {}
+        detail = _mapping(targets[0])
+        target = _mapping(detail.get("target"))
+        epochs = _mapping(detail.get("epochs"))
+        identity = detail.get("identity")
+        projected = {
+            "host": target.get("host", ""),
+            "fingerprint": target.get("fingerprint", ""),
+            "target_epoch": epochs.get("target_epoch", 0),
+        }
+        if isinstance(identity, Mapping) and identity:
+            projected["identity"] = _compact_value(
+                identity, max_depth=2, max_items=8, max_string=128
+            )
+        return projected
 
     def observation(
         self,
@@ -386,26 +412,28 @@ class ResultProjector:
         for selector in scope.selectors:
             if selector.kind == "capability":
                 values = []
-                for value_index, name in enumerate(selector.names):
+                for name in selector.names:
                     state = self._capability_state(capabilities, name)
                     counts[state] += 1
                     values.append({"name": name, "status": state})
-                    claims.append(
-                        {
-                            "path": (
-                                f"results.{selector.selector_id}.values[{value_index}]"
-                            ),
-                            "status": state,
-                            "selector_id": selector.selector_id,
-                        }
-                    )
                 observations[selector.selector_id] = {
                     "kind": "capability",
                     "values": values,
                 }
+                claims.append(
+                    {
+                        "path": f"results.{selector.selector_id}",
+                        "status": (
+                            "partial"
+                            if any(value["status"] == "not_checked" for value in values)
+                            else "grounded"
+                        ),
+                        "selector_id": selector.selector_id,
+                    }
+                )
                 continue
             values = []
-            for query in selector.queries:
+            for query_index, query in enumerate(selector.queries):
                 name = "mdbctl" if mdb_index == 0 else f"mdbctl_{mdb_index + 1}"
                 mdb_index += 1
                 child = _mapping(ssh_lane.get(name))
@@ -414,7 +442,7 @@ class ResultProjector:
                     value: object = None
                 elif child.get("ok") is True:
                     state = "available"
-                    value = self._mdb_value(child)
+                    value = self._mdb_value(child, query)
                 else:
                     state = "unavailable"
                     value = {
@@ -422,28 +450,27 @@ class ResultProjector:
                         "reason": child.get("error", "") or child.get("reason", ""),
                     }
                 counts[state] += 1
-                values.append({"query": query, "status": state, "value": value})
-                claims.append(
-                    {
-                        "path": f"results.{selector.selector_id}.values[{len(values) - 1}]",
-                        "status": state,
-                        "selector_id": selector.selector_id,
-                    }
+                values.append(
+                    {"query_index": query_index, "status": state, "value": value}
                 )
             observations[selector.selector_id] = {"kind": "mdb", "values": values}
+            claims.append(
+                {
+                    "path": f"results.{selector.selector_id}",
+                    "status": (
+                        "partial"
+                        if any(value["status"] == "not_checked" for value in values)
+                        else "grounded"
+                    ),
+                    "selector_id": selector.selector_id,
+                }
+            )
         observed_at = (
             _text(raw.get("observed_at"))
             or _text(result.get("completed_at"))
             or _text(result.get("started_at"))
         )
-        runtime = _mapping(result.get("runtime"))
-        runtime_status = _mapping(runtime.get("status"))
-        targets = runtime_status.get("targets", [])
-        target_detail = (
-            _compact_value(targets[0], max_depth=3, max_items=10)
-            if isinstance(targets, list) and targets and isinstance(targets[0], Mapping)
-            else {}
-        )
+        target_detail = self._target_identity(result)
         receipt_seed = {
             "scope": scope.to_public_dict(),
             "observed_at": observed_at,

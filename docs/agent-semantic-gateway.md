@@ -112,6 +112,23 @@ Live performance qualification remains a separate paired AB/BA gate because toke
 limits require a fixed model, target snapshot, and sufficient valid pairs. The compatibility
 profile is retained as the baseline until the semantic interface meets that gate consistently.
 
+Use `scripts/agent_gateway_ab.py` to run or re-evaluate the qualification. The runner creates a
+balanced AB/BA schedule, isolates every Codex home, applies semantic and scope acceptance, and
+computes the paired geometric mean plus the one-sided 95% bootstrap upper bound for total tokens,
+non-cached input plus output, and wall time. Ten valid pairs are the first decision point; an
+uncertain result expands to twenty and then thirty pairs.
+
+```bash
+python scripts/agent_gateway_ab.py run \
+  --work-root /path/to/benchmark-work \
+  --credentials /path/to/private/credentials.env \
+  --model <fixed-model> \
+  --pairs 10
+
+python scripts/agent_gateway_ab.py analyze \
+  /path/to/benchmark-work/results-*/all_metrics.json
+```
+
 ## Evolution
 
 The next selector adapters should be added in this order: D-Bus properties, active alarms, and
