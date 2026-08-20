@@ -113,6 +113,21 @@ class CommitThenConflictRepository(InMemoryRuntimeRepository):
         return projection
 
 
+class RecordingCommitRepository(InMemoryRuntimeRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.commits: list[tuple[str, ...]] = []
+
+    def commit(self, case_id, *, expected_revision, events):
+        pending = tuple(events)
+        self.commits.append(tuple(event.kind for event in pending))
+        return super().commit(
+            case_id,
+            expected_revision=expected_revision,
+            events=pending,
+        )
+
+
 class SemanticBackend:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
@@ -871,6 +886,225 @@ class AgentGatewayTests(unittest.TestCase):
             [event["kind"] for event in events].count("CloseoutRecorded"), 1
         )
         self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
+
+    def test_source_only_gate_response_uses_a_native_run_phase_event(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.68",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="native-source-phase",
+            operation_id="native-source-phase-start",
+        )
+
+        self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "submission_id": "native-source-phase-submission",
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "native-source-phase",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["run regression tests"],
+                    },
+                },
+            },
+            task_id="native-source-phase",
+            operation_id="native-source-phase-respond",
+        )
+
+        events = self.service.context_runtime.repository.events(waiting["run_id"])
+        self.assertEqual(
+            sum(event["kind"] == "RunPhaseRecorded" for event in events),
+            1,
+        )
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationProgressed"
+                and isinstance(event["payload"].get("phase_record"), dict)
+                for event in events
+            )
+        )
+
+    def test_source_only_terminal_response_is_one_complete_run_decision(self) -> None:
+        for response_status in ("completed", "failed"):
+            with self.subTest(response_status=response_status):
+                repository = RecordingCommitRepository()
+                service = RuntimeMcpService(
+                    SemanticBackend(),
+                    context_repository=repository,
+                )
+                try:
+                    waiting = service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "start",
+                            "target": "192.0.2.69",
+                            "intent": "diagnose-and-fix",
+                            "delivery_strategy": "source-only",
+                        },
+                        task_id=f"atomic-source-{response_status}",
+                        operation_id=f"atomic-source-{response_status}-start",
+                    )
+                    before = len(repository.commits)
+                    payload = (
+                        {
+                            "source_revision": f"atomic-{response_status}",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["run regression tests"],
+                        }
+                        if response_status == "completed"
+                        else {}
+                    )
+                    final = service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "respond",
+                            "run_id": waiting["run_id"],
+                            **gate_binding(waiting),
+                            "submission_id": f"atomic-{response_status}-submission",
+                            "response": {
+                                "status": response_status,
+                                "summary": f"source repair {response_status}",
+                                "payload": payload,
+                            },
+                        },
+                        task_id=f"atomic-source-{response_status}",
+                        operation_id=f"atomic-source-{response_status}-respond",
+                    )
+                    response_commits = repository.commits[before:]
+                    events = repository.events(waiting["run_id"])
+                finally:
+                    service.close()
+
+                terminal_commits = [
+                    kinds
+                    for kinds in response_commits
+                    if any(
+                        kind
+                        in {
+                            "RunGateSubmitted",
+                            "RunPhaseRecorded",
+                            "CloseoutRecorded",
+                            "RunOutcomeRecorded",
+                            "RunDecisionCommitted",
+                        }
+                        for kind in kinds
+                    )
+                ]
+                self.assertEqual(len(terminal_commits), 1, response_commits)
+                self.assertEqual(
+                    set(terminal_commits[0]),
+                    {
+                        "RunGateSubmitted",
+                        "RunPhaseRecorded",
+                        "EvidenceAttached",
+                        "CloseoutRecorded",
+                        "RunOutcomeRecorded",
+                        "RunDecisionCommitted",
+                    },
+                )
+                decision = next(
+                    event
+                    for event in events
+                    if event["kind"] == "RunDecisionCommitted"
+                    and event["payload"].get("command_id")
+                    == f"atomic-{response_status}-submission"
+                )
+                self.assertEqual(decision["payload"]["turn"]["state"], response_status)
+                self.assertEqual(
+                    decision["payload"]["turn"]["outcome"]["status"],
+                    response_status,
+                )
+                self.assertEqual(
+                    decision["payload"]["turn"]["facts"],
+                    final["facts"],
+                )
+                self.assertEqual(
+                    decision["payload"]["turn"]["gaps"],
+                    final["gaps"],
+                )
+                self.assertEqual(final["state"], response_status)
+
+    def test_cancellation_is_one_complete_run_decision(self) -> None:
+        repository = RecordingCommitRepository()
+        service = RuntimeMcpService(
+            SemanticBackend(),
+            context_repository=repository,
+        )
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.70",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="atomic-cancel",
+                operation_id="atomic-cancel-start",
+            )
+            before = len(repository.commits)
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "control",
+                    "run_id": waiting["run_id"],
+                    "command": "cancel",
+                    "submission_id": "atomic-cancel-submission",
+                    **gate_binding(waiting),
+                },
+                task_id="atomic-cancel",
+                operation_id="atomic-cancel-control",
+            )
+            response_commits = repository.commits[before:]
+            events = repository.events(waiting["run_id"])
+        finally:
+            service.close()
+
+        terminal_commits = [
+            kinds
+            for kinds in response_commits
+            if any(
+                kind
+                in {
+                    "RunCancelled",
+                    "CloseoutRecorded",
+                    "RunOutcomeRecorded",
+                    "RunDecisionCommitted",
+                }
+                for kind in kinds
+            )
+        ]
+        self.assertEqual(len(terminal_commits), 1, response_commits)
+        self.assertEqual(
+            set(terminal_commits[0]),
+            {
+                "RunCancelled",
+                "CloseoutRecorded",
+                "RunOutcomeRecorded",
+                "RunDecisionCommitted",
+            },
+        )
+        decision = next(
+            event
+            for event in events
+            if event["kind"] == "RunDecisionCommitted"
+            and event["payload"].get("command_id") == "atomic-cancel-submission"
+        )
+        self.assertEqual(decision["payload"]["turn"]["state"], "cancelled")
+        self.assertEqual(decision["payload"]["turn"]["outcome"]["status"], "cancelled")
+        self.assertEqual(decision["payload"]["turn"]["facts"], final["facts"])
+        self.assertEqual(decision["payload"]["turn"]["gaps"], final["gaps"])
+        self.assertEqual(final["state"], "cancelled")
 
     def test_start_command_identity_reattaches_across_task_ids(self) -> None:
         action = {

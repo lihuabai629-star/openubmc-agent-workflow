@@ -805,9 +805,12 @@ def _phase_receipt(
     evidence_loaded: bool,
 ) -> StageReceipt:
     stage = _PHASE_STAGES[phase_type]
+    raw_evidence_ids = _mapping(operation).get(
+        "evidence_ids", record.get("evidence_ids", [])
+    )
     evidence_ids = tuple(
         str(item)
-        for item in (_mapping(operation).get("evidence_ids", []) or [])
+        for item in (raw_evidence_ids or [])
         if isinstance(item, str)
     )
     facts: dict[str, object] = {
@@ -1395,6 +1398,31 @@ def aggregate_case_closeout(
             )
             if evidence_loaded and str(loaded.get("phase_type", "")) != phase_type:
                 evidence_loaded = False
+        else:
+            indexed_evidence = {
+                str(reference.get("evidence_id", "")): reference
+                for reference in projection.get("evidence_refs", [])
+                if isinstance(reference, Mapping)
+            }
+            native_evidence_ids = [
+                str(item)
+                for item in record.get("evidence_ids", [])
+                if isinstance(item, str) and item
+            ]
+            evidence_loaded = bool(native_evidence_ids)
+            for evidence_id in native_evidence_ids:
+                reference = indexed_evidence.get(evidence_id)
+                if not isinstance(reference, Mapping):
+                    evidence_loaded = False
+                    break
+                try:
+                    loaded = evidence_reader(reference)
+                except Exception:
+                    evidence_loaded = False
+                    break
+                if not isinstance(loaded, Mapping):
+                    evidence_loaded = False
+                    break
         receipts.append(
             _phase_receipt(
                 phase_type,

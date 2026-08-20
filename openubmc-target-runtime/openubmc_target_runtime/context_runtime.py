@@ -40,6 +40,8 @@ from .mutation import (
 )
 from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 from .redaction import is_secret_key, redact_text
+from .run_store import EventRunStore, RunDecision, RunEvent, upcast_run_events
+from .semantic_runtime import Outcome, RunTurn, run_turn_facts
 from .workflow import (
     DEFAULT_PHASE_REGISTRY,
     DEFAULT_WORKFLOW_DEFINITIONS,
@@ -689,6 +691,9 @@ def _empty_projection(case_id: str) -> dict[str, object]:
         "incidents": [],
         "current_incident": {},
         "run_outcome": {},
+        "run_decisions": [],
+        "current_turn": {},
+        "effect_intents": [],
         "start_command_id": "",
         "start_input_digest": "",
         "start_input": {},
@@ -721,7 +726,13 @@ def project_case(
     run_gates: list[dict[str, object]] = []
     gate_submissions: list[dict[str, object]] = []
     incidents: list[dict[str, object]] = []
-    for event in events:
+    run_decisions: list[dict[str, object]] = []
+    effect_intents: list[dict[str, object]] = []
+    for event in (
+        upcasted
+        for persisted in events
+        for upcasted in upcast_run_events(persisted)
+    ):
         revision = int(event["revision"])
         projection["revision"] = revision
         kind = str(event["kind"])
@@ -1211,6 +1222,15 @@ def project_case(
                 projection["current_incident"] = {}
                 projection["status"] = "terminal"
                 projection["next_actions"] = []
+        elif kind == "RunDecisionCommitted":
+            decision = dict(payload)
+            run_decisions.append(decision)
+            raw_turn = decision.get("turn")
+            if isinstance(raw_turn, Mapping):
+                projection["current_turn"] = dict(raw_turn)
+            raw_effect_intent = decision.get("effect_intent")
+            if isinstance(raw_effect_intent, Mapping) and raw_effect_intent:
+                effect_intents.append(dict(raw_effect_intent))
         elif kind == "RunVerificationDeferred":
             step_id = str(payload.get("workflow_step_id", ""))
             state = workflow_step_states.get(step_id)
@@ -1331,6 +1351,8 @@ def project_case(
     projection["run_gates"] = run_gates
     projection["gate_submissions"] = gate_submissions
     projection["incidents"] = incidents
+    projection["run_decisions"] = run_decisions
+    projection["effect_intents"] = effect_intents
     projection["evidence_refs"] = list(evidence_by_id.values())
     projection["evidence_ref_count"] = evidence_ref_count
     projection["projection_truncated"] = bool(
@@ -3542,6 +3564,106 @@ class ContextRuntime:
         bundle = build_closeout_bundle(closeout, markdown) if include_bundle else None
         return payload, markdown, bundle
 
+    def _project_pending_events(
+        self,
+        projection: Mapping[str, object],
+        events: Iterable[PendingCaseEvent],
+    ) -> dict[str, object]:
+        case_id = str(projection["case_id"])
+        revision = int(projection["revision"])
+        recorded_at = self.clock()
+        pending = tuple(events)
+        persisted = self.repository.events(case_id)
+        return project_case(
+            case_id,
+            (
+                *persisted,
+                *(
+                    {
+                        "revision": revision + offset,
+                        "kind": event.kind,
+                        "operation_id": event.operation_id,
+                        "payload": dict(event.payload),
+                        "created_at": recorded_at,
+                    }
+                    for offset, event in enumerate(pending, start=1)
+                ),
+            ),
+            last_access=float(projection.get("last_access", 0.0)),
+        )
+
+    @staticmethod
+    def _run_outcome_payload(
+        run_id: str,
+        closeout: Mapping[str, object],
+        *,
+        status: str,
+        summary: str,
+    ) -> dict[str, object]:
+        effective_status = status
+        if (
+            status == "completed"
+            and str(closeout.get("closure_status", ""))
+            not in {"verified", "completed_in_scope"}
+        ):
+            effective_status = "failed"
+        outcome = {
+            "status": effective_status,
+            "summary": (
+                str(closeout.get("summary", ""))
+                if effective_status != status
+                else summary.strip() or str(closeout.get("summary", ""))
+            ),
+            "acceptance": closeout.get("checks", closeout.get("acceptance", [])),
+            "closeout_fingerprint": str(closeout.get("fingerprint", "")),
+        }
+        outcome["outcome_id"] = "outcome-" + _fingerprint(
+            {"run_id": run_id, **outcome}
+        )[:32]
+        return outcome
+
+    def _terminal_run_events(
+        self,
+        projection: Mapping[str, object],
+        events: Iterable[PendingCaseEvent],
+        *,
+        status: str,
+        summary: str,
+        operation_id: str,
+    ) -> tuple[list[PendingCaseEvent], dict[str, object]]:
+        pending = list(events)
+        terminal_projection = self._project_pending_events(projection, pending)
+        closeout, markdown, bundle = self._derive_closeout(
+            terminal_projection,
+            terminal_status=status,
+            include_bundle=False,
+        )
+        pending.append(
+            PendingCaseEvent(
+                "CloseoutRecorded",
+                {
+                    "closeout": closeout,
+                    "closeout_markdown": markdown,
+                    "closeout_bundle": bundle,
+                },
+                f"{operation_id}-closeout",
+            )
+        )
+        outcome = self._run_outcome_payload(
+            str(projection["case_id"]),
+            closeout,
+            status=status,
+            summary=summary,
+        )
+        pending.append(
+            PendingCaseEvent(
+                "RunOutcomeRecorded",
+                {"outcome": outcome},
+                f"{operation_id}-outcome",
+            )
+        )
+        return pending, outcome
+
     @staticmethod
     def _closeout_bundle_enabled(
         projection: Mapping[str, object],
@@ -3653,9 +3775,28 @@ class ContextRuntime:
     ) -> dict[str, object]:
         if str(projection.get("status", "")) != "terminal":
             return dict(projection)
+        raw_outcome = projection.get("run_outcome")
+        existing_closeout = projection.get("closeout")
+        if (
+            isinstance(raw_outcome, Mapping)
+            and isinstance(existing_closeout, Mapping)
+            and existing_closeout
+            and str(raw_outcome.get("closeout_fingerprint", ""))
+            == str(existing_closeout.get("fingerprint", ""))
+        ):
+            return dict(projection)
+        outcome_status = (
+            str(raw_outcome.get("status", ""))
+            if isinstance(raw_outcome, Mapping)
+            else ""
+        )
         updated, _payload, _markdown, _bundle = self._record_closeout(
             projection,
-            terminal_status=case_terminal_status(projection),
+            terminal_status=(
+                outcome_status
+                if outcome_status == "cancelled"
+                else case_terminal_status(projection)
+            ),
             include_bundle=self._closeout_bundle_enabled(projection),
             operation_id="case-closeout-recovery",
         )
@@ -4483,6 +4624,7 @@ class ContextRuntime:
         operation_id: str,
     ) -> ContextToolResult:
         case_id = self._case_id(task_id, arguments)
+        native_run_event = arguments.get("_native_run_event") is True
         projection = self._load(case_id)
         if projection is None:
             raise CaseNotFound(case_id)
@@ -4824,6 +4966,19 @@ class ContextRuntime:
                 descriptor=descriptor,
                 arguments=arguments,
             )
+            if native_run_event:
+                record["evidence_ids"] = list(
+                    dict.fromkeys(
+                        [
+                            *(
+                                item
+                                for item in record.get("evidence_ids", [])
+                                if isinstance(item, str) and item
+                            ),
+                            evidence.evidence_id,
+                        ]
+                    )
+                )
             events: list[PendingCaseEvent] = []
             if record["gate_id"]:
                 events.append(
@@ -4842,7 +4997,7 @@ class ContextRuntime:
                         operation_id,
                     )
                 )
-            if status != "running":
+            if status != "running" and not native_run_event:
                 events.extend(
                     PendingCaseEvent(
                         "OperationTerminal",
@@ -4855,40 +5010,56 @@ class ContextRuntime:
                     )
                     for prior_operation_id in prior_running_operation_ids
                 )
-            events.extend((
-                PendingCaseEvent(
-                    "OperationAccepted",
-                    {
-                        "operation": descriptor.name,
-                        "idempotency_key": key,
-                        "request_fingerprint": fingerprint,
-                        "workflow_cycle_id": cycle_id,
-                        "workflow_step_id": step_id,
-                        "workflow_step_kind": "phase",
-                        "target_version": phase_identity.target_version,
-                        "workflow_definition_id": phase_identity.workflow_definition_id,
-                        "workflow_definition_version": phase_identity.workflow_version,
-                        "workflow_definition_fingerprint": phase_identity.workflow_fingerprint,
-                        "workflow_execution_id": phase_identity.execution_id,
-                        "workflow_attempt": phase_identity.attempt,
-                        "workflow_input_fingerprint": phase_identity.input_fingerprint,
-                        "workflow_target_epoch": phase_identity.target_epoch,
-                    },
-                    operation_id,
-                ),
-                PendingCaseEvent("OperationStarted", {}, operation_id),
-                PendingCaseEvent(
-                    "OperationProgressed",
-                    {"status": status, "phase_record": record},
-                    operation_id,
-                ),
-                PendingCaseEvent(
-                    "EvidenceAttached",
-                    {"evidence": evidence.to_public_dict()},
-                    operation_id,
-                ),
-            ))
-            if status != "running":
+            if native_run_event:
+                events.extend(
+                    (
+                        PendingCaseEvent(
+                            "RunPhaseRecorded",
+                            {"phase": record},
+                            operation_id,
+                        ),
+                        PendingCaseEvent(
+                            "EvidenceAttached",
+                            {"evidence": evidence.to_public_dict()},
+                            operation_id,
+                        ),
+                    )
+                )
+            else:
+                events.extend((
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {
+                            "operation": descriptor.name,
+                            "idempotency_key": key,
+                            "request_fingerprint": fingerprint,
+                            "workflow_cycle_id": cycle_id,
+                            "workflow_step_id": step_id,
+                            "workflow_step_kind": "phase",
+                            "target_version": phase_identity.target_version,
+                            "workflow_definition_id": phase_identity.workflow_definition_id,
+                            "workflow_definition_version": phase_identity.workflow_version,
+                            "workflow_definition_fingerprint": phase_identity.workflow_fingerprint,
+                            "workflow_execution_id": phase_identity.execution_id,
+                            "workflow_attempt": phase_identity.attempt,
+                            "workflow_input_fingerprint": phase_identity.input_fingerprint,
+                            "workflow_target_epoch": phase_identity.target_epoch,
+                        },
+                        operation_id,
+                    ),
+                    PendingCaseEvent("OperationStarted", {}, operation_id),
+                    PendingCaseEvent(
+                        "OperationProgressed",
+                        {"status": status, "phase_record": record},
+                        operation_id,
+                    ),
+                    PendingCaseEvent(
+                        "EvidenceAttached",
+                        {"evidence": evidence.to_public_dict()},
+                        operation_id,
+                    ),
+                ))
+            if status != "running" and not native_run_event:
                 events.append(
                     PendingCaseEvent(
                         "OperationTerminal",
@@ -4900,11 +5071,67 @@ class ContextRuntime:
                         operation_id,
                     )
                 )
-            projection = self.repository.commit(
-                case_id,
-                expected_revision=int(projection["revision"]),
-                events=events,
-            )
+            if native_run_event:
+                simulated_projection = self._project_pending_events(projection, events)
+                terminal_status = (
+                    status
+                    if status in {"failed", "cancelled"}
+                    or self._continuation_for(simulated_projection)["workflow_complete"]
+                    else ""
+                )
+                outcome: dict[str, object] | None = None
+                if terminal_status:
+                    events, outcome = self._terminal_run_events(
+                        projection,
+                        events,
+                        status=terminal_status,
+                        summary=str(record["summary"]),
+                        operation_id=operation_id,
+                    )
+                turn_projection = self._project_pending_events(projection, events)
+                turn = RunTurn(
+                    run_id=case_id,
+                    state=(str(outcome["status"]) if outcome is not None else "running"),
+                    facts=run_turn_facts(turn_projection),
+                    gaps=(
+                        (str(turn_projection["closeout_recovery_gap"]),)
+                        if turn_projection.get("closeout_recovery_gap")
+                        else ()
+                    ),
+                    outcome=(
+                        Outcome(
+                            status=str(outcome["status"]),
+                            summary=str(outcome["summary"]),
+                            acceptance=outcome.get("acceptance", []),
+                        )
+                        if outcome is not None
+                        else None
+                    ),
+                )
+                committed = EventRunStore(self.repository).commit(
+                    RunDecision(
+                        run_id=case_id,
+                        command_id=str(record["submission_id"]),
+                        input_digest=str(record["submission_digest"]),
+                        expected_revision=int(projection["revision"]),
+                        events=tuple(
+                            RunEvent(
+                                kind=event.kind,
+                                payload=event.payload,
+                                operation_id=event.operation_id,
+                            )
+                            for event in events
+                        ),
+                        turn=turn,
+                    )
+                )
+                projection = dict(committed.projection)
+            else:
+                projection = self.repository.commit(
+                    case_id,
+                    expected_revision=int(projection["revision"]),
+                    events=events,
+                )
         except Exception:
             self.repository.abandon_idempotency(case_id, key)
             raise
@@ -6892,7 +7119,7 @@ class ContextRuntime:
 
         return self.phase_record(
             self.catalog.require("phase_record"),
-            arguments,
+            {**dict(arguments), "_native_run_event": True},
             task_id=task_id,
             operation_id=operation_id,
         )
@@ -6950,46 +7177,46 @@ class ContextRuntime:
                     "cancellation submission identity is already bound differently"
                 )
             return dict(projection)
-        try:
-            updated = self.repository.commit(
-                run_id,
+        events, outcome = self._terminal_run_events(
+            projection,
+            (PendingCaseEvent("RunCancelled", payload, operation_id),),
+            status="cancelled",
+            summary="run cancelled at the current gate",
+            operation_id=operation_id,
+        )
+        turn_projection = self._project_pending_events(projection, events)
+        committed = EventRunStore(self.repository).commit(
+            RunDecision(
+                run_id=run_id,
+                command_id=submission_id,
+                input_digest=submission_digest,
                 expected_revision=int(projection["revision"]),
-                events=(PendingCaseEvent("RunCancelled", payload, operation_id),),
-            )
-        except RevisionConflict:
-            current = self.repository.load(run_id)
-            concurrent = next(
-                (
-                    item
-                    for item in reversed(
-                        list(
-                            current.get("gate_submissions", [])
-                            if isinstance(current, Mapping)
-                            else []
-                        )
+                events=tuple(
+                    RunEvent(
+                        kind=event.kind,
+                        payload=event.payload,
+                        operation_id=event.operation_id,
                     )
-                    if isinstance(item, Mapping)
-                    and str(item.get("submission_id", "")) == submission_id
+                    for event in events
                 ),
-                None,
+                turn=RunTurn(
+                    run_id=run_id,
+                    state="cancelled",
+                    facts=run_turn_facts(turn_projection),
+                    gaps=(
+                        (str(turn_projection["closeout_recovery_gap"]),)
+                        if turn_projection.get("closeout_recovery_gap")
+                        else ()
+                    ),
+                    outcome=Outcome(
+                        status=str(outcome["status"]),
+                        summary=str(outcome["summary"]),
+                        acceptance=outcome.get("acceptance", []),
+                    ),
+                ),
             )
-            if not isinstance(current, Mapping) or not isinstance(
-                concurrent, Mapping
-            ):
-                raise
-            if (
-                str(concurrent.get("gate_id", "")) != payload["gate_id"]
-                or int(concurrent.get("gate_version", 0))
-                != payload["gate_version"]
-                or str(concurrent.get("schema_digest", ""))
-                != payload["schema_digest"]
-                or str(concurrent.get("submission_digest", ""))
-                != payload["submission_digest"]
-                or str(concurrent.get("status", "")) != "cancelled"
-            ):
-                raise
-            updated = dict(current)
-        return self._cache(updated)
+        )
+        return self._cache(dict(committed.projection))
 
     def record_run_incident(
         self,
@@ -7096,26 +7323,12 @@ class ContextRuntime:
             include_bundle=False,
             operation_id=f"{operation_id}-closeout",
         )
-        effective_status = normalized
-        if (
-            normalized == "completed"
-            and str(closeout.get("closure_status", ""))
-            not in {"verified", "completed_in_scope"}
-        ):
-            effective_status = "failed"
-        outcome = {
-            "status": effective_status,
-            "summary": (
-                str(closeout.get("summary", ""))
-                if effective_status != normalized
-                else summary.strip() or str(closeout.get("summary", ""))
-            ),
-            "acceptance": closeout.get("checks", closeout.get("acceptance", [])),
-            "closeout_fingerprint": str(closeout.get("fingerprint", "")),
-        }
-        outcome["outcome_id"] = "outcome-" + _fingerprint(
-            {"run_id": run_id, **outcome}
-        )[:32]
+        outcome = self._run_outcome_payload(
+            run_id,
+            closeout,
+            status=normalized,
+            summary=summary,
+        )
         try:
             updated = self.repository.commit(
                 run_id,

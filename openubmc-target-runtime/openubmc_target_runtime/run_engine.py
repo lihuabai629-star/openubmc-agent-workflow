@@ -29,6 +29,7 @@ from .semantic_runtime import (
     StartRun,
     SubmitGate,
     fingerprint,
+    run_turn_facts,
 )
 from .workflow import DEFAULT_PHASE_REGISTRY
 
@@ -676,71 +677,7 @@ class RunEngine:
 
     @staticmethod
     def _facts(projection: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
-        cycle_id = _text(projection.get("workflow_cycle_id") or "cycle-1")
-        facts: list[dict[str, object]] = []
-        operations = projection.get("operations", [])
-        if isinstance(operations, list):
-            for operation in operations:
-                if not isinstance(operation, Mapping):
-                    continue
-                status = _text(operation.get("status"))
-                if status not in {"completed", "succeeded", "verified"}:
-                    continue
-                operation_name = _text(operation.get("operation"))
-                if operation_name in {
-                    "phase_record",
-                    "workflow.advance",
-                    "workflow.next",
-                }:
-                    continue
-                operation_cycle = _text(operation.get("workflow_cycle_id"))
-                if operation_cycle and operation_cycle != cycle_id:
-                    continue
-                fact: dict[str, object] = {
-                    "kind": "operation",
-                    "name": operation_name,
-                    "status": status,
-                    "summary": _text(operation.get("summary")),
-                }
-                evidence_ids = operation.get("evidence_ids", [])
-                if isinstance(evidence_ids, list) and evidence_ids:
-                    fact["evidence_ids"] = [
-                        _text(item) for item in evidence_ids[:8] if _text(item)
-                    ]
-                target_epoch = operation.get("target_epoch")
-                if isinstance(target_epoch, int) and not isinstance(
-                    target_epoch, bool
-                ):
-                    fact["target_epoch"] = target_epoch
-                facts.append(fact)
-        phases = projection.get("phase_records", [])
-        if isinstance(phases, list):
-            for phase in phases:
-                if (
-                    not isinstance(phase, Mapping)
-                    or _text(phase.get("status")) != "completed"
-                    or (
-                        _text(phase.get("workflow_cycle_id"))
-                        and _text(phase.get("workflow_cycle_id")) != cycle_id
-                    )
-                ):
-                    continue
-                fact = {
-                    "kind": "phase",
-                    "name": _text(phase.get("phase_type")),
-                    "status": "completed",
-                    "summary": _text(phase.get("summary")),
-                }
-                for name in (
-                    "source_revision",
-                    "artifact_sha256",
-                    "product_version",
-                ):
-                    value = _text(phase.get(name))
-                    if value:
-                        fact[name] = value
-                facts.append(fact)
-        return tuple(facts[-8:])
+        return run_turn_facts(projection)
 
     @staticmethod
     def _unknown_mutation(
