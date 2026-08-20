@@ -902,11 +902,15 @@ class UpgradeMcpBackend:
         mutation_options = {
             "image_uri": _argument_text(arguments, "image_uri"),
         }
+        recovery_mode = _argument_text(
+            arguments, "_runtime_effect_recovery"
+        ).lower()
         matching_journal = next(
             (
                 journal
                 for journal in binding.task_run.mutation_journals()
-                if journal.action == "upgrade"
+                if journal.operation_id == context.operation_id
+                and journal.action == "upgrade"
                 and not journal.terminal
                 and journal.stage != "replan_required"
                 and adapter.mutation_request(
@@ -931,6 +935,15 @@ class UpgradeMcpBackend:
             )
             if recovery is not None:
                 return recovery
+        if recovery_mode == "reconcile" and not any(
+            journal.operation_id == context.operation_id
+            and journal.action == "upgrade"
+            for journal in binding.task_run.mutation_journals()
+        ):
+            raise OSError(
+                "Upgrade recovery found no durable mutation journal; "
+                "refusing to upload a replacement Effect"
+            )
         artifact_bytes, actual_sha = _read_stable_artifact(artifact_path)
         if actual_sha != artifact.sha256:
             raise ValueError("upgrade artifact SHA-256 does not match")

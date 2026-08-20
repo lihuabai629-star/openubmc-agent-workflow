@@ -21,6 +21,7 @@ from openubmc_target_runtime import (  # noqa: E402
     RuntimeMcpService,
     TaskAuthorizationPolicy,
 )
+from openubmc_target_runtime.capability import EffectRecoveryMode  # noqa: E402
 from openubmc_upgrade.runtime_backend import (  # noqa: E402
     RedfishHttpSession,
     RedfishHttpError,
@@ -943,6 +944,57 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         ]
         self.assertEqual(len(uploads), 1)
         self.assertTrue(replayed["idempotent_replay"])
+
+    def test_recovery_without_a_durable_journal_never_uploads_firmware(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            transport = FakeRedfishTransport()
+            service = RuntimeMcpService(
+                UpgradeMcpBackend(
+                    journal_store=MutationJournalStore(root / "journals"),
+                    credential_loader=lambda _arguments: {
+                        "redfish": {
+                            "user": "Administrator",
+                            "password": "redfish-secret",
+                        }
+                    },
+                    redfish_transport_factory=lambda _arguments: transport,
+                )
+            )
+            try:
+                descriptor = service.catalog.require("upgrade_run")
+                with self.assertRaisesRegex(
+                    OSError, "no durable mutation journal"
+                ):
+                    service._execute_domain_value(
+                        "upgrade_run",
+                        descriptor,
+                        {
+                            "intent": "upgrade-and-verify",
+                            "delivery_strategy": "build-upgrade",
+                            "ip": "bmc.example",
+                            "artifact_path": str(artifact),
+                            "artifact_sha256": digest,
+                            "product_version": "2.0.0",
+                            "deadline": TEST_DEADLINE_SECONDS,
+                        },
+                        task_id="upgrade-recovery-without-journal",
+                        operation_id="upgrade-recovery-without-journal",
+                        recovery_mode=EffectRecoveryMode.RECONCILE,
+                    )
+            finally:
+                service.close()
+
+        uploads = [
+            call
+            for session in transport.sessions
+            for call in session.calls
+            if call[1] == "/redfish/v1/UpdateService/upload"
+        ]
+        self.assertEqual(uploads, [])
 
     def test_version_verification_waits_through_old_version_after_reboot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

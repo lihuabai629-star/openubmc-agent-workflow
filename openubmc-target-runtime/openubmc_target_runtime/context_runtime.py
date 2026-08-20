@@ -32,7 +32,7 @@ from .closeout import (
     render_markdown,
 )
 from .contracts import RUNTIME_API_VERSION
-from .effect_runner import EffectIntent
+from .effect_runner import EffectIntent, PreparedEffect
 from .mutation import (
     MutationAuthorizationDenied,
     MutationOperationConflict,
@@ -1546,15 +1546,59 @@ class BufferedRuntimeRepository:
         )
         return BufferedRunCommand(self, state, self._state.set(state))
 
-    def record_effect_intent(
-        self, run_id: str, effect_intent: Mapping[str, object]
+    def transaction_active(self, run_id: str) -> bool:
+        state = self._state.get()
+        return state is not None and state.run_id == run_id
+
+    def stage_effect(
+        self,
+        run_id: str,
+        *,
+        events: tuple[RunEvent, ...],
+        effect_intent: Mapping[str, object],
     ) -> None:
+        """Stage RunEngine-owned Effect facts in the active command buffer."""
+
         state = self._active(run_id)
         if state is None:
             raise ContextRuntimeError(
-                "Effect intent requires an active Run command transaction"
+                "Effect staging requires an active Run command transaction"
             )
+        if state.effect_intent is not None:
+            raise ContextRuntimeError(
+                "one RunDecision cannot schedule multiple Effects"
+            )
+        state.events.extend(
+            PendingCaseEvent(
+                kind=event.kind,
+                payload=dict(event.payload),
+                operation_id=event.operation_id,
+            )
+            for event in events
+        )
         state.effect_intent = dict(effect_intent)
+
+    def stage_events(
+        self,
+        run_id: str,
+        *,
+        events: tuple[RunEvent, ...],
+    ) -> None:
+        """Stage RunEngine-owned events in the active command buffer."""
+
+        state = self._active(run_id)
+        if state is None:
+            raise ContextRuntimeError(
+                "Run event staging requires an active command transaction"
+            )
+        state.events.extend(
+            PendingCaseEvent(
+                kind=event.kind,
+                payload=dict(event.payload),
+                operation_id=event.operation_id,
+            )
+            for event in events
+        )
 
     def reattach(self, run_id: str, task_id: str) -> None:
         if self.base_repository.load(run_id) is None:
@@ -2797,6 +2841,8 @@ class ContextRuntime:
     def _cache(self, projection: Mapping[str, object]) -> dict[str, object]:
         public = json.loads(json.dumps(projection))
         case_id = str(public["case_id"])
+        if self.repository.transaction_active(case_id):
+            return public
         public_bytes = len(_json_bytes(public))
         with self._lock:
             if self._projection_cache.pop(case_id, None) is not None:
@@ -6681,7 +6727,13 @@ class ContextRuntime:
         )
         if not isinstance(resumable_operation, Mapping):
             derived_operation_id = (
-                "op-run-" + step_identity.execution_id[5:29]
+                "op-run-"
+                + _fingerprint(
+                    {
+                        "run_id": str(projection.get("case_id", "")),
+                        "workflow_execution_id": step_identity.execution_id,
+                    }
+                )[:24]
             )
         domain_arguments["idempotency_key"] = derived_operation_id
         domain_arguments["_workflow_cycle_id"] = cycle_id
@@ -6703,9 +6755,28 @@ class ContextRuntime:
             workflow_input_fingerprint
         )
         domain_arguments["_workflow_target_epoch"] = target_epoch_floor
+        if "_workflow_request_fingerprint" not in domain_arguments:
+            domain_arguments["_workflow_request_fingerprint"] = _fingerprint(
+                {
+                    "operation": operation,
+                    "arguments": _sanitize(
+                        {
+                            key: value
+                            for key, value in domain_arguments.items()
+                            if key
+                            not in {
+                                "case_id",
+                                "expected_revision",
+                                "idempotency_key",
+                                "_workflow_request_fingerprint",
+                            }
+                        }
+                    ),
+                }
+            )
         return domain_arguments, derived_operation_id
 
-    def schedule_semantic_run_effect(
+    def prepare_semantic_run_effect(
         self,
         run_id: str,
         *,
@@ -6713,29 +6784,17 @@ class ContextRuntime:
         arguments: Mapping[str, object],
         operation_id: str,
         effect_class: object,
-    ) -> Mapping[str, object]:
-        """Persist one semantic Effect intent without invoking its Adapter."""
+    ) -> PreparedEffect | None:
+        """Prepare one Effect fact set for RunEngine to persist."""
 
         projection = self.read_case(run_id)
         request_fingerprint = str(
             arguments.get("_workflow_request_fingerprint", "")
-        ) or _fingerprint(
-            {
-                "operation": operation,
-                "arguments": _sanitize(
-                    {
-                        key: value
-                        for key, value in arguments.items()
-                        if key
-                        not in {
-                            "case_id",
-                            "expected_revision",
-                            "idempotency_key",
-                        }
-                    }
-                ),
-            }
         )
+        if len(request_fingerprint) != 64:
+            raise ValueError(
+                "semantic Effect request fingerprint is unavailable"
+            )
         existing = next(
             (
                 item
@@ -6760,77 +6819,38 @@ class ContextRuntime:
                 raise IdempotencyConflict(
                     "Effect identity is already bound to different input"
                 )
-            return projection
-        else:
-            workflow_metadata = {
-                "workflow_cycle_id": str(
-                    arguments.get("_workflow_cycle_id", "")
-                ),
-                "workflow_step_id": str(
-                    arguments.get("_workflow_step_id", "")
-                ),
-                "workflow_step_kind": str(
-                    arguments.get("_workflow_step_kind", "")
-                ),
-                "target_version": int(
-                    arguments.get(
-                        "_workflow_target_version",
-                        projection.get("target_version", 1),
-                    )
-                ),
-                "target_id": str(arguments.get("target_id", "")),
-                "workflow_definition_id": str(
-                    arguments.get("_workflow_definition_id", "")
-                ),
-                "workflow_definition_version": int(
-                    arguments.get("_workflow_definition_version", 0)
-                ),
-                "workflow_definition_fingerprint": str(
-                    arguments.get("_workflow_definition_fingerprint", "")
-                ),
-                "workflow_execution_id": str(
-                    arguments.get("_workflow_execution_id", "")
-                ),
-                "workflow_attempt": int(
-                    arguments.get("_workflow_attempt", 0)
-                ),
-                "workflow_input_fingerprint": str(
-                    arguments.get("_workflow_input_fingerprint", "")
-                ),
-                "workflow_target_epoch": int(
-                    arguments.get("_workflow_target_epoch", 0)
-                ),
-            }
-            projection = self.repository.commit(
-                run_id,
-                expected_revision=int(projection["revision"]),
-                events=(
-                    PendingCaseEvent(
-                        "OperationAccepted",
-                        {
-                            "operation": operation,
-                            "idempotency_key": operation_id,
-                            "request_fingerprint": request_fingerprint,
-                            "inputs": _operation_identity_inputs(arguments),
-                            **workflow_metadata,
-                        },
-                        operation_id,
-                    ),
-                    PendingCaseEvent("OperationStarted", {}, operation_id),
-                    PendingCaseEvent(
-                        "OperationProgressed",
-                        {
-                            "status": "running",
-                            "next_actions": [
-                                "reattach to the same durable Effect identity"
-                            ],
-                            "case_status": "running",
-                        },
-                        operation_id,
-                    ),
-                ),
-            )
-            self._cache(projection)
+            return None
+        workflow_metadata = {
+            "workflow_cycle_id": str(arguments.get("_workflow_cycle_id", "")),
+            "workflow_step_id": str(arguments.get("_workflow_step_id", "")),
+            "workflow_step_kind": str(arguments.get("_workflow_step_kind", "")),
+            "target_version": int(
+                arguments.get(
+                    "_workflow_target_version",
+                    projection.get("target_version", 1),
+                )
+            ),
+            "target_id": str(arguments.get("target_id", "")),
+            "workflow_definition_id": str(
+                arguments.get("_workflow_definition_id", "")
+            ),
+            "workflow_definition_version": int(
+                arguments.get("_workflow_definition_version", 0)
+            ),
+            "workflow_definition_fingerprint": str(
+                arguments.get("_workflow_definition_fingerprint", "")
+            ),
+            "workflow_execution_id": str(
+                arguments.get("_workflow_execution_id", "")
+            ),
+            "workflow_attempt": int(arguments.get("_workflow_attempt", 0)),
+            "workflow_input_fingerprint": str(
+                arguments.get("_workflow_input_fingerprint", "")
+            ),
+            "workflow_target_epoch": int(
+                arguments.get("_workflow_target_epoch", 0)
+            ),
+        }
         intent = EffectIntent(
             run_id=run_id,
             effect_id=operation_id,
@@ -6839,82 +6859,15 @@ class ContextRuntime:
             request_fingerprint=request_fingerprint,
             arguments=dict(_sanitize_runtime_inputs(arguments)),
         )
-        record_intent = getattr(self.repository, "record_effect_intent", None)
-        if not callable(record_intent):
-            raise ContextRuntimeError(
-                "Effect intent requires a Run command transaction"
-            )
-        record_intent(run_id, intent.to_public_dict())
-        return self.read_case(run_id)
-
-    def mark_semantic_effect_unknown(
-        self,
-        run_id: str,
-        *,
-        operation: str,
-        operation_id: str,
-    ) -> Mapping[str, object]:
-        """Conservatively recover a persisted Mutation after process loss."""
-
-        for _attempt in range(2):
-            projection = self.read_case(run_id)
-            current = next(
-                (
-                    item
-                    for item in reversed(list(projection.get("operations", [])))
-                    if isinstance(item, Mapping)
-                    and str(item.get("operation_id", "")) == operation_id
-                ),
-                None,
-            )
-            if not isinstance(current, Mapping):
-                raise CaseNotFound(
-                    f"Run Effect {operation_id} is not present in {run_id}"
-                )
-            if str(current.get("operation", "")) != operation:
-                raise IdempotencyConflict(
-                    "Effect identity is bound to another operation"
-                )
-            status = str(current.get("status", ""))
-            if status == "mutation_outcome_unknown" or status not in {
-                "accepted",
-                "running",
-            }:
-                return projection
-            try:
-                recovered = self.repository.commit(
-                    run_id,
-                    expected_revision=int(projection["revision"]),
-                    events=(
-                        PendingCaseEvent(
-                            "OperationTerminal",
-                            {
-                                "status": "mutation_outcome_unknown",
-                                "summary": (
-                                    "the Runtime process ended after durable Effect "
-                                    "scheduling; reconcile the same identity"
-                                ),
-                                "canonical_error": {
-                                    "code": "effect_process_interrupted",
-                                    "message": (
-                                        "the Effect may have started before process loss"
-                                    ),
-                                },
-                                "next_actions": [
-                                    "reconcile the mutation journal before retrying"
-                                ],
-                                "case_status": "open",
-                            },
-                            operation_id,
-                        ),
-                    ),
-                )
-            except RevisionConflict:
-                continue
-            self._cache(recovered)
-            return recovered
-        raise RevisionConflict(
-            f"Run Effect {operation_id} changed while marking it unknown"
+        return PreparedEffect(
+            intent=intent,
+            accepted_payload={
+                "operation": operation,
+                "idempotency_key": operation_id,
+                "request_fingerprint": request_fingerprint,
+                "inputs": _operation_identity_inputs(arguments),
+                **workflow_metadata,
+            },
         )
 
     def workflow_advance(

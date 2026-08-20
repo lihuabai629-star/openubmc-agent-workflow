@@ -35,7 +35,13 @@ from .semantic_runtime import (
     run_id_for_command,
 )
 from .run_store import RunDecision, RunDecisionConflict, RunEvent, RunStore
-from .effect_runner import EffectIntent, LocalEffectRunner
+from .effect_runner import (
+    EffectIntent,
+    EffectRunMode,
+    LocalEffectRunner,
+    PreparedEffect,
+)
+from .capability import EffectClass
 from .workflow import DEFAULT_PHASE_REGISTRY
 
 
@@ -249,14 +255,14 @@ class RunDriver(Protocol):
         operation_id: str,
     ) -> Mapping[str, object]: ...
 
-    def execute_step(
+    def prepare_step(
         self,
         run_id: str,
         *,
         operation: str,
         workflow_step_id: str,
         task_id: str,
-    ) -> Mapping[str, object]: ...
+    ) -> PreparedEffect | None: ...
 
     def reconcile_run(
         self,
@@ -324,6 +330,21 @@ class RunCommandTransactions(Protocol):
     def begin(self, run_id: str) -> ContextManager[RunCommandTransaction]: ...
 
     def reattach(self, run_id: str, task_id: str) -> None: ...
+
+    def stage_effect(
+        self,
+        run_id: str,
+        *,
+        events: tuple[RunEvent, ...],
+        effect_intent: Mapping[str, object],
+    ) -> None: ...
+
+    def stage_events(
+        self,
+        run_id: str,
+        *,
+        events: tuple[RunEvent, ...],
+    ) -> None: ...
 
 
 class ObservationEngine:
@@ -1029,12 +1050,41 @@ class RunEngine:
                     )
                     return self._turn(snapshot, state="incident")
                 try:
-                    snapshot = self.driver.execute_step(
+                    prepared = self.driver.prepare_step(
                         self._run_id(snapshot),
                         operation=required_operation,
                         workflow_step_id=workflow_step_id,
                         task_id=task_id,
                     )
+                    if prepared is not None:
+                        self.command_transactions.stage_effect(
+                            self._run_id(snapshot),
+                            events=(
+                                RunEvent(
+                                    "OperationAccepted",
+                                    prepared.accepted_payload,
+                                    prepared.intent.effect_id,
+                                ),
+                                RunEvent(
+                                    "OperationStarted",
+                                    {},
+                                    prepared.intent.effect_id,
+                                ),
+                                RunEvent(
+                                    "OperationProgressed",
+                                    {
+                                        "status": "running",
+                                        "next_actions": [
+                                            "reattach to the same durable Effect identity"
+                                        ],
+                                        "case_status": "running",
+                                    },
+                                    prepared.intent.effect_id,
+                                ),
+                            ),
+                            effect_intent=prepared.intent.to_public_dict(),
+                        )
+                    snapshot = self.driver.run_snapshot(self._run_id(snapshot))
                 except Exception as exc:
                     snapshot = self.driver.run_snapshot(self._run_id(snapshot))
                     if self._unknown_mutation(_projection(snapshot)) is not None:
@@ -1296,15 +1346,29 @@ class RunEngine:
             return self._project_terminal(committed.turn, task_id=task_id)
         intent = EffectIntent.from_mapping(raw_intent)
         mode = (
-            "dispatch"
+            EffectRunMode.DISPATCH
             if isinstance(committed.effect_intent, Mapping)
             and _text(committed.effect_intent.get("effect_id")) == intent.effect_id
             and not committed.replayed
-            else "reattach"
-            if self.effect_runner.has_seen(intent.effect_id)
-            else "recover"
+            else EffectRunMode.REATTACH
+            if self.effect_runner.has_seen(intent)
+            else EffectRunMode.RECOVER
         )
-        for _attempt in range(WORKFLOW_INTERNAL_MAX_STEPS):
+        recovery_attempted = (
+            mode is EffectRunMode.RECOVER
+            and intent.effect_class is not EffectClass.READ_ONLY
+        )
+        if recovery_attempted:
+            recovery_attempted = self._persist_effect_recovery_boundary(intent)
+            if not recovery_attempted:
+                snapshot = self.driver.run_snapshot(intent.run_id)
+                return self._turn(
+                    snapshot,
+                    state="running",
+                    next_action="resume the Run after the settled Effect",
+                )
+        reattach_attempt = 0
+        while True:
             future = self.effect_runner.ensure(intent, mode=mode)
             remaining = deadline_at - time.monotonic()
             if remaining <= 0:
@@ -1323,11 +1387,36 @@ class RunEngine:
                 )
             snapshot = self.driver.run_snapshot(intent.run_id)
             projection = _projection(snapshot)
+            unknown = self._unknown_mutation(projection)
+            if recovery_attempted and unknown is not None:
+                snapshot = self._record_incident(
+                    snapshot,
+                    code="mutation_outcome_unknown",
+                    message=(
+                        "Mutation recovery could not prove the durable Effect "
+                        "outcome without reapplying it"
+                    ),
+                    effect_id=intent.effect_id,
+                    operation_id=f"{intent.effect_id}-recovery-incident",
+                )
+                return self._turn(snapshot, state="incident")
             active = self._active_effect_intent(projection)
             if isinstance(active, Mapping) and _text(
                 active.get("effect_id")
             ) == intent.effect_id:
-                mode = "reattach"
+                mode = EffectRunMode.REATTACH
+                delay = min(1.0, 0.2 * (2 ** min(reattach_attempt, 3)))
+                reattach_attempt += 1
+                remaining = deadline_at - time.monotonic()
+                if remaining <= delay:
+                    return self._turn(
+                        snapshot,
+                        state="running",
+                        next_action=(
+                            "resume the Run to reattach to the current Effect"
+                        ),
+                    )
+                time.sleep(delay)
                 continue
             remaining = deadline_at - time.monotonic()
             if remaining <= 0:
@@ -1351,12 +1440,110 @@ class RunEngine:
                 task_id=task_id,
                 operation_id=resume_operation_id,
             )
-        snapshot = self.driver.run_snapshot(intent.run_id)
-        return self._turn(
-            snapshot,
-            state="running",
-            next_action="resume the Run to reattach to the current Effect",
+
+    def _persist_effect_recovery_boundary(self, intent: EffectIntent) -> bool:
+        command_id = "recover-" + fingerprint(
+            {"run_id": intent.run_id, "effect_id": intent.effect_id}
+        )[:32]
+        input_digest = fingerprint(
+            {
+                "schema": "openubmc.semantic-runtime/effect-recovery-v1",
+                "run_id": intent.run_id,
+                "effect_id": intent.effect_id,
+            }
         )
+        for attempt in range(4):
+            try:
+                replayed = self.run_store.replay(
+                    intent.run_id,
+                    command_id,
+                    input_digest,
+                )
+            except RunDecisionConflict as exc:
+                raise CommandConflict(str(exc)) from exc
+            if replayed is not None:
+                return True
+            with self.command_transactions.begin(intent.run_id) as transaction:
+                snapshot = self.driver.run_snapshot(intent.run_id)
+                projection = _projection(snapshot)
+                current = next(
+                    (
+                        item
+                        for item in reversed(
+                            list(projection.get("operations", []))
+                        )
+                        if isinstance(item, Mapping)
+                        and _text(item.get("operation_id")) == intent.effect_id
+                    ),
+                    None,
+                )
+                if not isinstance(current, Mapping):
+                    raise CommandConflict(
+                        "persisted Effect is missing from its Run projection"
+                    )
+                if _text(current.get("operation")) != intent.operation:
+                    raise CommandConflict(
+                        "persisted Effect identity is bound to another operation"
+                    )
+                status = _text(current.get("status"))
+                if status not in {
+                    "accepted",
+                    "running",
+                    "mutation_outcome_unknown",
+                }:
+                    return False
+                if status != "mutation_outcome_unknown":
+                    self.command_transactions.stage_events(
+                        intent.run_id,
+                        events=(
+                            RunEvent(
+                                "OperationTerminal",
+                                {
+                                    "status": "mutation_outcome_unknown",
+                                    "summary": (
+                                        "the Runtime process ended after durable "
+                                        "Effect scheduling; reconcile the same identity"
+                                    ),
+                                    "canonical_error": {
+                                        "code": "effect_process_interrupted",
+                                        "message": (
+                                            "the Effect may have started before "
+                                            "process loss"
+                                        ),
+                                    },
+                                    "next_actions": [
+                                        "reconcile the mutation journal before retrying"
+                                    ],
+                                    "case_status": "open",
+                                },
+                                intent.effect_id,
+                            ),
+                        ),
+                    )
+                    snapshot = self.driver.run_snapshot(intent.run_id)
+                turn = self._turn(
+                    snapshot,
+                    state="running",
+                    next_action="reconcile the same durable Effect identity",
+                )
+                try:
+                    self.run_store.commit(
+                        RunDecision(
+                            run_id=intent.run_id,
+                            command_id=command_id,
+                            input_digest=input_digest,
+                            expected_revision=transaction.expected_revision,
+                            events=transaction.events,
+                            turn=turn,
+                        )
+                    )
+                except RunDecisionConflict as exc:
+                    if attempt >= 3:
+                        raise CommandConflict(str(exc)) from exc
+                    continue
+                transaction.accept()
+                return True
+        raise CommandConflict("Effect recovery decision could not converge")
 
     def execute(
         self,

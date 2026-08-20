@@ -21,6 +21,9 @@ from openubmc_target_runtime import (  # noqa: E402
     RuntimeMcpService,
     TelnetCommandResult,
 )
+from openubmc_target_runtime.capability import (  # noqa: E402
+    EffectRecoveryMode,
+)
 from openubmc_live_patch.runtime_backend import (  # noqa: E402
     LivePatchMcpBackend,
     _LivePatchTask,
@@ -537,6 +540,53 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
         self.assertEqual(telnet.opens, 2)
         self.assertTrue(replayed["idempotent_replay"])
         self.assertEqual(len(ssh.uploads), 1)
+
+    def test_recovery_without_a_durable_journal_never_applies_live_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            ssh = FakeSshTransport()
+            telnet = FakeTelnetTransport(digest)
+            service = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=MutationJournalStore(root / "journals"),
+                    credential_loader=lambda _arguments: {
+                        "ssh": {"user": "root", "password": "ssh-secret"},
+                        "telnet": {"user": "root", "password": "telnet-secret"},
+                    },
+                    ssh_transport_factory=lambda _arguments: ssh,
+                    telnet_transport_factory=lambda _arguments: telnet,
+                )
+            )
+            try:
+                descriptor = service.catalog.require("live_patch_run")
+                with self.assertRaisesRegex(
+                    OSError, "no durable mutation journal"
+                ):
+                    service._execute_domain_value(
+                        "live_patch_run",
+                        descriptor,
+                        {
+                            "intent": "diagnose-and-fix",
+                            "delivery_strategy": "live-patch",
+                            "ip": "bmc.example",
+                            "local_path": str(local),
+                            "artifact_sha256": digest,
+                            "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                            "restart_scope": "none",
+                            "deadline": TEST_DEADLINE_SECONDS,
+                        },
+                        task_id="live-patch-recovery-without-journal",
+                        operation_id="live-patch-recovery-without-journal",
+                        recovery_mode=EffectRecoveryMode.RECONCILE,
+                    )
+            finally:
+                service.close()
+
+        self.assertEqual(ssh.uploads, [])
+        self.assertEqual(telnet.commands, [])
 
     def test_unknown_live_patch_is_reconciled_read_first_without_reupload(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

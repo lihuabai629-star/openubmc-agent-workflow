@@ -901,6 +901,9 @@ class LivePatchMcpBackend:
         backup_dir = posixpath.dirname(backup_probe)
         backup = f"{backup_dir}/{PurePosixPath(remote).name}.bak.{token}"
         expected_metadata: dict[str, int | str] = {}
+        recovery_mode = _argument_text(
+            arguments, "_runtime_effect_recovery"
+        ).lower()
 
         def mutation_operation(expected_sha: str) -> dict[str, object]:
             return {
@@ -962,6 +965,16 @@ class LivePatchMcpBackend:
                 mode=mode,
                 restart_scope=restart_scope,
                 expected_metadata=expected_metadata,
+            )
+
+        if recovery_mode == "reconcile" and not any(
+            journal.operation_id == context.operation_id
+            and journal.action == "live_patch"
+            for journal in binding.task_run.mutation_journals()
+        ):
+            raise OSError(
+                "Live Patch recovery found no durable mutation journal; "
+                "refusing to apply a replacement Effect"
             )
 
         if not local.is_file():

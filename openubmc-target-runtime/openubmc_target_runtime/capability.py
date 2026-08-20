@@ -133,7 +133,7 @@ class RuntimeSDKContext:
     timeout_seconds: float
     target_id: str = ""
     minimum_target_epoch: int = 0
-    recovery_mode: str = ""
+    recovery_mode: "EffectRecoveryMode | None" = None
 
 
 @dataclass(frozen=True)
@@ -265,6 +265,10 @@ class EffectClass(str, Enum):
     IDEMPOTENT_MUTATION = "idempotent_mutation"
     RECONCILABLE_MUTATION = "reconcilable_mutation"
     IRREVERSIBLE_MUTATION = "irreversible_mutation"
+
+
+class EffectRecoveryMode(str, Enum):
+    RECONCILE = "reconcile"
 
 
 @dataclass(frozen=True)

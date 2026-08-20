@@ -27,6 +27,8 @@ from openubmc_target_runtime import (  # noqa: E402
     RevisionConflict,
     ReferenceViolation,
     ResumeRun,
+    RunDecision,
+    RunDecisionConflict,
     RunEngine,
     STDIO_FRAME_MAX_BYTES,
     TOOLS_LIST_MAX_BYTES,
@@ -430,10 +432,10 @@ class DormantEffectRunner:
     def __init__(self) -> None:
         self.intents = []
 
-    def has_seen(self, _effect_id: str) -> bool:
+    def has_seen(self, _intent) -> bool:
         return False
 
-    def ensure(self, intent, *, mode: str):
+    def ensure(self, intent, *, mode):
         self.intents.append((intent, mode))
         return object()
 
@@ -461,6 +463,104 @@ class RecoveryAwareLivePatchBackend(SemanticBackend):
         else:
             self.apply_calls += 1
         return super().live_patch_run(task, arguments, context)
+
+
+class MissingJournalRecoveryBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.apply_calls = 0
+        self.recovery_calls = 0
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        if arguments.get("_runtime_effect_recovery") == "reconcile":
+            self.recovery_calls += 1
+            raise OSError("no durable mutation journal")
+        self.apply_calls += 1
+        return super().live_patch_run(task, arguments, context)
+
+
+class RecoveryBoundaryConflictOnceStore:
+    def __init__(self, delegate: EventRunStore) -> None:
+        self.delegate = delegate
+        self.raced = False
+
+    def load(self, run_id: str):
+        return self.delegate.load(run_id)
+
+    def replay(self, run_id: str, command_id: str, input_digest: str):
+        return self.delegate.replay(run_id, command_id, input_digest)
+
+    def commit(self, decision: RunDecision):
+        if decision.command_id.startswith("recover-") and not self.raced:
+            self.raced = True
+            self.delegate.commit(
+                RunDecision(
+                    run_id=decision.run_id,
+                    command_id=(
+                        "concurrent-" + decision.command_id.removeprefix("recover-")
+                    ),
+                    input_digest="f" * 64,
+                    expected_revision=decision.expected_revision,
+                    events=(),
+                    turn=decision.turn,
+                )
+            )
+            raise RunDecisionConflict("simulated concurrent Run revision")
+        return self.delegate.commit(decision)
+
+
+class BlockingDebugSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.operation_ids: list[str] = []
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        if arguments.get("mdb_only"):
+            return self.debug_collect(task, arguments, context)
+        context.raise_if_stopped()
+        self.operation_ids.append(str(context.operation_id))
+        if len(self.operation_ids) >= 2:
+            self.started.set()
+        self.release.wait(timeout=2)
+        return super().debug_run(task, arguments, context)
+
+
+class PersistentlyRunningUpgradeBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.upgrade_attempts = 0
+
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.upgrade_attempts += 1
+        self.calls.append(("upgrade_run", dict(arguments)))
+        return {
+            "ok": True,
+            "status": "running",
+            "summary": "upgrade is still active",
+            "target_epoch": 1,
+        }
+
+
+class PersistentlyRunningDebugBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.debug_attempts = 0
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        if arguments.get("mdb_only"):
+            return self.debug_collect(task, arguments, context)
+        context.raise_if_stopped()
+        self.debug_attempts += 1
+        self.calls.append(("debug_run", dict(arguments)))
+        return {
+            "ok": True,
+            "status": "running",
+            "summary": "debug collection is still active",
+        }
 
 
 class AutoAssuranceSemanticBackend(SemanticBackend):
@@ -3619,6 +3719,68 @@ class AgentGatewayTests(unittest.TestCase):
                 [persisted_effect_id],
             )
 
+    def test_effect_identity_is_unique_across_concurrent_runs(self) -> None:
+        backend = BlockingDebugSemanticBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            first = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.76",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "deadline": 0.02,
+                },
+                task_id="effect-identity-first",
+                operation_id="effect-identity-first",
+            )
+            second = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.76",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "deadline": 0.02,
+                },
+                task_id="effect-identity-second",
+                operation_id="effect-identity-second",
+            )
+
+            self.assertTrue(backend.started.wait(timeout=0.5))
+            self.assertNotEqual(first["run_id"], second["run_id"])
+            self.assertEqual(len(backend.operation_ids), 2)
+            self.assertEqual(len(set(backend.operation_ids)), 2)
+        finally:
+            backend.release.set()
+            service.close()
+
+    def test_running_effect_reattach_uses_bounded_internal_backoff(self) -> None:
+        backend = PersistentlyRunningDebugBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            started_at = time.monotonic()
+            running = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.77",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "deadline": 0.65,
+                },
+                task_id="running-backoff",
+                operation_id="running-backoff-start",
+            )
+            elapsed = time.monotonic() - started_at
+        finally:
+            service.close()
+
+        self.assertEqual(running["state"], "running")
+        self.assertGreaterEqual(elapsed, 0.5)
+        self.assertLessEqual(backend.debug_attempts, 3)
+
     def test_sqlite_restart_reconciles_a_persisted_mutation_without_reapply(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -3705,6 +3867,200 @@ class AgentGatewayTests(unittest.TestCase):
             self.assertEqual(backend.apply_calls, 0)
             self.assertEqual(backend.reconcile_calls, 1)
             self.assertEqual(backend.operation_ids, [persisted_effect_id])
+
+    def test_restart_recovery_without_journal_stays_incident_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "missing-journal.sqlite3"
+            blobs = root / "missing-journal-blobs"
+            patch_file = root / "missing-journal.lua"
+            patch_file.write_bytes(b"return 'never-reapply'\n")
+            first = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.78",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="missing-journal",
+                    operation_id="missing-journal-start",
+                )
+                first.effect_runner.close()
+                dormant = DormantEffectRunner()
+                first.effect_runner = dormant
+                first.semantic_runtime.run_engine.effect_runner = dormant
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "mutation is durably scheduled",
+                            "payload": {
+                                "source_revision": "missing-journal-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh verification"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.78",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/tmp/missing-journal.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 0.01,
+                    },
+                    task_id="missing-journal",
+                    operation_id="missing-journal-submit",
+                )
+            finally:
+                first.close()
+
+            backend = MissingJournalRecoveryBackend()
+            second = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                incident = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="missing-journal-recovery",
+                    operation_id="missing-journal-recovery",
+                )
+                repeated = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="missing-journal-repeated",
+                    operation_id="missing-journal-repeated",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(incident["state"], "incident")
+        self.assertEqual(repeated["state"], "incident")
+        self.assertEqual(backend.apply_calls, 0)
+        self.assertEqual(backend.recovery_calls, 2)
+
+    def test_recovery_boundary_converges_after_a_concurrent_run_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "recovery-race.sqlite3"
+            blobs = root / "recovery-race-blobs"
+            patch_file = root / "recovery-race.lua"
+            patch_file.write_bytes(b"return 'recover-once'\n")
+            first = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.79",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="recovery-race",
+                    operation_id="recovery-race-start",
+                )
+                first.effect_runner.close()
+                dormant = DormantEffectRunner()
+                first.effect_runner = dormant
+                first.semantic_runtime.run_engine.effect_runner = dormant
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "mutation is durably scheduled",
+                            "payload": {
+                                "source_revision": "recovery-race-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh verification"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.79",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/tmp/recovery-race.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 0.01,
+                    },
+                    task_id="recovery-race",
+                    operation_id="recovery-race-submit",
+                )
+            finally:
+                first.close()
+
+            backend = RecoveryAwareLivePatchBackend()
+            second = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            run_store = RecoveryBoundaryConflictOnceStore(
+                second.semantic_runtime.run_engine.run_store
+            )
+            second.semantic_runtime.run_engine.run_store = run_store
+            try:
+                final = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="recovery-race-resume",
+                    operation_id="recovery-race-resume",
+                )
+                events = second.context_runtime.repository.events(
+                    running["run_id"]
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertTrue(run_store.raced)
+        self.assertEqual(backend.apply_calls, 0)
+        self.assertEqual(backend.reconcile_calls, 1)
+        self.assertEqual(
+            sum(
+                event["kind"] == "OperationTerminal"
+                and event["payload"].get("status")
+                == "mutation_outcome_unknown"
+                for event in events
+            ),
+            1,
+        )
 
     def test_verification_failure_is_deferred_and_resumed_without_reapplying(self) -> None:
         backend = DeferredVerificationSemanticBackend()

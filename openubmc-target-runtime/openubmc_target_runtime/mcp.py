@@ -50,13 +50,14 @@ from .semantic_runtime import (
     run_id_for_command,
 )
 from .run_store import EventRunStore
-from .effect_runner import EffectIntent, LocalEffectRunner
+from .effect_runner import EffectIntent, LocalEffectRunner, PreparedEffect
 from .capability import (
     CallableDomainAdapter,
     CapabilityDescriptor,
     CapabilityRegistry,
     DomainExecutor,
     EffectClass,
+    EffectRecoveryMode,
     RuntimeSDKContext,
 )
 from .context_runtime import (
@@ -2339,14 +2340,14 @@ class _RuntimeSemanticAdapter:
             operation_id=operation_id,
         )
 
-    def execute_step(
+    def prepare_step(
         self,
         run_id: str,
         *,
         operation: str,
         workflow_step_id: str,
         task_id: str,
-    ) -> Mapping[str, object]:
+    ) -> PreparedEffect | None:
         projection = self.service.context_runtime.read_case(run_id)
         arguments, derived_id = (
             self.service.context_runtime.prepare_semantic_run_operation(
@@ -2356,14 +2357,13 @@ class _RuntimeSemanticAdapter:
             )
         )
         policy = self.service.domain_executor.policy_for(operation)
-        self.service.context_runtime.schedule_semantic_run_effect(
+        return self.service.context_runtime.prepare_semantic_run_effect(
             run_id,
             operation=operation,
             arguments=arguments,
             operation_id=derived_id,
             effect_class=policy.effect_class,
         )
-        return self.run_snapshot(run_id)
 
     def execute_effect(self, intent: EffectIntent) -> Mapping[str, object]:
         try:
@@ -2381,11 +2381,6 @@ class _RuntimeSemanticAdapter:
     def recover_effect(self, intent: EffectIntent) -> Mapping[str, object]:
         if intent.effect_class is EffectClass.READ_ONLY:
             return self.execute_effect(intent)
-        self.service.context_runtime.mark_semantic_effect_unknown(
-            intent.run_id,
-            operation=intent.operation,
-            operation_id=intent.effect_id,
-        )
         self.service.recover_domain_effect(intent)
         return self.run_snapshot(intent.run_id)
 
@@ -2416,19 +2411,21 @@ class _RuntimeSemanticAdapter:
         blocked_operation_id = str(unknown.get("operation_id", ""))
         if not blocked_operation_id:
             raise ValueError("unknown mutation is missing its durable operation id")
-        recovered = self.service.context_runtime.restore_domain_arguments(
-            run_id,
-            blocked_operation,
-            {"case_id": run_id},
-            force=True,
+        raw_intent = next(
+            (
+                item
+                for item in reversed(list(projection.get("effect_intents", [])))
+                if isinstance(item, Mapping)
+                and str(item.get("effect_id", "")) == blocked_operation_id
+            ),
+            None,
         )
-        recovered["idempotency_key"] = blocked_operation_id
-        self.service.call_tool(
-            blocked_operation,
-            recovered,
-            task_id=run_id,
-            operation_id=blocked_operation_id,
-        )
+        if not isinstance(raw_intent, Mapping):
+            raise ValueError("unknown mutation is missing its durable Effect intent")
+        intent = EffectIntent.from_mapping(raw_intent)
+        if intent.operation != blocked_operation:
+            raise ValueError("unknown mutation Effect intent has the wrong operation")
+        self.service.recover_domain_effect(intent)
         return self.run_snapshot(run_id)
 
     def record_incident(
@@ -3571,7 +3568,7 @@ class RuntimeMcpService:
         bounded_arguments = dict(arguments)
         if sdk_context.recovery_mode:
             bounded_arguments["_runtime_effect_recovery"] = (
-                sdk_context.recovery_mode
+                sdk_context.recovery_mode.value
             )
         observation_mode = bounded_arguments.pop("_agent_observation", False)
         capability_names = bounded_arguments.pop("_agent_capability_names", [])
@@ -3639,7 +3636,7 @@ class RuntimeMcpService:
         *,
         task_id: str,
         operation_id: str,
-        recovery_mode: str = "",
+        recovery_mode: EffectRecoveryMode | None = None,
     ) -> dict[str, object]:
         capability_descriptor = self.capability_registry.require(name)
         timeout = min(
@@ -3693,7 +3690,7 @@ class RuntimeMcpService:
                 domain_arguments,
                 task_id=intent.run_id,
                 operation_id=intent.effect_id,
-                recovery_mode="reconcile",
+                recovery_mode=EffectRecoveryMode.RECONCILE,
             ),
         )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
+from enum import Enum
 import re
 import threading
 
@@ -70,6 +71,18 @@ class EffectIntent:
         }
 
 
+@dataclass(frozen=True)
+class PreparedEffect:
+    intent: EffectIntent
+    accepted_payload: Mapping[str, object]
+
+
+class EffectRunMode(str, Enum):
+    DISPATCH = "dispatch"
+    REATTACH = "reattach"
+    RECOVER = "recover"
+
+
 class LocalEffectRunner:
     """Run durable Effects locally while preserving one identity across reattach."""
 
@@ -88,7 +101,9 @@ class LocalEffectRunner:
             max_workers=max_workers,
             thread_name_prefix="openubmc-effect",
         )
-        self._futures: dict[str, Future[Mapping[str, object]]] = {}
+        self._futures: dict[
+            tuple[str, str], Future[Mapping[str, object]]
+        ] = {}
         self._lock = threading.Lock()
         self._closed = False
 
@@ -96,24 +111,29 @@ class LocalEffectRunner:
         self,
         intent: EffectIntent,
         *,
-        mode: str,
+        mode: EffectRunMode,
     ) -> Future[Mapping[str, object]]:
-        if mode not in {"dispatch", "reattach", "recover"}:
-            raise ValueError("EffectRunner mode must be dispatch, reattach, or recover")
+        if not isinstance(mode, EffectRunMode):
+            raise TypeError("EffectRunner mode must be an EffectRunMode")
+        identity = (intent.run_id, intent.effect_id)
         with self._lock:
             if self._closed:
                 raise RuntimeError("EffectRunner is closed")
-            current = self._futures.get(intent.effect_id)
+            current = self._futures.get(identity)
             if current is not None and not current.done():
                 return current
-            callback = self._recover if mode == "recover" else self._execute
+            callback = (
+                self._recover
+                if mode is EffectRunMode.RECOVER
+                else self._execute
+            )
             future = self._executor.submit(callback, intent)
-            self._futures[intent.effect_id] = future
+            self._futures[identity] = future
             return future
 
-    def has_seen(self, effect_id: str) -> bool:
+    def has_seen(self, intent: EffectIntent) -> bool:
         with self._lock:
-            return effect_id in self._futures
+            return (intent.run_id, intent.effect_id) in self._futures
 
     @staticmethod
     def wait(
