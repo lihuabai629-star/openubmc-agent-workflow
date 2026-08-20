@@ -14,8 +14,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ci-contract:
+    name: CI contract preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.13"
+
+      - name: Install locked Python validation dependencies
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: >-
+          python -m pip install --only-binary=:all:
+          --require-hashes --requirement requirements-ci.lock
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: openubmc-kb-mcp/package-lock.json
+
+      - name: Report locked toolchain
+        run: |
+          python --version
+          node --version
+          npm --version
+          test -f openubmc-kb-mcp/package-lock.json
+
+      - name: Validate CI contract
+        run: python -m unittest scripts.tests.test_continuous_validation_workflow
+
   validate:
     name: Runtime Core repository validation
+    needs: ci-contract
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

@@ -26,6 +26,20 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
     def step(self, name: str) -> dict[str, object]:
         return next(step for step in self.steps() if step.get("name") == name)
 
+    def test_contract_preflight_is_a_separate_required_check(self) -> None:
+        jobs = self.workflow["jobs"]
+        preflight = jobs["ci-contract"]
+        self.assertEqual(preflight["name"], "CI contract preflight")
+        self.assertEqual(jobs["validate"]["needs"], "ci-contract")
+        self.assertEqual(
+            next(
+                step["run"]
+                for step in preflight["steps"]
+                if step.get("name") == "Validate CI contract"
+            ),
+            "python -m unittest scripts.tests.test_continuous_validation_workflow",
+        )
+
     def test_pull_requests_and_main_pushes_run_validation(self) -> None:
         triggers = self.workflow["on"]
         self.assertIn("pull_request", triggers)
