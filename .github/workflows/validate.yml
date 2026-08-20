@@ -90,3 +90,48 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
         run: python scripts/validate_workflow.py
+
+  diagnose-debug-root:
+    name: Python root - openubmc-debug/tests
+    needs: ci-contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.13"
+      - run: python -m unittest discover -s openubmc-debug/tests -p 'test_*.py'
+
+  diagnose-environment-root:
+    name: Python root - openubmc-environment-setup/tests
+    needs: ci-contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: openubmc-kb-mcp/package-lock.json
+      - run: python -m unittest discover -s openubmc-environment-setup/tests -p 'test_*.py'
+
+  diagnose-node:
+    name: Node stages - openubmc-kb-mcp
+    needs: ci-contract
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: openubmc-kb-mcp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: openubmc-kb-mcp/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npm run check
