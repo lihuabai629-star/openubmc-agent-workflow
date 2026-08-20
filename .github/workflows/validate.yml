@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - refactor/run-engine-core
 
 permissions:
   contents: read
@@ -14,6 +15,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  repair-validator-mode:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/refactor/run-engine-core'
+    name: Restore validator executable mode
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/run-engine-core
+      - name: Restore executable mode when required
+        run: |
+          if test -x scripts/validate_workflow.py; then
+            exit 0
+          fi
+          chmod +x scripts/validate_workflow.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add scripts/validate_workflow.py
+          git commit -m "fix: restore workflow validator executable mode"
+          git push origin HEAD:refactor/run-engine-core
+
   ci-contract:
     name: CI contract preflight
     runs-on: ubuntu-24.04

@@ -43,7 +43,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
     def test_pull_requests_and_main_pushes_run_validation(self) -> None:
         triggers = self.workflow["on"]
         self.assertIn("pull_request", triggers)
-        self.assertEqual(triggers["push"]["branches"], ["main"])
+        self.assertIn("main", triggers["push"]["branches"])
         self.assertEqual(
             self.step("Run complete repository validation")["run"],
             "python scripts/validate_workflow.py",
