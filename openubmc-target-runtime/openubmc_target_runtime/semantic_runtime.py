@@ -1077,6 +1077,102 @@ class RunTurn:
         return result
 
 
+def project_run_turn(
+    projection: Mapping[str, object],
+    *,
+    run_id: str,
+    gate: Gate | Mapping[str, object] | None = None,
+    use_current_gate: bool = False,
+    state: str = "",
+    next_action: str = "",
+    use_projected_next_action: bool = False,
+    observation_ref: ObservationRef | None = None,
+    base_turn: RunTurn | None = None,
+) -> RunTurn:
+    """Build the current bounded Turn from one authoritative Run projection."""
+
+    selected_gate = gate
+    if use_current_gate:
+        raw_gate = projection.get("current_gate")
+        selected_gate = (
+            Gate.from_public_dict(raw_gate)
+            if isinstance(raw_gate, Mapping) and raw_gate
+            else None
+        )
+    raw_incident = projection.get("current_incident")
+    incident = (
+        Incident(
+            incident_id=_text(raw_incident.get("incident_id")),
+            code=_text(raw_incident.get("code")),
+            message=_text(raw_incident.get("message")),
+            effect_id=_text(raw_incident.get("effect_id")),
+            recoverable=bool(raw_incident.get("recoverable", True)),
+        )
+        if isinstance(raw_incident, Mapping) and raw_incident
+        else None
+    )
+    raw_outcome = projection.get("run_outcome")
+    outcome = (
+        Outcome(
+            status=_text(raw_outcome.get("status")),
+            summary=_text(raw_outcome.get("summary")),
+            acceptance=raw_outcome.get("acceptance", []),
+        )
+        if isinstance(raw_outcome, Mapping) and raw_outcome
+        else None
+    )
+    projection_status = _text(projection.get("status"))
+    selected_state = state or (
+        outcome.status
+        if outcome is not None
+        else "incident"
+        if incident is not None
+        else "waiting_response"
+        if selected_gate is not None
+        else "running"
+        if projection_status in {"open", "waiting_phase_record"}
+        else projection_status
+        or (base_turn.state if base_turn is not None else "running")
+    )
+    selected_next_action = next_action
+    if use_projected_next_action and not selected_next_action:
+        raw_next_actions = projection.get("next_actions", [])
+        if isinstance(raw_next_actions, list) and raw_next_actions:
+            selected_next_action = _text(raw_next_actions[0])
+        elif base_turn is not None and selected_state == base_turn.state:
+            selected_next_action = base_turn.next_action
+    if outcome is not None or selected_state in {
+        "cancelled",
+        "completed",
+        "failed",
+    }:
+        selected_next_action = ""
+    gaps = base_turn.gaps if base_turn is not None else ()
+    recovery_gap = _text(projection.get("closeout_recovery_gap"))
+    if recovery_gap and recovery_gap not in gaps:
+        gaps = (*gaps, recovery_gap)
+    return RunTurn(
+        run_id=run_id,
+        state=selected_state,
+        gate=selected_gate,
+        incident=incident,
+        facts=run_turn_facts(projection),
+        gaps=gaps,
+        outcome=outcome,
+        next_action=selected_next_action,
+        observation_ref=(
+            observation_ref
+            if observation_ref is not None
+            else base_turn.observation_ref
+            if base_turn is not None
+            else None
+        ),
+        outcome_recorded=(
+            base_turn.outcome_recorded if base_turn is not None else False
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class ObservationResult:
     query: ObservationQuery

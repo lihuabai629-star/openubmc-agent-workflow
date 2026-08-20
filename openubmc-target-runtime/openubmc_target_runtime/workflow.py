@@ -240,6 +240,8 @@ class WorkflowDefinition:
         raw_steps = value.get("steps")
         if not isinstance(raw_steps, list):
             raise ValueError("workflow definition steps must be an array")
+        if not all(isinstance(step, Mapping) for step in raw_steps):
+            raise ValueError("workflow definition steps must contain objects")
         definition = cls(
             definition_id=str(value.get("definition_id", "")),
             version=int(value.get("version", 0)),
@@ -250,7 +252,6 @@ class WorkflowDefinition:
             steps=tuple(
                 WorkflowStepDefinition.from_public_dict(step)
                 for step in raw_steps
-                if isinstance(step, Mapping)
             ),
         )
         recorded = str(value.get("fingerprint", ""))

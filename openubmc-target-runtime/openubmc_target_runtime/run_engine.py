@@ -29,9 +29,9 @@ from .semantic_runtime import (
     StartRun,
     SubmitGate,
     fingerprint,
+    project_run_turn,
     run_command_identity,
     run_id_for_command,
-    run_turn_facts,
 )
 from .run_store import RunDecision, RunDecisionConflict, RunEvent, RunStore
 from .workflow import DEFAULT_PHASE_REGISTRY
@@ -423,13 +423,13 @@ class RunEngine:
         command_transactions: RunCommandTransactions | None = None,
         artifact_store: LocalArtifactStore | None = None,
     ) -> None:
-        if (run_store is None) != (command_transactions is None):
+        if run_store is None or command_transactions is None:
             raise ValueError(
-                "RunStore and command transactions must be configured together"
+                "RunStore and command transactions are required"
             )
         self.driver = driver
-        self.run_store = run_store
-        self.command_transactions = command_transactions
+        self.run_store: RunStore = run_store
+        self.command_transactions: RunCommandTransactions = command_transactions
         self.artifact_store = artifact_store or LocalArtifactStore()
 
     @staticmethod
@@ -706,10 +706,6 @@ class RunEngine:
         )
 
     @staticmethod
-    def _facts(projection: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
-        return run_turn_facts(projection)
-
-    @staticmethod
     def _unknown_mutation(
         projection: Mapping[str, object]
     ) -> Mapping[str, object] | None:
@@ -836,26 +832,11 @@ class RunEngine:
         next_action: str = "",
     ) -> RunTurn:
         projection = _projection(snapshot)
-        outcome = self._outcome(projection)
-        incident = self._current_incident(projection)
-        selected_state = state or (
-            outcome.status
-            if outcome is not None
-            else "incident"
-            if incident is not None
-            else _text(projection.get("status") or "running")
-        )
-        gaps: tuple[object, ...] = ()
-        if projection.get("closeout_recovery_gap"):
-            gaps = (_text(projection.get("closeout_recovery_gap")),)
-        return RunTurn(
+        return project_run_turn(
+            projection,
             run_id=self._run_id(snapshot),
-            state=selected_state,
             gate=gate,
-            incident=incident,
-            facts=self._facts(projection),
-            gaps=gaps,
-            outcome=outcome,
+            state=state,
             next_action=next_action,
             observation_ref=observation_ref,
         )
@@ -1278,15 +1259,6 @@ class RunEngine:
         task_id: str,
         operation_id: str,
     ) -> RunTurn:
-        if self.run_store is None or self.command_transactions is None:
-            return self._project_terminal(
-                self._execute_uncommitted(
-                    command,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                ),
-                task_id=task_id,
-            )
         command_id, input_digest = run_command_identity(
             command,
             operation_id=operation_id,

@@ -19,6 +19,7 @@ from openubmc_target_runtime import (  # noqa: E402
     AgentGatewayError,
     CommandConflict,
     EvidenceUnavailable,
+    EventRunStore,
     GateConflict,
     InMemoryRuntimeRepository,
     OBSERVATION_MAX_BYTES,
@@ -39,6 +40,9 @@ from openubmc_target_runtime import (  # noqa: E402
     StartRun,
     StdioMcpServer,
     SubmitGate,
+)
+from openubmc_target_runtime.context_runtime import (  # noqa: E402
+    BufferedRuntimeRepository,
 )
 
 
@@ -1240,6 +1244,10 @@ class AgentGatewayTests(unittest.TestCase):
         )
 
         events = self.service.context_runtime.repository.events(waiting["run_id"])
+        submission = next(
+            event for event in events if event["kind"] == "RunGateSubmitted"
+        )
+        self.assertEqual(submission["payload"]["actor"], "openubmc-developer")
         self.assertEqual(
             sum(event["kind"] == "RunPhaseRecorded" for event in events),
             1,
@@ -2892,6 +2900,10 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             [event["kind"] for event in events].count("RunCancelled"), 1
         )
+        cancelled = next(
+            event for event in events if event["kind"] == "RunCancelled"
+        )
+        self.assertEqual(cancelled["payload"]["actor"], "runtime")
         self.assertFalse(
             any(
                 event["kind"] == "OperationProgressed"
@@ -3161,7 +3173,12 @@ class AgentGatewayTests(unittest.TestCase):
 
     def test_automatic_reconcile_attempts_an_unknown_mutation_only_once(self) -> None:
         driver = PersistentUnknownRunDriver()
-        turn = RunEngine(driver).execute(
+        repository = InMemoryRuntimeRepository()
+        turn = RunEngine(
+            driver,
+            run_store=EventRunStore(repository),
+            command_transactions=BufferedRuntimeRepository(repository),
+        ).execute(
             ResumeRun("run-persistent-unknown"),
             task_id="persistent-unknown",
             operation_id="persistent-unknown-resume",
@@ -3171,6 +3188,13 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(turn.state, "incident")
         self.assertIsNotNone(turn.incident)
         self.assertEqual(turn.incident.code, "mutation_outcome_unknown")
+
+    def test_run_engine_requires_durable_command_dependencies(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "RunStore and command transactions are required",
+        ):
+            RunEngine(PersistentUnknownRunDriver())
 
     def test_execute_automatically_reconciles_an_unknown_mutation(self) -> None:
         backend = FailOnceUpgradeSemanticBackend()

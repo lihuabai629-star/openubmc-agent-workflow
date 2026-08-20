@@ -463,6 +463,40 @@ class RunDecisionContractTests(unittest.TestCase):
                     WORKFLOW_DEFINITION_SCHEMA,
                 )
 
+    def test_legacy_workflow_definition_rejects_a_non_object_step(self) -> None:
+        with self.assertRaisesRegex(
+            RunEventSchemaError,
+            "workflow definition cannot be upcast",
+        ):
+            upcast_run_events(
+                {
+                    "revision": 1,
+                    "kind": "CaseOpened",
+                    "operation_id": "workflow-definition-invalid-step",
+                    "payload": {
+                        "workflow_definition": {
+                            "definition_id": "workflow-source-only",
+                            "version": 1,
+                            "intent": "diagnose-and-fix",
+                            "entry_domain": "debug",
+                            "entry_operation": "",
+                            "delivery_strategy": "source-only",
+                            "steps": [
+                                {
+                                    "step_id": "step-developer",
+                                    "kind": "phase",
+                                    "name": "developer.change",
+                                    "owner": "openubmc-developer",
+                                    "receipt_schema": "developer-change-v1",
+                                },
+                                "not-an-object",
+                            ],
+                        }
+                    },
+                    "created_at": 1.0,
+                }
+            )
+
     def test_incompatible_legacy_phase_event_is_rejected(self) -> None:
         with self.assertRaisesRegex(
             RunEventSchemaError,

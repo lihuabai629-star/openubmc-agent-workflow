@@ -8,7 +8,7 @@ import re
 from typing import Protocol
 
 from .contracts import RUNTIME_API_VERSION
-from .semantic_runtime import Gate, Incident, Outcome, RunTurn, run_turn_facts
+from .semantic_runtime import RunTurn, project_run_turn
 from .workflow import WORKFLOW_DEFINITION_SCHEMA, WorkflowDefinition
 
 
@@ -225,78 +225,14 @@ class EventRunStore:
         if isinstance(current_turn, Mapping) and current_turn:
             raw_turn = current_turn
         base_turn = RunTurn.from_public_dict(raw_turn)
-        raw_gate = projection.get("current_gate")
-        gate = (
-            Gate.from_public_dict(raw_gate)
-            if isinstance(raw_gate, Mapping) and raw_gate
-            else None
-        )
-        raw_incident = projection.get("current_incident")
-        incident = (
-            Incident(
-                incident_id=str(raw_incident.get("incident_id", "")).strip(),
-                code=str(raw_incident.get("code", "")).strip(),
-                message=str(raw_incident.get("message", "")).strip(),
-                effect_id=str(raw_incident.get("effect_id", "")).strip(),
-                recoverable=bool(raw_incident.get("recoverable", True)),
-            )
-            if isinstance(raw_incident, Mapping) and raw_incident
-            else None
-        )
-        raw_outcome = projection.get("run_outcome")
-        outcome = (
-            Outcome(
-                status=str(raw_outcome.get("status", "")).strip(),
-                summary=str(raw_outcome.get("summary", "")).strip(),
-                acceptance=raw_outcome.get("acceptance", []),
-            )
-            if isinstance(raw_outcome, Mapping) and raw_outcome
-            else None
-        )
-        projection_status = str(projection.get("status", "")).strip()
-        if outcome is not None:
-            state = outcome.status or "terminal"
-        elif incident is not None:
-            state = "incident"
-        elif gate is not None:
-            state = "waiting_response"
-        elif projection_status in {"open", "waiting_phase_record"}:
-            state = "running"
-        else:
-            state = projection_status or base_turn.state
-        raw_next_actions = projection.get("next_actions", [])
-        projected_next = (
-            str(raw_next_actions[0]).strip()
-            if isinstance(raw_next_actions, list) and raw_next_actions
-            else ""
-        )
-        if outcome is not None or state in {"cancelled", "completed", "failed"}:
-            next_action = ""
-        elif projected_next:
-            next_action = projected_next
-        elif state == base_turn.state:
-            next_action = base_turn.next_action
-        elif gate is not None:
-            next_action = "submit the requested Gate response"
-        else:
-            next_action = ""
-        gaps = base_turn.gaps
-        recovery_gap = str(projection.get("closeout_recovery_gap", "")).strip()
-        if recovery_gap and recovery_gap not in gaps:
-            gaps = (*gaps, recovery_gap)
         return CommittedRunDecision(
             projection=dict(projection),
-            turn=RunTurn(
+            turn=project_run_turn(
+                projection,
                 run_id=str(projection.get("case_id") or base_turn.run_id),
-                state=state,
-                gate=gate,
-                incident=incident,
-                facts=run_turn_facts(projection),
-                gaps=gaps,
-                outcome=outcome,
-                next_action=next_action,
-                observation_ref=base_turn.observation_ref,
-                outcome_recorded=base_turn.outcome_recorded,
+                use_current_gate=True,
+                use_projected_next_action=True,
+                base_turn=base_turn,
             ),
             replayed=True,
         )
