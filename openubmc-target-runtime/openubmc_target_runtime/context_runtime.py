@@ -6760,6 +6760,7 @@ class ContextRuntime:
                 raise IdempotencyConflict(
                     "Effect identity is already bound to different input"
                 )
+            return projection
         else:
             workflow_metadata = {
                 "workflow_cycle_id": str(
@@ -6837,7 +6838,6 @@ class ContextRuntime:
             effect_class=effect_class,
             request_fingerprint=request_fingerprint,
             arguments=dict(_sanitize_runtime_inputs(arguments)),
-            recovery_required=isinstance(existing, Mapping),
         )
         record_intent = getattr(self.repository, "record_effect_intent", None)
         if not callable(record_intent):

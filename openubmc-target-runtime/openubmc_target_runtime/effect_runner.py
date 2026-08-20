@@ -27,7 +27,6 @@ class EffectIntent:
     effect_class: EffectClass
     request_fingerprint: str
     arguments: Mapping[str, object]
-    recovery_required: bool = False
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -56,7 +55,6 @@ class EffectIntent:
             effect_class=EffectClass(str(value.get("effect_class", ""))),
             request_fingerprint=str(value.get("request_fingerprint", "")),
             arguments=dict(raw_arguments),
-            recovery_required=bool(value.get("recovery_required", False)),
         )
 
     def to_public_dict(self) -> dict[str, object]:
@@ -69,7 +67,6 @@ class EffectIntent:
             "effect_class": self.effect_class.value,
             "request_fingerprint": self.request_fingerprint,
             "arguments": dict(self.arguments),
-            "recovery_required": self.recovery_required,
         }
 
 

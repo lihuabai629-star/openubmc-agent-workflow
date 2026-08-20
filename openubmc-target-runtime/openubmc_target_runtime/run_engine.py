@@ -1299,13 +1299,13 @@ class RunEngine:
             "dispatch"
             if isinstance(committed.effect_intent, Mapping)
             and _text(committed.effect_intent.get("effect_id")) == intent.effect_id
-            and not intent.recovery_required
             and not committed.replayed
             else "reattach"
             if self.effect_runner.has_seen(intent.effect_id)
             else "recover"
         )
         for _attempt in range(WORKFLOW_INTERNAL_MAX_STEPS):
+            future = self.effect_runner.ensure(intent, mode=mode)
             remaining = deadline_at - time.monotonic()
             if remaining <= 0:
                 snapshot = self.driver.run_snapshot(intent.run_id)
@@ -1314,7 +1314,6 @@ class RunEngine:
                     state="running",
                     next_action="resume the Run to reattach to the current Effect",
                 )
-            future = self.effect_runner.ensure(intent, mode=mode)
             if not self.effect_runner.wait(future, remaining):
                 snapshot = self.driver.run_snapshot(intent.run_id)
                 return self._turn(
