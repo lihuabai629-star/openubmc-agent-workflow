@@ -1435,7 +1435,7 @@ class _BufferedRunState:
     last_access: float
     recorded_at: float
     events: list[PendingCaseEvent] = field(default_factory=list)
-    idempotency_claims: set[tuple[str, str]] = field(default_factory=set)
+    idempotency_claims: dict[tuple[str, str], str] = field(default_factory=dict)
     idempotency_receipts: dict[
         tuple[str, str], Mapping[str, object]
     ] = field(default_factory=dict)
@@ -1462,13 +1462,29 @@ class BufferedRunCommand:
 
     @property
     def events(self) -> tuple[RunEvent, ...]:
-        return tuple(
+        persisted_receipts = tuple(
             RunEvent(
-                kind=event.kind,
-                payload=event.payload,
-                operation_id=event.operation_id,
+                kind="RunCommandReceiptRecorded",
+                payload={
+                    "case_id": identity[0],
+                    "key": identity[1],
+                    "fingerprint": self.state.idempotency_claims.get(identity, ""),
+                    "receipt": dict(receipt),
+                },
+                operation_id=identity[1],
             )
-            for event in self.state.events
+            for identity, receipt in self.state.idempotency_receipts.items()
+        )
+        return (
+            *tuple(
+                RunEvent(
+                    kind=event.kind,
+                    payload=event.payload,
+                    operation_id=event.operation_id,
+                )
+                for event in self.state.events
+            ),
+            *persisted_receipts,
         )
 
     @property
@@ -1542,6 +1558,37 @@ class BufferedRuntimeRepository:
     def reattach(self, run_id: str, task_id: str) -> None:
         if self.base_repository.load(run_id) is None:
             raise CaseNotFound(run_id)
+        for event in self.base_repository.events(run_id):
+            if event.get("kind") != "RunCommandReceiptRecorded":
+                continue
+            payload = event.get("payload", {})
+            if not isinstance(payload, Mapping):
+                continue
+            case_id = str(payload.get("case_id", ""))
+            key = str(payload.get("key", ""))
+            fingerprint = str(payload.get("fingerprint", ""))
+            receipt = payload.get("receipt")
+            if (
+                case_id != run_id
+                or not key
+                or not fingerprint
+                or not isinstance(receipt, Mapping)
+            ):
+                continue
+            try:
+                replay = self.base_repository.claim_idempotency(
+                    case_id,
+                    key,
+                    fingerprint,
+                )
+            except OperationAlreadyInProgress:
+                replay = None
+            if replay is None:
+                self.base_repository.complete_idempotency(
+                    case_id,
+                    key,
+                    receipt,
+                )
         self.base_repository.bind_task(task_id, run_id)
 
     def _active(self, case_id: str) -> _BufferedRunState | None:
@@ -1649,7 +1696,7 @@ class BufferedRuntimeRepository:
             case_id, key, fingerprint
         )
         if state is not None and replay is None:
-            state.idempotency_claims.add((case_id, key))
+            state.idempotency_claims[(case_id, key)] = fingerprint
         return replay
 
     def complete_idempotency(
@@ -1664,7 +1711,7 @@ class BufferedRuntimeRepository:
     def abandon_idempotency(self, case_id: str, key: str) -> None:
         state = self._active(case_id) if self._state.get() is not None else None
         if state is not None:
-            state.idempotency_claims.discard((case_id, key))
+            state.idempotency_claims.pop((case_id, key), None)
             state.idempotency_receipts.pop((case_id, key), None)
         self.base_repository.abandon_idempotency(case_id, key)
 
@@ -1765,7 +1812,7 @@ class BufferedRuntimeRepository:
                         identity[0], identity[1], receipt
                     )
                 for case_id, key in (
-                    state.idempotency_claims - set(state.idempotency_receipts)
+                    set(state.idempotency_claims) - set(state.idempotency_receipts)
                 ):
                     self.base_repository.abandon_idempotency(case_id, key)
             else:

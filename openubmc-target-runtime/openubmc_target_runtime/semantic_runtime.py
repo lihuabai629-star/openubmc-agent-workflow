@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import re
@@ -532,6 +532,97 @@ class ReconcileRun:
 RunCommand: TypeAlias = StartRun | SubmitGate | ResumeRun | CancelRun | ReconcileRun
 
 
+def _normalized_gate_submission(
+    response: Mapping[str, object],
+) -> dict[str, object]:
+    raw_payload = response.get("payload", {})
+    payload: object = (
+        dict(raw_payload) if isinstance(raw_payload, Mapping) else raw_payload
+    )
+    if isinstance(payload, dict):
+        raw_artifact_ref = payload.get("artifact_ref")
+        if isinstance(raw_artifact_ref, Mapping):
+            artifact_ref = dict(raw_artifact_ref)
+            if "handle" not in artifact_ref and "path" in artifact_ref:
+                artifact_ref["handle"] = artifact_ref.pop("path")
+            if "digest" not in artifact_ref and "sha256" in artifact_ref:
+                artifact_ref["digest"] = artifact_ref.pop("sha256")
+            raw_digest = artifact_ref.get("digest")
+            if isinstance(raw_digest, str):
+                digest = raw_digest.strip().removeprefix("sha256:").lower()
+                artifact_ref["digest"] = f"sha256:{digest}"
+            for name in (
+                "handle",
+                "kind",
+                "provenance",
+                "retention_hint",
+                "version",
+                "target",
+                "run_id",
+            ):
+                value = artifact_ref.get(name)
+                if isinstance(value, str):
+                    artifact_ref[name] = value.strip()
+            payload["artifact_ref"] = artifact_ref
+    raw_status = response.get("status")
+    raw_summary = response.get("summary")
+    return {
+        "status": (
+            raw_status.strip().lower()
+            if isinstance(raw_status, str)
+            else raw_status
+        ),
+        "summary": (
+            raw_summary.strip()
+            if isinstance(raw_summary, str)
+            else raw_summary
+        ),
+        "payload": payload,
+    }
+
+
+def _run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
+    if isinstance(command, SubmitGate):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/submit-gate-input-v1",
+            "run_id": command.run_id,
+            "gate_id": command.gate_id,
+            "gate_version": command.gate_version,
+            "schema_digest": command.schema_digest,
+            "response": _normalized_gate_submission(command.response),
+        }
+    if isinstance(command, CancelRun):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/cancel-run-input-v1",
+            "run_id": command.run_id,
+            "gate_id": command.gate_id,
+            "gate_version": command.gate_version,
+            "schema_digest": command.schema_digest,
+        }
+    if isinstance(command, ReconcileRun):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/reconcile-run-input-v1",
+            "run_id": command.run_id,
+        }
+    if isinstance(command, ResumeRun):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/resume-run-input-v1",
+            "run_id": command.run_id,
+        }
+    return {
+        "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
+        "target": command.target,
+        "intent": command.intent,
+        "purpose": command.purpose,
+        "delivery_strategy": command.delivery_strategy,
+        "observation_ref": (
+            command.observation_ref.to_public_dict()
+            if command.observation_ref is not None
+            else None
+        ),
+    }
+
+
 def run_command_identity(
     command: RunCommand, *, operation_id: str
 ) -> tuple[str, str]:
@@ -542,52 +633,16 @@ def run_command_identity(
         raise AgentGatewayError(
             "Run command operation_id must be a safe 1-128 character identifier"
         )
+    canonical_digest = fingerprint(_run_command_semantic_input(command))
     persisted_digest = _text(getattr(command, "input_digest", ""))
     if persisted_digest:
         if _SHA256.fullmatch(persisted_digest) is None:
             raise AgentGatewayError("Run command input_digest must be SHA-256")
-        return command_id, persisted_digest
-    if isinstance(command, SubmitGate):
-        semantic_input: Mapping[str, object] = {
-            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/submit-gate-input-v1",
-            "run_id": command.run_id,
-            "gate_id": command.gate_id,
-            "gate_version": command.gate_version,
-            "schema_digest": command.schema_digest,
-            "response": dict(command.response),
-        }
-    elif isinstance(command, CancelRun):
-        semantic_input = {
-            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/cancel-run-input-v1",
-            "run_id": command.run_id,
-            "gate_id": command.gate_id,
-            "gate_version": command.gate_version,
-            "schema_digest": command.schema_digest,
-        }
-    elif isinstance(command, ReconcileRun):
-        semantic_input = {
-            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/reconcile-run-input-v1",
-            "run_id": command.run_id,
-        }
-    elif isinstance(command, ResumeRun):
-        semantic_input = {
-            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/resume-run-input-v1",
-            "run_id": command.run_id,
-        }
-    else:
-        semantic_input = {
-            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
-            "target": command.target,
-            "intent": command.intent,
-            "purpose": command.purpose,
-            "delivery_strategy": command.delivery_strategy,
-            "observation_ref": (
-                command.observation_ref.to_public_dict()
-                if command.observation_ref is not None
-                else None
-            ),
-        }
-    return command_id, fingerprint(semantic_input)
+        if persisted_digest != canonical_digest:
+            raise AgentGatewayError(
+                "Run command input_digest does not match normalized input"
+            )
+    return command_id, canonical_digest
 
 
 def run_id_for_command(command: RunCommand, *, command_id: str) -> str:
@@ -673,30 +728,23 @@ def decode_run_command(
             )
             observation_ref = ObservationRef.from_public_dict(source)
         purpose = _text(action.get("purpose") or "complete the requested workflow")
-        semantic_input = {
-            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
-            "target": target,
-            "intent": intent,
-            "purpose": purpose,
-            "delivery_strategy": delivery,
-            "observation_ref": (
-                observation_ref.to_public_dict()
-                if observation_ref is not None
-                else None
-            ),
-        }
-        return StartRun(
+        command = StartRun(
             target=target,
             intent=intent,
             purpose=purpose,
             delivery_strategy=delivery,
             command_id=command_id,
-            input_digest=fingerprint(semantic_input),
+            input_digest="",
             observation_ref=observation_ref,
             legacy_observation_receipt=(
                 dict(legacy_receipt) if isinstance(legacy_receipt, Mapping) else None
             ),
         )
+        _identity, digest = run_command_identity(
+            command,
+            operation_id=operation_id,
+        )
+        return replace(command, input_digest=digest)
     run_id = _text(action.get("run_id"))
     if not run_id:
         raise AgentGatewayError(f"{kind or 'execute'} requires run_id")
@@ -716,24 +764,21 @@ def decode_run_command(
                 "schema_digest": schema_digest,
             },
         )
-        semantic_input = {
-            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/submit-gate-input-v1",
-            "run_id": run_id,
-            "gate_id": gate_id,
-            "gate_version": gate_version,
-            "schema_digest": schema_digest,
-            "response": dict(response),
-        }
-        return SubmitGate(
+        command = SubmitGate(
             run_id=run_id,
-            response=dict(response),
+            response=_normalized_gate_submission(response),
             gate_id=gate_id,
             gate_version=gate_version,
             schema_digest=schema_digest,
             submission_id=submission_id,
             command_id=submission_id,
-            input_digest=fingerprint(semantic_input),
+            input_digest="",
         )
+        _identity, digest = run_command_identity(
+            command,
+            operation_id=operation_id,
+        )
+        return replace(command, input_digest=digest)
     if kind == "resume":
         command_id = _text(operation_id)
         command = ResumeRun(run_id, command_id=command_id)

@@ -36,7 +36,9 @@ from openubmc_target_runtime import (  # noqa: E402
     SQLiteRuntimeRepository,
     ScopeContract,
     ScopeViolation,
+    StartRun,
     StdioMcpServer,
+    SubmitGate,
 )
 
 
@@ -126,6 +128,23 @@ class RecordingCommitRepository(InMemoryRuntimeRepository):
             expected_revision=expected_revision,
             events=pending,
         )
+
+
+class FailOnceRunReceiptRepository(InMemoryRuntimeRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_completion = False
+        self.claims: dict[tuple[str, str], str] = {}
+
+    def claim_idempotency(self, case_id, key, fingerprint):
+        self.claims[(case_id, key)] = fingerprint
+        return super().claim_idempotency(case_id, key, fingerprint)
+
+    def complete_idempotency(self, case_id, key, receipt) -> None:
+        if self.fail_next_completion:
+            self.fail_next_completion = False
+            raise OSError("simulated Run receipt completion interruption")
+        super().complete_idempotency(case_id, key, receipt)
 
 
 class SemanticBackend:
@@ -920,6 +939,271 @@ class AgentGatewayTests(unittest.TestCase):
             self.service.session_outcome_service.status()["outcome_count"],
             0,
         )
+
+    def test_existing_legacy_case_can_still_record_a_session_outcome(self) -> None:
+        result = self.service.call_tool(
+            "debug_run",
+            {
+                "case_id": "run-legacy-session-outcome",
+                "ip": "192.0.2.77",
+                "intent": "diagnosis-only",
+                "final_purpose": "preserve legacy governance compatibility",
+                "deadline": 10,
+            },
+            task_id="legacy-session-outcome",
+            operation_id="legacy-session-outcome-debug",
+        )
+        case_id = str(result.envelope["case_id"])
+
+        recorded = self.service.call_tool(
+            "session_outcome_record",
+            {
+                "session_id": "legacy-session-outcome",
+                "case_id": case_id,
+                "replay_fingerprint": "sha256:" + "a" * 64,
+                "workflow": "diagnosis-only",
+                "domain": "debug",
+                "outcome": "completed",
+                "summary": "legacy diagnosis completed",
+            },
+            task_id="legacy-session-outcome",
+            operation_id="legacy-session-outcome-record",
+        )
+
+        self.assertEqual(recorded["case_id"], case_id)
+
+    def test_gate_submission_does_not_coerce_numeric_summary_to_text(self) -> None:
+        waiting = self.service.semantic_runtime.execute(
+            StartRun(
+                target="192.0.2.81",
+                intent="diagnose-and-fix",
+                purpose="reject an invalid typed Gate response",
+                delivery_strategy="source-only",
+                command_id="typed-gate-schema-start",
+                input_digest="",
+            ),
+            task_id="typed-gate-schema",
+            operation_id="typed-gate-schema-start",
+        )
+        assert waiting.gate is not None
+
+        with self.assertRaisesRegex(GateConflict, "summary has the wrong type"):
+            self.service.semantic_runtime.execute(
+                SubmitGate(
+                    run_id=waiting.run_id,
+                    gate_id=waiting.gate.gate_id,
+                    gate_version=waiting.gate.version,
+                    schema_digest=waiting.gate.schema_digest,
+                    submission_id="typed-gate-schema-submit",
+                    command_id="typed-gate-schema-submit",
+                    input_digest="",
+                    response={
+                        "status": "completed",
+                        "summary": 42,
+                        "payload": {
+                            "source_revision": "typed-gate-schema-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["run regression tests"],
+                        },
+                    },
+                ),
+                task_id="typed-gate-schema",
+                operation_id="typed-gate-schema-submit",
+            )
+
+    def test_typed_runtime_normalizes_gate_input_before_command_replay(self) -> None:
+        start = StartRun(
+            target="192.0.2.78",
+            intent="diagnose-and-fix",
+            purpose="normalize a typed Gate submission",
+            delivery_strategy="source-only",
+            command_id="typed-normalized-start",
+            input_digest="",
+        )
+        waiting = self.service.semantic_runtime.execute(
+            start,
+            task_id="typed-normalized-start",
+            operation_id="typed-normalized-start",
+        )
+        self.assertIsInstance(waiting, RunTurn)
+        assert waiting.gate is not None
+        gate = waiting.gate
+        first_command = SubmitGate(
+            run_id=waiting.run_id,
+            response={
+                "status": "completed",
+                "summary": " source repair completed ",
+                "payload": {
+                    "source_revision": "typed-normalized-source",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["run regression tests"],
+                },
+            },
+            gate_id=gate.gate_id,
+            gate_version=gate.version,
+            schema_digest=gate.schema_digest,
+            submission_id="typed-normalized-submission",
+            command_id="typed-normalized-submission",
+            input_digest="",
+        )
+        first = self.service.semantic_runtime.execute(
+            first_command,
+            task_id="typed-normalized-first",
+            operation_id="typed-normalized-first",
+        )
+        replayed = self.service.semantic_runtime.execute(
+            SubmitGate(
+                **{
+                    **first_command.__dict__,
+                    "response": {
+                        **dict(first_command.response),
+                        "summary": "source repair completed",
+                    },
+                }
+            ),
+            task_id="typed-normalized-replay",
+            operation_id="typed-normalized-replay",
+        )
+
+        self.assertIsInstance(first, RunTurn)
+        self.assertEqual(first.state, "completed")
+        self.assertEqual(replayed.to_public_dict(), first.to_public_dict())
+        projection = self.service.context_runtime.read_case(waiting.run_id)
+        self.assertEqual(
+            sum(
+                item.get("command_id") == "typed-normalized-submission"
+                for item in projection["run_decisions"]
+            ),
+            1,
+        )
+
+    def test_replaying_an_old_start_command_returns_the_current_turn(self) -> None:
+        action = {
+            "kind": "start",
+            "target": "192.0.2.80",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+        }
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="current-turn-start",
+            operation_id="current-turn-start-command",
+        )
+        final = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "submission_id": "current-turn-submission",
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "current-turn-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["run regression tests"],
+                    },
+                },
+            },
+            task_id="current-turn-submit",
+            operation_id="current-turn-submit",
+        )
+
+        replayed_start = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="current-turn-replay",
+            operation_id="current-turn-start-command",
+        )
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(replayed_start["state"], "completed")
+        self.assertEqual(replayed_start["outcome"], final["outcome"])
+        self.assertIsNone(replayed_start["gate"])
+
+    def test_replayed_run_decision_repairs_pending_idempotency_receipt(self) -> None:
+        repository = FailOnceRunReceiptRepository()
+        service = RuntimeMcpService(
+            SemanticBackend(),
+            context_repository=repository,
+        )
+        try:
+            waiting = service.semantic_runtime.execute(
+                StartRun(
+                    target="192.0.2.79",
+                    intent="diagnose-and-fix",
+                    purpose="repair a committed Run receipt",
+                    delivery_strategy="source-only",
+                    command_id="typed-receipt-start",
+                    input_digest="",
+                ),
+                task_id="typed-receipt-start",
+                operation_id="typed-receipt-start",
+            )
+            assert waiting.gate is not None
+            gate = waiting.gate
+            command = SubmitGate(
+                run_id=waiting.run_id,
+                response={
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "typed-receipt-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["run regression tests"],
+                    },
+                },
+                gate_id=gate.gate_id,
+                gate_version=gate.version,
+                schema_digest=gate.schema_digest,
+                submission_id="typed-receipt-submission",
+                command_id="typed-receipt-submission",
+                input_digest="",
+            )
+            repository.fail_next_completion = True
+            with self.assertRaisesRegex(
+                OSError, "Run receipt completion interruption"
+            ):
+                service.semantic_runtime.execute(
+                    command,
+                    task_id="typed-receipt-first",
+                    operation_id="typed-receipt-first",
+                )
+
+            pending_run_claims = [
+                item
+                for item in repository.claims.items()
+                if item[0][0] == waiting.run_id
+                and repository._idempotency[item[0]]["status"] == "pending"
+            ]
+            self.assertEqual(len(pending_run_claims), 1)
+            ((case_id, key), request_fingerprint) = pending_run_claims[0]
+            self.assertEqual(
+                repository._idempotency[(case_id, key)]["status"],
+                "pending",
+            )
+
+            replayed = service.semantic_runtime.execute(
+                command,
+                task_id="typed-receipt-replay",
+                operation_id="typed-receipt-replay",
+            )
+            self.assertEqual(
+                repository._idempotency[(case_id, key)]["status"],
+                "completed",
+            )
+            receipt = repository.claim_idempotency(
+                case_id,
+                key,
+                request_fingerprint,
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(replayed.state, "completed")
+        self.assertIsInstance(receipt, dict)
 
     def test_source_only_gate_response_uses_a_native_run_phase_event(self) -> None:
         waiting = self.service.call_exposed_tool(

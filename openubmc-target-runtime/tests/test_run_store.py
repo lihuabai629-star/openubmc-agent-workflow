@@ -22,6 +22,7 @@ from openubmc_target_runtime import (  # noqa: E402
     WORKFLOW_DEFINITION_SCHEMA,
     project_case,
 )
+from openubmc_target_runtime.run_store import upcast_run_events  # noqa: E402
 
 
 class RunDecisionContractTests(unittest.TestCase):
@@ -202,6 +203,54 @@ class RunDecisionContractTests(unittest.TestCase):
 
         self.assertEqual(repository.current_revision("run-conflict"), before)
 
+    def test_replay_rebuilds_the_turn_after_a_transitional_outcome_event(self) -> None:
+        repository = InMemoryRuntimeRepository()
+        store = EventRunStore(repository)
+        decision = RunDecision(
+            run_id="run-transitional-outcome",
+            command_id="command-before-transitional-outcome",
+            input_digest="9" * 64,
+            expected_revision=0,
+            events=(),
+            turn=RunTurn(
+                run_id="run-transitional-outcome",
+                state="running",
+                next_action="resume the Run",
+            ),
+        )
+        store.commit(decision)
+        repository.commit(
+            "run-transitional-outcome",
+            expected_revision=1,
+            events=(
+                RunEvent(
+                    kind="RunOutcomeRecorded",
+                    operation_id="transitional-outcome",
+                    payload={
+                        "outcome": {
+                            "status": "completed",
+                            "summary": "completed through a compatibility writer",
+                            "acceptance": [],
+                        }
+                    },
+                ).for_persistence(),
+            ),
+        )
+
+        replayed = store.replay(
+            "run-transitional-outcome",
+            "command-before-transitional-outcome",
+            "9" * 64,
+        )
+
+        assert replayed is not None
+        self.assertEqual(replayed.turn.state, "completed")
+        self.assertEqual(
+            replayed.turn.outcome.summary,
+            "completed through a compatibility writer",
+        )
+        self.assertEqual(replayed.turn.next_action, "")
+
     def test_run_store_rejects_a_stale_expected_revision(self) -> None:
         repository = InMemoryRuntimeRepository()
         store = EventRunStore(repository)
@@ -313,7 +362,6 @@ class RunDecisionContractTests(unittest.TestCase):
                 "kind": "OperationProgressed",
                 "operation_id": "phase-legacy",
                 "payload": {
-                    "status": "completed",
                     "phase_record": {
                         "phase_type": "developer.change",
                         "status": "completed",
@@ -352,6 +400,84 @@ class RunDecisionContractTests(unittest.TestCase):
         )
         self.assertEqual(projection["run_outcome"]["status"], "completed")
 
+    def test_legacy_phase_event_is_explicitly_upcast_to_current_projection_shape(self) -> None:
+        (upcasted,) = upcast_run_events(
+            {
+                "revision": 3,
+                "kind": "OperationProgressed",
+                "operation_id": "phase-legacy",
+                "payload": {
+                    "status": "completed",
+                    "phase_record": {
+                        "phase_type": "developer.change",
+                        "status": "completed",
+                        "summary": "legacy source completed",
+                    },
+                },
+                "created_at": 3.0,
+            }
+        )
+
+        self.assertEqual(upcasted["kind"], "OperationProgressed")
+        self.assertEqual(upcasted["payload"]["status"], "completed")
+        self.assertEqual(
+            upcasted["payload"]["phase_record"]["summary"],
+            "legacy source completed",
+        )
+
+    def test_every_legacy_workflow_definition_event_is_explicitly_upcast(self) -> None:
+        legacy_definition = {
+            "definition_id": "workflow-source-only",
+            "version": 1,
+            "intent": "diagnose-and-fix",
+            "entry_domain": "debug",
+            "entry_operation": "",
+            "delivery_strategy": "source-only",
+            "steps": [
+                {
+                    "step_id": "step-developer",
+                    "kind": "phase",
+                    "name": "developer.change",
+                    "owner": "openubmc-developer",
+                    "receipt_schema": "developer-change-v1",
+                }
+            ],
+        }
+
+        for kind in ("CaseOpened", "DeliveryStrategySelected", "CaseUpdated"):
+            with self.subTest(kind=kind):
+                (upcasted,) = upcast_run_events(
+                    {
+                        "revision": 1,
+                        "kind": kind,
+                        "operation_id": "workflow-definition-legacy",
+                        "payload": {
+                            "workflow_definition": legacy_definition,
+                        },
+                        "created_at": 1.0,
+                    }
+                )
+
+                self.assertEqual(
+                    upcasted["payload"]["workflow_definition"]["schema"],
+                    WORKFLOW_DEFINITION_SCHEMA,
+                )
+
+    def test_incompatible_legacy_phase_event_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            RunEventSchemaError,
+            "legacy OperationProgressed phase_record is not an object",
+        ):
+            upcast_run_events(
+                {
+                    "revision": 3,
+                    "kind": "OperationProgressed",
+                    "operation_id": "phase-legacy-invalid",
+                    "payload": {"phase_record": "not-an-object"},
+                    "created_at": 3.0,
+                }
+            )
+
     def test_unknown_persisted_run_event_schema_is_rejected(self) -> None:
         with self.assertRaises(RunEventSchemaError):
             project_case(
@@ -369,6 +495,21 @@ class RunDecisionContractTests(unittest.TestCase):
                         "created_at": 1.0,
                     },
                 ),
+            )
+
+    def test_non_object_persisted_run_event_payload_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            RunEventSchemaError,
+            "persisted Run event payload is not an object",
+        ):
+            upcast_run_events(
+                {
+                    "revision": 1,
+                    "kind": "RunGateOpened",
+                    "operation_id": "invalid-payload",
+                    "payload": ["not", "an", "object"],
+                    "created_at": 1.0,
+                }
             )
 
     def test_incompatible_persisted_run_decision_version_is_rejected(self) -> None:

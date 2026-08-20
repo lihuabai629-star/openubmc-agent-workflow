@@ -2354,16 +2354,6 @@ class _RuntimeSemanticAdapter:
                 workflow_step_id=workflow_step_id,
             )
         )
-        descriptor = self.service.catalog.require(operation)
-        if descriptor.mutation:
-            self.service.context_runtime.repository.record_effect_intent(
-                run_id,
-                {
-                    "effect_id": derived_id,
-                    "operation": operation,
-                    "workflow_step_id": workflow_step_id,
-                },
-            )
         try:
             self.service.call_tool(
                 operation,
@@ -3894,13 +3884,19 @@ class RuntimeMcpService:
                     raise TypeError("details must be an object")
                 case_id = str(arguments.get("case_id", ""))
                 try:
-                    self.context_runtime.read_case(case_id)
+                    projection = self.context_runtime.read_case(case_id)
                 except CaseNotFound:
-                    if case_id.startswith("run-"):
-                        raise ValueError(
-                            "Session Outcome for a Run must be generated from Run Outcome"
-                        ) from None
-                else:
+                    projection = None
+                is_run = isinstance(projection, Mapping) and any(
+                    projection.get(name)
+                    for name in (
+                        "run_decisions",
+                        "run_gates",
+                        "incidents",
+                        "run_outcome",
+                    )
+                )
+                if is_run:
                     raise ValueError(
                         "Session Outcome for a Run must be generated from Run Outcome"
                     )
