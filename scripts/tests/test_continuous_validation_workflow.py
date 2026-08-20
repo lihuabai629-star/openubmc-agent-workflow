@@ -47,7 +47,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
     def test_toolchains_and_dependency_locks_are_explicit(self) -> None:
         python = self.step("Set up Python")
         self.assertEqual(python["uses"], "actions/setup-python@v5")
-        self.assertEqual(python["with"]["python-version"], "3.12.11")
+        self.assertEqual(python["with"]["python-version"], "3.12.13")
         self.assertEqual(
             self.step("Install locked Python validation dependencies")["run"],
             "python -m pip install --only-binary=:all: --require-hashes "
@@ -60,7 +60,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
         )
         node = self.step("Set up Node.js")
         self.assertEqual(node["uses"], "actions/setup-node@v4")
-        self.assertEqual(node["with"]["node-version"], "22.17.0")
+        self.assertEqual(node["with"]["node-version"], "22.23.2")
         self.assertEqual(node["with"]["cache"], "npm")
         self.assertEqual(
             node["with"]["cache-dependency-path"],
