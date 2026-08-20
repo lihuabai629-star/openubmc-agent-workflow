@@ -134,6 +134,15 @@ class EnvironmentSetupTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
+        self.original_tool_search_path = installer.tool_search_path
+        self.tool_search_path_patch = mock.patch.object(
+            installer,
+            "tool_search_path",
+            side_effect=lambda tool_dirs: self.original_tool_search_path(
+                [str(self.bin_dir), *tool_dirs]
+            ),
+        )
+        self.tool_search_path_patch.start()
         self.environment_patch = mock.patch.dict(
             installer.os.environ, {"SHELL": "/bin/bash"}, clear=False
         )
@@ -143,6 +152,7 @@ class EnvironmentSetupTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.environment_patch.stop()
+        self.tool_search_path_patch.stop()
         self.temporary.cleanup()
 
     @staticmethod
@@ -739,6 +749,18 @@ class EnvironmentSetupTests(unittest.TestCase):
             [str(installer.user_tool_bin(self.home))],
             dry_run=False,
         )
+
+    def test_install_fixture_resolves_tools_without_host_dependencies(self) -> None:
+        search_path = installer.tool_search_path(
+            [str(installer.user_tool_bin(self.home))]
+        )
+
+        for tool in (*installer.REQUIRED_TOOLS, "codex"):
+            with self.subTest(tool=tool):
+                self.assertEqual(
+                    installer.shutil.which(tool, path=search_path),
+                    str(self.bin_dir / tool),
+                )
 
     def test_apt_install_is_noninteractive(self) -> None:
         completed = subprocess.CompletedProcess(["apt-get"], 0, "", "")
@@ -3072,7 +3094,16 @@ class EnvironmentSetupTests(unittest.TestCase):
             executable = required_bin / tool
             executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             executable.chmod(0o755)
-        with mock.patch.dict(installer.os.environ, {"PATH": str(required_bin)}, clear=True):
+        with (
+            mock.patch.dict(
+                installer.os.environ, {"PATH": str(required_bin)}, clear=True
+            ),
+            mock.patch.object(
+                installer,
+                "tool_search_path",
+                self.original_tool_search_path,
+            ),
+        ):
             tooling = installer.inspect_tooling([str(required_bin)], ["codex"])
         self.assertTrue(tooling["ready"])
         self.assertTrue(all(tooling["required"].values()))

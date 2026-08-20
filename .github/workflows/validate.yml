@@ -52,7 +52,7 @@ jobs:
         run: python -m unittest scripts.tests.test_continuous_validation_workflow
 
   validate:
-    name: Runtime Core repository validation
+    name: Complete repository validation
     needs: ci-contract
     runs-on: ubuntu-24.04
     timeout-minutes: 30

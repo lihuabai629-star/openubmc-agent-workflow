@@ -31,6 +31,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
         self.assertEqual(set(jobs), {"ci-contract", "validate"})
         preflight = jobs["ci-contract"]
         self.assertEqual(preflight["name"], "CI contract preflight")
+        self.assertEqual(jobs["validate"]["name"], "Complete repository validation")
         self.assertEqual(jobs["validate"]["needs"], "ci-contract")
         self.assertEqual(
             next(

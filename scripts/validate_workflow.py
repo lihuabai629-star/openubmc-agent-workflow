@@ -278,6 +278,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.quick:
         print("workflow validation passed")
         return 0
+    node_root = ROOT / "openubmc-kb-mcp"
+    run(
+        ["npm", "ci", "--no-audit", "--no-fund"],
+        cwd=node_root,
+        stage="Node dependencies: openubmc-kb-mcp",
+    )
     test_roots = sorted(
         path.parent
         for path in ROOT.glob("*/tests/test_*.py")
@@ -287,12 +293,6 @@ def main(argv: list[str] | None = None) -> int:
             [sys.executable, "-m", "unittest", "discover", "-s", str(tests), "-p", "test_*.py"],
             stage=f"Python tests: {tests.relative_to(ROOT).as_posix()}",
         )
-    node_root = ROOT / "openubmc-kb-mcp"
-    run(
-        ["npm", "ci", "--no-audit", "--no-fund"],
-        cwd=node_root,
-        stage="Node dependencies: openubmc-kb-mcp",
-    )
     run(
         ["npm", "test"],
         cwd=node_root,

@@ -146,9 +146,9 @@ class WorkflowStageReportingTests(unittest.TestCase):
             [call.kwargs["stage"] for call in run.call_args_list],
             [
                 "Python compile",
+                "Node dependencies: openubmc-kb-mcp",
                 "Python tests: alpha/tests",
                 "Python tests: beta/tests",
-                "Node dependencies: openubmc-kb-mcp",
                 "Node tests: openubmc-kb-mcp",
                 "Node syntax: openubmc-kb-mcp",
             ],
