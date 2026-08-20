@@ -996,6 +996,77 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         ]
         self.assertEqual(uploads, [])
 
+    def test_terminal_journal_replays_after_upgrade_artifact_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            arguments = {
+                "intent": "upgrade-and-verify",
+                "delivery_strategy": "build-upgrade",
+                "ip": "bmc.example",
+                "artifact_path": str(artifact),
+                "artifact_sha256": digest,
+                "product_version": "2.0.0",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first = RuntimeMcpService(
+                UpgradeMcpBackend(
+                    journal_store=journals,
+                    credential_loader=lambda _arguments: {
+                        "redfish": {
+                            "user": "Administrator",
+                            "password": "redfish-secret",
+                        }
+                    },
+                    redfish_transport_factory=lambda _arguments: (
+                        FakeRedfishTransport()
+                    ),
+                )
+            )
+            try:
+                first.call_tool(
+                    "upgrade_run",
+                    arguments,
+                    task_id="terminal-upgrade",
+                    operation_id="terminal-upgrade-effect",
+                )
+            finally:
+                first.close()
+            artifact.unlink()
+
+            transport = FakeRedfishTransport()
+            second = RuntimeMcpService(
+                UpgradeMcpBackend(
+                    journal_store=journals,
+                    credential_loader=lambda _arguments: {
+                        "redfish": {
+                            "user": "Administrator",
+                            "password": "redfish-secret",
+                        }
+                    },
+                    redfish_transport_factory=lambda _arguments: transport,
+                )
+            )
+            try:
+                descriptor = second.catalog.require("upgrade_run")
+                replayed = second._execute_domain_value(
+                    "upgrade_run",
+                    descriptor,
+                    arguments,
+                    task_id="terminal-upgrade",
+                    operation_id="terminal-upgrade-effect",
+                    recovery_mode=EffectRecoveryMode.RECONCILE,
+                )
+            finally:
+                second.close()
+
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["journal"]["stage"], "verified")
+        self.assertEqual(transport.sessions, [])
+
     def test_version_verification_waits_through_old_version_after_reboot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

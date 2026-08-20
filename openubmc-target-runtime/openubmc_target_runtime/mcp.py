@@ -58,6 +58,7 @@ from .capability import (
     DomainExecutor,
     EffectClass,
     EffectRecoveryMode,
+    RUNTIME_EFFECT_RECOVERY_ARGUMENT,
     RuntimeSDKContext,
 )
 from .context_runtime import (
@@ -3567,8 +3568,8 @@ class RuntimeMcpService:
         descriptor = self.catalog.require(operation)
         bounded_arguments = dict(arguments)
         if sdk_context.recovery_mode:
-            bounded_arguments["_runtime_effect_recovery"] = (
-                sdk_context.recovery_mode.value
+            bounded_arguments[RUNTIME_EFFECT_RECOVERY_ARGUMENT] = (
+                sdk_context.recovery_mode
             )
         observation_mode = bounded_arguments.pop("_agent_observation", False)
         capability_names = bounded_arguments.pop("_agent_capability_names", [])

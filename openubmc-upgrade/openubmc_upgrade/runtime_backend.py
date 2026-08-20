@@ -46,7 +46,9 @@ from openubmc_target_runtime import (  # noqa: E402
     TargetPolicy,
     TargetSpec,
     TaskAuthorizationPolicy,
+    effect_recovery_mode,
     load_selected_credentials_file,
+    require_effect_recovery_journal,
 )
 
 
@@ -902,17 +904,14 @@ class UpgradeMcpBackend:
         mutation_options = {
             "image_uri": _argument_text(arguments, "image_uri"),
         }
-        recovery_mode = _argument_text(
-            arguments, "_runtime_effect_recovery"
-        ).lower()
+        recovery_mode = effect_recovery_mode(arguments)
+        journals = tuple(binding.task_run.mutation_journals())
         matching_journal = next(
             (
                 journal
-                for journal in binding.task_run.mutation_journals()
+                for journal in journals
                 if journal.operation_id == context.operation_id
                 and journal.action == "upgrade"
-                and not journal.terminal
-                and journal.stage != "replan_required"
                 and adapter.mutation_request(
                     operation_id=journal.operation_id,
                     artifact=artifact,
@@ -923,27 +922,56 @@ class UpgradeMcpBackend:
             None,
         )
         if matching_journal is not None:
-            recovery = self._recover_uncertain_upgrade(
-                binding=binding,
-                adapter=adapter,
-                journal=matching_journal,
-                artifact=artifact,
-                authorization=authorization,
-                arguments=arguments,
-                context=context,
-                mutation_options=mutation_options,
-            )
-            if recovery is not None:
-                return recovery
-        if recovery_mode == "reconcile" and not any(
-            journal.operation_id == context.operation_id
-            and journal.action == "upgrade"
-            for journal in binding.task_run.mutation_journals()
-        ):
-            raise OSError(
-                "Upgrade recovery found no durable mutation journal; "
-                "refusing to upload a replacement Effect"
-            )
+            if matching_journal.terminal:
+                result = adapter.run(
+                    operation_id=context.operation_id,
+                    authorization=authorization,
+                    artifact=artifact,
+                    apply=lambda _execution: (_ for _ in ()).throw(
+                        RuntimeError("terminal Upgrade replay invoked upload")
+                    ),
+                    read_installed_version=lambda _verification: (
+                        (_ for _ in ()).throw(
+                            RuntimeError(
+                                "terminal Upgrade replay invoked verification"
+                            )
+                        )
+                    ),
+                    debug_verify=None,
+                    mutation_options=mutation_options,
+                    operation_context=context,
+                )
+                if (
+                    result.journal.stage == "verification_failed_terminal"
+                    and result.journal.last_known_state == "activation-fallback"
+                ):
+                    raise UpgradeActivationReverted(
+                        "the existing upgrade operation already completed with an "
+                        "activation fallback; the artifact was not uploaded again"
+                    )
+                return result.to_public_dict()
+            if matching_journal.stage == "replan_required":
+                matching_journal = None
+            else:
+                recovery = self._recover_uncertain_upgrade(
+                    binding=binding,
+                    adapter=adapter,
+                    journal=matching_journal,
+                    artifact=artifact,
+                    authorization=authorization,
+                    arguments=arguments,
+                    context=context,
+                    mutation_options=mutation_options,
+                )
+                if recovery is not None:
+                    return recovery
+        require_effect_recovery_journal(
+            recovery_mode,
+            journals,
+            operation_id=context.operation_id,
+            action="upgrade",
+            label="Upgrade",
+        )
         artifact_bytes, actual_sha = _read_stable_artifact(artifact_path)
         if actual_sha != artifact.sha256:
             raise ValueError("upgrade artifact SHA-256 does not match")

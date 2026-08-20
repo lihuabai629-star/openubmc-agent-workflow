@@ -46,8 +46,12 @@ from .capability import (
     DomainAdapter,
     DomainReceipt,
     EffectClass,
+    EffectRecoveryMode,
+    RUNTIME_EFFECT_RECOVERY_ARGUMENT,
     RuntimeSDK,
     RuntimeSDKContext,
+    effect_recovery_mode,
+    require_effect_recovery_journal,
 )
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,

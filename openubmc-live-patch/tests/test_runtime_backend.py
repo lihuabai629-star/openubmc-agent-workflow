@@ -588,6 +588,84 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
         self.assertEqual(ssh.uploads, [])
         self.assertEqual(telnet.commands, [])
 
+    def test_terminal_journal_replays_after_local_patch_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            arguments = {
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "live-patch",
+                "ip": "bmc.example",
+                "local_path": str(local),
+                "artifact_sha256": digest,
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=lambda _arguments: {
+                        "ssh": {"user": "root", "password": "ssh-secret"},
+                        "telnet": {
+                            "user": "root",
+                            "password": "telnet-secret",
+                        },
+                    },
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: FakeTelnetTransport(
+                        digest
+                    ),
+                )
+            )
+            try:
+                first.call_tool(
+                    "live_patch_run",
+                    arguments,
+                    task_id="terminal-live-patch",
+                    operation_id="terminal-live-patch-effect",
+                )
+            finally:
+                first.close()
+            local.unlink()
+
+            ssh = FakeSshTransport()
+            telnet = FakeTelnetTransport(digest)
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=lambda _arguments: {
+                        "ssh": {"user": "root", "password": "ssh-secret"},
+                        "telnet": {
+                            "user": "root",
+                            "password": "telnet-secret",
+                        },
+                    },
+                    ssh_transport_factory=lambda _arguments: ssh,
+                    telnet_transport_factory=lambda _arguments: telnet,
+                )
+            )
+            try:
+                descriptor = second.catalog.require("live_patch_run")
+                replayed = second._execute_domain_value(
+                    "live_patch_run",
+                    descriptor,
+                    arguments,
+                    task_id="terminal-live-patch",
+                    operation_id="terminal-live-patch-effect",
+                    recovery_mode=EffectRecoveryMode.RECONCILE,
+                )
+            finally:
+                second.close()
+
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["journal"]["stage"], "verified")
+        self.assertEqual(ssh.uploads, [])
+        self.assertEqual(telnet.commands, [])
+
     def test_unknown_live_patch_is_reconciled_read_first_without_reupload(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

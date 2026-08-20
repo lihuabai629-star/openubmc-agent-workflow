@@ -13,6 +13,7 @@ from .contracts import RUNTIME_API_VERSION
 
 CAPABILITY_REGISTRY_SCHEMA = f"{RUNTIME_API_VERSION}/capability-registry-v1"
 DOMAIN_RECEIPT_SCHEMA = f"{RUNTIME_API_VERSION}/domain-receipt-v1"
+RUNTIME_EFFECT_RECOVERY_ARGUMENT = "_runtime_effect_recovery"
 _OUTCOME_STATUSES = frozenset(
     {
         "succeeded",
@@ -269,6 +270,42 @@ class EffectClass(str, Enum):
 
 class EffectRecoveryMode(str, Enum):
     RECONCILE = "reconcile"
+
+
+def effect_recovery_mode(
+    arguments: Mapping[str, object],
+) -> EffectRecoveryMode | None:
+    raw = arguments.get(RUNTIME_EFFECT_RECOVERY_ARGUMENT)
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, EffectRecoveryMode):
+        return raw
+    try:
+        return EffectRecoveryMode(str(raw).strip().lower())
+    except ValueError as exc:
+        raise ValueError("unsupported Runtime Effect recovery mode") from exc
+
+
+def require_effect_recovery_journal(
+    mode: EffectRecoveryMode | None,
+    journals: Iterable[object],
+    *,
+    operation_id: str,
+    action: str,
+    label: str,
+) -> None:
+    if mode is not EffectRecoveryMode.RECONCILE:
+        return
+    if any(
+        str(getattr(journal, "operation_id", "")) == operation_id
+        and str(getattr(journal, "action", "")) == action
+        for journal in journals
+    ):
+        return
+    raise OSError(
+        f"{label} recovery found no durable mutation journal; "
+        "refusing to create a replacement Effect"
+    )
 
 
 @dataclass(frozen=True)

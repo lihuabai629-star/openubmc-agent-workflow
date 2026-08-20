@@ -44,7 +44,9 @@ from openubmc_target_runtime import (  # noqa: E402
     TargetPolicy,
     TargetSpec,
     TaskAuthorizationPolicy,
+    effect_recovery_mode,
     load_selected_credentials_file,
+    require_effect_recovery_journal,
 )
 
 
@@ -901,9 +903,7 @@ class LivePatchMcpBackend:
         backup_dir = posixpath.dirname(backup_probe)
         backup = f"{backup_dir}/{PurePosixPath(remote).name}.bak.{token}"
         expected_metadata: dict[str, int | str] = {}
-        recovery_mode = _argument_text(
-            arguments, "_runtime_effect_recovery"
-        ).lower()
+        recovery_mode = effect_recovery_mode(arguments)
 
         def mutation_operation(expected_sha: str) -> dict[str, object]:
             return {
@@ -920,14 +920,13 @@ class LivePatchMcpBackend:
             }
 
         current_local_sha = _sha256(local) if local.is_file() else ""
+        journals = tuple(binding.task_run.mutation_journals())
         matching_journal = next(
             (
                 journal
-                for journal in binding.task_run.mutation_journals()
+                for journal in journals
                 if journal.operation_id == context.operation_id
                 and journal.action == "live_patch"
-                and not journal.terminal
-                and journal.stage != "replan_required"
                 and (journal.expected_checksum or current_local_sha)
                 and adapter.mutation_request(
                     operation_id=journal.operation_id,
@@ -953,29 +952,46 @@ class LivePatchMcpBackend:
             operation = mutation_operation(
                 matching_journal.expected_checksum or current_local_sha
             )
-            return self._recover_uncertain_live_patch(
-                binding=binding,
-                adapter=adapter,
-                journal=matching_journal,
-                authorization=authorization,
-                context=context,
-                operation=operation,
-                remote=remote,
-                remote_root=remote_root,
-                mode=mode,
-                restart_scope=restart_scope,
-                expected_metadata=expected_metadata,
-            )
+            if matching_journal.terminal:
+                result = adapter.run(
+                    operation_id=context.operation_id,
+                    authorization=authorization,
+                    restart_scope=restart_scope,
+                    operation=operation,
+                    apply=lambda _execution: (_ for _ in ()).throw(
+                        RuntimeError("terminal Live Patch replay invoked apply")
+                    ),
+                    verify=lambda _fresh: (_ for _ in ()).throw(
+                        RuntimeError("terminal Live Patch replay invoked verify")
+                    ),
+                    action="live_patch",
+                    operation_context=context,
+                )
+                return result.to_public_dict()
+            if matching_journal.stage == "replan_required":
+                matching_journal = None
+            else:
+                return self._recover_uncertain_live_patch(
+                    binding=binding,
+                    adapter=adapter,
+                    journal=matching_journal,
+                    authorization=authorization,
+                    context=context,
+                    operation=operation,
+                    remote=remote,
+                    remote_root=remote_root,
+                    mode=mode,
+                    restart_scope=restart_scope,
+                    expected_metadata=expected_metadata,
+                )
 
-        if recovery_mode == "reconcile" and not any(
-            journal.operation_id == context.operation_id
-            and journal.action == "live_patch"
-            for journal in binding.task_run.mutation_journals()
-        ):
-            raise OSError(
-                "Live Patch recovery found no durable mutation journal; "
-                "refusing to apply a replacement Effect"
-            )
+        require_effect_recovery_journal(
+            recovery_mode,
+            journals,
+            operation_id=context.operation_id,
+            action="live_patch",
+            label="Live Patch",
+        )
 
         if not local.is_file():
             raise ValueError(f"Live Patch local_path is unavailable: {local}")
