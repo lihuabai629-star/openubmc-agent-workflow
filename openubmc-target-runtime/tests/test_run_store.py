@@ -117,6 +117,63 @@ class RunDecisionContractTests(unittest.TestCase):
         )
         self.assertEqual(replayed.turn.state, "incident")
 
+    def test_run_store_commits_the_complete_event_set_and_decision_marker_together(self) -> None:
+        class RecordingRepository(InMemoryRuntimeRepository):
+            def __init__(self) -> None:
+                super().__init__()
+                self.commits: list[tuple[str, ...]] = []
+
+            def commit(self, case_id, *, expected_revision, events):
+                pending = tuple(events)
+                self.commits.append(tuple(event.kind for event in pending))
+                return super().commit(
+                    case_id,
+                    expected_revision=expected_revision,
+                    events=pending,
+                )
+
+        repository = RecordingRepository()
+        store = EventRunStore(repository)
+
+        store.commit(
+            RunDecision(
+                run_id="run-complete-set",
+                command_id="command-complete-set",
+                input_digest="7" * 64,
+                expected_revision=0,
+                events=(
+                    RunEvent(
+                        kind="RunGateOpened",
+                        payload={"gate": {"gate_id": "gate-complete-set"}},
+                        operation_id="command-complete-set",
+                    ),
+                    RunEvent(
+                        kind="RunIncidentRaised",
+                        payload={
+                            "incident": {
+                                "incident_id": "incident-complete-set",
+                                "code": "contract-test",
+                                "message": "stop",
+                            }
+                        },
+                        operation_id="command-complete-set",
+                    ),
+                ),
+                turn=RunTurn(run_id="run-complete-set", state="incident"),
+            )
+        )
+
+        self.assertEqual(
+            repository.commits,
+            [
+                (
+                    "RunGateOpened",
+                    "RunIncidentRaised",
+                    "RunDecisionCommitted",
+                )
+            ],
+        )
+
     def test_run_store_rejects_same_command_identity_with_a_new_digest(self) -> None:
         repository = InMemoryRuntimeRepository()
         store = EventRunStore(repository)
@@ -308,6 +365,36 @@ class RunDecisionContractTests(unittest.TestCase):
                             "_run_event_schema": "openubmc.target-runtime.v1/run-event-v99",
                             "_run_event_version": 99,
                             "incident": {"incident_id": "incident-unknown"},
+                        },
+                        "created_at": 1.0,
+                    },
+                ),
+            )
+
+    def test_incompatible_persisted_run_decision_version_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            RunEventSchemaError, "RunDecision version"
+        ):
+            project_case(
+                "run-unknown-decision-version",
+                (
+                    {
+                        "revision": 1,
+                        "kind": "RunDecisionCommitted",
+                        "operation_id": "unknown-decision-version",
+                        "payload": {
+                            "_run_event_schema": (
+                                "openubmc.target-runtime.v1/run-event-v1"
+                            ),
+                            "_run_event_version": 1,
+                            "schema": RUN_DECISION_SCHEMA,
+                            "version": 99,
+                            "command_id": "unknown-decision-version",
+                            "input_digest": "8" * 64,
+                            "turn": {
+                                "run_id": "run-unknown-decision-version",
+                                "state": "running",
+                            },
                         },
                         "created_at": 1.0,
                     },

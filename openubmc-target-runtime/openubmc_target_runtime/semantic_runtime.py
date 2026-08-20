@@ -500,11 +500,15 @@ class SubmitGate:
     gate_version: int
     schema_digest: str
     submission_id: str = ""
+    command_id: str = ""
+    input_digest: str = ""
 
 
 @dataclass(frozen=True)
 class ResumeRun:
     run_id: str
+    command_id: str = ""
+    input_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -514,14 +518,87 @@ class CancelRun:
     gate_version: int
     schema_digest: str
     submission_id: str = ""
+    command_id: str = ""
+    input_digest: str = ""
 
 
 @dataclass(frozen=True)
 class ReconcileRun:
     run_id: str
+    command_id: str = ""
+    input_digest: str = ""
 
 
 RunCommand: TypeAlias = StartRun | SubmitGate | ResumeRun | CancelRun | ReconcileRun
+
+
+def run_command_identity(
+    command: RunCommand, *, operation_id: str
+) -> tuple[str, str]:
+    """Return the stable identity and canonical input digest for one command."""
+
+    command_id = _text(getattr(command, "command_id", "")) or _text(operation_id)
+    if _SAFE_ID.fullmatch(command_id) is None:
+        raise AgentGatewayError(
+            "Run command operation_id must be a safe 1-128 character identifier"
+        )
+    persisted_digest = _text(getattr(command, "input_digest", ""))
+    if persisted_digest:
+        if _SHA256.fullmatch(persisted_digest) is None:
+            raise AgentGatewayError("Run command input_digest must be SHA-256")
+        return command_id, persisted_digest
+    if isinstance(command, SubmitGate):
+        semantic_input: Mapping[str, object] = {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/submit-gate-input-v1",
+            "run_id": command.run_id,
+            "gate_id": command.gate_id,
+            "gate_version": command.gate_version,
+            "schema_digest": command.schema_digest,
+            "response": dict(command.response),
+        }
+    elif isinstance(command, CancelRun):
+        semantic_input = {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/cancel-run-input-v1",
+            "run_id": command.run_id,
+            "gate_id": command.gate_id,
+            "gate_version": command.gate_version,
+            "schema_digest": command.schema_digest,
+        }
+    elif isinstance(command, ReconcileRun):
+        semantic_input = {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/reconcile-run-input-v1",
+            "run_id": command.run_id,
+        }
+    elif isinstance(command, ResumeRun):
+        semantic_input = {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/resume-run-input-v1",
+            "run_id": command.run_id,
+        }
+    else:
+        semantic_input = {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
+            "target": command.target,
+            "intent": command.intent,
+            "purpose": command.purpose,
+            "delivery_strategy": command.delivery_strategy,
+            "observation_ref": (
+                command.observation_ref.to_public_dict()
+                if command.observation_ref is not None
+                else None
+            ),
+        }
+    return command_id, fingerprint(semantic_input)
+
+
+def run_id_for_command(command: RunCommand, *, command_id: str) -> str:
+    if not isinstance(command, StartRun):
+        return command.run_id
+    return "run-" + fingerprint(
+        {
+            "schema": "openubmc.semantic-runtime/start-command-identity-v1",
+            "command_id": command_id,
+        }
+    )[:32]
 
 
 def _gate_version(value: object) -> int:
@@ -630,13 +707,45 @@ def decode_run_command(
         gate_id = _gate_id(action.get("gate_id"))
         gate_version = _gate_version(action.get("gate_version"))
         schema_digest = _schema_digest(action.get("schema_digest"))
+        submission_id = _submission_id(
+            action.get("submission_id"),
+            binding={
+                "run_id": run_id,
+                "gate_id": gate_id,
+                "gate_version": gate_version,
+                "schema_digest": schema_digest,
+            },
+        )
+        semantic_input = {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/submit-gate-input-v1",
+            "run_id": run_id,
+            "gate_id": gate_id,
+            "gate_version": gate_version,
+            "schema_digest": schema_digest,
+            "response": dict(response),
+        }
         return SubmitGate(
             run_id=run_id,
             response=dict(response),
             gate_id=gate_id,
             gate_version=gate_version,
             schema_digest=schema_digest,
-            submission_id=_submission_id(
+            submission_id=submission_id,
+            command_id=submission_id,
+            input_digest=fingerprint(semantic_input),
+        )
+    if kind == "resume":
+        command_id = _text(operation_id)
+        command = ResumeRun(run_id, command_id=command_id)
+        identity, digest = run_command_identity(command, operation_id=operation_id)
+        return ResumeRun(run_id, command_id=identity, input_digest=digest)
+    if kind == "control":
+        command = _text(action.get("command")).lower()
+        if command == "cancel":
+            gate_id = _gate_id(action.get("gate_id"))
+            gate_version = _gate_version(action.get("gate_version"))
+            schema_digest = _schema_digest(action.get("schema_digest"))
+            submission_id = _submission_id(
                 action.get("submission_id"),
                 binding={
                     "run_id": run_id,
@@ -644,35 +753,39 @@ def decode_run_command(
                     "gate_version": gate_version,
                     "schema_digest": schema_digest,
                 },
-            ),
-        )
-    if kind == "resume":
-        return ResumeRun(run_id)
-    if kind == "control":
-        command = _text(action.get("command")).lower()
-        if command == "cancel":
-            gate_id = _gate_id(action.get("gate_id"))
-            gate_version = _gate_version(action.get("gate_version"))
-            schema_digest = _schema_digest(action.get("schema_digest"))
+            )
+            command = CancelRun(
+                run_id=run_id,
+                gate_id=gate_id,
+                gate_version=gate_version,
+                schema_digest=schema_digest,
+                submission_id=submission_id,
+                command_id=submission_id,
+            )
+            identity, digest = run_command_identity(
+                command, operation_id=operation_id
+            )
             return CancelRun(
                 run_id=run_id,
                 gate_id=gate_id,
                 gate_version=gate_version,
                 schema_digest=schema_digest,
-                submission_id=_submission_id(
-                    action.get("submission_id"),
-                    binding={
-                        "run_id": run_id,
-                        "gate_id": gate_id,
-                        "gate_version": gate_version,
-                        "schema_digest": schema_digest,
-                    },
-                ),
+                submission_id=submission_id,
+                command_id=identity,
+                input_digest=digest,
             )
         if command == "reconcile":
-            return ReconcileRun(run_id)
+            identity, digest = run_command_identity(
+                ReconcileRun(run_id, command_id=_text(operation_id)),
+                operation_id=operation_id,
+            )
+            return ReconcileRun(run_id, command_id=identity, input_digest=digest)
         if command == "continue":
-            return ResumeRun(run_id)
+            identity, digest = run_command_identity(
+                ResumeRun(run_id, command_id=_text(operation_id)),
+                operation_id=operation_id,
+            )
+            return ResumeRun(run_id, command_id=identity, input_digest=digest)
         raise AgentGatewayError("control command must be continue, reconcile, or cancel")
     raise AgentGatewayError("execute kind must be start, respond, resume, or control")
 

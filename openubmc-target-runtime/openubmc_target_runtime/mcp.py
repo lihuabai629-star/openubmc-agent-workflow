@@ -47,7 +47,9 @@ from .semantic_runtime import (
     StartRun,
     SubmitGate,
     bounded_request,
+    run_id_for_command,
 )
+from .run_store import EventRunStore
 from .capability import (
     CallableDomainAdapter,
     CapabilityDescriptor,
@@ -60,6 +62,7 @@ from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     BlobRepository,
     CONTEXT_WORKFLOW_STEP_ARGUMENT,
+    CaseNotFound,
     ContextRuntime,
     ContextToolResult,
     IdempotencyConflict,
@@ -2148,16 +2151,7 @@ class _RuntimeSemanticAdapter:
                 else None
             ),
         }
-        run_id = "run-" + hashlib.sha256(
-            json.dumps(
-                {
-                    "schema": "openubmc.semantic-runtime/start-command-identity-v1",
-                    "command_id": command.command_id,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()[:32]
+        run_id = run_id_for_command(command, command_id=command.command_id)
         try:
             existing = self.service.context_runtime.reattach_semantic_run(
                 run_id,
@@ -2360,6 +2354,16 @@ class _RuntimeSemanticAdapter:
                 workflow_step_id=workflow_step_id,
             )
         )
+        descriptor = self.service.catalog.require(operation)
+        if descriptor.mutation:
+            self.service.context_runtime.repository.record_effect_intent(
+                run_id,
+                {
+                    "effect_id": derived_id,
+                    "operation": operation,
+                    "workflow_step_id": workflow_step_id,
+                },
+            )
         try:
             self.service.call_tool(
                 operation,
@@ -2652,7 +2656,13 @@ class RuntimeMcpService:
         semantic_adapter = _RuntimeSemanticAdapter(self)
         self.semantic_runtime = SemanticRuntime(
             ObservationEngine(semantic_adapter),
-            RunEngine(semantic_adapter),
+            RunEngine(
+                semantic_adapter,
+                run_store=EventRunStore(
+                    self.context_runtime.repository.base_repository
+                ),
+                command_transactions=self.context_runtime.repository,
+            ),
         )
         self.agent_gateway = AgentGateway(
             self.semantic_runtime,
@@ -3882,9 +3892,21 @@ class RuntimeMcpService:
                 details = arguments.get("details", {})
                 if not isinstance(details, Mapping):
                     raise TypeError("details must be an object")
+                case_id = str(arguments.get("case_id", ""))
+                try:
+                    self.context_runtime.read_case(case_id)
+                except CaseNotFound:
+                    if case_id.startswith("run-"):
+                        raise ValueError(
+                            "Session Outcome for a Run must be generated from Run Outcome"
+                        ) from None
+                else:
+                    raise ValueError(
+                        "Session Outcome for a Run must be generated from Run Outcome"
+                    )
                 record = self.session_outcome_service.record(
                     session_id=str(arguments.get("session_id", "")),
-                    case_id=str(arguments.get("case_id", "")),
+                    case_id=case_id,
                     replay_fingerprint=str(arguments.get("replay_fingerprint", "")),
                     workflow=str(arguments.get("workflow", "")),
                     domain=str(arguments.get("domain", "")),

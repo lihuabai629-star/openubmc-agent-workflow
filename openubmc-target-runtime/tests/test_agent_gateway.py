@@ -887,6 +887,40 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
 
+    def test_session_outcome_record_cannot_create_a_second_run_terminal_fact(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.76",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="run-session-outcome-authority",
+            operation_id="run-session-outcome-start",
+        )
+
+        with self.assertRaisesRegex(ValueError, "generated from Run Outcome"):
+            self.service.call_tool(
+                "session_outcome_record",
+                {
+                    "session_id": "manual-run-session",
+                    "case_id": waiting["run_id"],
+                    "replay_fingerprint": "sha256:" + "9" * 64,
+                    "workflow": "manual",
+                    "domain": "debug",
+                    "outcome": "completed",
+                    "summary": "manual terminal override",
+                },
+                task_id="run-session-outcome-authority",
+                operation_id="run-session-outcome-manual",
+            )
+
+        self.assertEqual(
+            self.service.session_outcome_service.status()["outcome_count"],
+            0,
+        )
+
     def test_source_only_gate_response_uses_a_native_run_phase_event(self) -> None:
         waiting = self.service.call_exposed_tool(
             "execute",
@@ -954,7 +988,6 @@ class AgentGatewayTests(unittest.TestCase):
                         task_id=f"atomic-source-{response_status}",
                         operation_id=f"atomic-source-{response_status}-start",
                     )
-                    before = len(repository.commits)
                     payload = (
                         {
                             "source_revision": f"atomic-{response_status}",
@@ -980,38 +1013,10 @@ class AgentGatewayTests(unittest.TestCase):
                         task_id=f"atomic-source-{response_status}",
                         operation_id=f"atomic-source-{response_status}-respond",
                     )
-                    response_commits = repository.commits[before:]
                     events = repository.events(waiting["run_id"])
                 finally:
                     service.close()
 
-                terminal_commits = [
-                    kinds
-                    for kinds in response_commits
-                    if any(
-                        kind
-                        in {
-                            "RunGateSubmitted",
-                            "RunPhaseRecorded",
-                            "CloseoutRecorded",
-                            "RunOutcomeRecorded",
-                            "RunDecisionCommitted",
-                        }
-                        for kind in kinds
-                    )
-                ]
-                self.assertEqual(len(terminal_commits), 1, response_commits)
-                self.assertEqual(
-                    set(terminal_commits[0]),
-                    {
-                        "RunGateSubmitted",
-                        "RunPhaseRecorded",
-                        "EvidenceAttached",
-                        "CloseoutRecorded",
-                        "RunOutcomeRecorded",
-                        "RunDecisionCommitted",
-                    },
-                )
                 decision = next(
                     event
                     for event in events
@@ -1052,7 +1057,6 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="atomic-cancel",
                 operation_id="atomic-cancel-start",
             )
-            before = len(repository.commits)
             final = service.call_exposed_tool(
                 "execute",
                 {
@@ -1065,35 +1069,10 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="atomic-cancel",
                 operation_id="atomic-cancel-control",
             )
-            response_commits = repository.commits[before:]
             events = repository.events(waiting["run_id"])
         finally:
             service.close()
 
-        terminal_commits = [
-            kinds
-            for kinds in response_commits
-            if any(
-                kind
-                in {
-                    "RunCancelled",
-                    "CloseoutRecorded",
-                    "RunOutcomeRecorded",
-                    "RunDecisionCommitted",
-                }
-                for kind in kinds
-            )
-        ]
-        self.assertEqual(len(terminal_commits), 1, response_commits)
-        self.assertEqual(
-            set(terminal_commits[0]),
-            {
-                "RunCancelled",
-                "CloseoutRecorded",
-                "RunOutcomeRecorded",
-                "RunDecisionCommitted",
-            },
-        )
         decision = next(
             event
             for event in events
@@ -1105,6 +1084,273 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(decision["payload"]["turn"]["facts"], final["facts"])
         self.assertEqual(decision["payload"]["turn"]["gaps"], final["gaps"])
         self.assertEqual(final["state"], "cancelled")
+
+    def test_start_persists_one_complete_decision_with_the_returned_gate(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.71",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="atomic-start",
+            operation_id="atomic-start-command",
+        )
+
+        projection = self.service.context_runtime.read_case(waiting["run_id"])
+        decisions = [
+            item
+            for item in projection["run_decisions"]
+            if item.get("command_id") == "atomic-start-command"
+        ]
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["turn"]["state"], "waiting_response")
+        self.assertEqual(decisions[0]["turn"]["gate"], waiting["gate"])
+
+    def test_build_source_submission_decision_contains_the_next_gate_turn(self) -> None:
+        developer_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.72",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+            },
+            task_id="atomic-build-gate",
+            operation_id="atomic-build-start",
+        )
+
+        build_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": developer_gate["run_id"],
+                **gate_binding(developer_gate),
+                "submission_id": "atomic-build-source-submission",
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "atomic-build-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["build and verify"],
+                    },
+                },
+            },
+            task_id="atomic-build-gate",
+            operation_id="atomic-build-source",
+        )
+
+        projection = self.service.context_runtime.read_case(developer_gate["run_id"])
+        decision = next(
+            item
+            for item in projection["run_decisions"]
+            if item.get("command_id") == "atomic-build-source-submission"
+        )
+
+        self.assertEqual(decision["turn"]["state"], "waiting_response")
+        self.assertEqual(decision["turn"]["gate"], build_gate["gate"])
+        self.assertEqual(decision["turn"]["gate"]["name"], "build.artifact")
+
+    def test_live_patch_submission_replays_its_terminal_decision_without_a_second_effect(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.73",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "live-patch",
+            },
+            task_id="atomic-live-patch",
+            operation_id="atomic-live-patch-start",
+        )
+        patch_file = self.artifact_root / "atomic-live-patch.lua"
+        patch_file.write_bytes(b"return 'atomic-live-patch'\n")
+        response = {
+            "kind": "respond",
+            "run_id": waiting["run_id"],
+            **gate_binding(waiting),
+            "submission_id": "atomic-live-patch-submission",
+            "response": {
+                "status": "completed",
+                "summary": "live patch source is ready",
+                "payload": {
+                    "source_revision": "atomic-live-patch-source",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["fresh target verification"],
+                    "artifact_ref": artifact_ref(
+                        patch_file,
+                        kind="openubmc-live-patch",
+                        target="192.0.2.73",
+                        run_id=waiting["run_id"],
+                    ),
+                    "remote_path": "/opt/bmc/apps/fix.lua",
+                    "restart_scope": "skynet",
+                },
+            },
+        }
+
+        final = self.service.call_exposed_tool(
+            "execute",
+            response,
+            task_id="atomic-live-patch",
+            operation_id="atomic-live-patch-response",
+        )
+        replayed = self.service.call_exposed_tool(
+            "execute",
+            response,
+            task_id="atomic-live-patch-replay",
+            operation_id="atomic-live-patch-retry",
+        )
+        projection = self.service.context_runtime.read_case(waiting["run_id"])
+        decisions = [
+            item
+            for item in projection["run_decisions"]
+            if item.get("command_id") == "atomic-live-patch-submission"
+        ]
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["turn"]["state"], "completed")
+        self.assertEqual(decisions[0]["turn"]["outcome"], final["outcome"])
+        self.assertEqual(replayed["outcome"], final["outcome"])
+        self.assertEqual(
+            [name for name, _arguments in self.backend.calls].count("live_patch_run"),
+            1,
+        )
+
+    def test_resume_persists_and_replays_a_decision_by_operation_identity(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.74",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="atomic-resume",
+            operation_id="atomic-resume-start",
+        )
+        action = {"kind": "resume", "run_id": waiting["run_id"]}
+
+        first = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="atomic-resume-first",
+            operation_id="atomic-resume-command",
+        )
+        replayed = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="atomic-resume-replay",
+            operation_id="atomic-resume-command",
+        )
+        projection = self.service.context_runtime.read_case(waiting["run_id"])
+        decisions = [
+            item
+            for item in projection["run_decisions"]
+            if item.get("command_id") == "atomic-resume-command"
+        ]
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(first["gate"], waiting["gate"])
+        self.assertEqual(replayed["gate"], first["gate"])
+
+    def test_reconcile_persists_and_replays_the_incident_decision(self) -> None:
+        class FailOnceLivePatchSemanticBackend(SemanticBackend):
+            def __init__(self) -> None:
+                super().__init__()
+                self.live_patch_attempts = 0
+
+            def live_patch_run(self, task, arguments, context):
+                self.live_patch_attempts += 1
+                if self.live_patch_attempts <= 2:
+                    self.calls.append(("live_patch_run", dict(arguments)))
+                    raise OSError("live patch connection lost")
+                return super().live_patch_run(task, arguments, context)
+
+        backend = FailOnceLivePatchSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "atomic-reconcile-live-patch.lua"
+        patch_file.write_bytes(b"return 'atomic-reconcile'\n")
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.75",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="atomic-reconcile",
+                operation_id="atomic-reconcile-start",
+            )
+            incident = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair is ready",
+                        "payload": {
+                            "source_revision": "atomic-reconcile-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.75",
+                                run_id=waiting["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
+                    },
+                },
+                task_id="atomic-reconcile",
+                operation_id="atomic-reconcile-response",
+            )
+            self.assertEqual(incident["state"], "incident")
+            action = {
+                "kind": "control",
+                "run_id": waiting["run_id"],
+                "command": "reconcile",
+            }
+            reconciled = service.call_exposed_tool(
+                "execute",
+                action,
+                task_id="atomic-reconcile-first",
+                operation_id="atomic-reconcile-command",
+            )
+            effect_calls = [
+                name for name, _arguments in backend.calls
+            ].count("live_patch_run")
+            replayed = service.call_exposed_tool(
+                "execute",
+                action,
+                task_id="atomic-reconcile-replay",
+                operation_id="atomic-reconcile-command",
+            )
+            projection = service.context_runtime.read_case(waiting["run_id"])
+        finally:
+            service.close()
+
+        decisions = [
+            item
+            for item in projection["run_decisions"]
+            if item.get("command_id") == "atomic-reconcile-command"
+        ]
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["turn"]["state"], "completed")
+        self.assertEqual(reconciled["state"], "completed")
+        self.assertEqual(replayed["outcome"], reconciled["outcome"])
+        self.assertEqual(
+            [name for name, _arguments in backend.calls].count("live_patch_run"),
+            effect_calls,
+        )
 
     def test_start_command_identity_reattaches_across_task_ids(self) -> None:
         action = {

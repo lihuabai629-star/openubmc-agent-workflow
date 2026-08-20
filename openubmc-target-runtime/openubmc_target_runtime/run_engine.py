@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import Protocol
+from typing import ContextManager, Protocol
 
 from .artifact_store import LocalArtifactStore
 from .semantic_runtime import (
@@ -29,8 +29,11 @@ from .semantic_runtime import (
     StartRun,
     SubmitGate,
     fingerprint,
+    run_command_identity,
+    run_id_for_command,
     run_turn_facts,
 )
+from .run_store import RunDecision, RunDecisionConflict, RunEvent, RunStore
 from .workflow import DEFAULT_PHASE_REGISTRY
 
 
@@ -302,6 +305,25 @@ class RunDriver(Protocol):
     ) -> Mapping[str, object]: ...
 
 
+class RunCommandTransaction(Protocol):
+    @property
+    def expected_revision(self) -> int: ...
+
+    @property
+    def events(self) -> tuple[RunEvent, ...]: ...
+
+    @property
+    def effect_intent(self) -> Mapping[str, object] | None: ...
+
+    def accept(self) -> None: ...
+
+
+class RunCommandTransactions(Protocol):
+    def begin(self, run_id: str) -> ContextManager[RunCommandTransaction]: ...
+
+    def reattach(self, run_id: str, task_id: str) -> None: ...
+
+
 class ObservationEngine:
     """Collect, automatically assure when useful, and persist one observation."""
 
@@ -397,9 +419,17 @@ class RunEngine:
         self,
         driver: RunDriver,
         *,
+        run_store: RunStore | None = None,
+        command_transactions: RunCommandTransactions | None = None,
         artifact_store: LocalArtifactStore | None = None,
     ) -> None:
+        if (run_store is None) != (command_transactions is None):
+            raise ValueError(
+                "RunStore and command transactions must be configured together"
+            )
         self.driver = driver
+        self.run_store = run_store
+        self.command_transactions = command_transactions
         self.artifact_store = artifact_store or LocalArtifactStore()
 
     @staticmethod
@@ -886,10 +916,7 @@ class RunEngine:
             projection = _projection(snapshot)
             outcome = self._outcome(projection)
             if outcome is not None:
-                return self._project_terminal(
-                    self._turn(snapshot, observation_ref=observation_ref),
-                    task_id=task_id,
-                )
+                return self._turn(snapshot, observation_ref=observation_ref)
             if _text(projection.get("status")) == "cancelled":
                 snapshot = self.driver.record_outcome(
                     self._run_id(snapshot),
@@ -1095,7 +1122,7 @@ class RunEngine:
             response = self._normalized_response(
                 command, gate=gate, projection=_projection(snapshot)
             )
-            submission_digest = fingerprint(response)
+            submission_digest = command.input_digest
             if _text(prior.get("submission_digest")) != submission_digest:
                 raise CommandConflict(
                     "submission_id was already used with different Gate input"
@@ -1112,7 +1139,7 @@ class RunEngine:
         response = self._normalized_response(
             command, gate=gate, projection=_projection(snapshot)
         )
-        submission_digest = fingerprint(response)
+        submission_digest = command.input_digest
         snapshot = self.driver.record_gate_response(
             command,
             gate=gate,
@@ -1140,7 +1167,7 @@ class RunEngine:
             "summary": "run cancelled at the current gate",
             "payload": {},
         }
-        submission_digest = fingerprint(response)
+        submission_digest = command.input_digest
         prior = self._submission_record(snapshot, command.submission_id)
         if prior is not None:
             self._validate_duplicate_gate(command, prior)
@@ -1167,12 +1194,9 @@ class RunEngine:
             summary="run cancelled at the current gate",
             operation_id=f"{operation_id}-outcome",
         )
-        return self._project_terminal(
-            self._turn(snapshot, state="cancelled"),
-            task_id=task_id,
-        )
+        return self._turn(snapshot, state="cancelled")
 
-    def execute(
+    def _execute_uncommitted(
         self,
         command: RunCommand,
         *,
@@ -1204,11 +1228,25 @@ class RunEngine:
                 operation_id=operation_id,
             )
         if isinstance(command, ReconcileRun):
-            snapshot = self.driver.reconcile_run(
-                command.run_id,
-                task_id=task_id,
-                operation_id=operation_id,
-            )
+            try:
+                snapshot = self.driver.reconcile_run(
+                    command.run_id,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                )
+            except Exception as exc:
+                snapshot = self.driver.run_snapshot(command.run_id)
+                unknown = self._unknown_mutation(_projection(snapshot))
+                if unknown is None:
+                    raise
+                snapshot = self._record_incident(
+                    snapshot,
+                    code="mutation_outcome_unknown",
+                    message=f"{type(exc).__name__}: {exc}",
+                    effect_id=_text(unknown.get("operation_id")),
+                    operation_id=f"{operation_id}-incident",
+                )
+                return self._turn(snapshot, state="incident")
             current = self._current_incident(_projection(snapshot))
             if (
                 current is not None
@@ -1232,6 +1270,68 @@ class RunEngine:
                 operation_id=operation_id,
             )
         raise TypeError(f"unsupported RunCommand: {type(command).__name__}")
+
+    def execute(
+        self,
+        command: RunCommand,
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> RunTurn:
+        if self.run_store is None or self.command_transactions is None:
+            return self._project_terminal(
+                self._execute_uncommitted(
+                    command,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                ),
+                task_id=task_id,
+            )
+        command_id, input_digest = run_command_identity(
+            command,
+            operation_id=operation_id,
+        )
+        run_id = run_id_for_command(command, command_id=command_id)
+        try:
+            replayed = self.run_store.replay(run_id, command_id, input_digest)
+        except RunDecisionConflict as exc:
+            if isinstance(command, (SubmitGate, CancelRun)):
+                snapshot = self.driver.run_snapshot(command.run_id)
+                prior = self._submission_record(snapshot, command.submission_id)
+                if prior is not None:
+                    self._validate_duplicate_gate(command, prior)
+            raise CommandConflict(str(exc)) from exc
+        if replayed is not None:
+            self.command_transactions.reattach(run_id, task_id)
+            return self._project_terminal(replayed.turn, task_id=task_id)
+
+        with self.command_transactions.begin(run_id) as transaction:
+            turn = self._execute_uncommitted(
+                command,
+                task_id=task_id,
+                operation_id=operation_id,
+            )
+            if turn.run_id != run_id:
+                raise CommandConflict(
+                    "Run command produced a Turn for a different Run"
+                )
+            try:
+                committed = self.run_store.commit(
+                    RunDecision(
+                        run_id=run_id,
+                        command_id=command_id,
+                        input_digest=input_digest,
+                        expected_revision=transaction.expected_revision,
+                        events=transaction.events,
+                        turn=turn,
+                        effect_intent=transaction.effect_intent,
+                    )
+                )
+            except RunDecisionConflict as exc:
+                raise CommandConflict(str(exc)) from exc
+            transaction.accept()
+
+        return self._project_terminal(committed.turn, task_id=task_id)
 
 
 class SemanticRuntime(SemanticRuntimePort):

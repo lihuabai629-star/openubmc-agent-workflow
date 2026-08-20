@@ -150,6 +150,10 @@ class RunStore(Protocol):
 
     def load(self, run_id: str) -> Mapping[str, object] | None: ...
 
+    def replay(
+        self, run_id: str, command_id: str, input_digest: str
+    ) -> CommittedRunDecision | None: ...
+
     def commit(self, decision: RunDecision) -> CommittedRunDecision: ...
 
 
@@ -193,23 +197,57 @@ class EventRunStore:
             None,
         )
 
+    @staticmethod
+    def _replayed_decision(
+        projection: Mapping[str, object],
+        recorded: Mapping[str, object],
+        *,
+        input_digest: str,
+    ) -> CommittedRunDecision:
+        if recorded.get("schema") != RUN_DECISION_SCHEMA:
+            raise RunEventSchemaError(
+                "persisted RunDecision has an unsupported schema"
+            )
+        if recorded.get("version") != RUN_DECISION_VERSION:
+            raise RunEventSchemaError(
+                "persisted RunDecision has an unsupported version"
+            )
+        if recorded.get("input_digest") != input_digest:
+            raise RunDecisionConflict(
+                "Run command identity is already bound to different input"
+            )
+        raw_turn = recorded.get("turn")
+        if not isinstance(raw_turn, Mapping):
+            raise RunEventSchemaError(
+                "persisted RunDecision is missing its Turn"
+            )
+        return CommittedRunDecision(
+            projection=dict(projection),
+            turn=RunTurn.from_public_dict(raw_turn),
+            replayed=True,
+        )
+
+    def replay(
+        self, run_id: str, command_id: str, input_digest: str
+    ) -> CommittedRunDecision | None:
+        current = self.repository.load(run_id)
+        recorded = self._recorded_decision(current, command_id)
+        if not isinstance(current, Mapping) or not isinstance(recorded, Mapping):
+            return None
+        return self._replayed_decision(
+            current,
+            recorded,
+            input_digest=input_digest,
+        )
+
     def commit(self, decision: RunDecision) -> CommittedRunDecision:
         current = self.repository.load(decision.run_id)
         recorded = self._recorded_decision(current, decision.command_id)
-        if isinstance(recorded, Mapping):
-            if recorded.get("input_digest") != decision.input_digest:
-                raise RunDecisionConflict(
-                    "Run command identity is already bound to different input"
-                )
-            raw_turn = recorded.get("turn")
-            if not isinstance(raw_turn, Mapping):
-                raise RunEventSchemaError(
-                    "persisted RunDecision is missing its Turn"
-                )
-            return CommittedRunDecision(
-                projection=dict(current or {}),
-                turn=RunTurn.from_public_dict(raw_turn),
-                replayed=True,
+        if isinstance(current, Mapping) and isinstance(recorded, Mapping):
+            return self._replayed_decision(
+                current,
+                recorded,
+                input_digest=decision.input_digest,
             )
         decision_record = RunEvent(
             kind="RunDecisionCommitted",
@@ -241,21 +279,15 @@ class EventRunStore:
                 raise
             current = self.repository.load(decision.run_id)
             recorded = self._recorded_decision(current, decision.command_id)
-            if isinstance(recorded, Mapping):
-                if recorded.get("input_digest") != decision.input_digest:
-                    raise RunDecisionConflict(
-                        "Run command identity is already bound to different input"
-                    ) from exc
-                raw_turn = recorded.get("turn")
-                if not isinstance(raw_turn, Mapping):
-                    raise RunEventSchemaError(
-                        "persisted RunDecision is missing its Turn"
-                    ) from exc
-                return CommittedRunDecision(
-                    projection=dict(current or {}),
-                    turn=RunTurn.from_public_dict(raw_turn),
-                    replayed=True,
-                )
+            if isinstance(current, Mapping) and isinstance(recorded, Mapping):
+                try:
+                    return self._replayed_decision(
+                        current,
+                        recorded,
+                        input_digest=decision.input_digest,
+                    )
+                except RunStoreError as replay_exc:
+                    raise replay_exc from exc
             raise RunDecisionConflict(
                 "RunDecision expected revision is stale"
             ) from exc
@@ -336,6 +368,17 @@ def upcast_run_events(
             "status": str(raw_phase.get("status", "")),
             "phase_record": dict(raw_phase),
         }
+    elif kind == "RunDecisionCommitted":
+        if payload.get("schema") != RUN_DECISION_SCHEMA:
+            raise RunEventSchemaError(
+                "unsupported persisted RunDecision schema: "
+                + str(payload.get("schema"))
+            )
+        if payload.get("version") != RUN_DECISION_VERSION:
+            raise RunEventSchemaError(
+                "unsupported persisted RunDecision version: "
+                + str(payload.get("version"))
+            )
     normalized["kind"] = kind
     normalized["payload"] = payload
     return (normalized,)
