@@ -69,8 +69,20 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             PYTHON_LOCK.read_text(encoding="utf-8"),
+            "attrs==26.1.0 \\\n"
+            "    --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309\n"
+            "jsonschema==4.26.0 \\\n"
+            "    --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce\n"
+            "jsonschema-specifications==2025.9.1 \\\n"
+            "    --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe\n"
             "PyYAML==6.0.3 \\\n"
-            "    --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc\n",
+            "    --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc\n"
+            "referencing==0.37.0 \\\n"
+            "    --hash=sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231\n"
+            "rpds-py==2026.6.3 \\\n"
+            "    --hash=sha256:ecabd69db66de867690f9797f2f8fa27ba501bbc24540cbdbdc649cd15888ba6\n"
+            "typing-extensions==4.16.0 \\\n"
+            "    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8\n",
         )
         node = self.step("Set up Node.js")
         self.assertEqual(node["uses"], "actions/setup-node@v4")
