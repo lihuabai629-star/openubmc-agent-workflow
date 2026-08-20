@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+import time
 from typing import ContextManager, Protocol
 
 from .artifact_store import LocalArtifactStore
@@ -34,6 +35,7 @@ from .semantic_runtime import (
     run_id_for_command,
 )
 from .run_store import RunDecision, RunDecisionConflict, RunEvent, RunStore
+from .effect_runner import EffectIntent, LocalEffectRunner
 from .workflow import DEFAULT_PHASE_REGISTRY
 
 
@@ -422,6 +424,7 @@ class RunEngine:
         run_store: RunStore | None = None,
         command_transactions: RunCommandTransactions | None = None,
         artifact_store: LocalArtifactStore | None = None,
+        effect_runner: LocalEffectRunner | None = None,
     ) -> None:
         if run_store is None or command_transactions is None:
             raise ValueError(
@@ -431,6 +434,7 @@ class RunEngine:
         self.run_store: RunStore = run_store
         self.command_transactions: RunCommandTransactions = command_transactions
         self.artifact_store = artifact_store or LocalArtifactStore()
+        self.effect_runner = effect_runner
 
     @staticmethod
     def _run_id(snapshot: Mapping[str, object]) -> str:
@@ -1252,6 +1256,109 @@ class RunEngine:
             )
         raise TypeError(f"unsupported RunCommand: {type(command).__name__}")
 
+    @staticmethod
+    def _active_effect_intent(
+        projection: Mapping[str, object],
+    ) -> Mapping[str, object] | None:
+        active_ids = {
+            _text(item.get("operation_id"))
+            for item in projection.get("operations", [])
+            if isinstance(item, Mapping)
+            and _text(item.get("status")) in {"accepted", "running"}
+        }
+        if not active_ids:
+            return None
+        intents = projection.get("effect_intents", [])
+        if not isinstance(intents, list):
+            return None
+        return next(
+            (
+                item
+                for item in reversed(intents)
+                if isinstance(item, Mapping)
+                and _text(item.get("effect_id")) in active_ids
+            ),
+            None,
+        )
+
+    def _settle_effect(
+        self,
+        committed,
+        *,
+        task_id: str,
+        deadline_at: float,
+    ) -> RunTurn:
+        if self.effect_runner is None:
+            return self._project_terminal(committed.turn, task_id=task_id)
+        projection = committed.projection
+        raw_intent = self._active_effect_intent(projection)
+        if not isinstance(raw_intent, Mapping):
+            return self._project_terminal(committed.turn, task_id=task_id)
+        intent = EffectIntent.from_mapping(raw_intent)
+        mode = (
+            "dispatch"
+            if isinstance(committed.effect_intent, Mapping)
+            and _text(committed.effect_intent.get("effect_id")) == intent.effect_id
+            and not intent.recovery_required
+            and not committed.replayed
+            else "reattach"
+            if self.effect_runner.has_seen(intent.effect_id)
+            else "recover"
+        )
+        for _attempt in range(WORKFLOW_INTERNAL_MAX_STEPS):
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0:
+                snapshot = self.driver.run_snapshot(intent.run_id)
+                return self._turn(
+                    snapshot,
+                    state="running",
+                    next_action="resume the Run to reattach to the current Effect",
+                )
+            future = self.effect_runner.ensure(intent, mode=mode)
+            if not self.effect_runner.wait(future, remaining):
+                snapshot = self.driver.run_snapshot(intent.run_id)
+                return self._turn(
+                    snapshot,
+                    state="running",
+                    next_action="resume the Run to reattach to the current Effect",
+                )
+            snapshot = self.driver.run_snapshot(intent.run_id)
+            projection = _projection(snapshot)
+            active = self._active_effect_intent(projection)
+            if isinstance(active, Mapping) and _text(
+                active.get("effect_id")
+            ) == intent.effect_id:
+                mode = "reattach"
+                continue
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0:
+                return self._turn(
+                    snapshot,
+                    state="running",
+                    next_action="resume the Run to advance after the completed Effect",
+                )
+            resume_operation_id = "resume-" + fingerprint(
+                {
+                    "run_id": intent.run_id,
+                    "effect_id": intent.effect_id,
+                }
+            )[:32]
+            return self.execute(
+                ResumeRun(
+                    intent.run_id,
+                    command_id=resume_operation_id,
+                    caller_deadline=remaining,
+                ),
+                task_id=task_id,
+                operation_id=resume_operation_id,
+            )
+        snapshot = self.driver.run_snapshot(intent.run_id)
+        return self._turn(
+            snapshot,
+            state="running",
+            next_action="resume the Run to reattach to the current Effect",
+        )
+
     def execute(
         self,
         command: RunCommand,
@@ -1259,6 +1366,9 @@ class RunEngine:
         task_id: str,
         operation_id: str,
     ) -> RunTurn:
+        deadline_at = time.monotonic() + float(
+            getattr(command, "caller_deadline", 120.0)
+        )
         command_id, input_digest = run_command_identity(
             command,
             operation_id=operation_id,
@@ -1275,35 +1385,50 @@ class RunEngine:
             raise CommandConflict(str(exc)) from exc
         if replayed is not None:
             self.command_transactions.reattach(run_id, task_id)
-            return self._project_terminal(replayed.turn, task_id=task_id)
-
-        with self.command_transactions.begin(run_id) as transaction:
-            turn = self._execute_uncommitted(
-                command,
+            return self._settle_effect(
+                replayed,
                 task_id=task_id,
-                operation_id=operation_id,
+                deadline_at=deadline_at,
             )
-            if turn.run_id != run_id:
-                raise CommandConflict(
-                    "Run command produced a Turn for a different Run"
-                )
-            try:
-                committed = self.run_store.commit(
-                    RunDecision(
-                        run_id=run_id,
-                        command_id=command_id,
-                        input_digest=input_digest,
-                        expected_revision=transaction.expected_revision,
-                        events=transaction.events,
-                        turn=turn,
-                        effect_intent=transaction.effect_intent,
-                    )
-                )
-            except RunDecisionConflict as exc:
-                raise CommandConflict(str(exc)) from exc
-            transaction.accept()
 
-        return self._project_terminal(committed.turn, task_id=task_id)
+        committed = None
+        for attempt in range(4):
+            with self.command_transactions.begin(run_id) as transaction:
+                turn = self._execute_uncommitted(
+                    command,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                )
+                if turn.run_id != run_id:
+                    raise CommandConflict(
+                        "Run command produced a Turn for a different Run"
+                    )
+                try:
+                    committed = self.run_store.commit(
+                        RunDecision(
+                            run_id=run_id,
+                            command_id=command_id,
+                            input_digest=input_digest,
+                            expected_revision=transaction.expected_revision,
+                            events=transaction.events,
+                            turn=turn,
+                            effect_intent=transaction.effect_intent,
+                        )
+                    )
+                except RunDecisionConflict as exc:
+                    if not isinstance(command, ResumeRun) or attempt >= 3:
+                        raise CommandConflict(str(exc)) from exc
+                    continue
+                transaction.accept()
+                break
+        if committed is None:
+            raise CommandConflict("RunDecision could not converge")
+
+        return self._settle_effect(
+            committed,
+            task_id=task_id,
+            deadline_at=deadline_at,
+        )
 
 
 class SemanticRuntime(SemanticRuntimePort):

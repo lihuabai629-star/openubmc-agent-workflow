@@ -490,6 +490,7 @@ class StartRun:
     input_digest: str
     observation_ref: ObservationRef | None = None
     legacy_observation_receipt: Mapping[str, object] | None = None
+    caller_deadline: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -502,6 +503,7 @@ class SubmitGate:
     submission_id: str = ""
     command_id: str = ""
     input_digest: str = ""
+    caller_deadline: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -509,6 +511,7 @@ class ResumeRun:
     run_id: str
     command_id: str = ""
     input_digest: str = ""
+    caller_deadline: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -520,6 +523,7 @@ class CancelRun:
     submission_id: str = ""
     command_id: str = ""
     input_digest: str = ""
+    caller_deadline: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -527,6 +531,7 @@ class ReconcileRun:
     run_id: str
     command_id: str = ""
     input_digest: str = ""
+    caller_deadline: float = 120.0
 
 
 RunCommand: TypeAlias = StartRun | SubmitGate | ResumeRun | CancelRun | ReconcileRun
@@ -683,11 +688,24 @@ def _submission_id(value: object, *, binding: Mapping[str, object]) -> str:
     return selected
 
 
+def _caller_deadline(action: Mapping[str, object]) -> float:
+    value = action.get("deadline", 120)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AgentGatewayError("execute deadline must be a positive number")
+    deadline = float(value)
+    if deadline <= 0 or deadline > 120:
+        raise AgentGatewayError(
+            "execute deadline must be greater than zero and at most 120 seconds"
+        )
+    return deadline
+
+
 def decode_run_command(
     action: Mapping[str, object], *, operation_id: str
 ) -> RunCommand:
     bounded_request(action)
     kind = _text(action.get("kind")).lower()
+    caller_deadline = _caller_deadline(action)
     if kind == "start":
         command_id = _text(operation_id)
         if _SAFE_ID.fullmatch(command_id) is None:
@@ -739,6 +757,7 @@ def decode_run_command(
             legacy_observation_receipt=(
                 dict(legacy_receipt) if isinstance(legacy_receipt, Mapping) else None
             ),
+            caller_deadline=caller_deadline,
         )
         _identity, digest = run_command_identity(
             command,
@@ -773,6 +792,7 @@ def decode_run_command(
             submission_id=submission_id,
             command_id=submission_id,
             input_digest="",
+            caller_deadline=caller_deadline,
         )
         _identity, digest = run_command_identity(
             command,
@@ -781,9 +801,18 @@ def decode_run_command(
         return replace(command, input_digest=digest)
     if kind == "resume":
         command_id = _text(operation_id)
-        command = ResumeRun(run_id, command_id=command_id)
+        command = ResumeRun(
+            run_id,
+            command_id=command_id,
+            caller_deadline=caller_deadline,
+        )
         identity, digest = run_command_identity(command, operation_id=operation_id)
-        return ResumeRun(run_id, command_id=identity, input_digest=digest)
+        return ResumeRun(
+            run_id,
+            command_id=identity,
+            input_digest=digest,
+            caller_deadline=caller_deadline,
+        )
     if kind == "control":
         command = _text(action.get("command")).lower()
         if command == "cancel":
@@ -806,6 +835,7 @@ def decode_run_command(
                 schema_digest=schema_digest,
                 submission_id=submission_id,
                 command_id=submission_id,
+                caller_deadline=caller_deadline,
             )
             identity, digest = run_command_identity(
                 command, operation_id=operation_id
@@ -818,19 +848,38 @@ def decode_run_command(
                 submission_id=submission_id,
                 command_id=identity,
                 input_digest=digest,
+                caller_deadline=caller_deadline,
             )
         if command == "reconcile":
             identity, digest = run_command_identity(
-                ReconcileRun(run_id, command_id=_text(operation_id)),
+                ReconcileRun(
+                    run_id,
+                    command_id=_text(operation_id),
+                    caller_deadline=caller_deadline,
+                ),
                 operation_id=operation_id,
             )
-            return ReconcileRun(run_id, command_id=identity, input_digest=digest)
+            return ReconcileRun(
+                run_id,
+                command_id=identity,
+                input_digest=digest,
+                caller_deadline=caller_deadline,
+            )
         if command == "continue":
             identity, digest = run_command_identity(
-                ResumeRun(run_id, command_id=_text(operation_id)),
+                ResumeRun(
+                    run_id,
+                    command_id=_text(operation_id),
+                    caller_deadline=caller_deadline,
+                ),
                 operation_id=operation_id,
             )
-            return ResumeRun(run_id, command_id=identity, input_digest=digest)
+            return ResumeRun(
+                run_id,
+                command_id=identity,
+                input_digest=digest,
+                caller_deadline=caller_deadline,
+            )
         raise AgentGatewayError("control command must be continue, reconcile, or cancel")
     raise AgentGatewayError("execute kind must be start, respond, resume, or control")
 

@@ -133,6 +133,7 @@ class RuntimeSDKContext:
     timeout_seconds: float
     target_id: str = ""
     minimum_target_epoch: int = 0
+    recovery_mode: str = ""
 
 
 @dataclass(frozen=True)

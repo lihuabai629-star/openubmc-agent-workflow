@@ -142,6 +142,7 @@ class RunDecision:
 class CommittedRunDecision:
     projection: Mapping[str, object]
     turn: RunTurn
+    effect_intent: Mapping[str, object] | None = None
     replayed: bool = False
 
 
@@ -234,6 +235,11 @@ class EventRunStore:
                 use_projected_next_action=True,
                 base_turn=base_turn,
             ),
+            effect_intent=(
+                dict(recorded["effect_intent"])
+                if isinstance(recorded.get("effect_intent"), Mapping)
+                else None
+            ),
             replayed=True,
         )
 
@@ -304,6 +310,11 @@ class EventRunStore:
         return CommittedRunDecision(
             projection=dict(projection),
             turn=decision.turn,
+            effect_intent=(
+                dict(decision.effect_intent)
+                if isinstance(decision.effect_intent, Mapping)
+                else None
+            ),
         )
 
 

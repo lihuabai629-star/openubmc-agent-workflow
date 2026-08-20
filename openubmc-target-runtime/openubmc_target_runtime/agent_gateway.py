@@ -713,6 +713,16 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                 "type": "string",
                 "enum": ["continue", "reconcile", "cancel"],
             },
+            "deadline": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 120,
+                "default": 120,
+                "description": (
+                    "Maximum time to wait for the next actionable Turn; "
+                    "it does not change Run command identity."
+                ),
+            },
         },
         "additionalProperties": False,
     }

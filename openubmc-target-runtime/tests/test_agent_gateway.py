@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -381,6 +382,85 @@ class RunningUpgradeSemanticBackend(SemanticBackend):
             },
             "journal": {"stage": "verified", "action": "upgrade"},
         }
+
+
+class BlockingLivePatchSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.intent_was_persisted = False
+        self.inspect_persisted_intent = lambda _operation_id: False
+        self.operation_ids: list[str] = []
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.intent_was_persisted = bool(
+            self.inspect_persisted_intent(str(context.operation_id))
+        )
+        self.operation_ids.append(str(context.operation_id))
+        self.started.set()
+        self.release.wait(timeout=2)
+        context.raise_if_stopped()
+        self.calls.append(("live_patch_run", dict(arguments)))
+        return {
+            "ok": True,
+            "summary": "live patch verified after bounded wait",
+            "target_epoch": 1,
+            "mutation": {
+                "local_sha256": str(arguments.get("artifact_sha256", "")),
+                "remote_after_sha256": str(arguments.get("artifact_sha256", "")),
+                "root_mount_restored": True,
+            },
+            "verification": {
+                "remote_sha256": str(arguments.get("artifact_sha256", "")),
+                "target_epoch": 1,
+            },
+            "journal": {
+                "stage": "verified",
+                "action": "live_patch",
+                "expected_checksum": str(arguments.get("artifact_sha256", "")),
+                "observed_checksum": str(arguments.get("artifact_sha256", "")),
+                "root_mount_restored": True,
+            },
+        }
+
+
+class DormantEffectRunner:
+    def __init__(self) -> None:
+        self.intents = []
+
+    def has_seen(self, _effect_id: str) -> bool:
+        return False
+
+    def ensure(self, intent, *, mode: str):
+        self.intents.append((intent, mode))
+        return object()
+
+    @staticmethod
+    def wait(_future, _timeout: float) -> bool:
+        return False
+
+    @staticmethod
+    def close() -> None:
+        return None
+
+
+class RecoveryAwareLivePatchBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.apply_calls = 0
+        self.reconcile_calls = 0
+        self.operation_ids: list[str] = []
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.operation_ids.append(str(context.operation_id))
+        if arguments.get("_runtime_effect_recovery") == "reconcile":
+            self.reconcile_calls += 1
+        else:
+            self.apply_calls += 1
+        return super().live_patch_run(task, arguments, context)
 
 
 class AutoAssuranceSemanticBackend(SemanticBackend):
@@ -1377,7 +1457,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(decision["payload"]["turn"]["gaps"], final["gaps"])
         self.assertEqual(final["state"], "cancelled")
 
-    def test_start_persists_one_complete_decision_with_the_returned_gate(self) -> None:
+    def test_start_persists_effect_scheduling_then_returns_the_next_gate(self) -> None:
         waiting = self.service.call_exposed_tool(
             "execute",
             {
@@ -1398,8 +1478,13 @@ class AgentGatewayTests(unittest.TestCase):
         ]
 
         self.assertEqual(len(decisions), 1)
-        self.assertEqual(decisions[0]["turn"]["state"], "waiting_response")
-        self.assertEqual(decisions[0]["turn"]["gate"], waiting["gate"])
+        self.assertEqual(decisions[0]["turn"]["state"], "running")
+        self.assertEqual(
+            decisions[0]["effect_intent"]["operation"],
+            "debug_run",
+        )
+        self.assertEqual(projection["current_turn"]["state"], "waiting_response")
+        self.assertEqual(projection["current_turn"]["gate"], waiting["gate"])
 
     def test_build_source_submission_decision_contains_the_next_gate_turn(self) -> None:
         developer_gate = self.service.call_exposed_tool(
@@ -1446,7 +1531,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(decision["turn"]["gate"], build_gate["gate"])
         self.assertEqual(decision["turn"]["gate"]["name"], "build.artifact")
 
-    def test_live_patch_submission_replays_its_terminal_decision_without_a_second_effect(self) -> None:
+    def test_live_patch_submission_replays_after_internal_effect_decisions(self) -> None:
         waiting = self.service.call_exposed_tool(
             "execute",
             {
@@ -1504,8 +1589,12 @@ class AgentGatewayTests(unittest.TestCase):
         ]
 
         self.assertEqual(len(decisions), 1)
-        self.assertEqual(decisions[0]["turn"]["state"], "completed")
-        self.assertEqual(decisions[0]["turn"]["outcome"], final["outcome"])
+        self.assertEqual(decisions[0]["turn"]["state"], "running")
+        self.assertEqual(
+            decisions[0]["effect_intent"]["operation"],
+            "live_patch_run",
+        )
+        self.assertEqual(projection["current_turn"]["outcome"], final["outcome"])
         self.assertEqual(replayed["outcome"], final["outcome"])
         self.assertEqual(
             [name for name, _arguments in self.backend.calls].count("live_patch_run"),
@@ -1636,7 +1725,12 @@ class AgentGatewayTests(unittest.TestCase):
             if item.get("command_id") == "atomic-reconcile-command"
         ]
         self.assertEqual(len(decisions), 1)
-        self.assertEqual(decisions[0]["turn"]["state"], "completed")
+        self.assertEqual(decisions[0]["turn"]["state"], "running")
+        self.assertEqual(
+            decisions[0]["effect_intent"]["operation"],
+            "debug_collect",
+        )
+        self.assertEqual(projection["current_turn"]["state"], "completed")
         self.assertEqual(reconciled["state"], "completed")
         self.assertEqual(replayed["outcome"], reconciled["outcome"])
         self.assertEqual(
@@ -3266,7 +3360,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(final["outcome_recorded"])
         self.assertEqual(backend.upgrade_attempts, 2)
 
-    def test_running_effect_reattaches_with_the_same_operation_identity(self) -> None:
+    def test_short_running_effect_reattaches_without_a_model_polling_turn(self) -> None:
         backend = RunningUpgradeSemanticBackend()
         service = RuntimeMcpService(backend)
         product = self.artifact_root / "running-upgrade-product.hpm"
@@ -3302,7 +3396,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="running-upgrade",
                 operation_id="running-upgrade-source",
             )
-            running = service.call_exposed_tool(
+            final = service.call_exposed_tool(
                 "execute",
                 {
                     "kind": "respond",
@@ -3326,17 +3420,8 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="running-upgrade",
                 operation_id="running-upgrade-build",
             )
-            self.assertEqual(running["state"], "running")
-            self.assertIn("reattach", running["next"])
             running_projection = service.context_runtime.read_case(
                 developer_gate["run_id"]
-            )
-
-            final = service.call_exposed_tool(
-                "execute",
-                {"kind": "resume", "run_id": developer_gate["run_id"]},
-                task_id="running-upgrade-resume",
-                operation_id="running-upgrade-resume-1",
             )
         finally:
             service.close()
@@ -3349,6 +3434,277 @@ class AgentGatewayTests(unittest.TestCase):
             1,
             (backend.upgrade_operation_ids, running_projection["operations"]),
         )
+
+    def test_execute_deadline_returns_running_after_persisting_effect_intent(self) -> None:
+        backend = BlockingLivePatchSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "bounded-live-patch.lua"
+        patch_file.write_bytes(b"return 'bounded'\n")
+        timer = threading.Timer(1, backend.release.set)
+        timer.start()
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.73",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="bounded-live-patch",
+                operation_id="bounded-live-patch-start",
+            )
+
+            def persisted(effect_id: str) -> bool:
+                for event in service.context_runtime.repository.events(
+                    waiting["run_id"]
+                ):
+                    intent = event["payload"].get("effect_intent")
+                    if (
+                        event["kind"] == "RunDecisionCommitted"
+                        and isinstance(intent, dict)
+                        and intent.get("effect_id") == effect_id
+                    ):
+                        return True
+                return False
+
+            backend.inspect_persisted_intent = persisted
+            started_at = time.monotonic()
+            response_action = {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "submission_id": "bounded-live-patch-submission",
+                "response": {
+                    "status": "completed",
+                    "summary": "patch is ready",
+                    "payload": {
+                        "source_revision": "bounded-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["verify replacement"],
+                        "artifact_ref": artifact_ref(
+                            patch_file,
+                            kind="openubmc-live-patch",
+                            target="192.0.2.73",
+                            run_id=waiting["run_id"],
+                        ),
+                        "remote_path": "/tmp/bounded-live-patch.lua",
+                        "restart_scope": "none",
+                    },
+                },
+                "deadline": 0.05,
+            }
+            running = service.call_exposed_tool(
+                "execute",
+                response_action,
+                task_id="bounded-live-patch",
+                operation_id="bounded-live-patch-submit",
+            )
+            elapsed = time.monotonic() - started_at
+
+            self.assertTrue(backend.started.wait(timeout=0.5))
+            self.assertLess(elapsed, 0.5)
+            self.assertEqual(running["state"], "running")
+            self.assertTrue(backend.intent_was_persisted)
+
+            replayed = service.call_exposed_tool(
+                "execute",
+                {**response_action, "deadline": 0.02},
+                task_id="bounded-live-patch-replay",
+                operation_id="bounded-live-patch-replay",
+            )
+            resumed = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": waiting["run_id"],
+                    "deadline": 0.02,
+                },
+                task_id="bounded-live-patch-resume",
+                operation_id="bounded-live-patch-resume",
+            )
+            self.assertEqual(replayed["state"], "running")
+            self.assertEqual(resumed["state"], "running")
+            self.assertEqual(len(backend.operation_ids), 1)
+
+            backend.release.set()
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": waiting["run_id"],
+                    "deadline": 1,
+                },
+                task_id="bounded-live-patch-final",
+                operation_id="bounded-live-patch-final",
+            )
+            self.assertEqual(final["state"], "completed")
+            self.assertEqual(len(set(backend.operation_ids)), 1)
+        finally:
+            backend.release.set()
+            timer.cancel()
+            service.close()
+
+    def test_sqlite_restart_reexecutes_a_persisted_read_only_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "read-restart.sqlite3"
+            blobs = root / "read-restart-blobs"
+            first_backend = SemanticBackend()
+            first = RuntimeMcpService(
+                first_backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            dormant = DormantEffectRunner()
+            first.effect_runner.close()
+            first.effect_runner = dormant
+            first.semantic_runtime.run_engine.effect_runner = dormant
+            try:
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.74",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                        "deadline": 0.01,
+                    },
+                    task_id="read-restart",
+                    operation_id="read-restart-start",
+                )
+            finally:
+                first.close()
+
+            self.assertEqual(running["state"], "running")
+            self.assertEqual(first_backend.calls, [])
+            persisted_effect_id = first.context_runtime.read_case(
+                running["run_id"]
+            )["effect_intents"][-1]["effect_id"]
+
+            second_backend = SemanticBackend()
+            second = RuntimeMcpService(
+                second_backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                waiting = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="read-restart-resume",
+                    operation_id="read-restart-resume",
+                )
+                operations = second.context_runtime.read_case(
+                    running["run_id"]
+                )["operations"]
+            finally:
+                second.close()
+
+            self.assertEqual(waiting["state"], "waiting_response")
+            self.assertEqual(
+                [name for name, _arguments in second_backend.calls],
+                ["debug_run"],
+            )
+            self.assertEqual(
+                [
+                    item["operation_id"]
+                    for item in operations
+                    if item.get("operation") == "debug_run"
+                ],
+                [persisted_effect_id],
+            )
+
+    def test_sqlite_restart_reconciles_a_persisted_mutation_without_reapply(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "mutation-restart.sqlite3"
+            blobs = root / "mutation-restart-blobs"
+            first = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            patch_file = root / "mutation-restart.lua"
+            patch_file.write_bytes(b"return 'restart-safe'\n")
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.75",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="mutation-restart",
+                    operation_id="mutation-restart-start",
+                )
+                first.effect_runner.close()
+                dormant = DormantEffectRunner()
+                first.effect_runner = dormant
+                first.semantic_runtime.run_engine.effect_runner = dormant
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "mutation is durably scheduled",
+                            "payload": {
+                                "source_revision": "mutation-restart-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["verify after reconcile"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.75",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/tmp/mutation-restart.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 0.01,
+                    },
+                    task_id="mutation-restart",
+                    operation_id="mutation-restart-submit",
+                )
+            finally:
+                first.close()
+
+            persisted_effect_id = first.context_runtime.read_case(
+                running["run_id"]
+            )["effect_intents"][-1]["effect_id"]
+            backend = RecoveryAwareLivePatchBackend()
+            second = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                final = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="mutation-restart-resume",
+                    operation_id="mutation-restart-resume",
+                )
+            finally:
+                second.close()
+
+            self.assertEqual(final["state"], "completed")
+            self.assertEqual(backend.apply_calls, 0)
+            self.assertEqual(backend.reconcile_calls, 1)
+            self.assertEqual(backend.operation_ids, [persisted_effect_id])
 
     def test_verification_failure_is_deferred_and_resumed_without_reapplying(self) -> None:
         backend = DeferredVerificationSemanticBackend()

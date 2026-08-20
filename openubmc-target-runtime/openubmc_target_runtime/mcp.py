@@ -50,6 +50,7 @@ from .semantic_runtime import (
     run_id_for_command,
 )
 from .run_store import EventRunStore
+from .effect_runner import EffectIntent, LocalEffectRunner
 from .capability import (
     CallableDomainAdapter,
     CapabilityDescriptor,
@@ -2354,17 +2355,39 @@ class _RuntimeSemanticAdapter:
                 workflow_step_id=workflow_step_id,
             )
         )
+        policy = self.service.domain_executor.policy_for(operation)
+        self.service.context_runtime.schedule_semantic_run_effect(
+            run_id,
+            operation=operation,
+            arguments=arguments,
+            operation_id=derived_id,
+            effect_class=policy.effect_class,
+        )
+        return self.run_snapshot(run_id)
+
+    def execute_effect(self, intent: EffectIntent) -> Mapping[str, object]:
         try:
             self.service.call_tool(
-                operation,
-                arguments,
-                task_id=run_id,
-                operation_id=derived_id,
+                intent.operation,
+                intent.arguments,
+                task_id=intent.run_id,
+                operation_id=intent.effect_id,
                 _context_workflow_step=True,
             )
         except OperationAlreadyInProgress:
             pass
-        return self.run_snapshot(run_id)
+        return self.run_snapshot(intent.run_id)
+
+    def recover_effect(self, intent: EffectIntent) -> Mapping[str, object]:
+        if intent.effect_class is EffectClass.READ_ONLY:
+            return self.execute_effect(intent)
+        self.service.context_runtime.mark_semantic_effect_unknown(
+            intent.run_id,
+            operation=intent.operation,
+            operation_id=intent.effect_id,
+        )
+        self.service.recover_domain_effect(intent)
+        return self.run_snapshot(intent.run_id)
 
     def reconcile_run(
         self,
@@ -2644,6 +2667,10 @@ class RuntimeMcpService:
         self.interface_profile = selected_interface_profile
         self.agent_projector = ResultProjector()
         semantic_adapter = _RuntimeSemanticAdapter(self)
+        self.effect_runner = LocalEffectRunner(
+            semantic_adapter.execute_effect,
+            semantic_adapter.recover_effect,
+        )
         self.semantic_runtime = SemanticRuntime(
             ObservationEngine(semantic_adapter),
             RunEngine(
@@ -2652,6 +2679,7 @@ class RuntimeMcpService:
                     self.context_runtime.repository.base_repository
                 ),
                 command_transactions=self.context_runtime.repository,
+                effect_runner=self.effect_runner,
             ),
         )
         self.agent_gateway = AgentGateway(
@@ -3541,6 +3569,10 @@ class RuntimeMcpService:
     ) -> Mapping[str, object]:
         descriptor = self.catalog.require(operation)
         bounded_arguments = dict(arguments)
+        if sdk_context.recovery_mode:
+            bounded_arguments["_runtime_effect_recovery"] = (
+                sdk_context.recovery_mode
+            )
         observation_mode = bounded_arguments.pop("_agent_observation", False)
         capability_names = bounded_arguments.pop("_agent_capability_names", [])
         assured = bounded_arguments.pop("_agent_assured", False)
@@ -3607,6 +3639,7 @@ class RuntimeMcpService:
         *,
         task_id: str,
         operation_id: str,
+        recovery_mode: str = "",
     ) -> dict[str, object]:
         capability_descriptor = self.capability_registry.require(name)
         timeout = min(
@@ -3624,9 +3657,44 @@ class RuntimeMcpService:
                     minimum_target_epoch=int(
                         bounded_arguments.get("_minimum_target_epoch", 0)
                     ),
+                    recovery_mode=recovery_mode,
                 ),
                 arguments=bounded_arguments,
             ).value
+        )
+
+    def recover_domain_effect(self, intent: EffectIntent) -> Mapping[str, object]:
+        """Reconcile a persisted Mutation identity after local process loss."""
+
+        descriptor = self.catalog.require(intent.operation)
+        if not descriptor.mutation:
+            raise ValueError("only Mutation Effects require reconcile recovery")
+        context_arguments = dict(intent.arguments)
+        context_arguments[CONTEXT_WORKFLOW_STEP_ARGUMENT] = True
+        domain_arguments = {
+            key: value
+            for key, value in context_arguments.items()
+            if key not in {"case_id", "expected_revision", "idempotency_key"}
+            and not key.startswith("_workflow_")
+            and key
+            not in {
+                "_context_defaults_inferred",
+                CONTEXT_WORKFLOW_STEP_ARGUMENT,
+            }
+        }
+        return self.context_runtime.invoke_domain(
+            descriptor,
+            context_arguments,
+            task_id=intent.run_id,
+            operation_id=intent.effect_id,
+            executor=lambda: self._execute_domain_value(
+                intent.operation,
+                descriptor,
+                domain_arguments,
+                task_id=intent.run_id,
+                operation_id=intent.effect_id,
+                recovery_mode="reconcile",
+            ),
         )
 
     def _observe_domain_direct(
@@ -4105,6 +4173,7 @@ class RuntimeMcpService:
         )
 
     def close(self) -> None:
+        self.effect_runner.close()
         self.registry.close()
 
 
