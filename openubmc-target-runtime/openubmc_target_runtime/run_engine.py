@@ -739,7 +739,14 @@ class RunEngine:
                 item
                 for item in reversed(list(projection.get("operations", [])))
                 if isinstance(item, Mapping)
-                and _text(item.get("status")) == "mutation_outcome_unknown"
+                and (
+                    _text(item.get("status")) == "mutation_outcome_unknown"
+                    or (
+                        _text(item.get("status")) == "blocked"
+                        and _text(item.get("operation"))
+                        in {"live_patch_run", "upgrade_run"}
+                    )
+                )
             ),
             None,
         )

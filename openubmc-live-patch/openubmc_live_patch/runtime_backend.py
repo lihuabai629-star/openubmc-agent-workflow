@@ -1194,6 +1194,12 @@ class LivePatchMcpBackend:
         """Inspect an uncertain install before deciding whether verification is safe."""
 
         backup = journal.backup_reference
+        if (
+            not backup
+            and journal.before_checksum
+            and not bool(operation.get("no_backup", False))
+        ):
+            backup = str(operation.get("backup_path", ""))
         if backup:
             backup = _validate_remote_path(backup, allowed_roots=("/tmp/",))
 
@@ -1400,7 +1406,16 @@ class LivePatchMcpBackend:
                 recovered.journal.epoch_after
                 or recovered.journal.epoch_before
             ),
-            "mutation": {"recovery": recovered.to_public_dict()},
+            "mutation": {
+                "local_sha256": str(operation["local_sha256"]),
+                "remote_after_sha256": (
+                    recovered.journal.observed_checksum
+                    or str(operation["local_sha256"])
+                ),
+                "remote_after_metadata": dict(expected_metadata),
+                "root_mount_restored": recovered.journal.root_mount_restored,
+                "recovery": recovered.to_public_dict(),
+            },
             "verification": recovered.verification,
             "journal": recovered.journal.to_public_dict(),
             "idempotent_replay": False,

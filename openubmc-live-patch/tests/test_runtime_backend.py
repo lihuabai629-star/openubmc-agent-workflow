@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Mapping
 import gzip
 import hashlib
+import os
 from pathlib import Path
 import re
 import sys
 import tempfile
+import threading
 import unittest
 
 
@@ -15,10 +18,13 @@ sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-live-patch"))
 
 from openubmc_target_runtime import (  # noqa: E402
+    FilesystemBlobRepository,
+    OrchestratedMcpBackend,
     MutationAuthorizationDenied,
     MutationJournalStore,
     MutationOperationConflict,
     RuntimeMcpService,
+    SQLiteRuntimeRepository,
     TelnetCommandResult,
 )
 from openubmc_target_runtime.capability import (  # noqa: E402
@@ -31,6 +37,78 @@ from openubmc_live_patch.runtime_backend import (  # noqa: E402
 
 
 TEST_DEADLINE_SECONDS = 30
+
+
+def artifact_ref(path: Path, *, target: str, run_id: str) -> dict[str, object]:
+    body = path.read_bytes()
+    return {
+        "handle": str(path),
+        "digest": "sha256:" + hashlib.sha256(body).hexdigest(),
+        "kind": "openubmc-live-patch",
+        "size": len(body),
+        "provenance": "live-patch-fault-matrix",
+        "retention_hint": "run-lifetime",
+        "target": target,
+        "run_id": run_id,
+    }
+
+
+def gate_binding(turn: Mapping[str, object]) -> dict[str, object]:
+    gate = turn["gate"]
+    assert isinstance(gate, Mapping)
+    return {
+        "gate_id": gate["gate_id"],
+        "gate_version": gate["gate_version"],
+        "schema_digest": gate["schema_digest"],
+    }
+
+
+class WorkflowDebugBackend:
+    class Task:
+        def __init__(self, task_id: str) -> None:
+            self.task_id = task_id
+
+    @staticmethod
+    def open_task(task_id: str):
+        return WorkflowDebugBackend.Task(task_id)
+
+    @staticmethod
+    def close_task(_task) -> None:
+        return None
+
+    @staticmethod
+    def maintain_task(_task) -> int:
+        return 0
+
+    @staticmethod
+    def task_status(task) -> dict[str, object]:
+        return {"task_id": task.task_id}
+
+    @staticmethod
+    def debug_run(_task, _arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        return {"ok": True, "summary": "diagnosis completed"}
+
+    @staticmethod
+    def debug_collect(_task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        return {
+            "ok": True,
+            "observed_at": "2026-08-20T00:00:00Z",
+            "target_epoch": int(arguments.get("_minimum_target_epoch", 0)),
+            "business_acceptance": "passed",
+            "result": {
+                "capabilities": {
+                    "ssh_transport": True,
+                    "mdbctl": True,
+                    "busctl": False,
+                    "active_alarm_transport": True,
+                    "active_alarm_endpoint_verified": False,
+                    "active_alarms": True,
+                },
+                "lanes": {"ssh": {}},
+            },
+        }
 
 
 def decoded_shell_script(command: str) -> str:
@@ -236,7 +314,862 @@ class MissingBackupTelnetTransport(FakeTelnetTransport):
         return super().run_command(session, command, **kwargs)
 
 
+class LoseInstallResponseOnceTelnetTransport(FakeTelnetTransport):
+    def __init__(self, digest: str, **kwargs) -> None:
+        super().__init__(digest, **kwargs)
+        self.install_commands = 0
+        self.response_lost = False
+        self.faulted = threading.Event()
+
+    def run_command(self, session, command: str, **kwargs):
+        if "p=i;" in command:
+            self.install_commands += 1
+            result = super().run_command(session, command, **kwargs)
+            if not self.response_lost:
+                self.response_lost = True
+                self.faulted.set()
+                raise OSError("connection lost after atomic replacement")
+            return result
+        return super().run_command(session, command, **kwargs)
+
+
+class CrashCutSshTransport(FakeSshTransport):
+    def __init__(self, cut: str, faulted: threading.Event) -> None:
+        super().__init__()
+        self.cut = cut
+        self.faulted = faulted
+        self.response_lost = False
+
+    def upload_file(self, master, local_path: str, remote_path: str, **kwargs):
+        result = super().upload_file(
+            master,
+            local_path,
+            remote_path,
+            **kwargs,
+        )
+        if self.cut == "upload" and not self.response_lost:
+            self.response_lost = True
+            self.faulted.set()
+            raise OSError("connection lost after staging upload")
+        return result
+
+
+class CrashCutTelnetTransport(FakeTelnetTransport):
+    def __init__(
+        self,
+        expected_digest: str,
+        before_digest: str,
+        *,
+        cut: str,
+        faulted: threading.Event,
+    ) -> None:
+        super().__init__(expected_digest, target_exists=True)
+        self.before_digest = before_digest
+        self.current_digest = before_digest
+        self.backup_digest = ""
+        self.backup_exists = False
+        self.cut = cut
+        self.faulted = faulted
+        self.root_mount_mode = "ro" if cut == "remount" else "rw"
+        self.response_lost = False
+        self.backup_commands = 0
+        self.install_commands = 0
+        self.restart_commands = 0
+        self.verification_commands = 0
+        self.recovery_reads: list[str] = []
+
+    def _lose_once(self, cut: str, message: str) -> None:
+        if self.cut == cut and not self.response_lost:
+            self.response_lost = True
+            self.faulted.set()
+            raise OSError(message)
+
+    @staticmethod
+    def _result(stdout: str) -> TelnetCommandResult:
+        return TelnetCommandResult(
+            stdout=stdout,
+            returncode=0,
+            framing_complete=True,
+            timed_out=False,
+            connection_closed=False,
+            raw=stdout.encode(),
+        )
+
+    def run_command(self, session, command: str, **kwargs):
+        if "mount -o remount,rw /" in command:
+            self.commands.append(command)
+            self.root_mount_mode = "rw"
+            result = self._result("remount_rw_ok")
+            self._lose_once("remount", "connection lost after root remount")
+            return result
+        if "mount -o remount,ro /" in command:
+            self.commands.append(command)
+            self.root_mount_mode = "ro"
+            return self._result("remount_ro_ok")
+        if "live_patch_recovery_inspected" in command:
+            self.commands.append(command)
+            self.recovery_reads.append("target")
+            return self._result(
+                f"remote_sha256={self.current_digest}\n"
+                f"remote_mode={self.current_mode}\n"
+                f"remote_uid={self.current_uid}\n"
+                f"remote_gid={self.current_gid}\n"
+                "remote_exists\nlive_patch_recovery_inspected"
+            )
+        if "backup_exists" in command:
+            self.commands.append(command)
+            self.recovery_reads.append("backup")
+            if not self.backup_exists:
+                return self._result("backup_missing")
+            return self._result(
+                f"backup_sha256={self.backup_digest}\n"
+                f"backup_mode={self.target_mode}\n"
+                f"backup_uid={self.target_uid}\n"
+                f"backup_gid={self.target_gid}\nbackup_exists"
+            )
+        if "/proc/mounts" in command:
+            self.commands.append(command)
+            self.recovery_reads.append("mount")
+            return self._result(f"{self.root_mount_mode},relatime")
+        if "live_patch_restart_observed" in command:
+            self.commands.append(command)
+            self.recovery_reads.append("restart")
+            return self._result("live_patch_restart_observed")
+        if "target_exists" in command:
+            self.commands.append(command)
+            return self._result(
+                f"{self.current_digest}  /opt/bmc/apps/demo/unit.lua\n"
+                f"target_mode={self.current_mode}\n"
+                f"target_uid={self.current_uid}\n"
+                f"target_gid={self.current_gid}\n"
+                "target_exists"
+            )
+        if "p=b;" in command:
+            self.backup_commands += 1
+            self.backup_exists = True
+            self.backup_digest = self.current_digest
+            result = super().run_command(session, command, **kwargs)
+            self._lose_once("backup", "connection lost after atomic backup")
+            return result
+        if "p=i;" in command:
+            self.install_commands += 1
+            result = super().run_command(session, command, **kwargs)
+            self.current_digest = self.digest
+            self._lose_once("install", "connection lost after atomic replacement")
+            return result
+        if "restart_ok" in command:
+            self.restart_commands += 1
+            result = super().run_command(session, command, **kwargs)
+            self._lose_once("restart", "connection lost after restart")
+            return result
+        if "verify_sha256" in command:
+            self.verification_commands += 1
+            self.commands.append(command)
+            result = self._result(
+                f"remote_sha256={self.current_digest}\n"
+                f"remote_mode={self.current_mode}\n"
+                f"remote_uid={self.current_uid}\n"
+                f"remote_gid={self.current_gid}\nverify_sha256"
+            )
+            self._lose_once("verification", "verification response lost")
+            return result
+        return super().run_command(session, command, **kwargs)
+
+
+class DispatchFailOnceLivePatchBackend(LivePatchMcpBackend):
+    def __init__(self, *, faulted: threading.Event, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.faulted = faulted
+        self.failed = False
+
+    def live_patch_run(self, task, arguments, context):
+        if not self.failed:
+            self.failed = True
+            self.faulted.set()
+            raise OSError("adapter dispatch failed before Live Patch started")
+        return super().live_patch_run(task, arguments, context)
+
+
+class BlockAfterTerminalLivePatchBackend(LivePatchMcpBackend):
+    def __init__(
+        self,
+        *,
+        terminal: threading.Event,
+        release: threading.Event,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.terminal = terminal
+        self.release = release
+        self.blocked_once = False
+
+    def live_patch_run(self, task, arguments, context):
+        value = super().live_patch_run(task, arguments, context)
+        if not self.blocked_once:
+            self.blocked_once = True
+            self.terminal.set()
+            if not self.release.wait(timeout=5):
+                raise TimeoutError("terminal result was not released")
+        return value
+
+
 class LivePatchRuntimeBackendTests(unittest.TestCase):
+    def test_execute_restart_replays_terminal_journal_before_run_fact_commit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "live-patch-terminal.sqlite3"
+            blobs = root / "blobs"
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            terminal = threading.Event()
+            release = threading.Event()
+            ssh = FakeSshTransport()
+            telnet = FakeTelnetTransport(digest, target_exists=True)
+            debug = WorkflowDebugBackend()
+            live_patch = BlockAfterTerminalLivePatchBackend(
+                terminal=terminal,
+                release=release,
+                journal_store=journals,
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: ssh,
+                telnet_transport_factory=lambda _arguments: telnet,
+            )
+
+            def service(*, reclaim_pending: bool = False) -> RuntimeMcpService:
+                return RuntimeMcpService(
+                    OrchestratedMcpBackend(
+                        {
+                            "debug_run": debug,
+                            "debug_collect": debug,
+                            "live_patch_run": live_patch,
+                        }
+                    ),
+                    context_repository=SQLiteRuntimeRepository(
+                        database,
+                        owner_is_active=(
+                            (lambda _pid, _started: False)
+                            if reclaim_pending
+                            else (lambda pid, _started: pid == os.getpid())
+                        ),
+                    ),
+                    blob_repository=FilesystemBlobRepository(blobs),
+                )
+
+            first = service()
+            second = None
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "bmc.example",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="live-patch-terminal",
+                    operation_id="live-patch-terminal-start",
+                )
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": "live-patch-terminal-source",
+                                "authored_files": ["src/unit.lua"],
+                                "verification_plan": ["fresh target verification"],
+                                "artifact_ref": artifact_ref(
+                                    local,
+                                    target="bmc.example",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 0.000001,
+                    },
+                    task_id="live-patch-terminal",
+                    operation_id="live-patch-terminal-submit",
+                )
+                self.assertTrue(terminal.wait(timeout=1))
+                journal = journals.load_for_task(waiting["run_id"])[0]
+                self.assertEqual(journal.stage, "verified")
+
+                second = service(reclaim_pending=True)
+                final = second.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": waiting["run_id"]},
+                    task_id="live-patch-terminal-resume",
+                    operation_id="live-patch-terminal-resume",
+                )
+                projection = second.context_runtime.read_case(waiting["run_id"])
+            finally:
+                release.set()
+                first.close()
+                if second is not None:
+                    second.close()
+
+        self.assertEqual(running["state"], "running")
+        self.assertEqual(
+            final["state"],
+            "completed",
+            {"turn": final, "operations": projection.get("operations")},
+        )
+        self.assertEqual(len(ssh.uploads), 1)
+        self.assertEqual(
+            len([command for command in telnet.commands if "p=i;" in command]),
+            1,
+        )
+
+    def test_execute_restart_reports_incident_when_dispatch_failed_before_journal(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "live-patch-dispatch.sqlite3"
+            blobs = root / "blobs"
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            faulted = threading.Event()
+            ssh = FakeSshTransport()
+            telnet = FakeTelnetTransport(digest, target_exists=True)
+            debug = WorkflowDebugBackend()
+            live_patch = DispatchFailOnceLivePatchBackend(
+                faulted=faulted,
+                journal_store=journals,
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: ssh,
+                telnet_transport_factory=lambda _arguments: telnet,
+            )
+
+            def service() -> RuntimeMcpService:
+                return RuntimeMcpService(
+                    OrchestratedMcpBackend(
+                        {
+                            "debug_run": debug,
+                            "debug_collect": debug,
+                            "live_patch_run": live_patch,
+                        }
+                    ),
+                    context_repository=SQLiteRuntimeRepository(database),
+                    blob_repository=FilesystemBlobRepository(blobs),
+                )
+
+            first = service()
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "bmc.example",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="live-patch-dispatch",
+                    operation_id="live-patch-dispatch-start",
+                )
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": "live-patch-dispatch-source",
+                                "authored_files": ["src/unit.lua"],
+                                "verification_plan": ["fresh target verification"],
+                                "artifact_ref": artifact_ref(
+                                    local,
+                                    target="bmc.example",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 0.000001,
+                    },
+                    task_id="live-patch-dispatch",
+                    operation_id="live-patch-dispatch-submit",
+                )
+                self.assertTrue(faulted.wait(timeout=1))
+                effect_id = first.context_runtime.read_case(
+                    waiting["run_id"]
+                )["effect_intents"][-1]["effect_id"]
+            finally:
+                first.close()
+
+            second = service()
+            try:
+                final = second.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": waiting["run_id"]},
+                    task_id="live-patch-dispatch-resume",
+                    operation_id="live-patch-dispatch-resume",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(running["state"], "running")
+        self.assertEqual(final["state"], "incident", final)
+        self.assertEqual(final["incident"]["effect_id"], effect_id)
+        self.assertEqual(journals.load_for_task(waiting["run_id"]), [])
+        self.assertEqual(ssh.uploads, [])
+        self.assertEqual(telnet.commands, [])
+
+    def run_public_restart_fault(self, cut: str) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "live-patch-crash.sqlite3"
+            blobs = root / "blobs"
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            before_digest = hashlib.sha256(b"previous version").hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            faulted = threading.Event()
+            fault_cut = cut.removesuffix("-deleted")
+            ssh = CrashCutSshTransport(fault_cut, faulted)
+            telnet = CrashCutTelnetTransport(
+                digest,
+                before_digest,
+                cut=fault_cut,
+                faulted=faulted,
+            )
+            debug = WorkflowDebugBackend()
+            live_patch = LivePatchMcpBackend(
+                journal_store=journals,
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: ssh,
+                telnet_transport_factory=lambda _arguments: telnet,
+            )
+
+            def service() -> RuntimeMcpService:
+                return RuntimeMcpService(
+                    OrchestratedMcpBackend(
+                        {
+                            "debug_run": debug,
+                            "debug_collect": debug,
+                            "live_patch_run": live_patch,
+                        }
+                    ),
+                    context_repository=SQLiteRuntimeRepository(database),
+                    blob_repository=FilesystemBlobRepository(blobs),
+                )
+
+            first = service()
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "bmc.example",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id=f"live-patch-{cut}",
+                    operation_id=f"live-patch-{cut}-start",
+                )
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": f"live-patch-{cut}-source",
+                                "authored_files": ["src/unit.lua"],
+                                "verification_plan": ["fresh target verification"],
+                                "artifact_ref": artifact_ref(
+                                    local,
+                                    target="bmc.example",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                                "restart_scope": (
+                                    "skynet" if fault_cut == "restart" else "none"
+                                ),
+                            },
+                        },
+                        "deadline": 0.000001,
+                    },
+                    task_id=f"live-patch-{cut}",
+                    operation_id=f"live-patch-{cut}-submit",
+                )
+                self.assertTrue(faulted.wait(timeout=1), cut)
+                first_projection = first.context_runtime.read_case(waiting["run_id"])
+                effect_id = first_projection["effect_intents"][-1]["effect_id"]
+                mutation_id = journals.load_for_task(waiting["run_id"])[0].operation_id
+            finally:
+                first.close()
+
+            if cut.endswith("-deleted"):
+                local.unlink()
+            recovery_start = len(telnet.recovery_reads)
+            second = service()
+            try:
+                final = second.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": waiting["run_id"]},
+                    task_id=f"live-patch-{cut}-resume",
+                    operation_id=f"live-patch-{cut}-resume",
+                )
+                projection = second.context_runtime.read_case(waiting["run_id"])
+                recovered_mutation_ids = {
+                    journal.operation_id
+                    for journal in journals.load_for_task(waiting["run_id"])
+                    if journal.action == "live_patch"
+                }
+            finally:
+                second.close()
+
+            return {
+                "running": running,
+                "final": final,
+                "projection": projection,
+                "effect_id": effect_id,
+                "mutation_id": mutation_id,
+                "recovered_mutation_ids": recovered_mutation_ids,
+                "ssh": ssh,
+                "telnet": telnet,
+                "recovery_reads": tuple(telnet.recovery_reads[recovery_start:]),
+            }
+
+    def test_execute_restart_replans_after_lost_backup_response(self) -> None:
+        result = self.run_public_restart_fault("backup")
+
+        self.assertEqual(result["running"]["state"], "running")
+        self.assertEqual(result["final"]["state"], "failed", result["final"])
+        self.assertEqual(result["telnet"].backup_commands, 1)
+        self.assertEqual(result["telnet"].install_commands, 0)
+        self.assertEqual(len(result["ssh"].uploads), 0)
+        self.assertEqual(result["recovered_mutation_ids"], {result["mutation_id"]})
+        self.assertEqual(
+            {
+                item["operation_id"]
+                for item in result["projection"]["operations"]
+                if item.get("operation") == "live_patch_run"
+            },
+            {result["effect_id"]},
+        )
+        self.assertEqual(result["recovery_reads"][:3], ("target", "backup", "mount"))
+
+    def test_execute_restart_returns_incident_after_lost_remount_response(self) -> None:
+        result = self.run_public_restart_fault("remount")
+
+        self.assertEqual(result["running"]["state"], "running")
+        self.assertEqual(result["final"]["state"], "incident", result["final"])
+        self.assertEqual(result["telnet"].backup_commands, 0)
+        self.assertEqual(result["telnet"].install_commands, 0)
+        self.assertEqual(len(result["ssh"].uploads), 0)
+        self.assertEqual(result["recovered_mutation_ids"], {result["mutation_id"]})
+        self.assertEqual(result["recovery_reads"][:2], ("target", "mount"))
+        self.assertEqual(
+            result["final"]["incident"]["effect_id"],
+            result["effect_id"],
+        )
+
+    def test_execute_restart_replans_after_lost_upload_response(self) -> None:
+        result = self.run_public_restart_fault("upload")
+
+        self.assertEqual(result["running"]["state"], "running")
+        self.assertEqual(result["final"]["state"], "failed", result["final"])
+        self.assertEqual(result["telnet"].backup_commands, 1)
+        self.assertEqual(result["telnet"].install_commands, 0)
+        self.assertEqual(len(result["ssh"].uploads), 1)
+        self.assertEqual(result["recovered_mutation_ids"], {result["mutation_id"]})
+        self.assertEqual(result["recovery_reads"][:3], ("target", "backup", "mount"))
+
+    def test_execute_restart_verifies_after_lost_install_response(self) -> None:
+        result = self.run_public_restart_fault("install")
+
+        self.assertEqual(result["running"]["state"], "running")
+        self.assertEqual(result["final"]["state"], "completed", result["final"])
+        self.assertEqual(result["telnet"].backup_commands, 1)
+        self.assertEqual(result["telnet"].install_commands, 1)
+        self.assertEqual(result["telnet"].restart_commands, 0)
+        self.assertEqual(len(result["ssh"].uploads), 1)
+        self.assertEqual(result["recovered_mutation_ids"], {result["mutation_id"]})
+        self.assertEqual(result["recovery_reads"][:3], ("target", "backup", "mount"))
+
+    def test_execute_restart_recovers_install_after_local_patch_is_deleted(self) -> None:
+        result = self.run_public_restart_fault("install-deleted")
+
+        self.assertEqual(result["running"]["state"], "running")
+        self.assertEqual(result["final"]["state"], "completed", result["final"])
+        self.assertEqual(result["telnet"].install_commands, 1)
+        self.assertEqual(len(result["ssh"].uploads), 1)
+        self.assertEqual(result["recovered_mutation_ids"], {result["mutation_id"]})
+        self.assertEqual(result["recovery_reads"][:3], ("target", "backup", "mount"))
+
+    def test_execute_restart_verifies_after_lost_restart_response(self) -> None:
+        result = self.run_public_restart_fault("restart")
+
+        self.assertEqual(result["running"]["state"], "running")
+        self.assertEqual(result["final"]["state"], "completed", result["final"])
+        self.assertEqual(result["telnet"].backup_commands, 1)
+        self.assertEqual(result["telnet"].install_commands, 1)
+        self.assertEqual(result["telnet"].restart_commands, 1)
+        self.assertEqual(len(result["ssh"].uploads), 1)
+        self.assertEqual(result["recovered_mutation_ids"], {result["mutation_id"]})
+        self.assertEqual(
+            result["recovery_reads"][:4],
+            ("target", "backup", "mount", "restart"),
+        )
+
+    def test_execute_restart_retries_only_fresh_verification_after_response_loss(
+        self,
+    ) -> None:
+        result = self.run_public_restart_fault("verification")
+
+        self.assertEqual(result["running"]["state"], "running")
+        self.assertEqual(result["final"]["state"], "completed", result["final"])
+        self.assertEqual(result["telnet"].backup_commands, 1)
+        self.assertEqual(result["telnet"].install_commands, 1)
+        self.assertEqual(result["telnet"].restart_commands, 1)
+        self.assertEqual(result["telnet"].verification_commands, 2)
+        self.assertEqual(len(result["ssh"].uploads), 1)
+        self.assertEqual(result["recovered_mutation_ids"], {result["mutation_id"]})
+        self.assertEqual(result["recovery_reads"][:3], ("target", "backup", "mount"))
+
+    def test_execute_live_patch_returns_a_terminal_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            ssh = FakeSshTransport()
+            telnet = FakeTelnetTransport(digest)
+            debug = WorkflowDebugBackend()
+            live_patch = LivePatchMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: ssh,
+                telnet_transport_factory=lambda _arguments: telnet,
+            )
+            service = RuntimeMcpService(
+                OrchestratedMcpBackend(
+                    {
+                        "debug_run": debug,
+                        "debug_collect": debug,
+                        "live_patch_run": live_patch,
+                    }
+                )
+            )
+            try:
+                waiting = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "bmc.example",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="public-live-patch",
+                    operation_id="public-live-patch-start",
+                )
+                final = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": "public-live-patch-source",
+                                "authored_files": ["src/unit.lua"],
+                                "verification_plan": ["fresh target verification"],
+                                "artifact_ref": artifact_ref(
+                                    local,
+                                    target="bmc.example",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 1.0,
+                    },
+                    task_id="public-live-patch",
+                    operation_id="public-live-patch-submit",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(waiting["state"], "waiting_response")
+        self.assertEqual(final["state"], "completed", final)
+        self.assertEqual(len(ssh.uploads), 1)
+
+    def test_execute_restart_recovers_lost_install_response_without_replacing_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "live-patch-crash.sqlite3"
+            blobs = root / "blobs"
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            ssh = FakeSshTransport()
+            telnet = LoseInstallResponseOnceTelnetTransport(
+                digest,
+                target_exists=True,
+            )
+            debug = WorkflowDebugBackend()
+            live_patch = LivePatchMcpBackend(
+                journal_store=journals,
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: ssh,
+                telnet_transport_factory=lambda _arguments: telnet,
+            )
+
+            first = RuntimeMcpService(
+                OrchestratedMcpBackend(
+                    {
+                        "debug_run": debug,
+                        "debug_collect": debug,
+                        "live_patch_run": live_patch,
+                    }
+                ),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "bmc.example",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="lost-install-response",
+                    operation_id="lost-install-response-start",
+                )
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": "lost-install-source",
+                                "authored_files": ["src/unit.lua"],
+                                "verification_plan": ["fresh target verification"],
+                                "artifact_ref": artifact_ref(
+                                    local,
+                                    target="bmc.example",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 0.000001,
+                    },
+                    task_id="lost-install-response",
+                    operation_id="lost-install-response-submit",
+                )
+                self.assertTrue(telnet.faulted.wait(timeout=1))
+                first_projection = first.context_runtime.read_case(waiting["run_id"])
+                effect_id = first_projection["effect_intents"][-1]["effect_id"]
+                mutation_id = journals.load_for_task(waiting["run_id"])[
+                    0
+                ].operation_id
+            finally:
+                first.close()
+
+            second = RuntimeMcpService(
+                OrchestratedMcpBackend(
+                    {
+                        "debug_run": debug,
+                        "debug_collect": debug,
+                        "live_patch_run": live_patch,
+                    }
+                ),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                final = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": waiting["run_id"],
+                    },
+                    task_id="lost-install-response-resume",
+                    operation_id="lost-install-response-resume",
+                )
+                projection = second.context_runtime.read_case(waiting["run_id"])
+                operations = projection["operations"]
+                recovered_mutation_ids = {
+                    journal.operation_id
+                    for journal in journals.load_for_task(waiting["run_id"])
+                    if journal.action == "live_patch"
+                }
+            finally:
+                second.close()
+
+        self.assertEqual(running["state"], "running", running)
+        self.assertEqual(
+            final["state"],
+            "completed",
+            {
+                "turn": final,
+                "phase_records": projection.get("phase_records"),
+                "stage_receipts": projection.get("stage_receipts"),
+                "workflow_step_states": projection.get("workflow_step_states"),
+                "operations": projection.get("operations"),
+            },
+        )
+        self.assertEqual(telnet.install_commands, 1)
+        self.assertEqual(len(ssh.uploads), 1)
+        self.assertEqual(
+            {
+                item["operation_id"]
+                for item in operations
+                if item.get("operation") == "live_patch_run"
+            },
+            {effect_id},
+        )
+        self.assertEqual(recovered_mutation_ids, {mutation_id})
+
     def test_artifact_digest_mismatch_is_rejected_before_remote_effects(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

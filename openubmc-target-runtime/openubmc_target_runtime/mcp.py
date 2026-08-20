@@ -1884,6 +1884,15 @@ class OrchestratedMcpBackend:
                         for block in iter(lambda: stream.read(1024 * 1024), b""):
                             digest.update(block)
                     operation["local_sha256"] = digest.hexdigest()
+                else:
+                    authored_digest = str(
+                        operation.get("artifact_sha256", "")
+                    ).lower()
+                    if len(authored_digest) == 64 and all(
+                        character in "0123456789abcdef"
+                        for character in authored_digest
+                    ):
+                        operation["local_sha256"] = authored_digest
         return _fingerprint(
             {
                 "domain": domain,
@@ -2398,7 +2407,8 @@ class _RuntimeSemanticAdapter:
                 item
                 for item in reversed(list(projection.get("operations", [])))
                 if isinstance(item, Mapping)
-                and item.get("status") == "mutation_outcome_unknown"
+                and item.get("status")
+                in {"mutation_outcome_unknown", "blocked"}
                 and str(item.get("operation", "")) in self.service.catalog.names()
                 and self.service.catalog.require(
                     str(item.get("operation", ""))
