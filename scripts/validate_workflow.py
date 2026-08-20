@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -24,10 +25,20 @@ SKILL_PACKAGE_IGNORED_PARTS = frozenset(
 )
 
 
-def run(command: list[str], *, cwd: Path = ROOT) -> None:
+def run(command: list[str], *, cwd: Path = ROOT, stage: str) -> None:
+    github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+    if github_actions:
+        print(f"::group::{stage}", flush=True)
+    else:
+        print(f"==> {stage}", flush=True)
     print("$ " + " ".join(command), flush=True)
-    result = subprocess.run(command, cwd=cwd, check=False)
+    try:
+        result = subprocess.run(command, cwd=cwd, check=False)
+    finally:
+        if github_actions:
+            print("::endgroup::", flush=True)
     if result.returncode:
+        print(f"validation stage failed: {stage}", file=sys.stderr, flush=True)
         raise SystemExit(result.returncode)
 
 
@@ -260,7 +271,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.release_contract_only:
         print("release contract validation passed")
         return 0
-    run([sys.executable, "-m", "compileall", "-q", "."])
+    run(
+        [sys.executable, "-m", "compileall", "-q", "."],
+        stage="Python compile",
+    )
     if args.quick:
         print("workflow validation passed")
         return 0
@@ -271,10 +285,24 @@ def main(argv: list[str] | None = None) -> int:
     for tests in dict.fromkeys(test_roots):
         run(
             [sys.executable, "-m", "unittest", "discover", "-s", str(tests), "-p", "test_*.py"],
+            stage=f"Python tests: {tests.relative_to(ROOT).as_posix()}",
         )
-    run(["npm", "ci", "--no-audit", "--no-fund"], cwd=ROOT / "openubmc-kb-mcp")
-    run(["npm", "test"], cwd=ROOT / "openubmc-kb-mcp")
-    run(["npm", "run", "check"], cwd=ROOT / "openubmc-kb-mcp")
+    node_root = ROOT / "openubmc-kb-mcp"
+    run(
+        ["npm", "ci", "--no-audit", "--no-fund"],
+        cwd=node_root,
+        stage="Node dependencies: openubmc-kb-mcp",
+    )
+    run(
+        ["npm", "test"],
+        cwd=node_root,
+        stage="Node tests: openubmc-kb-mcp",
+    )
+    run(
+        ["npm", "run", "check"],
+        cwd=node_root,
+        stage="Node syntax: openubmc-kb-mcp",
+    )
     print("workflow validation passed")
     return 0
 
