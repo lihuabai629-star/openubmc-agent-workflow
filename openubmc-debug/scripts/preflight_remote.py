@@ -35,6 +35,49 @@ from _preflight_recommendations import (
 from _target_runtime_adapter import open_debug_runtime_lease
 
 
+_PREFLIGHT_CHECK_NAMES = frozenset(
+    {"SSH", "MDBCTL", "DBUS_ENV", "BUSCTL", "TELNET"}
+)
+_PREFLIGHT_CHECK_DEPENDENCIES = {
+    "MDBCTL": frozenset({"SSH"}),
+    "DBUS_ENV": frozenset({"SSH"}),
+    "BUSCTL": frozenset({"SSH", "DBUS_ENV"}),
+}
+
+
+def _selected_preflight_checks(args: argparse.Namespace) -> frozenset[str]:
+    requested = {
+        str(name).strip().upper()
+        for name in getattr(args, "preflight_checks", [])
+        if str(name).strip()
+    }
+    unsupported = requested - _PREFLIGHT_CHECK_NAMES
+    if unsupported:
+        raise ValueError(
+            "unsupported preflight checks: " + ", ".join(sorted(unsupported))
+        )
+    if not requested:
+        if bool(getattr(args, "mdb_only", False)):
+            requested = {"SSH", "MDBCTL"}
+        else:
+            requested = {"SSH", "MDBCTL", "DBUS_ENV", "BUSCTL"}
+            if not bool(getattr(args, "skip_telnet", False)):
+                requested.add("TELNET")
+    selected = set(requested)
+    for name in tuple(requested):
+        selected.update(_PREFLIGHT_CHECK_DEPENDENCIES.get(name, ()))
+    return frozenset(selected)
+
+
+def _normalize_preflight_scope(args: argparse.Namespace) -> None:
+    if getattr(args, "preflight_checks", []):
+        selected = _selected_preflight_checks(args)
+        args.skip_telnet = "TELNET" not in selected
+        args.mdb_only = selected <= {"SSH", "MDBCTL"}
+    elif getattr(args, "mdb_only", False):
+        args.skip_telnet = True
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Preflight remote access for openUBMC debug sessions.")
     parser.add_argument("--ip", required=True, help="BMC IP")
@@ -61,6 +104,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mdb-only",
         action="store_true",
         help="Check only SSH freshness and the MDB object lane",
+    )
+    parser.add_argument(
+        "--check",
+        action="append",
+        dest="preflight_checks",
+        choices=sorted(_PREFLIGHT_CHECK_NAMES),
+        default=[],
+        help="Run only the named capability check and its required dependencies",
     )
     parser.add_argument(
         "--busctl-service",
@@ -133,18 +184,58 @@ def summarize_capabilities(
     }
 
 
-def build_json_report_payload(
+def summarize_preflight(
     args: argparse.Namespace,
     checks: dict[str, dict[str, object]],
 ) -> dict[str, object]:
+    """Derive one authoritative status for CLI, JSON, and typed callers."""
+
+    status = summarize_capabilities(checks)
+    if getattr(args, "preflight_checks", []):
+        selected = _selected_preflight_checks(args)
+        passed_count = sum(
+            bool(checks.get(name, {}).get("ok")) for name in selected
+        )
+        overall_ok = passed_count == len(selected)
+        if overall_ok:
+            overall_code = "ok"
+        elif passed_count:
+            overall_code = "partial"
+        else:
+            overall_code = "unavailable"
+    else:
+        overall_ok = bool(status["usable"])
+        overall_code = str(status["overall_code"])
+    status.update(
+        {
+            "overall_ok": overall_ok,
+            "overall_code": overall_code,
+            "returncode": 0 if overall_ok else 1,
+        }
+    )
+    return status
+
+
+def build_json_report_payload(
+    args: argparse.Namespace,
+    checks: dict[str, dict[str, object]],
+    *,
+    status: dict[str, object] | None = None,
+) -> dict[str, object]:
     failed_checks = [name for name, item in checks.items() if not item["ok"]]
     failure_count = len(failed_checks)
-    capability_status = summarize_capabilities(checks)
+    capability_status = status or summarize_preflight(args, checks)
+    overall_ok = bool(capability_status["overall_ok"])
     overall_code = str(capability_status["overall_code"])
     management_cli_blocked = (
         checks.get("MDBCTL", {}).get("code") == "remote-command-unsupported"
     )
-    if capability_status["usable"]:
+    if getattr(args, "preflight_checks", []) and overall_ok:
+        overall_recommendation = (
+            "The requested preflight scope passed; continue with the operation "
+            "that required these checks."
+        )
+    elif capability_status["usable"]:
         overall_recommendation = (
             "Choose remote object, remote log/file, or combined snapshot from the "
             "reported capabilities; failed optional checks do not block a usable lane."
@@ -174,9 +265,9 @@ def build_json_report_payload(
     return build_common_json_payload(
         tool="preflight_remote",
         ip=args.ip,
-        ok=bool(capability_status["usable"]),
+        ok=overall_ok,
         code=overall_code,
-        returncode=0 if capability_status["usable"] else 1,
+        returncode=int(capability_status["returncode"]),
         warnings=[f"check_failed:{name}" for name in failed_checks],
         request={
             "ssh_port": args.ssh_port,
@@ -186,7 +277,7 @@ def build_json_report_payload(
             "busctl_service": args.busctl_service,
         },
         result={
-            "overall_ok": bool(capability_status["usable"]),
+            "overall_ok": overall_ok,
             "all_checks_ok": bool(capability_status["all_checks_ok"]),
             "overall_code": overall_code,
             "capabilities": capability_status["capabilities"],
@@ -200,9 +291,14 @@ def build_json_report_payload(
     )
 
 
-def emit_json_report(args: argparse.Namespace, checks: dict[str, dict[str, object]]) -> None:
-    payload = build_json_report_payload(args, checks)
-    capability_status = summarize_capabilities(checks)
+def emit_json_report(
+    args: argparse.Namespace,
+    checks: dict[str, dict[str, object]],
+    *,
+    status: dict[str, object] | None = None,
+) -> None:
+    capability_status = status or summarize_preflight(args, checks)
+    payload = build_json_report_payload(args, checks, status=capability_status)
     failed_checks = [name for name, item in checks.items() if not item["ok"]]
     failure_count = len(failed_checks)
     overall_code = str(capability_status["overall_code"])
@@ -214,7 +310,7 @@ def emit_json_report(args: argparse.Namespace, checks: dict[str, dict[str, objec
     payload.update(
         {
             "ip": args.ip,
-            "overall_ok": bool(capability_status["usable"]),
+            "overall_ok": bool(capability_status["overall_ok"]),
             "all_checks_ok": bool(capability_status["all_checks_ok"]),
             "overall_code": overall_code,
             "capabilities": capability_status["capabilities"],
@@ -253,18 +349,20 @@ def run_preflight_checks(
 
         future.add_done_callback(publish)
 
-    mdb_only = bool(getattr(args, "mdb_only", False))
-    with ThreadPoolExecutor(max_workers=2 if mdb_only else 4) as executor:
-        ssh_future = executor.submit(
-            check_ssh,
-            args,
-            ssh,
-            debug_dumper,
-            ssh_runner=ssh_runner,
-        )
-        observe("SSH", ssh_future)
+    selected = _selected_preflight_checks(args)
+    with ThreadPoolExecutor(max_workers=max(1, min(4, len(selected)))) as executor:
+        ssh_future = None
+        if "SSH" in selected:
+            ssh_future = executor.submit(
+                check_ssh,
+                args,
+                ssh,
+                debug_dumper,
+                ssh_runner=ssh_runner,
+            )
+            observe("SSH", ssh_future)
         dbus_future = None
-        if not mdb_only:
+        if "DBUS_ENV" in selected:
             dbus_future = executor.submit(
                 check_dbus_env,
                 args,
@@ -274,16 +372,18 @@ def run_preflight_checks(
                 environment_cache=environment_cache,
             )
             observe("DBUS_ENV", dbus_future)
-        mdbctl_future = executor.submit(
-            check_mdbctl,
-            args,
-            ssh,
-            debug_dumper,
-            ssh_runner=ssh_runner,
-        )
-        observe("MDBCTL", mdbctl_future)
+        mdbctl_future = None
+        if "MDBCTL" in selected:
+            mdbctl_future = executor.submit(
+                check_mdbctl,
+                args,
+                ssh,
+                debug_dumper,
+                ssh_runner=ssh_runner,
+            )
+            observe("MDBCTL", mdbctl_future)
         telnet_future = None
-        if not mdb_only and not getattr(args, "skip_telnet", False):
+        if "TELNET" in selected:
             telnet_future = executor.submit(
                 check_telnet,
                 args,
@@ -297,26 +397,32 @@ def run_preflight_checks(
         busctl_future = None
         if dbus_future is not None:
             dbus_result = dbus_future.result()
-            busctl_future = executor.submit(
-                check_busctl,
-                args,
-                ssh,
-                dbus_result[2],
-                debug_dumper,
-                ssh_runner=ssh_runner,
-            )
-            observe("BUSCTL", busctl_future)
-        ssh_result = ssh_future.result()
-        mdbctl_result = mdbctl_future.result()
+            if "BUSCTL" in selected:
+                busctl_future = executor.submit(
+                    check_busctl,
+                    args,
+                    ssh,
+                    dbus_result[2],
+                    debug_dumper,
+                    ssh_runner=ssh_runner,
+                )
+                observe("BUSCTL", busctl_future)
+        ssh_result = ssh_future.result() if ssh_future is not None else None
+        mdbctl_result = (
+            mdbctl_future.result() if mdbctl_future is not None else None
+        )
         telnet_result = telnet_future.result() if telnet_future is not None else None
         busctl_result = (
             busctl_future.result() if busctl_future is not None else None
         )
 
-    results = {"SSH": ssh_result}
+    results: dict[str, tuple] = {}
+    if ssh_result is not None:
+        results["SSH"] = ssh_result
     if dbus_result is not None:
         results["DBUS_ENV"] = dbus_result
-    results["MDBCTL"] = mdbctl_result
+    if mdbctl_result is not None:
+        results["MDBCTL"] = mdbctl_result
     if busctl_result is not None:
         results["BUSCTL"] = busctl_result
     if telnet_result is not None:
@@ -338,16 +444,18 @@ def build_checks(
     raw_results: dict[str, tuple],
 ) -> dict[str, dict[str, object]]:
     checks: dict[str, dict[str, object]] = {}
-    ok, lines = raw_results["SSH"]
-    checks["SSH"] = build_check_result("SSH", ok, lines, args)
+    if "SSH" in raw_results:
+        ok, lines = raw_results["SSH"]
+        checks["SSH"] = build_check_result("SSH", ok, lines, args)
 
     if "DBUS_ENV" in raw_results:
         env_ok, env_lines, env = raw_results["DBUS_ENV"]
         checks["DBUS_ENV"] = build_check_result(
             "DBUS_ENV", env_ok, env_lines, args, env=env
         )
-    ok, lines = raw_results["MDBCTL"]
-    checks["MDBCTL"] = build_check_result("MDBCTL", ok, lines, args)
+    if "MDBCTL" in raw_results:
+        ok, lines = raw_results["MDBCTL"]
+        checks["MDBCTL"] = build_check_result("MDBCTL", ok, lines, args)
     if "BUSCTL" in raw_results:
         ok, lines = raw_results["BUSCTL"]
         checks["BUSCTL"] = build_check_result("BUSCTL", ok, lines, args)
@@ -358,7 +466,10 @@ def build_checks(
     if "LOG_FILES" in raw_results:
         ok, lines = raw_results["LOG_FILES"]
         checks["LOG_FILES"] = build_check_result("LOG_FILES", ok, lines, args)
-    if checks["MDBCTL"]["code"] == "remote-command-unsupported":
+    if (
+        "MDBCTL" in checks
+        and checks["MDBCTL"]["code"] == "remote-command-unsupported"
+    ):
         recommendation = RECOMMENDED_NEXT_STEPS["remote-command-unsupported"]
         for name in ("DBUS_ENV", "BUSCTL"):
             if name not in checks:
@@ -384,17 +495,23 @@ def refresh_preflight_checks(
 ) -> dict[str, dict[str, object]]:
     """Refresh clock/uptime anchors without repeating capability discovery."""
 
-    checks = copy.deepcopy(base_checks)
-    ssh_ok, ssh_lines = check_ssh(
-        args,
-        ssh,
-        debug_dumper,
-        ssh_runner=ssh_runner,
-    )
-    if check_observer is not None:
-        check_observer("SSH", (ssh_ok, ssh_lines))
-    checks["SSH"] = build_check_result("SSH", ssh_ok, ssh_lines, args)
-    if not getattr(args, "skip_telnet", False) and "TELNET" in checks:
+    selected = _selected_preflight_checks(args)
+    checks = {
+        name: copy.deepcopy(value)
+        for name, value in base_checks.items()
+        if name in selected or (name == "LOG_FILES" and "TELNET" in selected)
+    }
+    if "SSH" in selected:
+        ssh_ok, ssh_lines = check_ssh(
+            args,
+            ssh,
+            debug_dumper,
+            ssh_runner=ssh_runner,
+        )
+        if check_observer is not None:
+            check_observer("SSH", (ssh_ok, ssh_lines))
+        checks["SSH"] = build_check_result("SSH", ssh_ok, ssh_lines, args)
+    if "TELNET" in selected and "TELNET" in checks:
         telnet_ok, telnet_lines = check_telnet_time(
             args,
             telnet,
@@ -459,20 +576,20 @@ def execute_preflight(
         )
         checks = build_checks(args, raw_results)
 
+    status = summarize_preflight(args, checks)
     if args.json:
-        emit_json_report(args, checks)
+        emit_json_report(args, checks, status=status)
     else:
         for title, result in checks.items():
             print_section(title, str(result["status"]), list(result["lines"]))
 
-    return 0 if summarize_capabilities(checks)["usable"] else 1
+    return int(status["returncode"])
 
 
 def run_typed_preflight_one_shot(args: argparse.Namespace) -> int:
     """Resolve credentials once and reuse one SSH/Telnet lease for preflight."""
 
-    if getattr(args, "mdb_only", False):
-        args.skip_telnet = True
+    _normalize_preflight_scope(args)
     credentials = resolve_debug_credentials(
         args,
         include_telnet=not args.skip_telnet,
@@ -508,8 +625,7 @@ def main(
     _check_observer=None,
 ) -> int:
     args = _args or parse_args()
-    if getattr(args, "mdb_only", False):
-        args.skip_telnet = True
+    _normalize_preflight_scope(args)
     if (
         _args is None
         and _ssh is None

@@ -646,6 +646,75 @@ class LivePatchMcpBackend:
     def task_status(task: _LivePatchTask) -> dict[str, object]:
         return task.status()
 
+    @staticmethod
+    def _fresh_live_patch_verification(
+        fresh,
+        *,
+        binding: _LivePatchBinding,
+        remote: str,
+        expected_sha: str,
+        expected_metadata: Mapping[str, int | str],
+        operation_id: str,
+        context,
+    ) -> dict[str, object]:
+        if not expected_metadata:
+            raise RuntimeError("Live Patch expected metadata is unavailable")
+        request = RemoteReadRequest.create(
+            request_id=f"{operation_id}:fresh-checksum",
+            target=binding.target,
+            credential_selector=binding.ssh_selector,
+            collector_name="live-patch-fresh-checksum",
+            operation={
+                "remote_path": remote,
+                "expected_sha256": expected_sha,
+                "expected_metadata": dict(expected_metadata),
+            },
+        )
+
+        def collect(_read_context):
+            lane = binding.task_run.telnet_lane(
+                target=binding.target,
+                credentials=binding.telnet_credentials,
+                lease_name=LivePatchRuntimeAdapter.LEASE_NAME,
+                transport=binding.telnet_transport,
+            )
+            expected_mode = str(expected_metadata["mode"])
+            expected_uid = int(expected_metadata["uid"])
+            expected_gid = int(expected_metadata["gid"])
+            result = lane.run_command(
+                "remote_sha=$(sha256sum {remote} | awk '{{print $1}}') && "
+                "remote_mode=$(stat -c %a {remote}) && "
+                "remote_uid=$(stat -c %u {remote}) && "
+                "remote_gid=$(stat -c %g {remote}) && "
+                "printf 'remote_sha256=%s\\nremote_mode=%s\\nremote_uid=%s\\nremote_gid=%s\\n' "
+                '"$remote_sha" "$remote_mode" "$remote_uid" "$remote_gid" && '
+                "test \"$remote_sha\" = {expected_sha} && "
+                "test \"$remote_mode\" = {expected_mode} && "
+                "test \"$remote_uid\" = {expected_uid} && "
+                "test \"$remote_gid\" = {expected_gid} && echo verify_sha256".format(
+                    remote=shlex.quote(remote),
+                    expected_sha=shlex.quote(expected_sha),
+                    expected_mode=shlex.quote(expected_mode),
+                    expected_uid=expected_uid,
+                    expected_gid=expected_gid,
+                ),
+                timeout=min(20.0, context.remaining()),
+            )
+            text = _telnet_stdout(result, marker="verify_sha256")
+            if expected_sha not in text.lower():
+                raise RuntimeError("fresh Live Patch checksum does not match")
+            return {
+                "remote_sha256": expected_sha,
+                "remote_metadata": _file_metadata(text, "remote"),
+            }
+
+        verified = fresh.run_read(request, collect)
+        return {
+            **verified.value,
+            "target_epoch": verified.target_epoch,
+            "lane_epochs": verified.lane_epochs,
+        }
+
     def _create_binding(
         self,
         task_id: str,
@@ -816,9 +885,9 @@ class LivePatchMcpBackend:
             )
 
         local = Path(_argument_text(arguments, "local_path")).expanduser().resolve()
-        if not local.is_file():
-            raise ValueError(f"Live Patch local_path is unavailable: {local}")
-        local_sha = _sha256(local)
+        authored_local_sha = _argument_text(arguments, "artifact_sha256").lower()
+        if authored_local_sha and _SHA256.fullmatch(authored_local_sha) is None:
+            raise ValueError("Live Patch artifact_sha256 must be SHA-256")
         token = hashlib.sha256(context.operation_id.encode("utf-8")).hexdigest()[:16]
         staging = _argument_text(arguments, "staging_path") or (
             f"/tmp/.openubmc-live-patch-{token}"
@@ -832,6 +901,75 @@ class LivePatchMcpBackend:
         backup_dir = posixpath.dirname(backup_probe)
         backup = f"{backup_dir}/{PurePosixPath(remote).name}.bak.{token}"
         expected_metadata: dict[str, int | str] = {}
+
+        def mutation_operation(expected_sha: str) -> dict[str, object]:
+            return {
+                "local_path": str(local),
+                "local_sha256": expected_sha,
+                "remote_path": remote,
+                "mode": mode,
+                "staging_path": staging,
+                "backup_path": backup,
+                "backup_dir": backup_dir,
+                "no_backup": no_backup,
+                "no_remount": no_remount,
+                "force_path": allow_outside_roots,
+            }
+
+        current_local_sha = _sha256(local) if local.is_file() else ""
+        matching_journal = next(
+            (
+                journal
+                for journal in binding.task_run.mutation_journals()
+                if journal.operation_id == context.operation_id
+                and journal.action == "live_patch"
+                and not journal.terminal
+                and journal.stage != "replan_required"
+                and (journal.expected_checksum or current_local_sha)
+                and adapter.mutation_request(
+                    operation_id=journal.operation_id,
+                    restart_scope=restart_scope,
+                    operation=mutation_operation(
+                        journal.expected_checksum or current_local_sha
+                    ),
+                    action="live_patch",
+                ).fingerprint
+                == journal.operation_fingerprint
+            ),
+            None,
+        )
+        if matching_journal is not None:
+            if (
+                authored_local_sha
+                and matching_journal.expected_checksum
+                and authored_local_sha != matching_journal.expected_checksum
+            ):
+                raise ValueError(
+                    "Live Patch artifact SHA-256 does not match the durable mutation"
+                )
+            operation = mutation_operation(
+                matching_journal.expected_checksum or current_local_sha
+            )
+            return self._recover_uncertain_live_patch(
+                binding=binding,
+                adapter=adapter,
+                journal=matching_journal,
+                authorization=authorization,
+                context=context,
+                operation=operation,
+                remote=remote,
+                remote_root=remote_root,
+                mode=mode,
+                restart_scope=restart_scope,
+                expected_metadata=expected_metadata,
+            )
+
+        if not local.is_file():
+            raise ValueError(f"Live Patch local_path is unavailable: {local}")
+        local_sha = current_local_sha
+        if authored_local_sha and local_sha != authored_local_sha:
+            raise ValueError("Live Patch artifact SHA-256 does not match")
+        operation = mutation_operation(local_sha)
 
         def apply(execution) -> dict[str, object]:
             mount = _RootMountState()
@@ -986,80 +1124,21 @@ class LivePatchMcpBackend:
                 )
 
         def verify(fresh) -> dict[str, object]:
-            if not expected_metadata:
-                raise RuntimeError("Live Patch expected metadata is unavailable")
-            request = RemoteReadRequest.create(
-                request_id=f"{context.operation_id}:fresh-checksum",
-                target=binding.target,
-                credential_selector=binding.ssh_selector,
-                collector_name="live-patch-fresh-checksum",
-                operation={
-                    "remote_path": remote,
-                    "expected_sha256": local_sha,
-                    "expected_metadata": dict(expected_metadata),
-                },
+            return self._fresh_live_patch_verification(
+                fresh,
+                binding=binding,
+                remote=remote,
+                expected_sha=local_sha,
+                expected_metadata=expected_metadata,
+                operation_id=context.operation_id,
+                context=context,
             )
-
-            def collect(_read_context):
-                lane = binding.task_run.telnet_lane(
-                    target=binding.target,
-                    credentials=binding.telnet_credentials,
-                    lease_name=LivePatchRuntimeAdapter.LEASE_NAME,
-                    transport=binding.telnet_transport,
-                )
-                expected_mode = str(expected_metadata["mode"])
-                expected_uid = int(expected_metadata["uid"])
-                expected_gid = int(expected_metadata["gid"])
-                result = lane.run_command(
-                    "remote_sha=$(sha256sum {remote} | awk '{{print $1}}') && "
-                    "remote_mode=$(stat -c %a {remote}) && "
-                    "remote_uid=$(stat -c %u {remote}) && "
-                    "remote_gid=$(stat -c %g {remote}) && "
-                    "printf 'remote_sha256=%s\\nremote_mode=%s\\nremote_uid=%s\\nremote_gid=%s\\n' "
-                    "\"$remote_sha\" \"$remote_mode\" \"$remote_uid\" \"$remote_gid\" && "
-                    "test \"$remote_sha\" = {expected_sha} && "
-                    "test \"$remote_mode\" = {expected_mode} && "
-                    "test \"$remote_uid\" = {expected_uid} && "
-                    "test \"$remote_gid\" = {expected_gid} && echo verify_sha256".format(
-                        remote=shlex.quote(remote),
-                        expected_sha=shlex.quote(local_sha),
-                        expected_mode=shlex.quote(expected_mode),
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                    ),
-                    timeout=min(20.0, context.remaining()),
-                )
-                text = _telnet_stdout(result, marker="verify_sha256")
-                if local_sha not in text:
-                    raise RuntimeError("fresh Live Patch checksum does not match")
-                return {
-                    "remote_sha256": local_sha,
-                    "remote_metadata": _file_metadata(text, "remote"),
-                }
-
-            verified = fresh.run_read(request, collect)
-            return {
-                **verified.value,
-                "target_epoch": verified.target_epoch,
-                "lane_epochs": verified.lane_epochs,
-            }
 
         result = adapter.run(
             operation_id=context.operation_id,
             authorization=authorization,
             restart_scope=restart_scope,
-            operation={
-                "local_path": str(local),
-                "local_sha256": local_sha,
-                "remote_path": remote,
-                "mode": mode,
-                "staging_path": staging,
-                "backup_path": backup,
-                "backup_dir": backup_dir,
-                "no_backup": no_backup,
-                "no_remount": no_remount,
-                "force_path": allow_outside_roots,
-            },
+            operation=operation,
             apply=apply,
             verify=verify,
             action="live_patch",
@@ -1067,6 +1146,236 @@ class LivePatchMcpBackend:
         )
         context.raise_if_stopped()
         return result.to_public_dict()
+
+    def _recover_uncertain_live_patch(
+        self,
+        *,
+        binding: _LivePatchBinding,
+        adapter: LivePatchRuntimeAdapter,
+        journal,
+        authorization: MutationAuthorization,
+        context,
+        operation: Mapping[str, object],
+        remote: str,
+        remote_root: str,
+        mode: str,
+        restart_scope: str,
+        expected_metadata: dict[str, int | str],
+    ) -> dict[str, object]:
+        """Inspect an uncertain install before deciding whether verification is safe."""
+
+        backup = journal.backup_reference
+        if backup:
+            backup = _validate_remote_path(backup, allowed_roots=("/tmp/",))
+
+        def inspect(_inspection_context) -> dict[str, object]:
+            lane = binding.task_run.telnet_lane(
+                target=binding.target,
+                credentials=binding.telnet_credentials,
+                lease_name=LivePatchRuntimeAdapter.LEASE_NAME,
+                transport=binding.telnet_transport,
+            )
+            for path in (
+                (remote, remote_root, False),
+                *(((backup, "/tmp", False),) if backup else ()),
+            ):
+                command = _path_guard_command((path,))
+                if len(command.encode("utf-8")) > _TELNET_COMMAND_MAX_BYTES:
+                    raise ValueError(
+                        "Live Patch recovery path is too long for bounded "
+                        "Telnet guard execution"
+                    )
+                _require_path_guard(
+                    lane.run_command(
+                        command,
+                        timeout=min(20.0, context.remaining()),
+                    )
+                )
+            remote_result = lane.run_command(
+                "if test -L {remote}; then echo remote_symlink; "
+                "elif test -f {remote}; then "
+                "remote_sha=$(sha256sum {remote} | awk '{{print $1}}'); "
+                "remote_mode=$(stat -c %a {remote}); "
+                "remote_uid=$(stat -c %u {remote}); "
+                "remote_gid=$(stat -c %g {remote}); "
+                "printf 'remote_sha256=%s\\nremote_mode=%s\\nremote_uid=%s\\nremote_gid=%s\\n' "
+                '"$remote_sha" "$remote_mode" "$remote_uid" "$remote_gid"; '
+                "echo remote_exists; else echo remote_missing; fi; "
+                "echo live_patch_recovery_inspected".format(
+                    remote=shlex.quote(remote)
+                ),
+                timeout=min(20.0, context.remaining()),
+            )
+            remote_text = _telnet_stdout(
+                remote_result,
+                marker="live_patch_recovery_inspected",
+            )
+            evidence_safe = "remote_symlink" not in remote_text
+            remote_sha = ""
+            remote_metadata: dict[str, int | str] = {}
+            if "remote_exists" in remote_text:
+                checksum = re.search(
+                    rf"\bremote_sha256=({_SHA256.pattern})\b",
+                    remote_text,
+                )
+                if checksum is None:
+                    raise RuntimeError(
+                        "Live Patch recovery target checksum is unavailable"
+                    )
+                remote_sha = checksum.group(1).lower()
+                remote_metadata = _file_metadata(remote_text, "remote")
+            elif "remote_missing" not in remote_text:
+                evidence_safe = False
+
+            backup_exists: bool | None = None
+            backup_sha = ""
+            backup_metadata: dict[str, int | str] = {}
+            if backup:
+                backup_result = lane.run_command(
+                    "if test -L {backup}; then echo backup_symlink; "
+                    "elif test -f {backup}; then "
+                    "backup_sha=$(sha256sum {backup} | awk '{{print $1}}'); "
+                    "backup_mode=$(stat -c %a {backup}); "
+                    "backup_uid=$(stat -c %u {backup}); "
+                    "backup_gid=$(stat -c %g {backup}); "
+                    "printf 'backup_sha256=%s\\nbackup_mode=%s\\nbackup_uid=%s\\nbackup_gid=%s\\n' "
+                    '"$backup_sha" "$backup_mode" "$backup_uid" "$backup_gid"; '
+                    "echo backup_exists; else echo backup_missing; fi".format(
+                        backup=shlex.quote(backup)
+                    ),
+                    timeout=min(20.0, context.remaining()),
+                )
+                backup_text = _telnet_text(
+                    backup_result,
+                    purpose="Live Patch recovery backup inspection",
+                )
+                if "backup_exists" in backup_text:
+                    backup_exists = True
+                    checksum = re.search(
+                        rf"\bbackup_sha256=({_SHA256.pattern})\b",
+                        backup_text,
+                    )
+                    if checksum is None:
+                        raise RuntimeError(
+                            "Live Patch recovery backup checksum is unavailable"
+                        )
+                    backup_sha = checksum.group(1).lower()
+                    backup_metadata = _file_metadata(backup_text, "backup")
+                elif "backup_missing" in backup_text:
+                    backup_exists = False
+                    evidence_safe = False
+                else:
+                    evidence_safe = False
+                if journal.before_checksum and backup_sha != journal.before_checksum:
+                    evidence_safe = False
+
+            mount_result = lane.run_command(
+                "awk '$2 == \"/\" {print $4; exit}' /proc/mounts",
+                timeout=min(20.0, context.remaining()),
+            )
+            mount_options = _root_mount_options(
+                _telnet_text(
+                    mount_result,
+                    purpose="Live Patch recovery root mount inspection",
+                )
+            )
+            original_mount = tuple(
+                item
+                for item in str(journal.root_mount_mode).split(",")
+                if item and item not in {"unknown", "not-inspected"}
+            )
+            if "ro" in original_mount or "rw" in original_mount:
+                root_mount_restored: bool | None = (
+                    ("ro" in original_mount and "ro" in mount_options)
+                    or ("rw" in original_mount and "rw" in mount_options)
+                )
+            else:
+                root_mount_restored = journal.root_mount_restored
+
+            restart_observed: bool | None = True
+            if restart_scope == "skynet":
+                restart_result = lane.run_command(
+                    "if pidof skynet >/dev/null 2>&1; then "
+                    "echo live_patch_restart_observed; else "
+                    "echo live_patch_restart_missing; fi",
+                    timeout=min(20.0, context.remaining()),
+                )
+                restart_text = _telnet_text(
+                    restart_result,
+                    purpose="Live Patch recovery restart inspection",
+                )
+                restart_observed = "live_patch_restart_observed" in restart_text
+                if not restart_observed:
+                    evidence_safe = False
+
+            if remote_sha == journal.expected_checksum:
+                expected_mode = format(int(mode, 8), "o")
+                if backup_metadata:
+                    expected_uid = int(backup_metadata["uid"])
+                    expected_gid = int(backup_metadata["gid"])
+                elif not journal.before_checksum:
+                    expected_uid = 0
+                    expected_gid = 0
+                else:
+                    expected_uid = int(remote_metadata.get("uid", -1))
+                    expected_gid = int(remote_metadata.get("gid", -1))
+                if (
+                    str(remote_metadata.get("mode", "")) != expected_mode
+                    or int(remote_metadata.get("uid", -1)) != expected_uid
+                    or int(remote_metadata.get("gid", -1)) != expected_gid
+                ):
+                    evidence_safe = False
+                expected_metadata.clear()
+                expected_metadata.update(
+                    {
+                        "mode": expected_mode,
+                        "uid": expected_uid,
+                        "gid": expected_gid,
+                    }
+                )
+
+            return {
+                "target_reachable": evidence_safe,
+                "remote_checksum": remote_sha,
+                "backup_exists": backup_exists,
+                "backup_checksum": backup_sha,
+                "root_mount_mode": ",".join(mount_options),
+                "root_mount_restored": root_mount_restored,
+                "restart_observed": restart_observed,
+            }
+
+        recovered = adapter.recover(
+            operation_id=journal.operation_id,
+            authorization=authorization,
+            restart_scope=restart_scope,
+            operation=operation,
+            inspect=inspect,
+            verify=lambda fresh: self._fresh_live_patch_verification(
+                fresh,
+                binding=binding,
+                remote=remote,
+                expected_sha=str(operation["local_sha256"]),
+                expected_metadata=expected_metadata,
+                operation_id=journal.operation_id,
+                context=context,
+            ),
+            action="live_patch",
+            operation_context=context,
+        )
+        return {
+            "operation_id": recovered.operation_id,
+            "action": "live_patch",
+            "target_fingerprint": binding.target.fingerprint,
+            "epoch_before": recovered.journal.epoch_before,
+            "epoch_after": (
+                recovered.journal.epoch_after
+                or recovered.journal.epoch_before
+            ),
+            "mutation": {"recovery": recovered.to_public_dict()},
+            "verification": recovered.verification,
+            "journal": recovered.journal.to_public_dict(),
+            "idempotent_replay": False,
+        }
 
     def _rollback_run(
         self,

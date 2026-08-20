@@ -1,8 +1,8 @@
 # openUBMC Agent Workflow 架构裁决
 
 日期：2026-08-19
-评估基线：`refactor/agent-semantic-gateway`，`db38a4a`
-状态：架构决策建议，作为 v2 收口与 v2.1 实施输入
+设计基线：`refactor/agent-semantic-gateway`，`db38a4a`
+实现状态：核心裁决已在 `refactor/run-engine-core` 落地，剩余项见第 13 节
 
 ## 1. 最终裁决
 
@@ -35,23 +35,35 @@
 
 ### 2.2 状态权威目前名实不符
 
-现有 [`WorkflowKernel`](../openubmc-target-runtime/openubmc_target_runtime/workflow.py#L533) 只完成三件事：
+迁移前的 `WorkflowKernel` 只完成三件事：
 
 - 根据投影解析或恢复 `WorkflowDefinition`；
 - 生成 `StepIdentity`；
 - 生成 semantic cursor。
 
-真正的 Run 推进、Gate 产生、Domain 调用、unknown Mutation 阻断、事件提交和 Closeout 均位于 [`ContextRuntime.workflow_advance`](../openubmc-target-runtime/openubmc_target_runtime/context_runtime.py#L5680)，`workflow.next` 也只是其 continuation 入口，见 [`workflow_next`](../openubmc-target-runtime/openubmc_target_runtime/context_runtime.py#L6234)。
+迁移前，真正的 Run 推进、Gate 产生、Domain 调用、unknown Mutation 阻断、事件提交和
+Closeout 均位于 `ContextRuntime.workflow_advance`，`workflow.next` 只是其 continuation
+入口。当前 Agent 主路径已由 `RunEngine.execute` 选择 Gate 或单个 Domain step，不再调用
+`workflow.next`；`ContextRuntime` 保留 definition cursor、event repository 和 Domain
+invocation Adapter。Gate response 暂时仍经 `record_gate_submission -> phase_record` bridge
+写入旧事件模型，这是 M4 尚未完成的边界。
 
-因此问题不是缺少第二个状态机，而是当前状态机埋在巨型 `ContextRuntime` 中，`WorkflowKernel` 的名称又暗示了它拥有并不存在的权威。
+因此实现没有增加第二个状态机，而是把 Agent-visible transition authority 从巨型
+`ContextRuntime` 纵向迁到 `RunEngine`。`WorkflowKernel` 已校正为
+`WorkflowDefinitions`，旧名称只保留 import alias。
 
 ### 2.3 外部 Interface 已变深，内部 seam 仍浅
 
-- [`AgentGatewayRuntimePort`](../openubmc-target-runtime/openubmc_target_runtime/agent_gateway.py#L53) 暴露 8 个方法，Gateway 需要知道 observation assurance、持久化、Run 启动、snapshot、reconcile 和 Outcome 记录。
-- `respond` 目前由 Gateway 组合 `phase_record` 与 `workflow.next`；terminal Outcome 又由 Gateway 单独写入。这些都属于 Runtime 状态转换，而不是 Gateway 投影职责。
-- [`_RuntimeGatewayAdapter`](../openubmc-target-runtime/openubmc_target_runtime/mcp.py#L2022) 主要透传上述 8 个方法，没有形成高杠杆 seam。
-- [`RuntimeSDK.execute`](../openubmc-target-runtime/openubmc_target_runtime/capability.py#L224) 每次调用仍接收一个临时 Domain Adapter；生产路径在调用点创建 `CallableDomainAdapter`，说明 Adapter 注册与执行 locality 不足。
-- [`execute` schema](../openubmc-target-runtime/openubmc_target_runtime/agent_gateway.py#L1121) 仍允许多个无统一总预算的字符串和开放对象；当前 Gate payload 也使用开放 `additionalProperties`。
+- 迁移前的 `AgentGatewayRuntimePort` 暴露 8 个方法，Gateway 需要知道 observation
+  refinement、持久化、Run 启动、snapshot、reconcile 和 Outcome 记录。
+- 迁移前 `respond` 由 Gateway 组合 `phase_record` 与 `workflow.next`，terminal Outcome
+  又由 Gateway 单独写入。
+- 当前 `SemanticRuntimePort` 只保留 typed `observe/execute`；Gateway 仅解码和投影，
+  `RunEngine` 负责 Gate、推进、reconcile、Incident 和 Outcome。
+- 当前 `DomainExecutor` 在 Runtime 构造时预注册 Adapter，并按 Effect class 选择有限只读
+  重试或单次 Mutation 执行。
+- Agent request 与 stdio frame 已设置 256 KiB 总预算，大内容通过 ObservationRef 或
+  ArtifactRef 流转。
 
 ### 2.4 Mutation 语义已经比通用工作流更成熟
 
@@ -106,8 +118,8 @@ Agent Gateway
        │ typed Query / RunCommand
        ▼
 Runtime Module
-  query(...)  -> ObservationResult
-  submit(...) -> Turn
+  observe(...) -> ObservationResult
+  execute(...) -> Turn
 ```
 
 Runtime 内部可以同步执行，也可以将来通过 queue/worker 异步执行；这些机制都被 Adapter 隐藏。Agent 一次调用只在下一真实 Gate、Incident、running reattach point 或 Outcome 返回。
@@ -139,7 +151,7 @@ Agent / Agent SDK
 ┌────────────────── Runtime Core ─────────────────────────┐
 │                                                         │
 │ ObservationEngine        RunEngine                      │
-│ selector + assurance     sole transition authority      │
+│ selector + auto policy   sole transition authority      │
 │         │                 │                              │
 │         ▼                 ├─ WorkflowDefinitions        │
 │ Evidence/ArtifactStore    ├─ Policy / Gate / Incident    │
@@ -159,22 +171,25 @@ Agent / Agent SDK
 
 ```python
 class SemanticRuntimePort(Protocol):
-    def query(
+    def observe(
         self,
         query: ObservationQuery,
         *,
-        context: CallContext,
+        task_id: str,
+        operation_id: str,
     ) -> ObservationResult: ...
 
-    def submit(
+    def execute(
         self,
         command: RunCommand,
         *,
-        context: CallContext,
+        task_id: str,
+        operation_id: str,
     ) -> RunTurn: ...
 ```
 
-外部 MCP 名称仍是 `observe` 和 `execute`。`query/submit` 表明内部接收的是 typed 领域对象，不是继续透传外部 JSON。
+外部 MCP 与内部 typed seam 都使用 `observe` 和 `execute`，但 Gateway 进入 Runtime 前已将
+JSON 解码为关闭的 typed 领域对象。
 
 `RunCommand` 是关闭的 discriminated union：
 
@@ -192,7 +207,13 @@ Worker result、timer 和 operator resolution 是 RunEngine 的内部 command，
 
 ```python
 class RunEngine:
-    def handle(self, command: RunCommand, *, context: RunContext) -> RunTurn: ...
+    def execute(
+        self,
+        command: RunCommand,
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> RunTurn: ...
 ```
 
 这一项单方法 Interface 应隐藏：definition pinning、事件加载与提交、幂等、Gate lifecycle、Effect 调度、Mutation reconcile、Outcome、Session Outcome 投影和 restart recovery。
@@ -209,7 +230,7 @@ class RunEngine:
 
 ### 4.3 `WorkflowDefinitions` 的职责
 
-将 `WorkflowKernel` 更名为 `WorkflowDefinitions`，保留：
+`WorkflowKernel` 已更名为 `WorkflowDefinitions`，保留：
 
 - route resolution；
 - definition serialization、version、fingerprint；
@@ -225,7 +246,8 @@ class RunEngine:
 - Event commit；
 - Retry、reconcile 或 Outcome。
 
-如果保留 `WorkflowKernel` 名称，则它必须改为真正包含唯一 `RunEngine`。在当前代码形态下，直接改名更清晰，也避免两个“内核”权威。
+旧 `WorkflowKernel` 名称只作为迁移期 alias 保留，生产代码使用
+`DEFAULT_WORKFLOW_DEFINITIONS`，避免形成两个“内核”权威。
 
 ### 4.4 `DomainExecutor` 的职责
 
@@ -357,16 +379,17 @@ schema_id / schema_version / schema_digest
 state: open | submitted | expired | cancelled
 deadline
 required_role_or_capability
-token_hash
+submission_id / submission_digest
 ```
 
-Agent-facing Turn 内嵌不超过 2 KiB 的关闭 schema，并携带短 opaque token。schema 使用真实 `properties` 与 `required`，不再依赖开放 `payload` 加旁路 `required_fields`。
+Agent-facing Turn 内嵌不超过 4 KiB 的关闭 schema，并携带 Gate ID、版本和 schema digest。
+内部研发 Runtime 不使用 one-time secret token；这一点由 ADR-0004 修订 ADR-0003。
 
 提交规则：
 
 - 同一 `submission_id + digest` 重放返回原 Turn；
 - 不同提交竞争同一 Gate 时只有一个成功；
-- 错误 Run、旧 version、已消费 token 或 schema 不匹配返回 conflict；
+- 错误 Run、错误 Gate、旧 version、不同 input digest 或 schema 不匹配返回 conflict；
 - actor、提交时间与 transport identity 由 Adapter/Runtime 注入，不由模型自由声明；
 - cancel 记录 `RunCancelled`，不伪造成一条 cancelled phase receipt。
 
@@ -393,7 +416,9 @@ open -> reconciling -> resolved
   └-----------------> cancelled
 ```
 
-v2.0 的最低要求不是立即实现完整 Incident Module，而是 unknown 一律转为人工处置且绝不生成错误成功 Outcome。v2.1 再让 Incident 成为 `RunEngine` 内部的持久对象，并在 Agent Turn 中只投影安全动作，在 Operator Interface 中提供完整事件、Journal 与 Evidence。
+当前基线会先自动 reconcile unknown Mutation；仍无法收敛时返回显式 Incident Turn，且绝不
+生成错误成功 Outcome。后续仍需把 Incident lifecycle 和 operator resolution 固化为完整
+持久对象，在 Operator Interface 中提供事件、Journal 与 Evidence。
 
 ## 9. 模型推理与确定性 Runtime 的分工
 
@@ -536,7 +561,8 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 1. 为 `execute` 设置整体 serialized input budget，并限制字符串、数组、对象深度、属性数和错误响应。
 2. 为 MCP stdio 增加解析前 frame/line byte limit。
 3. `StartRun` 改传 `observation_ref + digest`，Runtime 重建 Receipt；兼容期可读完整 Receipt，但默认不再回传。
-4. 引入持久 `gate_id + gate_version + token + submission identity`，关闭 Gate schema。
+4. 引入持久 `gate_id + gate_version + schema digest + submission identity + input digest`，
+   关闭 Gate schema；内部研发不使用 one-time secret token。
 5. 明确 Effect/Mutation 的 at-least-once、idempotency、epoch/fencing 与 reconcile 表述，删除外部副作用 exactly-once 暗示。
 6. 按上述切点完成 source-only、live-patch、build-upgrade 的重启和 fault injection。
 7. 将正式 A/B 摘要与可复核 digest 纳入仓库。
@@ -544,19 +570,22 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 
 退出条件：所有 P0 budget、Gate、Mutation 和 crash-cut 测试通过；默认工具仍为两个；unknown 不会生成成功 Outcome。
 
-### P1：v2.1 内部深化
+### P1：Runtime 内部深化
 
 目标：让外部两个 operations 背后形成真正的 deep Modules。
 
-1. 新增 typed `ObservationQuery/Result`、`RunCommand/RunTurn` 和两方法 `SemanticRuntimePort`。
-2. 以兼容 Adapter 包装当前 8 方法 Port，先切 Gateway，再逐步删除旧 Port。
-3. 将 `WorkflowKernel` 改为 `WorkflowDefinitions`。
-4. 从 `ContextRuntime.workflow_advance/next` 提取唯一 `RunEngine.handle`；保持现有事件和 storage 兼容读取。
-5. 将 observation persistence、Gate 提交、Outcome 和 Session Outcome 投影移入 Runtime。
-6. Domain Adapters 构造时注册，`DomainExecutor` 统一执行与 reconcile。
-7. 将 Gate、Submission、Effect 和 Incident 变为版本化事实；为旧 event/projection 提供 upcaster。
-8. 用行为 contract tests 和 fake Adapters 替换源码字符串测试。
-9. 按变化原因拆分 `context_runtime.py` 与 `mcp.py`，不以文件行数为单独目标。
+1. typed `ObservationQuery/Result`、`RunCommand/RunTurn` 和两方法
+   `SemanticRuntimePort`：已完成。
+2. Gateway 删除旧 8 方法协调并切到 typed seam：已完成。
+3. `WorkflowKernel` 改为 `WorkflowDefinitions`：已完成，保留兼容 alias。
+4. 建立唯一 `RunEngine.execute` 并保持现有 event/storage 兼容读取：已完成主路径。
+5. observation persistence、Gate 决策、Run Outcome 和 Session Outcome 投影移入 Runtime：
+   已完成主路径；Gate persistence 仍复用旧 `phase_record` bridge。
+6. Domain Adapters 构造时注册，`DomainExecutor` 统一执行策略：已完成基线。
+7. Gate、Submission、Incident 和 Outcome 已有版本化持久事实；Incident lifecycle、原生
+   Gate submission event writer 与显式 old-event upcaster 继续演进。
+8. 行为 contract tests 和 fake Adapters：已补主路径，旧源码 contraction tests 逐步退役。
+9. 继续按变化原因收缩 `context_runtime.py` 与 `mcp.py`，不以文件行数为单独目标。
 
 退出条件：Gateway 只依赖两方法 typed Interface；RunEngine 是唯一状态写入者；核心测试不穿透 Module Interface。
 
@@ -590,7 +619,7 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 - 默认 tools/list 只含两个 operations，schema 总量有界；
 - JSON 只存在于 MCP/CLI Adapter，Runtime tests 使用 typed command；
 - 相同 command identity + digest 返回原 Turn；不同 digest conflict；
-- Gate 同提交幂等、并发提交单赢家、旧 version/错误 token conflict；
+- Gate 同提交幂等、并发提交单赢家、旧 version/错误 Gate/不同 input digest conflict；
 - terminal Run 不复活，Session Outcome 可从 Run 重建；
 - ArtifactRef digest、ACL、target/run binding 和 GC 后行为 fail closed。
 
@@ -645,7 +674,7 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 3. `WorkflowDefinitions + RunEngine` 及唯一状态权威；
 4. `execute -> Turn` 与内部异步/reattach 语义；
 5. Effect at-least-once、idempotency、target epoch/fencing、unknown reconcile；
-6. Gate version、one-time token 与 Submission 幂等；
+6. Gate version、schema digest、Submission 幂等与冲突检测；
 7. ArtifactRef/ObservationRef 与大对象 claim-check；
 8. 局部 event-backed ledger，不全面 Event Sourcing/CQRS；
 9. Incident 与 Gate/Blocker 的语义区分；
@@ -659,7 +688,7 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 | --- | --- | --- |
 | 恢复 19 个 Agent-facing 工具 | 否决 | 再次泄漏 Runtime sequencing |
 | 内部继续使用万能 `Mapping[str, object]` | 否决 | 类型、不变量和版本分散 |
-| 同时存在 WorkflowKernel 与 RunEngine 两个状态机 | 否决 | 双权威、恢复歧义 |
+| 同时存在 WorkflowDefinitions 与 RunEngine 两个状态机 | 否决 | 定义 Module 不能成为第二状态权威 |
 | Agent 可见统一 CommandAck + polling | 当前否决 | 更多轮次和调度概念，无规模证据 |
 | 立即引入 Outbox/Inbox/Broker | 延后到 v3 触发 | 当前无跨进程 dual-write |
 | 完整 Event Sourcing/CQRS | 否决 | 迁移和版本成本高于当前收益 |
@@ -671,14 +700,18 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 
 ## 17. 最终方向判断
 
-当前方向是对的，但下一步不再是扩能力，而是完成内部收敛：
+当前方向和第一轮内部收敛都已验证正确，下一步仍不应扩张 Agent Interface：
 
 - 保留 Runtime Core、`observe/execute`、MutationJournal、Evidence/Artifact、Replay 与治理面；
-- 将 `WorkflowKernel` 校正为 `WorkflowDefinitions`；
-- 建立唯一 `RunEngine`，把 Gateway 的 8 方法协调和 `ContextRuntime` 中的推进逻辑收进去；
+- `WorkflowDefinitions` 已校正为纯定义 Module；
+- typed `SemanticRuntimePort` 与 `RunEngine` 已接管 Gateway 的 8 方法协调、自动 reconcile
+  和 Session Outcome 投影；
+- M4 尚未完成：`phase_record` persistence bridge、old-event upcaster 与 compatibility
+  telemetry 仍需收口；
 - 保留 Turn-to-next-Gate，隐藏 Ack、polling、scheduler 与未来 Worker；
 - v2 做本地 typed event-backed Process Manager，不做分布式平台；
-- v2.1 引入持久 Gate/Incident 和 ArtifactRef；
+- 继续固化 Incident lifecycle、旧 event upcaster、compatibility telemetry 和完整 execute
+  fault matrix；
 - 只有规模与部署证据出现后，才把 Outbox/Inbox、Worker、共享 fencing 与 durable backend 作为一个完整 v3 演进包引入。
 
 这条路线具有最高 Interface depth：Agent 学习的概念最少，Runtime 提供的行为最多；同时把状态、安全与恢复规则集中到一个可测试 seam，获得更高 leverage 和 locality。

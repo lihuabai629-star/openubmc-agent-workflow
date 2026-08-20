@@ -17,6 +17,7 @@ sys.path.insert(0, str(SCRIPTS))
 import _preflight_checks  # noqa: E402
 import _remote_common  # noqa: E402
 import preflight_remote  # noqa: E402
+import workflow_remote  # noqa: E402
 
 
 class PreflightCompatibilityTests(unittest.TestCase):
@@ -54,6 +55,190 @@ class PreflightCompatibilityTests(unittest.TestCase):
 
 
 class PreflightRuntimeFailureTests(unittest.TestCase):
+    def _run_typed_json_preflight(
+        self,
+        requested: list[str],
+    ) -> dict[str, object]:
+        command = [
+            sys.executable,
+            str(SCRIPTS / "preflight_remote.py"),
+            "--ip",
+            "192.0.2.130",
+            *(item for name in requested for item in ("--check", name)),
+            "--json",
+            "--compact-json",
+        ]
+
+        def invoke(executed_command: list[str]) -> int:
+            args = preflight_remote.parse_args(
+                workflow_remote._command_argv(executed_command)
+            )
+            return preflight_remote.execute_preflight(
+                args,
+                {
+                    "user": "debug-user",
+                    "password": "",
+                    "port": 22,
+                    "identity_file": "",
+                },
+                {"user": "", "password": "", "port": 23},
+            )
+
+        return workflow_remote.run_python_json_tool(
+            "preflight_start",
+            command,
+            invoke,
+            30,
+        )
+
+    def test_explicit_ssh_preflight_has_one_success_contract(self) -> None:
+        with mock.patch.object(
+            preflight_remote,
+            "check_ssh",
+            return_value=(True, ["ssh ready"]),
+        ):
+            result = self._run_typed_json_preflight(["SSH"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["code"], "ok")
+        self.assertEqual(result["returncode"], 0)
+        payload = result["payload"]
+        self.assertIsInstance(payload, dict)
+        assert isinstance(payload, dict)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["returncode"], 0)
+        self.assertTrue(payload["result"]["overall_ok"])
+        self.assertEqual(payload["result"]["overall_code"], "ok")
+
+    def test_explicit_preflight_partial_result_keeps_a_valid_contract(self) -> None:
+        with (
+            mock.patch.object(
+                preflight_remote,
+                "check_ssh",
+                return_value=(True, ["ssh ready"]),
+            ),
+            mock.patch.object(
+                preflight_remote,
+                "check_mdbctl",
+                return_value=(False, ["mdb unavailable"]),
+            ),
+        ):
+            result = self._run_typed_json_preflight(["MDBCTL"])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "partial")
+        self.assertEqual(result["returncode"], 1)
+        self.assertNotEqual(result["code"], "invalid_tool_contract")
+        payload = result["payload"]
+        self.assertIsInstance(payload, dict)
+        assert isinstance(payload, dict)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["returncode"], 1)
+        self.assertFalse(payload["result"]["overall_ok"])
+        self.assertEqual(payload["result"]["overall_code"], "partial")
+
+    def test_explicit_preflight_checks_only_probe_requested_surfaces(self) -> None:
+        credentials = {
+            "user": "debug-user",
+            "password": "",
+            "port": 22,
+            "identity_file": "",
+        }
+        telnet = {"user": "", "password": "", "port": 23}
+        cases = (
+            (["SSH"], {"SSH"}),
+            (["TELNET"], {"TELNET", "LOG_FILES"}),
+            (["MDBCTL"], {"SSH", "MDBCTL"}),
+            (["DBUS_ENV"], {"SSH", "DBUS_ENV"}),
+            (["BUSCTL"], {"SSH", "DBUS_ENV", "BUSCTL"}),
+        )
+        for requested, expected_results in cases:
+            with self.subTest(requested=requested):
+                args = preflight_remote.parse_args(
+                    [
+                        "--ip",
+                        "192.0.2.130",
+                        *(item for name in requested for item in ("--check", name)),
+                    ]
+                )
+                with (
+                    mock.patch.object(
+                        preflight_remote,
+                        "check_ssh",
+                        return_value=(True, ["ssh ready"]),
+                    ) as ssh_check,
+                    mock.patch.object(
+                        preflight_remote,
+                        "check_mdbctl",
+                        return_value=(True, ["mdb ready"]),
+                    ) as mdb_check,
+                    mock.patch.object(
+                        preflight_remote,
+                        "check_dbus_env",
+                        return_value=(True, ["dbus ready"], {"DBUS": "fixture"}),
+                    ) as dbus_check,
+                    mock.patch.object(
+                        preflight_remote,
+                        "check_busctl",
+                        return_value=(True, ["bus ready"]),
+                    ) as bus_check,
+                    mock.patch.object(
+                        preflight_remote,
+                        "check_telnet",
+                        return_value=(True, ["telnet ready"], True),
+                    ) as telnet_check,
+                ):
+                    raw = preflight_remote.run_preflight_checks(
+                        args,
+                        credentials,
+                        telnet,
+                    )
+
+                self.assertEqual(set(raw), expected_results)
+                expected_calls = preflight_remote._selected_preflight_checks(args)
+                self.assertEqual(ssh_check.call_count, int("SSH" in expected_calls))
+                self.assertEqual(
+                    mdb_check.call_count, int("MDBCTL" in expected_calls)
+                )
+                self.assertEqual(
+                    dbus_check.call_count, int("DBUS_ENV" in expected_calls)
+                )
+                self.assertEqual(
+                    bus_check.call_count, int("BUSCTL" in expected_calls)
+                )
+                self.assertEqual(
+                    telnet_check.call_count, int("TELNET" in expected_calls)
+                )
+
+    def test_telnet_only_assurance_refresh_does_not_probe_ssh(self) -> None:
+        args = preflight_remote.parse_args(
+            ["--ip", "192.0.2.130", "--check", "TELNET"]
+        )
+        base_checks = {
+            "SSH": {"ok": True},
+            "MDBCTL": {"ok": True},
+            "TELNET": {"ok": True},
+            "LOG_FILES": {"ok": True},
+        }
+        with (
+            mock.patch.object(preflight_remote, "check_ssh") as ssh_check,
+            mock.patch.object(
+                preflight_remote,
+                "check_telnet_time",
+                return_value=(True, ["telnet refreshed"]),
+            ) as telnet_check,
+        ):
+            refreshed = preflight_remote.refresh_preflight_checks(
+                args,
+                {"user": "", "password": "", "port": 22},
+                {"user": "", "password": "", "port": 23},
+                base_checks,
+            )
+
+        ssh_check.assert_not_called()
+        telnet_check.assert_called_once()
+        self.assertEqual(set(refreshed), {"TELNET", "LOG_FILES"})
+
     def test_preflight_observer_reports_mdb_before_slow_dbus_finishes(self) -> None:
         args = preflight_remote.parse_args(
             ["--ip", "192.0.2.130", "--skip-telnet"]
@@ -258,6 +443,67 @@ class PreflightRuntimeFailureTests(unittest.TestCase):
 
         self.assertEqual(returncode, 0)
         run_typed.assert_called_once_with(args)
+
+    def test_explicit_ssh_check_does_not_open_a_telnet_lease(self) -> None:
+        args = preflight_remote.parse_args(
+            ["--ip", "192.0.2.130", "--check", "SSH"]
+        )
+        credentials = {
+            "ssh": {
+                "user": "debug-user",
+                "password": "debug-password",
+                "port": 22,
+                "identity_file": "",
+            },
+            "telnet": {
+                "user": "",
+                "password": "",
+                "port": 23,
+            },
+        }
+
+        class FakeLease:
+            object_alarm_lease = mock.sentinel.object_alarm_lease
+            telnet_session = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return None
+
+            @staticmethod
+            def ssh_credentials_mapping():
+                return credentials["ssh"]
+
+            @staticmethod
+            def telnet_credentials_mapping():
+                return credentials["telnet"]
+
+        with (
+            mock.patch.object(
+                preflight_remote,
+                "resolve_debug_credentials",
+                return_value=credentials,
+            ) as resolve,
+            mock.patch.object(
+                preflight_remote,
+                "open_debug_runtime_lease",
+                return_value=FakeLease(),
+            ) as open_lease,
+            mock.patch.object(
+                preflight_remote,
+                "execute_preflight",
+                return_value=0,
+            ),
+        ):
+            returncode = preflight_remote.run_typed_preflight_one_shot(args)
+
+        self.assertEqual(returncode, 0)
+        self.assertTrue(args.mdb_only)
+        self.assertTrue(args.skip_telnet)
+        resolve.assert_called_once_with(args, include_telnet=False)
+        self.assertTrue(open_lease.call_args.kwargs["args"].skip_telnet)
 
     def test_management_cli_rejection_disables_object_capability(self) -> None:
         with mock.patch.object(

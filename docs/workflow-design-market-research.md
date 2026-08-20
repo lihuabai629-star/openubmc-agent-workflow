@@ -4,6 +4,12 @@
 
 评估基线：`refactor/agent-semantic-gateway`，`db38a4a`
 
+实现更新：Issue #25 的首轮收敛已在 `refactor/run-engine-core` 落地，包括 typed
+`SemanticRuntimePort`、`RunEngine`、`WorkflowDefinitions`、预注册 `DomainExecutor`、
+ObservationRef/ArtifactRef、持久 Gate identity、自动 reconcile、Incident 和 256 KiB
+request/frame 预算。本文的“当前实现基线”和缺口表保留为调研时快照；后续状态以
+[演进档案](workflow-evolution-roadmap.md)和 ADR-0004 为准。
+
 ## 执行摘要
 
 当前架构方向是正确的，但只完成了“入口收缩”，尚未完成“执行内核深化”。应继续保留一个持久化 Runtime Core，将 `observe(Query)` 与 `execute(Action)` 作为默认 Agent Interface，并把 Operator/CI 留在独立治理面；下一阶段不应重新增加 Agent-facing 工具，也不应立即替换为 Temporal、BPMN、LangGraph 或通用 DAG 引擎。
@@ -29,7 +35,8 @@
 4. **“exactly-once workflow execution”不能外推成“exactly-once external effect”。** openUBMC 应公开采用至少一次副作用模型，并通过持久 effect identity、幂等、目标 epoch/fencing 与 reconcile 收敛未知状态。
 5. **Gate 需要成为持久领域对象。** `respond` 不应只是给当前阶段提交一个自由 JSON，而应提交给明确的 `gate_id + gate_version`，并拒绝重复、过期或跨 Run 的响应。
 6. **Artifact 是状态规模控制的基础设施。** 原始 Evidence、日志包、构建产物和较大结果应存入内容寻址存储，Agent 与流程状态只携带句柄、摘要和必要元数据。
-7. **当前内部 seam 仍偏浅。** `AgentGatewayRuntimePort` 暴露 8 个方法，`RuntimeSDK` 主要完成注册表查找、Adapter 调用和 Receipt 包装；外部入口已经变深，内部实现尚未形成高杠杆 typed Modules。
+7. **调研时内部 seam 仍偏浅。** 当时 `AgentGatewayRuntimePort` 暴露 8 个方法；该缺口已由
+   typed `SemanticRuntimePort + RunEngine + DomainExecutor` 主路径收敛。
 8. **不应提前平台化。** 在单机 Runtime 的吞吐、可用性或多租户瓶颈得到证据前，不应预先引入 HA 队列、BPMN、Temporal 或完整 Event Sourcing/CQRS。
 
 ## 研究方法与证据等级
@@ -40,16 +47,16 @@
 - **架构推论**：由多个事实推导出的 openUBMC 设计判断；
 - **待验证假设**：需要原型、故障注入或基准测试确认，不能作为既成能力宣传。
 
-## 当前实现基线
+## 调研时实现基线（历史快照）
 
 ### 已验证事实
 
 - 默认 Agent profile 只暴露 `observe` 和 `execute`；兼容面与 Operator 面显式分离。
-- Observation scope 上限为 2 KiB，ObservationReceipt 上限为 4 KiB，Turn 上限为 8 KiB，Gate schema 上限为 2 KiB。
+- Observation scope 上限为 2 KiB，ObservationReceipt 上限为 4 KiB，Turn 上限为 8 KiB，Gate schema 上限为 4 KiB。
 - `execute` 支持 `start | respond | resume | control`，并把内部推进上限固定为 64 步。
 - `execute` 的 JSON Schema 对 `intent`、`purpose`、`run_id`、`target` 等字符串没有统一长度上限，`workflow`、`response` 与完整 `observation_receipt` 也缺少总字节预算。
 - MCP stdio server 在 `json.loads` 前逐行读取输入，但没有绝对帧长或行长上限。
-- `AgentGatewayRuntimePort` 当前暴露 8 个内部方法；`RuntimeSDK.execute` 仍要求调用方逐次传入 Domain Adapter。
+- 评估时 `AgentGatewayRuntimePort` 暴露 8 个内部方法；`RuntimeSDK.execute` 仍要求调用方逐次传入 Domain Adapter。
 - 核心文件已经明显膨胀：`context_runtime.py` 6551 行、`mcp.py` 4258 行、`agent_gateway.py` 1174 行。
 - `test_contraction_contracts.py` 包含源码字符串与函数体切片断言，重构时容易产生非行为性失败。
 - 11 个 Skill 入口文件合计约 109 KiB，其中 `openubmc-debug/SKILL.md` 约 18 KiB；渐进披露仍有优化空间。
@@ -221,14 +228,14 @@ Agent framework 最适合作为上层消费者或 Adapter，而不是 Runtime Co
 5. **有界 Observation**：scope、freshness、assurance 与 claim grounding 已经形成清晰语义。
 6. **兼容面暂时保留**：在迁移遥测和 A/B 资格验证完成前保留 compatibility profile 是务实做法。
 
-### 尚未闭环的部分
+### 调研时尚未闭环的部分
 
-| 风险 | 当前表现 | 后果 | 优先级 |
+| 风险 | 评估时表现 | 后果 | 优先级 |
 | --- | --- | --- | --- |
 | `execute` 输入无总预算 | 多个字符串/对象无上限，完整 Receipt 可回传 | 内存、Token、解析时间与攻击面不可控 | P0 |
 | MCP stdio 无帧上限 | 先读完整行再解析 JSON | 超大输入可在 schema 校验前消耗资源 | P0 |
 | ObservationReceipt 回传过重 | Agent 把完整投影重新提交给 Runtime | 重复上下文、篡改面和协议耦合 | P0 |
-| Gate 缺少持久提交身份 | `response` 是自由 JSON，未绑定一次性版本 token | 重复提交、过期提交、跨 Gate 混用 | P0 |
+| Gate 缺少持久提交身份 | `response` 是自由 JSON，未绑定 Gate identity、version 与 submission digest | 重复提交、过期提交、跨 Gate 混用 | P0 |
 | Mutation exactly-once 语义未明确 | 已有 idempotency 与 reconcile，但领域状态仍分散 | 故障切点下难以证明不会重复副作用 | P0/P1 |
 | 内部 Port 太宽且 JSON 化 | 8 方法、`Mapping[str, object]` 透传 | 两工具退化为万能入口，类型与不变量分散 | P1 |
 | RuntimeSDK 偏浅 | 每次调用传 Adapter，主要做包装 | seam 杠杆和 locality 不足 | P1 |
@@ -285,7 +292,7 @@ same semantic Interface.
 | `ObservationEngine` | `observe(Query) -> ObservationResult` | selector dispatch、capability discovery、freshness、assurance、claim grounding、source persistence |
 | `RunEngine` | `start(StartCommand)`、`submit(GateSubmission)`、`advance(RunId)` | workflow version、deterministic cursor、Gate 创建、Outcome、step limit、恢复 |
 | `DomainExecutor` | `execute(DomainCommand, EffectContext) -> DomainResult` | Adapter lookup、timeout、idempotency、target lease、fencing、journal、reconcile |
-| `GateModule` | `open(GateSpec)`、`submit(GateSubmission)`、`expire(GateId)` | one-time token、version、policy、actor、deadline、审计 |
+| `GateModule` | `open(GateSpec)`、`submit(GateSubmission)`、`expire(GateId)` | version、schema digest、submission identity、actor、deadline、审计 |
 | `ArtifactStore` | `put(Content, Metadata) -> ArtifactHandle`、`get(Handle)` | content address、digest、size、retention、redaction、GC |
 | `RunLedger` | `append(Fact)`、`load(RunId)` | 原子提交、sequence、schema version、crash recovery |
 
@@ -339,20 +346,20 @@ unknown ── reconcile(same effect_id, target_epoch/fence) ──┬→ confir
   "gate_id": "gate-...",
   "gate_version": 3,
   "submission_id": "submission-...",
-  "gate_token": "opaque-one-time-token",
-  "response": {},
-  "actor": {},
-  "submitted_at": "..."
+  "response": {}
 }
 ```
 
 必须满足：
 
-- token 与 Run、Gate、version、schema digest 绑定；
-- 同一 `submission_id` 重放返回原结果；
+- Gate identity、version 与 schema digest 由 Runtime 生成并持久化；
+- 同一 `submission_id + input digest` 重放返回原结果；
+- 同一 submission identity 携带不同输入、错误 Gate 或旧 version 返回 conflict；
 - 不同 submission 对已关闭 Gate 返回明确 conflict；
-- 旧 version、错误 Run 或 schema digest 不匹配一律拒绝；
+- actor 与 submitted time 由 Adapter/Runtime 派生，不由模型填写；
 - Gate 打开、提交、过期、取消和人工接管都写入 ledger。
+
+内部研发默认不要求 one-time secret Gate token，详见 ADR-0004。
 
 ### Artifact/Evidence 协议
 
@@ -409,10 +416,10 @@ Agent 与 Run state 只传以下有界元数据：
 | Agent Interface | `tools/list` 默认 profile | 仅两个工具，schema 总量有界 | 已覆盖 |
 | Observation | scope/freshness/assurance/预算 | 超范围 fail closed，Receipt ≤ 4 KiB | 已覆盖 |
 | Observation 性能 | 固定模型、固定 target snapshot、10/20/30 对 A/B | Token、有效 Token、耗时满足阈值 | 10 对已通过 |
-| Execute 输入 | 超长字符串、深层对象、宽对象、超大 Receipt | 在业务执行前拒绝，错误响应有界 | 缺失，P0 |
-| MCP transport | 超大单行、非法 UTF-8/JSON、并发取消 | 在解析前按帧预算拒绝，不影响后续请求 | 缺失，P0 |
-| Observation handle | 正常、篡改 digest、GC 后引用、跨 target 使用 | 只接受可重建且 target 匹配的 handle | 缺失，P0 |
-| Gate | 重复 submission、旧 version、错误 token、并发响应、超时 | 幂等重放或 conflict；ledger 完整 | 缺失，P0 |
+| Execute 输入 | 超长字符串、深层对象、宽对象、超大 Receipt | 在业务执行前拒绝，错误响应有界 | 256 KiB 总预算已覆盖；shape 细化待评估 |
+| MCP transport | 超大单行、非法 UTF-8/JSON、并发取消 | 在解析前按帧预算拒绝，不影响后续请求 | 超大帧及后续合法请求已覆盖 |
+| Observation handle | 正常、篡改 digest、GC 后引用、跨 target 使用 | 只接受可重建且 target 匹配的 handle | digest、target、restart 已覆盖；GC 待补 |
+| Gate | 重复 submission、旧 version、错误 Gate、不同 input digest、并发响应 | 幂等重放或 conflict；ledger 完整 | 主路径已覆盖 |
 | source-only | 正常、每个持久化切点重启、阶段失败/取消 | 不产生错误成功 Outcome | 部分覆盖，需全链路 |
 | live-patch | dispatch 前后崩溃、目标响应丢失、重复 reconcile | 同一 effect_id 收敛，不重复替换 | 部分覆盖，需故障注入 |
 | build-upgrade | build Gate/upgrade 前后重启、升级结果未知 | 同一 journal 恢复，fresh verification 后终结 | 部分覆盖，需真实/仿真 target |
@@ -434,11 +441,12 @@ Agent 与 Run state 只传以下有界元数据：
 1. 为 `execute` 定义统一 serialized input budget，并为每个字符串、数组、对象深度和属性数设置上限；错误输出也必须有界。
 2. 为 MCP stdio 添加解析前 frame/line byte limit，并覆盖超大输入、连续合法请求和并发取消测试。
 3. 将 `observation_receipt` 输入替换为 `observation_handle + digest`；Runtime 从 EvidenceStore 重建、校验 scope 和 target identity。
-4. 引入 `gate_id + gate_version + submission_id + one-time token`，持久化 Gate 与 Submission lifecycle。
+4. 引入 `gate_id + gate_version + schema digest + submission_id + input digest`，持久化
+   Gate 与 Submission lifecycle；内部研发不增加 secret token。
 5. 明确 Effect 状态机与 unknown reconcile 不变量，并把“exactly-once”从对外表述中移除。
 6. 为 source-only、live-patch、build-upgrade 各完成正常、进程重启、故障注入三类全链路测试。
 7. 把正式 A/B 摘要做脱敏后纳入仓库，记录模型、样本、阈值、无效 pair 与可复现实验方法。
-8. 落盘 ADR-0001 至 ADR-0007，并定义 compatibility profile 的退役政策。
+8. 落盘核心 ADR，并定义 compatibility profile 的退役政策。
 
 发布退出条件：所有 P0 测试通过；三条交付路径均能在未知副作用场景安全收敛；默认 Agent Interface 仍为两个工具；正式 A/B 不回归。
 

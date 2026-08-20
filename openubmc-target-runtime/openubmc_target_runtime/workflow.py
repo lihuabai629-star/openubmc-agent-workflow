@@ -530,8 +530,8 @@ class WorkflowRoute:
         return True
 
 
-class WorkflowKernel:
-    """Deep module that owns workflow definition and step identity semantics."""
+class WorkflowDefinitions:
+    """Versioned deterministic workflow structure with no external I/O."""
 
     def __init__(self, registry: WorkflowRegistry) -> None:
         self.registry = registry
@@ -695,4 +695,8 @@ DEFAULT_WORKFLOW_REGISTRY = WorkflowRegistry(
     ),
 )
 
-DEFAULT_WORKFLOW_KERNEL = WorkflowKernel(DEFAULT_WORKFLOW_REGISTRY)
+DEFAULT_WORKFLOW_DEFINITIONS = WorkflowDefinitions(DEFAULT_WORKFLOW_REGISTRY)
+
+# Compatibility aliases for stored code and callers that still use the old name.
+WorkflowKernel = WorkflowDefinitions
+DEFAULT_WORKFLOW_KERNEL = DEFAULT_WORKFLOW_DEFINITIONS

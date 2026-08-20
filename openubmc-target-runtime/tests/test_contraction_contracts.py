@@ -54,17 +54,112 @@ class RuntimeContractionContracts(unittest.TestCase):
         self.assertNotIn("step.domain ==", workflow_body)
         self.assertIn("step.canonical_name", workflow_body)
 
-    def test_workflow_plan_and_cursor_have_one_canonical_interface(self) -> None:
-        workflow_source = (
-            RUNTIME_ROOT / "openubmc_target_runtime/workflow.py"
-        ).read_text(encoding="utf-8")
-        runtime_source = (
-            RUNTIME_ROOT / "openubmc_target_runtime/context_runtime.py"
-        ).read_text(encoding="utf-8")
+    def test_workflow_definitions_expose_one_deterministic_cursor(self) -> None:
+        sys.path.insert(0, str(RUNTIME_ROOT))
+        try:
+            from openubmc_target_runtime.workflow import (
+                DEFAULT_WORKFLOW_DEFINITIONS,
+            )
 
-        self.assertNotIn("def plan(", workflow_source)
-        self.assertEqual(workflow_source.count("def semantic_cursor("), 1)
-        self.assertIn("DEFAULT_WORKFLOW_KERNEL.semantic_cursor(", runtime_source)
+            projection = {
+                "intent": "diagnose-and-fix",
+                "entry_domain": "debug",
+                "entry_operation": "debug_run",
+                "delivery_strategy": "source-only",
+                "workflow_cycle_id": "cycle-1",
+                "target_version": 1,
+            }
+            nodes = [{"step_id": "step-01-debug-run", "status": "completed"}]
+            first = DEFAULT_WORKFLOW_DEFINITIONS.semantic_cursor(
+                projection,
+                nodes=nodes,
+                acceptance_plan_id="acceptance-1",
+            )
+            replayed = DEFAULT_WORKFLOW_DEFINITIONS.semantic_cursor(
+                projection,
+                nodes=nodes,
+                acceptance_plan_id="acceptance-1",
+            )
+            changed = DEFAULT_WORKFLOW_DEFINITIONS.semantic_cursor(
+                projection,
+                nodes=[{"step_id": "step-01-debug-run", "status": "failed"}],
+                acceptance_plan_id="acceptance-1",
+            )
+        finally:
+            sys.path.remove(str(RUNTIME_ROOT))
+
+        self.assertEqual(replayed, first)
+        self.assertNotEqual(changed, first)
+
+    def test_agent_gateway_routes_requests_through_typed_runtime_values(self) -> None:
+        sys.path.insert(0, str(RUNTIME_ROOT))
+        try:
+            from openubmc_target_runtime import (
+                AgentGateway,
+                ObservationQuery,
+                ObservationRef,
+                ObservationResult,
+                RunTurn,
+                StartRun,
+            )
+
+            class TypedRuntime:
+                observed = None
+                executed = None
+
+                def observe(self, query, *, task_id, operation_id):
+                    self.observed = query
+                    return ObservationResult(
+                        query=query,
+                        raw={
+                            "observed_at": "2026-08-20T00:00:00Z",
+                            "result": {
+                                "capabilities": {"ssh_transport": True},
+                                "lanes": {"ssh": {}},
+                            },
+                        },
+                        assurance="fast",
+                        observation_ref=ObservationRef(
+                            handle="blob://" + "1" * 64,
+                            digest="1" * 64,
+                            size=1,
+                            provenance="runtime-observation",
+                            retention_hint="run-lifetime",
+                            kind="observation",
+                            target=query.target,
+                            scope_digest="2" * 64,
+                            observed_at="2026-08-20T00:00:00Z",
+                        ),
+                    )
+
+                def execute(self, command, *, task_id, operation_id):
+                    self.executed = command
+                    return RunTurn(run_id="run-typed", state="running")
+
+            runtime = TypedRuntime()
+            gateway = AgentGateway(runtime)
+            receipt = gateway.observe(
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"kind": "capability", "names": ["ssh"]}
+                    ],
+                },
+                task_id="typed-observe",
+                operation_id="typed-observe-1",
+            )
+            turn = gateway.execute(
+                {"kind": "start", "target": "192.0.2.10"},
+                task_id="typed-execute",
+                operation_id="typed-execute-1",
+            )
+        finally:
+            sys.path.remove(str(RUNTIME_ROOT))
+
+        self.assertIsInstance(runtime.observed, ObservationQuery)
+        self.assertIsInstance(runtime.executed, StartRun)
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(turn["run_id"], "run-typed")
 
     def test_phase_and_terminal_derivation_have_canonical_owners(self) -> None:
         workflow_source = (

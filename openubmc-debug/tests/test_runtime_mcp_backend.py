@@ -69,10 +69,18 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         module = load_script("target_runtime_mcp")
         runtime = module._load_runtime_module()
         calls: list[str] = []
+        preflight_scopes: list[tuple[str, ...]] = []
 
-        def runner(name, _command, _environment, _timeout, **_kwargs):
+        def runner(name, command, _environment, _timeout, **_kwargs):
             calls.append(name)
-            if name == "preflight_start":
+            if name in {"preflight_start", "preflight_end"}:
+                preflight_scopes.append(
+                    tuple(
+                        command[index + 1]
+                        for index, item in enumerate(command[:-1])
+                        if item == "--check"
+                    )
+                )
                 return {
                     "name": name,
                     "ok": True,
@@ -87,6 +95,11 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                                 "dbus_env": True,
                                 "mdbctl": True,
                                 "busctl": False,
+                                **(
+                                    {"active_alarm_endpoint_verified": True}
+                                    if name == "preflight_end"
+                                    else {}
+                                ),
                             }
                         },
                     },
@@ -148,7 +161,9 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     operation_id="agent-observe-operation",
                 )
                 combined_calls = list(calls)
+                combined_scopes = list(preflight_scopes)
                 calls.clear()
+                preflight_scopes.clear()
                 mdb_only_receipt = service.call_exposed_tool(
                     "observe",
                     {
@@ -165,7 +180,9 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     operation_id="agent-observe-mdb-only-operation",
                 )
                 mdb_only_calls = list(calls)
+                mdb_only_scopes = list(preflight_scopes)
                 calls.clear()
+                preflight_scopes.clear()
                 capability_only_receipt = service.call_exposed_tool(
                     "observe",
                     {
@@ -182,8 +199,10 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     operation_id="agent-observe-capability-only-operation",
                 )
                 capability_only_calls = list(calls)
+                capability_only_scopes = list(preflight_scopes)
                 calls.clear()
-                assured_receipt = service.call_exposed_tool(
+                preflight_scopes.clear()
+                legacy_assurance_receipt = service.call_exposed_tool(
                     "observe",
                     {
                         "target": "192.0.2.30",
@@ -204,7 +223,84 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     task_id="agent-observe-assured",
                     operation_id="agent-observe-assured-operation",
                 )
-                assured_calls = list(calls)
+                legacy_assurance_calls = list(calls)
+                legacy_assurance_scopes = list(preflight_scopes)
+                calls.clear()
+                preflight_scopes.clear()
+                ssh_only_receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["ssh"],
+                            }
+                        ],
+                    },
+                    task_id="agent-observe-ssh-only",
+                    operation_id="agent-observe-ssh-only-operation",
+                )
+                ssh_only_calls = list(calls)
+                ssh_only_scopes = list(preflight_scopes)
+                calls.clear()
+                preflight_scopes.clear()
+                telnet_only_receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["telnet"],
+                            }
+                        ],
+                    },
+                    task_id="agent-observe-telnet-only",
+                    operation_id="agent-observe-telnet-only-operation",
+                )
+                telnet_only_calls = list(calls)
+                telnet_only_scopes = list(preflight_scopes)
+                calls.clear()
+                preflight_scopes.clear()
+                dbus_only_receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["dbus"],
+                            }
+                        ],
+                    },
+                    task_id="agent-observe-dbus-only",
+                    operation_id="agent-observe-dbus-only-operation",
+                )
+                dbus_only_calls = list(calls)
+                dbus_only_scopes = list(preflight_scopes)
+                calls.clear()
+                preflight_scopes.clear()
+                automatic_receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["alarms"],
+                            }
+                        ],
+                    },
+                    task_id="agent-observe-automatic-assurance",
+                    operation_id="agent-observe-automatic-assurance-operation",
+                )
+                automatic_calls = list(calls)
+                automatic_scopes = list(preflight_scopes)
                 case_ids = [
                     service.context_runtime.repository.case_for_task(task_id)
                     for task_id in (
@@ -212,21 +308,52 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                         "agent-observe-mdb-only",
                         "agent-observe-capability-only",
                         "agent-observe-assured",
+                        "agent-observe-ssh-only",
+                        "agent-observe-telnet-only",
+                        "agent-observe-dbus-only",
+                        "agent-observe-automatic-assurance",
                     )
                 ]
             finally:
                 service.close()
 
-        self.assertEqual(case_ids, [None, None, None, None])
+        self.assertEqual(
+            case_ids,
+            [None, None, None, None, None, None, None, None],
+        )
         self.assertEqual(
             set(combined_calls), {"preflight_start", "mdbctl", "mdbctl_2"}
         )
         self.assertEqual(len(combined_calls), 3)
         self.assertEqual(mdb_only_calls, ["preflight_start", "mdbctl"])
         self.assertEqual(capability_only_calls, ["preflight_start"])
+        self.assertEqual(legacy_assurance_calls, ["preflight_start", "mdbctl"])
+        self.assertEqual(ssh_only_calls, ["preflight_start"])
+        self.assertEqual(telnet_only_calls, ["preflight_start"])
+        self.assertEqual(dbus_only_calls, ["preflight_start"])
+        self.assertEqual(automatic_calls, ["preflight_start", "preflight_end"])
         self.assertEqual(
-            assured_calls,
-            ["preflight_start", "mdbctl", "preflight_end"],
+            combined_scopes,
+            [("BUSCTL", "DBUS_ENV", "MDBCTL", "SSH", "TELNET")],
+        )
+        self.assertEqual(mdb_only_scopes, [("MDBCTL", "SSH")])
+        self.assertEqual(
+            capability_only_scopes,
+            [("BUSCTL", "DBUS_ENV", "MDBCTL", "SSH", "TELNET")],
+        )
+        self.assertEqual(
+            legacy_assurance_scopes,
+            [("BUSCTL", "DBUS_ENV", "MDBCTL", "SSH")],
+        )
+        self.assertEqual(ssh_only_scopes, [("SSH",)])
+        self.assertEqual(telnet_only_scopes, [("TELNET",)])
+        self.assertEqual(dbus_only_scopes, [("DBUS_ENV", "SSH")])
+        self.assertEqual(
+            automatic_scopes,
+            [
+                ("BUSCTL", "DBUS_ENV", "SSH"),
+                ("BUSCTL", "DBUS_ENV", "SSH"),
+            ],
         )
         states = {
             item["name"]: item["status"]
@@ -244,8 +371,17 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertTrue(receipt["coverage"]["complete"])
         self.assertTrue(mdb_only_receipt["coverage"]["complete"])
         self.assertTrue(capability_only_receipt["coverage"]["complete"])
-        self.assertEqual(assured_receipt["assurance"], "assured")
-        self.assertTrue(assured_receipt["coverage"]["complete"])
+        self.assertNotIn("assurance", legacy_assurance_receipt)
+        self.assertTrue(legacy_assurance_receipt["coverage"]["complete"])
+        self.assertTrue(ssh_only_receipt["coverage"]["complete"])
+        self.assertTrue(telnet_only_receipt["coverage"]["complete"])
+        self.assertTrue(dbus_only_receipt["coverage"]["complete"])
+        self.assertEqual(
+            dbus_only_receipt["results"]["caps"]["values"],
+            [{"name": "dbus", "status": "available"}],
+        )
+        self.assertNotIn("assurance", automatic_receipt)
+        self.assertTrue(automatic_receipt["coverage"]["complete"])
 
     def test_workflow_argv_accepts_runtime_direct_passwords_without_legacy_projection(
         self,

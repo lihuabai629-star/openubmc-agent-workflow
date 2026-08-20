@@ -121,5 +121,39 @@ class WorkflowManifestValidationTests(unittest.TestCase):
                     validator.validate_manifest()
 
 
+class WorkflowStageReportingTests(unittest.TestCase):
+    def test_full_validation_labels_each_python_root_and_node_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for relative in (
+                "alpha/tests/test_alpha.py",
+                "beta/tests/test_beta.py",
+            ):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+            (root / "openubmc-kb-mcp").mkdir()
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                mock.patch.object(validator, "validate_manifest", return_value={}),
+                mock.patch.object(validator, "validate_release_metadata"),
+                mock.patch.object(validator, "run") as run,
+            ):
+                self.assertEqual(validator.main([]), 0)
+
+        self.assertEqual(
+            [call.kwargs["stage"] for call in run.call_args_list],
+            [
+                "Python compile",
+                "Node dependencies: openubmc-kb-mcp",
+                "Python tests: alpha/tests",
+                "Python tests: beta/tests",
+                "Node tests: openubmc-kb-mcp",
+                "Node syntax: openubmc-kb-mcp",
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

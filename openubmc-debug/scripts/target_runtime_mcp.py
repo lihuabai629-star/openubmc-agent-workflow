@@ -522,11 +522,22 @@ class DebugMcpBackend:
             raise ValueError("prior_observation is only valid for assured upgrade")
         credential_values = bounded.pop("_credential_values", None)
         minimum_target_epoch = bounded.pop("_minimum_target_epoch", 0)
-        wide_capabilities = any(
-            name not in {"ssh", "mdbctl"} for name in capability_names
-        )
-        bounded["mdb_only"] = not wide_capabilities
-        bounded["skip_telnet"] = "telnet" not in capability_names
+        preflight_checks: set[str] = set()
+        for name in capability_names:
+            if name == "ssh":
+                preflight_checks.add("SSH")
+            elif name == "telnet":
+                preflight_checks.add("TELNET")
+            elif name == "mdbctl":
+                preflight_checks.update({"SSH", "MDBCTL"})
+            elif name == "dbus":
+                preflight_checks.update({"SSH", "DBUS_ENV"})
+            elif name in {"busctl", "alarms"}:
+                preflight_checks.update({"SSH", "DBUS_ENV", "BUSCTL"})
+        if bounded.get("mdb_queries"):
+            preflight_checks.update({"SSH", "MDBCTL"})
+        bounded["mdb_only"] = preflight_checks <= {"SSH", "MDBCTL"}
+        bounded["skip_telnet"] = "TELNET" not in preflight_checks
         bounded["no_freshness"] = True
         bounded["no_source_correlation"] = True
         args = self._workflow_args(
@@ -535,6 +546,7 @@ class DebugMcpBackend:
             default_deadline=180,
             fast_snapshot=True,
         )
+        args.preflight_checks = sorted(preflight_checks)
         deadline = workflow_remote.WorkflowDeadline(args.deadline)
         environment = os.environ.copy()
         with task.lease_scope(

@@ -42,7 +42,7 @@ from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 from .redaction import is_secret_key, redact_text
 from .workflow import (
     DEFAULT_PHASE_REGISTRY,
-    DEFAULT_WORKFLOW_KERNEL,
+    DEFAULT_WORKFLOW_DEFINITIONS,
     WorkflowStepDefinition,
 )
 
@@ -61,6 +61,7 @@ MAX_PROJECTED_OPERATIONS = 128
 MAX_PROJECTED_PHASE_RECORDS = 32
 MAX_PROJECTED_EVIDENCE_REFS = 256
 MAX_OBSERVATION_SOURCE_BYTES = 8 * 1024 * 1024
+OBSERVATION_REUSE_MAX_AGE_SECONDS = 15 * 60
 CONTEXT_WORKFLOW_STEP_ARGUMENT = "_context_workflow_step"
 _DELIVERY_STRATEGIES = {"source-only", "live-patch", "build-upgrade"}
 _TASK_POLICY_FIELD = "author" + "ization"
@@ -682,6 +683,15 @@ def _empty_projection(case_id: str) -> dict[str, object]:
         "operation_count": 0,
         "phase_records": [],
         "phase_record_count": 0,
+        "run_gates": [],
+        "current_gate": {},
+        "gate_submissions": [],
+        "incidents": [],
+        "current_incident": {},
+        "run_outcome": {},
+        "start_command_id": "",
+        "start_input_digest": "",
+        "start_input": {},
         "evidence_refs": [],
         "evidence_ref_count": 0,
         "projection_truncated": False,
@@ -708,6 +718,9 @@ def project_case(
     workflow_step_attempts: dict[str, int] = {}
     workflow_phase_values: dict[str, dict[str, object]] = {}
     unknown_mutations: dict[str, dict[str, object]] = {}
+    run_gates: list[dict[str, object]] = []
+    gate_submissions: list[dict[str, object]] = []
+    incidents: list[dict[str, object]] = []
     for event in events:
         revision = int(event["revision"])
         projection["revision"] = revision
@@ -744,6 +757,9 @@ def project_case(
                     "workflow_definition": dict(
                         payload.get("workflow_definition", {})
                     ),
+                    "start_command_id": str(payload.get("start_command_id", "")),
+                    "start_input_digest": str(payload.get("start_input_digest", "")),
+                    "start_input": dict(payload.get("start_input", {})),
                     "workflow_cycle_id": str(
                         payload.get("workflow_cycle_id", "cycle-1")
                     ),
@@ -826,6 +842,8 @@ def project_case(
                     for key, value in workflow_step_attempts.items()
                     if ":phase:" in key
                 }
+                projection["current_gate"] = {}
+                projection["current_incident"] = {}
             projection["status"] = "open"
         elif kind == "WorkflowCycleStarted":
             previous_closeout = projection.get("closeout")
@@ -848,6 +866,8 @@ def project_case(
             workflow_step_states = {}
             workflow_step_attempts = {}
             workflow_phase_values = {}
+            projection["current_gate"] = {}
+            projection["current_incident"] = {}
             projection["closeout"] = {}
             projection["closeout_markdown"] = ""
             projection["closeout_bundle"] = None
@@ -890,6 +910,7 @@ def project_case(
                 for phase_type, value in workflow_phase_values.items()
                 if phase_type in active_phase_names
             }
+            projection["current_gate"] = {}
             projection["closeout"] = {}
             projection["closeout_markdown"] = ""
             projection["closeout_bundle"] = None
@@ -969,6 +990,8 @@ def project_case(
                 operation["status"] = str(payload["status"])
             if "next_actions" in payload:
                 projection["next_actions"] = list(payload["next_actions"])
+            if "case_status" in payload:
+                projection["status"] = str(payload["case_status"])
             phase = payload.get("phase_record")
             if isinstance(phase, Mapping):
                 phase_public = dict(phase)
@@ -1016,6 +1039,47 @@ def project_case(
                     workflow_phase_values[
                         str(phase_public.get("phase_type", ""))
                     ] = phase_public
+            else:
+                step_id = str(operation.get("workflow_step_id", ""))
+                cycle_id = str(operation.get("workflow_cycle_id", ""))
+                if step_id and cycle_id == str(
+                    projection.get("workflow_cycle_id", "")
+                ):
+                    workflow_step_states[step_id] = {
+                        "kind": str(
+                            operation.get("workflow_step_kind", "operation")
+                        ),
+                        "name": str(operation.get("operation", "")),
+                        "status": str(operation.get("status", "running")),
+                        "workflow_cycle_id": cycle_id,
+                        "target_version": int(
+                            operation.get("target_version", 0)
+                        ),
+                        "target_id": str(operation.get("target_id", "")),
+                        "operation_id": operation_id,
+                        "workflow_execution_id": str(
+                            operation.get("workflow_execution_id", "")
+                        ),
+                        "workflow_definition_id": str(
+                            operation.get("workflow_definition_id", "")
+                        ),
+                        "workflow_definition_version": int(
+                            operation.get("workflow_definition_version", 0)
+                        ),
+                        "workflow_input_fingerprint": str(
+                            operation.get("workflow_input_fingerprint", "")
+                        ),
+                        "workflow_attempt": int(
+                            operation.get("workflow_attempt", 0)
+                        ),
+                        "target_epoch": int(
+                            payload.get(
+                                "target_epoch",
+                                operation.get("workflow_target_epoch", 0),
+                            )
+                            or 0
+                        ),
+                    }
         elif kind == "OperationTerminal":
             operation = operations.setdefault(
                 operation_id,
@@ -1074,6 +1138,96 @@ def project_case(
             if "next_actions" in payload:
                 projection["next_actions"] = list(payload["next_actions"])
             projection["status"] = str(payload.get("case_status", "open"))
+        elif kind == "RunGateOpened":
+            raw_gate = payload.get("gate")
+            if isinstance(raw_gate, Mapping):
+                gate = dict(raw_gate)
+                gate["status"] = "open"
+                run_gates.append(gate)
+                projection["current_gate"] = gate
+                projection["status"] = "waiting_phase_record"
+        elif kind == "RunGateSubmitted":
+            gate_id = str(payload.get("gate_id", ""))
+            gate_version = int(payload.get("gate_version", 0))
+            for gate in reversed(run_gates):
+                if (
+                    str(gate.get("gate_id", "")) == gate_id
+                    and int(gate.get("gate_version", 0)) == gate_version
+                ):
+                    gate["status"] = "submitted"
+                    gate["submission_id"] = str(payload.get("submission_id", ""))
+                    break
+            gate_submissions.append(dict(payload))
+            current_gate = projection.get("current_gate")
+            if (
+                isinstance(current_gate, Mapping)
+                and str(current_gate.get("gate_id", "")) == gate_id
+                and int(current_gate.get("gate_version", 0)) == gate_version
+            ):
+                projection["current_gate"] = {}
+        elif kind == "RunCancelled":
+            gate_id = str(payload.get("gate_id", ""))
+            gate_version = int(payload.get("gate_version", 0))
+            for gate in reversed(run_gates):
+                if (
+                    str(gate.get("gate_id", "")) == gate_id
+                    and int(gate.get("gate_version", 0)) == gate_version
+                ):
+                    gate["status"] = "cancelled"
+                    gate["submission_id"] = str(
+                        payload.get("submission_id", "")
+                    )
+                    break
+            gate_submissions.append(dict(payload))
+            projection["current_gate"] = {}
+            projection["status"] = "cancelled"
+            projection["next_actions"] = []
+        elif kind == "RunIncidentRaised":
+            raw_incident = payload.get("incident")
+            if isinstance(raw_incident, Mapping):
+                incident = dict(raw_incident)
+                incident["status"] = "open"
+                incidents.append(incident)
+                projection["current_incident"] = incident
+                projection["status"] = "incident"
+        elif kind == "RunIncidentResolved":
+            incident_id = str(payload.get("incident_id", ""))
+            for incident in reversed(incidents):
+                if str(incident.get("incident_id", "")) == incident_id:
+                    incident["status"] = "resolved"
+                    break
+            current_incident = projection.get("current_incident")
+            if (
+                isinstance(current_incident, Mapping)
+                and str(current_incident.get("incident_id", "")) == incident_id
+            ):
+                projection["current_incident"] = {}
+                projection["status"] = "open"
+        elif kind == "RunOutcomeRecorded":
+            raw_outcome = payload.get("outcome")
+            if isinstance(raw_outcome, Mapping):
+                projection["run_outcome"] = dict(raw_outcome)
+                projection["current_gate"] = {}
+                projection["current_incident"] = {}
+                projection["status"] = "terminal"
+                projection["next_actions"] = []
+        elif kind == "RunVerificationDeferred":
+            step_id = str(payload.get("workflow_step_id", ""))
+            state = workflow_step_states.get(step_id)
+            if isinstance(state, Mapping):
+                workflow_step_states[step_id] = {
+                    **dict(state),
+                    "status": "pending_retry",
+                }
+            projection["status"] = "running"
+            projection["next_actions"] = [
+                str(
+                    payload.get(
+                        "next_action",
+                        "resume the Run to retry fresh verification",
+                    )
+                )
+            ]
         elif kind == "OperationReconciled":
             operation = operations.setdefault(
                 operation_id,
@@ -1174,6 +1328,9 @@ def project_case(
     projection["operation_count"] = operation_count
     projection["phase_records"] = phases
     projection["phase_record_count"] = phase_record_count
+    projection["run_gates"] = run_gates
+    projection["gate_submissions"] = gate_submissions
+    projection["incidents"] = incidents
     projection["evidence_refs"] = list(evidence_by_id.values())
     projection["evidence_ref_count"] = evidence_ref_count
     projection["projection_truncated"] = bool(
@@ -2300,7 +2457,7 @@ class ContextRuntime:
             for item in projection.get("evidence_refs", [])
             if isinstance(item, Mapping)
         ]
-        workflow_definition = DEFAULT_WORKFLOW_KERNEL.definition_for(projection)
+        workflow_definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(projection)
         capsule = {
             "schema": f"{CONTEXT_RUNTIME_SCHEMA}/capsule",
             "case_id": case_id,
@@ -2504,7 +2661,7 @@ class ContextRuntime:
             },
             frozen_at=self.clock(),
         )
-        revised_workflow = DEFAULT_WORKFLOW_KERNEL.registry.resolve(
+        revised_workflow = DEFAULT_WORKFLOW_DEFINITIONS.registry.resolve(
             intent=intent,
             entry_domain=_case_entry_domain(projection),
             entry_operation=str(projection.get("entry_operation", "")),
@@ -2592,6 +2749,7 @@ class ContextRuntime:
         arguments: Mapping[str, object],
         *,
         require_existing: bool = False,
+        create_only: bool = False,
     ) -> dict[str, object]:
         if "include_closeout_bundle" in arguments:
             _strict_bool(
@@ -2601,6 +2759,8 @@ class ContextRuntime:
             )
         existing = self._load(case_id)
         if existing is not None:
+            if create_only:
+                raise RevisionConflict(f"case {case_id} already exists")
             if arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True:
                 return existing
             supplied = {
@@ -2673,7 +2833,7 @@ class ContextRuntime:
                     frozen_at=self.clock(),
                 ).to_public_dict()
                 payload["workflow_definition"] = (
-                    DEFAULT_WORKFLOW_KERNEL.registry.resolve(
+                    DEFAULT_WORKFLOW_DEFINITIONS.registry.resolve(
                         intent=str(revised_arguments["intent"]),
                         entry_domain=str(
                             payload.get(
@@ -2804,7 +2964,7 @@ class ContextRuntime:
             authorized_exceptions=opened_arguments.get("authorized_exceptions"),
             allow_insecure_tls=allow_insecure_tls,
         )
-        workflow_definition = DEFAULT_WORKFLOW_KERNEL.registry.resolve(
+        workflow_definition = DEFAULT_WORKFLOW_DEFINITIONS.registry.resolve(
             intent=str(opened_arguments.get("intent", "diagnosis-only")),
             entry_domain=str(opened_arguments.get("entry_domain", "")),
             entry_operation=str(
@@ -2855,9 +3015,20 @@ class ContextRuntime:
                             "idempotency_key",
                             "deadline",
                         }
+                        and not str(key).startswith("_")
                     }
                 ),
+                "start_command_id": str(
+                    opened_arguments.get("_start_command_id", "")
+                ),
+                "start_input_digest": str(
+                    opened_arguments.get("_start_input_digest", "")
+                ),
+                "start_input": _sanitize_runtime_inputs(
+                    opened_arguments.get("_start_input", {})
+                ),
             },
+            str(opened_arguments.get("_start_command_id", "")),
         )
         return self._cache(
             self.repository.commit(case_id, expected_revision=0, events=(event,))
@@ -3735,7 +3906,7 @@ class ContextRuntime:
                 )
             workflow_step_id = str(workflow_metadata["workflow_step_id"])
             if workflow_step_id and not workflow_metadata["workflow_execution_id"]:
-                definition = DEFAULT_WORKFLOW_KERNEL.definition_for(projection)
+                definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(projection)
                 step_definition = next(
                     (
                         step
@@ -3765,7 +3936,7 @@ class ContextRuntime:
                             target_id=execution_target_id,
                         )
                     )
-                    identity = DEFAULT_WORKFLOW_KERNEL.step_identity(
+                    identity = DEFAULT_WORKFLOW_DEFINITIONS.step_identity(
                         projection,
                         step=step_definition,
                         attempt=attempt,
@@ -4029,14 +4200,22 @@ class ContextRuntime:
         )
         pending.append(
             PendingCaseEvent(
-                "OperationReconciled" if reconciling else "OperationTerminal",
+                (
+                    "OperationProgressed"
+                    if operation_status == "running"
+                    else "OperationReconciled"
+                    if reconciling
+                    else "OperationTerminal"
+                ),
                 {
                     "status": operation_status,
                     "summary": redact_text(
                         _summary_for(descriptor.name, value)
                     ),
                     "next_actions": _next_actions(value),
-                    "case_status": case_status,
+                    "case_status": (
+                        "running" if operation_status == "running" else case_status
+                    ),
                     "target_epoch": self._observed_target_epoch(
                         value,
                         target_id=execution_target_id,
@@ -4116,6 +4295,9 @@ class ContextRuntime:
             raise MutationOutcomeUnknown(
                 "mutation returned without a terminal journal stage"
             )
+        if operation_status == "running":
+            self.repository.abandon_idempotency(case_id, idempotency_key)
+            return ContextToolResult(value, envelope)
         self.repository.complete_idempotency(case_id, idempotency_key, receipt)
         return ContextToolResult(value, envelope)
 
@@ -4329,6 +4511,15 @@ class ContextRuntime:
             "source_revision": str(arguments.get("source_revision", "")).strip(),
             "summary": str(arguments.get("summary", "")).strip(),
             "recorded_at": self.clock(),
+            "gate_id": str(arguments.get("gate_id", "")).strip(),
+            "gate_version": arguments.get("gate_version", 0),
+            "gate_schema_digest": str(
+                arguments.get("gate_schema_digest", "")
+            ).strip(),
+            "submission_id": str(arguments.get("submission_id", "")).strip(),
+            "submission_digest": str(
+                arguments.get("submission_digest", "")
+            ).strip(),
         }
         if status == "completed" and not record["source_revision"]:
             raise ValueError("source_revision is required")
@@ -4385,6 +4576,10 @@ class ContextRuntime:
                     "source_delivery": source_delivery,
                     "known_gaps": list(known_gaps),
                     "artifact_path": str(arguments.get("artifact_path", "")),
+                    "artifact_sha256": str(
+                        arguments.get("artifact_sha256", "")
+                    ).strip().lower(),
+                    "artifact_ref": _sanitize(arguments.get("artifact_ref", {})),
                     "remote_path": str(arguments.get("remote_path", "")),
                     "restart_scope": str(arguments.get("restart_scope", "none")),
                 }
@@ -4430,6 +4625,7 @@ class ContextRuntime:
                 {
                     "artifact_path": artifact_path,
                     "artifact_sha256": artifact_sha256,
+                    "artifact_ref": _sanitize(arguments.get("artifact_ref", {})),
                     "product_version": product_version,
                     "component_versions": _sanitize(component_versions),
                     "build_commands": list(build_commands),
@@ -4544,7 +4740,7 @@ class ContextRuntime:
             kind="phase",
             step_id=step_id,
         ) + 1
-        definition = DEFAULT_WORKFLOW_KERNEL.definition_for(projection)
+        definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(projection)
         step_definition = next(
             (step for step in definition.steps if step.step_id == step_id),
             None,
@@ -4561,7 +4757,7 @@ class ContextRuntime:
         elif step_definition.kind != "phase":
             self.repository.abandon_idempotency(case_id, key)
             raise ValueError(f"workflow step {step_id} is not a phase")
-        phase_identity = DEFAULT_WORKFLOW_KERNEL.step_identity(
+        phase_identity = DEFAULT_WORKFLOW_DEFINITIONS.step_identity(
             projection,
             step=step_definition,
             attempt=phase_attempt,
@@ -4629,6 +4825,23 @@ class ContextRuntime:
                 arguments=arguments,
             )
             events: list[PendingCaseEvent] = []
+            if record["gate_id"]:
+                events.append(
+                    PendingCaseEvent(
+                        "RunGateSubmitted",
+                        {
+                            "gate_id": record["gate_id"],
+                            "gate_version": record["gate_version"],
+                            "schema_digest": record["gate_schema_digest"],
+                            "submission_id": record["submission_id"],
+                            "submission_digest": record["submission_digest"],
+                            "status": record["status"],
+                            "summary": record["summary"],
+                            "recorded_at": record["recorded_at"],
+                        },
+                        operation_id,
+                    )
+                )
             if status != "running":
                 events.extend(
                     PendingCaseEvent(
@@ -4910,10 +5123,46 @@ class ContextRuntime:
     ) -> dict[str, object]:
         """Persist redacted observation evidence without opening a Case."""
 
+        result = raw.get("result")
+        result = result if isinstance(result, Mapping) else {}
+        runtime = result.get("runtime")
+        runtime = runtime if isinstance(runtime, Mapping) else {}
+        runtime_status = runtime.get("status")
+        runtime_status = runtime_status if isinstance(runtime_status, Mapping) else {}
+        raw_targets = runtime_status.get("targets", [])
+        first_target = (
+            raw_targets[0]
+            if isinstance(raw_targets, list)
+            and raw_targets
+            and isinstance(raw_targets[0], Mapping)
+            else {}
+        )
+        target_detail = first_target.get("target")
+        target_detail = target_detail if isinstance(target_detail, Mapping) else {}
+        epochs = first_target.get("epochs")
+        epochs = epochs if isinstance(epochs, Mapping) else {}
+        identity = first_target.get("identity")
+        identity = identity if isinstance(identity, Mapping) else {}
+        observed_at = str(
+            raw.get("observed_at")
+            or result.get("completed_at")
+            or result.get("started_at")
+            or ""
+        ).strip()
+        persisted_at = self.clock()
+        scope_digest = _fingerprint(_sanitize(scope))
         document = {
             "schema": OBSERVATION_SOURCE_SCHEMA,
             "scope": _sanitize(scope),
+            "scope_digest": scope_digest,
             "assurance": str(assurance),
+            "target": str(scope.get("target", "")),
+            "observed_at": observed_at,
+            "persisted_at": persisted_at,
+            "fresh_until": persisted_at + OBSERVATION_REUSE_MAX_AGE_SECONDS,
+            "target_fingerprint": str(target_detail.get("fingerprint", "")),
+            "target_epoch": int(epochs.get("target_epoch", 0) or 0),
+            "target_identity": _sanitize(identity),
             "raw": _sanitize(raw),
         }
         body = _json_bytes(document)
@@ -4925,6 +5174,16 @@ class ContextRuntime:
             "blob_id": blob_id,
             "sha256": blob_id,
             "uri": f"blob://{blob_id}",
+            "byte_count": len(body),
+            "kind": "observation",
+            "provenance": "runtime-observation",
+            "retention_hint": "run-lifetime",
+            "target": document["target"],
+            "scope_digest": scope_digest,
+            "observed_at": observed_at,
+            "fresh_until": document["fresh_until"],
+            "target_fingerprint": document["target_fingerprint"],
+            "target_epoch": document["target_epoch"],
         }
 
     def load_observation(
@@ -4939,11 +5198,20 @@ class ContextRuntime:
             or any(character not in "0123456789abcdef" for character in blob_id)
             or source.get("sha256") != blob_id
             or source.get("uri") != f"blob://{blob_id}"
+            or source.get("kind") != "observation"
+            or source.get("provenance") != "runtime-observation"
         ):
             raise EvidenceUnavailable("invalid observation source reference")
         body = self.blob_repository.read(blob_id, offset=0, limit=-1)
         if len(body) > MAX_OBSERVATION_SOURCE_BYTES:
             raise EvidenceUnavailable("observation source exceeds the persistence limit")
+        byte_count = source.get("byte_count")
+        if (
+            isinstance(byte_count, bool)
+            or not isinstance(byte_count, int)
+            or byte_count != len(body)
+        ):
+            raise EvidenceUnavailable("observation source size is invalid")
         value = json.loads(body.decode("utf-8"))
         if not isinstance(value, Mapping) or value.get("schema") != OBSERVATION_SOURCE_SCHEMA:
             raise EvidenceUnavailable("observation source schema is invalid")
@@ -4951,6 +5219,21 @@ class ContextRuntime:
         raw = value.get("raw")
         if not isinstance(scope, Mapping) or not isinstance(raw, Mapping):
             raise EvidenceUnavailable("observation source is incomplete")
+        expected_metadata = {
+            "target": str(value.get("target", "")),
+            "scope_digest": str(value.get("scope_digest", "")),
+            "observed_at": str(value.get("observed_at", "")),
+            "target_fingerprint": str(value.get("target_fingerprint", "")),
+            "target_epoch": int(value.get("target_epoch", 0) or 0),
+        }
+        if expected_metadata["scope_digest"] != _fingerprint(_sanitize(scope)):
+            raise EvidenceUnavailable("observation source scope digest is invalid")
+        for name, expected in expected_metadata.items():
+            supplied = source.get(name, "" if isinstance(expected, str) else 0)
+            if supplied != expected:
+                raise EvidenceUnavailable(
+                    f"observation source {name} does not match persisted metadata"
+                )
         return dict(value)
 
     def restore_domain_arguments(
@@ -4958,6 +5241,8 @@ class ContextRuntime:
         task_id: str,
         operation: str,
         arguments: Mapping[str, object],
+        *,
+        force: bool = False,
     ) -> dict[str, object]:
         """Recover Case-owned domain inputs before a new task opens its backend."""
 
@@ -4968,7 +5253,7 @@ class ContextRuntime:
             and supplied_ip.strip()
         ) or "targets" in restored:
             return restored
-        if self.repository.case_for_task(task_id):
+        if self.repository.case_for_task(task_id) and not force:
             return restored
         case_id = self._case_id(task_id, restored, bind=False)
         projection = self._load(case_id)
@@ -4989,7 +5274,7 @@ class ContextRuntime:
     ) -> list[tuple[str, str, str]]:
         return [
             (step.kind, step.name, step.step_id)
-            for step in DEFAULT_WORKFLOW_KERNEL.definition_for(projection).steps
+            for step in DEFAULT_WORKFLOW_DEFINITIONS.definition_for(projection).steps
         ]
 
     @classmethod
@@ -5315,6 +5600,7 @@ class ContextRuntime:
                 return classified
         explicit = str(value.get("status", "")).strip().lower()
         if explicit in {
+            "running",
             "partial",
             "failed",
             "cancelled",
@@ -5333,7 +5619,7 @@ class ContextRuntime:
     def _workflow_plan(projection: Mapping[str, object]) -> list[tuple[str, str]]:
         return [
             (step.kind, step.name)
-            for step in DEFAULT_WORKFLOW_KERNEL.definition_for(projection).steps
+            for step in DEFAULT_WORKFLOW_DEFINITIONS.definition_for(projection).steps
         ]
 
     @staticmethod
@@ -5428,7 +5714,7 @@ class ContextRuntime:
             )
         raw_plan = projection.get("acceptance_plan", {})
         plan = raw_plan if isinstance(raw_plan, Mapping) else {}
-        return DEFAULT_WORKFLOW_KERNEL.semantic_cursor(
+        return DEFAULT_WORKFLOW_DEFINITIONS.semantic_cursor(
             projection,
             nodes=nodes,
             acceptance_plan_id=str(plan.get("plan_id", "")),
@@ -5622,12 +5908,16 @@ class ContextRuntime:
             developer = completed_phases.get("developer.change", {})
             for source, destination in (
                 ("artifact_path", "local_path"),
+                ("artifact_sha256", "artifact_sha256"),
                 ("remote_path", "remote_path"),
                 ("restart_scope", "restart_scope"),
                 ("verification_plan", "verification_checks"),
             ):
                 if source in developer and destination not in arguments:
-                    arguments[destination] = developer[source]
+                    value = developer[source]
+                    if source == "artifact_sha256" and not str(value).strip():
+                        continue
+                    arguments[destination] = value
         if operation == "upgrade_run":
             build = completed_phases.get("build.artifact", {})
             for name in ("artifact_path", "artifact_sha256", "product_version"):
@@ -5676,6 +5966,145 @@ class ContextRuntime:
                 ),
             }
         )
+
+    def prepare_semantic_run_operation(
+        self,
+        projection: Mapping[str, object],
+        *,
+        operation: str,
+        workflow_step_id: str,
+    ) -> tuple[dict[str, object], str]:
+        """Prepare one exact operation selected by RunEngine, without advancing."""
+
+        continuation = self._continuation_for(projection)
+        if str(continuation.get("required_operation", "")) != operation:
+            raise ValueError("operation is not the current Run continuation")
+        if str(continuation.get("required_workflow_step_id", "")) != workflow_step_id:
+            raise ValueError("workflow step is not the current Run continuation")
+        completed_phases = self._completed_phases(projection)
+        domain_arguments = self._domain_arguments(
+            projection, operation, completed_phases
+        )
+        required_target_id = self._workflow_step_target_id(
+            projection,
+            kind="operation",
+            name=operation,
+            step_id=workflow_step_id,
+        )
+        if required_target_id:
+            domain_arguments["target_id"] = required_target_id
+            for target in projection.get("targets", []):
+                if (
+                    isinstance(target, Mapping)
+                    and str(target.get("target_id", "")) == required_target_id
+                    and str(target.get("address", "")).strip()
+                ):
+                    domain_arguments["ip"] = str(target["address"])
+                    break
+        target_epoch_floor = self._target_epoch_floor(
+            projection,
+            target_id=(
+                self._preferred_target_id(projection, domain_arguments)
+                if operation in {"live_patch_run", "upgrade_run", "debug_collect"}
+                else self._selected_target_id(projection, domain_arguments)
+            ),
+        )
+        if operation in {"live_patch_run", "upgrade_run"}:
+            domain_arguments["_minimum_target_epoch"] = target_epoch_floor
+        if operation == "debug_collect" and target_epoch_floor:
+            domain_arguments["_minimum_target_epoch"] = target_epoch_floor
+        cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
+        target_version = int(projection.get("target_version", 1))
+        workflow_definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(
+            projection
+        )
+        step_definition = next(
+            step
+            for step in workflow_definition.steps
+            if step.step_id == workflow_step_id
+        )
+        workflow_input_fingerprint = self._workflow_operation_input_fingerprint(
+            projection,
+            operation,
+            target_id=required_target_id,
+        )
+        resumable_operation = next(
+            (
+                item
+                for item in reversed(list(projection.get("operations", [])))
+                if isinstance(item, Mapping)
+                and str(item.get("operation", "")) == operation
+                and str(item.get("workflow_cycle_id", "")) == cycle_id
+                and str(item.get("workflow_step_id", "")) == workflow_step_id
+                and int(item.get("target_version", 0)) == target_version
+                and str(item.get("target_id", "")) == required_target_id
+                and str(item.get("workflow_definition_fingerprint", ""))
+                == workflow_definition.fingerprint
+                and str(item.get("workflow_input_fingerprint", ""))
+                == workflow_input_fingerprint
+                and str(item.get("status", "")) in {"accepted", "running"}
+            ),
+            None,
+        )
+        if isinstance(resumable_operation, Mapping):
+            derived_operation_id = str(
+                resumable_operation.get("operation_id", "")
+            )
+            resumed_request_fingerprint = str(
+                resumable_operation.get("request_fingerprint", "")
+            )
+            if resumed_request_fingerprint:
+                domain_arguments["_workflow_request_fingerprint"] = (
+                    resumed_request_fingerprint
+                )
+            attempt = int(
+                resumable_operation.get(
+                    "workflow_attempt",
+                    self._workflow_attempt(
+                        projection,
+                        kind="operation",
+                        step_id=workflow_step_id,
+                    ),
+                )
+            )
+        else:
+            attempt = self._workflow_attempt(
+                projection,
+                kind="operation",
+                step_id=workflow_step_id,
+            ) + 1
+        step_identity = DEFAULT_WORKFLOW_DEFINITIONS.step_identity(
+            projection,
+            step=step_definition,
+            attempt=attempt,
+            input_fingerprint=workflow_input_fingerprint,
+            target_epoch=target_epoch_floor,
+        )
+        if not isinstance(resumable_operation, Mapping):
+            derived_operation_id = (
+                "op-run-" + step_identity.execution_id[5:29]
+            )
+        domain_arguments["idempotency_key"] = derived_operation_id
+        domain_arguments["_workflow_cycle_id"] = cycle_id
+        domain_arguments["_workflow_step_id"] = workflow_step_id
+        domain_arguments["_workflow_step_kind"] = "operation"
+        domain_arguments["_workflow_target_version"] = target_version
+        domain_arguments["_workflow_definition_id"] = (
+            step_identity.workflow_definition_id
+        )
+        domain_arguments["_workflow_definition_version"] = (
+            step_identity.workflow_version
+        )
+        domain_arguments["_workflow_definition_fingerprint"] = (
+            step_identity.workflow_fingerprint
+        )
+        domain_arguments["_workflow_execution_id"] = step_identity.execution_id
+        domain_arguments["_workflow_attempt"] = attempt
+        domain_arguments["_workflow_input_fingerprint"] = (
+            workflow_input_fingerprint
+        )
+        domain_arguments["_workflow_target_epoch"] = target_epoch_floor
+        return domain_arguments, derived_operation_id
 
     def workflow_advance(
         self,
@@ -5964,7 +6393,7 @@ class ContextRuntime:
                     domain_arguments["_minimum_target_epoch"] = target_epoch_floor
                 cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
                 target_version = int(projection.get("target_version", 1))
-                workflow_definition = DEFAULT_WORKFLOW_KERNEL.definition_for(
+                workflow_definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(
                     projection
                 )
                 step_definition = next(
@@ -5995,8 +6424,6 @@ class ContextRuntime:
                         == workflow_definition.fingerprint
                         and str(item.get("workflow_input_fingerprint", ""))
                         == workflow_input_fingerprint
-                        and int(item.get("workflow_target_epoch", -1))
-                        == target_epoch_floor
                         and str(item.get("status", "")) in {"accepted", "running"}
                     ),
                     None,
@@ -6028,7 +6455,7 @@ class ContextRuntime:
                         kind=kind,
                         step_id=step_id,
                     ) + 1
-                step_identity = DEFAULT_WORKFLOW_KERNEL.step_identity(
+                step_identity = DEFAULT_WORKFLOW_DEFINITIONS.step_identity(
                     projection,
                     step=step_definition,
                     attempt=attempt,
@@ -6304,6 +6731,471 @@ class ContextRuntime:
             domain_invoker=domain_invoker,
             _require_existing_case=True,
         )
+
+    def open_semantic_run(
+        self,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        run_id: str,
+        start_command_id: str,
+        start_input_digest: str,
+        start_input: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Open a pinned Run without executing or selecting any workflow step."""
+
+        existing = self.reattach_semantic_run(
+            run_id,
+            task_id=task_id,
+            start_command_id=start_command_id,
+            start_input_digest=start_input_digest,
+        )
+        if existing is not None:
+            return existing
+        opened_arguments = {
+            **dict(arguments),
+            "case_id": run_id,
+            "_start_command_id": start_command_id,
+            "_start_input_digest": start_input_digest,
+            "_start_input": dict(start_input),
+        }
+        try:
+            projection = self._open_case(
+                run_id,
+                opened_arguments,
+                create_only=True,
+            )
+        except RevisionConflict:
+            concurrent = self.reattach_semantic_run(
+                run_id,
+                task_id=task_id,
+                start_command_id=start_command_id,
+                start_input_digest=start_input_digest,
+            )
+            if concurrent is None:
+                raise
+            return concurrent
+        self.repository.bind_task(task_id, run_id)
+        return self._cache(projection)
+
+    def reattach_semantic_run(
+        self,
+        run_id: str,
+        *,
+        task_id: str,
+        start_command_id: str,
+        start_input_digest: str,
+    ) -> dict[str, object] | None:
+        projection = self._load(run_id)
+        if projection is None:
+            return None
+        if (
+            str(projection.get("start_command_id", "")) != start_command_id
+            or str(projection.get("start_input_digest", "")) != start_input_digest
+        ):
+            raise IdempotencyConflict(
+                "StartRun command identity is already bound to different input"
+            )
+        self.repository.bind_task(task_id, run_id)
+        return self._cache(projection)
+
+    def persist_run_gate(
+        self,
+        run_id: str,
+        gate: Mapping[str, object],
+        *,
+        operation_id: str,
+    ) -> dict[str, object]:
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        current = projection.get("current_gate")
+        if isinstance(current, Mapping) and current:
+            comparable = {
+                key: current.get(key)
+                for key in (
+                    "gate_id",
+                    "gate_version",
+                    "schema_digest",
+                    "workflow_cycle_id",
+                    "workflow_step_id",
+                )
+            }
+            expected = {key: gate.get(key) for key in comparable}
+            if comparable != expected:
+                raise RevisionConflict("Run already has a different open Gate")
+            return dict(projection)
+        existing = next(
+            (
+                item
+                for item in reversed(list(projection.get("run_gates", [])))
+                if isinstance(item, Mapping)
+                and item.get("gate_id") == gate.get("gate_id")
+                and item.get("gate_version") == gate.get("gate_version")
+            ),
+            None,
+        )
+        if isinstance(existing, Mapping):
+            raise CaseClosed("a submitted Gate cannot be reopened")
+        try:
+            updated = self.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "RunGateOpened",
+                        {"gate": _sanitize(dict(gate))},
+                        operation_id,
+                    ),
+                ),
+            )
+        except RevisionConflict:
+            current_projection = self.repository.load(run_id)
+            concurrent = (
+                current_projection.get("current_gate")
+                if isinstance(current_projection, Mapping)
+                else None
+            )
+            comparable = (
+                {
+                    key: concurrent.get(key)
+                    for key in (
+                        "gate_id",
+                        "gate_version",
+                        "schema_digest",
+                        "workflow_cycle_id",
+                        "workflow_step_id",
+                    )
+                }
+                if isinstance(concurrent, Mapping)
+                else {}
+            )
+            expected = {key: gate.get(key) for key in comparable}
+            if (
+                not isinstance(current_projection, Mapping)
+                or not isinstance(concurrent, Mapping)
+                or not concurrent
+                or comparable != expected
+            ):
+                raise
+            updated = dict(current_projection)
+        return self._cache(updated)
+
+    def record_gate_submission(
+        self,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> ContextToolResult:
+        """Persist a RunEngine-authorized Gate submission through the event store."""
+
+        return self.phase_record(
+            self.catalog.require("phase_record"),
+            arguments,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+
+    def record_run_cancelled(
+        self,
+        run_id: str,
+        *,
+        gate: Mapping[str, object],
+        submission_id: str,
+        submission_digest: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        payload = {
+            "gate_id": str(gate.get("gate_id", "")),
+            "gate_version": int(gate.get("gate_version", 0)),
+            "schema_digest": str(gate.get("schema_digest", "")),
+            "submission_id": submission_id,
+            "submission_digest": submission_digest,
+            "status": "cancelled",
+            "summary": "run cancelled at the current gate",
+            "recorded_at": self.clock(),
+        }
+        prior = next(
+            (
+                item
+                for item in reversed(
+                    list(projection.get("gate_submissions", []))
+                )
+                if isinstance(item, Mapping)
+                and str(item.get("submission_id", "")) == submission_id
+            ),
+            None,
+        )
+        if isinstance(prior, Mapping):
+            comparable = {
+                name: str(prior.get(name, ""))
+                for name in (
+                    "gate_id",
+                    "schema_digest",
+                    "submission_digest",
+                    "status",
+                )
+            }
+            expected = {name: str(payload[name]) for name in comparable}
+            if (
+                comparable != expected
+                or int(prior.get("gate_version", 0))
+                != payload["gate_version"]
+            ):
+                raise IdempotencyConflict(
+                    "cancellation submission identity is already bound differently"
+                )
+            return dict(projection)
+        try:
+            updated = self.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(PendingCaseEvent("RunCancelled", payload, operation_id),),
+            )
+        except RevisionConflict:
+            current = self.repository.load(run_id)
+            concurrent = next(
+                (
+                    item
+                    for item in reversed(
+                        list(
+                            current.get("gate_submissions", [])
+                            if isinstance(current, Mapping)
+                            else []
+                        )
+                    )
+                    if isinstance(item, Mapping)
+                    and str(item.get("submission_id", "")) == submission_id
+                ),
+                None,
+            )
+            if not isinstance(current, Mapping) or not isinstance(
+                concurrent, Mapping
+            ):
+                raise
+            if (
+                str(concurrent.get("gate_id", "")) != payload["gate_id"]
+                or int(concurrent.get("gate_version", 0))
+                != payload["gate_version"]
+                or str(concurrent.get("schema_digest", ""))
+                != payload["schema_digest"]
+                or str(concurrent.get("submission_digest", ""))
+                != payload["submission_digest"]
+                or str(concurrent.get("status", "")) != "cancelled"
+            ):
+                raise
+            updated = dict(current)
+        return self._cache(updated)
+
+    def record_run_incident(
+        self,
+        run_id: str,
+        incident: Mapping[str, object],
+        *,
+        operation_id: str,
+    ) -> dict[str, object]:
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        current = projection.get("current_incident")
+        if (
+            isinstance(current, Mapping)
+            and current.get("incident_id") == incident.get("incident_id")
+        ):
+            return dict(projection)
+        updated = self.repository.commit(
+            run_id,
+            expected_revision=int(projection["revision"]),
+            events=(
+                PendingCaseEvent(
+                    "RunIncidentRaised",
+                    {"incident": _sanitize(dict(incident))},
+                    operation_id,
+                ),
+            ),
+        )
+        return self._cache(updated)
+
+    def resolve_run_incident(
+        self,
+        run_id: str,
+        incident_id: str,
+        *,
+        operation_id: str,
+    ) -> dict[str, object]:
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        current = projection.get("current_incident")
+        if not isinstance(current, Mapping) or not current:
+            return dict(projection)
+        if str(current.get("incident_id", "")) != incident_id:
+            raise RevisionConflict("a different Incident is currently open")
+        updated = self.repository.commit(
+            run_id,
+            expected_revision=int(projection["revision"]),
+            events=(
+                PendingCaseEvent(
+                    "RunIncidentResolved",
+                    {"incident_id": incident_id},
+                    operation_id,
+                ),
+            ),
+        )
+        return self._cache(updated)
+
+    def record_run_outcome(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        summary: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        normalized = status.strip().lower()
+        if normalized not in {"completed", "failed", "cancelled"}:
+            raise ValueError("Run Outcome status must be completed, failed, or cancelled")
+        existing = projection.get("run_outcome")
+        if isinstance(existing, Mapping) and existing:
+            effective_status = normalized
+            effective_summary = summary.strip()
+            closeout = projection.get("closeout")
+            if isinstance(closeout, Mapping) and closeout:
+                if (
+                    normalized == "completed"
+                    and str(closeout.get("closure_status", ""))
+                    not in {"verified", "completed_in_scope"}
+                ):
+                    effective_status = "failed"
+                    effective_summary = str(closeout.get("summary", ""))
+                elif not effective_summary:
+                    effective_summary = str(closeout.get("summary", ""))
+            if str(existing.get("status", "")) != effective_status:
+                raise RevisionConflict("Run already has a different terminal Outcome")
+            if (
+                effective_summary
+                and str(existing.get("summary", "")) != effective_summary
+            ):
+                raise RevisionConflict("Run already has a different Outcome summary")
+            return dict(projection)
+        (
+            projection,
+            closeout,
+            _markdown,
+            _bundle,
+        ) = self._record_closeout(
+            projection,
+            terminal_status=normalized,
+            include_bundle=False,
+            operation_id=f"{operation_id}-closeout",
+        )
+        effective_status = normalized
+        if (
+            normalized == "completed"
+            and str(closeout.get("closure_status", ""))
+            not in {"verified", "completed_in_scope"}
+        ):
+            effective_status = "failed"
+        outcome = {
+            "status": effective_status,
+            "summary": (
+                str(closeout.get("summary", ""))
+                if effective_status != normalized
+                else summary.strip() or str(closeout.get("summary", ""))
+            ),
+            "acceptance": closeout.get("checks", closeout.get("acceptance", [])),
+            "closeout_fingerprint": str(closeout.get("fingerprint", "")),
+        }
+        outcome["outcome_id"] = "outcome-" + _fingerprint(
+            {"run_id": run_id, **outcome}
+        )[:32]
+        try:
+            updated = self.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "RunOutcomeRecorded",
+                        {"outcome": outcome},
+                        operation_id,
+                    ),
+                ),
+            )
+        except RevisionConflict:
+            current = self.repository.load(run_id)
+            concurrent = (
+                current.get("run_outcome")
+                if isinstance(current, Mapping)
+                else None
+            )
+            if (
+                not isinstance(current, Mapping)
+                or not isinstance(concurrent, Mapping)
+                or not concurrent
+            ):
+                raise
+            if str(concurrent.get("status", "")) != outcome["status"]:
+                raise RevisionConflict(
+                    "Run already has a different terminal Outcome"
+                )
+            if str(concurrent.get("summary", "")) != outcome["summary"]:
+                raise RevisionConflict("Run already has a different Outcome summary")
+            if (
+                concurrent.get("acceptance") != outcome["acceptance"]
+                or str(concurrent.get("closeout_fingerprint", ""))
+                != outcome["closeout_fingerprint"]
+            ):
+                raise RevisionConflict(
+                    "Run already has a different Outcome acceptance"
+                )
+            updated = dict(current)
+        return self._cache(updated)
+
+    def defer_run_verification(
+        self,
+        run_id: str,
+        *,
+        workflow_step_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        if not workflow_step_id:
+            raise ValueError("verification workflow_step_id is required")
+        states = projection.get("workflow_step_states", {})
+        state = states.get(workflow_step_id) if isinstance(states, Mapping) else None
+        if not isinstance(state, Mapping) or str(state.get("name", "")) != "debug_collect":
+            raise ValueError("verification step is not present in the current Run")
+        step_status = str(state.get("status", ""))
+        if step_status == "pending_retry":
+            return dict(projection)
+        if step_status != "failed":
+            raise ValueError("verification step is not eligible for retry")
+        updated = self.repository.commit(
+            run_id,
+            expected_revision=int(projection["revision"]),
+            events=(
+                PendingCaseEvent(
+                    "RunVerificationDeferred",
+                    {
+                        "workflow_step_id": workflow_step_id,
+                        "next_action": (
+                            "resume the Run to retry fresh target verification"
+                        ),
+                    },
+                    operation_id,
+                ),
+            ),
+        )
+        return self._cache(updated)
 
     def read_case(self, case_id: str) -> dict[str, object]:
         projection = self._load(case_id, touch=True)

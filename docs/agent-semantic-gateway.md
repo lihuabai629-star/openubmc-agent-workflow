@@ -15,10 +15,11 @@ AgentGateway
   └─ execute(Action) -> Turn
   │
 Runtime Core
-  ├─ WorkflowKernel and Run ledger
-  ├─ Target leases and domain adapters
-  ├─ EvidenceStore and Acceptance
-  └─ MutationJournal, reconcile, and rollback
+  ├─ ObservationEngine
+  ├─ RunEngine + WorkflowDefinitions
+  ├─ DomainExecutor + target leases
+  ├─ Evidence/Artifact storage and Acceptance
+  └─ MutationJournal, automatic reconcile, and rollback
 
 Operator / CI profile
   ├─ raw Evidence and Case inspection
@@ -27,9 +28,11 @@ Operator / CI profile
   └─ lifecycle and Runtime status
 ```
 
-The AgentGateway is the deep Module. MCP and CLI are transport Adapters at the same seam. Runtime
-implementation concepts such as Case revision, workflow attempts, phase records, evidence offsets,
-and continuation operation names are not part of the Agent Interface.
+The AgentGateway is a bounded decode and projection Adapter. It depends on a two-method typed
+`SemanticRuntimePort`; orchestration, recovery, and terminal Outcome formation stay in the Runtime
+Core. MCP and CLI are transport Adapters at the same seam. Runtime implementation concepts such as
+Case revision, workflow attempts, phase records, evidence offsets, and continuation operation names
+are not part of the Agent Interface.
 
 ## Interface profiles
 
@@ -68,11 +71,12 @@ Freshness is a time property. The Agent Interface currently accepts only live ev
 `max_age_seconds=0`; the old `freshness` and `log-file` profiles are rejected because profiles
 describe evidence scope, not evidence age.
 
-`assurance=auto` first performs the fast exact observation. It upgrades to the assured path only
-when coverage contains `not_checked` values or freshness cannot be established. The assured
-Adapter receives the prior observation and reuses already collected MDB values, adding only the
-required assurance pass. `assurance=assured` fails closed when no scope-preserving Adapter exists;
-`auto` retains the fast incomplete Receipt in that situation.
+The Runtime owns one automatic observation policy. It first performs the exact read and upgrades to
+a scope-preserving assurance pass only when coverage contains `not_checked` values or freshness
+cannot be established. The Adapter receives the prior observation and can reuse already collected
+MDB values. If no precise assurance Adapter exists, the Runtime retains the bounded result and its
+explicit gaps. Legacy `assurance` input remains accepted during migration but is normalized to this
+single policy and is not returned in the Agent projection.
 
 An `ObservationReceipt` contains semantic values, tri-state capability results
 (`available | unavailable | not_checked`), coverage, observation time, target identity when
@@ -81,10 +85,12 @@ generate a Closeout. The model-visible document is limited to 4 KiB; a result th
 returned as an incomplete receipt requesting narrower selectors.
 
 The redacted raw observation is persisted in the Runtime Core as a content-addressed source. A
-complete Receipt carries that source reference and can seed `execute(kind=start)`. The Runtime
-reconstructs and verifies the Receipt from the source before using the observation as the first
+complete Receipt carries an `ObservationRef` and can seed `execute(kind=start)`. The Runtime
+reconstructs the observation, verifies its digest and target scope, and then uses it as the first
 diagnostic evidence, so it does not recollect the same evidence and remains reusable after a
-process restart. Incomplete or modified Receipts cannot seed a Run.
+process restart. Validation also binds the persisted scope digest, observation time, target
+metadata, and 15-minute reuse window before a Run is opened. Complete legacy Receipts remain a
+compatibility input; modified, expired, or incomplete content cannot seed a Run.
 
 ## Execution contract
 
@@ -93,22 +99,35 @@ process restart. Incomplete or modified Receipts cannot seed a Run.
 - `start`: create and advance a Run;
 - `respond`: satisfy the current phase Gate and continue;
 - `resume`: continue an existing Run;
-- `control`: continue, reconcile, or cancel at a phase Gate.
+- `control`: compatibility commands for continue, reconcile, or cancel at a phase Gate.
 
 The Runtime Core advances deterministic steps internally and returns a `Turn` only at a real Gate,
-blocker, or terminal Outcome. A Turn contains the Run ID, semantic state, a small Gate input schema,
-verified facts, gaps, and a bounded terminal Outcome. It is limited to 8 KiB; each Gate schema is
-limited to 2 KiB. The internal advancement limit is fixed at 64 steps and is not part of the Agent
-Interface. Exhaustion appears as an `internal_step_limit` blocker rather than a caller-controlled
-continuation budget.
+an unresolved Incident, a running reattach point, or terminal Outcome. A Turn contains the Run ID,
+semantic state, a small Gate input schema, verified facts, gaps, and a bounded terminal Outcome. It
+is limited to 8 KiB; each Gate schema is limited to 4 KiB. The internal advancement limit is fixed
+at 64 steps and is not part of the Agent Interface. Exhaustion appears as an
+`internal_step_limit` blocker rather than a caller-controlled continuation budget.
 
-`control=reconcile` is distinct from ordinary continuation. It finds the latest unknown mutation,
-restores the persisted domain arguments, retries with the same durable operation ID and mutation
-journal, and continues the Run only after the mutation result is known. This prevents an
-interrupted Live Patch or upgrade from being repeated under a new identity.
+Each phase Gate exposes stable `gate_id`, `gate_version`, and schema digest. A response may carry a
+submission identity; the Adapter otherwise derives one from the persisted Gate binding. Duplicate
+identity plus identical normalized input is idempotent. Reuse with different input, a different
+Gate, or a stale version is a conflict. The internal developer Runtime does not require a one-time
+secret Gate token.
 
-Terminal Runs automatically create a redacted Session Outcome record. Review, approval, rejection,
-and promotion remain operator-only operations.
+Patch and firmware inputs use `ArtifactRef`. The Runtime requires kind, content digest, byte size,
+provenance, retention hint, target, and Run binding, then streams the local content to verify its
+digest before any mutation begins. Missing content, cross-target or cross-Run references, wrong
+kind, size mismatch, and tampering fail before Domain execution.
+
+When a mutation result is unknown, `RunEngine` automatically performs one reconcile attempt using
+the same durable operation ID and mutation journal. If the read-first recovery converges, execution
+continues without another Agent Turn. If it cannot converge, the Runtime returns an Incident with
+the affected Effect identity. Explicit `control=reconcile` remains as a compatibility and operator
+fallback rather than the normal Agent path.
+
+Terminal Runs first persist one authoritative Run Outcome. A redacted Session Outcome is then
+projected from that fact; retries do not create another Run Outcome or governance record. Review,
+approval, rejection, and promotion remain operator-only operations.
 
 ## Descriptor direction
 
@@ -130,11 +149,13 @@ Replay:
 
 - default tool count is two and `tools/list` stays within 8 KiB;
 - ObservationReceipt stays within 4 KiB;
-- Turn stays within 8 KiB and Gate schemas stay within 2 KiB;
+- Turn stays within 8 KiB and Gate schemas stay within 4 KiB;
 - observations do not create Cases;
-- unsupported scope and stale freshness models fail closed;
+- unsupported scope and stale freshness models are rejected before collection;
 - capability and claim coverage remain explicit;
 - Agent results do not expose Runtime sequencing mechanics;
+- duplicate Gate delivery is idempotent and stale or conflicting delivery is rejected;
+- unknown Mutation is automatically reconciled or returned as an Incident;
 - legacy and governance operations require explicit profiles.
 
 Live performance qualification remains a separate paired AB/BA gate because token and wall-time
@@ -165,17 +186,19 @@ The three supported delivery paths are verified through the same `execute` Inter
 | Delivery path | Normal completion | Process restart | Injected failure and recovery |
 | --- | --- | --- | --- |
 | source-only | terminal source Outcome | resume phase Gate from persisted Run | failed/cancelled phase remains terminal and never creates a success Outcome |
-| live-patch | mutation, fresh verification, terminal Outcome | resume before or after the phase Gate | unknown mutation reconciles through the same durable journal, including after restart |
-| build-upgrade | source Gate, build Gate, upgrade, fresh verification | resume either Gate from persisted Run | interrupted upgrade reconciles through the same durable journal |
+| live-patch | mutation, fresh verification, terminal Outcome | resume before or after the phase Gate; deferred verification retries without reapplying | unknown mutation reconciles through the same durable journal, including after restart |
+| build-upgrade | source Gate, build Gate, upgrade, fresh verification | resume either Gate or a running Effect with the same operation identity | interrupted upgrade reconciles through the same durable journal |
 
 ## Evolution
 
 The Runtime Core remains the stable kernel. Future capability should deepen the two semantic
 operations instead of adding Agent-facing tools:
 
-1. add selector Adapters for D-Bus properties, verified active alarms, and bounded log search;
-2. add typed workflow intents and Gate schemas behind `execute` without exposing Runtime sequencing;
-3. evolve assurance into policy-driven freshness and identity checks while preserving exact scope;
+1. replace the remaining `phase_record` persistence bridge with native Run events, then add
+   explicit old-event upcasters;
+2. extract a Domain Pack contract only after Live Patch and Upgrade demonstrate the same seams;
+3. add selector Adapters for D-Bus properties, verified active alarms, and bounded log search only
+   from measured development gaps;
 4. keep evidence inspection, Replay, governance, and lifecycle automation in the operator/CI plane;
 5. retire the compatibility profile only after migration telemetry and paired AB/BA qualification
    show that the semantic Interface is both cheaper and at least as reliable.

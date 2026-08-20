@@ -798,6 +798,7 @@ class DebugRuntimeLease:
         return (
             profile,
             str(getattr(args, "busctl_service", "")).strip(),
+            tuple(sorted(getattr(args, "preflight_checks", []))),
         )
 
     def _preflight_epoch_signature(self, args) -> tuple[object, ...]:
@@ -821,7 +822,12 @@ class DebugRuntimeLease:
             int(epochs.get("target_epoch", 0)) if isinstance(epochs, dict) else 0,
             *lane_signature("ssh"),
         ]
-        if not bool(getattr(args, "skip_telnet", False)):
+        selected_checks = set(getattr(args, "preflight_checks", []))
+        if (
+            "TELNET" in selected_checks
+            if selected_checks
+            else not bool(getattr(args, "skip_telnet", False))
+        ):
             signature.extend(lane_signature("telnet"))
         return tuple(signature)
 
