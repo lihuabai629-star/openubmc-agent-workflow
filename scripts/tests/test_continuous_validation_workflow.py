@@ -28,6 +28,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
 
     def test_contract_preflight_is_a_separate_required_check(self) -> None:
         jobs = self.workflow["jobs"]
+        self.assertEqual(set(jobs), {"ci-contract", "validate"})
         preflight = jobs["ci-contract"]
         self.assertEqual(preflight["name"], "CI contract preflight")
         self.assertEqual(jobs["validate"]["needs"], "ci-contract")
@@ -43,7 +44,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
     def test_pull_requests_and_main_pushes_run_validation(self) -> None:
         triggers = self.workflow["on"]
         self.assertIn("pull_request", triggers)
-        self.assertIn("main", triggers["push"]["branches"])
+        self.assertEqual(triggers["push"]["branches"], ["main"])
         self.assertEqual(
             self.step("Run complete repository validation")["run"],
             "python scripts/validate_workflow.py",
