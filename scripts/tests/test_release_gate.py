@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "release_gate.py"
@@ -104,6 +105,7 @@ class ReleaseGateTests(unittest.TestCase):
                     previous_ref="v1.1.1",
                     clean_home=root / "clean",
                     lifecycle_home=root / "lifecycle",
+                    source_commit="a" * 40,
                 )
             )
 
@@ -119,6 +121,96 @@ class ReleaseGateTests(unittest.TestCase):
         ab_evidence = gates["agent_gateway_ab_evidence"][0]
         self.assertIn("agent_gateway_ab.py", ab_evidence[1])
         self.assertIn("verify", ab_evidence)
+        self.assertEqual(
+            ab_evidence[ab_evidence.index("--source-ref") + 1],
+            "a" * 40,
+        )
+
+    def test_release_source_commit_is_read_from_the_lock_only_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "release-gate@example.invalid"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Release Gate Test"],
+                cwd=root,
+                check=True,
+            )
+            (root / "source.txt").write_text("source\n", encoding="utf-8")
+            subprocess.run(["git", "add", "source.txt"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "source"], cwd=root, check=True
+            )
+            source_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout.strip()
+            (root / "release-lock.json").write_text("{}\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "release-lock.json"], cwd=root, check=True
+            )
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "lock"], cwd=root, check=True
+            )
+            lock_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout.strip()
+
+            with patch.object(
+                release_gate,
+                "verify_release_lock",
+                return_value={"source_commit": source_commit},
+            ):
+                resolved = release_gate._resolve_release_source_commit(
+                    root,
+                    lock_commit,
+                )
+
+        self.assertEqual(resolved, source_commit)
+
+    def test_invalid_release_lock_fails_instead_of_falling_back(self) -> None:
+        with patch.object(
+            release_gate,
+            "_resolve_commit",
+            return_value="b" * 40,
+        ), patch.object(
+            release_gate,
+            "verify_release_lock",
+            side_effect=release_gate.ReleaseLockError("bad lock"),
+        ):
+            with self.assertRaisesRegex(ValueError, "invalid immutable release ref"):
+                release_gate._resolve_release_source_commit(
+                    Path.cwd(),
+                    "release-ref",
+                )
+
+    def test_self_referencing_release_lock_is_rejected(self) -> None:
+        release_commit = "c" * 40
+        with patch.object(
+            release_gate,
+            "_resolve_commit",
+            return_value=release_commit,
+        ), patch.object(
+            release_gate,
+            "verify_release_lock",
+            return_value={"source_commit": release_commit},
+        ):
+            with self.assertRaisesRegex(ValueError, "lock-only child"):
+                release_gate._resolve_release_source_commit(
+                    Path.cwd(),
+                    "release-ref",
+                )
 
     def test_release_report_digests_runtime_qualification_evidence(self) -> None:
         def succeed(command, *, cwd):

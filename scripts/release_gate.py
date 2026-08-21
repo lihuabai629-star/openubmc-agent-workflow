@@ -16,6 +16,14 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "openubmc-target-runtime"))
+
+from openubmc_target_runtime.release import (  # noqa: E402
+    ReleaseLockError,
+    verify_release_lock,
+)
+
+
 RELEASE_GATE_SCHEMA = "openubmc-agent-workflow.release-gate.v2"
 
 
@@ -119,6 +127,27 @@ def _resolve_commit(workspace: Path, ref: str) -> str:
         stderr=subprocess.PIPE,
     )
     return completed.stdout.strip() if completed.returncode == 0 else ref
+
+
+def _resolve_release_source_commit(workspace: Path, ref: str) -> str:
+    """Resolve the source parent recorded by an immutable lock-only ref."""
+
+    release_commit = _resolve_commit(workspace, ref)
+    workspace_commit = _resolve_commit(workspace, "HEAD")
+    if release_commit.lower() != workspace_commit.lower():
+        raise ValueError(
+            "release gate workspace HEAD must match --current-ref"
+        )
+    try:
+        identity = verify_release_lock(workspace)
+    except ReleaseLockError as exc:
+        raise ValueError(f"invalid immutable release ref: {exc}") from exc
+    source_commit = str(identity.get("source_commit", "")).strip().lower()
+    if source_commit == release_commit.lower():
+        raise ValueError(
+            "immutable release ref must be a lock-only child of source_commit"
+        )
+    return source_commit
 
 
 def gate_commands(
@@ -234,7 +263,7 @@ def gate_commands(
                     "verify",
                     str(selected_ab_evidence),
                     "--source-ref",
-                    current_ref,
+                    source_commit,
                     "--repo",
                     str(ROOT),
                 ),
@@ -258,7 +287,10 @@ def execute_release_gate(
     lifecycle_home = work_root / "lifecycle-home"
     results: list[dict[str, object]] = []
     blocked = False
-    resolved_source_commit = source_commit or _resolve_commit(workspace, current_ref)
+    resolved_source_commit = source_commit or _resolve_release_source_commit(
+        workspace,
+        current_ref,
+    )
     for name, commands in gate_commands(
         current_ref=current_ref,
         previous_ref=previous_ref,
