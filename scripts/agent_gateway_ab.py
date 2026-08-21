@@ -315,38 +315,75 @@ def baseline_execute_acceptance(
         and item.get("server") == "openubmc-target-runtime"
     ]
     names = [str(call.get("tool", "")) for call in calls]
-    if names not in (
-        ["workflow.advance", "phase_record", "workflow.next"],
-        ["workflow.advance", "phase_record", "workflow.advance"],
-    ):
+    phase_positions = [
+        index for index, name in enumerate(names) if name == "phase_record"
+    ]
+    valid_shape = False
+    start_calls: list[Mapping[str, object]] = []
+    final_call: Mapping[str, object] = {}
+    if len(phase_positions) == 1:
+        phase_index = phase_positions[0]
+        start_calls = calls[:phase_index]
+        final_calls = calls[phase_index + 1 :]
+        valid_shape = (
+            bool(start_calls)
+            and all(call.get("tool") == "workflow.advance" for call in start_calls)
+            and len(final_calls) == 1
+            and final_calls[0].get("tool") in {"workflow.advance", "workflow.next"}
+        )
+        if final_calls:
+            final_call = final_calls[0]
+    if not valid_shape:
         errors.append(
-            "baseline must use workflow.advance, phase_record, and one continuation"
+            "baseline must use one or more workflow.advance calls, one phase_record, and one continuation"
         )
     if any(item.get("type") == "command_execution" for item in tools):
         errors.append("baseline must not execute shell commands")
-    if len(calls) == 3:
-        start_arguments = _json_object(calls[0].get("arguments"))
-        start_result = _structured_tool_result(calls[0])
-        phase_arguments = _json_object(calls[1].get("arguments"))
-        final_arguments = _json_object(calls[2].get("arguments"))
-        final_result = _structured_tool_result(calls[2])
-        if start_arguments.get("ip") != BENCHMARK_TARGET:
-            errors.append("baseline target does not match the benchmark target")
-        if start_arguments.get("intent") != "diagnose-and-fix":
-            errors.append("baseline intent must be diagnose-and-fix")
-        if start_arguments.get("delivery_strategy") != "source-only":
-            errors.append("baseline delivery strategy must be source-only")
-        handoff = _json_object(start_result.get("handoff_arguments"))
-        contract = _json_object(handoff.get("phase_record_contract"))
-        envelope = _json_object(start_result.get("agent_envelope"))
-        case_id = str(start_result.get("case_id") or envelope.get("case_id", ""))
-        current_revision = start_result.get("revision", envelope.get("revision"))
-        if (
-            start_result.get("status") != "waiting_phase_record"
-            or start_result.get("required_skill") != "openubmc-developer"
-            or not contract
-        ):
-            errors.append("baseline start must return one Developer phase Gate")
+    if valid_shape:
+        start_results = [_structured_tool_result(call) for call in start_calls]
+        start_arguments = [_json_object(call.get("arguments")) for call in start_calls]
+        phase_call = calls[phase_positions[0]]
+        phase_arguments = _json_object(phase_call.get("arguments"))
+        final_arguments = _json_object(final_call.get("arguments"))
+        final_result = _structured_tool_result(final_call)
+        case_ids: list[str] = []
+        contracts: list[Mapping[str, object]] = []
+        revisions: list[object] = []
+        for arguments, result in zip(start_arguments, start_results):
+            if arguments.get("ip") != BENCHMARK_TARGET:
+                errors.append("baseline target does not match the benchmark target")
+            if arguments.get("intent") != "diagnose-and-fix":
+                errors.append("baseline intent must be diagnose-and-fix")
+            if arguments.get("delivery_strategy") != "source-only":
+                errors.append("baseline delivery strategy must be source-only")
+            handoff = _json_object(result.get("handoff_arguments"))
+            contract = _json_object(handoff.get("phase_record_contract"))
+            envelope = _json_object(result.get("agent_envelope"))
+            case_ids.append(str(result.get("case_id") or envelope.get("case_id", "")))
+            contracts.append(contract)
+            revisions.append(result.get("revision", envelope.get("revision")))
+            if (
+                result.get("status") != "waiting_phase_record"
+                or result.get("required_skill") != "openubmc-developer"
+                or not contract
+            ):
+                errors.append("baseline start must return one Developer phase Gate")
+        case_id = case_ids[-1]
+        contract = contracts[-1]
+        current_revision = revisions[-1]
+        if not case_id or any(item != case_id for item in case_ids):
+            errors.append("baseline repeated starts must preserve the same Case")
+        for prior_contract in contracts[:-1]:
+            for name in (
+                "case_id",
+                "idempotency_key",
+                "phase_type",
+                "producer_identity",
+            ):
+                if prior_contract.get(name) != contract.get(name):
+                    errors.append(
+                        f"baseline repeated starts must preserve phase contract {name}"
+                    )
         for name in ("case_id", "idempotency_key", "phase_type", "producer_identity"):
             if phase_arguments.get(name) != contract.get(name):
                 errors.append(f"baseline phase_record must preserve {name}")

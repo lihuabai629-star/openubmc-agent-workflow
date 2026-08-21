@@ -846,6 +846,27 @@ class AgentGatewayAbTests(unittest.TestCase):
                     },
                     "agent_envelope": {
                         "case_id": "case-qualified",
+                        "revision": 4,
+                    },
+                },
+                elapsed=5,
+            ),
+            baseline_execute_event(
+                "workflow.advance",
+                {
+                    "ip": "10.121.136.200",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "final_purpose": "qualify Runtime source-only execution",
+                },
+                {
+                    "status": "waiting_phase_record",
+                    "required_skill": "openubmc-developer",
+                    "handoff_arguments": {
+                        "phase_record_contract": phase_contract,
+                    },
+                    "agent_envelope": {
+                        "case_id": "case-qualified",
                         "revision": 5,
                     },
                 },
@@ -900,7 +921,129 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertTrue(metric["valid"])
         self.assertEqual(metric["gate_roundtrips"], 1)
-        self.assertEqual(metric["time_to_next_actionable_turn_seconds"], 10)
+        self.assertEqual(metric["mcp_events"], 4)
+        self.assertEqual(metric["time_to_next_actionable_turn_seconds"], 5)
+
+    def test_baseline_execute_metric_rejects_repeated_start_contract_drift(self) -> None:
+        base_contract = {
+            "case_id": "case-qualified",
+            "expected_revision": 2,
+            "idempotency_key": "qualification-development",
+            "phase_type": "developer.change",
+            "producer_identity": "openubmc-developer",
+        }
+        scenarios = (
+            (
+                "different Case",
+                "case-other",
+                base_contract,
+                "baseline repeated starts must preserve the same Case",
+            ),
+            (
+                "different phase contract",
+                "case-qualified",
+                {**base_contract, "idempotency_key": "other-development"},
+                "baseline repeated starts must preserve phase contract idempotency_key",
+            ),
+        )
+        start_arguments = {
+            "ip": "10.121.136.200",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+            "final_purpose": "qualify Runtime source-only execution",
+        }
+
+        for name, repeated_case, repeated_contract, expected_error in scenarios:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as raw:
+                events = [
+                    baseline_execute_event(
+                        "workflow.advance",
+                        start_arguments,
+                        {
+                            "status": "waiting_phase_record",
+                            "required_skill": "openubmc-developer",
+                            "handoff_arguments": {
+                                "phase_record_contract": base_contract,
+                            },
+                            "agent_envelope": {
+                                "case_id": "case-qualified",
+                                "revision": 4,
+                            },
+                        },
+                        elapsed=5,
+                    ),
+                    baseline_execute_event(
+                        "workflow.advance",
+                        start_arguments,
+                        {
+                            "status": "waiting_phase_record",
+                            "required_skill": "openubmc-developer",
+                            "handoff_arguments": {
+                                "phase_record_contract": repeated_contract,
+                            },
+                            "agent_envelope": {
+                                "case_id": repeated_case,
+                                "revision": 5,
+                            },
+                        },
+                        elapsed=10,
+                    ),
+                    baseline_execute_event(
+                        "phase_record",
+                        {
+                            **repeated_contract,
+                            "expected_revision": 5,
+                            "status": "completed",
+                            "source_revision": "qualification-source",
+                            "summary": "qualification source-only receipt completed",
+                            "authored_files": ["src/qualification.lua"],
+                            "verification_plan": ["run qualification tests"],
+                        },
+                        {"status": "completed", "case_id": repeated_case},
+                        elapsed=20,
+                    ),
+                    baseline_execute_event(
+                        "workflow.next",
+                        {"case_id": repeated_case},
+                        {
+                            "status": "completed",
+                            "completed": True,
+                            "case_id": repeated_case,
+                        },
+                        elapsed=30,
+                    ),
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 100, "output_tokens": 10},
+                    },
+                ]
+                root = Path(raw)
+                events_path = root / "events.jsonl"
+                events_path.write_text(
+                    "\n".join(json.dumps(item) for item in events) + "\n",
+                    encoding="utf-8",
+                )
+                final_path = root / "final.md"
+                final_path.write_text(
+                    "source-only Runtime Outcome completed", encoding="utf-8"
+                )
+
+                metric = module.metric_from_run(
+                    arm="A",
+                    pair=1,
+                    order=1,
+                    events_path=events_path,
+                    final_path=final_path,
+                    exit_code=0,
+                    duration_seconds=31,
+                    scenario="execute-source-only",
+                )
+
+                self.assertFalse(metric["valid"])
+                self.assertIn(
+                    expected_error,
+                    metric["scope_validation"]["errors"],
+                )
 
     def test_analyzer_passes_ten_good_pairs_and_expands_uncertain_result(self) -> None:
         passing = []
