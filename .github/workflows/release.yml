@@ -54,6 +54,14 @@ jobs:
             --archive agent-gateway-ab-evidence.tar.xz \
             --destination agent-gateway-ab-evidence
 
+      - name: Restore AB attestation trust root
+        env:
+          AB_ATTESTATION_PUBLIC_KEY_BASE64: ${{ vars.AB_ATTESTATION_PUBLIC_KEY_BASE64 }}
+        run: |
+          test -n "$AB_ATTESTATION_PUBLIC_KEY_BASE64"
+          printf '%s' "$AB_ATTESTATION_PUBLIC_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/agent-gateway-ab-attestation.pub"
+          ssh-keygen -lf "$RUNNER_TEMP/agent-gateway-ab-attestation.pub" -E sha256
+
       - name: Run immutable release gates
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,6 +72,7 @@ jobs:
           --github-repository "${{ github.repository }}"
           --work-root release-gate-work
           --ab-evidence agent-gateway-ab-evidence/summary.json
+          --ab-attestation-public-key "$RUNNER_TEMP/agent-gateway-ab-attestation.pub"
           --output release-gate.json
 
       - name: Upload release evidence

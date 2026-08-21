@@ -159,6 +159,7 @@ def gate_commands(
     ab_evidence: Path | None = None,
     source_commit: str = "",
     github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
+    ab_attestation_public_key: Path | None = None,
 ) -> tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]:
     clean_install = tuple(_install_command(current_ref, clean_home))
     previous_install = tuple(_install_command(previous_ref, lifecycle_home))
@@ -169,6 +170,11 @@ def gate_commands(
         ab_evidence
         if ab_evidence is not None
         else lifecycle_home.parent / "agent-gateway-ab-summary.json"
+    )
+    selected_attestation_public_key = (
+        ab_attestation_public_key
+        if ab_attestation_public_key is not None
+        else lifecycle_home.parent / "agent-gateway-ab-attestation.pub"
     )
     return (
         (
@@ -266,6 +272,8 @@ def gate_commands(
                     source_commit,
                     "--repo",
                     str(ROOT),
+                    "--attestation-public-key",
+                    str(selected_attestation_public_key),
                 ),
             ),
         ),
@@ -282,6 +290,7 @@ def execute_release_gate(
     source_commit: str | None = None,
     ab_evidence: Path | None = None,
     github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
+    ab_attestation_public_key: Path | None = None,
 ) -> dict[str, object]:
     clean_home = work_root / "clean-install-home"
     lifecycle_home = work_root / "lifecycle-home"
@@ -299,6 +308,7 @@ def execute_release_gate(
         ab_evidence=ab_evidence,
         source_commit=resolved_source_commit,
         github_repository=github_repository,
+        ab_attestation_public_key=ab_attestation_public_key,
     ):
         if blocked:
             results.append({"name": name, "status": "skipped", "commands": []})
@@ -364,6 +374,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--ab-evidence", type=Path, required=True)
     parser.add_argument(
+        "--ab-attestation-public-key",
+        type=Path,
+        required=True,
+    )
+    parser.add_argument(
         "--github-repository",
         default="lihuabai629-star/openubmc-agent-workflow",
     )
@@ -386,6 +401,9 @@ def main(argv: list[str] | None = None) -> int:
             work_root=work_root,
             ab_evidence=args.ab_evidence.expanduser().absolute(),
             github_repository=args.github_repository,
+            ab_attestation_public_key=(
+                args.ab_attestation_public_key.expanduser().absolute()
+            ),
         )
         encoded = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         if args.output is not None:

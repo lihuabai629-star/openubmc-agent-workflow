@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
@@ -16,12 +19,17 @@ import random
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Iterable, Mapping
+import uuid
 
 
 SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v2"
-RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v1"
+RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v2"
+RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v1"
+RUN_ATTESTATION_IDENTITY = "openubmc-agent-workflow-qualification"
+RUN_ATTESTATION_NAMESPACE = "openubmc-agent-gateway-ab"
 DEFAULT_BASELINE_REF = "35b36efb6503d05a811b51bf09fb5f8dead0e208"
 CHECKPOINTS = (10, 20, 30)
 METRICS = (
@@ -624,6 +632,129 @@ def metrics_from_run_evidence(value: object) -> list[dict[str, object]]:
     ]
 
 
+def _run_source_binding_errors(
+    value: object,
+    *,
+    expected_candidate_commit: str,
+    expected_baseline_commit: str,
+) -> list[str]:
+    document = _json_object(value)
+    errors: list[str] = []
+    source = _json_object(document.get("source"))
+    expected = {
+        "A": expected_baseline_commit,
+        "B": expected_candidate_commit,
+    }
+    if source.get("candidate_commit") != expected_candidate_commit:
+        errors.append("AB run source commit does not match the release candidate")
+    if source.get("baseline_commit") != expected_baseline_commit:
+        errors.append("AB run source commit does not match the qualification baseline")
+    runs = document.get("runs")
+    if not isinstance(runs, list):
+        return errors
+    for index, value in enumerate(runs, 1):
+        run = _json_object(value)
+        arm = run.get("arm")
+        if arm in expected and run.get("source_commit") != expected[arm]:
+            errors.append(
+                f"AB run source commit does not match arm {arm} at item {index}"
+            )
+    return errors
+
+
+def _run_attestation_errors(
+    value: object, *, public_key: Path
+) -> list[str]:
+    document = _json_object(value)
+    runs = document.get("runs")
+    if not isinstance(runs, list):
+        return []
+    if not public_key.is_file():
+        return ["AB run attestation public key is unavailable"]
+    try:
+        expected_fingerprint = _ssh_key_fingerprint(public_key)
+        key_fields = public_key.read_text(encoding="utf-8").strip().split()
+    except (OSError, UnicodeDecodeError, ValueError):
+        return ["AB run attestation public key is invalid"]
+    if len(key_fields) < 2:
+        return ["AB run attestation public key is invalid"]
+    errors: list[str] = []
+    execution_ids: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix="openubmc-ab-verify-") as raw:
+        root = Path(raw)
+        allowed_signers = root / "allowed-signers"
+        allowed_signers.write_text(
+            f"{RUN_ATTESTATION_IDENTITY} {key_fields[0]} {key_fields[1]}\n",
+            encoding="utf-8",
+        )
+        for index, value in enumerate(runs, 1):
+            run = dict(_json_object(value))
+            execution_id = run.get("execution_id")
+            try:
+                normalized_execution_id = str(uuid.UUID(str(execution_id)))
+            except (ValueError, AttributeError):
+                errors.append(f"AB run attestation execution identity is invalid at item {index}")
+            else:
+                events = run.get("events")
+                thread_ids = [
+                    str(event.get("thread_id", ""))
+                    for event in events
+                    if isinstance(event, Mapping)
+                    and event.get("type") == "thread.started"
+                ] if isinstance(events, list) else []
+                if thread_ids != [normalized_execution_id]:
+                    errors.append(
+                        f"AB run attestation execution identity does not match the runner event at item {index}"
+                    )
+                if normalized_execution_id in execution_ids:
+                    errors.append(
+                        f"AB run attestation execution identity is duplicated at item {index}"
+                    )
+                execution_ids.add(normalized_execution_id)
+            attestation = _json_object(run.pop("attestation", None))
+            signature = attestation.get("signature")
+            if (
+                attestation.get("schema") != RUN_ATTESTATION_SCHEMA
+                or attestation.get("identity") != RUN_ATTESTATION_IDENTITY
+                or attestation.get("namespace") != RUN_ATTESTATION_NAMESPACE
+                or attestation.get("key_fingerprint") != expected_fingerprint
+                or not isinstance(signature, str)
+                or not signature
+            ):
+                errors.append(f"AB run attestation is invalid at item {index}")
+                continue
+            try:
+                signature_bytes = base64.b64decode(signature, validate=True)
+            except (ValueError, binascii.Error):
+                errors.append(f"AB run attestation signature is invalid at item {index}")
+                continue
+            signature_path = root / f"run-{index}.sig"
+            signature_path.write_bytes(signature_bytes)
+            completed = subprocess.run(
+                [
+                    "ssh-keygen",
+                    "-Y",
+                    "verify",
+                    "-q",
+                    "-f",
+                    str(allowed_signers),
+                    "-I",
+                    RUN_ATTESTATION_IDENTITY,
+                    "-n",
+                    RUN_ATTESTATION_NAMESPACE,
+                    "-s",
+                    str(signature_path),
+                ],
+                input=_canonical_json_bytes(run),
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if completed.returncode:
+                errors.append(f"AB run attestation signature is invalid at item {index}")
+    return errors
+
+
 def semantic_acceptance(
     text: str, *, scenario: str = "observation"
 ) -> dict[str, object]:
@@ -1119,6 +1250,115 @@ def _fingerprint(value: object) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _ssh_key_fingerprint(public_key: Path) -> str:
+    completed = subprocess.run(
+        ["ssh-keygen", "-lf", str(public_key), "-E", "sha256"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode or len(completed.stdout.split()) < 2:
+        raise ValueError("cannot fingerprint AB attestation public key")
+    return completed.stdout.split()[1]
+
+
+@contextmanager
+def _staged_private_key(private_key: Path, *, prefix: str):
+    with tempfile.TemporaryDirectory(prefix=prefix) as raw:
+        root = Path(raw)
+        key = root / "private-key"
+        key.write_bytes(private_key.read_bytes())
+        key.chmod(0o600)
+        yield root, key
+
+
+def _derive_public_key(key: Path, *, root: Path) -> Path:
+    public_key = root / "public-key.pub"
+    public = subprocess.run(
+        ["ssh-keygen", "-y", "-f", str(key)],
+        check=False,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if public.returncode or not public.stdout.strip():
+        raise ValueError("cannot derive AB attestation public key")
+    public_key.write_text(public.stdout.strip() + "\n", encoding="utf-8")
+    return public_key
+
+
+def _ssh_private_key_fingerprint(private_key: Path) -> str:
+    with _staged_private_key(private_key, prefix="openubmc-ab-key-") as (root, key):
+        public_key = _derive_public_key(key, root=root)
+        return _ssh_key_fingerprint(public_key)
+
+
+def attest_run_record(
+    value: Mapping[str, object], *, private_key: Path
+) -> dict[str, object]:
+    run = dict(value)
+    run.pop("attestation", None)
+    with _staged_private_key(private_key, prefix="openubmc-ab-attest-") as (root, key):
+        payload = root / "run.json"
+        payload.write_bytes(_canonical_json_bytes(run))
+        completed = subprocess.run(
+            [
+                "ssh-keygen",
+                "-Y",
+                "sign",
+                "-q",
+                "-f",
+                str(key),
+                "-n",
+                RUN_ATTESTATION_NAMESPACE,
+                str(payload),
+            ],
+            check=False,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if completed.returncode:
+            raise ValueError("cannot sign AB run evidence")
+        public_key = _derive_public_key(key, root=root)
+        run["attestation"] = {
+            "schema": RUN_ATTESTATION_SCHEMA,
+            "identity": RUN_ATTESTATION_IDENTITY,
+            "namespace": RUN_ATTESTATION_NAMESPACE,
+            "key_fingerprint": _ssh_key_fingerprint(public_key),
+            "signature": base64.b64encode(
+                Path(f"{payload}.sig").read_bytes()
+            ).decode("ascii"),
+        }
+    return run
+
+
+def _execution_identity(events: Iterable[Mapping[str, object]]) -> str:
+    thread_ids = [
+        str(event.get("thread_id", ""))
+        for event in events
+        if event.get("type") == "thread.started"
+    ]
+    if len(thread_ids) != 1:
+        raise ValueError("AB run must contain one Codex thread identity")
+    try:
+        return str(uuid.UUID(thread_ids[0]))
+    except ValueError as exc:
+        raise ValueError("AB run Codex thread identity is invalid") from exc
+
+
 def release_evidence(
     *,
     scenario: str,
@@ -1182,6 +1422,7 @@ def verify_summary(
     *,
     expected_source_commit: str,
     expected_baseline_commit: str = DEFAULT_BASELINE_REF,
+    attestation_public_key: Path | None = None,
 ) -> dict[str, object]:
     errors: list[str] = []
     try:
@@ -1285,6 +1526,22 @@ def verify_summary(
             run_evidence_value = json.loads(
                 run_evidence_path.read_text(encoding="utf-8")
             )
+            errors.extend(
+                _run_source_binding_errors(
+                    run_evidence_value,
+                    expected_candidate_commit=expected_source_commit,
+                    expected_baseline_commit=expected_baseline_commit,
+                )
+            )
+            if attestation_public_key is None:
+                errors.append("AB run attestation public key is required")
+            else:
+                errors.extend(
+                    _run_attestation_errors(
+                        run_evidence_value,
+                        public_key=attestation_public_key,
+                    )
+                )
             recomputed_metrics = metrics_from_run_evidence(run_evidence_value)
         except (
             OSError,
@@ -1359,6 +1616,19 @@ def run_benchmark(args: argparse.Namespace) -> int:
         )
     if tuple(args.codex_config) != QUALIFICATION_CODEX_CONFIG:
         raise RuntimeError("qualification Codex config does not match the contract")
+    attestation_private_key = args.attestation_private_key.expanduser().resolve()
+    if not attestation_private_key.is_file():
+        raise RuntimeError("AB attestation private key is unavailable")
+    attestation_public_key = args.attestation_public_key.expanduser().resolve()
+    if not attestation_public_key.is_file():
+        raise RuntimeError("AB attestation public key is unavailable")
+    try:
+        private_fingerprint = _ssh_private_key_fingerprint(attestation_private_key)
+        public_fingerprint = _ssh_key_fingerprint(attestation_public_key)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("AB attestation key is invalid") from exc
+    if private_fingerprint != public_fingerprint:
+        raise RuntimeError("AB attestation private key does not match the trusted public key")
     work_root = args.work_root.resolve()
     candidate_source_commit = _git_commit(repo, "HEAD")
     baseline_source_commit = _git_commit(repo, args.baseline_ref)
@@ -1384,6 +1654,10 @@ def run_benchmark(args: argparse.Namespace) -> int:
     metrics: list[dict[str, object]] = []
     run_evidence: dict[str, object] = {
         "schema": RUN_EVIDENCE_SCHEMA,
+        "source": {
+            "candidate_commit": candidate_source_commit,
+            "baseline_commit": baseline_source_commit,
+        },
         "runs": [],
     }
     run_evidence_path = output / "run_evidence.json"
@@ -1481,7 +1755,17 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 )
             raw_runs = run_evidence["runs"]
             assert isinstance(raw_runs, list)
-            raw_runs.append(record.to_mapping())
+            run_mapping = record.to_mapping()
+            run_mapping["source_commit"] = (
+                candidate_source_commit if arm == "B" else baseline_source_commit
+            )
+            run_mapping["execution_id"] = _execution_identity(events)
+            raw_runs.append(
+                attest_run_record(
+                    run_mapping,
+                    private_key=attestation_private_key,
+                )
+            )
             run_evidence_path.write_text(
                 json.dumps(run_evidence, ensure_ascii=False, separators=(",", ":"))
                 + "\n",
@@ -1549,6 +1833,11 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser.add_argument("summary", type=Path)
     verify_parser.add_argument("--source-ref", required=True)
     verify_parser.add_argument("--repo", type=Path, default=Path.cwd())
+    verify_parser.add_argument(
+        "--attestation-public-key",
+        type=Path,
+        required=True,
+    )
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--repo", type=Path, default=Path.cwd())
     run_parser.add_argument("--work-root", type=Path, required=True)
@@ -1557,6 +1846,16 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--pairs", type=int, default=10)
     run_parser.add_argument("--seed", type=int, default=20260819)
     run_parser.add_argument("--credentials", type=Path, required=True)
+    run_parser.add_argument(
+        "--attestation-private-key",
+        type=Path,
+        required=True,
+    )
+    run_parser.add_argument(
+        "--attestation-public-key",
+        type=Path,
+        required=True,
+    )
     run_parser.add_argument("--codex", default="codex")
     run_parser.add_argument("--codex-cwd", type=Path, default=Path("/home/workspace"))
     run_parser.add_argument("--model", required=True)
@@ -1583,6 +1882,7 @@ def main(argv: list[str] | None = None) -> int:
             args.summary.expanduser().absolute(),
             expected_source_commit=expected,
             expected_baseline_commit=expected_baseline,
+            attestation_public_key=args.attestation_public_key.expanduser().absolute(),
         )
         print(json.dumps(verification, ensure_ascii=False, indent=2))
         return 0 if verification["promotable"] else 1

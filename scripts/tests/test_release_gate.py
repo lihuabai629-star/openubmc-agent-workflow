@@ -127,6 +127,10 @@ class ReleaseGateTests(unittest.TestCase):
             ab_evidence[ab_evidence.index("--source-ref") + 1],
             "a" * 40,
         )
+        self.assertEqual(
+            Path(ab_evidence[ab_evidence.index("--attestation-public-key") + 1]),
+            root / "agent-gateway-ab-attestation.pub",
+        )
 
     def test_release_source_commit_is_read_from_the_lock_only_ref(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -272,8 +276,19 @@ class ReleaseGateTests(unittest.TestCase):
         restore = steps["Restore execute AB qualification evidence"]["run"]
         self.assertIn("sha256sum --check --strict", restore)
         self.assertIn("scripts/restore_ab_bundle.py", restore)
+        trust_root = steps["Restore AB attestation trust root"]
+        self.assertEqual(
+            trust_root["env"]["AB_ATTESTATION_PUBLIC_KEY_BASE64"],
+            "${{ vars.AB_ATTESTATION_PUBLIC_KEY_BASE64 }}",
+        )
+        self.assertIn("base64 --decode", trust_root["run"])
+        self.assertIn("$RUNNER_TEMP/agent-gateway-ab-attestation.pub", trust_root["run"])
         gate = steps["Run immutable release gates"]["run"]
         self.assertIn("--ab-evidence agent-gateway-ab-evidence/summary.json", gate)
+        self.assertIn(
+            '--ab-attestation-public-key "$RUNNER_TEMP/agent-gateway-ab-attestation.pub"',
+            gate,
+        )
         self.assertIn("--github-repository \"${{ github.repository }}\"", gate)
         self.assertIn("--work-root release-gate-work", gate)
         uploaded = set(

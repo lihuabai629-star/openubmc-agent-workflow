@@ -177,13 +177,23 @@ the run events used to recompute every promoted metric.
 python scripts/agent_gateway_ab.py run \
   --work-root /path/to/benchmark-work \
   --credentials /path/to/private/credentials.env \
+  --attestation-private-key /path/to/private/ab-evidence-signing-key \
+  --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
   --model <fixed-model> \
   --scenario execute-source-only \
   --pairs 10
 
-python scripts/agent_gateway_ab.py analyze \
-  /path/to/benchmark-work/results-*/all_metrics.json
+python scripts/agent_gateway_ab.py verify \
+  /path/to/benchmark-work/results-*/summary.json \
+  --source-ref <candidate-commit> \
+  --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub
 ```
+
+Every run record carries its tested source commit and a unique execution identity. The runner
+signs that record with the qualification key; verification uses a public key held outside the
+candidate checkout. The GitHub Release workflow restores that trust root from the
+`AB_ATTESTATION_PUBLIC_KEY_BASE64` repository variable managed outside source control, so editing
+a run or rebinding an old result to another candidate invalidates the evidence.
 
 For the GitHub Release workflow, package the four verified files as one xz-compressed,
 digest-bound input. The workflow rejects extra members and non-regular files before extraction.

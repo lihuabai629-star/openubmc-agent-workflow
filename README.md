@@ -162,6 +162,7 @@ python3 scripts/release_gate.py \
   --current-ref v2.0.0 \
   --previous-ref v1.2.2 \
   --ab-evidence /path/to/qualification-results/summary.json \
+  --ab-attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
   --output release-gate.json
 ```
 

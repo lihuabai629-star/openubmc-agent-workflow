@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +34,78 @@ EXPECTED_QUERIES = [
 ]
 
 
+def signing_keys(root: Path) -> tuple[Path, Path]:
+    root.mkdir(parents=True, exist_ok=True)
+    private_key = root / "qualification-key"
+    subprocess.run(
+        [
+            "ssh-keygen",
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-f",
+            str(private_key),
+        ],
+        check=True,
+    )
+    return private_key, Path(f"{private_key}.pub")
+
+
+def signed_run_evidence(
+    root: Path,
+    value: dict[str, object],
+    *,
+    private_key: Path,
+    public_key: Path,
+) -> dict[str, object]:
+    fingerprint = subprocess.run(
+        ["ssh-keygen", "-lf", str(public_key), "-E", "sha256"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.split()[1]
+    runs = value["runs"]
+    assert isinstance(runs, list)
+    for index, run in enumerate(runs, 1):
+        assert isinstance(run, dict)
+        payload = root / f"run-{index}.json"
+        payload.write_text(
+            json.dumps(
+                run,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [
+                "ssh-keygen",
+                "-Y",
+                "sign",
+                "-q",
+                "-f",
+                str(private_key),
+                "-n",
+                "openubmc-agent-gateway-ab",
+                str(payload),
+            ],
+            check=True,
+        )
+        run["attestation"] = {
+            "schema": module.RUN_ATTESTATION_SCHEMA,
+            "identity": "openubmc-agent-workflow-qualification",
+            "namespace": "openubmc-agent-gateway-ab",
+            "key_fingerprint": fingerprint,
+            "signature": base64.b64encode(
+                Path(f"{payload}.sig").read_bytes()
+            ).decode("ascii"),
+        }
+    return value
+
+
 def passing_run_fields():
     return {
         "exit_code": 0,
@@ -48,11 +123,23 @@ def verify_passing_summary(
     *,
     candidate_commit: str,
     baseline_commit: str,
+    run_candidate_commit: str | None = None,
 ):
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
         schedule = module.balanced_schedule(10, seed=7)
-        run_evidence = passing_execute_run_evidence(schedule)
+        run_evidence = passing_execute_run_evidence(
+            schedule,
+            candidate_commit=run_candidate_commit or candidate_commit,
+            baseline_commit=baseline_commit,
+        )
+        private_key, public_key = signing_keys(root)
+        signed_run_evidence(
+            root,
+            run_evidence,
+            private_key=private_key,
+            public_key=public_key,
+        )
         metrics = module.metrics_from_run_evidence(run_evidence)
         metrics_path = root / "all_metrics.json"
         schedule_path = root / "schedule.json"
@@ -79,6 +166,7 @@ def verify_passing_summary(
             summary_path,
             expected_source_commit=candidate_commit,
             expected_baseline_commit=module.DEFAULT_BASELINE_REF,
+            attestation_public_key=public_key,
         )
 
 
@@ -213,12 +301,21 @@ def baseline_execute_event(tool: str, arguments, structured, *, elapsed: float):
     }
 
 
-def passing_execute_run_evidence(schedule):
+def passing_execute_run_evidence(
+    schedule,
+    *,
+    candidate_commit: str = "a" * 40,
+    baseline_commit: str = module.DEFAULT_BASELINE_REF,
+):
     runs = []
     for pair, first, second in schedule:
         for order, arm in enumerate((first, second), 1):
+            execution_id = str(
+                uuid.UUID(int=(pair * 2) + (0 if arm == "A" else 1))
+            )
             if arm == "B":
                 events = [
+                    {"type": "thread.started", "thread_id": execution_id},
                     {
                         "type": "item.completed",
                         "item": {"type": "agent_message", "text": "start"},
@@ -248,6 +345,7 @@ def passing_execute_run_evidence(schedule):
                     "producer_identity": "openubmc-developer",
                 }
                 events = [
+                    {"type": "thread.started", "thread_id": execution_id},
                     {
                         "type": "item.completed",
                         "item": {"type": "agent_message", "text": "start"},
@@ -328,11 +426,22 @@ def passing_execute_run_evidence(schedule):
                     "arm": arm,
                     "pair": pair,
                     "order": order,
+                    "source_commit": (
+                        candidate_commit if arm == "B" else baseline_commit
+                    ),
+                    "execution_id": execution_id,
                     "events": events,
                     "final": "source-only Runtime Outcome completed",
                 }
             )
-    return {"schema": module.RUN_EVIDENCE_SCHEMA, "runs": runs}
+    return {
+        "schema": module.RUN_EVIDENCE_SCHEMA,
+        "source": {
+            "candidate_commit": candidate_commit,
+            "baseline_commit": baseline_commit,
+        },
+        "runs": runs,
+    }
 
 
 def write_run_evidence(root: Path, value=None) -> Path:
@@ -418,6 +527,40 @@ class AgentGatewayAbTests(unittest.TestCase):
 
             with patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
                 RuntimeError, "qualification model"
+            ):
+                module.run_benchmark(args)
+
+        prepare.assert_not_called()
+
+    def test_run_benchmark_rejects_an_untrusted_attestation_key_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as key_raw:
+            root = Path(raw)
+            module.subprocess.run(["git", "init"], cwd=root, check=True)
+            module.subprocess.run(
+                ["git", "config", "user.email", "benchmark@example.invalid"],
+                cwd=root,
+                check=True,
+            )
+            module.subprocess.run(
+                ["git", "config", "user.name", "Benchmark Test"],
+                cwd=root,
+                check=True,
+            )
+            (root / "tracked.txt").write_text("clean\n", encoding="utf-8")
+            module.subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            module.subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True)
+            private_key, _ = signing_keys(Path(key_raw) / "trusted")
+            _, different_public_key = signing_keys(Path(key_raw) / "different")
+            args = module.argparse.Namespace(
+                repo=root,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+                attestation_private_key=private_key,
+                attestation_public_key=different_public_key,
+            )
+
+            with patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
+                RuntimeError, "does not match"
             ):
                 module.run_benchmark(args)
 
@@ -1017,6 +1160,132 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertTrue(verified["promotable"], verified)
         self.assertRegex(verified["summary_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_verify_summary_rejects_run_evidence_rebound_to_another_candidate(self) -> None:
+        verified = verify_passing_summary(
+            candidate_commit="b" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            run_candidate_commit="a" * 40,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("run source commit" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_rejects_rewritten_run_source_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            candidate_commit = "b" * 40
+            schedule = module.balanced_schedule(10, seed=7)
+            run_evidence = passing_execute_run_evidence(
+                schedule,
+                candidate_commit="a" * 40,
+                baseline_commit=module.DEFAULT_BASELINE_REF,
+            )
+            private_key, public_key = signing_keys(root)
+            signed_run_evidence(
+                root,
+                run_evidence,
+                private_key=private_key,
+                public_key=public_key,
+            )
+            run_evidence["source"]["candidate_commit"] = candidate_commit
+            for run in run_evidence["runs"]:
+                if run["arm"] == "B":
+                    run["source_commit"] = candidate_commit
+            metrics = module.metrics_from_run_evidence(run_evidence)
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            run_evidence_path = write_run_evidence(root, run_evidence)
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit=candidate_commit,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                run_evidence_path=run_evidence_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path,
+                expected_source_commit=candidate_commit,
+                expected_baseline_commit=module.DEFAULT_BASELINE_REF,
+                attestation_public_key=public_key,
+            )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("attestation" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_rejects_duplicate_run_execution_identities(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            candidate_commit = "a" * 40
+            schedule = module.balanced_schedule(10, seed=7)
+            run_evidence = passing_execute_run_evidence(
+                schedule,
+                candidate_commit=candidate_commit,
+                baseline_commit=module.DEFAULT_BASELINE_REF,
+            )
+            run_evidence["runs"][1]["execution_id"] = run_evidence["runs"][0][
+                "execution_id"
+            ]
+            private_key, public_key = signing_keys(root)
+            signed_run_evidence(
+                root,
+                run_evidence,
+                private_key=private_key,
+                public_key=public_key,
+            )
+            metrics = module.metrics_from_run_evidence(run_evidence)
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            run_evidence_path = write_run_evidence(root, run_evidence)
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit=candidate_commit,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                run_evidence_path=run_evidence_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path,
+                expected_source_commit=candidate_commit,
+                expected_baseline_commit=module.DEFAULT_BASELINE_REF,
+                attestation_public_key=public_key,
+            )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("execution identity is duplicated" in error for error in verified["errors"]),
+            verified,
+        )
 
     def test_verify_summary_rejects_performance_fields_not_derived_from_runs(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
