@@ -32,7 +32,7 @@ from .closeout import (
     render_markdown,
 )
 from .contracts import RUNTIME_API_VERSION
-from .effect_runner import EffectIntent, PreparedEffect
+from .effect_runner import EffectIntent, EffectSettlementMode, PreparedEffect
 from .mutation import (
     MutationAuthorizationDenied,
     MutationOperationConflict,
@@ -6888,6 +6888,177 @@ class ContextRuntime:
                 **workflow_metadata,
             },
         )
+
+    def prepare_effect_transition(
+        self,
+        intent: EffectIntent,
+        *,
+        result: Mapping[str, object] | None,
+        error: BaseException | None,
+        settlement_mode: EffectSettlementMode,
+    ) -> tuple[RunEvent, ...]:
+        """Prepare settled Effect facts without committing Run state."""
+
+        if (result is None) == (error is None):
+            raise ValueError("Effect transition requires exactly one result or error")
+        if not isinstance(settlement_mode, EffectSettlementMode):
+            raise TypeError("Effect transition requires an EffectSettlementMode")
+        terminal_event_kind = (
+            "OperationReconciled"
+            if settlement_mode is EffectSettlementMode.RECONCILE
+            else "OperationTerminal"
+        )
+        descriptor = self.catalog.require(intent.operation)
+        projection = self.read_case(intent.run_id)
+        operation = next(
+            (
+                item
+                for item in reversed(list(projection.get("operations", [])))
+                if isinstance(item, Mapping)
+                and str(item.get("operation_id", "")) == intent.effect_id
+            ),
+            None,
+        )
+        if not isinstance(operation, Mapping):
+            raise ValueError("settled Effect is missing from its Run")
+        if str(operation.get("operation", "")) != intent.operation:
+            raise ValueError("settled Effect identity belongs to another operation")
+
+        arguments = dict(intent.arguments)
+        target_id = (
+            self._preferred_target_id(projection, arguments)
+            if descriptor.mutation or intent.operation == "debug_collect"
+            else self._selected_target_id(projection, arguments)
+        )
+        value = dict(result) if result is not None else None
+        if value is not None:
+            minimum_epoch = arguments.get("_minimum_target_epoch")
+            if minimum_epoch is not None:
+                if (
+                    isinstance(minimum_epoch, bool)
+                    or not isinstance(minimum_epoch, int)
+                    or minimum_epoch < 0
+                ):
+                    error = TypeError(
+                        "_minimum_target_epoch must be a non-negative integer"
+                    )
+                    value = None
+                else:
+                    observed_epoch = self._observed_target_epoch(
+                        value,
+                        target_id=target_id,
+                    )
+                    if observed_epoch is None:
+                        value.setdefault("target_epoch", minimum_epoch)
+                        observed_epoch = minimum_epoch
+                    if observed_epoch < minimum_epoch:
+                        error = ValueError(
+                            "fresh verification did not report the required "
+                            f"target epoch: observed {observed_epoch}, "
+                            f"required {minimum_epoch}"
+                        )
+                        value = None
+
+        if error is not None:
+            status = (
+                self._mutation_exception_status(error)
+                if descriptor.mutation
+                else "failed"
+            )
+            next_action = (
+                "reconcile the mutation journal before retrying"
+                if status == "mutation_outcome_unknown"
+                else (
+                    "provide the missing recovery authorization and retry "
+                    "the same durable operation"
+                    if status == "blocked"
+                    else "resolve the error and retry with the same Run"
+                )
+            )
+            return (
+                RunEvent(
+                    terminal_event_kind,
+                    {
+                        "status": status,
+                        "summary": redact_text(error),
+                        "canonical_error": {
+                            "code": str(
+                                getattr(error, "code", type(error).__name__)
+                            ),
+                            "message": redact_text(error),
+                        },
+                        "next_actions": [next_action],
+                        "case_status": "open",
+                    },
+                    intent.effect_id,
+                ),
+            )
+
+        assert value is not None
+        status = self._domain_result_status(descriptor, value)
+        events: list[RunEvent] = []
+        try:
+            evidence = self._put_evidence(
+                value,
+                case_id=intent.run_id,
+                operation_id=intent.effect_id,
+                descriptor=descriptor,
+                arguments=arguments,
+            )
+        except Exception as exc:
+            if descriptor.mutation and not self._mutation_is_terminal(value):
+                return (
+                    RunEvent(
+                        terminal_event_kind,
+                        {
+                            "status": "mutation_outcome_unknown",
+                            "summary": redact_text(
+                                "cannot persist non-terminal mutation evidence: "
+                                f"{exc}"
+                            ),
+                            "canonical_error": {
+                                "code": "mutation_outcome_unknown",
+                                "message": redact_text(exc),
+                            },
+                            "next_actions": [
+                                "reconcile the mutation journal before retrying"
+                            ],
+                            "case_status": "open",
+                        },
+                        intent.effect_id,
+                    ),
+                )
+        else:
+            events.append(
+                RunEvent(
+                    "EvidenceAttached",
+                    {"evidence": evidence.to_public_dict()},
+                    intent.effect_id,
+                )
+            )
+        events.append(
+            RunEvent(
+                (
+                    "OperationProgressed"
+                    if status == "running"
+                    else terminal_event_kind
+                ),
+                {
+                    "status": status,
+                    "summary": redact_text(
+                        _summary_for(intent.operation, value)
+                    ),
+                    "next_actions": _next_actions(value),
+                    "case_status": "running" if status == "running" else "open",
+                    "target_epoch": self._observed_target_epoch(
+                        value,
+                        target_id=target_id,
+                    ),
+                },
+                intent.effect_id,
+            )
+        )
+        return tuple(events)
 
     def workflow_advance(
         self,

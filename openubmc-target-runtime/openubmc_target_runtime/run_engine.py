@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import Future
 from contextvars import ContextVar
 from dataclasses import dataclass
 import time
@@ -35,10 +36,17 @@ from .semantic_runtime import (
     run_command_identity,
     run_id_for_command,
 )
-from .run_store import RunDecision, RunDecisionConflict, RunEvent, RunStore
+from .run_store import (
+    CommittedRunDecision,
+    RunDecision,
+    RunDecisionConflict,
+    RunEvent,
+    RunStore,
+)
 from .effect_runner import (
     EffectIntent,
     EffectRunMode,
+    EffectSettlementMode,
     LocalEffectRunner,
     PreparedEffect,
 )
@@ -247,6 +255,15 @@ class RunDriver(Protocol):
         workflow_step_id: str,
         task_id: str,
     ) -> PreparedEffect | None: ...
+
+    def effect_transition(
+        self,
+        intent: EffectIntent,
+        *,
+        result: Mapping[str, object] | None,
+        error: BaseException | None,
+        settlement_mode: EffectSettlementMode,
+    ) -> "RunTransition": ...
 
     def reconcile_run(
         self,
@@ -959,6 +976,15 @@ class RunEngine:
             return
         phase_type, artifact_kind = artifact_contract
         projection = _projection(snapshot)
+        if any(
+            isinstance(item, Mapping)
+            and _text(item.get("operation")) == operation
+            and _text(item.get("status")) in {"accepted", "running"}
+            for item in projection.get("operations", [])
+        ):
+            # The bytes were verified before this durable Effect was accepted.
+            # Recovery is journal-first and may not require the local artifact.
+            return
         phase = next(
             (
                 record
@@ -1096,6 +1122,7 @@ class RunEngine:
             unknown = self._unknown_mutation(projection)
             if (
                 unknown is not None
+                and current_incident is None
                 and allow_auto_reconcile
                 and not auto_reconcile_attempted
             ):
@@ -1642,8 +1669,22 @@ class RunEngine:
                     state="running",
                     next_action="resume the Run to reattach to the current Effect",
                 )
-            snapshot = self.driver.run_snapshot(intent.run_id)
-            projection = _projection(snapshot)
+            committed = self._commit_effect_result(
+                intent,
+                future,
+                settlement_mode=(
+                    EffectSettlementMode.RECONCILE
+                    if recovery_attempted
+                    else EffectSettlementMode.DISPATCH
+                ),
+            )
+            snapshot = {
+                "projection": committed.projection,
+                "continuation": self.driver.run_snapshot(intent.run_id).get(
+                    "continuation", {}
+                ),
+            }
+            projection = committed.projection
             unknown = self._unknown_mutation(projection)
             if recovery_attempted and unknown is not None:
                 return self._commit_recovery_incident(intent)
@@ -1687,6 +1728,96 @@ class RunEngine:
                 task_id=task_id,
                 operation_id=resume_operation_id,
             )
+
+    def _commit_effect_result(
+        self,
+        intent: EffectIntent,
+        future: Future[Mapping[str, object]],
+        *,
+        settlement_mode: EffectSettlementMode,
+    ) -> CommittedRunDecision:
+        error = future.exception()
+        result = None if error is not None else future.result()
+        outcome_identity: dict[str, object] = {
+            "schema": "openubmc.semantic-runtime/effect-result-v1",
+            "run_id": intent.run_id,
+            "effect_id": intent.effect_id,
+            "settlement_mode": settlement_mode.value,
+        }
+        if error is None:
+            outcome_identity["result"] = result
+        else:
+            outcome_identity["error"] = {
+                "type": type(error).__name__,
+                "code": str(getattr(error, "code", "")),
+                "message": str(error),
+                "recovery_status": (
+                    dict(recovery_status)
+                    if isinstance(
+                        (recovery_status := getattr(error, "recovery_status", None)),
+                        Mapping,
+                    )
+                    else None
+                ),
+                "mutation_outcome": str(
+                    getattr(error, "mutation_outcome", "")
+                ),
+                "mutation_journal_stage": str(
+                    getattr(error, "mutation_journal_stage", "")
+                ),
+                "mutation_effects_started": bool(
+                    getattr(error, "mutation_effects_started", False)
+                ),
+            }
+        input_digest = fingerprint(outcome_identity)
+        command_id = "effect-result-" + input_digest[:32]
+        try:
+            replayed = self.run_store.replay(
+                intent.run_id,
+                command_id,
+                input_digest,
+            )
+        except RunDecisionConflict as exc:
+            raise CommandConflict(str(exc)) from exc
+        if replayed is not None:
+            return replayed
+        for attempt in range(4):
+            with self.command_transactions.begin(intent.run_id) as transaction:
+                token = self._active_transaction.set(transaction)
+                try:
+                    transition = self.driver.effect_transition(
+                        intent,
+                        result=result,
+                        error=error,
+                        settlement_mode=settlement_mode,
+                    )
+                    self._stage(transition.events)
+                    snapshot = self.driver.run_snapshot(intent.run_id)
+                    turn = self._turn(
+                        snapshot,
+                        state="running",
+                        next_action="resume the Run after the settled Effect",
+                    )
+                    try:
+                        committed = self.run_store.commit(
+                            RunDecision(
+                                run_id=intent.run_id,
+                                command_id=command_id,
+                                input_digest=input_digest,
+                                expected_revision=transaction.expected_revision,
+                                events=transaction.events,
+                                turn=turn,
+                            )
+                        )
+                    except RunDecisionConflict as exc:
+                        if attempt >= 3:
+                            raise CommandConflict(str(exc)) from exc
+                        continue
+                    transaction.accept()
+                    return committed
+                finally:
+                    self._active_transaction.reset(token)
+        raise CommandConflict("Effect result decision could not converge")
 
     def _persist_effect_recovery_boundary(self, intent: EffectIntent) -> bool:
         command_id = "recover-" + fingerprint(

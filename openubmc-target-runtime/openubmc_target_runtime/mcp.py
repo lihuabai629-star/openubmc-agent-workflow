@@ -53,7 +53,12 @@ from .semantic_runtime import (
     run_id_for_command,
 )
 from .run_store import EventRunStore
-from .effect_runner import EffectIntent, LocalEffectRunner, PreparedEffect
+from .effect_runner import (
+    EffectIntent,
+    EffectSettlementMode,
+    LocalEffectRunner,
+    PreparedEffect,
+)
 from .capability import (
     ArtifactContract,
     CallableDomainAdapter,
@@ -75,7 +80,6 @@ from .context_runtime import (
     ContextRuntime,
     ContextToolResult,
     IdempotencyConflict,
-    OperationAlreadyInProgress,
     RevisionConflict,
     RuntimeRepository,
 )
@@ -2316,23 +2320,29 @@ class _RuntimeSemanticAdapter:
         )
 
     def execute_effect(self, intent: EffectIntent) -> Mapping[str, object]:
-        try:
-            self.service.call_tool(
-                intent.operation,
-                self.service._dispatch_effect_arguments(intent),
-                task_id=intent.run_id,
-                operation_id=intent.effect_id,
-                _context_workflow_step=True,
-            )
-        except OperationAlreadyInProgress:
-            pass
-        return self.run_snapshot(intent.run_id)
+        return self.service.execute_domain_effect(intent)
 
     def recover_effect(self, intent: EffectIntent) -> Mapping[str, object]:
         if intent.effect_class is EffectClass.READ_ONLY:
             return self.execute_effect(intent)
-        self.service.recover_domain_effect(intent)
-        return self.run_snapshot(intent.run_id)
+        return self.service.execute_domain_effect(intent, recovery=True)
+
+    def effect_transition(
+        self,
+        intent: EffectIntent,
+        *,
+        result: Mapping[str, object] | None,
+        error: BaseException | None,
+        settlement_mode: EffectSettlementMode,
+    ) -> RunTransition:
+        return RunTransition(
+            events=self.service.context_runtime.prepare_effect_transition(
+                intent,
+                result=result,
+                error=error,
+                settlement_mode=settlement_mode,
+            )
+        )
 
     def reconcile_run(
         self,
@@ -2376,8 +2386,21 @@ class _RuntimeSemanticAdapter:
         intent = EffectIntent.from_mapping(raw_intent)
         if intent.operation != blocked_operation:
             raise ValueError("unknown mutation Effect intent has the wrong operation")
-        self.service.recover_domain_effect(intent)
-        return self.run_snapshot(run_id)
+        try:
+            result = self.service.execute_domain_effect(intent, recovery=True)
+            error: BaseException | None = None
+        except Exception as exc:
+            result = None
+            error = exc
+        return self.apply_transition(
+            run_id,
+            self.effect_transition(
+                intent,
+                result=result,
+                error=error,
+                settlement_mode=EffectSettlementMode.RECONCILE,
+            ),
+        )
 
 def _mapping_or_empty(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
@@ -3868,17 +3891,18 @@ class RuntimeMcpService:
                 result.setdefault("product_version", reference.version)
         return result
 
-    def recover_domain_effect(self, intent: EffectIntent) -> Mapping[str, object]:
-        """Reconcile a persisted Mutation identity after local process loss."""
+    def execute_domain_effect(
+        self,
+        intent: EffectIntent,
+        *,
+        recovery: bool = False,
+    ) -> Mapping[str, object]:
+        """Execute one persisted Effect without writing Run transitions."""
 
         descriptor = self.catalog.require(intent.operation)
-        if not descriptor.mutation:
+        if recovery and not descriptor.mutation:
             raise ValueError("only Mutation Effects require reconcile recovery")
-        context_arguments = self._dispatch_effect_arguments(
-            intent,
-            recovery=True,
-        )
-        context_arguments[CONTEXT_WORKFLOW_STEP_ARGUMENT] = True
+        context_arguments = dict(intent.arguments)
         domain_arguments = {
             key: value
             for key, value in context_arguments.items()
@@ -3892,57 +3916,16 @@ class RuntimeMcpService:
         }
         if isinstance(self.backend, OrchestratedMcpBackend):
             domain_arguments["_context_authoritative"] = True
-        return self.context_runtime.invoke_domain(
+        return self._execute_domain_value(
+            intent.operation,
             descriptor,
-            context_arguments,
+            domain_arguments,
             task_id=intent.run_id,
             operation_id=intent.effect_id,
-            executor=lambda: self._execute_domain_value(
-                intent.operation,
-                descriptor,
-                domain_arguments,
-                task_id=intent.run_id,
-                operation_id=intent.effect_id,
-                recovery_mode=EffectRecoveryMode.RECONCILE,
+            recovery_mode=(
+                EffectRecoveryMode.RECONCILE if recovery else None
             ),
         )
-
-    def _dispatch_effect_arguments(
-        self,
-        intent: EffectIntent,
-        *,
-        recovery: bool = False,
-    ) -> dict[str, object]:
-        """Resolve an ArtifactRef only for the actual Domain Adapter call."""
-
-        arguments = dict(intent.arguments)
-        raw_reference = arguments.get("artifact_ref")
-        if not isinstance(raw_reference, Mapping) or not raw_reference:
-            return arguments
-        reference = ArtifactRef.from_public_dict(raw_reference)
-        expected_kind = {
-            "live_patch_run": "openubmc-live-patch",
-            "upgrade_run": "openubmc-hpm",
-        }.get(intent.operation, "")
-        expected_target = str(arguments.get("ip", "")).strip()
-        path = (
-            self.artifact_store.path_for(reference)
-            if recovery
-            else self.artifact_store.resolve(
-                reference,
-                expected_kinds=(expected_kind,) if expected_kind else (),
-                expected_target=expected_target,
-                expected_run_id=intent.run_id,
-            )
-        )
-        arguments["artifact_ref"] = reference.to_public_dict()
-        arguments["artifact_sha256"] = reference.digest
-        if intent.operation == "live_patch_run":
-            arguments["local_path"] = str(path)
-        elif intent.operation == "upgrade_run":
-            arguments["artifact_path"] = str(path)
-            arguments["product_version"] = reference.version
-        return arguments
 
     def _observe_domain_direct(
         self,

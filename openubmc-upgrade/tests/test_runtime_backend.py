@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -51,6 +52,21 @@ def artifact_ref(
     version: str,
 ) -> dict[str, object]:
     body = path.read_bytes()
+    Path(str(path) + ".metadata.json").write_text(
+        json.dumps(
+            {
+                "schema": "openubmc-agent-workflow/artifact-metadata-v1",
+                "artifact": {
+                    "sha256": hashlib.sha256(body).hexdigest(),
+                    "size": len(body),
+                    "kind": "openubmc-hpm",
+                },
+                "product_version": version,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     return {
         "handle": str(path),
         "digest": "sha256:" + hashlib.sha256(body).hexdigest(),

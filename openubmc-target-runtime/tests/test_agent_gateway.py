@@ -93,6 +93,21 @@ def artifact_ref(
     }
     if version:
         reference["version"] = version
+        Path(str(path) + ".metadata.json").write_text(
+            json.dumps(
+                {
+                    "schema": "openubmc-agent-workflow/artifact-metadata-v1",
+                    "artifact": {
+                        "sha256": hashlib.sha256(body).hexdigest(),
+                        "size": len(body),
+                        "kind": kind,
+                    },
+                    "product_version": version,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
     return reference
 
 
@@ -2687,6 +2702,17 @@ class AgentGatewayTests(unittest.TestCase):
             wrong_run["run_id"] = "run-other"
             wrong_size = dict(valid)
             wrong_size["size"] = int(valid["size"]) + 1
+            wrong_version = dict(valid)
+            wrong_version["version"] = "9.9.9"
+            unbound_artifact = Path(raw) / "unbound-product.hpm"
+            unbound_artifact.write_bytes(b"unbound firmware bytes")
+            missing_metadata = artifact_ref(
+                unbound_artifact,
+                kind="openubmc-hpm",
+                target="192.0.2.44",
+                run_id=developer_gate["run_id"],
+            )
+            missing_metadata["version"] = "2.0.0"
             missing_target = dict(valid)
             missing_target.pop("target")
             missing_run = dict(valid)
@@ -2726,6 +2752,18 @@ class AgentGatewayTests(unittest.TestCase):
                     ReferenceViolation,
                     "digest does not match stored content",
                 ),
+                (
+                    "wrong-version",
+                    wrong_version,
+                    ReferenceViolation,
+                    "version does not match artifact metadata",
+                ),
+                (
+                    "missing-metadata",
+                    missing_metadata,
+                    ReferenceViolation,
+                    "requires build artifact metadata",
+                ),
                 ("missing-target", missing_target, GateConflict, "required fields"),
                 ("missing-run", missing_run, GateConflict, "required fields"),
                 (
@@ -2756,6 +2794,11 @@ class AgentGatewayTests(unittest.TestCase):
                         task_id="artifact-ref-validation",
                         operation_id=f"artifact-ref-{name}",
                     )
+
+            self.assertNotIn(
+                "upgrade_run",
+                [operation for operation, _arguments in self.backend.calls],
+            )
 
             final = self.service.call_exposed_tool(
                 "execute",
@@ -3123,36 +3166,43 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(first["state"], "waiting_response")
         self.assertEqual(first["gate"]["name"], "developer.change")
-        patch = self.artifact_root / "execute-live-patch-fix.lua"
-        patch.write_bytes(b"return 'fixed'\n")
+        patch_file = self.artifact_root / "execute-live-patch-fix.lua"
+        patch_file.write_bytes(b"return 'fixed'\n")
 
-        final = self.service.call_exposed_tool(
-            "execute",
-            {
-                "kind": "respond",
-                "run_id": first["run_id"],
-                **gate_binding(first),
-                "response": {
-                    "status": "completed",
-                    "summary": "source repair is ready for live patching",
-                    "payload": {
-                        "source_revision": "live-patch-source",
-                        "authored_files": ["src/fix.lua"],
-                        "verification_plan": ["fresh target verification"],
-                        "artifact_ref": artifact_ref(
-                            patch,
-                            kind="openubmc-live-patch",
-                            target="192.0.2.21",
-                            run_id=first["run_id"],
-                        ),
-                        "remote_path": "/opt/bmc/apps/fix.lua",
-                        "restart_scope": "skynet",
+        with patch.object(
+            self.service.context_runtime,
+            "invoke_domain",
+            side_effect=AssertionError(
+                "typed Effect execution must not let ContextRuntime write transitions"
+            ),
+        ):
+            final = self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": first["run_id"],
+                    **gate_binding(first),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair is ready for live patching",
+                        "payload": {
+                            "source_revision": "live-patch-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh target verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.21",
+                                run_id=first["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
                     },
                 },
-            },
-            task_id="execute-live-patch",
-            operation_id="live-patch-respond",
-        )
+                task_id="execute-live-patch",
+                operation_id="live-patch-respond",
+            )
 
         self.assertEqual(final["state"], "completed")
         self.assertTrue(final["outcome_recorded"])
@@ -3163,7 +3213,7 @@ class AgentGatewayTests(unittest.TestCase):
         live_patch_arguments = self.backend.calls[1][1]
         self.assertEqual(
             live_patch_arguments["artifact_sha256"],
-            hashlib.sha256(patch.read_bytes()).hexdigest(),
+            hashlib.sha256(patch_file.read_bytes()).hexdigest(),
         )
         projection = self.service.context_runtime.read_case(first["run_id"])
         intent_arguments = next(
@@ -3171,6 +3221,20 @@ class AgentGatewayTests(unittest.TestCase):
             for intent in projection["effect_intents"]
             if intent.get("operation") == "live_patch_run"
         )
+        effect_id = next(
+            intent["effect_id"]
+            for intent in projection["effect_intents"]
+            if intent.get("operation") == "live_patch_run"
+        )
+        effect_event_kinds = [
+            event["kind"]
+            for event in self.service.context_runtime.repository.events(
+                first["run_id"]
+            )
+            if event.get("operation_id") == effect_id
+        ]
+        self.assertIn("OperationTerminal", effect_event_kinds)
+        self.assertNotIn("OperationReconciled", effect_event_kinds)
         self.assertEqual(
             intent_arguments["artifact_ref"]["kind"],
             "openubmc-live-patch",
@@ -3332,20 +3396,27 @@ class AgentGatewayTests(unittest.TestCase):
     def test_automatic_reconcile_attempts_an_unknown_mutation_only_once(self) -> None:
         driver = PersistentUnknownRunDriver()
         repository = InMemoryRuntimeRepository()
-        turn = RunEngine(
+        engine = RunEngine(
             driver,
             run_store=EventRunStore(repository),
             command_transactions=BufferedRuntimeRepository(repository),
-        ).execute(
+        )
+        turn = engine.execute(
             ResumeRun("run-persistent-unknown"),
             task_id="persistent-unknown",
             operation_id="persistent-unknown-resume",
+        )
+        resumed = engine.execute(
+            ResumeRun("run-persistent-unknown"),
+            task_id="persistent-unknown",
+            operation_id="persistent-unknown-resume-again",
         )
 
         self.assertEqual(driver.reconcile_calls, 1)
         self.assertEqual(turn.state, "incident")
         self.assertIsNotNone(turn.incident)
         self.assertEqual(turn.incident.code, "mutation_outcome_unknown")
+        self.assertEqual(resumed.state, "incident")
 
     def test_run_engine_requires_durable_command_dependencies(self) -> None:
         with self.assertRaisesRegex(
@@ -3924,7 +3995,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(incident["state"], "incident")
         self.assertEqual(repeated["state"], "incident")
         self.assertEqual(backend.apply_calls, 0)
-        self.assertEqual(backend.recovery_calls, 2)
+        self.assertEqual(backend.recovery_calls, 1)
 
     def test_recovery_boundary_converges_after_a_concurrent_run_revision(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -4019,6 +4090,13 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(run_store.raced)
         self.assertEqual(backend.apply_calls, 0)
         self.assertEqual(backend.reconcile_calls, 1)
+        self.assertTrue(
+            any(
+                event["kind"] == "OperationReconciled"
+                and event.get("operation_id") == persisted_effect_id
+                for event in events
+            )
+        )
         self.assertEqual(
             sum(
                 event["kind"] == "OperationTerminal"

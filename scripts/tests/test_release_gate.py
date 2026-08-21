@@ -39,6 +39,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(
             [item["name"] for item in report["gates"]],
             [
+                "github_ci",
                 "clean_install",
                 "upgrade",
                 "rollback",
@@ -54,7 +55,13 @@ class ReleaseGateTests(unittest.TestCase):
             ],
         )
         self.assertTrue(all(item["status"] == "passed" for item in report["gates"]))
-        self.assertEqual(len(calls), 13)
+        self.assertEqual(len(calls), 14)
+        github_ci = calls[0]
+        self.assertIn("github_ci_evidence.py", github_ci[1])
+        self.assertEqual(
+            github_ci[github_ci.index("--commit") + 1],
+            "source-commit-test",
+        )
         self.assertEqual(report["source_commit"], "source-commit-test")
         self.assertRegex(report["environment_fingerprint"], r"^sha256:[0-9a-f]{64}$")
 
@@ -66,9 +73,9 @@ class ReleaseGateTests(unittest.TestCase):
             call_count += 1
             return subprocess.CompletedProcess(
                 command,
-                19 if call_count == 3 else 0,
+                19 if call_count == 4 else 0,
                 "",
-                "upgrade failed" if call_count == 3 else "",
+                "upgrade failed" if call_count == 4 else "",
             )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -84,9 +91,9 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertFalse(report["promotable"])
         self.assertEqual(
             [item["status"] for item in report["gates"]],
-            ["passed", "failed"] + ["skipped"] * 10,
+            ["passed", "passed", "failed"] + ["skipped"] * 10,
         )
-        self.assertEqual(call_count, 3)
+        self.assertEqual(call_count, 4)
 
     def test_upgrade_installs_previous_then_current_release(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -150,7 +157,14 @@ class ReleaseGateTests(unittest.TestCase):
         ):
             self.assertIn(name, workflow)
         self.assertIn("--ab-evidence agent-gateway-ab-evidence/summary.json", workflow)
+        self.assertIn("--github-repository \"${{ github.repository }}\"", workflow)
+        self.assertIn("--work-root release-gate-work", workflow)
+        self.assertIn("release-gate-work/github-ci-evidence.json", workflow)
         self.assertIn("python-version: \"3.12.13\"", workflow)
+        self.assertEqual(
+            release_gate.execute_release_gate.__kwdefaults__["github_repository"],
+            "lihuabai629-star/openubmc-agent-workflow",
+        )
 
 
 if __name__ == "__main__":

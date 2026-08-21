@@ -83,6 +83,11 @@ class EffectRunMode(str, Enum):
     RECOVER = "recover"
 
 
+class EffectSettlementMode(str, Enum):
+    DISPATCH = "dispatch"
+    RECONCILE = "reconcile"
+
+
 class LocalEffectRunner:
     """Run durable Effects locally while preserving one identity across reattach."""
 
@@ -145,8 +150,8 @@ class LocalEffectRunner:
         except FutureTimeout:
             return False
         except BaseException:
-            # The execution callback persists the authoritative failure or
-            # unknown state. RunEngine reads that projection before deciding.
+            # RunEngine converts the settled error into the authoritative
+            # RunDecision after this wait boundary.
             return True
         return True
 

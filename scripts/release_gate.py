@@ -128,6 +128,8 @@ def gate_commands(
     clean_home: Path,
     lifecycle_home: Path,
     ab_evidence: Path | None = None,
+    source_commit: str = "",
+    github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
 ) -> tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]:
     clean_install = tuple(_install_command(current_ref, clean_home))
     previous_install = tuple(_install_command(previous_ref, lifecycle_home))
@@ -140,6 +142,21 @@ def gate_commands(
         else lifecycle_home.parent / "agent-gateway-ab-summary.json"
     )
     return (
+        (
+            "github_ci",
+            (
+                (
+                    sys.executable,
+                    str(ROOT / "scripts" / "github_ci_evidence.py"),
+                    "--repository",
+                    github_repository,
+                    "--commit",
+                    source_commit,
+                    "--output",
+                    str(lifecycle_home.parent / "github-ci-evidence.json"),
+                ),
+            ),
+        ),
         ("clean_install", (clean_install,)),
         ("upgrade", (previous_install, current_upgrade)),
         (
@@ -235,17 +252,21 @@ def execute_release_gate(
     executor: Callable[..., subprocess.CompletedProcess[str]] = run_process,
     source_commit: str | None = None,
     ab_evidence: Path | None = None,
+    github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
 ) -> dict[str, object]:
     clean_home = work_root / "clean-install-home"
     lifecycle_home = work_root / "lifecycle-home"
     results: list[dict[str, object]] = []
     blocked = False
+    resolved_source_commit = source_commit or _resolve_commit(workspace, current_ref)
     for name, commands in gate_commands(
         current_ref=current_ref,
         previous_ref=previous_ref,
         clean_home=clean_home,
         lifecycle_home=lifecycle_home,
         ab_evidence=ab_evidence,
+        source_commit=resolved_source_commit,
+        github_repository=github_repository,
     ):
         if blocked:
             results.append({"name": name, "status": "skipped", "commands": []})
@@ -280,6 +301,9 @@ def execute_release_gate(
     qualification_artifact = _artifact(qualification_path)
     if qualification_artifact is not None:
         artifacts["runtime_qualification"] = qualification_artifact
+    github_ci_artifact = _artifact(work_root / "github-ci-evidence.json")
+    if github_ci_artifact is not None:
+        artifacts["github_ci"] = github_ci_artifact
     if ab_evidence is not None:
         ab_artifact = _artifact(ab_evidence)
         if ab_artifact is not None:
@@ -288,7 +312,7 @@ def execute_release_gate(
         "schema": RELEASE_GATE_SCHEMA,
         "current_ref": current_ref,
         "previous_ref": previous_ref,
-        "source_commit": source_commit or _resolve_commit(workspace, current_ref),
+        "source_commit": resolved_source_commit,
         "environment": environment,
         "environment_fingerprint": _fingerprint(environment),
         "promotable": promotable,
@@ -307,6 +331,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-root", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--ab-evidence", type=Path, required=True)
+    parser.add_argument(
+        "--github-repository",
+        default="lihuabai629-star/openubmc-agent-workflow",
+    )
     args = parser.parse_args(argv)
 
     if args.current_ref == args.previous_ref:
@@ -325,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace=args.workspace.expanduser().absolute(),
             work_root=work_root,
             ab_evidence=args.ab_evidence.expanduser().absolute(),
+            github_repository=args.github_repository,
         )
         encoded = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         if args.output is not None:
