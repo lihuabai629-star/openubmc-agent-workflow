@@ -74,6 +74,27 @@ class Backend:
 
 
 class DomainPackConformanceTests(unittest.TestCase):
+    def test_mutation_receipt_stage_contract_is_owned_by_the_journal(self) -> None:
+        self.assertIn("planned", MutationJournal.VALID_STAGES)
+        self.assertIn("replan_required", MutationJournal.VALID_STAGES)
+        self.assertTrue(
+            MutationJournal.VALID_STAGES.issuperset(
+                MutationJournal.TERMINAL_STAGES
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported mutation journal stage"):
+            MutationJournal(
+                task_id="invalid-stage",
+                operation_id="effect-invalid-stage",
+                operation_fingerprint="a" * 64,
+                action="live_patch",
+                original_intent="live-patch",
+                target_fingerprint="b" * 64,
+                target_identity=None,
+                epoch_before=0,
+                stage="future_stage",
+            )
+
     def test_mutation_journal_owns_a_typed_recovery_disposition(self) -> None:
         journal = MutationJournal(
             task_id="typed-recovery",
@@ -423,9 +444,10 @@ class DomainPackConformanceTests(unittest.TestCase):
         )
         self.assertEqual(len(verifications), 2)
         self.assertEqual(
-            executed.to_public_dict()["action"]["artifact"]["version"],
+            executed.to_public_dict()["action"]["artifact_ref"]["version"],
             "1.0.0",
         )
+        self.assertNotIn("artifact", executed.to_public_dict()["action"])
 
     def test_mutation_pack_never_retries_an_unknown_result(self) -> None:
         attempts = 0

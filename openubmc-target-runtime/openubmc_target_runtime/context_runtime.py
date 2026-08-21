@@ -4533,26 +4533,11 @@ class ContextRuntime:
             value = dict(raw_value)
             minimum_epoch = arguments.get("_minimum_target_epoch")
             if minimum_epoch is not None:
-                if (
-                    isinstance(minimum_epoch, bool)
-                    or not isinstance(minimum_epoch, int)
-                    or minimum_epoch < 0
-                ):
-                    raise TypeError(
-                        "_minimum_target_epoch must be a non-negative integer"
-                    )
-                observed_epoch = self._observed_target_epoch(
+                self._require_minimum_target_epoch(
                     value,
+                    minimum_epoch=minimum_epoch,
                     target_id=execution_target_id,
                 )
-                if observed_epoch is None:
-                    value.setdefault("target_epoch", minimum_epoch)
-                    observed_epoch = minimum_epoch
-                if observed_epoch < minimum_epoch:
-                    raise ValueError(
-                        "fresh verification did not report the required target epoch: "
-                        f"observed {observed_epoch}, required {minimum_epoch}"
-                    )
             operation_status = self._domain_result_status(descriptor, value)
         except Exception as exc:
             current = self.repository.load(case_id)
@@ -5479,7 +5464,7 @@ class ContextRuntime:
         observed = value.get("observed_target_epochs")
         if isinstance(observed, Mapping):
             selected = observed.get(target_id) if target_id else None
-            if selected is None and len(observed) == 1:
+            if selected is None and not target_id and len(observed) == 1:
                 selected = next(iter(observed.values()))
             if (
                 isinstance(selected, int)
@@ -5497,6 +5482,7 @@ class ContextRuntime:
             targets = status.get("targets") if isinstance(status, Mapping) else None
             if not isinstance(targets, list):
                 continue
+            candidates: list[tuple[str, int]] = []
             for target in targets:
                 if not isinstance(target, Mapping):
                     continue
@@ -5507,8 +5493,51 @@ class ContextRuntime:
                     and not isinstance(epoch, bool)
                     and epoch >= 0
                 ):
-                    return epoch
+                    nested_target = target.get("target")
+                    nested_target_id = (
+                        nested_target.get("target_id")
+                        if isinstance(nested_target, Mapping)
+                        else None
+                    )
+                    candidate_target_id = str(
+                        target.get("target_id", nested_target_id or "")
+                    ).strip()
+                    candidates.append((candidate_target_id, epoch))
+            if target_id:
+                for candidate_target_id, epoch in candidates:
+                    if candidate_target_id == target_id:
+                        return epoch
+                if len(candidates) == 1 and not candidates[0][0]:
+                    return candidates[0][1]
+            elif len(candidates) == 1:
+                return candidates[0][1]
         return None
+
+    @classmethod
+    def _require_minimum_target_epoch(
+        cls,
+        value: Mapping[str, object],
+        *,
+        minimum_epoch: object,
+        target_id: str,
+    ) -> int:
+        if (
+            isinstance(minimum_epoch, bool)
+            or not isinstance(minimum_epoch, int)
+            or minimum_epoch < 0
+        ):
+            raise TypeError("_minimum_target_epoch must be a non-negative integer")
+        observed_epoch = cls._observed_target_epoch(value, target_id=target_id)
+        if observed_epoch is None:
+            raise ValueError(
+                "fresh verification did not report the required target epoch"
+            )
+        if observed_epoch < minimum_epoch:
+            raise ValueError(
+                "fresh verification did not report the required target epoch: "
+                f"observed {observed_epoch}, required {minimum_epoch}"
+            )
+        return observed_epoch
 
     @staticmethod
     def _selected_target_id(
@@ -6823,30 +6852,15 @@ class ContextRuntime:
         if value is not None:
             minimum_epoch = arguments.get("_minimum_target_epoch")
             if minimum_epoch is not None:
-                if (
-                    isinstance(minimum_epoch, bool)
-                    or not isinstance(minimum_epoch, int)
-                    or minimum_epoch < 0
-                ):
-                    error = TypeError(
-                        "_minimum_target_epoch must be a non-negative integer"
-                    )
-                    value = None
-                else:
-                    observed_epoch = self._observed_target_epoch(
+                try:
+                    self._require_minimum_target_epoch(
                         value,
+                        minimum_epoch=minimum_epoch,
                         target_id=target_id,
                     )
-                    if observed_epoch is None:
-                        value.setdefault("target_epoch", minimum_epoch)
-                        observed_epoch = minimum_epoch
-                    if observed_epoch < minimum_epoch:
-                        error = ValueError(
-                            "fresh verification did not report the required "
-                            f"target epoch: observed {observed_epoch}, "
-                            f"required {minimum_epoch}"
-                        )
-                        value = None
+                except (TypeError, ValueError) as exc:
+                    error = exc
+                    value = None
 
         if error is not None:
             status = (

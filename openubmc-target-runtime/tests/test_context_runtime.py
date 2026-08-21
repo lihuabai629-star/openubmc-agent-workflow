@@ -14,6 +14,7 @@ sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
     AGENT_ENVELOPE_MAX_BYTES,
+    EffectClass,
     FilesystemBlobRepository,
     IdempotencyConflict,
     InMemoryBlobRepository,
@@ -26,6 +27,10 @@ from openubmc_target_runtime import (  # noqa: E402
     RevisionConflict,
     RuntimeMcpService,
     SQLiteRuntimeRepository,
+)
+from openubmc_target_runtime.effect_runner import (  # noqa: E402
+    EffectIntent,
+    EffectSettlementMode,
 )
 
 
@@ -79,6 +84,9 @@ class FullFakeBackend:
         context.raise_if_stopped()
         value = self._result("debug_collect", task, arguments)
         value["profile"] = arguments.get("profile", "standard")
+        minimum_epoch = arguments.get("_minimum_target_epoch")
+        if isinstance(minimum_epoch, int) and not isinstance(minimum_epoch, bool):
+            value["target_epoch"] = minimum_epoch
         return value
 
     def log_bundle_collect(self, task, arguments, context) -> dict[str, object]:
@@ -240,6 +248,160 @@ class BlobRepositoryContractTests(unittest.TestCase):
 
 
 class ContextRuntimeIntegrationTests(unittest.TestCase):
+    def test_legacy_domain_invocation_requires_an_observed_target_epoch(self) -> None:
+        service = RuntimeMcpService(FullFakeBackend())
+        try:
+            result = service.context_runtime.invoke_domain(
+                service.catalog.require("debug_collect"),
+                {
+                    "ip": "192.0.2.70",
+                    "_minimum_target_epoch": 4,
+                },
+                task_id="legacy-missing-target-epoch",
+                operation_id="legacy-missing-target-epoch-collect",
+                executor=lambda: {
+                    "ok": True,
+                    "business_acceptance": "passed",
+                },
+            )
+        finally:
+            service.close()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.envelope["status"], "failed")
+        self.assertIn(
+            "fresh verification did not report the required target epoch",
+            result["error"],
+        )
+        self.assertNotIn("target_epoch", result)
+
+    def test_legacy_domain_invocation_uses_the_selected_targets_epoch(self) -> None:
+        service = RuntimeMcpService(FullFakeBackend())
+        try:
+            result = service.context_runtime.invoke_domain(
+                service.catalog.require("debug_collect"),
+                {
+                    "ip": "192.0.2.71",
+                    "target_id": "candidate",
+                    "_minimum_target_epoch": 4,
+                },
+                task_id="legacy-target-scoped-epoch",
+                operation_id="legacy-target-scoped-epoch-collect",
+                executor=lambda: {
+                    "ok": True,
+                    "business_acceptance": "passed",
+                    "result": {
+                        "runtime": {
+                            "status": {
+                                "targets": [
+                                    {
+                                        "target_id": "reference",
+                                        "epochs": {"target_epoch": 9},
+                                    },
+                                    {
+                                        "target_id": "candidate",
+                                        "epochs": {"target_epoch": 3},
+                                    },
+                                ]
+                            }
+                        }
+                    },
+                },
+            )
+        finally:
+            service.close()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.envelope["status"], "failed")
+        self.assertIn("observed 3, required 4", result["error"])
+
+    def test_legacy_domain_invocation_rejects_a_foreign_observed_epoch(self) -> None:
+        service = RuntimeMcpService(FullFakeBackend())
+        try:
+            result = service.context_runtime.invoke_domain(
+                service.catalog.require("debug_collect"),
+                {
+                    "ip": "192.0.2.72",
+                    "target_id": "candidate",
+                    "_minimum_target_epoch": 4,
+                },
+                task_id="legacy-foreign-target-epoch",
+                operation_id="legacy-foreign-target-epoch-collect",
+                executor=lambda: {
+                    "ok": True,
+                    "business_acceptance": "passed",
+                    "observed_target_epochs": {"reference": 9},
+                },
+            )
+        finally:
+            service.close()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.envelope["status"], "failed")
+        self.assertIn(
+            "fresh verification did not report the required target epoch",
+            result["error"],
+        )
+
+    def test_effect_transition_rejects_a_foreign_observed_epoch(self) -> None:
+        service = RuntimeMcpService(FullFakeBackend())
+        effect_id = "typed-foreign-target-epoch-collect"
+        try:
+            opened = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.73", "deadline": 10},
+                task_id="typed-foreign-target-epoch",
+                operation_id="typed-foreign-target-epoch-open",
+            )
+            run_id = opened.envelope["case_id"]
+            projection = service.context_runtime.read_case(run_id)
+            service.context_runtime.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {
+                            "operation": "debug_collect",
+                            "idempotency_key": effect_id,
+                            "request_fingerprint": "a" * 64,
+                            "target_id": "candidate",
+                        },
+                        effect_id,
+                    ),
+                    PendingCaseEvent("OperationStarted", {}, effect_id),
+                ),
+            )
+            events = service.context_runtime.prepare_effect_transition(
+                EffectIntent(
+                    run_id=run_id,
+                    effect_id=effect_id,
+                    operation="debug_collect",
+                    effect_class=EffectClass.READ_ONLY,
+                    request_fingerprint="a" * 64,
+                    arguments={
+                        "target_id": "candidate",
+                        "_minimum_target_epoch": 4,
+                    },
+                ),
+                result={
+                    "ok": True,
+                    "business_acceptance": "passed",
+                    "observed_target_epochs": {"reference": 9},
+                },
+                error=None,
+                settlement_mode=EffectSettlementMode.DISPATCH,
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(events[0].kind, "OperationTerminal")
+        self.assertEqual(events[0].payload["status"], "failed")
+        self.assertIn(
+            "fresh verification did not report the required target epoch",
+            events[0].payload["summary"],
+        )
+
     def test_json_rpc_error_uses_mutation_journal_outcome_classification(self) -> None:
         class RollbackFailedBackend(FullFakeBackend):
             def live_patch_run(self, task, arguments, context):

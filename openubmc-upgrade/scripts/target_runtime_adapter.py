@@ -211,6 +211,53 @@ class UpgradeRuntimeAdapter(Generic[MutationValueT, DebugValueT]):
                     return candidate
         raise ValueError("fresh Upgrade verification did not return an installed version")
 
+    def _verify_installed_version(
+        self,
+        fresh: FreshVerificationContext,
+        *,
+        operation_id: str,
+        artifact: UpgradeArtifact,
+        read_installed_version: Callable[[UpgradeVerificationContext], object],
+        debug_verify: Callable[[FreshVerificationContext], DebugValueT] | None,
+    ) -> dict[str, object]:
+        version_request = RemoteReadRequest.create(
+            request_id=(
+                f"{operation_id}:installed-version:"
+                f"attempt-{fresh.verification_attempt}"
+            ),
+            target=self.target,
+            credential_selector=self.redfish_selector,
+            collector_name="upgrade-installed-version",
+            operation={"expected_version": artifact.product_version},
+        )
+
+        def collect_version(read_context):
+            return read_installed_version(
+                UpgradeVerificationContext(
+                    task_id=self.task_run.task_id,
+                    target=self.target,
+                    credentials=read_context.credentials,
+                    redfish_lane=self._redfish_lane(),
+                    artifact=artifact,
+                )
+            )
+
+        version_result = fresh.run_read(version_request, collect_version)
+        installed_version = self._installed_version(version_result.value)
+        if installed_version != artifact.product_version:
+            raise ValueError(
+                "target installed version does not match the upgrade artifact: "
+                f"expected {artifact.product_version}, found {installed_version}"
+            )
+        debug_value = debug_verify(fresh) if debug_verify is not None else None
+        return {
+            "installed_version": installed_version,
+            "version": version_result.value,
+            "debug": debug_value,
+            "target_epoch": version_result.target_epoch,
+            "redfish_epoch": version_result.lane_epochs["redfish"],
+        }
+
     def run(
         self,
         *,
@@ -241,40 +288,13 @@ class UpgradeRuntimeAdapter(Generic[MutationValueT, DebugValueT]):
             )
 
         def verify_upgrade(fresh: FreshVerificationContext) -> dict[str, object]:
-            version_request = RemoteReadRequest.create(
-                request_id=f"{operation_id}:installed-version",
-                target=self.target,
-                credential_selector=self.redfish_selector,
-                collector_name="upgrade-installed-version",
-                operation={"expected_version": artifact.product_version},
+            return self._verify_installed_version(
+                fresh,
+                operation_id=operation_id,
+                artifact=artifact,
+                read_installed_version=read_installed_version,
+                debug_verify=debug_verify,
             )
-
-            def collect_version(_read_context):
-                return read_installed_version(
-                    UpgradeVerificationContext(
-                        task_id=self.task_run.task_id,
-                        target=self.target,
-                        credentials=_read_context.credentials,
-                        redfish_lane=self._redfish_lane(),
-                        artifact=artifact,
-                    )
-                )
-
-            version_result = fresh.run_read(version_request, collect_version)
-            installed_version = self._installed_version(version_result.value)
-            if installed_version != artifact.product_version:
-                raise ValueError(
-                    "target installed version does not match the upgrade artifact: "
-                    f"expected {artifact.product_version}, found {installed_version}"
-                )
-            debug_value = debug_verify(fresh) if debug_verify is not None else None
-            return {
-                "installed_version": installed_version,
-                "version": version_result.value,
-                "debug": debug_value,
-                "target_epoch": version_result.target_epoch,
-                "redfish_epoch": version_result.lane_epochs["redfish"],
-            }
 
         return self.task_run.run_mutation(
             request,
@@ -304,39 +324,13 @@ class UpgradeRuntimeAdapter(Generic[MutationValueT, DebugValueT]):
         )
 
         def verify_upgrade(fresh: FreshVerificationContext) -> dict[str, object]:
-            version_request = RemoteReadRequest.create(
-                request_id=f"{operation_id}:installed-version",
-                target=self.target,
-                credential_selector=self.redfish_selector,
-                collector_name="upgrade-installed-version",
-                operation={"expected_version": artifact.product_version},
+            return self._verify_installed_version(
+                fresh,
+                operation_id=operation_id,
+                artifact=artifact,
+                read_installed_version=read_installed_version,
+                debug_verify=None,
             )
-
-            def collect_version(_read_context):
-                return read_installed_version(
-                    UpgradeVerificationContext(
-                        task_id=self.task_run.task_id,
-                        target=self.target,
-                        credentials=_read_context.credentials,
-                        redfish_lane=self._redfish_lane(),
-                        artifact=artifact,
-                    )
-                )
-
-            version_result = fresh.run_read(version_request, collect_version)
-            installed_version = self._installed_version(version_result.value)
-            if installed_version != artifact.product_version:
-                raise ValueError(
-                    "target installed version does not match the upgrade artifact: "
-                    f"expected {artifact.product_version}, found {installed_version}"
-                )
-            return {
-                "installed_version": installed_version,
-                "version": version_result.value,
-                "debug": None,
-                "target_epoch": version_result.target_epoch,
-                "redfish_epoch": version_result.lane_epochs["redfish"],
-            }
 
         return self.task_run.recover_mutation(
             request,

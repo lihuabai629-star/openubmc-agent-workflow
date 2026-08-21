@@ -1445,6 +1445,9 @@ class MutationContext:
     def record_artifact(self, reference: str) -> None:
         self.journal.record_artifact(reference)
 
+    def record_target_identity(self, identity: TargetIdentity) -> None:
+        self.journal.record_target_identity(identity)
+
     def mark_effects_started(self) -> None:
         self.journal.mark_effects_started()
 
@@ -1480,12 +1483,16 @@ class FreshVerificationContext:
         target: TargetSpec,
         mutation_token: object,
         epoch_after: int,
+        verification_attempt: int,
     ) -> None:
+        if verification_attempt < 1:
+            raise ValueError("verification_attempt must be positive")
         self.task_run = task_run
         self.coordinator = coordinator
         self.target = target
         self.mutation_token = mutation_token
         self.epoch_after = epoch_after
+        self.verification_attempt = verification_attempt
 
     def run_read(
         self,
@@ -1923,6 +1930,21 @@ class OpenUBMCTaskRun:
             if mutation_phase
             else None
         )
+        expected_missing = (
+            mutation_value.get("expected_missing")
+            if mutation_phase
+            else None
+        )
+        if expected_missing is None and mutation_phase:
+            expected_missing = mutation_value.get("remote_removed")
+        expected_metadata = (
+            mutation_value.get(
+                "expected_metadata",
+                mutation_value.get("remote_after_metadata"),
+            )
+            if mutation_phase
+            else None
+        )
         observed_checksum = mutation_value.get(
             "observed_checksum",
             mutation_value.get("remote_after_sha256"),
@@ -1942,6 +1964,16 @@ class OpenUBMCTaskRun:
             ),
             expected_checksum=(
                 str(expected_checksum) if expected_checksum is not None else None
+            ),
+            expected_missing=(
+                bool(expected_missing)
+                if expected_missing is not None
+                else None
+            ),
+            expected_metadata=(
+                expected_metadata
+                if isinstance(expected_metadata, Mapping)
+                else None
             ),
             observed_checksum=(
                 str(observed_checksum) if observed_checksum is not None else None
@@ -2197,6 +2229,7 @@ class OpenUBMCTaskRun:
                 target=request.target,
                 mutation_token=token,
                 epoch_after=epoch_after,
+                verification_attempt=journal.begin_verification_attempt(),
             )
             try:
                 verification_value = verify(verification_context)
@@ -2310,6 +2343,14 @@ class OpenUBMCTaskRun:
                 journal=journal,
                 inspection=MutationRecoveryEvidence(),
             )
+        if journal.stage == "replan_required":
+            self._record_metric("mutation_recoveries")
+            return MutationRecoveryStatus(
+                operation_id=request.operation_id,
+                decision="replan",
+                journal=journal,
+                inspection=MutationRecoveryEvidence(),
+            )
 
         try:
             resolution = self._ssh_credential_resolver().resolve_with_status(
@@ -2347,13 +2388,7 @@ class OpenUBMCTaskRun:
             raise
         journal.record_execution_evidence(
             observed_checksum=evidence.remote_checksum,
-            root_mount_mode=evidence.root_mount_mode,
             root_mount_restored=evidence.root_mount_restored,
-            restart_state=(
-                f"observed:{str(evidence.restart_observed).lower()}"
-                if evidence.restart_observed is not None
-                else "observed:unknown"
-            ),
         )
         decision = decide_mutation_recovery(journal, evidence)
         self._record_metric("mutation_recoveries")
@@ -2499,6 +2534,7 @@ class OpenUBMCTaskRun:
                 target=request.target,
                 mutation_token=token,
                 epoch_after=verification_epoch,
+                verification_attempt=journal.begin_verification_attempt(),
             )
             try:
                 verification_value = verify(verification_context)

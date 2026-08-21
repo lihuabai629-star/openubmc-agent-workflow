@@ -12,7 +12,7 @@ from typing import Protocol
 
 from .catalog import OperationCatalogError, validate_json_schema
 from .contracts import RUNTIME_API_VERSION
-from .mutation import MutationRecoveryDisposition
+from .mutation import MutationJournal, MutationRecoveryDisposition
 from .semantic_runtime import ArtifactRef
 
 
@@ -331,8 +331,7 @@ def mutation_recovery_route(
             raise ValueError(
                 "MutationJournal did not provide a valid recovery disposition"
             )
-        if disposition is not MutationRecoveryDisposition.NEW:
-            return MutationRecoveryRoute(journals, journal, disposition)
+        return MutationRecoveryRoute(journals, journal, disposition)
     require_effect_recovery_journal(
         mode,
         journals,
@@ -435,37 +434,10 @@ class DomainAction:
                 if self.artifact is not None
                 else None
             ),
-            "artifact": (
-                self.artifact.to_public_dict()
-                if self.artifact is not None
-                else None
-            ),
         }
 
 
 DomainVerifier = Callable[[DomainAction, DomainReceipt], bool]
-
-
-_MUTATION_JOURNAL_STAGES = frozenset(
-    {
-        "planned",
-        "applying",
-        "applied",
-        "verifying",
-        "verified",
-        "replan_required",
-        "mutation_failed",
-        "verification_failed",
-        "verification_failed_terminal",
-        "recovery_blocked",
-        "rolling_back",
-        "rollback_verifying",
-        "rollback_verified",
-        "rollback_failed",
-        "rollback_verification_failed",
-        "rollback_verification_failed_terminal",
-    }
-)
 
 
 def _mutation_journal_receipt_valid(
@@ -494,7 +466,7 @@ def _mutation_journal_receipt_valid(
         return False
     if not action and (schema or compatible_action != expected_action):
         return False
-    if str(journal.get("stage", "")) not in _MUTATION_JOURNAL_STAGES:
+    if str(journal.get("stage", "")) not in MutationJournal.VALID_STAGES:
         return False
     if schema:
         if schema != f"{RUNTIME_API_VERSION}/mutation-journal":

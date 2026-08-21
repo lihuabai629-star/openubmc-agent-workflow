@@ -948,6 +948,26 @@ class UpgradeMcpBackend:
                         "activation fallback; the artifact was not uploaded again"
                     )
                 return result.to_public_dict()
+            if (
+                recovery_route.disposition == "new"
+                and recovery_mode is not None
+            ):
+                recovered = adapter.recover(
+                    operation_id=matching_journal.operation_id,
+                    authorization=authorization,
+                    artifact=artifact,
+                    inspection={"target_reachable": True},
+                    read_installed_version=lambda _verification: (
+                        (_ for _ in ()).throw(
+                            RuntimeError("replanned Upgrade recovery invoked verify")
+                        )
+                    ),
+                    mutation_options=mutation_options,
+                    operation_context=context,
+                )
+                return recovered.to_transaction_dict(
+                    target_fingerprint=binding.target.fingerprint
+                )
             if recovery_route.disposition == "recover":
                 recovery = self._recover_uncertain_upgrade(
                     binding=binding,

@@ -21,6 +21,7 @@ from openubmc_target_runtime import (  # noqa: E402
     MutationJournal,
     MutationJournalCorrupt,
     MutationJournalStore,
+    MutationRecoveryEvidence,
     MutationRequest,
     MutationVerificationTerminalFailure,
     OpenUBMCTaskRun,
@@ -29,10 +30,40 @@ from openubmc_target_runtime import (  # noqa: E402
     TargetIdentity,
     TargetSpec,
     UnfinishedMutationExists,
+    decide_mutation_recovery,
 )
 
 
 class MutationRecoveryTests(unittest.TestCase):
+    def test_recovery_safety_is_distinct_from_target_reachability(self) -> None:
+        journal = MutationJournal(
+            task_id="recovery-safety",
+            operation_id="patch-recovery-safety",
+            operation_fingerprint="a" * 64,
+            action="live_patch",
+            original_intent="live-patch",
+            target_fingerprint="b" * 64,
+            target_identity=None,
+            epoch_before=0,
+            stage="applying",
+            effects_started=True,
+        )
+        evidence = MutationRecoveryEvidence.from_value(
+            {
+                "target_reachable": True,
+                "recovery_safe": False,
+                "safety_blockers": ["root_mount_not_restored"],
+            }
+        )
+
+        self.assertTrue(evidence.target_reachable)
+        self.assertFalse(evidence.recovery_safe)
+        self.assertEqual(
+            evidence.safety_blockers,
+            ("root_mount_not_restored",),
+        )
+        self.assertEqual(decide_mutation_recovery(journal, evidence), "manual")
+
     def setUp(self) -> None:
         self.selector = CredentialSelector.for_ssh(
             user="root",
@@ -655,6 +686,40 @@ class MutationRecoveryTests(unittest.TestCase):
             )
 
             self.assertEqual(inspected, ["read-only"])
+            self.assertEqual(status.decision, "replan")
+            self.assertEqual(status.journal.stage, "replan_required")
+
+    def test_replan_required_recovery_returns_the_durable_decision_without_inspection(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = MutationJournalStore(Path(raw) / "journals")
+            store.create(
+                MutationJournal(
+                    task_id="recovery-task",
+                    operation_id="patch-1",
+                    operation_fingerprint=self.request().fingerprint,
+                    action="live_patch",
+                    original_intent="diagnose-and-fix",
+                    target_fingerprint=self.target.fingerprint,
+                    target_identity=None,
+                    epoch_before=0,
+                    stage="replan_required",
+                    effects_started=False,
+                    verification_state="not_started",
+                    recovery_decision="replan",
+                )
+            )
+            restarted = self.task(store)
+
+            status = restarted.recover_mutation(
+                self.request(),
+                authorization=self.authorization,
+                inspect=lambda _context: self.fail(
+                    "durable replan recovery must not inspect the target"
+                ),
+                verify=lambda _context: self.fail("replan must not verify"),
+                rollback=lambda *_args: self.fail("replan must not rollback"),
+            )
+
             self.assertEqual(status.decision, "replan")
             self.assertEqual(status.journal.stage, "replan_required")
 

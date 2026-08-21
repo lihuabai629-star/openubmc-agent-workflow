@@ -172,6 +172,12 @@ class FakeTelnetTransport:
         self.current_mode = target_mode if target_exists else "644"
         self.current_uid = target_uid if target_exists else 0
         self.current_gid = target_gid if target_exists else 0
+        self.product_id = "product-a"
+        self.machine_id = "machine-a"
+        self.firmware_id = "firmware-1"
+        self.reboot_anchor = "boot-a"
+        self.skynet_pid = 100
+        self.skynet_start = 1000
         self.opens = 0
         self.commands: list[str] = []
 
@@ -185,6 +191,22 @@ class FakeTelnetTransport:
             stdout = "live_patch_paths_safe"
         elif "live_patch_codec_ready" in command:
             stdout = "live_patch_codec_ready"
+        elif "live_patch_identity_inspected" in command:
+            stdout = (
+                f"product_id={self.product_id}\n"
+                f"machine_id={self.machine_id}\n"
+                f"firmware_id={self.firmware_id}\n"
+                f"reboot_anchor={self.reboot_anchor}\n"
+                "live_patch_identity_inspected"
+            )
+        elif "rollback_backup_inspected" in command:
+            stdout = (
+                f"backup_sha256={self.digest}\n"
+                f"backup_mode={self.target_mode}\n"
+                f"backup_uid={self.target_uid}\n"
+                f"backup_gid={self.target_gid}\n"
+                "rollback_backup_inspected"
+            )
         elif "/proc/mounts" in command:
             stdout = "rw,relatime"
         elif "live_patch_recovery_inspected" in command:
@@ -204,8 +226,11 @@ class FakeTelnetTransport:
                 f"backup_uid={self.target_uid}\n"
                 f"backup_gid={self.target_gid}\nbackup_exists"
             )
-        elif "live_patch_restart_observed" in command:
-            stdout = "live_patch_restart_observed"
+        elif "live_patch_skynet_identity_inspected" in command:
+            stdout = (
+                f"skynet_process_identity={self.skynet_pid}:{self.skynet_start}\n"
+                "live_patch_skynet_identity_inspected"
+            )
         elif "target_exists" in command:
             stdout = (
                 f"{self.digest}  /opt/bmc/apps/demo/unit.lua\n"
@@ -268,6 +293,8 @@ class FakeTelnetTransport:
                 f"remote_gid={self.current_gid}\nverify_sha256"
             )
         elif "restart_ok" in command:
+            self.skynet_pid += 1
+            self.skynet_start += 1000
             stdout = "restart_ok"
         else:
             stdout = "ok"
@@ -299,6 +326,64 @@ class FailRestartOnceTelnetTransport(FakeTelnetTransport):
             self.commands.append(command)
             self.failed_restart = True
             raise OSError("connection lost after Live Patch install")
+        return super().run_command(session, command, **kwargs)
+
+
+class FailVerificationOnceTelnetTransport(FakeTelnetTransport):
+    def __init__(self, digest: str, **kwargs) -> None:
+        super().__init__(digest, **kwargs)
+        self.failed_verification = False
+
+    def run_command(self, session, command: str, **kwargs):
+        if "verify_sha256" in command and not self.failed_verification:
+            self.commands.append(command)
+            self.failed_verification = True
+            raise OSError("connection lost during fresh rollback verification")
+        return super().run_command(session, command, **kwargs)
+
+
+class FailVerificationTwiceTelnetTransport(FakeTelnetTransport):
+    def __init__(self, digest: str, **kwargs) -> None:
+        super().__init__(digest, **kwargs)
+        self.remaining_verification_failures = 2
+
+    def run_command(self, session, command: str, **kwargs):
+        if "verify_sha256" in command and self.remaining_verification_failures:
+            self.commands.append(command)
+            self.remaining_verification_failures -= 1
+            raise OSError("connection lost during fresh rollback verification")
+        return super().run_command(session, command, **kwargs)
+
+
+class LoseRollbackResponseOnceTelnetTransport(FakeTelnetTransport):
+    def __init__(self, digest: str, **kwargs) -> None:
+        super().__init__(digest, **kwargs)
+        self.rollback_commands = 0
+        self.response_lost = False
+
+    def run_command(self, session, command: str, **kwargs):
+        if "p=r;" in command:
+            self.rollback_commands += 1
+            result = super().run_command(session, command, **kwargs)
+            if not self.response_lost:
+                self.response_lost = True
+                raise OSError("connection lost after atomic rollback")
+            return result
+        return super().run_command(session, command, **kwargs)
+
+
+class UnsafePathTelnetTransport(FakeTelnetTransport):
+    def run_command(self, session, command: str, **kwargs):
+        if "live_patch_paths_safe" in command:
+            self.commands.append(command)
+            return TelnetCommandResult(
+                stdout="live_patch_path_rejected",
+                returncode=0,
+                framing_complete=True,
+                timed_out=False,
+                connection_closed=False,
+                raw=b"live_patch_path_rejected",
+            )
         return super().run_command(session, command, **kwargs)
 
 
@@ -434,10 +519,13 @@ class CrashCutTelnetTransport(FakeTelnetTransport):
             self.commands.append(command)
             self.recovery_reads.append("mount")
             return self._result(f"{self.root_mount_mode},relatime")
-        if "live_patch_restart_observed" in command:
+        if "live_patch_skynet_identity_inspected" in command:
             self.commands.append(command)
             self.recovery_reads.append("restart")
-            return self._result("live_patch_restart_observed")
+            return self._result(
+                f"skynet_process_identity={self.skynet_pid}:{self.skynet_start}\n"
+                "live_patch_skynet_identity_inspected"
+            )
         if "target_exists" in command:
             self.commands.append(command)
             return self._result(
@@ -1982,6 +2070,824 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
             result["verification"]["remote_metadata"],
             {"mode": "644", "uid": 104, "gid": 104},
         )
+
+    def test_unknown_rollback_is_reconciled_read_first_without_reapply(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "a" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first_telnet = FailRestartOnceTelnetTransport(
+                digest,
+                target_exists=True,
+            )
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: first_telnet,
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-live-patch-rollback-recovery",
+                        operation_id="rollback-recovery",
+                    )
+            finally:
+                first.close()
+
+            second_telnet = FakeTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+            )
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-live-patch-rollback-recovery",
+                    operation_id="rollback-recovery",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(
+            sum("p=r;" in command for command in first_telnet.commands),
+            1,
+        )
+        self.assertFalse(any("p=r;" in command for command in second_telnet.commands))
+        self.assertEqual(recovered["journal"]["stage"], "verified")
+        self.assertEqual(
+            recovered["mutation"]["recovery"]["decision"],
+            "verify",
+        )
+        self.assertEqual(recovered["verification"]["remote_sha256"], digest)
+
+    def test_rollback_recovery_rejects_an_unobserved_skynet_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "a" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "skynet",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: FailRestartOnceTelnetTransport(
+                        digest,
+                        target_exists=True,
+                        target_mode="644",
+                    ),
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-rollback-restart-not-observed",
+                        operation_id="rollback-restart-not-observed",
+                    )
+            finally:
+                first.close()
+
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: FakeTelnetTransport(
+                        digest,
+                        target_exists=True,
+                        target_mode="644",
+                    ),
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-restart-not-observed",
+                    operation_id="rollback-restart-not-observed",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(recovered["journal"]["stage"], "recovery_blocked")
+        self.assertEqual(
+            recovered["mutation"]["recovery"]["decision"],
+            "manual",
+        )
+        inspection = recovered["mutation"]["recovery"]["inspection"]
+        self.assertFalse(inspection["restart_observed"])
+        self.assertIn("restart_not_observed", inspection["safety_blockers"])
+
+    def test_reconcile_returns_replan_without_replaying_a_pre_effect_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "a" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first_telnet = UnsafePathTelnetTransport(digest, target_exists=True)
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: first_telnet,
+                )
+            )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "symlink guard failed"):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-rollback-replan-recovery",
+                        operation_id="rollback-replan-recovery",
+                    )
+            finally:
+                first.close()
+
+            second_telnet = FakeTelnetTransport(digest, target_exists=True)
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-replan-recovery",
+                    operation_id="rollback-replan-recovery",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(recovered["journal"]["stage"], "replan_required")
+        self.assertEqual(
+            recovered["mutation"]["recovery"]["decision"],
+            "replan",
+        )
+        self.assertFalse(any("p=r;" in command for command in second_telnet.commands))
+
+    def test_rollback_recovery_rejects_joint_backup_and_target_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            restored_digest = "a" * 64
+            drifted_digest = "b" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first_telnet = FailRestartOnceTelnetTransport(
+                restored_digest,
+                target_exists=True,
+            )
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: first_telnet,
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-rollback-drift-recovery",
+                        operation_id="rollback-drift-recovery",
+                    )
+            finally:
+                first.close()
+
+            journal = journals.load_for_task("task-rollback-drift-recovery")[0]
+            durable = journal.to_public_dict()
+            self.assertEqual(durable["expected_checksum"], restored_digest)
+            self.assertFalse(durable["expected_missing"])
+            self.assertEqual(
+                durable["expected_metadata"],
+                {"mode": "644", "uid": 104, "gid": 104},
+            )
+
+            second_telnet = FakeTelnetTransport(
+                drifted_digest,
+                target_exists=True,
+            )
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-drift-recovery",
+                    operation_id="rollback-drift-recovery",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(recovered["journal"]["stage"], "recovery_blocked")
+        self.assertEqual(
+            recovered["mutation"]["recovery"]["decision"],
+            "manual",
+        )
+        self.assertFalse(
+            any("verify_sha256" in command for command in second_telnet.commands)
+        )
+
+    def test_rollback_recovery_uses_a_new_fresh_read_identity_per_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "a" * 64
+            telnet = FailVerificationOnceTelnetTransport(
+                digest,
+                target_exists=True,
+            )
+            service = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=MutationJournalStore(root / "journals"),
+                    credential_loader=lambda _arguments: {
+                        "ssh": {"user": "root", "password": "ssh-secret"},
+                        "telnet": {"user": "root", "password": "telnet-secret"},
+                    },
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: telnet,
+                )
+            )
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            try:
+                with self.assertRaises(OSError):
+                    service.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-rollback-fresh-attempt",
+                        operation_id="rollback-fresh-attempt",
+                    )
+                recovered = service.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-fresh-attempt",
+                    operation_id="rollback-fresh-attempt",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(recovered["journal"]["stage"], "verified")
+        self.assertEqual(recovered["journal"]["verification_attempts"], 2)
+        self.assertEqual(
+            sum("verify_sha256" in command for command in telnet.commands),
+            2,
+        )
+
+    def test_lost_rollback_response_recovers_from_precommitted_expectation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "a" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first_telnet = LoseRollbackResponseOnceTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+            )
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: first_telnet,
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-rollback-lost-response",
+                        operation_id="rollback-lost-response",
+                    )
+            finally:
+                first.close()
+
+            durable = journals.load_for_task("task-rollback-lost-response")[0]
+            self.assertEqual(durable.expected_checksum, digest)
+            self.assertFalse(durable.expected_missing)
+            self.assertEqual(
+                durable.expected_metadata,
+                {"mode": "644", "uid": 104, "gid": 104},
+            )
+
+            second_telnet = FakeTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+            )
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-lost-response",
+                    operation_id="rollback-lost-response",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(first_telnet.rollback_commands, 1)
+        self.assertFalse(any("p=r;" in command for command in second_telnet.commands))
+        self.assertEqual(recovered["journal"]["stage"], "verified")
+
+    def test_rollback_recovery_ignores_missing_backup_after_target_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "a" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: FailRestartOnceTelnetTransport(
+                        digest,
+                        target_exists=True,
+                        target_mode="644",
+                    ),
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-rollback-missing-backup",
+                        operation_id="rollback-missing-backup",
+                    )
+            finally:
+                first.close()
+
+            second_telnet = MissingBackupTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+            )
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-missing-backup",
+                    operation_id="rollback-missing-backup",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(recovered["journal"]["stage"], "verified")
+        self.assertEqual(
+            recovered["mutation"]["recovery"]["inspection"]["backup_exists"],
+            False,
+        )
+
+    def test_rollback_recovery_fails_closed_without_original_mount_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "a" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: FailRestartOnceTelnetTransport(
+                        digest,
+                        target_exists=True,
+                        target_mode="644",
+                    ),
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-rollback-unknown-mount",
+                        operation_id="rollback-unknown-mount",
+                    )
+            finally:
+                first.close()
+
+            journal = journals.load_for_task("task-rollback-unknown-mount")[0]
+            journal.root_mount_mode = "unknown"
+            journal.root_mount_restored = None
+            journals.save(journal)
+
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: FakeTelnetTransport(
+                        digest,
+                        target_exists=True,
+                        target_mode="644",
+                    ),
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-unknown-mount",
+                    operation_id="rollback-unknown-mount",
+                )
+                self.assertEqual(
+                    journals.load_for_task("task-rollback-unknown-mount")[0].root_mount_mode,
+                    "unknown",
+                )
+                repeated = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-unknown-mount",
+                    operation_id="rollback-unknown-mount",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(recovered["journal"]["stage"], "recovery_blocked")
+        self.assertEqual(repeated["journal"]["stage"], "recovery_blocked")
+        self.assertEqual(
+            recovered["mutation"]["recovery"]["decision"],
+            "manual",
+        )
+
+        inspection = recovered["mutation"]["recovery"]["inspection"]
+        self.assertTrue(inspection["target_reachable"])
+        self.assertFalse(inspection["recovery_safe"])
+        self.assertIn(
+            "root_mount_not_restored",
+            inspection["safety_blockers"],
+        )
+
+    def test_rollback_restart_baseline_survives_repeated_reconcile(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "a" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "skynet",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            telnet = FailVerificationTwiceTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+            )
+
+            def service() -> RuntimeMcpService:
+                return RuntimeMcpService(
+                    LivePatchMcpBackend(
+                        journal_store=journals,
+                        credential_loader=credentials,
+                        ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                        telnet_transport_factory=lambda _arguments: telnet,
+                    )
+                )
+
+            first = service()
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-rollback-repeated-reconcile",
+                        operation_id="rollback-repeated-reconcile",
+                    )
+            finally:
+                first.close()
+
+            second = service()
+            try:
+                with self.assertRaises(OSError):
+                    second.call_tool(
+                        "live_patch_run",
+                        {**arguments, "_runtime_effect_recovery": "reconcile"},
+                        task_id="task-rollback-repeated-reconcile",
+                        operation_id="rollback-repeated-reconcile",
+                    )
+            finally:
+                second.close()
+
+            third = service()
+            try:
+                recovered = third.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-repeated-reconcile",
+                    operation_id="rollback-repeated-reconcile",
+                )
+            finally:
+                third.close()
+
+        self.assertEqual(recovered["journal"]["stage"], "verified")
+        self.assertEqual(
+            recovered["mutation"]["recovery"]["decision"],
+            "verify",
+        )
+
+    def test_rollback_recovery_rejects_a_replacement_target(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "a" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "backup_path": "/tmp/unit.lua.bak.1",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first_telnet = FailRestartOnceTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+            )
+            first_telnet.machine_id = "machine-a"
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: first_telnet,
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-rollback-replacement",
+                        operation_id="rollback-replacement",
+                    )
+            finally:
+                first.close()
+
+            second_telnet = FakeTelnetTransport(
+                digest,
+                target_exists=True,
+                target_mode="644",
+            )
+            second_telnet.machine_id = "machine-b"
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-rollback-replacement",
+                    operation_id="rollback-replacement",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(recovered["journal"]["stage"], "recovery_blocked")
+        self.assertEqual(
+            recovered["mutation"]["recovery"]["decision"],
+            "manual",
+        )
+
+    def test_unknown_remove_created_rollback_verifies_absence_without_reapply(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            digest = "c" * 64
+            journals = MutationJournalStore(root / "journals")
+            credentials = lambda _arguments: {
+                "ssh": {"user": "root", "password": "ssh-secret"},
+                "telnet": {"user": "root", "password": "telnet-secret"},
+            }
+            arguments = {
+                "intent": "rollback",
+                "action": "rollback",
+                "ip": "bmc.example",
+                "remove_created": True,
+                "expected_current_sha256": digest,
+                "remote_path": "/tmp/openubmc-live-patch-recovery",
+                "restart_scope": "none",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first_telnet = FailRestartOnceTelnetTransport(
+                digest,
+                target_exists=True,
+            )
+            first = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: first_telnet,
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "live_patch_run",
+                        arguments,
+                        task_id="task-remove-created-recovery",
+                        operation_id="rollback-remove-created-recovery",
+                    )
+            finally:
+                first.close()
+
+            second_telnet = FakeTelnetTransport(digest, target_exists=False)
+            second = RuntimeMcpService(
+                LivePatchMcpBackend(
+                    journal_store=journals,
+                    credential_loader=credentials,
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: second_telnet,
+                )
+            )
+            try:
+                recovered = second.call_tool(
+                    "live_patch_run",
+                    {**arguments, "_runtime_effect_recovery": "reconcile"},
+                    task_id="task-remove-created-recovery",
+                    operation_id="rollback-remove-created-recovery",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(
+            sum("p=r;" in command for command in first_telnet.commands),
+            1,
+        )
+        self.assertFalse(any("p=r;" in command for command in second_telnet.commands))
+        recovery_guard = next(
+            command
+            for command in second_telnet.commands
+            if "live_patch_paths_safe" in command
+        )
+        self.assertEqual(
+            recovery_guard.count(
+                "test -f /tmp/openubmc-live-patch-recovery"
+            ),
+            1,
+        )
+        self.assertEqual(recovered["journal"]["stage"], "verified")
+        self.assertEqual(
+            recovered["mutation"]["recovery"]["decision"],
+            "verify",
+        )
+        self.assertTrue(recovered["verification"]["remote_removed"])
 
     def test_backend_removes_a_checksum_matched_created_target(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -227,6 +227,9 @@ class SemanticBackend:
             "_minimum_target_epoch"
         ):
             value["business_acceptance"] = "passed"
+        minimum_epoch = arguments.get("_minimum_target_epoch")
+        if isinstance(minimum_epoch, int) and not isinstance(minimum_epoch, bool):
+            value["target_epoch"] = minimum_epoch
         return value
 
     def debug_run(self, task, arguments, context) -> dict[str, object]:
@@ -350,6 +353,13 @@ class FailLivePatchSemanticBackend(SemanticBackend):
         context.raise_if_stopped()
         self.calls.append(("live_patch_run", dict(arguments)))
         raise OSError("live patch connection lost")
+
+
+class MissingFreshEpochSemanticBackend(SemanticBackend):
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value.pop("target_epoch", None)
+        return value
 
 
 class IncompleteAcceptanceSemanticBackend(SemanticBackend):
@@ -3322,6 +3332,68 @@ class AgentGatewayTests(unittest.TestCase):
             sum(event["kind"] == "RunOutcomeRecorded" for event in events),
             1,
         )
+
+    def test_post_mutation_verification_requires_an_observed_target_epoch(self) -> None:
+        backend = MissingFreshEpochSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "missing-fresh-epoch.lua"
+        patch_file.write_bytes(b"return 'missing-epoch'\n")
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.69",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="missing-fresh-epoch",
+                operation_id="missing-fresh-epoch-start",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair ready",
+                        "payload": {
+                            "source_revision": "missing-fresh-epoch-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh target verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.69",
+                                run_id=waiting["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
+                    },
+                },
+                task_id="missing-fresh-epoch",
+                operation_id="missing-fresh-epoch-response",
+            )
+            for attempt in range(1, 4):
+                if final["state"] != "running":
+                    break
+                final = service.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": waiting["run_id"]},
+                    task_id="missing-fresh-epoch",
+                    operation_id=f"missing-fresh-epoch-resume-{attempt}",
+                )
+            projection = service.context_runtime.read_case(waiting["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(final["state"], "running")
+        self.assertIsNone(final["outcome"])
+        self.assertFalse(projection.get("run_outcome"))
+        self.assertIn("fresh target verification", final["next"])
 
     def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
         first = self.service.call_exposed_tool(

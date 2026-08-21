@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -442,6 +442,40 @@ class RunEngine:
         if transaction is None:
             raise CommandConflict("Run transition requires an active RunDecision")
         transaction.stage(events=events, effect_intent=effect_intent)
+
+    def _commit_run_decision(
+        self,
+        *,
+        run_id: str,
+        build: Callable[[RunCommandTransaction], RunDecision | None],
+        retry_conflicts: bool,
+        exhausted_message: str,
+        replay: Callable[[], CommittedRunDecision | None] | None = None,
+    ) -> CommittedRunDecision | None:
+        """Commit one atomic RunDecision with the shared revision retry protocol."""
+
+        for attempt in range(4):
+            if replay is not None:
+                replayed = replay()
+                if replayed is not None:
+                    return replayed
+            with self.command_transactions.begin(run_id) as transaction:
+                token = self._active_transaction.set(transaction)
+                try:
+                    decision = build(transaction)
+                    if decision is None:
+                        return None
+                    try:
+                        committed = self.run_store.commit(decision)
+                    except RunDecisionConflict as exc:
+                        if not retry_conflicts or attempt >= 3:
+                            raise CommandConflict(str(exc)) from exc
+                        continue
+                    transaction.accept()
+                    return committed
+                finally:
+                    self._active_transaction.reset(token)
+        raise CommandConflict(exhausted_message)
 
     def _apply_transition(
         self,
@@ -1597,41 +1631,35 @@ class RunEngine:
             raise CommandConflict(str(exc)) from exc
         if replayed is not None:
             return replayed.turn
-        for attempt in range(4):
-            with self.command_transactions.begin(intent.run_id) as transaction:
-                token = self._active_transaction.set(transaction)
-                try:
-                    snapshot = self._record_incident(
-                        self.driver.run_snapshot(intent.run_id),
-                        code="mutation_outcome_unknown",
-                        message=(
-                            "Mutation recovery could not prove the durable Effect "
-                            "outcome without reapplying it"
-                        ),
-                        effect_id=intent.effect_id,
-                        operation_id=f"{intent.effect_id}-recovery-incident",
-                    )
-                    turn = self._turn(snapshot, state="incident")
-                    try:
-                        committed = self.run_store.commit(
-                            RunDecision(
-                                run_id=intent.run_id,
-                                command_id=command_id,
-                                input_digest=input_digest,
-                                expected_revision=transaction.expected_revision,
-                                events=transaction.events,
-                                turn=turn,
-                            )
-                        )
-                    except RunDecisionConflict as exc:
-                        if attempt >= 3:
-                            raise CommandConflict(str(exc)) from exc
-                        continue
-                    transaction.accept()
-                    return committed.turn
-                finally:
-                    self._active_transaction.reset(token)
-        raise CommandConflict("recovery Incident decision could not converge")
+        def build(transaction: RunCommandTransaction) -> RunDecision:
+            snapshot = self._record_incident(
+                self.driver.run_snapshot(intent.run_id),
+                code="mutation_outcome_unknown",
+                message=(
+                    "Mutation recovery could not prove the durable Effect "
+                    "outcome without reapplying it"
+                ),
+                effect_id=intent.effect_id,
+                operation_id=f"{intent.effect_id}-recovery-incident",
+            )
+            return RunDecision(
+                run_id=intent.run_id,
+                command_id=command_id,
+                input_digest=input_digest,
+                expected_revision=transaction.expected_revision,
+                events=transaction.events,
+                turn=self._turn(snapshot, state="incident"),
+            )
+
+        committed = self._commit_run_decision(
+            run_id=intent.run_id,
+            build=build,
+            retry_conflicts=True,
+            exhausted_message="recovery Incident decision could not converge",
+        )
+        if committed is None:
+            raise CommandConflict("recovery Incident decision was not built")
+        return committed.turn
 
     def _settle_effect(
         self,
@@ -1804,43 +1832,37 @@ class RunEngine:
             raise CommandConflict(str(exc)) from exc
         if replayed is not None:
             return replayed
-        for attempt in range(4):
-            with self.command_transactions.begin(intent.run_id) as transaction:
-                token = self._active_transaction.set(transaction)
-                try:
-                    transition = self.driver.effect_transition(
-                        intent,
-                        result=result,
-                        error=error,
-                        settlement_mode=settlement_mode,
-                    )
-                    self._stage(transition.events)
-                    snapshot = self.driver.run_snapshot(intent.run_id)
-                    turn = self._turn(
-                        snapshot,
-                        state="running",
-                        next_action="resume the Run after the settled Effect",
-                    )
-                    try:
-                        committed = self.run_store.commit(
-                            RunDecision(
-                                run_id=intent.run_id,
-                                command_id=command_id,
-                                input_digest=input_digest,
-                                expected_revision=transaction.expected_revision,
-                                events=transaction.events,
-                                turn=turn,
-                            )
-                        )
-                    except RunDecisionConflict as exc:
-                        if attempt >= 3:
-                            raise CommandConflict(str(exc)) from exc
-                        continue
-                    transaction.accept()
-                    return committed
-                finally:
-                    self._active_transaction.reset(token)
-        raise CommandConflict("Effect result decision could not converge")
+        def build(transaction: RunCommandTransaction) -> RunDecision:
+            transition = self.driver.effect_transition(
+                intent,
+                result=result,
+                error=error,
+                settlement_mode=settlement_mode,
+            )
+            self._stage(transition.events)
+            snapshot = self.driver.run_snapshot(intent.run_id)
+            return RunDecision(
+                run_id=intent.run_id,
+                command_id=command_id,
+                input_digest=input_digest,
+                expected_revision=transaction.expected_revision,
+                events=transaction.events,
+                turn=self._turn(
+                    snapshot,
+                    state="running",
+                    next_action="resume the Run after the settled Effect",
+                ),
+            )
+
+        committed = self._commit_run_decision(
+            run_id=intent.run_id,
+            build=build,
+            retry_conflicts=True,
+            exhausted_message="Effect result decision could not converge",
+        )
+        if committed is None:
+            raise CommandConflict("Effect result decision was not built")
+        return committed
 
     def _persist_effect_recovery_boundary(self, intent: EffectIntent) -> bool:
         command_id = "recover-" + fingerprint(
@@ -1853,74 +1875,63 @@ class RunEngine:
                 "effect_id": intent.effect_id,
             }
         )
-        for attempt in range(4):
+        def replay() -> CommittedRunDecision | None:
             try:
-                replayed = self.run_store.replay(
+                return self.run_store.replay(
                     intent.run_id,
                     command_id,
                     input_digest,
                 )
             except RunDecisionConflict as exc:
                 raise CommandConflict(str(exc)) from exc
-            if replayed is not None:
-                return True
-            with self.command_transactions.begin(intent.run_id) as transaction:
-                token = self._active_transaction.set(transaction)
-                try:
-                    snapshot = self.driver.run_snapshot(intent.run_id)
-                    projection = _projection(snapshot)
-                    current = next(
-                        (
-                            item
-                            for item in reversed(
-                                list(projection.get("operations", []))
-                            )
-                            if isinstance(item, Mapping)
-                            and _text(item.get("operation_id")) == intent.effect_id
-                        ),
-                        None,
-                    )
-                    if not isinstance(current, Mapping):
-                        raise CommandConflict(
-                            "persisted Effect is missing from its Run projection"
-                        )
-                    if _text(current.get("operation")) != intent.operation:
-                        raise CommandConflict(
-                            "persisted Effect identity is bound to another operation"
-                        )
-                    status = _text(current.get("status"))
-                    if status not in {
-                        "accepted",
-                        "running",
-                        "mutation_outcome_unknown",
-                    }:
-                        return False
-                    turn = self._turn(
-                        snapshot,
-                        state="running",
-                        next_action="reconcile the same durable Effect identity",
-                    )
-                    try:
-                        self.run_store.commit(
-                            RunDecision(
-                                run_id=intent.run_id,
-                                command_id=command_id,
-                                input_digest=input_digest,
-                                expected_revision=transaction.expected_revision,
-                                events=transaction.events,
-                                turn=turn,
-                                effect_intent=intent.to_public_dict(),
-                            )
-                        )
-                    except RunDecisionConflict as exc:
-                        if attempt >= 3:
-                            raise CommandConflict(str(exc)) from exc
-                        continue
-                    transaction.accept()
-                    return True
-                finally:
-                    self._active_transaction.reset(token)
-        raise CommandConflict("Effect recovery decision could not converge")
+
+        def build(transaction: RunCommandTransaction) -> RunDecision | None:
+            snapshot = self.driver.run_snapshot(intent.run_id)
+            projection = _projection(snapshot)
+            current = next(
+                (
+                    item
+                    for item in reversed(list(projection.get("operations", [])))
+                    if isinstance(item, Mapping)
+                    and _text(item.get("operation_id")) == intent.effect_id
+                ),
+                None,
+            )
+            if not isinstance(current, Mapping):
+                raise CommandConflict(
+                    "persisted Effect is missing from its Run projection"
+                )
+            if _text(current.get("operation")) != intent.operation:
+                raise CommandConflict(
+                    "persisted Effect identity is bound to another operation"
+                )
+            if _text(current.get("status")) not in {
+                "accepted",
+                "running",
+                "mutation_outcome_unknown",
+            }:
+                return None
+            return RunDecision(
+                run_id=intent.run_id,
+                command_id=command_id,
+                input_digest=input_digest,
+                expected_revision=transaction.expected_revision,
+                events=transaction.events,
+                turn=self._turn(
+                    snapshot,
+                    state="running",
+                    next_action="reconcile the same durable Effect identity",
+                ),
+                effect_intent=intent.to_public_dict(),
+            )
+
+        return self._commit_run_decision(
+            run_id=intent.run_id,
+            build=build,
+            retry_conflicts=True,
+            exhausted_message="Effect recovery decision could not converge",
+            replay=replay,
+        ) is not None
 
     def execute(
         self,
@@ -1954,42 +1965,34 @@ class RunEngine:
                 deadline_at=deadline_at,
             )
 
-        committed = None
-        for attempt in range(4):
-            with self.command_transactions.begin(run_id) as transaction:
-                token = self._active_transaction.set(transaction)
-                try:
-                    turn = self._execute_uncommitted(
-                        command,
-                        task_id=task_id,
-                        operation_id=operation_id,
-                    )
-                    if turn.run_id != run_id:
-                        raise CommandConflict(
-                            "Run command produced a Turn for a different Run"
-                        )
-                    try:
-                        committed = self.run_store.commit(
-                            RunDecision(
-                                run_id=run_id,
-                                command_id=command_id,
-                                input_digest=input_digest,
-                                expected_revision=transaction.expected_revision,
-                                events=transaction.events,
-                                turn=turn,
-                                effect_intent=transaction.effect_intent,
-                            )
-                        )
-                    except RunDecisionConflict as exc:
-                        if not isinstance(command, ResumeRun) or attempt >= 3:
-                            raise CommandConflict(str(exc)) from exc
-                        continue
-                    transaction.accept()
-                    break
-                finally:
-                    self._active_transaction.reset(token)
+        def build(transaction: RunCommandTransaction) -> RunDecision:
+            turn = self._execute_uncommitted(
+                command,
+                task_id=task_id,
+                operation_id=operation_id,
+            )
+            if turn.run_id != run_id:
+                raise CommandConflict(
+                    "Run command produced a Turn for a different Run"
+                )
+            return RunDecision(
+                run_id=run_id,
+                command_id=command_id,
+                input_digest=input_digest,
+                expected_revision=transaction.expected_revision,
+                events=transaction.events,
+                turn=turn,
+                effect_intent=transaction.effect_intent,
+            )
+
+        committed = self._commit_run_decision(
+            run_id=run_id,
+            build=build,
+            retry_conflicts=isinstance(command, ResumeRun),
+            exhausted_message="RunDecision could not converge",
+        )
         if committed is None:
-            raise CommandConflict("RunDecision could not converge")
+            raise CommandConflict("RunDecision was not built")
 
         return self._settle_effect(
             committed,

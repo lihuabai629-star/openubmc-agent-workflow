@@ -37,6 +37,8 @@ def read_state(root: Path) -> dict[str, object]:
         "backup_digest": "",
         "staging_uploaded": False,
         "restart_observed": False,
+        "skynet_pid": 100,
+        "skynet_start": 1000,
         "backup_commands": 0,
         "uploads": 0,
         "install_commands": 0,
@@ -144,6 +146,18 @@ class PersistentTelnetTransport:
             return self._result("live_patch_paths_safe")
         if "live_patch_codec_ready" in command:
             return self._result("live_patch_codec_ready")
+        if "live_patch_identity_inspected" in command:
+            return self._result(
+                "product_id=product-a\nmachine_id=machine-a\n"
+                "firmware_id=firmware-1\nreboot_anchor=boot-a\n"
+                "live_patch_identity_inspected"
+            )
+        if "rollback_backup_inspected" in command:
+            return self._result(
+                f"backup_sha256={before}\nbackup_mode=440\n"
+                "backup_uid=104\nbackup_gid=104\n"
+                "rollback_backup_inspected"
+            )
         if "/proc/mounts" in command:
             return self._result("rw,relatime")
         if "live_patch_recovery_inspected" in command:
@@ -159,13 +173,12 @@ class PersistentTelnetTransport:
                 f"backup_sha256={state['backup_digest']}\nbackup_mode=440\n"
                 "backup_uid=104\nbackup_gid=104\nbackup_exists"
             )
-        if "live_patch_restart_observed" in command:
-            marker = (
-                "live_patch_restart_observed"
-                if bool(state["restart_observed"])
-                else "live_patch_restart_missing"
+        if "live_patch_skynet_identity_inspected" in command:
+            return self._result(
+                f"skynet_process_identity={state['skynet_pid']}:"
+                f"{state['skynet_start']}\n"
+                "live_patch_skynet_identity_inspected"
             )
-            return self._result(marker)
         if "target_exists" in command:
             return self._result(
                 f"{current}  /opt/bmc/apps/demo/unit.lua\n"
@@ -194,6 +207,8 @@ class PersistentTelnetTransport:
         if "restart_ok" in command:
             state["restart_commands"] = int(state["restart_commands"]) + 1
             state["restart_observed"] = True
+            state["skynet_pid"] = int(state["skynet_pid"]) + 1
+            state["skynet_start"] = int(state["skynet_start"]) + 1000
             write_state(self.root, state)
             self.controller.pause("restart")
             return self._result("restart_ok")
