@@ -88,6 +88,14 @@ class EffectSettlementMode(str, Enum):
     RECONCILE = "reconcile"
 
 
+@dataclass(frozen=True)
+class EffectExecution:
+    """One in-process execution bound to its original durable settlement lane."""
+
+    future: Future[Mapping[str, object]]
+    mode: EffectRunMode
+
+
 class LocalEffectRunner:
     """Run durable Effects locally while preserving one identity across reattach."""
 
@@ -106,8 +114,9 @@ class LocalEffectRunner:
             max_workers=max_workers,
             thread_name_prefix="openubmc-effect",
         )
-        self._futures: dict[
-            tuple[str, str], Future[Mapping[str, object]]
+        self._executions: dict[tuple[str, str], EffectExecution] = {}
+        self._history: dict[
+            tuple[str, str], tuple[EffectIntent, EffectRunMode]
         ] = {}
         self._lock = threading.Lock()
         self._closed = False
@@ -117,36 +126,55 @@ class LocalEffectRunner:
         intent: EffectIntent,
         *,
         mode: EffectRunMode,
-    ) -> Future[Mapping[str, object]]:
+    ) -> EffectExecution:
         if not isinstance(mode, EffectRunMode):
             raise TypeError("EffectRunner mode must be an EffectRunMode")
         identity = (intent.run_id, intent.effect_id)
         with self._lock:
             if self._closed:
                 raise RuntimeError("EffectRunner is closed")
-            current = self._futures.get(identity)
-            if current is not None and not current.done():
+            history = self._history.get(identity)
+            if history is not None and history[0] != intent:
+                raise ValueError("Effect identity has a conflicting intent")
+            current = self._executions.get(identity)
+            if current is not None:
                 return current
+            effective_mode = mode
+            if mode is EffectRunMode.REATTACH and history is not None:
+                effective_mode = history[1]
             callback = (
                 self._recover
-                if mode is EffectRunMode.RECOVER
+                if effective_mode is EffectRunMode.RECOVER
                 else self._execute
             )
             future = self._executor.submit(callback, intent)
-            self._futures[identity] = future
-            return future
+            execution = EffectExecution(future=future, mode=effective_mode)
+            self._executions[identity] = execution
+            self._history[identity] = (intent, effective_mode)
+            return execution
 
     def has_seen(self, intent: EffectIntent) -> bool:
         with self._lock:
-            return (intent.run_id, intent.effect_id) in self._futures
+            return (intent.run_id, intent.effect_id) in self._history
+
+    def acknowledge(
+        self,
+        intent: EffectIntent,
+        execution: EffectExecution,
+    ) -> None:
+        """Release a settled result only after its Run decision was committed."""
+        identity = (intent.run_id, intent.effect_id)
+        with self._lock:
+            if self._executions.get(identity) is execution:
+                del self._executions[identity]
 
     @staticmethod
     def wait(
-        future: Future[Mapping[str, object]],
+        execution: EffectExecution,
         timeout: float,
     ) -> bool:
         try:
-            future.result(timeout=max(0.0, timeout))
+            execution.future.result(timeout=max(0.0, timeout))
         except FutureTimeout:
             return False
         except BaseException:

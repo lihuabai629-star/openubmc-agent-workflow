@@ -31,6 +31,24 @@ EXPECTED_QUERIES = [
 ]
 
 
+def passing_metrics(schedule):
+    metrics = []
+    for pair, first, second in schedule:
+        for order, arm in enumerate((first, second), 1):
+            value = 100 if arm == "A" else 80
+            metrics.append(
+                {
+                    "scenario": "execute-source-only",
+                    "arm": arm,
+                    "pair": pair,
+                    "order": order,
+                    "valid": True,
+                    **{metric: value for metric in module.METRICS},
+                }
+            )
+    return metrics
+
+
 def candidate_observe_event(*, queries=None, complete: bool = True):
     selected_queries = EXPECTED_QUERIES if queries is None else queries
     receipt_id = "observation-test"
@@ -577,7 +595,7 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertRegex(evidence["environment_fingerprint"], r"^sha256:[0-9a-f]{64}$")
         self.assertRegex(evidence["evidence_digest"], r"^sha256:[0-9a-f]{64}$")
 
-    def test_verify_summary_accepts_current_untampered_release_evidence(self) -> None:
+    def test_verify_summary_rejects_claims_not_derived_from_raw_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             metrics_path = root / "all_metrics.json"
@@ -615,8 +633,229 @@ class AgentGatewayAbTests(unittest.TestCase):
                 summary_path, expected_source_commit="a" * 40
             )
 
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("raw metrics" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_rejects_metrics_that_do_not_match_the_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            schedule = module.balanced_schedule(10, seed=7)
+            metrics = passing_metrics(schedule)
+            tampered_schedule = [list(item) for item in schedule]
+            tampered_schedule[0][1], tampered_schedule[0][2] = (
+                tampered_schedule[0][2],
+                tampered_schedule[0][1],
+            )
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(tampered_schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit="b" * 40,
+                model="gpt-qualified",
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path, expected_source_commit="a" * 40
+            )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("schedule" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_accepts_analysis_recomputed_from_a_balanced_run(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            schedule = module.balanced_schedule(10, seed=7)
+            metrics = passing_metrics(schedule)
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit="b" * 40,
+                model="gpt-qualified",
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path, expected_source_commit="a" * 40
+            )
+
         self.assertTrue(verified["promotable"], verified)
         self.assertRegex(verified["summary_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_verify_summary_fails_closed_for_malformed_metric_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            schedule = module.balanced_schedule(10, seed=7)
+            metrics = passing_metrics(schedule)
+            metrics[0]["arm"] = []
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit="b" * 40,
+                model="gpt-qualified",
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path, expected_source_commit="a" * 40
+            )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("schedule binding" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_recomputes_the_environment_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            schedule = module.balanced_schedule(10, seed=7)
+            metrics = passing_metrics(schedule)
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            evidence = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit="b" * 40,
+                model="gpt-qualified",
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            evidence["environment_fingerprint"] = "sha256:" + "0" * 64
+            evidence_without_digest = dict(evidence)
+            evidence_without_digest.pop("evidence_digest")
+            evidence["evidence_digest"] = module._fingerprint(
+                evidence_without_digest
+            )
+            analysis["release_evidence"] = evidence
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path, expected_source_commit="a" * 40
+            )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("environment fingerprint" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_fails_closed_when_raw_metrics_cannot_be_analyzed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            schedule = module.balanced_schedule(10, seed=7)
+            valid_metrics = passing_metrics(schedule)
+            malformed_metrics = [dict(item) for item in valid_metrics]
+            malformed_metrics[0]["pair"] = {}
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            metrics_path.write_text(json.dumps(malformed_metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            analysis = module.analyze(valid_metrics)
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit="b" * 40,
+                model="gpt-qualified",
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path, expected_source_commit="a" * 40
+            )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("cannot analyze" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_fails_closed_for_a_malformed_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            schedule = module.balanced_schedule(10, seed=7)
+            metrics = passing_metrics(schedule)
+            malformed_schedule = [list(item) for item in schedule]
+            malformed_schedule[0][1] = []
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(malformed_schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit="b" * 40,
+                model="gpt-qualified",
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path, expected_source_commit="a" * 40
+            )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("one A arm" in error for error in verified["errors"]),
+            verified,
+        )
 
     def test_verify_summary_rejects_source_mismatch_and_artifact_tamper(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

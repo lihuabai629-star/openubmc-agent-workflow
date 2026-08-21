@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -473,7 +474,7 @@ class DormantEffectRunner:
 
     def ensure(self, intent, *, mode):
         self.intents.append((intent, mode))
-        return object()
+        return SimpleNamespace(mode=mode, future=object())
 
     @staticmethod
     def wait(_future, _timeout: float) -> bool:
@@ -3693,6 +3694,7 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="bounded-live-patch-final",
             )
             self.assertEqual(final["state"], "completed")
+            self.assertEqual(len(backend.operation_ids), 1)
             self.assertEqual(len(set(backend.operation_ids)), 1)
         finally:
             backend.release.set()

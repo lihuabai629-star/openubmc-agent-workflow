@@ -1656,13 +1656,13 @@ class RunEngine:
             if self.effect_runner.has_seen(intent)
             else EffectRunMode.RECOVER
         )
-        recovery_attempted = (
+        starts_recovery = (
             mode is EffectRunMode.RECOVER
             and intent.effect_class is not EffectClass.READ_ONLY
         )
-        if recovery_attempted:
-            recovery_attempted = self._persist_effect_recovery_boundary(intent)
-            if not recovery_attempted:
+        if starts_recovery:
+            starts_recovery = self._persist_effect_recovery_boundary(intent)
+            if not starts_recovery:
                 snapshot = self.driver.run_snapshot(intent.run_id)
                 return self._turn(
                     snapshot,
@@ -1671,7 +1671,11 @@ class RunEngine:
                 )
         reattach_attempt = 0
         while True:
-            future = self.effect_runner.ensure(intent, mode=mode)
+            execution = self.effect_runner.ensure(intent, mode=mode)
+            recovery_attempted = (
+                execution.mode is EffectRunMode.RECOVER
+                and intent.effect_class is not EffectClass.READ_ONLY
+            )
             remaining = deadline_at - time.monotonic()
             if remaining <= 0:
                 snapshot = self.driver.run_snapshot(intent.run_id)
@@ -1680,7 +1684,7 @@ class RunEngine:
                     state="running",
                     next_action="resume the Run to reattach to the current Effect",
                 )
-            if not self.effect_runner.wait(future, remaining):
+            if not self.effect_runner.wait(execution, remaining):
                 snapshot = self.driver.run_snapshot(intent.run_id)
                 return self._turn(
                     snapshot,
@@ -1689,13 +1693,14 @@ class RunEngine:
                 )
             committed = self._commit_effect_result(
                 intent,
-                future,
+                execution.future,
                 settlement_mode=(
                     EffectSettlementMode.RECONCILE
                     if recovery_attempted
                     else EffectSettlementMode.DISPATCH
                 ),
             )
+            self.effect_runner.acknowledge(intent, execution)
             snapshot = {
                 "projection": committed.projection,
                 "continuation": self.driver.run_snapshot(intent.run_id).get(

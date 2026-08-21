@@ -627,6 +627,83 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
     }
 
 
+def validate_schedule(
+    schedule: object,
+    metrics: list[Mapping[str, object]],
+    *,
+    requested_pairs: object,
+    scenario: str,
+) -> list[str]:
+    errors: list[str] = []
+    if (
+        not isinstance(requested_pairs, int)
+        or isinstance(requested_pairs, bool)
+        or requested_pairs < 1
+    ):
+        return ["AB schedule requested pair count is invalid"]
+    if not isinstance(schedule, list):
+        return ["AB schedule must contain an array"]
+    if len(schedule) != requested_pairs:
+        errors.append("AB schedule length does not match the requested pair count")
+
+    expected_runs: dict[tuple[int, int], str] = {}
+    order_counts = {("A", "B"): 0, ("B", "A"): 0}
+    for expected_pair, item in enumerate(schedule, 1):
+        if not isinstance(item, list) or len(item) != 3:
+            errors.append("AB schedule entries must be [pair, first_arm, second_arm]")
+            continue
+        pair, first, second = item
+        if (
+            not isinstance(pair, int)
+            or isinstance(pair, bool)
+            or pair != expected_pair
+        ):
+            errors.append("AB schedule pair identifiers must be contiguous")
+            continue
+        if (
+            not isinstance(first, str)
+            or not isinstance(second, str)
+            or {first, second} != {"A", "B"}
+        ):
+            errors.append("AB schedule must contain one A arm and one B arm per pair")
+            continue
+        order = (first, second)
+        order_counts[order] += 1
+        expected_runs[(pair, 1)] = str(first)
+        expected_runs[(pair, 2)] = str(second)
+
+    if order_counts[("A", "B")] != (requested_pairs + 1) // 2 or order_counts[
+        ("B", "A")
+    ] != requested_pairs // 2:
+        errors.append("AB schedule is not balanced between AB and BA order")
+
+    observed_runs: dict[tuple[int, int], str] = {}
+    for item in metrics:
+        pair = item.get("pair")
+        order = item.get("order")
+        arm = item.get("arm")
+        if (
+            not isinstance(pair, int)
+            or isinstance(pair, bool)
+            or not isinstance(order, int)
+            or isinstance(order, bool)
+            or not isinstance(arm, str)
+            or arm not in {"A", "B"}
+        ):
+            errors.append("AB raw metrics contain an invalid schedule binding")
+            continue
+        key = (pair, order)
+        if key in observed_runs:
+            errors.append("AB raw metrics contain duplicate schedule entries")
+            continue
+        observed_runs[key] = str(arm)
+        if item.get("scenario") != scenario:
+            errors.append("AB raw metrics scenario does not match release evidence")
+    if observed_runs != expected_runs:
+        errors.append("AB raw metrics do not match the recorded schedule")
+    return errors
+
+
 def _run(command: list[str], *, cwd: Path, env: Mapping[str, str], stdin: str, stdout: Path, stderr: Path) -> int:
     with stdout.open("w", encoding="utf-8") as output, stderr.open("w", encoding="utf-8") as errors:
         started = time.monotonic()
@@ -904,10 +981,12 @@ def verify_summary(
         errors.append("AB release evidence thresholds do not match the release contract")
     if not str(evidence.get("model", "")).strip():
         errors.append("AB release evidence is missing the model")
-    if not str(evidence.get("environment_fingerprint", "")).startswith("sha256:"):
-        errors.append("AB release evidence is missing the environment fingerprint")
+    environment = _json_object(evidence.get("environment"))
+    if evidence.get("environment_fingerprint") != _fingerprint(dict(environment)):
+        errors.append("AB release evidence environment fingerprint is invalid")
 
     artifacts = _json_object(evidence.get("artifacts"))
+    artifact_paths: dict[str, Path] = {}
     for name in ("all_metrics", "schedule"):
         artifact = _json_object(artifacts.get(name))
         path = Path(str(artifact.get("path", "")))
@@ -920,6 +999,56 @@ def verify_summary(
             errors.append(f"AB {name} digest does not match the artifact")
         if artifact.get("size_bytes") != path.stat().st_size:
             errors.append(f"AB {name} size does not match the artifact")
+        artifact_paths[name] = path
+
+    raw_metrics: list[Mapping[str, object]] | None = None
+    metrics_path = artifact_paths.get("all_metrics")
+    if metrics_path is not None:
+        try:
+            loaded_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            errors.append(f"cannot read AB raw metrics: {type(exc).__name__}")
+        else:
+            if not isinstance(loaded_metrics, list) or not all(
+                isinstance(item, Mapping) for item in loaded_metrics
+            ):
+                errors.append("AB raw metrics must contain an array of objects")
+            else:
+                raw_metrics = loaded_metrics
+                try:
+                    recomputed = analyze(raw_metrics)
+                except (KeyError, OverflowError, TypeError, ValueError) as exc:
+                    errors.append(f"cannot analyze AB raw metrics: {type(exc).__name__}")
+                else:
+                    analysis_fields = (
+                        "schema",
+                        "valid_pairs",
+                        "invalid_pairs",
+                        "metrics",
+                        "decision",
+                        "next_pair_target",
+                        "thresholds",
+                    )
+                    if any(
+                        summary.get(name) != recomputed.get(name)
+                        for name in analysis_fields
+                    ):
+                        errors.append("AB summary is not derived from the raw metrics")
+    schedule_path = artifact_paths.get("schedule")
+    if schedule_path is not None and raw_metrics is not None:
+        try:
+            raw_schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            errors.append(f"cannot read AB schedule: {type(exc).__name__}")
+        else:
+            errors.extend(
+                validate_schedule(
+                    raw_schedule,
+                    raw_metrics,
+                    requested_pairs=samples.get("requested_pairs"),
+                    scenario=str(evidence.get("scenario", "")),
+                )
+            )
     expected_evidence_digest = evidence.get("evidence_digest")
     evidence_without_digest = dict(evidence)
     evidence_without_digest.pop("evidence_digest", None)
