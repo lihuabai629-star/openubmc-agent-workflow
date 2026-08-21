@@ -1073,7 +1073,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(final["outcome_recorded"])
         self.assertLessEqual(encoded_size(final), TURN_MAX_BYTES)
         self.assertNotIn("phase_record", json.dumps(final, ensure_ascii=False))
-        self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
+        self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 0)
         replayed = self.service.call_exposed_tool(
             "execute",
             {"kind": "resume", "run_id": first["run_id"]},
@@ -1088,9 +1088,9 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             [event["kind"] for event in events].count("CloseoutRecorded"), 1
         )
-        self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
+        self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 0)
 
-    def test_session_outcome_record_cannot_create_a_second_run_terminal_fact(self) -> None:
+    def test_operator_projects_session_outcome_from_the_persisted_run_outcome(self) -> None:
         waiting = self.service.call_exposed_tool(
             "execute",
             {
@@ -1103,25 +1103,40 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="run-session-outcome-start",
         )
 
-        with self.assertRaisesRegex(ValueError, "generated from Run Outcome"):
-            self.service.call_tool(
-                "session_outcome_record",
-                {
-                    "session_id": "manual-run-session",
-                    "case_id": waiting["run_id"],
-                    "replay_fingerprint": "sha256:" + "9" * 64,
-                    "workflow": "manual",
-                    "domain": "debug",
-                    "outcome": "completed",
-                    "summary": "manual terminal override",
+        final = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "operator-projection-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["run tests"],
+                    },
                 },
-                task_id="run-session-outcome-authority",
-                operation_id="run-session-outcome-manual",
-            )
+            },
+            task_id="run-session-outcome-authority",
+            operation_id="run-session-outcome-finish",
+        )
+        before = self.service.context_runtime.repository.events(waiting["run_id"])
+        recorded = self.service.call_tool(
+            "session_outcome_record",
+            {"case_id": waiting["run_id"]},
+            task_id="run-session-outcome-authority",
+            operation_id="run-session-outcome-project",
+        )
+        after = self.service.context_runtime.repository.events(waiting["run_id"])
 
+        self.assertEqual(recorded["case_id"], waiting["run_id"])
+        self.assertEqual(recorded["outcome"], final["outcome"]["status"])
+        self.assertEqual(after, before)
         self.assertEqual(
             self.service.session_outcome_service.status()["outcome_count"],
-            0,
+            1,
         )
 
     def test_existing_legacy_case_can_still_record_a_session_outcome(self) -> None:
@@ -1307,89 +1322,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(replayed_start["outcome"], final["outcome"])
         self.assertIsNone(replayed_start["gate"])
 
-    def test_replayed_run_decision_repairs_pending_idempotency_receipt(self) -> None:
-        repository = FailOnceRunReceiptRepository()
-        service = RuntimeMcpService(
-            SemanticBackend(),
-            context_repository=repository,
-        )
-        try:
-            waiting = service.semantic_runtime.execute(
-                StartRun(
-                    target="192.0.2.79",
-                    intent="diagnose-and-fix",
-                    purpose="repair a committed Run receipt",
-                    delivery_strategy="source-only",
-                    command_id="typed-receipt-start",
-                    input_digest="",
-                ),
-                task_id="typed-receipt-start",
-                operation_id="typed-receipt-start",
-            )
-            assert waiting.gate is not None
-            gate = waiting.gate
-            command = SubmitGate(
-                run_id=waiting.run_id,
-                response={
-                    "status": "completed",
-                    "summary": "source repair completed",
-                    "payload": {
-                        "source_revision": "typed-receipt-source",
-                        "authored_files": ["src/fix.lua"],
-                        "verification_plan": ["run regression tests"],
-                    },
-                },
-                gate_id=gate.gate_id,
-                gate_version=gate.version,
-                schema_digest=gate.schema_digest,
-                submission_id="typed-receipt-submission",
-                command_id="typed-receipt-submission",
-                input_digest="",
-            )
-            repository.fail_next_completion = True
-            with self.assertRaisesRegex(
-                OSError, "Run receipt completion interruption"
-            ):
-                service.semantic_runtime.execute(
-                    command,
-                    task_id="typed-receipt-first",
-                    operation_id="typed-receipt-first",
-                )
-
-            pending_run_claims = [
-                item
-                for item in repository.claims.items()
-                if item[0][0] == waiting.run_id
-                and repository._idempotency[item[0]]["status"] == "pending"
-            ]
-            self.assertEqual(len(pending_run_claims), 1)
-            ((case_id, key), request_fingerprint) = pending_run_claims[0]
-            self.assertEqual(
-                repository._idempotency[(case_id, key)]["status"],
-                "pending",
-            )
-
-            replayed = service.semantic_runtime.execute(
-                command,
-                task_id="typed-receipt-replay",
-                operation_id="typed-receipt-replay",
-            )
-            self.assertEqual(
-                repository._idempotency[(case_id, key)]["status"],
-                "completed",
-            )
-            receipt = repository.claim_idempotency(
-                case_id,
-                key,
-                request_fingerprint,
-            )
-        finally:
-            service.close()
-
-        self.assertEqual(replayed.state, "completed")
-        self.assertIsInstance(receipt, dict)
-
-    def test_source_only_gate_response_uses_a_native_run_phase_event(self) -> None:
+    def test_source_only_gate_response_is_carried_by_the_gate_submission(self) -> None:
         waiting = self.service.call_exposed_tool(
             "execute",
             {
@@ -1429,8 +1362,12 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(submission["payload"]["actor"], "openubmc-developer")
         self.assertEqual(
+            submission["payload"]["phase"]["phase_type"],
+            "developer.change",
+        )
+        self.assertEqual(
             sum(event["kind"] == "RunPhaseRecorded" for event in events),
-            1,
+            0,
         )
         self.assertFalse(
             any(
@@ -1438,6 +1375,18 @@ class AgentGatewayTests(unittest.TestCase):
                 and isinstance(event["payload"].get("phase_record"), dict)
                 for event in events
             )
+        )
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationAccepted"
+                and event["payload"].get("operation")
+                in {"phase_record", "workflow.next"}
+                for event in events
+            )
+        )
+        self.assertEqual(
+            self.service.session_outcome_service.status()["outcome_count"],
+            0,
         )
 
     def test_source_only_terminal_response_is_one_complete_run_decision(self) -> None:
@@ -2430,55 +2379,16 @@ class AgentGatewayTests(unittest.TestCase):
                     },
                 },
             }
-            driver = service.semantic_runtime.run_engine.driver
-            original = driver.record_gate_response
-            raced = False
-
-            def record_after_competitor(
-                command,
-                *,
-                gate,
+            final = service.call_exposed_tool(
+                "execute",
                 response,
-                submission_digest,
-                task_id,
-                operation_id,
-            ):
-                nonlocal raced
-                if not raced:
-                    raced = True
-                    original(
-                        command,
-                        gate=gate,
-                        response=response,
-                        submission_digest=submission_digest,
-                        task_id=task_id,
-                        operation_id=f"{operation_id}-winner",
-                    )
-                return original(
-                    command,
-                    gate=gate,
-                    response=response,
-                    submission_digest=submission_digest,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-
-            with patch.object(
-                driver,
-                "record_gate_response",
-                side_effect=record_after_competitor,
-            ):
-                final = service.call_exposed_tool(
-                    "execute",
-                    response,
-                    task_id="gate-race-window",
-                    operation_id="gate-race-window-response",
-                )
+                task_id="gate-race-window",
+                operation_id="gate-race-window-response",
+            )
             events = service.context_runtime.repository.events(waiting["run_id"])
         finally:
             service.close()
 
-        self.assertTrue(raced)
         self.assertEqual(final["state"], "completed")
         self.assertEqual(
             sum(event["kind"] == "RunGateSubmitted" for event in events),
@@ -2918,17 +2828,17 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="artifact-dispatch-boundary",
                 operation_id="artifact-dispatch-boundary-start",
             )
-            driver = service.semantic_runtime.run_engine.driver
-            original = driver.record_gate_response
+            transactions = service.context_runtime.repository
+            original = transactions.stage_events
 
             def replace_after_persist(*args, **kwargs):
-                snapshot = original(*args, **kwargs)
+                result = original(*args, **kwargs)
                 patch_file.write_bytes(b"return 'replaced-after-gate'\n")
-                return snapshot
+                return result
 
             with patch.object(
-                driver,
-                "record_gate_response",
+                transactions,
+                "stage_events",
                 side_effect=replace_after_persist,
             ):
                 blocked = service.call_exposed_tool(
@@ -4423,6 +4333,96 @@ class AgentGatewayTests(unittest.TestCase):
         finally:
             compatibility.close()
             operator.close()
+
+    def test_compatibility_calls_publish_anonymous_operation_counts(self) -> None:
+        compatibility = RuntimeMcpService(
+            SemanticBackend(), interface_profile="compatibility"
+        )
+        try:
+            compatibility.call_exposed_tool(
+                "debug_run",
+                {
+                    "ip": "192.0.2.78",
+                    "intent": "diagnosis-only",
+                    "final_purpose": "compatibility telemetry",
+                },
+                task_id="compatibility-telemetry-task",
+                operation_id="compatibility-telemetry-call",
+            )
+            status = compatibility.call_tool(
+                "runtime_status",
+                {},
+                task_id="compatibility-telemetry-status",
+                operation_id="compatibility-telemetry-status",
+            )
+        finally:
+            compatibility.close()
+
+        telemetry = status["compatibility_telemetry"]
+        self.assertEqual(telemetry["total_calls"], 1)
+        self.assertEqual(telemetry["operation_counts"], {"debug_run": 1})
+        self.assertNotIn("task", json.dumps(telemetry))
+        self.assertNotIn("192.0.2.78", json.dumps(telemetry))
+
+    def test_compatibility_controls_delegate_native_runs_to_typed_runtime(self) -> None:
+        compatibility = RuntimeMcpService(
+            SemanticBackend(), interface_profile="compatibility"
+        )
+        try:
+            waiting = compatibility.semantic_runtime.execute(
+                StartRun(
+                    target="192.0.2.79",
+                    intent="diagnose-and-fix",
+                    purpose="verify compatibility delegation",
+                    delivery_strategy="source-only",
+                    command_id="compatibility-native-start",
+                    input_digest="",
+                ),
+                task_id="compatibility-native",
+                operation_id="compatibility-native-start",
+            )
+            compatibility.call_exposed_tool(
+                "phase_record",
+                {
+                    "case_id": waiting.run_id,
+                    "expected_revision": compatibility.context_runtime.read_case(
+                        waiting.run_id
+                    )["revision"],
+                    "idempotency_key": "compatibility-native-phase",
+                    "phase_type": "developer.change",
+                    "producer_identity": "openubmc-developer",
+                    "status": "completed",
+                    "summary": "source completed",
+                    "source_revision": "compatibility-native-source",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["run tests"],
+                },
+                task_id="compatibility-native",
+                operation_id="compatibility-native-phase",
+            )
+            final = compatibility.call_exposed_tool(
+                "workflow.next",
+                {"case_id": waiting.run_id},
+                task_id="compatibility-native",
+                operation_id="compatibility-native-next",
+            )
+            events = compatibility.context_runtime.repository.events(waiting.run_id)
+        finally:
+            compatibility.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(
+            sum(event["kind"] == "RunGateSubmitted" for event in events),
+            1,
+        )
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationAccepted"
+                and event["payload"].get("operation")
+                in {"phase_record", "workflow.next"}
+                for event in events
+            )
+        )
 
     def test_agent_endpoint_rejects_raw_evidence_tool(self) -> None:
         endpoint = JsonRpcMcpEndpoint(self.service, session_task_id="agent-session")

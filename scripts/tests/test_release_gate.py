@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -31,6 +32,7 @@ class ReleaseGateTests(unittest.TestCase):
                 workspace=Path.cwd(),
                 work_root=root,
                 executor=succeed,
+                source_commit="source-commit-test",
             )
 
         self.assertTrue(report["promotable"])
@@ -41,11 +43,20 @@ class ReleaseGateTests(unittest.TestCase):
                 "upgrade",
                 "rollback",
                 "agent_interface",
+                "source_only",
+                "live_patch",
+                "build_upgrade",
                 "replay_smoke",
+                "old_schema_compatibility",
+                "domain_pack_conformance",
+                "runtime_safety_qualification",
+                "agent_gateway_ab_evidence",
             ],
         )
         self.assertTrue(all(item["status"] == "passed" for item in report["gates"]))
-        self.assertEqual(len(calls), 6)
+        self.assertEqual(len(calls), 13)
+        self.assertEqual(report["source_commit"], "source-commit-test")
+        self.assertRegex(report["environment_fingerprint"], r"^sha256:[0-9a-f]{64}$")
 
     def test_failure_blocks_later_gates_and_promotion(self) -> None:
         call_count = 0
@@ -67,12 +78,13 @@ class ReleaseGateTests(unittest.TestCase):
                 workspace=Path.cwd(),
                 work_root=Path(directory),
                 executor=fail_upgrade,
+                source_commit="source-commit-test",
             )
 
         self.assertFalse(report["promotable"])
         self.assertEqual(
             [item["status"] for item in report["gates"]],
-            ["passed", "failed", "skipped", "skipped", "skipped"],
+            ["passed", "failed"] + ["skipped"] * 10,
         )
         self.assertEqual(call_count, 3)
 
@@ -94,6 +106,51 @@ class ReleaseGateTests(unittest.TestCase):
         rollback = gates["rollback"][0]
         self.assertIn("rollback", rollback)
         self.assertIn("--skip-tool-install", rollback)
+        qualification = gates["runtime_safety_qualification"][0]
+        self.assertIn("runtime_qualification.py", qualification[1])
+        self.assertIn("--output", qualification)
+        ab_evidence = gates["agent_gateway_ab_evidence"][0]
+        self.assertIn("agent_gateway_ab.py", ab_evidence[1])
+        self.assertIn("verify", ab_evidence)
+
+    def test_release_report_digests_runtime_qualification_evidence(self) -> None:
+        def succeed(command, *, cwd):
+            if "runtime_qualification.py" in " ".join(command):
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps({"promotable": True, "violations": {}}),
+                    encoding="utf-8",
+                )
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = release_gate.execute_release_gate(
+                current_ref="candidate",
+                previous_ref="previous",
+                workspace=Path.cwd(),
+                work_root=Path(directory),
+                executor=succeed,
+                source_commit="source-commit-test",
+            )
+
+        artifact = report["artifacts"]["runtime_qualification"]
+        self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
+        self.assertGreater(artifact["size_bytes"], 0)
+
+    def test_release_workflow_restores_and_requires_execute_ab_evidence(self) -> None:
+        workflow = (Path.cwd() / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        for name in (
+            "ab_summary_base64",
+            "ab_metrics_base64",
+            "ab_schedule_base64",
+        ):
+            self.assertIn(name, workflow)
+        self.assertIn("--ab-evidence agent-gateway-ab-evidence/summary.json", workflow)
+        self.assertIn("python-version: \"3.12.13\"", workflow)
 
 
 if __name__ == "__main__":

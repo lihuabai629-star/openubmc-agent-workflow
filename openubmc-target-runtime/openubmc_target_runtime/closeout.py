@@ -1391,14 +1391,14 @@ def aggregate_case_closeout(
             if recorded_operation_id
             else phase_operation_by_type.get(phase_type)
         )
-        evidence_loaded = False
+        evidence_loaded = record.get("native_run_fact") is True
         if matching_operation is not None:
             _evidence_ids, loaded, evidence_loaded = operation_evidence(
                 matching_operation
             )
             if evidence_loaded and str(loaded.get("phase_type", "")) != phase_type:
                 evidence_loaded = False
-        else:
+        elif not evidence_loaded:
             indexed_evidence = {
                 str(reference.get("evidence_id", "")): reference
                 for reference in projection.get("evidence_refs", [])

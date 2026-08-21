@@ -392,11 +392,9 @@ def upcast_run_events(
         raw_phase = payload.get("phase")
         if not isinstance(raw_phase, Mapping):
             raise RunEventSchemaError("RunPhaseRecorded is missing its phase fact")
-        kind = "OperationProgressed"
-        payload = {
-            "status": str(raw_phase.get("status", "")),
-            "phase_record": dict(raw_phase),
-        }
+        phase = dict(raw_phase)
+        kind = "RunGateSubmitted"
+        payload = _legacy_gate_submission(phase)
     elif kind == "OperationProgressed" and "phase_record" in payload:
         raw_phase = payload.get("phase_record")
         if not isinstance(raw_phase, Mapping):
@@ -406,11 +404,8 @@ def upcast_run_events(
         phase = dict(raw_phase)
         status = str(phase.get("status", payload.get("status", "")))
         phase["status"] = status
-        payload = {
-            **payload,
-            "status": status,
-            "phase_record": phase,
-        }
+        kind = "RunGateSubmitted"
+        payload = _legacy_gate_submission(phase)
     elif kind == "RunDecisionCommitted":
         if payload.get("schema") != RUN_DECISION_SCHEMA:
             raise RunEventSchemaError(
@@ -425,3 +420,25 @@ def upcast_run_events(
     normalized["kind"] = kind
     normalized["payload"] = payload
     return (normalized,)
+
+
+def _legacy_gate_submission(phase: Mapping[str, object]) -> dict[str, object]:
+    """Translate a retired phase writer fact into the current Gate fact."""
+
+    gate_version = phase.get("gate_version", 0)
+    if isinstance(gate_version, bool) or not isinstance(gate_version, int):
+        gate_version = 0
+    return {
+        "gate_id": str(phase.get("gate_id", "")),
+        "gate_version": gate_version,
+        "schema_digest": str(
+            phase.get("gate_schema_digest", phase.get("schema_digest", ""))
+        ).removeprefix("sha256:"),
+        "submission_id": str(phase.get("submission_id", "")),
+        "submission_digest": str(phase.get("submission_digest", "")),
+        "actor": str(phase.get("producer_identity", "")),
+        "status": str(phase.get("status", "")),
+        "summary": str(phase.get("summary", "")),
+        "recorded_at": phase.get("recorded_at", 0.0),
+        "phase": dict(phase),
+    }

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
 import time
 from typing import ContextManager, Protocol
 
@@ -42,7 +41,7 @@ from .effect_runner import (
     PreparedEffect,
 )
 from .capability import EffectClass
-from .workflow import DEFAULT_PHASE_REGISTRY
+from .workflow import DEFAULT_PHASE_REGISTRY, DEFAULT_WORKFLOW_DEFINITIONS
 
 
 WORKFLOW_INTERNAL_MAX_STEPS = 64
@@ -235,17 +234,6 @@ class RunDriver(Protocol):
         operation_id: str,
     ) -> Mapping[str, object]: ...
 
-    def record_gate_response(
-        self,
-        command: SubmitGate,
-        *,
-        gate: Gate,
-        response: Mapping[str, object],
-        submission_digest: str,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
-
     def cancel_run(
         self,
         command: CancelRun,
@@ -304,14 +292,6 @@ class RunDriver(Protocol):
         workflow_step_id: str,
         operation_id: str,
     ) -> Mapping[str, object]: ...
-
-    def project_outcome(
-        self,
-        turn: RunTurn,
-        *,
-        task_id: str,
-    ) -> Mapping[str, object]: ...
-
 
 class RunCommandTransaction(Protocol):
     @property
@@ -707,6 +687,76 @@ class RunEngine:
         return {"status": status, "summary": summary, "payload": payload}
 
     @staticmethod
+    def _phase_fact(
+        command: SubmitGate,
+        *,
+        gate: Gate,
+        response: Mapping[str, object],
+        projection: Mapping[str, object],
+        operation_id: str,
+        input_digest: str,
+    ) -> dict[str, object]:
+        phase_descriptor = DEFAULT_PHASE_REGISTRY.require(gate.name)
+        persisted_gate = _mapping(projection.get("current_gate"))
+        cycle_id = _text(
+            persisted_gate.get("workflow_cycle_id")
+            or projection.get("workflow_cycle_id")
+            or "cycle-1"
+        )
+        step_id = _text(persisted_gate.get("workflow_step_id"))
+        definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(projection)
+        step = next(
+            candidate for candidate in definition.steps if candidate.step_id == step_id
+        )
+        prior_attempts = [
+            int(item.get("workflow_attempt", item.get("phase_attempt", 0)) or 0)
+            for item in projection.get("phase_records", [])
+            if isinstance(item, Mapping)
+            and _text(item.get("phase_type")) == gate.name
+            and _text(item.get("workflow_cycle_id")) == cycle_id
+        ]
+        attempt = max(prior_attempts, default=0) + 1
+        identity = DEFAULT_WORKFLOW_DEFINITIONS.step_identity(
+            projection,
+            step=step,
+            attempt=attempt,
+            input_fingerprint=input_digest,
+            target_epoch=0,
+        )
+        payload = dict(_mapping(response.get("payload")))
+        record = {
+            "phase_type": gate.name,
+            "producer_identity": DEFAULT_PHASE_REGISTRY.canonical_producer(
+                gate.name,
+                gate.owner,
+            ),
+            "receipt_schema": phase_descriptor.receipt_schema,
+            "operation_id": operation_id,
+            "status": _text(response.get("status")),
+            "summary": _text(response.get("summary")),
+            "recorded_at": time.time(),
+            "gate_id": gate.gate_id,
+            "gate_version": gate.version,
+            "gate_schema_digest": gate.schema_digest,
+            "submission_id": command.submission_id,
+            "submission_digest": input_digest,
+            "workflow_cycle_id": cycle_id,
+            "workflow_step_id": step_id,
+            "phase_attempt": attempt,
+            "target_version": identity.target_version,
+            "workflow_definition_id": identity.workflow_definition_id,
+            "workflow_definition_version": identity.workflow_version,
+            "workflow_definition_fingerprint": identity.workflow_fingerprint,
+            "workflow_execution_id": identity.execution_id,
+            "workflow_attempt": identity.attempt,
+            "workflow_input_fingerprint": identity.input_fingerprint,
+            "workflow_target_epoch": identity.target_epoch,
+            "native_run_fact": True,
+            **payload,
+        }
+        return record
+
+    @staticmethod
     def _current_incident(projection: Mapping[str, object]) -> Incident | None:
         raw = projection.get("current_incident")
         if not isinstance(raw, Mapping) or not raw:
@@ -872,21 +922,6 @@ class RunEngine:
             next_action=next_action,
             observation_ref=observation_ref,
         )
-
-    def _project_terminal(self, turn: RunTurn, *, task_id: str) -> RunTurn:
-        if turn.outcome is None:
-            return turn
-        try:
-            recorded = bool(self.driver.project_outcome(turn, task_id=task_id))
-        except Exception as exc:
-            return replace(
-                turn,
-                gaps=(
-                    *turn.gaps,
-                    f"session_outcome_projection_failed: {type(exc).__name__}",
-                ),
-            )
-        return replace(turn, outcome_recorded=recorded)
 
     def _record_incident(
         self,
@@ -1145,6 +1180,10 @@ class RunEngine:
         operation_id: str,
     ) -> RunTurn:
         snapshot = self.driver.run_snapshot(command.run_id)
+        _command_id, submission_digest = run_command_identity(
+            command,
+            operation_id=operation_id,
+        )
         prior = self._submission_record(snapshot, command.submission_id)
         if prior is not None:
             self._validate_duplicate_gate(command, prior)
@@ -1164,7 +1203,6 @@ class RunEngine:
             response = self._normalized_response(
                 command, gate=gate, projection=_projection(snapshot)
             )
-            submission_digest = command.input_digest
             if _text(prior.get("submission_digest")) != submission_digest:
                 raise CommandConflict(
                     "submission_id was already used with different Gate input"
@@ -1181,15 +1219,37 @@ class RunEngine:
         response = self._normalized_response(
             command, gate=gate, projection=_projection(snapshot)
         )
-        submission_digest = command.input_digest
-        snapshot = self.driver.record_gate_response(
+        response_operation_id = f"{operation_id}-response"
+        phase = self._phase_fact(
             command,
             gate=gate,
             response=response,
-            submission_digest=submission_digest,
-            task_id=task_id,
-            operation_id=f"{operation_id}-response",
+            projection=_projection(snapshot),
+            operation_id=response_operation_id,
+            input_digest=submission_digest,
         )
+        self.command_transactions.stage_events(
+            command.run_id,
+            events=(
+                RunEvent(
+                    "RunGateSubmitted",
+                    {
+                        "gate_id": gate.gate_id,
+                        "gate_version": gate.version,
+                        "schema_digest": gate.schema_digest,
+                        "submission_id": command.submission_id,
+                        "submission_digest": submission_digest,
+                        "actor": phase["producer_identity"],
+                        "status": response["status"],
+                        "summary": response["summary"],
+                        "recorded_at": phase["recorded_at"],
+                        "phase": phase,
+                    },
+                    response_operation_id,
+                ),
+            ),
+        )
+        snapshot = self.driver.run_snapshot(command.run_id)
         return self._advance(
             snapshot,
             task_id=task_id,
@@ -1209,7 +1269,10 @@ class RunEngine:
             "summary": "run cancelled at the current gate",
             "payload": {},
         }
-        submission_digest = command.input_digest
+        _command_id, submission_digest = run_command_identity(
+            command,
+            operation_id=operation_id,
+        )
         prior = self._submission_record(snapshot, command.submission_id)
         if prior is not None:
             self._validate_duplicate_gate(command, prior)
@@ -1346,11 +1409,11 @@ class RunEngine:
         deadline_at: float,
     ) -> RunTurn:
         if self.effect_runner is None:
-            return self._project_terminal(committed.turn, task_id=task_id)
+            return committed.turn
         projection = committed.projection
         raw_intent = self._active_effect_intent(projection)
         if not isinstance(raw_intent, Mapping):
-            return self._project_terminal(committed.turn, task_id=task_id)
+            return committed.turn
         intent = EffectIntent.from_mapping(raw_intent)
         mode = (
             EffectRunMode.DISPATCH

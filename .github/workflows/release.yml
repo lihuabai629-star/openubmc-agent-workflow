@@ -11,6 +11,18 @@ on:
         description: Previous immutable release tag used for upgrade and rollback
         required: true
         type: string
+      ab_summary_base64:
+        description: Base64-encoded execute AB summary.json
+        required: true
+        type: string
+      ab_metrics_base64:
+        description: Base64-encoded execute AB all_metrics.json
+        required: true
+        type: string
+      ab_schedule_base64:
+        description: Base64-encoded execute AB schedule.json
+        required: true
+        type: string
       promote:
         description: Create the GitHub Release after every gate passes
         required: true
@@ -31,7 +43,18 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12.13"
+
+      - name: Restore execute AB qualification evidence
+        env:
+          AB_SUMMARY_BASE64: ${{ inputs.ab_summary_base64 }}
+          AB_METRICS_BASE64: ${{ inputs.ab_metrics_base64 }}
+          AB_SCHEDULE_BASE64: ${{ inputs.ab_schedule_base64 }}
+        run: |
+          mkdir -p agent-gateway-ab-evidence
+          printf '%s' "$AB_SUMMARY_BASE64" | base64 --decode > agent-gateway-ab-evidence/summary.json
+          printf '%s' "$AB_METRICS_BASE64" | base64 --decode > agent-gateway-ab-evidence/all_metrics.json
+          printf '%s' "$AB_SCHEDULE_BASE64" | base64 --decode > agent-gateway-ab-evidence/schedule.json
 
       - name: Run immutable release gates
         env:
@@ -40,6 +63,7 @@ jobs:
           python3 scripts/release_gate.py
           --current-ref "${{ inputs.current_ref }}"
           --previous-ref "${{ inputs.previous_ref }}"
+          --ab-evidence agent-gateway-ab-evidence/summary.json
           --output release-gate.json
 
       - name: Upload release evidence

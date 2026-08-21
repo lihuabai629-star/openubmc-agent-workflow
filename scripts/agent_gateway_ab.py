@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import platform
 import random
 import statistics
 import subprocess
@@ -18,14 +20,27 @@ import time
 from typing import Iterable, Mapping
 
 
-SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v1"
+SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v2"
 DEFAULT_BASELINE_REF = "35b36efb6503d05a811b51bf09fb5f8dead0e208"
 CHECKPOINTS = (10, 20, 30)
 METRICS = (
     "total_tokens",
     "noncached_input_plus_output",
+    "tool_output_bytes",
+    "model_turns",
     "duration_seconds",
+    "time_to_next_actionable_turn_seconds",
 )
+THRESHOLDS = {
+    "geometric_mean_ratio_max": 1.10,
+    "one_sided_95_upper_max": 1.15,
+    "p95_ratio_max_at_30_pairs": 1.20,
+    "first_decision_pairs": 10,
+    "expansion_pairs": [20, 30],
+    "duplicate_dangerous_effects": 0,
+    "false_successes": 0,
+    "unknown_new_identity_retries": 0,
+}
 BENCHMARK_TARGET = "10.121.136.200"
 BENCHMARK_CAPABILITIES = ("ssh", "telnet", "mdbctl", "busctl")
 BENCHMARK_MDB_QUERIES = (
@@ -177,6 +192,161 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
     return {"passed": not errors, "errors": errors}
 
 
+def _structured_tool_result(call: Mapping[str, object]) -> Mapping[str, object]:
+    result = _json_object(call.get("result"))
+    return _json_object(
+        result.get("structured_content") or result.get("structuredContent")
+    )
+
+
+def candidate_execute_acceptance(
+    tools: list[Mapping[str, object]],
+) -> dict[str, object]:
+    errors: list[str] = []
+    calls = [
+        item
+        for item in tools
+        if item.get("type") == "mcp_tool_call"
+        and item.get("server") == "openubmc-target-runtime"
+    ]
+    if any(call.get("tool") != "execute" for call in calls):
+        errors.append("candidate execute qualification may call only execute")
+    kinds = [str(_json_object(call.get("arguments")).get("kind", "")) for call in calls]
+    if kinds != ["start", "respond"]:
+        errors.append("candidate must use one start and one Gate response")
+    if any(item.get("type") == "command_execution" for item in tools):
+        errors.append("candidate must not execute shell commands")
+    if len(calls) == 2:
+        start_arguments = _json_object(calls[0].get("arguments"))
+        start_result = _structured_tool_result(calls[0])
+        final_arguments = _json_object(calls[1].get("arguments"))
+        final_result = _structured_tool_result(calls[1])
+        if start_arguments.get("target") != BENCHMARK_TARGET:
+            errors.append("execute target does not match the benchmark target")
+        if start_arguments.get("intent") != "diagnose-and-fix":
+            errors.append("execute intent must be diagnose-and-fix")
+        if start_arguments.get("delivery_strategy") != "source-only":
+            errors.append("execute delivery strategy must be source-only")
+        gate = _json_object(start_result.get("gate"))
+        if start_result.get("state") != "waiting_response" or not gate:
+            errors.append("start must return one actionable Developer Gate")
+        if gate.get("owner") != "openubmc-developer":
+            errors.append("source-only Gate must be owned by openubmc-developer")
+        if final_arguments.get("run_id") != start_result.get("run_id"):
+            errors.append("Gate response must continue the same Run")
+        response = _json_object(final_arguments.get("response"))
+        if response.get("status") != "completed":
+            errors.append("Gate response must complete the source phase")
+        outcome = _json_object(final_result.get("outcome"))
+        if final_result.get("state") != "completed" or outcome.get("status") != "completed":
+            errors.append("Gate response must return a completed Runtime Outcome")
+    return {
+        "passed": not errors,
+        "errors": errors,
+        "gate_roundtrips": kinds.count("respond"),
+        "resume_calls": kinds.count("resume"),
+    }
+
+
+def baseline_execute_acceptance(
+    tools: list[Mapping[str, object]],
+) -> dict[str, object]:
+    errors: list[str] = []
+    calls = [
+        item
+        for item in tools
+        if item.get("type") == "mcp_tool_call"
+        and item.get("server") == "openubmc-target-runtime"
+    ]
+    names = [str(call.get("tool", "")) for call in calls]
+    if names not in (
+        ["workflow.advance", "phase_record", "workflow.next"],
+        ["workflow.advance", "phase_record", "workflow.advance"],
+    ):
+        errors.append(
+            "baseline must use workflow.advance, phase_record, and one continuation"
+        )
+    if any(item.get("type") == "command_execution" for item in tools):
+        errors.append("baseline must not execute shell commands")
+    if len(calls) == 3:
+        start_arguments = _json_object(calls[0].get("arguments"))
+        start_result = _structured_tool_result(calls[0])
+        phase_arguments = _json_object(calls[1].get("arguments"))
+        final_arguments = _json_object(calls[2].get("arguments"))
+        final_result = _structured_tool_result(calls[2])
+        if start_arguments.get("ip") != BENCHMARK_TARGET:
+            errors.append("baseline target does not match the benchmark target")
+        if start_arguments.get("intent") != "diagnose-and-fix":
+            errors.append("baseline intent must be diagnose-and-fix")
+        if start_arguments.get("delivery_strategy") != "source-only":
+            errors.append("baseline delivery strategy must be source-only")
+        handoff = _json_object(start_result.get("handoff_arguments"))
+        contract = _json_object(handoff.get("phase_record_contract"))
+        envelope = _json_object(start_result.get("agent_envelope"))
+        case_id = str(start_result.get("case_id") or envelope.get("case_id", ""))
+        current_revision = start_result.get("revision", envelope.get("revision"))
+        if (
+            start_result.get("status") != "waiting_phase_record"
+            or start_result.get("required_skill") != "openubmc-developer"
+            or not contract
+        ):
+            errors.append("baseline start must return one Developer phase Gate")
+        for name in ("case_id", "idempotency_key", "phase_type", "producer_identity"):
+            if phase_arguments.get(name) != contract.get(name):
+                errors.append(f"baseline phase_record must preserve {name}")
+        if phase_arguments.get("expected_revision") != current_revision:
+            errors.append("baseline phase_record must use the current envelope revision")
+        if phase_arguments.get("status") != "completed":
+            errors.append("baseline phase_record must complete the source phase")
+        if final_arguments.get("case_id") != case_id:
+            errors.append("baseline continuation must use the same Case")
+        if final_result.get("status") != "completed" or final_result.get("completed") is not True:
+            errors.append("baseline continuation must return a terminal workflow")
+    return {
+        "passed": not errors,
+        "errors": errors,
+        "gate_roundtrips": names.count("phase_record"),
+        "resume_calls": names.count("workflow.next"),
+    }
+
+
+def _actionable_elapsed(
+    events: list[Mapping[str, object]], *, arm: str, scenario: str, fallback: float
+) -> float:
+    for event in events:
+        if event.get("type") != "item.completed":
+            continue
+        item = _json_object(event.get("item"))
+        if item.get("type") != "mcp_tool_call":
+            continue
+        if scenario == "observation" and item.get("tool") != "observe":
+            continue
+        if scenario == "execute-source-only":
+            structured = _structured_tool_result(item)
+            if arm == "B":
+                if item.get("tool") != "execute":
+                    continue
+                state = str(structured.get("state", ""))
+                if state not in {"waiting_response", "incident", "running", "completed", "failed"}:
+                    continue
+            else:
+                if item.get("tool") not in {"workflow.advance", "workflow.next"}:
+                    continue
+                if structured.get("status") not in {
+                    "waiting_phase_record",
+                    "completed",
+                    "failed",
+                    "blocked",
+                    "mutation_outcome_unknown",
+                }:
+                    continue
+        elapsed = event.get("observed_elapsed_seconds")
+        if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
+            return round(float(elapsed), 3)
+        return round(fallback, 3)
+    return round(fallback, 3)
+
+
 def metric_from_run(
     *,
     arm: str,
@@ -186,6 +356,7 @@ def metric_from_run(
     final_path: Path,
     exit_code: int,
     duration_seconds: float,
+    scenario: str = "observation",
 ) -> dict[str, object]:
     events = _read_events(events_path)
     completed = [event for event in events if event.get("type") == "turn.completed"]
@@ -206,14 +377,31 @@ def metric_from_run(
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
-    acceptance = semantic_acceptance(final)
+    acceptance = semantic_acceptance(final, scenario=scenario)
     scope_validation = (
-        {"passed": True, "errors": []}
-        if arm != "B"
-        else candidate_scope_acceptance(tools)
+        (
+            candidate_scope_acceptance(tools)
+            if scenario == "observation"
+            else candidate_execute_acceptance(tools)
+        )
+        if arm == "B"
+        else (
+            baseline_execute_acceptance(tools)
+            if scenario == "execute-source-only"
+            else {"passed": True, "errors": []}
+        )
     )
     scope_ok = bool(scope_validation["passed"])
+    model_turns = max(
+        1,
+        sum(
+            event.get("type") == "item.completed"
+            and _json_object(event.get("item")).get("type") == "agent_message"
+            for event in events
+        ),
+    )
     return {
+        "scenario": scenario,
         "arm": arm,
         "pair": pair,
         "order": order,
@@ -233,6 +421,15 @@ def metric_from_run(
         ),
         "mcp_events": sum(item.get("type") == "mcp_tool_call" for item in tools),
         "tool_output_bytes": sum(_tool_output_bytes(item) for item in tools),
+        "model_turns": model_turns,
+        "time_to_next_actionable_turn_seconds": _actionable_elapsed(
+            events,
+            arm=arm,
+            scenario=scenario,
+            fallback=duration_seconds,
+        ),
+        "gate_roundtrips": int(scope_validation.get("gate_roundtrips", 0) or 0),
+        "resume_calls": int(scope_validation.get("resume_calls", 0) or 0),
         "mcp_tools": [
             {"tool": name, "count": count}
             for name, count in sorted(mcp_tools.items())
@@ -250,7 +447,18 @@ def metric_from_run(
     }
 
 
-def semantic_acceptance(text: str) -> dict[str, object]:
+def semantic_acceptance(
+    text: str, *, scenario: str = "observation"
+) -> dict[str, object]:
+    if scenario == "execute-source-only":
+        folded = text.lower().replace("`", "")
+        required = ("source-only", "runtime", "outcome", "completed")
+        missing = [token for token in required if token not in folded]
+        return {
+            "passed": not missing,
+            "missing": missing,
+            "conclusion_supported": not missing,
+        }
     folded = text.lower().replace("`", "")
     required_groups = {
         "capabilities": ("ssh", "telnet", "mdbctl", "busctl"),
@@ -326,8 +534,20 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
     for pair_id in pair_ids:
         members = [item for item in metrics if int(item.get("pair", 0)) == pair_id]
         by_arm = {str(item.get("arm")): item for item in members}
-        if set(by_arm) != {"A", "B"} or not all(
-            bool(item.get("valid")) for item in by_arm.values()
+        metric_gaps = {
+            arm: [
+                metric
+                for metric in METRICS
+                if not isinstance(item.get(metric), (int, float))
+                or isinstance(item.get(metric), bool)
+                or float(item[metric]) <= 0
+            ]
+            for arm, item in by_arm.items()
+        }
+        if (
+            set(by_arm) != {"A", "B"}
+            or not all(bool(item.get("valid")) for item in by_arm.values())
+            or any(metric_gaps.values())
         ):
             invalid.append(
                 {
@@ -336,6 +556,7 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
                     "valid": {
                         arm: bool(item.get("valid")) for arm, item in by_arm.items()
                     },
+                    "missing_or_nonpositive_metrics": metric_gaps,
                 }
             )
             continue
@@ -347,7 +568,10 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
         if ratios:
             point = _geometric_mean(ratios)
             upper = bootstrap_upper(ratios)
-            metric_pass = point <= 1.10 and upper <= 1.15
+            metric_pass = (
+                point <= THRESHOLDS["geometric_mean_ratio_max"]
+                and upper <= THRESHOLDS["one_sided_95_upper_max"]
+            )
             p95_ratio = (
                 _percentile(
                     (float(candidate[metric]) for _baseline, candidate in paired),
@@ -361,7 +585,10 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
                 else None
             )
             if p95_ratio is not None:
-                metric_pass = metric_pass and p95_ratio <= 1.20
+                metric_pass = (
+                    metric_pass
+                    and p95_ratio <= THRESHOLDS["p95_ratio_max_at_30_pairs"]
+                )
             summaries[metric] = {
                 "paired_ratios": [round(value, 6) for value in ratios],
                 "geometric_mean_ratio": round(point, 6),
@@ -396,22 +623,41 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
         "metrics": summaries,
         "decision": decision,
         "next_pair_target": next_pairs,
+        "thresholds": dict(THRESHOLDS),
     }
 
 
 def _run(command: list[str], *, cwd: Path, env: Mapping[str, str], stdin: str, stdout: Path, stderr: Path) -> int:
     with stdout.open("w", encoding="utf-8") as output, stderr.open("w", encoding="utf-8") as errors:
-        completed = subprocess.run(
+        started = time.monotonic()
+        process = subprocess.Popen(
             command,
             cwd=cwd,
             env=dict(env),
-            input=stdin,
             text=True,
-            stdout=output,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
             stderr=errors,
-            check=False,
+            bufsize=1,
         )
-    return completed.returncode
+        assert process.stdin is not None
+        assert process.stdout is not None
+        process.stdin.write(stdin)
+        process.stdin.close()
+        for line in process.stdout:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                output.write(line)
+                continue
+            if isinstance(event, dict):
+                event["observed_elapsed_seconds"] = round(
+                    time.monotonic() - started, 3
+                )
+                output.write(json.dumps(event, ensure_ascii=False) + "\n")
+            else:
+                output.write(line)
+        return process.wait()
 
 
 def _prepare_worktree(repo: Path, destination: Path, ref: str) -> None:
@@ -443,7 +689,41 @@ def _prepare_worktree(repo: Path, destination: Path, ref: str) -> None:
     )
 
 
-def _prompt(skill_path: Path) -> str:
+def _prompt(
+    skill_path: Path, *, scenario: str = "observation", arm: str = "B"
+) -> str:
+    if scenario == "execute-source-only":
+        if arm == "A":
+            return "\n".join(
+                (
+                    "这是一次真实 BMC 环境下的 Runtime compatibility execute 配对资格基准。",
+                    f"使用已安装的 {skill_path} 所定义的原生 Case Continuation 路径。",
+                    "只允许使用 openubmc-debug 与 Gate 指定的 openubmc-developer；不得使用其他 Skill、知识库、网络搜索或 shell。",
+                    "不要列出 MCP resources/templates，不要做工具发现。",
+                    f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
+                    "第一次调用 openubmc-target-runtime.workflow.advance：ip 为目标，intent=diagnose-and-fix，delivery_strategy=source-only，final_purpose=qualify Runtime source-only execution。",
+                    "保存返回的 case_id、顶层 revision 与 handoff_arguments.phase_record_contract；不得重新开始 Case。",
+                    "第二次调用 phase_record：参数必须是扁平 JSON 对象。展开 phase_record_contract，但 expected_revision 必须替换为 workflow.advance 结果的当前顶层 revision；再把 status=completed、source_revision=qualification-source、summary=qualification source-only receipt completed、authored_files=[src/qualification.lua]、verification_plan=[run qualification tests] 全部放在同一顶层。严禁创建 receipt 或 payload 嵌套字段。",
+                    "第三次调用 workflow.next，且只携带同一 case_id，直接推进到终态。",
+                    "不得读写源码、不得调用 mutation 工具、不得修改目标。",
+                    "最终中文回答必须包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
+                )
+            ) + "\n"
+        return "\n".join(
+            (
+                "这是一次真实 BMC 环境下的 Runtime execute 配对资格基准。",
+                f"使用已安装的 {skill_path} 所定义的 Agent Gateway 路径。",
+                "只允许使用 openubmc-debug 与 Gate 指定的 openubmc-developer；不得使用其他 Skill、知识库、网络搜索或 shell。",
+                "不要列出 MCP resources/templates，不要做工具发现；直接调用 openubmc-target-runtime.execute。",
+                f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
+                "第一次且仅第一次调用：kind=start，intent=diagnose-and-fix，delivery_strategy=source-only。",
+                "保存 start Result 的 run_id、gate.gate_id、gate.gate_version 与 gate.schema_digest；不得再次 start。",
+                "Runtime 返回 developer.change Gate 后，不读写任何源码，提交固定基准 receipt：source_revision=qualification-source；authored_files=[src/qualification.lua]；verification_plan=[run qualification tests]；status=completed。",
+                "第二次且仅第二次调用：kind=respond，并原样携带保存的 run_id、gate_id、gate_version、schema_digest；response 只含上述固定 receipt。",
+                "同一 Gate 只能响应一次；不得省略 Gate binding，不得 poll、不得调用 resume、不得修改目标。",
+                "必须推进到终态，并在最终中文回答中包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
+            )
+        ) + "\n"
     return "\n".join(
         (
             "这是一次真实 BMC 环境下的 openubmc-debug 配对性能基准。",
@@ -469,13 +749,178 @@ class RunConfig:
 
 def prepare_arm_home(home: Path, source_root: Path) -> None:
     """Install the selected arm's Skill into the isolated benchmark home."""
-    skill_source = source_root / "openubmc-debug"
-    if not skill_source.is_dir():
-        raise FileNotFoundError(f"openubmc-debug Skill not found: {skill_source}")
-    for client_root in (".agents", ".codex"):
-        link = home / client_root / "skills" / "openubmc-debug"
-        link.parent.mkdir(parents=True, exist_ok=True)
-        link.symlink_to(skill_source, target_is_directory=True)
+    for skill_name in ("openubmc-debug", "openubmc-developer"):
+        skill_source = source_root / skill_name
+        if not skill_source.is_dir():
+            raise FileNotFoundError(f"{skill_name} Skill not found: {skill_source}")
+        for client_root in (".agents", ".codex"):
+            link = home / client_root / "skills" / skill_name
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(skill_source, target_is_directory=True)
+
+
+def _git_commit(repo: Path, ref: str) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", f"{ref}^{{commit}}"],
+        cwd=repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+
+
+def _version(command: list[str]) -> str:
+    completed = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    return completed.stdout.strip().splitlines()[0] if completed.stdout.strip() else "unavailable"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _fingerprint(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def release_evidence(
+    *,
+    scenario: str,
+    requested_pairs: int,
+    candidate_source_commit: str,
+    baseline_source_commit: str,
+    model: str,
+    metrics_path: Path,
+    schedule_path: Path,
+    analysis: Mapping[str, object],
+    environment: Mapping[str, object],
+) -> dict[str, object]:
+    environment_record = dict(environment)
+    evidence: dict[str, object] = {
+        "schema": f"{SCHEMA}/release-evidence-v1",
+        "scenario": scenario,
+        "source": {
+            "candidate_commit": candidate_source_commit,
+            "baseline_commit": baseline_source_commit,
+        },
+        "model": model,
+        "environment": environment_record,
+        "environment_fingerprint": _fingerprint(environment_record),
+        "thresholds": dict(THRESHOLDS),
+        "samples": {
+            "requested_pairs": requested_pairs,
+            "valid_pairs": int(analysis.get("valid_pairs", 0) or 0),
+            "invalid_pairs": list(analysis.get("invalid_pairs", [])),
+        },
+        "artifacts": {
+            "all_metrics": {
+                "path": metrics_path.name,
+                "sha256": _sha256(metrics_path),
+                "size_bytes": metrics_path.stat().st_size,
+            },
+            "schedule": {
+                "path": schedule_path.name,
+                "sha256": _sha256(schedule_path),
+                "size_bytes": schedule_path.stat().st_size,
+            },
+        },
+    }
+    evidence["evidence_digest"] = _fingerprint(evidence)
+    return evidence
+
+
+def verify_summary(
+    summary_path: Path, *, expected_source_commit: str
+) -> dict[str, object]:
+    errors: list[str] = []
+    try:
+        value = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {
+            "schema": f"{SCHEMA}/verification-v1",
+            "promotable": False,
+            "errors": [f"cannot read AB summary: {type(exc).__name__}"],
+        }
+    if not isinstance(value, Mapping):
+        return {
+            "schema": f"{SCHEMA}/verification-v1",
+            "promotable": False,
+            "errors": ["AB summary must be a JSON object"],
+        }
+    summary = dict(value)
+    if summary.get("schema") != SCHEMA:
+        errors.append("AB summary schema is not the current qualification schema")
+    if summary.get("decision") != "passed":
+        errors.append("AB summary decision is not passed")
+    valid_pairs = int(summary.get("valid_pairs", 0) or 0)
+    if valid_pairs < CHECKPOINTS[0]:
+        errors.append("AB summary has fewer than ten valid pairs")
+    invalid_pairs = summary.get("invalid_pairs", [])
+    if not isinstance(invalid_pairs, list) or invalid_pairs:
+        errors.append("AB summary contains invalid pairs")
+    if summary.get("thresholds") != THRESHOLDS:
+        errors.append("AB summary thresholds do not match the release contract")
+    metric_summary = _json_object(summary.get("metrics"))
+    for metric in METRICS:
+        if not bool(_json_object(metric_summary.get(metric)).get("passed")):
+            errors.append(f"AB metric did not pass: {metric}")
+
+    evidence = _json_object(summary.get("release_evidence"))
+    if evidence.get("scenario") != "execute-source-only":
+        errors.append("AB release evidence is not execute-source-only")
+    source = _json_object(evidence.get("source"))
+    if source.get("candidate_commit") != expected_source_commit:
+        errors.append("AB candidate source commit does not match the release candidate")
+    samples = _json_object(evidence.get("samples"))
+    if samples.get("valid_pairs") != valid_pairs or samples.get("invalid_pairs") != invalid_pairs:
+        errors.append("AB release evidence sample counts do not match the summary")
+    if evidence.get("thresholds") != THRESHOLDS:
+        errors.append("AB release evidence thresholds do not match the release contract")
+    if not str(evidence.get("model", "")).strip():
+        errors.append("AB release evidence is missing the model")
+    if not str(evidence.get("environment_fingerprint", "")).startswith("sha256:"):
+        errors.append("AB release evidence is missing the environment fingerprint")
+
+    artifacts = _json_object(evidence.get("artifacts"))
+    for name in ("all_metrics", "schedule"):
+        artifact = _json_object(artifacts.get(name))
+        path = Path(str(artifact.get("path", "")))
+        if not path.is_absolute():
+            path = summary_path.parent / path
+        if not path.is_file():
+            errors.append(f"AB {name} artifact is unavailable")
+            continue
+        if artifact.get("sha256") != _sha256(path):
+            errors.append(f"AB {name} digest does not match the artifact")
+        if artifact.get("size_bytes") != path.stat().st_size:
+            errors.append(f"AB {name} size does not match the artifact")
+    expected_evidence_digest = evidence.get("evidence_digest")
+    evidence_without_digest = dict(evidence)
+    evidence_without_digest.pop("evidence_digest", None)
+    if expected_evidence_digest != _fingerprint(evidence_without_digest):
+        errors.append("AB release evidence digest is invalid")
+    return {
+        "schema": f"{SCHEMA}/verification-v1",
+        "promotable": not errors,
+        "errors": errors,
+        "source_commit": expected_source_commit,
+        "valid_pairs": valid_pairs,
+        "invalid_pairs": invalid_pairs if isinstance(invalid_pairs, list) else [],
+        "summary_path": str(summary_path),
+        "summary_sha256": _sha256(summary_path),
+        "evidence_digest": expected_evidence_digest,
+    }
 
 
 def run_benchmark(args: argparse.Namespace) -> int:
@@ -511,7 +956,11 @@ def run_benchmark(args: argparse.Namespace) -> int:
             run_dir.mkdir(parents=True)
             home.mkdir()
             prepare_arm_home(home, config.source_root)
-            prompt = _prompt(config.source_root / "openubmc-debug" / "SKILL.md")
+            prompt = _prompt(
+                config.source_root / "openubmc-debug" / "SKILL.md",
+                scenario=args.scenario,
+                arm=arm,
+            )
             (run_dir / "prompt.md").write_text(prompt, encoding="utf-8")
             final_path = run_dir / "final.md"
             events_path = run_dir / "events.jsonl"
@@ -575,6 +1024,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 final_path=final_path,
                 exit_code=exit_code,
                 duration_seconds=duration,
+                scenario=args.scenario,
             )
             metrics.append(metric)
             (run_dir / "metrics.json").write_text(
@@ -589,6 +1039,25 @@ def run_benchmark(args: argparse.Namespace) -> int:
             if args.pause_seconds:
                 time.sleep(args.pause_seconds)
     summary = analyze(metrics)
+    metrics_path = output / "all_metrics.json"
+    schedule_path = output / "schedule.json"
+    environment_record = {
+        "python": platform.python_version(),
+        "node": _version(["node", "--version"]),
+        "codex": _version([args.codex, "--version"]),
+        "platform": platform.platform(),
+    }
+    summary["release_evidence"] = release_evidence(
+        scenario=args.scenario,
+        requested_pairs=args.pairs,
+        candidate_source_commit=_git_commit(repo, "HEAD"),
+        baseline_source_commit=_git_commit(repo, args.baseline_ref),
+        model=args.model,
+        metrics_path=metrics_path,
+        schedule_path=schedule_path,
+        analysis=summary,
+        environment=environment_record,
+    )
     (output / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -604,6 +1073,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     analyze_parser = subparsers.add_parser("analyze")
     analyze_parser.add_argument("metrics", type=Path)
+    verify_parser = subparsers.add_parser("verify")
+    verify_parser.add_argument("summary", type=Path)
+    verify_parser.add_argument("--source-ref", required=True)
+    verify_parser.add_argument("--repo", type=Path, default=Path.cwd())
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--repo", type=Path, default=Path.cwd())
     run_parser.add_argument("--work-root", type=Path, required=True)
@@ -618,6 +1091,11 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--codex-config", action="append", default=[])
     run_parser.add_argument("--pause-seconds", type=float, default=5)
     run_parser.add_argument("--only-arm", choices=("A", "B"))
+    run_parser.add_argument(
+        "--scenario",
+        choices=("observation", "execute-source-only"),
+        default="observation",
+    )
     args = parser.parse_args(argv)
     if args.command == "analyze":
         value = json.loads(args.metrics.read_text(encoding="utf-8"))
@@ -625,6 +1103,14 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("metrics must contain an array")
         print(json.dumps(analyze(value), ensure_ascii=False, indent=2))
         return 0
+    if args.command == "verify":
+        expected = _git_commit(args.repo.resolve(), args.source_ref)
+        verification = verify_summary(
+            args.summary.expanduser().absolute(),
+            expected_source_commit=expected,
+        )
+        print(json.dumps(verification, ensure_ascii=False, indent=2))
+        return 0 if verification["promotable"] else 1
     return run_benchmark(args)
 
 

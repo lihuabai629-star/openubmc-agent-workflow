@@ -125,9 +125,10 @@ continues without another Agent Turn. If it cannot converge, the Runtime returns
 the affected Effect identity. Explicit `control=reconcile` remains as a compatibility and operator
 fallback rather than the normal Agent path.
 
-Terminal Runs first persist one authoritative Run Outcome. A redacted Session Outcome is then
-projected from that fact; retries do not create another Run Outcome or governance record. Review,
-approval, rejection, and promotion remain operator-only operations.
+Terminal Runs persist one authoritative Run Outcome. The Agent path does not write a Session
+Outcome. An operator may explicitly project the redacted governance record from the persisted Run
+Outcome; retries cannot create another Run Outcome or alter the Run ledger. Review, approval,
+rejection, and promotion remain operator-only operations.
 
 ## Descriptor direction
 
@@ -165,14 +166,17 @@ profile is retained as the baseline until the semantic interface meets that gate
 Use `scripts/agent_gateway_ab.py` to run or re-evaluate the qualification. The runner creates a
 balanced AB/BA schedule, isolates every Codex home, applies semantic and scope acceptance, and
 computes the paired geometric mean plus the one-sided 95% bootstrap upper bound for total tokens,
-non-cached input plus output, and wall time. Ten valid pairs are the first decision point; an
-uncertain result expands to twenty and then thirty pairs.
+non-cached input plus output, tool-output bytes, model turns, wall time, and time to the next
+actionable Turn. Ten valid pairs are the first decision point; an uncertain result expands to
+twenty and then thirty pairs. Each result records both source commits, the model and environment
+fingerprint, thresholds, valid and invalid pairs, and digests for the schedule and raw metrics.
 
 ```bash
 python scripts/agent_gateway_ab.py run \
   --work-root /path/to/benchmark-work \
   --credentials /path/to/private/credentials.env \
   --model <fixed-model> \
+  --scenario execute-source-only \
   --pairs 10
 
 python scripts/agent_gateway_ab.py analyze \

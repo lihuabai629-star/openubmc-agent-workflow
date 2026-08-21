@@ -44,6 +44,7 @@ from .semantic_runtime import (
     GateConflict,
     ObservationQuery,
     RunTurn,
+    ResumeRun,
     StartRun,
     SubmitGate,
     bounded_request,
@@ -52,10 +53,12 @@ from .semantic_runtime import (
 from .run_store import EventRunStore
 from .effect_runner import EffectIntent, LocalEffectRunner, PreparedEffect
 from .capability import (
+    ArtifactContract,
     CallableDomainAdapter,
     CapabilityDescriptor,
     CapabilityRegistry,
     DomainExecutor,
+    DomainPack,
     EffectClass,
     EffectRecoveryMode,
     RUNTIME_EFFECT_RECOVERY_ARGUMENT,
@@ -2278,62 +2281,6 @@ class _RuntimeSemanticAdapter:
         )
         return self.run_snapshot(run_id)
 
-    def record_gate_response(
-        self,
-        command: SubmitGate,
-        *,
-        gate: Gate,
-        response: Mapping[str, object],
-        submission_digest: str,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]:
-        snapshot = self.run_snapshot(command.run_id)
-        if self._reattach_gate_submission(
-            snapshot,
-            command,
-            gate=gate,
-            submission_digest=submission_digest,
-        ):
-            return snapshot
-        continuation = _mapping_or_empty(snapshot.get("continuation"))
-        handoff = _mapping_or_empty(continuation.get("handoff_arguments"))
-        contract = dict(_mapping_or_empty(handoff.get("phase_record_contract")))
-        if not contract:
-            raise GateConflict("Run is not waiting at a phase response Gate")
-        payload = _mapping_or_empty(response.get("payload"))
-        contract.update(payload)
-        contract.update(
-            {
-                "status": str(response.get("status", "")),
-                "summary": str(response.get("summary", "")),
-                "gate_id": gate.gate_id,
-                "gate_version": gate.version,
-                "gate_schema_digest": gate.schema_digest,
-                "submission_id": command.submission_id,
-                "submission_digest": submission_digest,
-            }
-        )
-        try:
-            self.service.context_runtime.record_gate_submission(
-                contract,
-                task_id=task_id,
-                operation_id=operation_id,
-            )
-        except RevisionConflict as exc:
-            snapshot = self.run_snapshot(command.run_id)
-            if not self._reattach_gate_submission(
-                snapshot,
-                command,
-                gate=gate,
-                submission_digest=submission_digest,
-            ):
-                raise GateConflict(
-                    "Gate was submitted concurrently by a different submission"
-                ) from exc
-            return snapshot
-        return self.run_snapshot(command.run_id)
-
     def cancel_run(
         self,
         command: CancelRun,
@@ -2497,63 +2444,6 @@ class _RuntimeSemanticAdapter:
         )
         return self.run_snapshot(run_id)
 
-    def project_outcome(
-        self,
-        turn: RunTurn,
-        *,
-        task_id: str,
-    ) -> Mapping[str, object]:
-        del task_id
-        if turn.outcome is None:
-            return {}
-        projection = self.service.context_runtime.read_case(turn.run_id)
-        persisted_outcome = _mapping_or_empty(projection.get("run_outcome"))
-        if not persisted_outcome:
-            return {}
-        projected_outcome = turn.outcome.to_public_dict()
-        if any(
-            projected_outcome.get(name) != persisted_outcome.get(name)
-            for name in ("status", "summary", "acceptance")
-        ):
-            raise RuntimeError("Session Outcome projection does not match Run Outcome")
-        closeout = _mapping_or_empty(projection.get("closeout"))
-        replay_fingerprint = "sha256:" + hashlib.sha256(
-            json.dumps(
-                {
-                    "run_id": turn.run_id,
-                    "workflow": projection.get("workflow_definition", {}),
-                    "outcome": persisted_outcome,
-                    "closeout_fingerprint": closeout.get("fingerprint", ""),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        return self.service.session_outcome_service.record(
-            session_id=f"run:{turn.run_id}",
-            case_id=turn.run_id,
-            replay_fingerprint=replay_fingerprint,
-            workflow=str(
-                _mapping_or_empty(projection.get("workflow_definition")).get(
-                    "definition_id", "runtime-workflow"
-                )
-            ),
-            domain=str(projection.get("entry_domain", "runtime") or "runtime"),
-            outcome=(
-                "completed"
-                if str(persisted_outcome.get("status", "")) == "completed"
-                else "failed"
-            ),
-            summary=str(persisted_outcome.get("summary", "")).strip()
-            or "workflow completed",
-            details={
-                "state": str(persisted_outcome.get("status", "")),
-                "run_outcome_id": str(persisted_outcome.get("outcome_id", "")),
-                "gaps": list(turn.gaps),
-            },
-        ).to_public_dict()
-
-
 def _mapping_or_empty(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
@@ -2630,24 +2520,53 @@ class RuntimeMcpService:
                 )
             )
         self.capability_registry = CapabilityRegistry(capability_descriptors)
-        self.domain_executor = DomainExecutor(
-            self.capability_registry,
-            {
-                descriptor.operation: CallableDomainAdapter(
-                    lambda sdk_context, sdk_arguments, operation=descriptor.operation: (
-                        self._invoke_registered_domain_adapter(
-                            operation,
-                            sdk_context,
-                            sdk_arguments,
-                        )
+        domain_adapters = {
+            descriptor.operation: CallableDomainAdapter(
+                lambda sdk_context, sdk_arguments, operation=descriptor.operation: (
+                    self._invoke_registered_domain_adapter(
+                        operation,
+                        sdk_context,
+                        sdk_arguments,
                     )
                 )
-                for descriptor in self.capability_registry.descriptors()
-            },
-            effect_classes={
-                "live_patch_run": EffectClass.RECONCILABLE_MUTATION,
-                "upgrade_run": EffectClass.RECONCILABLE_MUTATION,
-            },
+            )
+            for descriptor in self.capability_registry.descriptors()
+        }
+        artifact_contracts = {
+            "live_patch_run": ArtifactContract(
+                path_fields=("local_path", "backup_path"),
+                digest_field="artifact_sha256",
+            ),
+            "upgrade_run": ArtifactContract(
+                path_fields=("artifact_path",),
+                digest_field="artifact_sha256",
+                version_field="product_version",
+                required=True,
+            ),
+        }
+        domain_packs: list[DomainPack] = []
+        for operation in ("live_patch_run", "upgrade_run"):
+            try:
+                descriptor = self.capability_registry.require(operation)
+            except ValueError:
+                continue
+            adapter = domain_adapters.pop(operation)
+            domain_packs.append(
+                DomainPack(
+                    name=operation.removesuffix("_run").replace("_", "-"),
+                    version="1",
+                    descriptor=descriptor,
+                    effect_class=EffectClass.RECONCILABLE_MUTATION,
+                    adapter=adapter,
+                    reconciler=adapter,
+                    verifier=lambda _action, receipt: bool(receipt.status),
+                    artifact_contract=artifact_contracts[operation],
+                )
+            )
+        self.domain_executor = DomainExecutor(
+            self.capability_registry,
+            domain_adapters,
+            packs=domain_packs,
         )
         self.context_runtime = context_runtime or ContextRuntime(
             self.catalog,
@@ -2663,6 +2582,8 @@ class RuntimeMcpService:
         self.session_outcome_service = SessionOutcomeService(
             session_outcome_repository or InMemorySessionOutcomeRepository()
         )
+        self._compatibility_telemetry_lock = threading.Lock()
+        self._compatibility_operation_counts: dict[str, int] = {}
         selected_interface_profile = str(interface_profile).strip().lower()
         if selected_interface_profile not in {
             "agent",
@@ -3237,19 +3158,12 @@ class RuntimeMcpService:
                 {
                     "name": "session_outcome_record",
                     "description": (
-                        "Record one redacted Session Outcome linked to a Case and Replay."
+                        "Project a terminal Run Outcome, or record one legacy Case "
+                        "Outcome, into the redacted governance store."
                     ),
                     "inputSchema": {
                         "type": "object",
-                        "required": [
-                            "session_id",
-                            "case_id",
-                            "replay_fingerprint",
-                            "workflow",
-                            "domain",
-                            "outcome",
-                            "summary",
-                        ],
+                        "required": ["case_id"],
                         "properties": {
                             "session_id": {"type": "string", "minLength": 1},
                             "case_id": {"type": "string", "minLength": 1},
@@ -3548,6 +3462,11 @@ class RuntimeMcpService:
         if self.interface_profile == "agent":
             bounded_request(arguments)
         self.interface_catalog.validate_arguments(name, arguments)
+        if self.interface_profile == "compatibility":
+            with self._compatibility_telemetry_lock:
+                self._compatibility_operation_counts[name] = (
+                    self._compatibility_operation_counts.get(name, 0) + 1
+                )
         if self.interface_profile == "agent":
             if name == "observe":
                 return self.agent_gateway.observe(
@@ -3639,6 +3558,116 @@ class RuntimeMcpService:
             ),
         )
 
+    def _translate_native_phase_record(
+        self,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> ContextToolResult | None:
+        case_id = str(arguments.get("case_id", "")).strip()
+        if not case_id:
+            return None
+        projection = self.context_runtime.repository.load(case_id)
+        if not isinstance(projection, Mapping):
+            raise CaseNotFound(case_id)
+        if not str(projection.get("start_command_id", "")):
+            return None
+        raw_gate = projection.get("current_gate")
+        if not isinstance(raw_gate, Mapping) or not raw_gate:
+            raise GateConflict("Run is not waiting at a compatibility phase Gate")
+        gate = Gate.from_public_dict(raw_gate)
+        if str(arguments.get("phase_type", "")) != gate.name:
+            raise GateConflict("phase_record targets a different Run Gate")
+        payload = {
+            key: value
+            for key, value in arguments.items()
+            if key
+            not in {
+                "case_id",
+                "expected_revision",
+                "idempotency_key",
+                "phase_type",
+                "producer_identity",
+                "status",
+                "summary",
+                "gate_id",
+                "gate_version",
+                "gate_schema_digest",
+                "submission_id",
+                "submission_digest",
+            }
+        }
+        submission_id = str(
+            arguments.get("idempotency_key") or operation_id
+        ).strip()
+        turn = self.semantic_runtime.execute(
+            SubmitGate(
+                run_id=case_id,
+                response={
+                    "status": str(arguments.get("status", "completed")),
+                    "summary": str(arguments.get("summary", "")),
+                    "payload": payload,
+                },
+                gate_id=gate.gate_id,
+                gate_version=gate.version,
+                schema_digest=gate.schema_digest,
+                submission_id=submission_id,
+                command_id=submission_id,
+            ),
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+        updated = self.context_runtime.read_case(case_id)
+        record = next(
+            (
+                item
+                for item in reversed(updated.get("phase_records", []))
+                if isinstance(item, Mapping)
+                and str(item.get("submission_id", "")) == submission_id
+            ),
+            None,
+        )
+        if not isinstance(record, Mapping):
+            raise RuntimeError("typed Runtime did not project the submitted phase")
+        return self.context_runtime.wrap_read(
+            {**dict(record), "run_turn": turn.to_public_dict()},
+            operation="phase_record",
+            operation_id=operation_id,
+            case_id=case_id,
+            status=str(record.get("status", "completed")),
+        )
+
+    def _translate_native_workflow_next(
+        self,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> ContextToolResult | None:
+        case_id = str(arguments.get("case_id", "")).strip()
+        if not case_id:
+            case_id = self.context_runtime.repository.case_for_task(task_id) or ""
+        if not case_id:
+            return None
+        projection = self.context_runtime.repository.load(case_id)
+        if not isinstance(projection, Mapping):
+            raise CaseNotFound(case_id)
+        if not str(projection.get("start_command_id", "")):
+            return None
+        turn = self.semantic_runtime.execute(
+            ResumeRun(run_id=case_id, command_id=operation_id),
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+        return self.context_runtime.wrap_read(
+            turn.to_public_dict(),
+            operation="workflow.next",
+            operation_id=operation_id,
+            case_id=case_id,
+            status=turn.state,
+        )
+
     def _execute_domain_value(
         self,
         name: str,
@@ -3654,8 +3683,13 @@ class RuntimeMcpService:
             self._timeout(domain_arguments), capability_descriptor.timeout_seconds
         )
         bounded_arguments = dict(domain_arguments)
+        execute = (
+            self.domain_executor.reconcile
+            if recovery_mode is EffectRecoveryMode.RECONCILE
+            else self.domain_executor.execute
+        )
         return dict(
-            self.domain_executor.execute(
+            execute(
                 name,
                 context=RuntimeSDKContext(
                     task_id=task_id,
@@ -3895,7 +3929,18 @@ class RuntimeMcpService:
             status["capability_registry"] = (
                 self.capability_registry.to_public_dict()
             )
+            status["domain_packs"] = list(
+                self.domain_executor.pack_descriptors()
+            )
             status["session_outcomes"] = self.session_outcome_service.status()
+            with self._compatibility_telemetry_lock:
+                compatibility_counts = dict(
+                    sorted(self._compatibility_operation_counts.items())
+                )
+            status["compatibility_telemetry"] = {
+                "total_calls": sum(compatibility_counts.values()),
+                "operation_counts": compatibility_counts,
+            }
             status["context_maintenance"] = {
                 "attempts": self._context_maintenance_attempts,
                 "failures": self._context_maintenance_failures,
@@ -3973,23 +4018,82 @@ class RuntimeMcpService:
                     )
                 )
                 if is_run:
-                    raise ValueError(
-                        "Session Outcome for a Run must be generated from Run Outcome"
+                    persisted_outcome = _mapping_or_empty(
+                        projection.get("run_outcome")
                     )
-                record = self.session_outcome_service.record(
-                    session_id=str(arguments.get("session_id", "")),
-                    case_id=case_id,
-                    replay_fingerprint=str(arguments.get("replay_fingerprint", "")),
-                    workflow=str(arguments.get("workflow", "")),
-                    domain=str(arguments.get("domain", "")),
-                    outcome=str(arguments.get("outcome", "")),
-                    gap_type=str(arguments.get("gap_type", "")),
-                    summary=str(arguments.get("summary", "")),
-                    details=details,
-                    architecture_decision=bool(
-                        arguments.get("architecture_decision", False)
-                    ),
-                )
+                    if not persisted_outcome:
+                        raise ValueError(
+                            "Session Outcome projection requires a terminal Run Outcome"
+                        )
+                    closeout = _mapping_or_empty(projection.get("closeout"))
+                    replay_fingerprint = "sha256:" + hashlib.sha256(
+                        json.dumps(
+                            {
+                                "run_id": case_id,
+                                "workflow": projection.get(
+                                    "workflow_definition", {}
+                                ),
+                                "outcome": persisted_outcome,
+                                "closeout_fingerprint": closeout.get(
+                                    "fingerprint", ""
+                                ),
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    run_status = str(persisted_outcome.get("status", ""))
+                    record = self.session_outcome_service.record(
+                        session_id=f"run:{case_id}",
+                        case_id=case_id,
+                        replay_fingerprint=replay_fingerprint,
+                        workflow=str(
+                            _mapping_or_empty(
+                                projection.get("workflow_definition")
+                            ).get("definition_id", "runtime-workflow")
+                        ),
+                        domain=str(
+                            projection.get("entry_domain", "runtime")
+                            or "runtime"
+                        ),
+                        outcome=(
+                            "completed"
+                            if run_status == "completed"
+                            else "partial"
+                            if run_status == "partial"
+                            else "failed"
+                        ),
+                        summary=str(
+                            persisted_outcome.get("summary", "")
+                        ).strip()
+                        or "workflow completed",
+                        details={
+                            "state": run_status,
+                            "run_outcome_id": str(
+                                persisted_outcome.get("outcome_id", "")
+                            ),
+                            "closeout_fingerprint": str(
+                                closeout.get("fingerprint", "")
+                            ),
+                        },
+                    )
+                else:
+                    record = self.session_outcome_service.record(
+                        session_id=str(arguments.get("session_id", "")),
+                        case_id=case_id,
+                        replay_fingerprint=str(
+                            arguments.get("replay_fingerprint", "")
+                        ),
+                        workflow=str(arguments.get("workflow", "")),
+                        domain=str(arguments.get("domain", "")),
+                        outcome=str(arguments.get("outcome", "")),
+                        gap_type=str(arguments.get("gap_type", "")),
+                        summary=str(arguments.get("summary", "")),
+                        details=details,
+                        architecture_decision=bool(
+                            arguments.get("architecture_decision", False)
+                        ),
+                    )
                 return self.context_runtime.wrap_read(
                     record.to_public_dict(),
                     operation=name,
@@ -4054,6 +4158,13 @@ class RuntimeMcpService:
                     case_id="",
                 )
             if name == "phase_record":
+                translated = self._translate_native_phase_record(
+                    arguments,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                )
+                if translated is not None:
+                    return translated
                 return self.context_runtime.phase_record(
                     descriptor,
                     arguments,
@@ -4077,6 +4188,13 @@ class RuntimeMcpService:
                     ),
                 )
             if name == "workflow.next":
+                translated = self._translate_native_workflow_next(
+                    arguments,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                )
+                if translated is not None:
+                    return translated
                 return self.context_runtime.workflow_next(
                     descriptor,
                     arguments,

@@ -1217,7 +1217,8 @@ def project_run_turn(
             else None
         ),
         outcome_recorded=(
-            base_turn.outcome_recorded if base_turn is not None else False
+            outcome is not None
+            or (base_turn.outcome_recorded if base_turn is not None else False)
         ),
     )
 

@@ -418,12 +418,103 @@ class RunDecisionContractTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(upcasted["kind"], "OperationProgressed")
+        self.assertEqual(upcasted["kind"], "RunGateSubmitted")
         self.assertEqual(upcasted["payload"]["status"], "completed")
         self.assertEqual(
-            upcasted["payload"]["phase_record"]["summary"],
+            upcasted["payload"]["phase"]["summary"],
             "legacy source completed",
         )
+
+    def test_legacy_and_current_phase_facts_replay_to_the_same_projection(self) -> None:
+        phase = {
+            "phase_type": "developer.change",
+            "producer_identity": "openubmc-developer",
+            "status": "completed",
+            "summary": "source completed",
+            "gate_id": "gate-replay",
+            "gate_version": 1,
+            "gate_schema_digest": "a" * 64,
+            "submission_id": "submission-replay",
+            "submission_digest": "b" * 64,
+            "workflow_cycle_id": "cycle-1",
+            "workflow_step_id": "step-developer",
+            "workflow_attempt": 1,
+            "target_version": 1,
+        }
+        base_events = (
+            {
+                "revision": 1,
+                "kind": "CaseOpened",
+                "operation_id": "start-replay",
+                "payload": {
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                "created_at": 1.0,
+            },
+            {
+                "revision": 2,
+                "kind": "RunGateOpened",
+                "operation_id": "gate-replay",
+                "payload": {
+                    "gate": {
+                        "gate_id": "gate-replay",
+                        "gate_version": 1,
+                        "gate_schema_digest": "a" * 64,
+                        "workflow_cycle_id": "cycle-1",
+                        "workflow_step_id": "step-developer",
+                    }
+                },
+                "created_at": 2.0,
+            },
+        )
+        legacy = project_case(
+            "run-replay",
+            (
+                *base_events,
+                {
+                    "revision": 3,
+                    "kind": "OperationProgressed",
+                    "operation_id": "phase-replay",
+                    "payload": {"status": "completed", "phase_record": phase},
+                    "created_at": 3.0,
+                },
+            ),
+        )
+        current = project_case(
+            "run-replay",
+            (
+                *base_events,
+                {
+                    "revision": 3,
+                    "kind": "RunGateSubmitted",
+                    "operation_id": "phase-replay",
+                    "payload": {
+                        "gate_id": "gate-replay",
+                        "gate_version": 1,
+                        "schema_digest": "a" * 64,
+                        "submission_id": "submission-replay",
+                        "submission_digest": "b" * 64,
+                        "actor": "openubmc-developer",
+                        "status": "completed",
+                        "summary": "source completed",
+                        "recorded_at": 0.0,
+                        "phase": phase,
+                    },
+                    "created_at": 3.0,
+                },
+            ),
+        )
+
+        for name in (
+            "phase_records",
+            "workflow_step_states",
+            "workflow_phase_values",
+            "current_gate",
+            "gate_submissions",
+            "operations",
+        ):
+            self.assertEqual(legacy[name], current[name], name)
 
     def test_every_legacy_workflow_definition_event_is_explicitly_upcast(self) -> None:
         legacy_definition = {

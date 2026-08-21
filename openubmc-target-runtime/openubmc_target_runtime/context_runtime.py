@@ -1172,7 +1172,63 @@ def project_case(
                     gate["status"] = "submitted"
                     gate["submission_id"] = str(payload.get("submission_id", ""))
                     break
-            gate_submissions.append(dict(payload))
+            gate_submissions.append(
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key != "phase"
+                }
+            )
+            raw_phase = payload.get("phase")
+            if isinstance(raw_phase, Mapping):
+                phase_public = dict(raw_phase)
+                phases.append(phase_public)
+                phase_record_count += 1
+                step_id = str(phase_public.get("workflow_step_id", ""))
+                cycle_id = str(phase_public.get("workflow_cycle_id", ""))
+                if step_id and cycle_id == str(
+                    projection.get("workflow_cycle_id", "")
+                ):
+                    workflow_step_states[step_id] = {
+                        "kind": "phase",
+                        "name": str(phase_public.get("phase_type", "")),
+                        "status": str(phase_public.get("status", "")),
+                        "workflow_cycle_id": cycle_id,
+                        "target_version": int(
+                            phase_public.get(
+                                "target_version",
+                                projection.get("target_version", 1),
+                            )
+                        ),
+                        "target_id": "",
+                        "operation_id": str(
+                            phase_public.get("operation_id", operation_id)
+                        ),
+                        "workflow_execution_id": str(
+                            phase_public.get("workflow_execution_id", "")
+                        ),
+                        "workflow_definition_id": str(
+                            phase_public.get("workflow_definition_id", "")
+                        ),
+                        "workflow_definition_version": int(
+                            phase_public.get("workflow_definition_version", 0)
+                        ),
+                        "workflow_input_fingerprint": str(
+                            phase_public.get("workflow_input_fingerprint", "")
+                        ),
+                        "workflow_attempt": int(
+                            phase_public.get(
+                                "workflow_attempt",
+                                phase_public.get("phase_attempt", 0),
+                            )
+                        ),
+                        "target_epoch": int(
+                            phase_public.get("workflow_target_epoch", 0)
+                        ),
+                    }
+                    workflow_phase_values[
+                        str(phase_public.get("phase_type", ""))
+                    ] = phase_public
             current_gate = projection.get("current_gate")
             if (
                 isinstance(current_gate, Mapping)
@@ -5081,7 +5137,6 @@ class ContextRuntime:
         operation_id: str,
     ) -> ContextToolResult:
         case_id = self._case_id(task_id, arguments)
-        native_run_event = arguments.get("_native_run_event") is True
         projection = self._load(case_id)
         if projection is None:
             raise CaseNotFound(case_id)
@@ -5423,19 +5478,6 @@ class ContextRuntime:
                 descriptor=descriptor,
                 arguments=arguments,
             )
-            if native_run_event:
-                record["evidence_ids"] = list(
-                    dict.fromkeys(
-                        [
-                            *(
-                                item
-                                for item in record.get("evidence_ids", [])
-                                if isinstance(item, str) and item
-                            ),
-                            evidence.evidence_id,
-                        ]
-                    )
-                )
             events: list[PendingCaseEvent] = []
             if record["gate_id"]:
                 events.append(
@@ -5455,7 +5497,7 @@ class ContextRuntime:
                         operation_id,
                     )
                 )
-            if status != "running" and not native_run_event:
+            if status != "running":
                 events.extend(
                     PendingCaseEvent(
                         "OperationTerminal",
@@ -5468,23 +5510,7 @@ class ContextRuntime:
                     )
                     for prior_operation_id in prior_running_operation_ids
                 )
-            if native_run_event:
-                events.extend(
-                    (
-                        PendingCaseEvent(
-                            "RunPhaseRecorded",
-                            {"phase": record},
-                            operation_id,
-                        ),
-                        PendingCaseEvent(
-                            "EvidenceAttached",
-                            {"evidence": evidence.to_public_dict()},
-                            operation_id,
-                        ),
-                    )
-                )
-            else:
-                events.extend((
+            events.extend((
                     PendingCaseEvent(
                         "OperationAccepted",
                         {
@@ -5517,7 +5543,7 @@ class ContextRuntime:
                         operation_id,
                     ),
                 ))
-            if status != "running" and not native_run_event:
+            if status != "running":
                 events.append(
                     PendingCaseEvent(
                         "OperationTerminal",
@@ -5529,22 +5555,6 @@ class ContextRuntime:
                         operation_id,
                     )
                 )
-            if native_run_event:
-                simulated_projection = self._project_pending_events(projection, events)
-                terminal_status = (
-                    status
-                    if status in {"failed", "cancelled"}
-                    or self._continuation_for(simulated_projection)["workflow_complete"]
-                    else ""
-                )
-                if terminal_status:
-                    events, _outcome = self._terminal_run_events(
-                        projection,
-                        events,
-                        status=terminal_status,
-                        summary=str(record["summary"]),
-                        operation_id=operation_id,
-                    )
             projection = self.repository.commit(
                 case_id,
                 expected_revision=int(projection["revision"]),
@@ -7644,22 +7654,6 @@ class ContextRuntime:
                 raise
             updated = dict(current_projection)
         return self._cache(updated)
-
-    def record_gate_submission(
-        self,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> ContextToolResult:
-        """Persist a RunEngine-authorized Gate submission through the event store."""
-
-        return self.phase_record(
-            self.catalog.require("phase_record"),
-            {**dict(arguments), "_native_run_event": True},
-            task_id=task_id,
-            operation_id=operation_id,
-        )
 
     def record_run_cancelled(
         self,
