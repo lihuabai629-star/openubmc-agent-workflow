@@ -461,6 +461,66 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(events[0].payload["status"], "mutation_outcome_unknown")
         self.assertIn("cannot persist mutation evidence", events[0].payload["summary"])
 
+    def test_effect_transition_keeps_read_only_effect_retryable_when_evidence_fails(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(
+            FullFakeBackend(),
+            blob_repository=FailingBlobRepository(),
+        )
+        effect_id = "typed-read-only-evidence-failure"
+        try:
+            opened = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.76", "deadline": 10},
+                task_id="typed-read-only",
+                operation_id="typed-read-only-open",
+            )
+            run_id = opened.envelope["case_id"]
+            projection = service.context_runtime.read_case(run_id)
+            service.context_runtime.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {
+                            "operation": "debug_collect",
+                            "idempotency_key": effect_id,
+                            "request_fingerprint": "c" * 64,
+                            "target_id": "candidate",
+                        },
+                        effect_id,
+                    ),
+                    PendingCaseEvent("OperationStarted", {}, effect_id),
+                ),
+            )
+            events = service.context_runtime.prepare_effect_transition(
+                EffectIntent(
+                    run_id=run_id,
+                    effect_id=effect_id,
+                    operation="debug_collect",
+                    effect_class=EffectClass.READ_ONLY,
+                    request_fingerprint="c" * 64,
+                    arguments={"target_id": "candidate"},
+                ),
+                result={"ok": True, "summary": "fresh observation completed"},
+                error=None,
+                settlement_mode=EffectSettlementMode.DISPATCH,
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "OperationProgressed")
+        self.assertEqual(events[0].payload["status"], "running")
+        self.assertEqual(
+            events[0].payload["canonical_error"]["code"],
+            "evidence_not_persisted",
+        )
+        self.assertEqual(events[0].payload["evidence_retry_generation"], 1)
+        self.assertIn("retry", events[0].payload["next_actions"][0])
+
     def test_json_rpc_error_uses_mutation_journal_outcome_classification(self) -> None:
         class RollbackFailedBackend(FullFakeBackend):
             def live_patch_run(self, task, arguments, context):

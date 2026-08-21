@@ -155,6 +155,79 @@ class LocalEffectRunnerTests(unittest.TestCase):
         finally:
             runner.close()
 
+    def test_settlement_generation_is_bound_to_each_execution(self) -> None:
+        runner = LocalEffectRunner(
+            lambda _intent: {"status": "completed"},
+            lambda _intent: {"status": "recovered"},
+            max_workers=1,
+        )
+        intent = EffectIntent(
+            run_id="run-generation",
+            effect_id="effect-generation",
+            operation="debug_collect",
+            effect_class=EffectClass.READ_ONLY,
+            request_fingerprint="f" * 64,
+            arguments={},
+        )
+        try:
+            first = runner.ensure(
+                intent,
+                mode=EffectRunMode.DISPATCH,
+                settlement_generation=0,
+            )
+            stale_waiter = runner.ensure(
+                intent,
+                mode=EffectRunMode.REATTACH,
+                settlement_generation=1,
+            )
+
+            self.assertIs(stale_waiter, first)
+            self.assertEqual(stale_waiter.settlement_generation, 0)
+
+            runner.acknowledge(
+                intent,
+                first,
+                retain_for_reattach=True,
+            )
+            replacement = runner.ensure(
+                intent,
+                mode=EffectRunMode.REATTACH,
+                settlement_generation=1,
+            )
+
+            self.assertIsNot(replacement, first)
+            self.assertEqual(replacement.settlement_generation, 1)
+        finally:
+            runner.close()
+
+    def test_failed_claim_does_not_start_a_new_execution(self) -> None:
+        calls: list[str] = []
+        runner = LocalEffectRunner(
+            lambda intent: calls.append(intent.effect_id) or {"status": "completed"},
+            lambda _intent: {"status": "recovered"},
+            max_workers=1,
+        )
+        intent = EffectIntent(
+            run_id="run-claim",
+            effect_id="effect-claim",
+            operation="debug_collect",
+            effect_class=EffectClass.READ_ONLY,
+            request_fingerprint="1" * 64,
+            arguments={},
+        )
+        try:
+            execution = runner.ensure(
+                intent,
+                mode=EffectRunMode.DISPATCH,
+                settlement_generation=1,
+                claim=lambda: False,
+            )
+        finally:
+            runner.close()
+
+        self.assertIsNone(execution)
+        self.assertEqual(calls, [])
+
     def test_same_identity_rejects_a_conflicting_effect_intent(self) -> None:
         runner = LocalEffectRunner(
             lambda _intent: {"status": "completed"},

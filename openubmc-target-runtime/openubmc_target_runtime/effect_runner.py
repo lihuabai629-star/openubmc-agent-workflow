@@ -94,6 +94,7 @@ class EffectExecution:
 
     future: Future[Mapping[str, object]]
     mode: EffectRunMode
+    settlement_generation: int
 
 
 class LocalEffectRunner:
@@ -126,9 +127,13 @@ class LocalEffectRunner:
         intent: EffectIntent,
         *,
         mode: EffectRunMode,
-    ) -> EffectExecution:
+        settlement_generation: int = 0,
+        claim: Callable[[], bool] | None = None,
+    ) -> EffectExecution | None:
         if not isinstance(mode, EffectRunMode):
             raise TypeError("EffectRunner mode must be an EffectRunMode")
+        if settlement_generation < 0:
+            raise ValueError("EffectRunner settlement generation must be non-negative")
         identity = (intent.run_id, intent.effect_id)
         with self._lock:
             if self._closed:
@@ -139,6 +144,8 @@ class LocalEffectRunner:
             current = self._executions.get(identity)
             if current is not None:
                 return current
+            if claim is not None and not claim():
+                return None
             effective_mode = mode
             if mode is EffectRunMode.REATTACH and history is not None:
                 effective_mode = history[1]
@@ -148,7 +155,11 @@ class LocalEffectRunner:
                 else self._execute
             )
             future = self._executor.submit(callback, intent)
-            execution = EffectExecution(future=future, mode=effective_mode)
+            execution = EffectExecution(
+                future=future,
+                mode=effective_mode,
+                settlement_generation=settlement_generation,
+            )
             self._executions[identity] = execution
             self._history[identity] = (intent, effective_mode)
             return execution

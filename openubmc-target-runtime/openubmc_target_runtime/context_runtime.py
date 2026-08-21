@@ -1005,6 +1005,10 @@ def project_case(
             )
             if "status" in payload:
                 operation["status"] = str(payload["status"])
+            if "evidence_retry_generation" in payload:
+                operation["evidence_retry_generation"] = int(
+                    payload["evidence_retry_generation"]
+                )
             if "next_actions" in payload:
                 projection["next_actions"] = list(payload["next_actions"])
             if "case_status" in payload:
@@ -6920,6 +6924,32 @@ class ContextRuntime:
                         intent.effect_id,
                     ),
                 )
+            retry_generation = int(
+                operation.get("evidence_retry_generation", 0)
+            ) + 1
+            return (
+                RunEvent(
+                    "OperationProgressed",
+                    {
+                        "status": "running",
+                        "summary": redact_text(
+                            "cannot persist read-only evidence: "
+                            f"{exc}"
+                        ),
+                        "canonical_error": {
+                            "code": "evidence_not_persisted",
+                            "message": redact_text(exc),
+                        },
+                        "next_actions": [
+                            "retry the same read-only Effect after restoring "
+                            "evidence storage"
+                        ],
+                        "evidence_retry_generation": retry_generation,
+                        "case_status": "running",
+                    },
+                    intent.effect_id,
+                ),
+            )
         else:
             events.append(
                 RunEvent(

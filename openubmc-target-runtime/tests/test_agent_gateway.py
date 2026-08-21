@@ -36,6 +36,7 @@ from openubmc_target_runtime import (  # noqa: E402
     TURN_MAX_BYTES,
     JsonRpcMcpEndpoint,
     FilesystemBlobRepository,
+    InMemoryBlobRepository,
     RunTurn,
     RuntimeMcpService,
     RuntimeSDKContext,
@@ -169,6 +170,18 @@ class FailOnceRunReceiptRepository(InMemoryRuntimeRepository):
             self.fail_next_completion = False
             raise OSError("simulated Run receipt completion interruption")
         super().complete_idempotency(case_id, key, receipt)
+
+
+class FailOnceBlobRepository(InMemoryBlobRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 1
+
+    def put(self, body: bytes) -> str:
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise OSError("simulated evidence persistence interruption")
+        return super().put(body)
 
 
 class SemanticBackend:
@@ -481,9 +494,15 @@ class DormantEffectRunner:
     def has_seen(self, _intent) -> bool:
         return False
 
-    def ensure(self, intent, *, mode):
-        self.intents.append((intent, mode))
-        return SimpleNamespace(mode=mode, future=object())
+    def ensure(self, intent, *, mode, settlement_generation=0, claim=None):
+        if claim is not None and not claim():
+            return None
+        self.intents.append((intent, mode, settlement_generation))
+        return SimpleNamespace(
+            mode=mode,
+            future=object(),
+            settlement_generation=settlement_generation,
+        )
 
     @staticmethod
     def wait(_future, _timeout: float) -> bool:
@@ -590,6 +609,46 @@ class BlockingDebugSemanticBackend(SemanticBackend):
             self.started.set()
         self.release.wait(timeout=2)
         return super().debug_run(task, arguments, context)
+
+
+class BlockingOnceDebugSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        if arguments.get("mdb_only"):
+            return self.debug_collect(task, arguments, context)
+        self.started.set()
+        self.release.wait(timeout=2)
+        return super().debug_run(task, arguments, context)
+
+
+class SequencedEvidenceRetryBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._attempt = 0
+        self.first_started = threading.Event()
+        self.first_release = threading.Event()
+        self.second_started = threading.Event()
+        self.second_release = threading.Event()
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        if arguments.get("mdb_only"):
+            return self.debug_collect(task, arguments, context)
+        context.raise_if_stopped()
+        with self._lock:
+            self._attempt += 1
+            attempt = self._attempt
+        if attempt == 1:
+            self.first_started.set()
+            self.first_release.wait(timeout=3)
+        else:
+            self.second_started.set()
+            self.second_release.wait(timeout=3)
+        return {"ok": True, "summary": f"observation-{attempt}"}
 
 
 class PersistentlyRunningUpgradeBackend(SemanticBackend):
@@ -2163,6 +2222,311 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             [name for name, _arguments in self.backend.calls],
             ["debug_collect"],
+        )
+
+    def test_read_only_effect_retries_same_identity_after_evidence_failure(self) -> None:
+        backend = SemanticBackend()
+        service = RuntimeMcpService(
+            backend,
+            blob_repository=FailOnceBlobRepository(),
+        )
+        action = {
+            "kind": "start",
+            "target": "192.0.2.84",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+        }
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                action,
+                task_id="read-only-evidence-retry",
+                operation_id="read-only-evidence-retry-start",
+            )
+            replayed = service.call_exposed_tool(
+                "execute",
+                action,
+                task_id="read-only-evidence-retry-replay",
+                operation_id="read-only-evidence-retry-start",
+            )
+            events = service.context_runtime.repository.events(waiting["run_id"])
+            projection = service.context_runtime.read_case(waiting["run_id"])
+        finally:
+            service.close()
+
+        debug_calls = [
+            arguments
+            for name, arguments in backend.calls
+            if name == "debug_run"
+        ]
+        self.assertEqual(waiting["state"], "waiting_response")
+        self.assertEqual(replayed["state"], "waiting_response")
+        self.assertEqual(len(debug_calls), 2)
+        operation_ids = {
+            event["operation_id"]
+            for event in events
+            if event["kind"] == "OperationProgressed"
+            and event["payload"].get("canonical_error", {}).get("code")
+            == "evidence_not_persisted"
+        }
+        self.assertEqual(len(operation_ids), 1)
+        effect_id = next(iter(operation_ids))
+        self.assertTrue(
+            any(
+                event["kind"] == "EvidenceAttached"
+                and event["operation_id"] == effect_id
+                for event in events
+            )
+        )
+        self.assertEqual(
+            sum(
+                event["kind"] == "EvidenceAttached"
+                and event["operation_id"] == effect_id
+                for event in events
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(
+                event["kind"] == "OperationTerminal"
+                and event["operation_id"] == effect_id
+                for event in events
+            ),
+            1,
+        )
+        operation = next(
+            item
+            for item in projection["operations"]
+            if item["operation_id"] == effect_id
+        )
+        self.assertEqual(operation["status"], "completed")
+        self.assertEqual(operation["evidence_retry_generation"], 1)
+        self.assertNotIn("canonical_error", operation)
+
+    def test_concurrent_read_only_settlement_commits_one_terminal_decision(self) -> None:
+        backend = BlockingOnceDebugSemanticBackend()
+        service = RuntimeMcpService(backend)
+        action = {
+            "kind": "start",
+            "target": "192.0.2.85",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+        }
+        turns: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+
+        def execute(task_id: str) -> None:
+            try:
+                turns.append(
+                    service.call_exposed_tool(
+                        "execute",
+                        action,
+                        task_id=task_id,
+                        operation_id="concurrent-read-only-settlement-start",
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        first = threading.Thread(target=execute, args=("concurrent-read-only-a",))
+        second = threading.Thread(target=execute, args=("concurrent-read-only-b",))
+        try:
+            first.start()
+            self.assertTrue(backend.started.wait(timeout=1))
+            second.start()
+            time.sleep(0.05)
+            backend.release.set()
+            first.join(timeout=3)
+            second.join(timeout=3)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(turns), 2)
+            run_id = turns[0]["run_id"]
+            events = service.context_runtime.repository.events(run_id)
+        finally:
+            backend.release.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+            service.close()
+
+        terminal_effect_ids = [
+            event["operation_id"]
+            for event in events
+            if event["kind"] == "OperationTerminal"
+            and event["payload"].get("status") == "completed"
+        ]
+        self.assertEqual(len(terminal_effect_ids), 1)
+        effect_id = terminal_effect_ids[0]
+        self.assertEqual(
+            sum(
+                event["kind"] == "EvidenceAttached"
+                and event["operation_id"] == effect_id
+                for event in events
+            ),
+            1,
+        )
+
+    def test_stale_waiter_cannot_settle_as_a_new_evidence_retry_generation(
+        self,
+    ) -> None:
+        backend = SequencedEvidenceRetryBackend()
+        service = RuntimeMcpService(
+            backend,
+            blob_repository=FailOnceBlobRepository(),
+        )
+        engine = service.semantic_runtime.run_engine
+        original_commit = engine._commit_effect_result  # noqa: SLF001
+        original_ensure = service.effect_runner.ensure
+        original_acknowledge = service.effect_runner.acknowledge
+        scheduling_lock = threading.Lock()
+        old_execution: list[object | None] = [None]
+        old_waiters = [0]
+        stale_thread_ident: list[int | None] = [None]
+        both_old_waiters = threading.Event()
+        allow_stale_waiter = threading.Event()
+        stale_waiter_done = threading.Event()
+        stale_before_ensure = threading.Event()
+        allow_stale_ensure = threading.Event()
+        new_execution_acknowledged = threading.Event()
+
+        def ordered_commit(intent, execution, *, settlement_mode):
+            leader = False
+            stale_waiter = False
+            with scheduling_lock:
+                if old_execution[0] is None:
+                    old_execution[0] = execution
+                if execution is old_execution[0]:
+                    old_waiters[0] += 1
+                    leader = old_waiters[0] == 1
+                    stale_waiter = old_waiters[0] == 2
+                    if stale_waiter:
+                        stale_thread_ident[0] = threading.get_ident()
+                        both_old_waiters.set()
+            if leader:
+                self.assertTrue(both_old_waiters.wait(timeout=3))
+            if stale_waiter:
+                self.assertTrue(allow_stale_waiter.wait(timeout=3))
+            committed = original_commit(
+                intent,
+                execution,
+                settlement_mode=settlement_mode,
+            )
+            if stale_waiter:
+                stale_waiter_done.set()
+            return committed
+
+        def ordered_ensure(
+            intent,
+            *,
+            mode,
+            settlement_generation=0,
+            claim=None,
+        ):
+            if (
+                threading.get_ident() == stale_thread_ident[0]
+                and settlement_generation == 1
+            ):
+                stale_before_ensure.set()
+                self.assertTrue(allow_stale_ensure.wait(timeout=3))
+            return original_ensure(
+                intent,
+                mode=mode,
+                settlement_generation=settlement_generation,
+                claim=claim,
+            )
+
+        def ordered_acknowledge(
+            intent,
+            execution,
+            *,
+            retain_for_reattach,
+        ) -> None:
+            original_acknowledge(
+                intent,
+                execution,
+                retain_for_reattach=retain_for_reattach,
+            )
+            if (
+                execution is not old_execution[0]
+                and not retain_for_reattach
+            ):
+                new_execution_acknowledged.set()
+
+        engine._commit_effect_result = ordered_commit  # type: ignore[method-assign]
+        service.effect_runner.ensure = ordered_ensure  # type: ignore[method-assign]
+        service.effect_runner.acknowledge = (  # type: ignore[method-assign]
+            ordered_acknowledge
+        )
+        action = {
+            "kind": "start",
+            "target": "192.0.2.86",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+            "deadline": 2.5,
+        }
+        turns: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+
+        def execute(task_id: str) -> None:
+            try:
+                turns.append(
+                    service.call_exposed_tool(
+                        "execute",
+                        action,
+                        task_id=task_id,
+                        operation_id="stale-generation-start",
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        first = threading.Thread(target=execute, args=("stale-generation-a",))
+        second = threading.Thread(target=execute, args=("stale-generation-b",))
+        try:
+            first.start()
+            self.assertTrue(backend.first_started.wait(timeout=1))
+            second.start()
+            backend.first_release.set()
+            self.assertTrue(backend.second_started.wait(timeout=2))
+            allow_stale_waiter.set()
+            self.assertTrue(stale_waiter_done.wait(timeout=2))
+            self.assertTrue(stale_before_ensure.wait(timeout=2))
+            backend.second_release.set()
+            self.assertTrue(new_execution_acknowledged.wait(timeout=2))
+            allow_stale_ensure.set()
+            first.join(timeout=4)
+            second.join(timeout=4)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(turns), 2)
+            events = service.context_runtime.repository.events(turns[0]["run_id"])
+        finally:
+            backend.first_release.set()
+            backend.second_release.set()
+            allow_stale_waiter.set()
+            allow_stale_ensure.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+            service.close()
+
+        terminal_effect_ids = [
+            event["operation_id"]
+            for event in events
+            if event["kind"] == "OperationTerminal"
+            and event["payload"].get("status") == "completed"
+        ]
+        self.assertEqual(backend._attempt, 2)
+        self.assertEqual(len(terminal_effect_ids), 1)
+        effect_id = terminal_effect_ids[0]
+        self.assertEqual(
+            sum(
+                event["kind"] == "EvidenceAttached"
+                and event["operation_id"] == effect_id
+                for event in events
+            ),
+            1,
         )
 
     def test_observation_ref_rejects_digest_tamper_and_target_mismatch(self) -> None:

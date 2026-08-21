@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
@@ -47,6 +46,7 @@ from .run_store import (
     RunStore,
 )
 from .effect_runner import (
+    EffectExecution,
     EffectIntent,
     EffectRunMode,
     EffectSettlementMode,
@@ -1709,7 +1709,89 @@ class RunEngine:
                 )
         reattach_attempt = 0
         while True:
-            execution = self.effect_runner.ensure(intent, mode=mode)
+            latest_snapshot = self.driver.run_snapshot(intent.run_id)
+            latest_projection = _projection(latest_snapshot)
+            latest_active = self._active_effect_intent(latest_projection)
+            if not (
+                isinstance(latest_active, Mapping)
+                and _text(latest_active.get("effect_id")) == intent.effect_id
+            ):
+                remaining = deadline_at - time.monotonic()
+                if remaining <= 0:
+                    return self._turn(
+                        latest_snapshot,
+                        state="running",
+                        next_action=(
+                            "resume the Run to advance after the completed Effect"
+                        ),
+                    )
+                resume_operation_id = "resume-" + fingerprint(
+                    {
+                        "run_id": intent.run_id,
+                        "effect_id": intent.effect_id,
+                    }
+                )[:32]
+                return self.execute(
+                    ResumeRun(
+                        intent.run_id,
+                        command_id=resume_operation_id,
+                        caller_deadline=remaining,
+                    ),
+                    task_id=task_id,
+                    operation_id=resume_operation_id,
+                )
+            settlement_generation = 0
+            if intent.effect_class is EffectClass.READ_ONLY:
+                operation = next(
+                    (
+                        item
+                        for item in reversed(
+                            list(latest_projection.get("operations", []))
+                        )
+                        if isinstance(item, Mapping)
+                        and _text(item.get("operation_id")) == intent.effect_id
+                    ),
+                    {},
+                )
+                settlement_generation = int(
+                    operation.get("evidence_retry_generation", 0)
+                )
+
+            def claim_effect() -> bool:
+                claimed_projection = _projection(
+                    self.driver.run_snapshot(intent.run_id)
+                )
+                claimed_active = self._active_effect_intent(claimed_projection)
+                if not (
+                    isinstance(claimed_active, Mapping)
+                    and _text(claimed_active.get("effect_id")) == intent.effect_id
+                ):
+                    return False
+                if intent.effect_class is not EffectClass.READ_ONLY:
+                    return True
+                claimed_operation = next(
+                    (
+                        item
+                        for item in reversed(
+                            list(claimed_projection.get("operations", []))
+                        )
+                        if isinstance(item, Mapping)
+                        and _text(item.get("operation_id")) == intent.effect_id
+                    ),
+                    {},
+                )
+                return int(
+                    claimed_operation.get("evidence_retry_generation", 0)
+                ) == settlement_generation
+
+            execution = self.effect_runner.ensure(
+                intent,
+                mode=mode,
+                settlement_generation=settlement_generation,
+                claim=claim_effect,
+            )
+            if execution is None:
+                continue
             recovery_attempted = (
                 execution.mode is EffectRunMode.RECOVER
                 and intent.effect_class is not EffectClass.READ_ONLY
@@ -1731,7 +1813,7 @@ class RunEngine:
                 )
             committed = self._commit_effect_result(
                 intent,
-                execution.future,
+                execution,
                 settlement_mode=(
                     EffectSettlementMode.RECONCILE
                     if recovery_attempted
@@ -1805,10 +1887,11 @@ class RunEngine:
     def _commit_effect_result(
         self,
         intent: EffectIntent,
-        future: Future[Mapping[str, object]],
+        execution: EffectExecution,
         *,
         settlement_mode: EffectSettlementMode,
     ) -> CommittedRunDecision:
+        future = execution.future
         error = future.exception()
         result = None if error is not None else future.result()
         outcome_identity: dict[str, object] = {
@@ -1817,6 +1900,10 @@ class RunEngine:
             "effect_id": intent.effect_id,
             "settlement_mode": settlement_mode.value,
         }
+        if intent.effect_class is EffectClass.READ_ONLY:
+            outcome_identity["evidence_retry_generation"] = int(
+                execution.settlement_generation
+            )
         if error is None:
             outcome_identity["result"] = result
         else:

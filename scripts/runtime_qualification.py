@@ -22,6 +22,7 @@ QUALIFICATIONS = (
         "duplicate_dangerous_effects",
         (
             "tests.test_agent_gateway.AgentGatewayTests.test_effect_identity_is_unique_across_concurrent_runs",
+            "tests.test_agent_gateway.AgentGatewayTests.test_stale_waiter_cannot_settle_as_a_new_evidence_retry_generation",
             "tests.test_agent_gateway.AgentGatewayTests.test_live_patch_submission_replays_after_internal_effect_decisions",
             "tests.test_agent_gateway.AgentGatewayTests.test_sqlite_restart_reconciles_a_persisted_mutation_without_reapply",
             "tests.test_mutation_recovery.MutationRecoveryTests.test_sigkill_crash_cuts_preserve_identity_and_never_repeat_the_mutation",
@@ -32,6 +33,7 @@ QUALIFICATIONS = (
         (
             "tests.test_agent_gateway.AgentGatewayTests.test_source_only_failed_phase_never_produces_a_success_outcome",
             "tests.test_agent_gateway.AgentGatewayTests.test_incomplete_live_patch_acceptance_cannot_report_completed_success",
+            "tests.test_agent_gateway.AgentGatewayTests.test_read_only_effect_retries_same_identity_after_evidence_failure",
         ),
     ),
     (
