@@ -402,6 +402,65 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
             events[0].payload["summary"],
         )
 
+    def test_effect_transition_keeps_terminal_mutation_recoverable_when_evidence_fails(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(
+            FullFakeBackend(),
+            blob_repository=FailingBlobRepository(),
+        )
+        effect_id = "typed-terminal-mutation-evidence-failure"
+        try:
+            opened = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.74", "deadline": 10},
+                task_id="typed-terminal-mutation",
+                operation_id="typed-terminal-mutation-open",
+            )
+            run_id = opened.envelope["case_id"]
+            projection = service.context_runtime.read_case(run_id)
+            service.context_runtime.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {
+                            "operation": "live_patch_run",
+                            "idempotency_key": effect_id,
+                            "request_fingerprint": "b" * 64,
+                            "target_id": "candidate",
+                        },
+                        effect_id,
+                    ),
+                    PendingCaseEvent("OperationStarted", {}, effect_id),
+                ),
+            )
+            events = service.context_runtime.prepare_effect_transition(
+                EffectIntent(
+                    run_id=run_id,
+                    effect_id=effect_id,
+                    operation="live_patch_run",
+                    effect_class=EffectClass.RECONCILABLE_MUTATION,
+                    request_fingerprint="b" * 64,
+                    arguments={"target_id": "candidate"},
+                ),
+                result={
+                    "ok": True,
+                    "journal": {"stage": "verified"},
+                    "target_epoch": 2,
+                },
+                error=None,
+                settlement_mode=EffectSettlementMode.DISPATCH,
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "OperationTerminal")
+        self.assertEqual(events[0].payload["status"], "mutation_outcome_unknown")
+        self.assertIn("cannot persist mutation evidence", events[0].payload["summary"])
+
     def test_json_rpc_error_uses_mutation_journal_outcome_classification(self) -> None:
         class RollbackFailedBackend(FullFakeBackend):
             def live_patch_run(self, task, arguments, context):
@@ -568,6 +627,53 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         self.assertIn("evidence_not_persisted", first.envelope["gaps"][0])
         self.assertTrue(replay["ok"])
         self.assertEqual(len(backend.calls), 1)
+
+    def test_direct_terminal_mutation_evidence_failure_stays_unknown(self) -> None:
+        backend = FullFakeBackend()
+        repository = InMemoryRuntimeRepository()
+        service = RuntimeMcpService(
+            backend,
+            context_repository=repository,
+            blob_repository=FailingBlobRepository(),
+        )
+        arguments = {
+            "ip": "192.0.2.75",
+            "intent": "live-patch",
+            "delivery_strategy": "live-patch",
+            "local_path": "/tmp/unit.lua",
+            "remote_path": "/opt/bmc/apps/demo/unit.lua",
+            "restart_scope": "none",
+            "deadline": 10,
+            "idempotency_key": "terminal-evidence-failure",
+        }
+        try:
+            with self.assertRaisesRegex(
+                MutationOutcomeUnknown,
+                "cannot persist mutation evidence",
+            ):
+                service.call_tool(
+                    "live_patch_run",
+                    arguments,
+                    task_id="terminal-evidence-failure-task",
+                    operation_id="terminal-evidence-failure-operation",
+                )
+            case_id = repository.case_for_task("terminal-evidence-failure-task")
+            case = service.call_tool(
+                "case_read",
+                {"case_id": case_id},
+                task_id="terminal-evidence-failure-reader",
+                operation_id="terminal-evidence-failure-read",
+            )
+        finally:
+            service.close()
+
+        mutation = next(
+            item
+            for item in case["operations"]
+            if item["operation_id"] == "terminal-evidence-failure-operation"
+        )
+        self.assertEqual(mutation["status"], "mutation_outcome_unknown")
+        self.assertEqual([name for name, _ in backend.calls], ["live_patch_run"])
 
     def test_unknown_mutation_blocks_advance_but_explicit_reconciliation_recovers(self) -> None:
         backend = FailOnceUpgradeBackend()

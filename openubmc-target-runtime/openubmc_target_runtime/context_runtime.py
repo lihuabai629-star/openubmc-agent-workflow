@@ -3964,17 +3964,6 @@ class ContextRuntime:
             raise
 
     @staticmethod
-    def _mutation_is_terminal(value: Mapping[str, object]) -> bool:
-        journal = value.get("journal")
-        if not isinstance(journal, Mapping):
-            return False
-        return mutation_journal_operation_status(journal) in {
-            "completed",
-            "failed",
-            "blocked",
-        }
-
-    @staticmethod
     def _domain_operation_status(
         descriptor: OperationDescriptor,
         value: Mapping[str, object],
@@ -4642,10 +4631,10 @@ class ContextRuntime:
                     f"evidence_not_persisted: {type(exc).__name__}: {exc}"
                 )
             )
-            if descriptor.mutation and not self._mutation_is_terminal(value):
+            if descriptor.mutation:
                 current = self.repository.load(case_id)
                 message = redact_text(
-                    f"cannot persist non-terminal mutation evidence: {exc}"
+                    f"cannot persist mutation evidence: {exc}"
                 )
                 if current is not None:
                     event_kind = "OperationReconciled" if reconciling else "OperationTerminal"
@@ -6909,14 +6898,14 @@ class ContextRuntime:
                 arguments=arguments,
             )
         except Exception as exc:
-            if descriptor.mutation and not self._mutation_is_terminal(value):
+            if descriptor.mutation:
                 return (
                     RunEvent(
                         terminal_event_kind,
                         {
                             "status": "mutation_outcome_unknown",
                             "summary": redact_text(
-                                "cannot persist non-terminal mutation evidence: "
+                                "cannot persist mutation evidence: "
                                 f"{exc}"
                             ),
                             "canonical_error": {
