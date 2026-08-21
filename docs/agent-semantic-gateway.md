@@ -179,9 +179,16 @@ python scripts/agent_gateway_ab.py run \
   --credentials /path/to/private/credentials.env \
   --attestation-private-key /path/to/private/ab-evidence-signing-key \
   --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
-  --model <fixed-model> \
+  --model gpt-5.6-sol \
   --scenario execute-source-only \
-  --pairs 10
+  --pairs 10 \
+  --codex-config 'features.shell_tool=false' \
+  --codex-config 'model_provider="cliproxy"' \
+  --codex-config 'model_providers.cliproxy.name="CLIProxyAPI"' \
+  --codex-config 'model_providers.cliproxy.base_url="http://82.156.104.157/v1"' \
+  --codex-config 'model_providers.cliproxy.env_key="CLI_PROXY_API_KEY"' \
+  --codex-config 'model_providers.cliproxy.wire_api="responses"' \
+  --codex-config 'model_providers.cliproxy.supports_websockets=false'
 
 python scripts/agent_gateway_ab.py verify \
   /path/to/benchmark-work/results-*/summary.json \

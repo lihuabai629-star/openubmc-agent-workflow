@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -664,6 +665,28 @@ class AgentGatewayAbTests(unittest.TestCase):
         )
         self.assertIn("response 内只含 status、summary、payload", prompt)
         self.assertNotIn("response 只含上述固定 receipt", prompt)
+
+    def test_documented_qualification_command_locks_model_and_codex_config(self) -> None:
+        documentation = (
+            Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
+        ).read_text(encoding="utf-8")
+        run_command = documentation.partition(
+            "python scripts/agent_gateway_ab.py run \\",
+        )[2].partition("\n\npython scripts/agent_gateway_ab.py verify")[0]
+        tokens = shlex.split(run_command.replace("\\\n", " "))
+        models = [
+            tokens[index + 1]
+            for index, token in enumerate(tokens[:-1])
+            if token == "--model"
+        ]
+        codex_config = [
+            tokens[index + 1]
+            for index, token in enumerate(tokens[:-1])
+            if token == "--codex-config"
+        ]
+
+        self.assertEqual(models, [module.QUALIFICATION_MODEL])
+        self.assertEqual(tuple(codex_config), module.QUALIFICATION_CODEX_CONFIG)
 
     def test_candidate_execute_acceptance_binds_response_to_the_start_gate(self) -> None:
         start = candidate_execute_event(
