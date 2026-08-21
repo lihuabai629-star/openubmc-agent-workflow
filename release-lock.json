@@ -2,7 +2,7 @@
   "schema": "openubmc-agent-workflow.release-lock.v1",
   "lock_version": 1,
   "release_version": "2.0.0",
-  "source_commit": "d088decff76a5c69d8d399ee2e8cfb838d1fd182",
+  "source_commit": "3e809bf51da28cefcd9c694bb4702b9465725641",
   "source_commit_policy": "lock-finalization-parent-v1",
   "workflow_digest": "sha256:7636ddabbec78788e7b670c2c37ec0b821269c8f8fdb216c80bff932efa7c29b",
   "skills": [
@@ -150,5 +150,5 @@
     ]
   },
   "source_tree_digest": "sha256:84fb8f0bf250dd9ab98ea76c95ea9b1c00b0f235377ff045117216658a60128a",
-  "lock_digest": "sha256:c5e8fd9e94d9359a2dd11d0cc3d0054f81089763803729e4a8b20af21c7e2e84"
+  "lock_digest": "sha256:650467ce53575bc24881985e2e4b38f814def96e712a17949837b324b410bd2b"
 }
