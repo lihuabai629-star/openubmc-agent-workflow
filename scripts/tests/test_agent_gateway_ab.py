@@ -1045,6 +1045,126 @@ class AgentGatewayAbTests(unittest.TestCase):
                     metric["scope_validation"]["errors"],
                 )
 
+    def test_baseline_execute_metric_binds_contract_and_terminal_result_to_case(self) -> None:
+        base_contract = {
+            "case_id": "case-qualified",
+            "expected_revision": 2,
+            "idempotency_key": "qualification-development",
+            "phase_type": "developer.change",
+            "producer_identity": "openubmc-developer",
+        }
+        scenarios = (
+            (
+                "contract Case divergence",
+                {**base_contract, "case_id": "case-other"},
+                "case-qualified",
+                "case-qualified",
+                "baseline start phase contract must match the Case",
+            ),
+            (
+                "phase result Case divergence",
+                base_contract,
+                "case-other",
+                "case-qualified",
+                "baseline phase_record result must use the same Case",
+            ),
+            (
+                "terminal result Case divergence",
+                base_contract,
+                "case-qualified",
+                "case-other",
+                "baseline continuation result must use the same Case",
+            ),
+        )
+        start_arguments = {
+            "ip": "10.121.136.200",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+            "final_purpose": "qualify Runtime source-only execution",
+        }
+
+        for (
+            name,
+            phase_contract,
+            phase_result_case,
+            terminal_case,
+            expected_error,
+        ) in scenarios:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as raw:
+                events = [
+                    baseline_execute_event(
+                        "workflow.advance",
+                        start_arguments,
+                        {
+                            "status": "waiting_phase_record",
+                            "required_skill": "openubmc-developer",
+                            "handoff_arguments": {
+                                "phase_record_contract": phase_contract,
+                            },
+                            "agent_envelope": {
+                                "case_id": "case-qualified",
+                                "revision": 5,
+                            },
+                        },
+                        elapsed=10,
+                    ),
+                    baseline_execute_event(
+                        "phase_record",
+                        {
+                            **phase_contract,
+                            "expected_revision": 5,
+                            "status": "completed",
+                            "source_revision": "qualification-source",
+                            "summary": "qualification source-only receipt completed",
+                            "authored_files": ["src/qualification.lua"],
+                            "verification_plan": ["run qualification tests"],
+                        },
+                        {"status": "completed", "case_id": phase_result_case},
+                        elapsed=20,
+                    ),
+                    baseline_execute_event(
+                        "workflow.next",
+                        {"case_id": "case-qualified"},
+                        {
+                            "status": "completed",
+                            "completed": True,
+                            "case_id": terminal_case,
+                        },
+                        elapsed=30,
+                    ),
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 100, "output_tokens": 10},
+                    },
+                ]
+                root = Path(raw)
+                events_path = root / "events.jsonl"
+                events_path.write_text(
+                    "\n".join(json.dumps(item) for item in events) + "\n",
+                    encoding="utf-8",
+                )
+                final_path = root / "final.md"
+                final_path.write_text(
+                    "source-only Runtime Outcome completed", encoding="utf-8"
+                )
+
+                metric = module.metric_from_run(
+                    arm="A",
+                    pair=1,
+                    order=1,
+                    events_path=events_path,
+                    final_path=final_path,
+                    exit_code=0,
+                    duration_seconds=31,
+                    scenario="execute-source-only",
+                )
+
+                self.assertFalse(metric["valid"])
+                self.assertIn(
+                    expected_error,
+                    metric["scope_validation"]["errors"],
+                )
+
     def test_analyzer_passes_ten_good_pairs_and_expands_uncertain_result(self) -> None:
         passing = []
         for pair in range(1, 11):

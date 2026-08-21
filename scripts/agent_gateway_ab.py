@@ -73,6 +73,12 @@ BENCHMARK_MDB_QUERIES = (
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo SocketId",
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.DriveStatus Health",
 )
+BASELINE_PHASE_CONTRACT_IDENTITY_FIELDS = (
+    "case_id",
+    "idempotency_key",
+    "phase_type",
+    "producer_identity",
+)
 
 
 def _json_object(value: object) -> Mapping[str, object]:
@@ -344,6 +350,7 @@ def baseline_execute_acceptance(
         start_arguments = [_json_object(call.get("arguments")) for call in start_calls]
         phase_call = calls[phase_positions[0]]
         phase_arguments = _json_object(phase_call.get("arguments"))
+        phase_result = _structured_tool_result(phase_call)
         final_arguments = _json_object(final_call.get("arguments"))
         final_result = _structured_tool_result(final_call)
         case_ids: list[str] = []
@@ -373,26 +380,27 @@ def baseline_execute_acceptance(
         current_revision = revisions[-1]
         if not case_id or any(item != case_id for item in case_ids):
             errors.append("baseline repeated starts must preserve the same Case")
+        if any(item.get("case_id") != case for item, case in zip(contracts, case_ids)):
+            errors.append("baseline start phase contract must match the Case")
         for prior_contract in contracts[:-1]:
-            for name in (
-                "case_id",
-                "idempotency_key",
-                "phase_type",
-                "producer_identity",
-            ):
+            for name in BASELINE_PHASE_CONTRACT_IDENTITY_FIELDS:
                 if prior_contract.get(name) != contract.get(name):
                     errors.append(
                         f"baseline repeated starts must preserve phase contract {name}"
                     )
-        for name in ("case_id", "idempotency_key", "phase_type", "producer_identity"):
+        for name in BASELINE_PHASE_CONTRACT_IDENTITY_FIELDS:
             if phase_arguments.get(name) != contract.get(name):
                 errors.append(f"baseline phase_record must preserve {name}")
         if phase_arguments.get("expected_revision") != current_revision:
             errors.append("baseline phase_record must use the current envelope revision")
         if phase_arguments.get("status") != "completed":
             errors.append("baseline phase_record must complete the source phase")
+        if phase_result.get("case_id") != case_id:
+            errors.append("baseline phase_record result must use the same Case")
         if final_arguments.get("case_id") != case_id:
             errors.append("baseline continuation must use the same Case")
+        if final_result.get("case_id") != case_id:
+            errors.append("baseline continuation result must use the same Case")
         if final_result.get("status") != "completed" or final_result.get("completed") is not True:
             errors.append("baseline continuation must return a terminal workflow")
     return {
