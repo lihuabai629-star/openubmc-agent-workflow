@@ -1728,7 +1728,6 @@ class RunEngine:
                     else EffectSettlementMode.DISPATCH
                 ),
             )
-            self.effect_runner.acknowledge(intent, execution)
             snapshot = {
                 "projection": committed.projection,
                 "continuation": self.driver.run_snapshot(intent.run_id).get(
@@ -1736,13 +1735,26 @@ class RunEngine:
                 ),
             }
             projection = committed.projection
+            active = self._active_effect_intent(projection)
+            effect_remains_active = (
+                isinstance(active, Mapping)
+                and _text(active.get("effect_id")) == intent.effect_id
+            )
             unknown = self._unknown_mutation(projection)
             if recovery_attempted and unknown is not None:
-                return self._commit_recovery_incident(intent)
-            active = self._active_effect_intent(projection)
-            if isinstance(active, Mapping) and _text(
-                active.get("effect_id")
-            ) == intent.effect_id:
+                incident = self._commit_recovery_incident(intent)
+                self.effect_runner.acknowledge(
+                    intent,
+                    execution,
+                    retain_for_reattach=False,
+                )
+                return incident
+            self.effect_runner.acknowledge(
+                intent,
+                execution,
+                retain_for_reattach=effect_remains_active,
+            )
+            if effect_remains_active:
                 mode = EffectRunMode.REATTACH
                 delay = min(1.0, 0.2 * (2 ** min(reattach_attempt, 3)))
                 reattach_attempt += 1

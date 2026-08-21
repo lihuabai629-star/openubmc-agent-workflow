@@ -42,8 +42,12 @@ class LocalEffectRunnerTests(unittest.TestCase):
             self.assertIs(reattached, first)
             self.assertEqual(calls, ["effect-settled"])
 
-            runner.acknowledge(intent, reattached)
-            self.assertTrue(runner.has_seen(intent))
+            runner.acknowledge(
+                intent,
+                reattached,
+                retain_for_reattach=False,
+            )
+            self.assertFalse(runner.has_seen(intent))
             next_attempt = runner.ensure(intent, mode=EffectRunMode.REATTACH)
 
             self.assertIsNot(next_attempt, first)
@@ -56,9 +60,19 @@ class LocalEffectRunnerTests(unittest.TestCase):
             runner.close()
 
     def test_reattach_preserves_the_original_recovery_settlement_mode(self) -> None:
+        calls: list[str] = []
+
+        def execute(_intent: EffectIntent) -> dict[str, object]:
+            calls.append("dispatch")
+            return {"status": "dispatched"}
+
+        def recover(_intent: EffectIntent) -> dict[str, object]:
+            calls.append("recover")
+            return {"status": "recovered"}
+
         runner = LocalEffectRunner(
-            lambda _intent: {"status": "dispatched"},
-            lambda _intent: {"status": "recovered"},
+            execute,
+            recover,
             max_workers=1,
         )
         intent = EffectIntent(
@@ -78,6 +92,65 @@ class LocalEffectRunnerTests(unittest.TestCase):
             self.assertEqual(
                 reattached.future.result(timeout=1),
                 {"status": "recovered"},
+            )
+            runner.acknowledge(
+                intent,
+                reattached,
+                retain_for_reattach=True,
+            )
+
+            next_recovery = runner.ensure(intent, mode=EffectRunMode.REATTACH)
+
+            self.assertIsNot(next_recovery, recovery)
+            self.assertIs(next_recovery.mode, EffectRunMode.RECOVER)
+            self.assertEqual(
+                next_recovery.future.result(timeout=1),
+                {"status": "recovered"},
+            )
+            self.assertEqual(calls, ["recover", "recover"])
+            runner.acknowledge(
+                intent,
+                next_recovery,
+                retain_for_reattach=False,
+            )
+            self.assertFalse(runner.has_seen(intent))
+        finally:
+            runner.close()
+
+    def test_stale_acknowledgement_does_not_release_a_new_execution(self) -> None:
+        runner = LocalEffectRunner(
+            lambda _intent: {"status": "completed"},
+            lambda _intent: {"status": "recovered"},
+            max_workers=1,
+        )
+        intent = EffectIntent(
+            run_id="run-stale-ack",
+            effect_id="effect-stale-ack",
+            operation="live_patch_run",
+            effect_class=EffectClass.IRREVERSIBLE_MUTATION,
+            request_fingerprint="e" * 64,
+            arguments={},
+        )
+        try:
+            first = runner.ensure(intent, mode=EffectRunMode.DISPATCH)
+            first.future.result(timeout=1)
+            runner.acknowledge(
+                intent,
+                first,
+                retain_for_reattach=False,
+            )
+
+            replacement = runner.ensure(intent, mode=EffectRunMode.DISPATCH)
+            runner.acknowledge(
+                intent,
+                first,
+                retain_for_reattach=False,
+            )
+
+            self.assertTrue(runner.has_seen(intent))
+            self.assertIs(
+                runner.ensure(intent, mode=EffectRunMode.REATTACH),
+                replacement,
             )
         finally:
             runner.close()
@@ -111,9 +184,12 @@ class LocalEffectRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "conflicting intent"):
                 runner.ensure(conflicting, mode=EffectRunMode.REATTACH)
 
-            runner.acknowledge(original, execution)
-            with self.assertRaisesRegex(ValueError, "conflicting intent"):
-                runner.ensure(conflicting, mode=EffectRunMode.REATTACH)
+            runner.acknowledge(
+                original,
+                execution,
+                retain_for_reattach=False,
+            )
+            self.assertFalse(runner.has_seen(original))
         finally:
             runner.close()
 

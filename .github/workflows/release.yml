@@ -75,6 +75,9 @@ jobs:
         with:
           name: release-gate-${{ inputs.current_ref }}
           path: |
+            agent-gateway-ab-evidence/summary.json
+            agent-gateway-ab-evidence/all_metrics.json
+            agent-gateway-ab-evidence/schedule.json
             release-gate.json
             release-gate-work/github-ci-evidence.json
             release-gate-work/runtime-qualification.json

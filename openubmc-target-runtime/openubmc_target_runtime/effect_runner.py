@@ -161,12 +161,16 @@ class LocalEffectRunner:
         self,
         intent: EffectIntent,
         execution: EffectExecution,
+        *,
+        retain_for_reattach: bool,
     ) -> None:
-        """Release a settled result only after its Run decision was committed."""
+        """Release a committed result and retain only a genuine reattach lane."""
         identity = (intent.run_id, intent.effect_id)
         with self._lock:
             if self._executions.get(identity) is execution:
                 del self._executions[identity]
+                if not retain_for_reattach:
+                    self._history.pop(identity, None)
 
     @staticmethod
     def wait(

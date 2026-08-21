@@ -50,8 +50,6 @@ from openubmc_target_runtime import (  # noqa: E402
 from openubmc_target_runtime.context_runtime import (  # noqa: E402
     BufferedRuntimeRepository,
 )
-
-
 def encoded_size(value: object) -> int:
     return len(
         json.dumps(

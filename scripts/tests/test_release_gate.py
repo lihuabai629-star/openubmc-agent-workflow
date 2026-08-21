@@ -252,6 +252,13 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("--github-repository \"${{ github.repository }}\"", workflow)
         self.assertIn("--work-root release-gate-work", workflow)
         self.assertIn("release-gate-work/github-ci-evidence.json", workflow)
+        expected_occurrences = {
+            "agent-gateway-ab-evidence/summary.json": 3,
+            "agent-gateway-ab-evidence/all_metrics.json": 2,
+            "agent-gateway-ab-evidence/schedule.json": 2,
+        }
+        for artifact, count in expected_occurrences.items():
+            self.assertEqual(workflow.count(artifact), count)
         self.assertIn("python-version: \"3.12.13\"", workflow)
         self.assertEqual(
             release_gate.execute_release_gate.__kwdefaults__["github_repository"],

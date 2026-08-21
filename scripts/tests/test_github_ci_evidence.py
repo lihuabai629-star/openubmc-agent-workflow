@@ -15,6 +15,24 @@ SPEC.loader.exec_module(github_ci)
 
 
 class GitHubCiEvidenceTests(unittest.TestCase):
+    @staticmethod
+    def workflow_runs(*, check_suite_id: int = 10) -> dict[str, object]:
+        return {
+            "workflow_runs": [
+                {
+                    "id": 20,
+                    "workflow_id": 30,
+                    "name": "Workflow validation",
+                    "path": ".github/workflows/validate.yml",
+                    "event": "pull_request",
+                    "head_sha": "candidate",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "check_suite_id": check_suite_id,
+                }
+            ]
+        }
+
     def test_required_checks_must_succeed_on_exact_candidate_commit(self) -> None:
         payload = {
             "check_runs": [
@@ -25,6 +43,8 @@ class GitHubCiEvidenceTests(unittest.TestCase):
                     "status": "completed",
                     "conclusion": "success",
                     "html_url": "https://example/check/1",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
                 },
                 {
                     "id": 2,
@@ -33,12 +53,15 @@ class GitHubCiEvidenceTests(unittest.TestCase):
                     "status": "completed",
                     "conclusion": "success",
                     "html_url": "https://example/check/2",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
                 },
             ]
         }
 
         evidence = github_ci.evaluate_check_runs(
             payload,
+            self.workflow_runs(),
             repository="owner/repo",
             commit="candidate",
         )
@@ -58,6 +81,8 @@ class GitHubCiEvidenceTests(unittest.TestCase):
                     "head_sha": "other",
                     "status": "completed",
                     "conclusion": "success",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
                 },
                 {
                     "id": 2,
@@ -65,12 +90,15 @@ class GitHubCiEvidenceTests(unittest.TestCase):
                     "head_sha": "candidate",
                     "status": "completed",
                     "conclusion": "failure",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
                 },
             ]
         }
 
         evidence = github_ci.evaluate_check_runs(
             payload,
+            self.workflow_runs(),
             repository="owner/repo",
             commit="candidate",
         )
@@ -81,15 +109,166 @@ class GitHubCiEvidenceTests(unittest.TestCase):
             ["missing", "failed"],
         )
 
+    def test_untrusted_app_cannot_replace_the_github_actions_check(self) -> None:
+        payload = {
+            "check_runs": [
+                {
+                    "id": 1,
+                    "name": "CI contract preflight",
+                    "head_sha": "candidate",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
+                },
+                {
+                    "id": 99,
+                    "name": "CI contract preflight",
+                    "head_sha": "candidate",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": 99999, "slug": "untrusted-checks"},
+                    "check_suite": {"id": 10},
+                },
+                {
+                    "id": 2,
+                    "name": "Complete repository validation",
+                    "head_sha": "candidate",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
+                },
+            ]
+        }
+
+        evidence = github_ci.evaluate_check_runs(
+            payload,
+            self.workflow_runs(),
+            repository="owner/repo",
+            commit="candidate",
+        )
+
+        self.assertFalse(evidence["promotable"])
+        self.assertEqual(
+            [item["status"] for item in evidence["required_checks"]],
+            ["failed", "passed"],
+        )
+
+    def test_same_app_check_from_another_workflow_cannot_replace_ci(self) -> None:
+        payload = {
+            "check_runs": [
+                {
+                    "id": 1,
+                    "name": "CI contract preflight",
+                    "head_sha": "candidate",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
+                },
+                {
+                    "id": 99,
+                    "name": "CI contract preflight",
+                    "head_sha": "candidate",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 11},
+                },
+                {
+                    "id": 2,
+                    "name": "Complete repository validation",
+                    "head_sha": "candidate",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
+                },
+            ]
+        }
+        workflow_runs = self.workflow_runs()
+        workflow_runs["workflow_runs"].append(
+            {
+                "id": 21,
+                "workflow_id": 31,
+                "name": "Impersonating workflow",
+                "path": ".github/workflows/other.yml",
+                "event": "pull_request",
+                "head_sha": "candidate",
+                "status": "completed",
+                "conclusion": "success",
+                "check_suite_id": 11,
+            }
+        )
+
+        evidence = github_ci.evaluate_check_runs(
+            payload,
+            workflow_runs,
+            repository="owner/repo",
+            commit="candidate",
+        )
+
+        self.assertFalse(evidence["promotable"])
+        self.assertEqual(
+            [item["status"] for item in evidence["required_checks"]],
+            ["failed", "passed"],
+        )
+
+    def test_pending_canonical_workflow_is_pending_instead_of_missing(self) -> None:
+        payload = {
+            "check_runs": [
+                {
+                    "id": 1,
+                    "name": "CI contract preflight",
+                    "head_sha": "candidate",
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
+                },
+                {
+                    "id": 2,
+                    "name": "Complete repository validation",
+                    "head_sha": "candidate",
+                    "status": "queued",
+                    "conclusion": None,
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "check_suite": {"id": 10},
+                },
+            ]
+        }
+        workflow_runs = self.workflow_runs()
+        workflow_runs["workflow_runs"][0]["status"] = "in_progress"
+        workflow_runs["workflow_runs"][0]["conclusion"] = None
+
+        evidence = github_ci.evaluate_check_runs(
+            payload,
+            workflow_runs,
+            repository="owner/repo",
+            commit="candidate",
+        )
+
+        self.assertFalse(evidence["promotable"])
+        self.assertEqual(
+            [item["status"] for item in evidence["required_checks"]],
+            ["pending", "pending"],
+        )
+
     def test_collection_uses_github_check_runs_api(self) -> None:
         calls: list[tuple[str, ...]] = []
 
         def run(command, **kwargs):
             calls.append(tuple(command))
+            payload = (
+                self.workflow_runs()
+                if any("actions/runs" in part for part in command)
+                else {"check_runs": []}
+            )
             return subprocess.CompletedProcess(
                 command,
                 0,
-                json.dumps({"check_runs": []}),
+                json.dumps(payload),
                 "",
             )
 
@@ -102,6 +281,7 @@ class GitHubCiEvidenceTests(unittest.TestCase):
         self.assertFalse(evidence["promotable"])
         self.assertEqual(calls[0][0:2], ("gh", "api"))
         self.assertIn("repos/owner/repo/commits/candidate/check-runs", calls[0])
+        self.assertIn("repos/owner/repo/actions/runs", calls[1])
 
 
 if __name__ == "__main__":

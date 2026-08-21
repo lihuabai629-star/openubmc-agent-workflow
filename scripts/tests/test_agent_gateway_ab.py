@@ -130,7 +130,7 @@ def candidate_execute_event(kind: str, state: str, *, elapsed: float):
         )
         structured["gate"] = {
             "gate_id": "gate-developer",
-            "version": 1,
+            "gate_version": 1,
             "schema_digest": "a" * 64,
             "owner": "openubmc-developer",
         }
@@ -143,11 +143,11 @@ def candidate_execute_event(kind: str, state: str, *, elapsed: float):
                 "schema_digest": "a" * 64,
                 "response": {
                     "status": "completed",
-                    "summary": "source repair completed",
+                    "summary": "qualification source-only receipt completed",
                     "payload": {
-                        "source_revision": "qualified-source",
-                        "authored_files": ["src/fix.lua"],
-                        "verification_plan": ["run tests"],
+                        "source_revision": "qualification-source",
+                        "authored_files": ["src/qualification.lua"],
+                        "verification_plan": ["run qualification tests"],
                     },
                 },
             }
@@ -209,6 +209,36 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         prepare.assert_not_called()
 
+    def test_run_benchmark_rejects_a_noncanonical_model_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            module.subprocess.run(["git", "init"], cwd=root, check=True)
+            module.subprocess.run(
+                ["git", "config", "user.email", "benchmark@example.invalid"],
+                cwd=root,
+                check=True,
+            )
+            module.subprocess.run(
+                ["git", "config", "user.name", "Benchmark Test"],
+                cwd=root,
+                check=True,
+            )
+            (root / "tracked.txt").write_text("clean\n", encoding="utf-8")
+            module.subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            module.subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True)
+            args = module.argparse.Namespace(
+                repo=root,
+                model="different-model",
+                codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+            )
+
+            with patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
+                RuntimeError, "qualification model"
+            ):
+                module.run_benchmark(args)
+
+        prepare.assert_not_called()
+
     def test_prepare_arm_home_links_selected_skill_for_supported_clients(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -245,13 +275,52 @@ class AgentGatewayAbTests(unittest.TestCase):
             arm="B",
         )
 
+        self.assertIn("读取 start 工具结果的 structured_content", prompt)
         self.assertIn(
-            "response 必须是三字段对象：status=completed；"
-            "summary=qualification source-only receipt completed；payload",
+            '"kind":"respond","run_id":"<structured_content.run_id>",'
+            '"gate_id":"<structured_content.gate.gate_id>",'
+            '"gate_version":<structured_content.gate.gate_version>,'
+            '"schema_digest":"<structured_content.gate.schema_digest>",'
+            '"response":{"status":"completed",',
             prompt,
         )
-        self.assertIn("payload 内只含 source_revision", prompt)
+        self.assertIn(
+            "kind、run_id、gate_id、gate_version、schema_digest、response "
+            "都是 respond 参数的顶层字段",
+            prompt,
+        )
+        self.assertIn("response 内只含 status、summary、payload", prompt)
         self.assertNotIn("response 只含上述固定 receipt", prompt)
+
+    def test_candidate_execute_acceptance_binds_response_to_the_start_gate(self) -> None:
+        start = candidate_execute_event(
+            "start", "waiting_response", elapsed=1
+        )["item"]
+        respond = candidate_execute_event("respond", "completed", elapsed=2)["item"]
+        respond["arguments"]["gate_id"] = "gate-from-another-run"
+
+        accepted = module.candidate_execute_acceptance([start, respond])
+
+        self.assertFalse(accepted["passed"], accepted)
+        self.assertIn(
+            "Gate response must preserve gate_id",
+            accepted["errors"],
+        )
+
+    def test_candidate_execute_acceptance_requires_the_fixed_source_receipt(self) -> None:
+        start = candidate_execute_event(
+            "start", "waiting_response", elapsed=1
+        )["item"]
+        respond = candidate_execute_event("respond", "completed", elapsed=2)["item"]
+        respond["arguments"]["response"]["summary"] = "different work"
+
+        accepted = module.candidate_execute_acceptance([start, respond])
+
+        self.assertFalse(accepted["passed"], accepted)
+        self.assertIn(
+            "Gate response must match the fixed source receipt",
+            accepted["errors"],
+        )
 
     def test_semantic_acceptance_requires_fields_and_cautious_conclusion(self) -> None:
         text = (
@@ -582,7 +651,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
                 baseline_source_commit="b" * 40,
-                model="gpt-qualified",
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics,
                 schedule_path=schedule,
                 analysis={"valid_pairs": 10, "invalid_pairs": []},
@@ -594,6 +664,48 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("geometric_mean_ratio_max", evidence["thresholds"])
         self.assertRegex(evidence["environment_fingerprint"], r"^sha256:[0-9a-f]{64}$")
         self.assertRegex(evidence["evidence_digest"], r"^sha256:[0-9a-f]{64}$")
+
+    def test_release_evidence_records_the_fixed_benchmark_contract(self) -> None:
+        self.assertEqual(
+            module.QUALIFICATION_CODEX_CONFIG,
+            (
+                "features.shell_tool=false",
+                'model_provider="cliproxy"',
+                'model_providers.cliproxy.name="CLIProxyAPI"',
+                'model_providers.cliproxy.base_url="http://82.156.104.157/v1"',
+                'model_providers.cliproxy.env_key="CLI_PROXY_API_KEY"',
+                'model_providers.cliproxy.wire_api="responses"',
+                "model_providers.cliproxy.supports_websockets=false",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            metrics = root / "all_metrics.json"
+            schedule = root / "schedule.json"
+            metrics.write_text("[]\n", encoding="utf-8")
+            schedule.write_text("[]\n", encoding="utf-8")
+
+            evidence = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit="b" * 40,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
+                metrics_path=metrics,
+                schedule_path=schedule,
+                analysis={"valid_pairs": 10, "invalid_pairs": []},
+                environment={"python": "3.12", "node": "v22"},
+            )
+
+        self.assertEqual(
+            evidence["benchmark"],
+            {
+                "target": module.BENCHMARK_TARGET,
+                "prompt_digest": module.QUALIFICATION_PROMPT_DIGEST,
+                "codex_config": list(module.QUALIFICATION_CODEX_CONFIG),
+            },
+        )
 
     def test_verify_summary_rejects_claims_not_derived_from_raw_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -617,7 +729,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
                 baseline_source_commit="b" * 40,
-                model="gpt-qualified",
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
                 analysis=analysis,
@@ -659,7 +772,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
                 baseline_source_commit="b" * 40,
-                model="gpt-qualified",
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
                 analysis=analysis,
@@ -693,7 +807,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
                 baseline_source_commit="b" * 40,
-                model="gpt-qualified",
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
                 analysis=analysis,
@@ -708,6 +823,41 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertTrue(verified["promotable"], verified)
         self.assertRegex(verified["summary_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_verify_summary_rejects_a_different_benchmark_model(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            schedule = module.balanced_schedule(10, seed=7)
+            metrics = passing_metrics(schedule)
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="execute-source-only",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit="b" * 40,
+                model="different-model",
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path, expected_source_commit="a" * 40
+            )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB release evidence model does not match the qualification contract",
+            verified["errors"],
+        )
 
     def test_verify_summary_fails_closed_for_malformed_metric_bindings(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -725,7 +875,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
                 baseline_source_commit="b" * 40,
-                model="gpt-qualified",
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
                 analysis=analysis,
@@ -759,7 +910,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
                 baseline_source_commit="b" * 40,
-                model="gpt-qualified",
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
                 analysis=analysis,
@@ -802,7 +954,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
                 baseline_source_commit="b" * 40,
-                model="gpt-qualified",
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
                 analysis=analysis,
@@ -838,7 +991,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
                 baseline_source_commit="b" * 40,
-                model="gpt-qualified",
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
                 analysis=analysis,
@@ -879,7 +1033,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
                 baseline_source_commit="b" * 40,
-                model="gpt-qualified",
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
                 analysis=analysis,

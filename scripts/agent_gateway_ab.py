@@ -42,6 +42,16 @@ THRESHOLDS = {
     "unknown_new_identity_retries": 0,
 }
 BENCHMARK_TARGET = "10.121.136.200"
+QUALIFICATION_MODEL = "gpt-5.6-sol"
+QUALIFICATION_CODEX_CONFIG = (
+    "features.shell_tool=false",
+    'model_provider="cliproxy"',
+    'model_providers.cliproxy.name="CLIProxyAPI"',
+    'model_providers.cliproxy.base_url="http://82.156.104.157/v1"',
+    'model_providers.cliproxy.env_key="CLI_PROXY_API_KEY"',
+    'model_providers.cliproxy.wire_api="responses"',
+    "model_providers.cliproxy.supports_websockets=false",
+)
 BENCHMARK_CAPABILITIES = ("ssh", "telnet", "mdbctl", "busctl")
 BENCHMARK_MDB_QUERIES = (
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
@@ -199,6 +209,38 @@ def _structured_tool_result(call: Mapping[str, object]) -> Mapping[str, object]:
     )
 
 
+def _qualification_source_receipt() -> dict[str, object]:
+    return {
+        "status": "completed",
+        "summary": "qualification source-only receipt completed",
+        "payload": {
+            "source_revision": "qualification-source",
+            "authored_files": ["src/qualification.lua"],
+            "verification_plan": ["run qualification tests"],
+        },
+    }
+
+
+def _qualification_respond_template() -> str:
+    template = {
+        "kind": "respond",
+        "run_id": "<structured_content.run_id>",
+        "gate_id": "<structured_content.gate.gate_id>",
+        "gate_version": "<structured_content.gate.gate_version>",
+        "schema_digest": "<structured_content.gate.schema_digest>",
+        "response": _qualification_source_receipt(),
+    }
+    encoded = json.dumps(
+        template,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return encoded.replace(
+        '"gate_version":"<structured_content.gate.gate_version>"',
+        '"gate_version":<structured_content.gate.gate_version>',
+    )
+
+
 def candidate_execute_acceptance(
     tools: list[Mapping[str, object]],
 ) -> dict[str, object]:
@@ -234,9 +276,14 @@ def candidate_execute_acceptance(
             errors.append("source-only Gate must be owned by openubmc-developer")
         if final_arguments.get("run_id") != start_result.get("run_id"):
             errors.append("Gate response must continue the same Run")
+        for name in ("gate_id", "gate_version", "schema_digest"):
+            if gate.get(name) in (None, ""):
+                errors.append(f"start Gate must provide {name}")
+            elif final_arguments.get(name) != gate.get(name):
+                errors.append(f"Gate response must preserve {name}")
         response = _json_object(final_arguments.get("response"))
-        if response.get("status") != "completed":
-            errors.append("Gate response must complete the source phase")
+        if response != _qualification_source_receipt():
+            errors.append("Gate response must match the fixed source receipt")
         outcome = _json_object(final_result.get("outcome"))
         if final_result.get("state") != "completed" or outcome.get("status") != "completed":
             errors.append("Gate response must return a completed Runtime Outcome")
@@ -794,9 +841,10 @@ def _prompt(
                 "不要列出 MCP resources/templates，不要做工具发现；直接调用 openubmc-target-runtime.execute。",
                 f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
                 "第一次且仅第一次调用：kind=start，intent=diagnose-and-fix，delivery_strategy=source-only。",
-                "保存 start Result 的 run_id、gate.gate_id、gate.gate_version 与 gate.schema_digest；不得再次 start。",
-                "Runtime 返回 developer.change Gate 后，不读写任何源码，提交固定基准 receipt。response 必须是三字段对象：status=completed；summary=qualification source-only receipt completed；payload。",
-                "第二次且仅第二次调用：kind=respond，并原样携带保存的 run_id、gate_id、gate_version、schema_digest；payload 内只含 source_revision=qualification-source、authored_files=[src/qualification.lua]、verification_plan=[run qualification tests]。",
+                "读取 start 工具结果的 structured_content，仅从中保存 run_id、gate.gate_id、gate.gate_version 与 gate.schema_digest；不得再次 start。",
+                "Runtime 返回 developer.change Gate 后，不读写任何源码，提交固定基准 receipt。第二次且仅第二次调用 execute，参数必须严格采用下面的完整 JSON 模板，并把尖括号占位符替换为 structured_content 中对应的原值：",
+                _qualification_respond_template(),
+                "kind、run_id、gate_id、gate_version、schema_digest、response 都是 respond 参数的顶层字段；response 内只含 status、summary、payload，不得把任何 Gate binding 放入 response 或 payload。",
                 "同一 Gate 只能响应一次；不得省略 Gate binding，不得 poll、不得调用 resume、不得修改目标。",
                 "必须推进到终态，并在最终中文回答中包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
             )
@@ -815,6 +863,23 @@ def _prompt(
             "禁止写操作、状态变更、宽查询、日志和源码读取。中文回答，不超过 500 字。",
         )
     ) + "\n"
+
+
+QUALIFICATION_PROMPT_DIGEST = "sha256:" + hashlib.sha256(
+    json.dumps(
+        {
+            arm: _prompt(
+                Path("<skill-path>"),
+                scenario="execute-source-only",
+                arm=arm,
+            )
+            for arm in ("A", "B")
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -897,6 +962,7 @@ def release_evidence(
     schedule_path: Path,
     analysis: Mapping[str, object],
     environment: Mapping[str, object],
+    codex_config: Iterable[str] = (),
 ) -> dict[str, object]:
     environment_record = dict(environment)
     evidence: dict[str, object] = {
@@ -907,6 +973,11 @@ def release_evidence(
             "baseline_commit": baseline_source_commit,
         },
         "model": model,
+        "benchmark": {
+            "target": BENCHMARK_TARGET,
+            "prompt_digest": QUALIFICATION_PROMPT_DIGEST,
+            "codex_config": list(codex_config),
+        },
         "environment": environment_record,
         "environment_fingerprint": _fingerprint(environment_record),
         "thresholds": dict(THRESHOLDS),
@@ -979,8 +1050,17 @@ def verify_summary(
         errors.append("AB release evidence sample counts do not match the summary")
     if evidence.get("thresholds") != THRESHOLDS:
         errors.append("AB release evidence thresholds do not match the release contract")
-    if not str(evidence.get("model", "")).strip():
-        errors.append("AB release evidence is missing the model")
+    if evidence.get("model") != QUALIFICATION_MODEL:
+        errors.append(
+            "AB release evidence model does not match the qualification contract"
+        )
+    benchmark = _json_object(evidence.get("benchmark"))
+    if benchmark.get("target") != BENCHMARK_TARGET:
+        errors.append("AB benchmark target does not match the qualification contract")
+    if benchmark.get("prompt_digest") != QUALIFICATION_PROMPT_DIGEST:
+        errors.append("AB benchmark prompt does not match the qualification contract")
+    if benchmark.get("codex_config") != list(QUALIFICATION_CODEX_CONFIG):
+        errors.append("AB Codex config does not match the qualification contract")
     environment = _json_object(evidence.get("environment"))
     if evidence.get("environment_fingerprint") != _fingerprint(dict(environment)):
         errors.append("AB release evidence environment fingerprint is invalid")
@@ -1070,6 +1150,12 @@ def verify_summary(
 def run_benchmark(args: argparse.Namespace) -> int:
     repo = args.repo.resolve()
     _require_clean_candidate(repo)
+    if args.model != QUALIFICATION_MODEL:
+        raise RuntimeError(
+            f"qualification model must be {QUALIFICATION_MODEL}"
+        )
+    if tuple(args.codex_config) != QUALIFICATION_CODEX_CONFIG:
+        raise RuntimeError("qualification Codex config does not match the contract")
     work_root = args.work_root.resolve()
     baseline_root = work_root / "variants" / "baseline"
     _prepare_worktree(repo, baseline_root, args.baseline_ref)
@@ -1198,6 +1284,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
         candidate_source_commit=_git_commit(repo, "HEAD"),
         baseline_source_commit=_git_commit(repo, args.baseline_ref),
         model=args.model,
+        codex_config=args.codex_config,
         metrics_path=metrics_path,
         schedule_path=schedule_path,
         analysis=summary,
