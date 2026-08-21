@@ -3291,10 +3291,13 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="incomplete-live-patch-response",
             )
             projection = service.context_runtime.read_case(waiting["run_id"])
-            replayed = service.context_runtime.record_run_outcome(
-                waiting["run_id"],
-                status="completed",
-                summary="workflow completed",
+            replayed = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": waiting["run_id"],
+                },
+                task_id="incomplete-live-patch-acceptance-replay",
                 operation_id="incomplete-live-patch-outcome-replay",
             )
             events = service.context_runtime.repository.events(waiting["run_id"])
@@ -3310,7 +3313,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(final["state"], "failed")
         self.assertEqual(final["outcome"]["status"], "failed")
         self.assertEqual(projection["run_outcome"]["status"], "failed")
-        self.assertEqual(replayed["run_outcome"], projection["run_outcome"])
+        self.assertEqual(replayed["outcome"], final["outcome"])
         self.assertEqual(closeout["closure_status"], "partial")
         self.assertEqual(closeout["business_acceptance"], "unverified")
         self.assertEqual(integrity["status"], "not_run")
@@ -3424,6 +3427,22 @@ class AgentGatewayTests(unittest.TestCase):
             "RunStore and command transactions are required",
         ):
             RunEngine(PersistentUnknownRunDriver())
+
+    def test_run_engine_rejects_unknown_transition_kinds(self) -> None:
+        repository = InMemoryRuntimeRepository()
+        engine = RunEngine(
+            PersistentUnknownRunDriver(),
+            run_store=EventRunStore(repository),
+            command_transactions=BufferedRuntimeRepository(repository),
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsupported Run transition kind"):
+            engine._apply_transition(  # noqa: SLF001 - architecture contract test
+                "run-persistent-unknown",
+                "outcome_typo",
+                {"status": "completed"},
+                operation_id="transition-typo",
+            )
 
     def test_execute_automatically_reconciles_an_unknown_mutation(self) -> None:
         backend = FailOnceUpgradeSemanticBackend()
@@ -4571,6 +4590,93 @@ class AgentGatewayTests(unittest.TestCase):
                 for event in events
             )
         )
+
+    def test_legacy_phase_writer_does_not_persist_a_native_gate_submission(self) -> None:
+        opened = self.service.call_tool(
+            "debug_run",
+            {
+                "ip": "192.0.2.82",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "final_purpose": "verify legacy phase isolation",
+            },
+            task_id="legacy-phase-isolation",
+            operation_id="legacy-phase-isolation-start",
+        )
+        run_id = opened.envelope["case_id"]
+
+        self.service.call_tool(
+            "phase_record",
+            {
+                "case_id": run_id,
+                "expected_revision": self.service.context_runtime.read_case(
+                    run_id
+                )["revision"],
+                "idempotency_key": "legacy-phase-isolation-submission",
+                "phase_type": "developer.change",
+                "producer_identity": "openubmc-developer",
+                "status": "completed",
+                "summary": "legacy source completed",
+                "source_revision": "legacy-phase-isolation-source",
+                "authored_files": ["src/legacy.lua"],
+                "verification_plan": ["run tests"],
+            },
+            task_id="legacy-phase-isolation",
+            operation_id="legacy-phase-isolation-submission",
+        )
+
+        events = self.service.context_runtime.repository.events(run_id)
+        projection = self.service.context_runtime.read_case(run_id)
+        self.assertFalse(any(event["kind"] == "RunGateSubmitted" for event in events))
+        self.assertTrue(
+            any(
+                event["kind"] == "OperationProgressed"
+                and isinstance(event["payload"].get("legacy_phase_record"), dict)
+                for event in events
+            )
+        )
+        self.assertEqual(
+            projection["phase_records"][-1]["source_revision"],
+            "legacy-phase-isolation-source",
+        )
+
+    def test_legacy_phase_writer_rejects_native_runs(self) -> None:
+        waiting = self.service.semantic_runtime.execute(
+            StartRun(
+                target="192.0.2.83",
+                intent="diagnose-and-fix",
+                purpose="verify native Gate authority",
+                delivery_strategy="source-only",
+                command_id="native-phase-authority-start",
+                input_digest="",
+            ),
+            task_id="native-phase-authority",
+            operation_id="native-phase-authority-start",
+        )
+
+        with self.assertRaisesRegex(
+            GateConflict,
+            "native Run phase transitions require RunEngine",
+        ):
+            self.service.call_tool(
+                "phase_record",
+                {
+                    "case_id": waiting.run_id,
+                    "expected_revision": self.service.context_runtime.read_case(
+                        waiting.run_id
+                    )["revision"],
+                    "idempotency_key": "native-phase-authority-submission",
+                    "phase_type": "developer.change",
+                    "producer_identity": "openubmc-developer",
+                    "status": "completed",
+                    "summary": "must use SubmitGate",
+                    "source_revision": "native-phase-authority-source",
+                    "authored_files": ["src/native.lua"],
+                    "verification_plan": ["run tests"],
+                },
+                task_id="native-phase-authority",
+                operation_id="native-phase-authority-submission",
+            )
 
     def test_compatibility_controls_upcast_legacy_runs_before_transitioning(self) -> None:
         compatibility = RuntimeMcpService(

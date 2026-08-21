@@ -1064,12 +1064,11 @@ class UpgradeMcpBackend:
             and not pending
             and not expected_locations
         ):
-            journal.mark_effects_rejected()
             journal.transition(
-                "replan_required",
-                verification_state="not_started",
-                last_known_state="upgrade-recovery-found-no-artifact-effect",
-                recovery_decision="replan",
+                "recovery_blocked",
+                verification_state="blocked",
+                last_known_state="upgrade-recovery-evidence-insufficient",
+                recovery_decision="manual",
             )
             return {
                 "operation_id": journal.operation_id,
@@ -1079,7 +1078,7 @@ class UpgradeMcpBackend:
                 "epoch_after": journal.epoch_before,
                 "mutation": {
                     "recovery": {
-                        "decision": "replan",
+                        "decision": "manual",
                         "inspection": inspection,
                     }
                 },

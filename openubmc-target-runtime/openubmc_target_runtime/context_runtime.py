@@ -46,6 +46,7 @@ from .run_store import (
     RunEvent,
     upcast_run_events,
 )
+from .semantic_runtime import GateConflict
 from .workflow import (
     DEFAULT_PHASE_REGISTRY,
     DEFAULT_WORKFLOW_DEFINITIONS,
@@ -1008,7 +1009,9 @@ def project_case(
                 projection["next_actions"] = list(payload["next_actions"])
             if "case_status" in payload:
                 projection["status"] = str(payload["case_status"])
-            phase = payload.get("phase_record")
+            phase = payload.get("legacy_phase_record")
+            if not isinstance(phase, Mapping):
+                phase = payload.get("phase_record")
             if isinstance(phase, Mapping):
                 phase_public = dict(phase)
                 phases.append(phase_public)
@@ -4069,106 +4072,6 @@ class ContextRuntime:
         bundle = build_closeout_bundle(closeout, markdown) if include_bundle else None
         return payload, markdown, bundle
 
-    def _project_pending_events(
-        self,
-        projection: Mapping[str, object],
-        events: Iterable[PendingCaseEvent],
-    ) -> dict[str, object]:
-        case_id = str(projection["case_id"])
-        revision = int(projection["revision"])
-        recorded_at = self.clock()
-        pending = tuple(events)
-        persisted = self.repository.events(case_id)
-        return project_case(
-            case_id,
-            (
-                *persisted,
-                *(
-                    {
-                        "revision": revision + offset,
-                        "kind": event.kind,
-                        "operation_id": event.operation_id,
-                        "payload": dict(event.payload),
-                        "created_at": recorded_at,
-                    }
-                    for offset, event in enumerate(pending, start=1)
-                ),
-            ),
-            last_access=float(projection.get("last_access", 0.0)),
-        )
-
-    @staticmethod
-    def _run_outcome_payload(
-        run_id: str,
-        closeout: Mapping[str, object],
-        *,
-        status: str,
-        summary: str,
-    ) -> dict[str, object]:
-        effective_status = status
-        if (
-            status == "completed"
-            and str(closeout.get("closure_status", ""))
-            not in {"verified", "completed_in_scope"}
-        ):
-            effective_status = "failed"
-        outcome = {
-            "status": effective_status,
-            "summary": (
-                str(closeout.get("summary", ""))
-                if effective_status != status
-                else summary.strip() or str(closeout.get("summary", ""))
-            ),
-            "acceptance": closeout.get("checks", closeout.get("acceptance", [])),
-            "closeout_fingerprint": str(closeout.get("fingerprint", "")),
-        }
-        outcome["outcome_id"] = "outcome-" + _fingerprint(
-            {"run_id": run_id, **outcome}
-        )[:32]
-        return outcome
-
-    def _terminal_run_events(
-        self,
-        projection: Mapping[str, object],
-        events: Iterable[PendingCaseEvent],
-        *,
-        status: str,
-        summary: str,
-        operation_id: str,
-    ) -> tuple[list[PendingCaseEvent], dict[str, object]]:
-        pending = list(events)
-        terminal_projection = self._project_pending_events(projection, pending)
-        closeout, markdown, bundle = self._derive_closeout(
-            terminal_projection,
-            terminal_status=status,
-            include_bundle=False,
-        )
-        pending.append(
-            PendingCaseEvent(
-                "CloseoutRecorded",
-                {
-                    "closeout": closeout,
-                    "closeout_markdown": markdown,
-                    "closeout_bundle": bundle,
-                },
-                f"{operation_id}-closeout",
-            )
-        )
-        outcome = self._run_outcome_payload(
-            str(projection["case_id"]),
-            closeout,
-            status=status,
-            summary=summary,
-        )
-        pending.append(
-            PendingCaseEvent(
-                "RunOutcomeRecorded",
-                {"outcome": outcome},
-                f"{operation_id}-outcome",
-            )
-        )
-        return pending, outcome
-
     @staticmethod
     def _closeout_bundle_enabled(
         projection: Mapping[str, object],
@@ -5134,6 +5037,10 @@ class ContextRuntime:
             raise CaseNotFound(case_id)
         if projection.get("closed"):
             raise CaseClosed(f"case {case_id} is closed")
+        if str(projection.get("start_command_id", "")):
+            raise GateConflict(
+                "native Run phase transitions require RunEngine SubmitGate"
+            )
         expected = arguments.get("expected_revision", projection["revision"])
         phase_descriptor = DEFAULT_PHASE_REGISTRY.require(
             str(arguments.get("phase_type", ""))
@@ -5471,24 +5378,6 @@ class ContextRuntime:
                 arguments=arguments,
             )
             events: list[PendingCaseEvent] = []
-            if record["gate_id"]:
-                events.append(
-                    PendingCaseEvent(
-                        "RunGateSubmitted",
-                        {
-                            "gate_id": record["gate_id"],
-                            "gate_version": record["gate_version"],
-                            "schema_digest": record["gate_schema_digest"],
-                            "submission_id": record["submission_id"],
-                            "submission_digest": record["submission_digest"],
-                            "actor": record["producer_identity"],
-                            "status": record["status"],
-                            "summary": record["summary"],
-                            "recorded_at": record["recorded_at"],
-                        },
-                        operation_id,
-                    )
-                )
             if status != "running":
                 events.extend(
                     PendingCaseEvent(
@@ -5526,7 +5415,7 @@ class ContextRuntime:
                     PendingCaseEvent("OperationStarted", {}, operation_id),
                     PendingCaseEvent(
                         "OperationProgressed",
-                        {"status": status, "phase_record": record},
+                        {"status": status, "legacy_phase_record": record},
                         operation_id,
                     ),
                     PendingCaseEvent(
@@ -7753,309 +7642,6 @@ class ContextRuntime:
         self.repository.bind_task(task_id, run_id)
         return self._cache(projection)
 
-    def persist_run_gate(
-        self,
-        run_id: str,
-        gate: Mapping[str, object],
-        *,
-        operation_id: str,
-    ) -> dict[str, object]:
-        projection = self._load(run_id)
-        if projection is None:
-            raise CaseNotFound(run_id)
-        current = projection.get("current_gate")
-        if isinstance(current, Mapping) and current:
-            comparable = {
-                key: current.get(key)
-                for key in (
-                    "gate_id",
-                    "gate_version",
-                    "schema_digest",
-                    "workflow_cycle_id",
-                    "workflow_step_id",
-                )
-            }
-            expected = {key: gate.get(key) for key in comparable}
-            if comparable != expected:
-                raise RevisionConflict("Run already has a different open Gate")
-            return dict(projection)
-        existing = next(
-            (
-                item
-                for item in reversed(list(projection.get("run_gates", [])))
-                if isinstance(item, Mapping)
-                and item.get("gate_id") == gate.get("gate_id")
-                and item.get("gate_version") == gate.get("gate_version")
-            ),
-            None,
-        )
-        if isinstance(existing, Mapping):
-            raise CaseClosed("a submitted Gate cannot be reopened")
-        try:
-            updated = self.repository.commit(
-                run_id,
-                expected_revision=int(projection["revision"]),
-                events=(
-                    PendingCaseEvent(
-                        "RunGateOpened",
-                        {"gate": _sanitize(dict(gate))},
-                        operation_id,
-                    ),
-                ),
-            )
-        except RevisionConflict:
-            current_projection = self.repository.load(run_id)
-            concurrent = (
-                current_projection.get("current_gate")
-                if isinstance(current_projection, Mapping)
-                else None
-            )
-            comparable = (
-                {
-                    key: concurrent.get(key)
-                    for key in (
-                        "gate_id",
-                        "gate_version",
-                        "schema_digest",
-                        "workflow_cycle_id",
-                        "workflow_step_id",
-                    )
-                }
-                if isinstance(concurrent, Mapping)
-                else {}
-            )
-            expected = {key: gate.get(key) for key in comparable}
-            if (
-                not isinstance(current_projection, Mapping)
-                or not isinstance(concurrent, Mapping)
-                or not concurrent
-                or comparable != expected
-            ):
-                raise
-            updated = dict(current_projection)
-        return self._cache(updated)
-
-    def record_run_cancelled(
-        self,
-        run_id: str,
-        *,
-        gate: Mapping[str, object],
-        submission_id: str,
-        submission_digest: str,
-        operation_id: str,
-    ) -> dict[str, object]:
-        projection = self._load(run_id)
-        if projection is None:
-            raise CaseNotFound(run_id)
-        payload = {
-            "gate_id": str(gate.get("gate_id", "")),
-            "gate_version": int(gate.get("gate_version", 0)),
-            "schema_digest": str(gate.get("schema_digest", "")),
-            "submission_id": submission_id,
-            "submission_digest": submission_digest,
-            "actor": "runtime",
-            "status": "cancelled",
-            "summary": "run cancelled at the current gate",
-            "recorded_at": self.clock(),
-        }
-        prior = next(
-            (
-                item
-                for item in reversed(
-                    list(projection.get("gate_submissions", []))
-                )
-                if isinstance(item, Mapping)
-                and str(item.get("submission_id", "")) == submission_id
-            ),
-            None,
-        )
-        if isinstance(prior, Mapping):
-            comparable = {
-                name: str(prior.get(name, ""))
-                for name in (
-                    "gate_id",
-                    "schema_digest",
-                    "submission_digest",
-                    "status",
-                )
-            }
-            expected = {name: str(payload[name]) for name in comparable}
-            if (
-                comparable != expected
-                or int(prior.get("gate_version", 0))
-                != payload["gate_version"]
-            ):
-                raise IdempotencyConflict(
-                    "cancellation submission identity is already bound differently"
-                )
-            return dict(projection)
-        events, _outcome = self._terminal_run_events(
-            projection,
-            (PendingCaseEvent("RunCancelled", payload, operation_id),),
-            status="cancelled",
-            summary="run cancelled at the current gate",
-            operation_id=operation_id,
-        )
-        updated = self.repository.commit(
-            run_id,
-            expected_revision=int(projection["revision"]),
-            events=events,
-        )
-        return self._cache(updated)
-
-    def record_run_incident(
-        self,
-        run_id: str,
-        incident: Mapping[str, object],
-        *,
-        operation_id: str,
-    ) -> dict[str, object]:
-        projection = self._load(run_id)
-        if projection is None:
-            raise CaseNotFound(run_id)
-        current = projection.get("current_incident")
-        if (
-            isinstance(current, Mapping)
-            and current.get("incident_id") == incident.get("incident_id")
-        ):
-            return dict(projection)
-        updated = self.repository.commit(
-            run_id,
-            expected_revision=int(projection["revision"]),
-            events=(
-                PendingCaseEvent(
-                    "RunIncidentRaised",
-                    {"incident": _sanitize(dict(incident))},
-                    operation_id,
-                ),
-            ),
-        )
-        return self._cache(updated)
-
-    def resolve_run_incident(
-        self,
-        run_id: str,
-        incident_id: str,
-        *,
-        operation_id: str,
-    ) -> dict[str, object]:
-        projection = self._load(run_id)
-        if projection is None:
-            raise CaseNotFound(run_id)
-        current = projection.get("current_incident")
-        if not isinstance(current, Mapping) or not current:
-            return dict(projection)
-        if str(current.get("incident_id", "")) != incident_id:
-            raise RevisionConflict("a different Incident is currently open")
-        updated = self.repository.commit(
-            run_id,
-            expected_revision=int(projection["revision"]),
-            events=(
-                PendingCaseEvent(
-                    "RunIncidentResolved",
-                    {"incident_id": incident_id},
-                    operation_id,
-                ),
-            ),
-        )
-        return self._cache(updated)
-
-    def record_run_outcome(
-        self,
-        run_id: str,
-        *,
-        status: str,
-        summary: str,
-        operation_id: str,
-    ) -> dict[str, object]:
-        projection = self._load(run_id)
-        if projection is None:
-            raise CaseNotFound(run_id)
-        normalized = status.strip().lower()
-        if normalized not in {"completed", "failed", "cancelled"}:
-            raise ValueError("Run Outcome status must be completed, failed, or cancelled")
-        existing = projection.get("run_outcome")
-        if isinstance(existing, Mapping) and existing:
-            effective_status = normalized
-            effective_summary = summary.strip()
-            closeout = projection.get("closeout")
-            if isinstance(closeout, Mapping) and closeout:
-                if (
-                    normalized == "completed"
-                    and str(closeout.get("closure_status", ""))
-                    not in {"verified", "completed_in_scope"}
-                ):
-                    effective_status = "failed"
-                    effective_summary = str(closeout.get("summary", ""))
-                elif not effective_summary:
-                    effective_summary = str(closeout.get("summary", ""))
-            if str(existing.get("status", "")) != effective_status:
-                raise RevisionConflict("Run already has a different terminal Outcome")
-            if (
-                effective_summary
-                and str(existing.get("summary", "")) != effective_summary
-            ):
-                raise RevisionConflict("Run already has a different Outcome summary")
-            return dict(projection)
-        (
-            projection,
-            closeout,
-            _markdown,
-            _bundle,
-        ) = self._record_closeout(
-            projection,
-            terminal_status=normalized,
-            include_bundle=False,
-            operation_id=f"{operation_id}-closeout",
-        )
-        outcome = self._run_outcome_payload(
-            run_id,
-            closeout,
-            status=normalized,
-            summary=summary,
-        )
-        try:
-            updated = self.repository.commit(
-                run_id,
-                expected_revision=int(projection["revision"]),
-                events=(
-                    PendingCaseEvent(
-                        "RunOutcomeRecorded",
-                        {"outcome": outcome},
-                        operation_id,
-                    ),
-                ),
-            )
-        except RevisionConflict:
-            current = self.repository.load(run_id)
-            concurrent = (
-                current.get("run_outcome")
-                if isinstance(current, Mapping)
-                else None
-            )
-            if (
-                not isinstance(current, Mapping)
-                or not isinstance(concurrent, Mapping)
-                or not concurrent
-            ):
-                raise
-            if str(concurrent.get("status", "")) != outcome["status"]:
-                raise RevisionConflict(
-                    "Run already has a different terminal Outcome"
-                )
-            if str(concurrent.get("summary", "")) != outcome["summary"]:
-                raise RevisionConflict("Run already has a different Outcome summary")
-            if (
-                concurrent.get("acceptance") != outcome["acceptance"]
-                or str(concurrent.get("closeout_fingerprint", ""))
-                != outcome["closeout_fingerprint"]
-            ):
-                raise RevisionConflict(
-                    "Run already has a different Outcome acceptance"
-                )
-            updated = dict(current)
-        return self._cache(updated)
-
     def derive_run_closeout(
         self,
         run_id: str,
@@ -8078,45 +7664,6 @@ class ContextRuntime:
             "closeout_markdown": markdown,
             "closeout_bundle": bundle,
         }
-
-    def defer_run_verification(
-        self,
-        run_id: str,
-        *,
-        workflow_step_id: str,
-        operation_id: str,
-    ) -> dict[str, object]:
-        projection = self._load(run_id)
-        if projection is None:
-            raise CaseNotFound(run_id)
-        if not workflow_step_id:
-            raise ValueError("verification workflow_step_id is required")
-        states = projection.get("workflow_step_states", {})
-        state = states.get(workflow_step_id) if isinstance(states, Mapping) else None
-        if not isinstance(state, Mapping) or str(state.get("name", "")) != "debug_collect":
-            raise ValueError("verification step is not present in the current Run")
-        step_status = str(state.get("status", ""))
-        if step_status == "pending_retry":
-            return dict(projection)
-        if step_status != "failed":
-            raise ValueError("verification step is not eligible for retry")
-        updated = self.repository.commit(
-            run_id,
-            expected_revision=int(projection["revision"]),
-            events=(
-                PendingCaseEvent(
-                    "RunVerificationDeferred",
-                    {
-                        "workflow_step_id": workflow_step_id,
-                        "next_action": (
-                            "resume the Run to retry fresh target verification"
-                        ),
-                    },
-                    operation_id,
-                ),
-            ),
-        )
-        return self._cache(updated)
 
     def read_case(self, case_id: str) -> dict[str, object]:
         projection = self._load(case_id, touch=True)

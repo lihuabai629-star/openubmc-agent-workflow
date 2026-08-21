@@ -1771,7 +1771,9 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         ]
         self.assertEqual(len(uploads), 1)
 
-    def test_uncertain_upgrade_with_no_effect_becomes_replan_without_artifact(self) -> None:
+    def test_uncertain_upgrade_with_no_visible_effect_remains_blocked_without_reupload(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             artifact = root / "openubmc.hpm"
@@ -1788,18 +1790,43 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                 digest=digest,
                 transport=transport,
                 task_id="task-upgrade-recovery-no-effect",
+                remove_artifact=False,
             )
+            backend = UpgradeMcpBackend(
+                journal_store=store,
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                replayed = service.call_tool(
+                    "upgrade_run",
+                    {
+                        **self.arguments(artifact, digest),
+                        "version_poll_interval": 0.001,
+                    },
+                    task_id="task-upgrade-recovery-no-effect",
+                    operation_id="upgrade-recovery",
+                )
+            finally:
+                service.close()
             journal = store.load(
                 "task-upgrade-recovery-no-effect",
                 "upgrade-recovery",
             )
 
-        self.assertEqual(result["mutation"]["recovery"]["decision"], "replan")
+        self.assertEqual(result["mutation"]["recovery"]["decision"], "manual")
+        self.assertEqual(replayed["mutation"]["recovery"]["decision"], "manual")
         self.assertIsNone(result["verification"])
         self.assertIsNotNone(journal)
-        self.assertEqual(journal.stage, "replan_required")
-        self.assertFalse(journal.effects_started)
-        self.assertFalse(journal.blocks_target)
+        self.assertEqual(journal.stage, "recovery_blocked")
+        self.assertTrue(journal.effects_started)
+        self.assertTrue(journal.blocks_target)
         self.assertEqual(transport.upload_attempts, 1)
 
     def test_uncertain_upgrade_already_installed_verifies_without_artifact(self) -> None:

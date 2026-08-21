@@ -10,6 +10,7 @@ RUNTIME_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
+    ContextRuntime,
     EventRunStore,
     InMemoryRuntimeRepository,
     RUN_DECISION_SCHEMA,
@@ -31,6 +32,18 @@ from openubmc_target_runtime.run_engine import (  # noqa: E402
 
 
 class RunDecisionContractTests(unittest.TestCase):
+    def test_context_runtime_exposes_no_peer_run_transition_writers(self) -> None:
+        retired = {
+            "persist_run_gate",
+            "record_run_cancelled",
+            "record_run_incident",
+            "resolve_run_incident",
+            "record_run_outcome",
+            "defer_run_verification",
+        }
+
+        self.assertFalse(retired & set(ContextRuntime.__dict__))
+
     def test_run_engine_persistence_protocol_exposes_one_typed_transition_seam(self) -> None:
         retired = {
             "persist_gate",

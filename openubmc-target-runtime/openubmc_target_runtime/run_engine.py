@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from concurrent.futures import Future
 from contextvars import ContextVar
 from dataclasses import dataclass
+from enum import Enum
 import time
 from typing import ContextManager, Protocol
 
@@ -63,6 +64,15 @@ _CAPABILITY_KEYS = {
     "dbus": "dbus_env",
     "alarms": "active_alarm_endpoint_verified",
 }
+
+
+class RunTransitionKind(str, Enum):
+    GATE_OPENED = "gate_opened"
+    RUN_CANCELLED = "run_cancelled"
+    INCIDENT_RAISED = "incident_raised"
+    INCIDENT_RESOLVED = "incident_resolved"
+    VERIFICATION_DEFERRED = "verification_deferred"
+    OUTCOME_RECORDED = "outcome_recorded"
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -436,14 +446,18 @@ class RunEngine:
     def _apply_transition(
         self,
         run_id: str,
-        kind: str,
+        kind: RunTransitionKind,
         payload: Mapping[str, object],
         *,
         operation_id: str,
     ) -> Mapping[str, object]:
+        try:
+            transition_kind = RunTransitionKind(kind)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"unsupported Run transition kind: {kind}") from exc
         event_payload: Mapping[str, object]
         events: tuple[RunEvent, ...]
-        if kind == "gate_opened":
+        if transition_kind is RunTransitionKind.GATE_OPENED:
             gate = payload.get("gate")
             if not isinstance(gate, Mapping):
                 raise ValueError("gate_opened transition requires a Gate")
@@ -451,7 +465,7 @@ class RunEngine:
             events = (
                 RunEvent("RunGateOpened", event_payload, operation_id),
             )
-        elif kind == "run_cancelled":
+        elif transition_kind is RunTransitionKind.RUN_CANCELLED:
             gate = payload.get("gate")
             if not isinstance(gate, Mapping):
                 raise ValueError("run_cancelled transition requires a Gate")
@@ -471,7 +485,7 @@ class RunEngine:
             events = (
                 RunEvent("RunCancelled", event_payload, operation_id),
             )
-        elif kind == "incident_raised":
+        elif transition_kind is RunTransitionKind.INCIDENT_RAISED:
             incident = payload.get("incident")
             if not isinstance(incident, Mapping):
                 raise ValueError("incident_raised transition requires an Incident")
@@ -482,7 +496,7 @@ class RunEngine:
                     operation_id,
                 ),
             )
-        elif kind == "incident_resolved":
+        elif transition_kind is RunTransitionKind.INCIDENT_RESOLVED:
             events = (
                 RunEvent(
                     "RunIncidentResolved",
@@ -490,7 +504,7 @@ class RunEngine:
                     operation_id,
                 ),
             )
-        elif kind == "verification_deferred":
+        elif transition_kind is RunTransitionKind.VERIFICATION_DEFERRED:
             events = (
                 RunEvent(
                     "RunVerificationDeferred",
@@ -505,7 +519,7 @@ class RunEngine:
                     operation_id,
                 ),
             )
-        else:
+        elif transition_kind is RunTransitionKind.OUTCOME_RECORDED:
             normalized = _text(payload.get("status")).lower()
             if normalized not in {"completed", "failed", "cancelled"}:
                 raise ValueError(
@@ -556,6 +570,10 @@ class RunEngine:
                     {"outcome": outcome},
                     operation_id,
                 ),
+            )
+        else:  # pragma: no cover - Enum exhaustiveness guard
+            raise ValueError(
+                f"unsupported Run transition kind: {transition_kind.value}"
             )
         return self.driver.apply_transition(
             run_id,
@@ -644,7 +662,7 @@ class RunEngine:
         )
         persisted_snapshot = self._apply_transition(
             self._run_id(snapshot),
-            "gate_opened",
+            RunTransitionKind.GATE_OPENED,
             {
                 "gate": {
                     **gate.to_public_dict(),
@@ -1087,7 +1105,7 @@ class RunEngine:
         )
         return self._apply_transition(
             run_id,
-            "incident_raised",
+            RunTransitionKind.INCIDENT_RAISED,
             {"incident": incident.to_public_dict()},
             operation_id=operation_id,
         )
@@ -1110,7 +1128,7 @@ class RunEngine:
             if _text(projection.get("status")) == "cancelled":
                 snapshot = self._apply_transition(
                     self._run_id(snapshot),
-                    "outcome_recorded",
+                    RunTransitionKind.OUTCOME_RECORDED,
                     {
                         "status": "cancelled",
                         "summary": "run cancelled at the current gate",
@@ -1152,7 +1170,7 @@ class RunEngine:
                     if unknown is None and current_incident is not None:
                         snapshot = self._apply_transition(
                             self._run_id(snapshot),
-                            "incident_resolved",
+                            RunTransitionKind.INCIDENT_RESOLVED,
                             {"incident_id": current_incident.incident_id},
                             operation_id=f"{operation_id}-incident-resolved",
                         )
@@ -1179,7 +1197,7 @@ class RunEngine:
                 ):
                     snapshot = self._apply_transition(
                         self._run_id(snapshot),
-                        "verification_deferred",
+                        RunTransitionKind.VERIFICATION_DEFERRED,
                         {"workflow_step_id": terminal_step_id},
                         operation_id=f"{operation_id}-verification-deferred",
                     )
@@ -1191,7 +1209,7 @@ class RunEngine:
                 status = _text(terminal_step.get("status"))
                 snapshot = self._apply_transition(
                     self._run_id(snapshot),
-                    "outcome_recorded",
+                    RunTransitionKind.OUTCOME_RECORDED,
                     {
                         "status": status,
                         "summary": self._step_summary(projection, terminal_step),
@@ -1203,7 +1221,7 @@ class RunEngine:
             if bool(continuation.get("workflow_complete")):
                 snapshot = self._apply_transition(
                     self._run_id(snapshot),
-                    "outcome_recorded",
+                    RunTransitionKind.OUTCOME_RECORDED,
                     {"status": "completed", "summary": "workflow completed"},
                     operation_id=f"{operation_id}-outcome",
                 )
@@ -1438,7 +1456,7 @@ class RunEngine:
             self._validate_gate(command, gate)
             snapshot = self._apply_transition(
                 command.run_id,
-                "run_cancelled",
+                RunTransitionKind.RUN_CANCELLED,
                 {
                     "gate": gate.to_public_dict(),
                     "submission_id": command.submission_id,
@@ -1448,7 +1466,7 @@ class RunEngine:
             )
         snapshot = self._apply_transition(
             command.run_id,
-            "outcome_recorded",
+            RunTransitionKind.OUTCOME_RECORDED,
             {
                 "status": "cancelled",
                 "summary": "run cancelled at the current gate",
@@ -1515,7 +1533,7 @@ class RunEngine:
             ):
                 snapshot = self._apply_transition(
                     command.run_id,
-                    "incident_resolved",
+                    RunTransitionKind.INCIDENT_RESOLVED,
                     {"incident_id": current.incident_id},
                     operation_id=f"{operation_id}-incident-resolved",
                 )
