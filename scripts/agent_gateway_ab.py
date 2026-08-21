@@ -73,7 +73,8 @@ BENCHMARK_MDB_QUERIES = (
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo SocketId",
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.DriveStatus Health",
 )
-BASELINE_PHASE_CONTRACT_IDENTITY_FIELDS = (
+BASELINE_PHASE_CONTRACT_STABLE_FIELDS = (
+    "receipt_schema",
     "case_id",
     "idempotency_key",
     "phase_type",
@@ -224,6 +225,13 @@ def _structured_tool_result(call: Mapping[str, object]) -> Mapping[str, object]:
     )
 
 
+def _result_case_identity(result: Mapping[str, object]) -> tuple[str, bool]:
+    top_level = str(result.get("case_id") or "")
+    envelope = _json_object(result.get("agent_envelope"))
+    nested = str(envelope.get("case_id") or "")
+    return top_level or nested, not (top_level and nested and top_level != nested)
+
+
 def _qualification_source_receipt() -> dict[str, object]:
     return {
         "status": "completed",
@@ -366,9 +374,14 @@ def baseline_execute_acceptance(
             handoff = _json_object(result.get("handoff_arguments"))
             contract = _json_object(handoff.get("phase_record_contract"))
             envelope = _json_object(result.get("agent_envelope"))
-            case_ids.append(str(result.get("case_id") or envelope.get("case_id", "")))
+            result_case, case_consistent = _result_case_identity(result)
+            case_ids.append(result_case)
             contracts.append(contract)
             revisions.append(result.get("revision", envelope.get("revision")))
+            if not case_consistent:
+                errors.append(
+                    "baseline start result Case must match its agent envelope"
+                )
             if (
                 result.get("status") != "waiting_phase_record"
                 or result.get("required_skill") != "openubmc-developer"
@@ -383,23 +396,33 @@ def baseline_execute_acceptance(
         if any(item.get("case_id") != case for item, case in zip(contracts, case_ids)):
             errors.append("baseline start phase contract must match the Case")
         for prior_contract in contracts[:-1]:
-            for name in BASELINE_PHASE_CONTRACT_IDENTITY_FIELDS:
+            for name in BASELINE_PHASE_CONTRACT_STABLE_FIELDS:
                 if prior_contract.get(name) != contract.get(name):
                     errors.append(
                         f"baseline repeated starts must preserve phase contract {name}"
                     )
-        for name in BASELINE_PHASE_CONTRACT_IDENTITY_FIELDS:
+        for name in BASELINE_PHASE_CONTRACT_STABLE_FIELDS:
             if phase_arguments.get(name) != contract.get(name):
                 errors.append(f"baseline phase_record must preserve {name}")
         if phase_arguments.get("expected_revision") != current_revision:
             errors.append("baseline phase_record must use the current envelope revision")
         if phase_arguments.get("status") != "completed":
             errors.append("baseline phase_record must complete the source phase")
-        if phase_result.get("case_id") != case_id:
+        phase_case, phase_case_consistent = _result_case_identity(phase_result)
+        if not phase_case_consistent:
+            errors.append(
+                "baseline phase_record result Case must match its agent envelope"
+            )
+        if phase_case != case_id:
             errors.append("baseline phase_record result must use the same Case")
         if final_arguments.get("case_id") != case_id:
             errors.append("baseline continuation must use the same Case")
-        if final_result.get("case_id") != case_id:
+        final_case, final_case_consistent = _result_case_identity(final_result)
+        if not final_case_consistent:
+            errors.append(
+                "baseline continuation result Case must match its agent envelope"
+            )
+        if final_case != case_id:
             errors.append("baseline continuation result must use the same Case")
         if final_result.get("status") != "completed" or final_result.get("completed") is not True:
             errors.append("baseline continuation must return a terminal workflow")

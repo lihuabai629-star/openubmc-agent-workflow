@@ -301,6 +301,52 @@ def baseline_execute_event(tool: str, arguments, structured, *, elapsed: float):
     }
 
 
+def baseline_phase_contract(**changes):
+    contract = {
+        "receipt_schema": "openubmc.target-runtime.v1/developer-change-receipt-v1",
+        "case_id": "case-qualified",
+        "expected_revision": 2,
+        "idempotency_key": "qualification-development",
+        "phase_type": "developer.change",
+        "producer_identity": "openubmc-developer",
+    }
+    contract.update(changes)
+    return contract
+
+
+def baseline_start_arguments():
+    return {
+        "ip": "10.121.136.200",
+        "intent": "diagnose-and-fix",
+        "delivery_strategy": "source-only",
+        "final_purpose": "qualify Runtime source-only execution",
+    }
+
+
+def baseline_metric_from_events(events):
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        events_path = root / "events.jsonl"
+        events_path.write_text(
+            "\n".join(json.dumps(item) for item in events) + "\n",
+            encoding="utf-8",
+        )
+        final_path = root / "final.md"
+        final_path.write_text(
+            "source-only Runtime Outcome completed", encoding="utf-8"
+        )
+        return module.metric_from_run(
+            arm="A",
+            pair=1,
+            order=1,
+            events_path=events_path,
+            final_path=final_path,
+            exit_code=0,
+            duration_seconds=31,
+            scenario="execute-source-only",
+        )
+
+
 def passing_execute_run_evidence(
     schedule,
     *,
@@ -822,22 +868,11 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertFalse(metric["scope_acceptance"])
 
     def test_baseline_execute_metric_requires_compatibility_terminal_workflow(self) -> None:
-        phase_contract = {
-            "case_id": "case-qualified",
-            "expected_revision": 2,
-            "idempotency_key": "qualification-development",
-            "phase_type": "developer.change",
-            "producer_identity": "openubmc-developer",
-        }
+        phase_contract = baseline_phase_contract()
         events = [
             baseline_execute_event(
                 "workflow.advance",
-                {
-                    "ip": "10.121.136.200",
-                    "intent": "diagnose-and-fix",
-                    "delivery_strategy": "source-only",
-                    "final_purpose": "qualify Runtime source-only execution",
-                },
+                baseline_start_arguments(),
                 {
                     "status": "waiting_phase_record",
                     "required_skill": "openubmc-developer",
@@ -853,12 +888,7 @@ class AgentGatewayAbTests(unittest.TestCase):
             ),
             baseline_execute_event(
                 "workflow.advance",
-                {
-                    "ip": "10.121.136.200",
-                    "intent": "diagnose-and-fix",
-                    "delivery_strategy": "source-only",
-                    "final_purpose": "qualify Runtime source-only execution",
-                },
+                baseline_start_arguments(),
                 {
                     "status": "waiting_phase_record",
                     "required_skill": "openubmc-developer",
@@ -897,27 +927,7 @@ class AgentGatewayAbTests(unittest.TestCase):
                 "usage": {"input_tokens": 100, "output_tokens": 10},
             },
         ]
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            events_path = root / "events.jsonl"
-            events_path.write_text(
-                "\n".join(json.dumps(item) for item in events) + "\n",
-                encoding="utf-8",
-            )
-            final_path = root / "final.md"
-            final_path.write_text(
-                "source-only Runtime Outcome completed", encoding="utf-8"
-            )
-            metric = module.metric_from_run(
-                arm="A",
-                pair=1,
-                order=1,
-                events_path=events_path,
-                final_path=final_path,
-                exit_code=0,
-                duration_seconds=31,
-                scenario="execute-source-only",
-            )
+        metric = baseline_metric_from_events(events)
 
         self.assertTrue(metric["valid"])
         self.assertEqual(metric["gate_roundtrips"], 1)
@@ -925,13 +935,7 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(metric["time_to_next_actionable_turn_seconds"], 5)
 
     def test_baseline_execute_metric_rejects_repeated_start_contract_drift(self) -> None:
-        base_contract = {
-            "case_id": "case-qualified",
-            "expected_revision": 2,
-            "idempotency_key": "qualification-development",
-            "phase_type": "developer.change",
-            "producer_identity": "openubmc-developer",
-        }
+        base_contract = baseline_phase_contract()
         scenarios = (
             (
                 "different Case",
@@ -942,23 +946,23 @@ class AgentGatewayAbTests(unittest.TestCase):
             (
                 "different phase contract",
                 "case-qualified",
-                {**base_contract, "idempotency_key": "other-development"},
+                baseline_phase_contract(idempotency_key="other-development"),
                 "baseline repeated starts must preserve phase contract idempotency_key",
             ),
+            (
+                "different receipt schema",
+                "case-qualified",
+                baseline_phase_contract(receipt_schema="other-receipt-v1"),
+                "baseline repeated starts must preserve phase contract receipt_schema",
+            ),
         )
-        start_arguments = {
-            "ip": "10.121.136.200",
-            "intent": "diagnose-and-fix",
-            "delivery_strategy": "source-only",
-            "final_purpose": "qualify Runtime source-only execution",
-        }
 
         for name, repeated_case, repeated_contract, expected_error in scenarios:
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as raw:
+            with self.subTest(name=name):
                 events = [
                     baseline_execute_event(
                         "workflow.advance",
-                        start_arguments,
+                        baseline_start_arguments(),
                         {
                             "status": "waiting_phase_record",
                             "required_skill": "openubmc-developer",
@@ -974,7 +978,7 @@ class AgentGatewayAbTests(unittest.TestCase):
                     ),
                     baseline_execute_event(
                         "workflow.advance",
-                        start_arguments,
+                        baseline_start_arguments(),
                         {
                             "status": "waiting_phase_record",
                             "required_skill": "openubmc-developer",
@@ -1017,27 +1021,7 @@ class AgentGatewayAbTests(unittest.TestCase):
                         "usage": {"input_tokens": 100, "output_tokens": 10},
                     },
                 ]
-                root = Path(raw)
-                events_path = root / "events.jsonl"
-                events_path.write_text(
-                    "\n".join(json.dumps(item) for item in events) + "\n",
-                    encoding="utf-8",
-                )
-                final_path = root / "final.md"
-                final_path.write_text(
-                    "source-only Runtime Outcome completed", encoding="utf-8"
-                )
-
-                metric = module.metric_from_run(
-                    arm="A",
-                    pair=1,
-                    order=1,
-                    events_path=events_path,
-                    final_path=final_path,
-                    exit_code=0,
-                    duration_seconds=31,
-                    scenario="execute-source-only",
-                )
+                metric = baseline_metric_from_events(events)
 
                 self.assertFalse(metric["valid"])
                 self.assertIn(
@@ -1046,17 +1030,11 @@ class AgentGatewayAbTests(unittest.TestCase):
                 )
 
     def test_baseline_execute_metric_binds_contract_and_terminal_result_to_case(self) -> None:
-        base_contract = {
-            "case_id": "case-qualified",
-            "expected_revision": 2,
-            "idempotency_key": "qualification-development",
-            "phase_type": "developer.change",
-            "producer_identity": "openubmc-developer",
-        }
+        base_contract = baseline_phase_contract()
         scenarios = (
             (
                 "contract Case divergence",
-                {**base_contract, "case_id": "case-other"},
+                baseline_phase_contract(case_id="case-other"),
                 "case-qualified",
                 "case-qualified",
                 "baseline start phase contract must match the Case",
@@ -1076,13 +1054,6 @@ class AgentGatewayAbTests(unittest.TestCase):
                 "baseline continuation result must use the same Case",
             ),
         )
-        start_arguments = {
-            "ip": "10.121.136.200",
-            "intent": "diagnose-and-fix",
-            "delivery_strategy": "source-only",
-            "final_purpose": "qualify Runtime source-only execution",
-        }
-
         for (
             name,
             phase_contract,
@@ -1090,11 +1061,11 @@ class AgentGatewayAbTests(unittest.TestCase):
             terminal_case,
             expected_error,
         ) in scenarios:
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as raw:
+            with self.subTest(name=name):
                 events = [
                     baseline_execute_event(
                         "workflow.advance",
-                        start_arguments,
+                        baseline_start_arguments(),
                         {
                             "status": "waiting_phase_record",
                             "required_skill": "openubmc-developer",
@@ -1137,27 +1108,101 @@ class AgentGatewayAbTests(unittest.TestCase):
                         "usage": {"input_tokens": 100, "output_tokens": 10},
                     },
                 ]
-                root = Path(raw)
-                events_path = root / "events.jsonl"
-                events_path.write_text(
-                    "\n".join(json.dumps(item) for item in events) + "\n",
-                    encoding="utf-8",
-                )
-                final_path = root / "final.md"
-                final_path.write_text(
-                    "source-only Runtime Outcome completed", encoding="utf-8"
+                metric = baseline_metric_from_events(events)
+
+                self.assertFalse(metric["valid"])
+                self.assertIn(
+                    expected_error,
+                    metric["scope_validation"]["errors"],
                 )
 
-                metric = module.metric_from_run(
-                    arm="A",
-                    pair=1,
-                    order=1,
-                    events_path=events_path,
-                    final_path=final_path,
-                    exit_code=0,
-                    duration_seconds=31,
-                    scenario="execute-source-only",
-                )
+    def test_baseline_execute_metric_rejects_nested_envelope_case_drift(self) -> None:
+        phase_contract = baseline_phase_contract()
+        scenarios = (
+            (
+                "start envelope",
+                "case-other",
+                "case-qualified",
+                "case-qualified",
+                "baseline start result Case must match its agent envelope",
+            ),
+            (
+                "phase envelope",
+                "case-qualified",
+                "case-other",
+                "case-qualified",
+                "baseline phase_record result Case must match its agent envelope",
+            ),
+            (
+                "terminal envelope",
+                "case-qualified",
+                "case-qualified",
+                "case-other",
+                "baseline continuation result Case must match its agent envelope",
+            ),
+        )
+
+        for (
+            name,
+            start_envelope_case,
+            phase_envelope_case,
+            terminal_envelope_case,
+            expected_error,
+        ) in scenarios:
+            with self.subTest(name=name):
+                events = [
+                    baseline_execute_event(
+                        "workflow.advance",
+                        baseline_start_arguments(),
+                        {
+                            "status": "waiting_phase_record",
+                            "required_skill": "openubmc-developer",
+                            "case_id": "case-qualified",
+                            "handoff_arguments": {
+                                "phase_record_contract": phase_contract,
+                            },
+                            "agent_envelope": {
+                                "case_id": start_envelope_case,
+                                "revision": 5,
+                            },
+                        },
+                        elapsed=10,
+                    ),
+                    baseline_execute_event(
+                        "phase_record",
+                        {
+                            **phase_contract,
+                            "expected_revision": 5,
+                            "status": "completed",
+                            "source_revision": "qualification-source",
+                            "summary": "qualification source-only receipt completed",
+                            "authored_files": ["src/qualification.lua"],
+                            "verification_plan": ["run qualification tests"],
+                        },
+                        {
+                            "status": "completed",
+                            "case_id": "case-qualified",
+                            "agent_envelope": {"case_id": phase_envelope_case},
+                        },
+                        elapsed=20,
+                    ),
+                    baseline_execute_event(
+                        "workflow.next",
+                        {"case_id": "case-qualified"},
+                        {
+                            "status": "completed",
+                            "completed": True,
+                            "case_id": "case-qualified",
+                            "agent_envelope": {"case_id": terminal_envelope_case},
+                        },
+                        elapsed=30,
+                    ),
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 100, "output_tokens": 10},
+                    },
+                ]
+                metric = baseline_metric_from_events(events)
 
                 self.assertFalse(metric["valid"])
                 self.assertIn(
