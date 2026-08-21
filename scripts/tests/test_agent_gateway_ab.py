@@ -220,6 +220,21 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(orders.count(("A", "B")), 5)
         self.assertEqual(orders.count(("B", "A")), 5)
 
+    def test_candidate_execute_prompt_uses_the_current_gate_response_shape(self) -> None:
+        prompt = module._prompt(
+            Path("/tmp/openubmc-debug/SKILL.md"),
+            scenario="execute-source-only",
+            arm="B",
+        )
+
+        self.assertIn(
+            "response 必须是三字段对象：status=completed；"
+            "summary=qualification source-only receipt completed；payload",
+            prompt,
+        )
+        self.assertIn("payload 内只含 source_revision", prompt)
+        self.assertNotIn("response 只含上述固定 receipt", prompt)
+
     def test_semantic_acceptance_requires_fields_and_cautious_conclusion(self) -> None:
         text = (
             "SSH Telnet MDBCTL BUSCTL；Name Disk0，Protocol 3，ResourceId 0，"

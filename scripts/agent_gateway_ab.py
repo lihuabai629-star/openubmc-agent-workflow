@@ -718,8 +718,8 @@ def _prompt(
                 f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
                 "第一次且仅第一次调用：kind=start，intent=diagnose-and-fix，delivery_strategy=source-only。",
                 "保存 start Result 的 run_id、gate.gate_id、gate.gate_version 与 gate.schema_digest；不得再次 start。",
-                "Runtime 返回 developer.change Gate 后，不读写任何源码，提交固定基准 receipt：source_revision=qualification-source；authored_files=[src/qualification.lua]；verification_plan=[run qualification tests]；status=completed。",
-                "第二次且仅第二次调用：kind=respond，并原样携带保存的 run_id、gate_id、gate_version、schema_digest；response 只含上述固定 receipt。",
+                "Runtime 返回 developer.change Gate 后，不读写任何源码，提交固定基准 receipt。response 必须是三字段对象：status=completed；summary=qualification source-only receipt completed；payload。",
+                "第二次且仅第二次调用：kind=respond，并原样携带保存的 run_id、gate_id、gate_version、schema_digest；payload 内只含 source_revision=qualification-source、authored_files=[src/qualification.lua]、verification_plan=[run qualification tests]。",
                 "同一 Gate 只能响应一次；不得省略 Gate binding，不得 poll、不得调用 resume、不得修改目标。",
                 "必须推进到终态，并在最终中文回答中包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
             )
