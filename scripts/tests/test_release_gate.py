@@ -242,20 +242,26 @@ class ReleaseGateTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for name in (
+        for name in ("ab_bundle_base64", "ab_bundle_sha256"):
+            self.assertIn(name, workflow)
+        for obsolete in (
             "ab_summary_base64",
             "ab_metrics_base64",
             "ab_schedule_base64",
         ):
-            self.assertIn(name, workflow)
+            self.assertNotIn(obsolete, workflow)
+        self.assertIn("sha256sum --check", workflow)
+        self.assertIn("tar --extract --gzip", workflow)
+        self.assertIn("--no-same-owner", workflow)
         self.assertIn("--ab-evidence agent-gateway-ab-evidence/summary.json", workflow)
         self.assertIn("--github-repository \"${{ github.repository }}\"", workflow)
         self.assertIn("--work-root release-gate-work", workflow)
         self.assertIn("release-gate-work/github-ci-evidence.json", workflow)
         expected_occurrences = {
-            "agent-gateway-ab-evidence/summary.json": 3,
-            "agent-gateway-ab-evidence/all_metrics.json": 2,
-            "agent-gateway-ab-evidence/schedule.json": 2,
+            "agent-gateway-ab-evidence/summary.json": 2,
+            "agent-gateway-ab-evidence/all_metrics.json": 1,
+            "agent-gateway-ab-evidence/schedule.json": 1,
+            "agent-gateway-ab-evidence.tar.gz": 5,
         }
         for artifact, count in expected_occurrences.items():
             self.assertEqual(workflow.count(artifact), count)

@@ -11,16 +11,12 @@ on:
         description: Previous immutable release tag used for upgrade and rollback
         required: true
         type: string
-      ab_summary_base64:
-        description: Base64-encoded execute AB summary.json
+      ab_bundle_base64:
+        description: Base64-encoded gzip tar of summary.json, all_metrics.json, and schedule.json
         required: true
         type: string
-      ab_metrics_base64:
-        description: Base64-encoded execute AB all_metrics.json
-        required: true
-        type: string
-      ab_schedule_base64:
-        description: Base64-encoded execute AB schedule.json
+      ab_bundle_sha256:
+        description: SHA-256 of the compressed execute AB evidence bundle
         required: true
         type: string
       promote:
@@ -48,14 +44,18 @@ jobs:
 
       - name: Restore execute AB qualification evidence
         env:
-          AB_SUMMARY_BASE64: ${{ inputs.ab_summary_base64 }}
-          AB_METRICS_BASE64: ${{ inputs.ab_metrics_base64 }}
-          AB_SCHEDULE_BASE64: ${{ inputs.ab_schedule_base64 }}
+          AB_BUNDLE_BASE64: ${{ inputs.ab_bundle_base64 }}
+          AB_BUNDLE_SHA256: ${{ inputs.ab_bundle_sha256 }}
         run: |
           mkdir -p agent-gateway-ab-evidence
-          printf '%s' "$AB_SUMMARY_BASE64" | base64 --decode > agent-gateway-ab-evidence/summary.json
-          printf '%s' "$AB_METRICS_BASE64" | base64 --decode > agent-gateway-ab-evidence/all_metrics.json
-          printf '%s' "$AB_SCHEDULE_BASE64" | base64 --decode > agent-gateway-ab-evidence/schedule.json
+          printf '%s' "$AB_BUNDLE_BASE64" | base64 --decode > agent-gateway-ab-evidence.tar.gz
+          printf '%s  %s\n' "$AB_BUNDLE_SHA256" agent-gateway-ab-evidence.tar.gz | sha256sum --check --strict
+          test "$(tar --list --gzip --file agent-gateway-ab-evidence.tar.gz | LC_ALL=C sort)" = "$(printf '%s\n' all_metrics.json schedule.json summary.json)"
+          tar --extract --gzip --file agent-gateway-ab-evidence.tar.gz \
+            --directory agent-gateway-ab-evidence \
+            --no-same-owner \
+            --no-same-permissions \
+            summary.json all_metrics.json schedule.json
 
       - name: Run immutable release gates
         env:
@@ -78,6 +78,7 @@ jobs:
             agent-gateway-ab-evidence/summary.json
             agent-gateway-ab-evidence/all_metrics.json
             agent-gateway-ab-evidence/schedule.json
+            agent-gateway-ab-evidence.tar.gz
             release-gate.json
             release-gate-work/github-ci-evidence.json
             release-gate-work/runtime-qualification.json

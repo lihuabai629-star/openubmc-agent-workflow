@@ -183,6 +183,18 @@ python scripts/agent_gateway_ab.py analyze \
   /path/to/benchmark-work/results-*/all_metrics.json
 ```
 
+For the GitHub Release workflow, package the three verified files as one compressed,
+digest-bound input. Compression keeps the supported 20/30-pair checkpoints below GitHub's
+workflow-dispatch payload limit:
+
+```bash
+tar -C /path/to/benchmark-work/results-YYYYMMDD-HHMMSS \
+  -czf agent-gateway-ab-evidence.tar.gz \
+  summary.json all_metrics.json schedule.json
+sha256sum agent-gateway-ab-evidence.tar.gz
+base64 -w0 agent-gateway-ab-evidence.tar.gz
+```
+
 ## Recovery coverage
 
 The three supported delivery paths are verified through the same `execute` Interface:
