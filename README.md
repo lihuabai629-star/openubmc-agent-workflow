@@ -153,13 +153,15 @@ links are changed when the lock is missing, invalid, or incompatible. `check --j
 resolved immutable release identity. Linked development checkouts remain mutable by design and are
 reported as `linked-development-source` rather than being treated as a release.
 
-Before promotion, run the ordered release gate against the new immutable ref and the previous
-release ref:
+Before promotion, run the execute A/B qualification described in
+`docs/agent-semantic-gateway.md`, then pass its digest-bound `summary.json` (with the adjacent
+`all_metrics.json`, `schedule.json`, and `run_evidence.json`) to the ordered release gate:
 
 ```bash
 python3 scripts/release_gate.py \
   --current-ref v2.0.0 \
   --previous-ref v1.2.2 \
+  --ab-evidence /path/to/qualification-results/summary.json \
   --output release-gate.json
 ```
 

@@ -30,7 +30,6 @@ from openubmc_target_runtime import (  # noqa: E402
     ReferenceViolation,
     ResumeRun,
     RunDecision,
-    RunDecisionConflict,
     RunEngine,
     STDIO_FRAME_MAX_BYTES,
     TOOLS_LIST_MAX_BYTES,
@@ -50,6 +49,7 @@ from openubmc_target_runtime import (  # noqa: E402
 from openubmc_target_runtime.context_runtime import (  # noqa: E402
     BufferedRuntimeRepository,
 )
+from openubmc_target_runtime.run_store import RunCommitRequest  # noqa: E402
 def encoded_size(value: object) -> int:
     return len(
         json.dumps(
@@ -102,6 +102,7 @@ def artifact_ref(
                         "kind": kind,
                     },
                     "product_version": version,
+                    "provenance": reference["provenance"],
                 },
                 sort_keys=True,
             ),
@@ -530,29 +531,47 @@ class RecoveryBoundaryConflictOnceStore:
         self.delegate = delegate
         self.raced = False
 
-    def load(self, run_id: str):
-        return self.delegate.load(run_id)
+    def load(self, run_id: str, **kwargs):
+        return self.delegate.load(run_id, **kwargs)
 
-    def replay(self, run_id: str, command_id: str, input_digest: str):
-        return self.delegate.replay(run_id, command_id, input_digest)
+    def commit(self, request):
+        if not isinstance(request, RunCommitRequest):
+            return self.delegate.commit(request)
 
-    def commit(self, decision: RunDecision):
-        if decision.command_id.startswith("recover-") and not self.raced:
-            self.raced = True
-            self.delegate.commit(
-                RunDecision(
-                    run_id=decision.run_id,
-                    command_id=(
-                        "concurrent-" + decision.command_id.removeprefix("recover-")
-                    ),
-                    input_digest="f" * 64,
-                    expected_revision=decision.expected_revision,
-                    events=(),
-                    turn=decision.turn,
+        def build(draft):
+            decision = request.build(draft)
+            if (
+                decision is not None
+                and request.command_id.startswith("recover-")
+                and not self.raced
+            ):
+                self.raced = True
+                self.delegate.commit(
+                    RunDecision(
+                        run_id=decision.run_id,
+                        command_id=(
+                            "concurrent-"
+                            + decision.command_id.removeprefix("recover-")
+                        ),
+                        input_digest="f" * 64,
+                        expected_revision=decision.expected_revision,
+                        events=(),
+                        turn=decision.turn,
+                    )
                 )
+            return decision
+
+        return self.delegate.commit(
+            RunCommitRequest(
+                run_id=request.run_id,
+                command_id=request.command_id,
+                input_digest=request.input_digest,
+                build=build,
+                retry_conflicts=request.retry_conflicts,
+                exhausted_message=request.exhausted_message,
+                task_id=request.task_id,
             )
-            raise RunDecisionConflict("simulated concurrent Run revision")
-        return self.delegate.commit(decision)
+        )
 
 
 class BlockingDebugSemanticBackend(SemanticBackend):
@@ -676,14 +695,24 @@ class OversizedGateTurnRuntime:
 
 
 class PersistentUnknownRunDriver:
-    def __init__(self) -> None:
+    def __init__(self, repository=None) -> None:
         self.reconcile_calls = 0
-        self.incident = None
+        self.repository = repository
 
     def _snapshot(self) -> dict[str, object]:
+        persisted = (
+            self.repository.load("run-persistent-unknown")
+            if self.repository is not None
+            else None
+        )
+        incident = (
+            persisted.get("current_incident", {})
+            if isinstance(persisted, dict)
+            else {}
+        )
         projection: dict[str, object] = {
             "case_id": "run-persistent-unknown",
-            "status": "incident" if self.incident is not None else "open",
+            "status": "incident" if incident else "open",
             "operations": [
                 {
                     "operation": "live_patch_run",
@@ -692,35 +721,25 @@ class PersistentUnknownRunDriver:
                 }
             ],
             "workflow_step_states": {},
-            "current_incident": (
-                self.incident.to_public_dict() if self.incident is not None else {}
-            ),
+            "current_incident": incident,
         }
         return {"projection": projection, "continuation": {}}
 
     def run_snapshot(self, _run_id: str) -> dict[str, object]:
         return self._snapshot()
 
+    @staticmethod
+    def domain_metadata(operation: str) -> dict[str, object]:
+        return {"mutation": operation == "live_patch_run"}
+
+    @staticmethod
+    def domain_artifact_metadata(_phase_type: str) -> dict[str, object]:
+        return {}
+
     def reconcile_run(self, _run_id: str, *, task_id: str, operation_id: str):
         del task_id, operation_id
         self.reconcile_calls += 1
-        return self._snapshot()
-
-    def apply_transition(self, _run_id: str, transition):
-        if len(transition.events) != 1:
-            raise AssertionError("unexpected transition event batch")
-        event = transition.events[0]
-        if event.kind != "RunIncidentRaised":
-            raise AssertionError(f"unexpected transition: {event.kind}")
-        value = event.payload["incident"]
-        self.incident = Incident(
-            incident_id=str(value["incident_id"]),
-            code=str(value["code"]),
-            message=str(value["message"]),
-            effect_id=str(value.get("effect_id", "")),
-            recoverable=bool(value.get("recoverable", True)),
-        )
-        return self._snapshot()
+        return None
 
     @staticmethod
     def derive_closeout(_run_id: str, *, terminal_status: str):
@@ -744,6 +763,32 @@ class AgentGatewayTests(unittest.TestCase):
             self.service.close()
         finally:
             self.artifact_directory.cleanup()
+
+    def test_agent_gateway_owns_bounded_run_fact_projection(self) -> None:
+        projection = {
+            "workflow_cycle_id": "cycle-1",
+            "operations": [
+                {
+                    "operation": f"domain_{index}",
+                    "status": "completed",
+                    "summary": f"completed {index}",
+                    "workflow_cycle_id": "cycle-1",
+                }
+                for index in range(10)
+            ],
+            "phase_records": [],
+        }
+        facts = self.service.agent_projector.run_facts(projection)
+        turn = RunTurn(
+            run_id="run-fact-projection",
+            state="running",
+            facts=facts,
+        )
+        projected = self.service.agent_projector.turn(turn)
+
+        self.assertEqual(len(projected["facts"]), 8)
+        self.assertEqual(projected["facts"][0]["name"], "domain_2")
+        self.assertEqual(projected["facts"][-1]["name"], "domain_9")
 
     def test_default_interface_has_two_small_semantic_tools(self) -> None:
         definitions = self.service.tool_definitions()
@@ -2728,6 +2773,8 @@ class AgentGatewayTests(unittest.TestCase):
             missing_run.pop("run_id")
             missing_provenance = dict(valid)
             missing_provenance["provenance"] = ""
+            wrong_provenance = dict(valid)
+            wrong_provenance["provenance"] = "forged-unverified-producer"
 
             invalid_cases = (
                 (
@@ -2780,6 +2827,12 @@ class AgentGatewayTests(unittest.TestCase):
                     missing_provenance,
                     GateConflict,
                     "must not be empty",
+                ),
+                (
+                    "wrong-provenance",
+                    wrong_provenance,
+                    ReferenceViolation,
+                    "provenance does not match artifact metadata",
                 ),
             )
             for name, reference, error, message in invalid_cases:
@@ -3468,12 +3521,15 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(verification_arguments["no_freshness"])
 
     def test_automatic_reconcile_attempts_an_unknown_mutation_only_once(self) -> None:
-        driver = PersistentUnknownRunDriver()
         repository = InMemoryRuntimeRepository()
+        transactions = BufferedRuntimeRepository(repository)
+        driver = PersistentUnknownRunDriver(transactions)
         engine = RunEngine(
             driver,
-            run_store=EventRunStore(repository),
-            command_transactions=BufferedRuntimeRepository(repository),
+            run_store=EventRunStore(
+                repository,
+                draft_buffer=transactions,
+            ),
         )
         turn = engine.execute(
             ResumeRun("run-persistent-unknown"),
@@ -3495,7 +3551,7 @@ class AgentGatewayTests(unittest.TestCase):
     def test_run_engine_requires_durable_command_dependencies(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
-            "RunStore and command transactions are required",
+            "RunStore is required",
         ):
             RunEngine(PersistentUnknownRunDriver())
 
@@ -3503,8 +3559,10 @@ class AgentGatewayTests(unittest.TestCase):
         repository = InMemoryRuntimeRepository()
         engine = RunEngine(
             PersistentUnknownRunDriver(),
-            run_store=EventRunStore(repository),
-            command_transactions=BufferedRuntimeRepository(repository),
+            run_store=EventRunStore(
+                repository,
+                draft_buffer=BufferedRuntimeRepository(repository),
+            ),
         )
 
         with self.assertRaisesRegex(ValueError, "unsupported Run transition kind"):

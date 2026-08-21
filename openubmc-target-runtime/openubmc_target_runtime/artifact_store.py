@@ -92,6 +92,10 @@ class LocalArtifactStore:
             raise ReferenceViolation(
                 "ArtifactRef version does not match artifact metadata"
             )
+        if str(metadata.get("provenance", "")) != reference.provenance:
+            raise ReferenceViolation(
+                "ArtifactRef provenance does not match artifact metadata"
+            )
 
     def resolve(
         self,

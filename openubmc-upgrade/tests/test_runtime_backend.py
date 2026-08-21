@@ -62,6 +62,7 @@ def artifact_ref(
                     "kind": "openubmc-hpm",
                 },
                 "product_version": version,
+                "provenance": "upgrade-fault-matrix",
             },
             sort_keys=True,
         ),

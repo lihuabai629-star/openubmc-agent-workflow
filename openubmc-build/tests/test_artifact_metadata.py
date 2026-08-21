@@ -24,6 +24,7 @@ class ArtifactMetadataTests(unittest.TestCase):
                 artifact,
                 kind="openubmc-hpm",
                 product_version="2.3.4",
+                provenance="openubmc-build:test-run",
             )
             payload = json.loads(output.read_text(encoding="utf-8"))
 
@@ -40,6 +41,7 @@ class ArtifactMetadataTests(unittest.TestCase):
                     "kind": "openubmc-hpm",
                 },
                 "product_version": "2.3.4",
+                "provenance": "openubmc-build:test-run",
             },
         )
 

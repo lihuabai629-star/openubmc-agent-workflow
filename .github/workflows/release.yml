@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       ab_bundle_base64:
-        description: Base64-encoded gzip tar of summary.json, all_metrics.json, and schedule.json
+        description: Base64-encoded xz tar of summary, metrics, schedule, and run evidence
         required: true
         type: string
       ab_bundle_sha256:
@@ -28,6 +28,7 @@ on:
 permissions:
   contents: read
   checks: read
+  actions: read
 
 jobs:
   release-gate:
@@ -47,15 +48,11 @@ jobs:
           AB_BUNDLE_BASE64: ${{ inputs.ab_bundle_base64 }}
           AB_BUNDLE_SHA256: ${{ inputs.ab_bundle_sha256 }}
         run: |
-          mkdir -p agent-gateway-ab-evidence
-          printf '%s' "$AB_BUNDLE_BASE64" | base64 --decode > agent-gateway-ab-evidence.tar.gz
-          printf '%s  %s\n' "$AB_BUNDLE_SHA256" agent-gateway-ab-evidence.tar.gz | sha256sum --check --strict
-          test "$(tar --list --gzip --file agent-gateway-ab-evidence.tar.gz | LC_ALL=C sort)" = "$(printf '%s\n' all_metrics.json schedule.json summary.json)"
-          tar --extract --gzip --file agent-gateway-ab-evidence.tar.gz \
-            --directory agent-gateway-ab-evidence \
-            --no-same-owner \
-            --no-same-permissions \
-            summary.json all_metrics.json schedule.json
+          printf '%s' "$AB_BUNDLE_BASE64" | base64 --decode > agent-gateway-ab-evidence.tar.xz
+          printf '%s  %s\n' "$AB_BUNDLE_SHA256" agent-gateway-ab-evidence.tar.xz | sha256sum --check --strict
+          python3 scripts/restore_ab_bundle.py \
+            --archive agent-gateway-ab-evidence.tar.xz \
+            --destination agent-gateway-ab-evidence
 
       - name: Run immutable release gates
         env:
@@ -77,8 +74,9 @@ jobs:
           path: |
             agent-gateway-ab-evidence/summary.json
             agent-gateway-ab-evidence/all_metrics.json
+            agent-gateway-ab-evidence/run_evidence.json
             agent-gateway-ab-evidence/schedule.json
-            agent-gateway-ab-evidence.tar.gz
+            agent-gateway-ab-evidence.tar.xz
             release-gate.json
             release-gate-work/github-ci-evidence.json
             release-gate-work/runtime-qualification.json

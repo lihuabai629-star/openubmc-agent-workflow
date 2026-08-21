@@ -60,7 +60,6 @@ from .effect_runner import (
     PreparedEffect,
 )
 from .capability import (
-    ArtifactContract,
     CallableDomainAdapter,
     CapabilityDescriptor,
     CapabilityRegistry,
@@ -70,8 +69,8 @@ from .capability import (
     EffectRecoveryMode,
     RUNTIME_EFFECT_RECOVERY_ARGUMENT,
     RuntimeSDKContext,
-    mutation_receipt_verifier,
 )
+from .domain_packs import builtin_domain_packs
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     BlobRepository,
@@ -2147,16 +2146,14 @@ class _RuntimeSemanticAdapter:
             ),
         }
 
-    def apply_transition(
+    def domain_metadata(self, operation: str) -> Mapping[str, object]:
+        return self.service.domain_executor.metadata_for(operation)
+
+    def domain_artifact_metadata(
         self,
-        run_id: str,
-        transition: RunTransition,
+        phase_type: str,
     ) -> Mapping[str, object]:
-        self.service.context_runtime.repository.stage(
-            run_id,
-            events=transition.events,
-        )
-        return self.run_snapshot(run_id)
+        return self.service.domain_executor.artifact_metadata_for_phase(phase_type)
 
     def persist_observation(
         self,
@@ -2350,7 +2347,7 @@ class _RuntimeSemanticAdapter:
         *,
         task_id: str,
         operation_id: str,
-    ) -> Mapping[str, object]:
+    ) -> RunTransition:
         projection = self.service.context_runtime.read_case(run_id)
         unknown = next(
             (
@@ -2392,14 +2389,11 @@ class _RuntimeSemanticAdapter:
         except Exception as exc:
             result = None
             error = exc
-        return self.apply_transition(
-            run_id,
-            self.effect_transition(
-                intent,
-                result=result,
-                error=error,
-                settlement_mode=EffectSettlementMode.RECONCILE,
-            ),
+        return self.effect_transition(
+            intent,
+            result=result,
+            error=error,
+            settlement_mode=EffectSettlementMode.RECONCILE,
         )
 
 def _mapping_or_empty(value: object) -> Mapping[str, object]:
@@ -2495,50 +2489,9 @@ class RuntimeMcpService:
             )
             for descriptor in self.capability_registry.descriptors()
         }
-        artifact_contracts = {
-            "live_patch_run": ArtifactContract(
-                path_fields=("local_path", "backup_path"),
-                digest_field="artifact_sha256",
-                artifact_kind="openubmc-live-patch",
-            ),
-            "upgrade_run": ArtifactContract(
-                path_fields=("artifact_path",),
-                digest_field="artifact_sha256",
-                version_field="product_version",
-                artifact_kind="openubmc-hpm",
-                required=True,
-            ),
-        }
-        default_domain_packs = tuple(
-            DomainPack(
-                name=operation.removesuffix("_run").replace("_", "-"),
-                version="1",
-                descriptor=self.capability_registry.require(operation),
-                effect_class=EffectClass.RECONCILABLE_MUTATION,
-                adapter=domain_adapters[operation],
-                reconciler=domain_adapters[operation],
-                verifier=(
-                    lambda action, receipt, operation=operation: mutation_receipt_verifier(
-                        action,
-                        receipt,
-                        journal_action=(
-                            "rollback"
-                            if operation == "live_patch_run"
-                            and str(action.arguments.get("action", ""))
-                            .strip()
-                            .lower()
-                            .replace("-", "_")
-                            == "rollback"
-                            else "live_patch"
-                            if operation == "live_patch_run"
-                            else "upgrade"
-                        ),
-                    )
-                ),
-                artifact_contract=artifact_contracts[operation],
-            )
-            for operation in ("live_patch_run", "upgrade_run")
-            if operation in domain_adapters
+        default_domain_packs = builtin_domain_packs(
+            self.capability_registry,
+            domain_adapters,
         )
         extension_packs = (
             tuple(
@@ -2608,11 +2561,13 @@ class RuntimeMcpService:
             RunEngine(
                 semantic_adapter,
                 run_store=EventRunStore(
-                    self.context_runtime.repository.base_repository
+                    self.context_runtime.repository.base_repository,
+                    draft_buffer=self.context_runtime.repository,
+                    fact_projector=self.agent_projector.run_facts,
                 ),
-                command_transactions=self.context_runtime.repository,
                 artifact_store=self.artifact_store,
                 effect_runner=self.effect_runner,
+                fact_projector=self.agent_projector.run_facts,
             ),
         )
         self.agent_gateway = AgentGateway(
@@ -3562,53 +3517,14 @@ class RuntimeMcpService:
                 context,
             ),
         )
-        if operation not in {"live_patch_run", "upgrade_run"}:
+        pack = self.domain_executor.pack_for(operation)
+        if pack is None:
             return value
-        journal_action = (
-            "rollback"
-            if operation == "live_patch_run"
-            and str(bounded_arguments.get("action", ""))
-            .strip()
-            .lower()
-            .replace("-", "_")
-            == "rollback"
-            else "live_patch"
-            if operation == "live_patch_run"
-            else "upgrade"
+        return pack.bind_compatibility_receipt(
+            value,
+            operation_id=sdk_context.operation_id,
+            arguments=bounded_arguments,
         )
-        translated = dict(value)
-        journal = translated.get("journal")
-        if isinstance(journal, Mapping) and not str(journal.get("schema", "")):
-            translated["_runtime_compatibility_receipt"] = {
-                "operation_id": sdk_context.operation_id,
-                "action": journal_action,
-            }
-            translated.setdefault("operation_id", sdk_context.operation_id)
-        executions = translated.get("executions")
-        if isinstance(executions, list):
-            bound_executions: list[object] = []
-            for raw_execution in executions:
-                if not isinstance(raw_execution, Mapping):
-                    bound_executions.append(raw_execution)
-                    continue
-                execution = dict(raw_execution)
-                execution_value = execution.get("value")
-                if isinstance(execution_value, Mapping):
-                    nested = dict(execution_value)
-                    nested_journal = nested.get("journal")
-                    if isinstance(nested_journal, Mapping) and not str(
-                        nested_journal.get("schema", "")
-                    ):
-                        nested["_runtime_compatibility_receipt"] = {
-                            "operation_id": str(
-                                execution.get("operation_id", "")
-                            ),
-                            "action": journal_action,
-                        }
-                        execution["value"] = nested
-                bound_executions.append(execution)
-            translated["executions"] = bound_executions
-        return translated
 
     def _translate_native_phase_record(
         self,
@@ -3834,12 +3750,11 @@ class RuntimeMcpService:
         raw_artifact_ref = bounded_arguments.get("artifact_ref")
         if isinstance(raw_artifact_ref, Mapping) and raw_artifact_ref:
             reference = ArtifactRef.from_public_dict(raw_artifact_ref)
-            expected_kind = {
-                "live_patch_run": "openubmc-live-patch",
-                "upgrade_run": "openubmc-hpm",
-            }.get(name, "")
-            if expected_kind and reference.kind != expected_kind:
-                raise ValueError("Domain Effect ArtifactRef has the wrong kind")
+            pack = self.domain_executor.pack_for(name)
+            contract = pack.artifact_contract if pack is not None else None
+            if contract is None:
+                raise ValueError("Domain Effect does not accept an ArtifactRef")
+            expected_kind = contract.artifact_kind
             expected_target = str(bounded_arguments.get("ip", "")).strip()
             if expected_target and reference.target != expected_target:
                 raise ValueError("Domain Effect ArtifactRef targets another BMC")
@@ -3856,12 +3771,9 @@ class RuntimeMcpService:
                 )
             )
             bounded_arguments["artifact_ref"] = reference.to_public_dict()
-            bounded_arguments["artifact_sha256"] = reference.digest
-            if name == "live_patch_run":
-                bounded_arguments["local_path"] = str(artifact_path)
-            elif name == "upgrade_run":
-                bounded_arguments["artifact_path"] = str(artifact_path)
-                bounded_arguments["product_version"] = reference.version
+            bounded_arguments.update(
+                contract.runtime_arguments(reference, artifact_path)
+            )
         execute = (
             self.domain_executor.reconcile
             if recovery_mode is EffectRecoveryMode.RECONCILE

@@ -116,8 +116,9 @@ secret Gate token.
 
 Patch and firmware inputs use `ArtifactRef`. The Runtime requires kind, content digest, byte size,
 provenance, retention hint, target, and Run binding, then streams the local content to verify its
-digest before any mutation begins. Missing content, cross-target or cross-Run references, wrong
-kind, size mismatch, and tampering fail before Domain execution.
+digest before any mutation begins. Versioned build artifacts also bind provenance and product
+version in adjacent digest-bound build metadata. Missing content, cross-target or cross-Run
+references, wrong kind, size or provenance mismatch, and tampering fail before Domain execution.
 
 When a mutation result is unknown, `RunEngine` automatically performs one reconcile attempt using
 the same durable operation ID and mutation journal. If the read-first recovery converges, execution
@@ -169,7 +170,8 @@ computes the paired geometric mean plus the one-sided 95% bootstrap upper bound 
 non-cached input plus output, tool-output bytes, model turns, wall time, and time to the next
 actionable Turn. Ten valid pairs are the first decision point; an uncertain result expands to
 twenty and then thirty pairs. Each result records both source commits, the model and environment
-fingerprint, thresholds, valid and invalid pairs, and digests for the schedule and raw metrics.
+fingerprint, thresholds, valid and invalid pairs, and digests for the schedule, raw metrics, and
+the run events used to recompute every promoted metric.
 
 ```bash
 python scripts/agent_gateway_ab.py run \
@@ -183,16 +185,17 @@ python scripts/agent_gateway_ab.py analyze \
   /path/to/benchmark-work/results-*/all_metrics.json
 ```
 
-For the GitHub Release workflow, package the three verified files as one compressed,
-digest-bound input. Compression keeps the supported 20/30-pair checkpoints below GitHub's
-workflow-dispatch payload limit:
+For the GitHub Release workflow, package the four verified files as one xz-compressed,
+digest-bound input. The workflow rejects extra members and non-regular files before extraction.
+High-ratio xz compression keeps the evidence, including the run events, within the supported
+workflow-dispatch input:
 
 ```bash
 tar -C /path/to/benchmark-work/results-YYYYMMDD-HHMMSS \
-  -czf agent-gateway-ab-evidence.tar.gz \
-  summary.json all_metrics.json schedule.json
-sha256sum agent-gateway-ab-evidence.tar.gz
-base64 -w0 agent-gateway-ab-evidence.tar.gz
+  -cJf agent-gateway-ab-evidence.tar.xz \
+  summary.json all_metrics.json schedule.json run_evidence.json
+sha256sum agent-gateway-ab-evidence.tar.xz
+base64 -w0 agent-gateway-ab-evidence.tar.xz
 ```
 
 ## Recovery coverage

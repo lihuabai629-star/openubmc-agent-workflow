@@ -29,6 +29,7 @@ from openubmc_target_runtime import (  # noqa: E402
     mutation_receipt_verifier,
     mutation_recovery_route,
 )
+from openubmc_target_runtime.domain_packs import builtin_domain_packs  # noqa: E402
 
 
 def descriptor(operation: str = "fake_mutation") -> CapabilityDescriptor:
@@ -74,6 +75,105 @@ class Backend:
 
 
 class DomainPackConformanceTests(unittest.TestCase):
+    def test_builtin_mutation_packs_own_artifact_phase_and_kind_metadata(self) -> None:
+        descriptors = (descriptor("live_patch_run"), descriptor("upgrade_run"))
+        registry = CapabilityRegistry(descriptors)
+        adapter = CallableDomainAdapter(lambda _context, _arguments: {})
+
+        registered = builtin_domain_packs(
+            registry,
+            {item.operation: adapter for item in descriptors},
+        )
+        packs = {pack.descriptor.operation: pack for pack in registered}
+        executor = DomainExecutor(registry, {}, packs=registered)
+
+        self.assertEqual(packs["live_patch_run"].artifact_phase, "developer.change")
+        self.assertEqual(
+            packs["live_patch_run"].artifact_contract.artifact_kind,
+            "openubmc-live-patch",
+        )
+        self.assertEqual(packs["upgrade_run"].artifact_phase, "build.artifact")
+        self.assertEqual(
+            packs["upgrade_run"].artifact_contract.artifact_kind,
+            "openubmc-hpm",
+        )
+        self.assertEqual(
+            executor.artifact_metadata_for_phase("build.artifact"),
+            {
+                "mutation": True,
+                "artifact_phase": "build.artifact",
+                "artifact_kind": "openubmc-hpm",
+                "artifact_requires_version": True,
+            },
+        )
+
+    def test_artifact_contract_materializes_runtime_arguments_without_gateway_branches(self) -> None:
+        contract = ArtifactContract(
+            path_fields=("artifact_path",),
+            digest_field="artifact_sha256",
+            version_field="product_version",
+            artifact_kind="openubmc-hpm",
+            required=True,
+        )
+        reference = ArtifactRef(
+            handle="/tmp/product.hpm",
+            digest="a" * 64,
+            kind="openubmc-hpm",
+            size=8,
+            provenance="openubmc-build",
+            version="2.0.0",
+            target="192.0.2.1",
+            run_id="run-1",
+        )
+
+        self.assertEqual(
+            contract.runtime_arguments(reference, Path("/verified/product.hpm")),
+            {
+                "artifact_path": "/verified/product.hpm",
+                "artifact_sha256": "a" * 64,
+                "product_version": "2.0.0",
+            },
+        )
+
+    def test_domain_pack_binds_legacy_mutation_receipts_with_pack_owned_action(self) -> None:
+        pack_descriptor = descriptor("live_patch_run")
+        adapter = CallableDomainAdapter(lambda _context, _arguments: {})
+        pack = DomainPack(
+            name="live-patch",
+            version="1",
+            descriptor=pack_descriptor,
+            effect_class=EffectClass.RECONCILABLE_MUTATION,
+            adapter=adapter,
+            reconciler=adapter,
+            verifier=lambda _action, _receipt: True,
+            journal_action=lambda arguments: (
+                "rollback" if arguments.get("action") == "rollback" else "live_patch"
+            ),
+        )
+
+        translated = pack.bind_compatibility_receipt(
+            {
+                "journal": {"stage": "verified"},
+                "executions": [
+                    {
+                        "operation_id": "nested-effect",
+                        "value": {"journal": {"stage": "verified"}},
+                    }
+                ],
+            },
+            operation_id="effect-1",
+            arguments={"action": "rollback"},
+        )
+
+        self.assertEqual(
+            translated["_runtime_compatibility_receipt"],
+            {"operation_id": "effect-1", "action": "rollback"},
+        )
+        self.assertEqual(
+            translated["executions"][0]["value"]["_runtime_compatibility_receipt"],
+            {"operation_id": "nested-effect", "action": "rollback"},
+        )
+
     def test_mutation_receipt_stage_contract_is_owned_by_the_journal(self) -> None:
         self.assertIn("planned", MutationJournal.VALID_STAGES)
         self.assertIn("replan_required", MutationJournal.VALID_STAGES)
@@ -448,6 +548,9 @@ class DomainPackConformanceTests(unittest.TestCase):
             "1.0.0",
         )
         self.assertNotIn("artifact", executed.to_public_dict()["action"])
+
+        public_pack = pack.to_public_dict()
+        self.assertEqual(public_pack["artifact_phase"], "")
 
     def test_mutation_pack_never_retries_an_unknown_result(self) -> None:
         attempts = 0

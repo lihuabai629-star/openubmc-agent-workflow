@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Protocol
 
@@ -398,6 +399,25 @@ class ArtifactContract:
             raise ValueError("Domain Action is missing its Artifact version")
         return None
 
+    def runtime_arguments(
+        self,
+        reference: ArtifactRef,
+        path: Path,
+    ) -> dict[str, object]:
+        """Materialize a verified ArtifactRef for the registered Domain Adapter."""
+
+        if reference.kind != self.artifact_kind:
+            raise ValueError("Domain Action ArtifactRef has the wrong kind")
+        arguments: dict[str, object] = {
+            self.path_fields[0]: str(path),
+            self.digest_field: reference.digest,
+        }
+        if self.version_field:
+            if not reference.version:
+                raise ValueError("Domain Action is missing its Artifact version")
+            arguments[self.version_field] = reference.version
+        return arguments
+
 
 @dataclass(frozen=True)
 class DomainAction:
@@ -583,7 +603,9 @@ class DomainPack:
     verifier: DomainVerifier
     reconciler: DomainAdapter | None = None
     artifact_contract: ArtifactContract | None = None
+    artifact_phase: str = ""
     capability_requirements: tuple[str, ...] = ()
+    journal_action: Callable[[Mapping[str, object]], str] | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -626,6 +648,52 @@ class DomainPack:
             artifact=artifact,
         )
 
+    def bind_compatibility_receipt(
+        self,
+        value: Mapping[str, object],
+        *,
+        operation_id: str,
+        arguments: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Bind schema-less legacy journals to this Pack's mutation identity."""
+
+        translated = dict(value)
+        if self.journal_action is None:
+            return translated
+        action = self.journal_action(arguments).strip()
+        if not action:
+            raise ValueError("Domain Pack journal action must not be empty")
+        journal = translated.get("journal")
+        if isinstance(journal, Mapping) and not str(journal.get("schema", "")):
+            translated["_runtime_compatibility_receipt"] = {
+                "operation_id": operation_id,
+                "action": action,
+            }
+            translated.setdefault("operation_id", operation_id)
+        executions = translated.get("executions")
+        if isinstance(executions, list):
+            bound_executions: list[object] = []
+            for raw_execution in executions:
+                if not isinstance(raw_execution, Mapping):
+                    bound_executions.append(raw_execution)
+                    continue
+                execution = dict(raw_execution)
+                execution_value = execution.get("value")
+                if isinstance(execution_value, Mapping):
+                    nested = dict(execution_value)
+                    nested_journal = nested.get("journal")
+                    if isinstance(nested_journal, Mapping) and not str(
+                        nested_journal.get("schema", "")
+                    ):
+                        nested["_runtime_compatibility_receipt"] = {
+                            "operation_id": str(execution.get("operation_id", "")),
+                            "action": action,
+                        }
+                        execution["value"] = nested
+                bound_executions.append(execution)
+            translated["executions"] = bound_executions
+        return translated
+
     def to_public_dict(self) -> dict[str, object]:
         return {
             "schema": DOMAIN_PACK_SCHEMA,
@@ -645,6 +713,7 @@ class DomainPack:
                 if self.artifact_contract is not None
                 else None
             ),
+            "artifact_phase": self.artifact_phase,
         }
 
 
@@ -797,6 +866,46 @@ class DomainExecutor:
                 else 1
             ),
         )
+
+    def pack_for(self, operation: str) -> DomainPack | None:
+        """Return the registered Pack that owns operation-specific contracts."""
+
+        return self.packs.get(operation)
+
+    def metadata_for(self, operation: str) -> Mapping[str, object]:
+        """Return Pack-owned metadata needed by deterministic Run progression."""
+
+        pack = self.packs.get(operation)
+        if pack is None:
+            return {}
+        return {
+            "mutation": pack.effect_class is EffectClass.RECONCILABLE_MUTATION,
+            "artifact_phase": pack.artifact_phase,
+            "artifact_kind": (
+                pack.artifact_contract.artifact_kind
+                if pack.artifact_contract is not None
+                else ""
+            ),
+            "artifact_requires_version": bool(
+                pack.artifact_contract is not None
+                and pack.artifact_contract.version_field
+            ),
+        }
+
+    def artifact_metadata_for_phase(
+        self,
+        phase_type: str,
+    ) -> Mapping[str, object]:
+        matches = [
+            self.metadata_for(operation)
+            for operation, pack in self.packs.items()
+            if pack.artifact_phase == phase_type and pack.artifact_contract is not None
+        ]
+        if len(matches) > 1:
+            raise ValueError(
+                f"multiple Domain Packs bind artifacts to phase {phase_type}"
+            )
+        return matches[0] if matches else {}
 
     def execute(
         self,

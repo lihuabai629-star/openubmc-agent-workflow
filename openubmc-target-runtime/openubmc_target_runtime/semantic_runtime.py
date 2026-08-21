@@ -959,74 +959,6 @@ class Outcome:
         }
 
 
-def run_turn_facts(
-    projection: Mapping[str, object],
-) -> tuple[Mapping[str, object], ...]:
-    cycle_id = _text(projection.get("workflow_cycle_id") or "cycle-1")
-    facts: list[dict[str, object]] = []
-    operations = projection.get("operations", [])
-    if isinstance(operations, list):
-        for operation in operations:
-            if not isinstance(operation, Mapping):
-                continue
-            status = _text(operation.get("status"))
-            if status not in {"completed", "succeeded", "verified"}:
-                continue
-            operation_name = _text(operation.get("operation"))
-            if not operation_name or operation_name in {
-                "phase_record",
-                "workflow.advance",
-                "workflow.next",
-            }:
-                continue
-            operation_cycle = _text(operation.get("workflow_cycle_id"))
-            if operation_cycle and operation_cycle != cycle_id:
-                continue
-            fact: dict[str, object] = {
-                "kind": "operation",
-                "name": operation_name,
-                "status": status,
-                "summary": _text(operation.get("summary")),
-            }
-            evidence_ids = operation.get("evidence_ids", [])
-            if isinstance(evidence_ids, list) and evidence_ids:
-                fact["evidence_ids"] = [
-                    _text(item) for item in evidence_ids[:8] if _text(item)
-                ]
-            target_epoch = operation.get("target_epoch")
-            if isinstance(target_epoch, int) and not isinstance(target_epoch, bool):
-                fact["target_epoch"] = target_epoch
-            facts.append(fact)
-    phases = projection.get("phase_records", [])
-    if isinstance(phases, list):
-        for phase in phases:
-            if (
-                not isinstance(phase, Mapping)
-                or _text(phase.get("status")) != "completed"
-                or (
-                    _text(phase.get("workflow_cycle_id"))
-                    and _text(phase.get("workflow_cycle_id")) != cycle_id
-                )
-            ):
-                continue
-            fact = {
-                "kind": "phase",
-                "name": _text(phase.get("phase_type")),
-                "status": "completed",
-                "summary": _text(phase.get("summary")),
-            }
-            for name in (
-                "source_revision",
-                "artifact_sha256",
-                "product_version",
-            ):
-                value = _text(phase.get(name))
-                if value:
-                    fact[name] = value
-            facts.append(fact)
-    return tuple(facts[-8:])
-
-
 @dataclass(frozen=True)
 class RunTurn:
     run_id: str
@@ -1137,8 +1069,9 @@ def project_run_turn(
     use_projected_next_action: bool = False,
     observation_ref: ObservationRef | None = None,
     base_turn: RunTurn | None = None,
+    facts: tuple[Mapping[str, object], ...] | None = None,
 ) -> RunTurn:
-    """Build the current bounded Turn from one authoritative Run projection."""
+    """Build the current semantic Turn from one authoritative Run projection."""
 
     selected_gate = gate
     if use_current_gate:
@@ -1205,7 +1138,13 @@ def project_run_turn(
         state=selected_state,
         gate=selected_gate,
         incident=incident,
-        facts=run_turn_facts(projection),
+        facts=(
+            facts
+            if facts is not None
+            else base_turn.facts
+            if base_turn is not None
+            else ()
+        ),
         gaps=gaps,
         outcome=outcome,
         next_action=selected_next_action,

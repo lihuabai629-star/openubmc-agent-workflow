@@ -260,15 +260,13 @@ class GitHubCiEvidenceTests(unittest.TestCase):
 
         def run(command, **kwargs):
             calls.append(tuple(command))
-            payload = (
-                self.workflow_runs()
-                if any("actions/runs" in part for part in command)
-                else {"check_runs": []}
-            )
+            payload = self.workflow_runs()["workflow_runs"] if any(
+                "actions/runs" in part for part in command
+            ) else []
             return subprocess.CompletedProcess(
                 command,
                 0,
-                json.dumps(payload),
+                "\n".join(json.dumps(item) for item in payload),
                 "",
             )
 
@@ -282,6 +280,45 @@ class GitHubCiEvidenceTests(unittest.TestCase):
         self.assertEqual(calls[0][0:2], ("gh", "api"))
         self.assertIn("repos/owner/repo/commits/candidate/check-runs", calls[0])
         self.assertIn("repos/owner/repo/actions/runs", calls[1])
+
+    def test_collection_merges_every_paginated_api_item(self) -> None:
+        calls: list[tuple[str, ...]] = []
+        checks = [
+            {
+                "id": index,
+                "name": name,
+                "head_sha": "candidate",
+                "status": "completed",
+                "conclusion": "success",
+                "html_url": f"https://example/check/{index}",
+                "app": {"id": 15368, "slug": "github-actions"},
+                "check_suite": {"id": 10},
+            }
+            for index, name in enumerate(github_ci.REQUIRED_CHECKS, 101)
+        ]
+        workflow = self.workflow_runs()["workflow_runs"][0]
+
+        def run(command, **kwargs):
+            calls.append(tuple(command))
+            items = [workflow] if any("actions/runs" in part for part in command) else checks
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "\n".join(json.dumps(item) for item in items) + "\n",
+                "",
+            )
+
+        evidence = github_ci.collect_evidence(
+            repository="owner/repo",
+            commit="candidate",
+            runner=run,
+        )
+
+        self.assertTrue(evidence["promotable"], evidence)
+        for call, selector in zip(calls, (".check_runs[]", ".workflow_runs[]")):
+            self.assertIn("--paginate", call)
+            self.assertIn("--jq", call)
+            self.assertIn(selector, call)
 
 
 if __name__ == "__main__":

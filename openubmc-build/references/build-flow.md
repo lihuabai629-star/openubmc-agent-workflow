@@ -252,12 +252,14 @@ handoff:
 ```bash
 python3 scripts/write_artifact_metadata.py \
   --path /absolute/path/to/openubmc.hpm \
-  --product-version <built-version>
+  --product-version <built-version> \
+  --provenance openubmc-build
 ```
 
 Keep the generated `<hpm>.metadata.json` adjacent to the HPM for Runtime validation; do not add its
-path to the Agent-facing Build result. Return the HPM absolute path, SHA-256, product version, and
-build evidence IDs. An HPM left by a failed or interrupted build is not a result.
+path to the Agent-facing Build result. Return the HPM absolute path, SHA-256, product version,
+`openubmc-build` provenance, and build evidence IDs. An HPM left by a failed or interrupted build
+is not a result.
 
 For `delivery_strategy=build-upgrade`, pass the typed Build result to `openubmc-upgrade` together
 with the task-owned target and rollback context. Build performs no Redfish discovery, upload,

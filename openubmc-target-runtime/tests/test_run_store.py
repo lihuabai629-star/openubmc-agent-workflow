@@ -25,10 +25,9 @@ from openubmc_target_runtime import (  # noqa: E402
 )
 from openubmc_target_runtime.run_store import upcast_run_events  # noqa: E402
 from openubmc_target_runtime.run_engine import (  # noqa: E402
-    RunCommandTransaction,
-    RunCommandTransactions,
     RunDriver,
 )
+from openubmc_target_runtime.run_store import RunStore  # noqa: E402
 
 
 class RunDecisionContractTests(unittest.TestCase):
@@ -53,11 +52,16 @@ class RunDecisionContractTests(unittest.TestCase):
             "stage_events",
         }
         self.assertFalse(retired & set(RunDriver.__dict__))
-        self.assertFalse(retired & set(RunCommandTransactions.__dict__))
-        self.assertFalse(retired & set(RunCommandTransaction.__dict__))
-        self.assertIn("apply_transition", RunDriver.__dict__)
+        self.assertNotIn("apply_transition", RunDriver.__dict__)
         self.assertIn("derive_closeout", RunDriver.__dict__)
-        self.assertIn("stage", RunCommandTransaction.__dict__)
+        self.assertEqual(
+            {
+                name
+                for name in RunStore.__dict__
+                if not name.startswith("_")
+            },
+            {"load", "commit"},
+        )
 
     def test_run_decision_is_a_versioned_typed_contract(self) -> None:
         decision = RunDecision(
@@ -270,11 +274,11 @@ class RunDecisionContractTests(unittest.TestCase):
             ),
         )
 
-        replayed = store.replay(
+        replayed = store.load(
             "run-transitional-outcome",
-            "command-before-transitional-outcome",
-            "9" * 64,
-        )
+            command_id="command-before-transitional-outcome",
+            input_digest="9" * 64,
+        ).decision
 
         assert replayed is not None
         self.assertEqual(replayed.turn.state, "completed")

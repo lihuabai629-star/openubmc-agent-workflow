@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import re
-from typing import Protocol
+from typing import ContextManager, Protocol
 
 from .contracts import RUNTIME_API_VERSION
 from .semantic_runtime import RunTurn, project_run_turn
@@ -146,16 +146,65 @@ class CommittedRunDecision:
     replayed: bool = False
 
 
+@dataclass(frozen=True)
+class LoadedRun:
+    projection: Mapping[str, object] | None
+    decision: CommittedRunDecision | None = None
+
+
+class RunDecisionDraft(Protocol):
+    @property
+    def expected_revision(self) -> int: ...
+
+    @property
+    def events(self) -> tuple[RunEvent, ...]: ...
+
+    @property
+    def effect_intent(self) -> Mapping[str, object] | None: ...
+
+    def stage(
+        self,
+        *,
+        events: tuple[RunEvent, ...],
+        effect_intent: Mapping[str, object] | None = None,
+    ) -> None: ...
+
+    def accept(self) -> None: ...
+
+
+class _RunDraftBuffer(Protocol):
+    def begin(self, run_id: str) -> ContextManager[RunDecisionDraft]: ...
+
+    def reattach(self, run_id: str, task_id: str) -> None: ...
+
+
+@dataclass(frozen=True)
+class RunCommitRequest:
+    run_id: str
+    command_id: str
+    input_digest: str
+    build: Callable[[RunDecisionDraft], RunDecision | None]
+    retry_conflicts: bool
+    exhausted_message: str
+    task_id: str = ""
+
+
 class RunStore(Protocol):
     """Small persistence Interface used by RunEngine decisions."""
 
-    def load(self, run_id: str) -> Mapping[str, object] | None: ...
+    def load(
+        self,
+        run_id: str,
+        *,
+        command_id: str = "",
+        input_digest: str = "",
+        task_id: str = "",
+    ) -> LoadedRun: ...
 
-    def replay(
-        self, run_id: str, command_id: str, input_digest: str
+    def commit(
+        self,
+        request: RunDecision | RunCommitRequest,
     ) -> CommittedRunDecision | None: ...
-
-    def commit(self, decision: RunDecision) -> CommittedRunDecision: ...
 
 
 class RunEventRepository(Protocol):
@@ -173,11 +222,42 @@ class RunEventRepository(Protocol):
 class EventRunStore:
     """Append RunDecision facts through one expected-revision transaction."""
 
-    def __init__(self, repository: RunEventRepository) -> None:
+    def __init__(
+        self,
+        repository: RunEventRepository,
+        *,
+        draft_buffer: _RunDraftBuffer | None = None,
+        fact_projector: Callable[
+            [Mapping[str, object]], tuple[Mapping[str, object], ...]
+        ] | None = None,
+    ) -> None:
         self.repository = repository
+        self._draft_buffer = draft_buffer
+        self.fact_projector = fact_projector
 
-    def load(self, run_id: str) -> Mapping[str, object] | None:
-        return self.repository.load(run_id)
+    def load(
+        self,
+        run_id: str,
+        *,
+        command_id: str = "",
+        input_digest: str = "",
+        task_id: str = "",
+    ) -> LoadedRun:
+        projection = self.repository.load(run_id)
+        decision = None
+        if command_id:
+            if not input_digest:
+                raise RunStoreError("RunStore load requires an input digest")
+            recorded = self._recorded_decision(projection, command_id)
+            if isinstance(projection, Mapping) and isinstance(recorded, Mapping):
+                decision = self._replayed_decision(
+                    projection,
+                    recorded,
+                    input_digest=input_digest,
+                )
+                if task_id and self._draft_buffer is not None:
+                    self._draft_buffer.reattach(run_id, task_id)
+        return LoadedRun(projection=projection, decision=decision)
 
     @staticmethod
     def _recorded_decision(
@@ -198,8 +278,8 @@ class EventRunStore:
             None,
         )
 
-    @staticmethod
     def _replayed_decision(
+        self,
         projection: Mapping[str, object],
         recorded: Mapping[str, object],
         *,
@@ -234,6 +314,11 @@ class EventRunStore:
                 use_current_gate=True,
                 use_projected_next_action=True,
                 base_turn=base_turn,
+                facts=(
+                    self.fact_projector(projection)
+                    if self.fact_projector is not None
+                    else None
+                ),
             ),
             effect_intent=(
                 dict(recorded["effect_intent"])
@@ -243,20 +328,7 @@ class EventRunStore:
             replayed=True,
         )
 
-    def replay(
-        self, run_id: str, command_id: str, input_digest: str
-    ) -> CommittedRunDecision | None:
-        current = self.repository.load(run_id)
-        recorded = self._recorded_decision(current, command_id)
-        if not isinstance(current, Mapping) or not isinstance(recorded, Mapping):
-            return None
-        return self._replayed_decision(
-            current,
-            recorded,
-            input_digest=input_digest,
-        )
-
-    def commit(self, decision: RunDecision) -> CommittedRunDecision:
+    def _commit_decision(self, decision: RunDecision) -> CommittedRunDecision:
         current = self.repository.load(decision.run_id)
         recorded = self._recorded_decision(current, decision.command_id)
         if isinstance(current, Mapping) and isinstance(recorded, Mapping):
@@ -316,6 +388,39 @@ class EventRunStore:
                 else None
             ),
         )
+
+    def commit(
+        self,
+        request: RunDecision | RunCommitRequest,
+    ) -> CommittedRunDecision | None:
+        if isinstance(request, RunDecision):
+            return self._commit_decision(request)
+        if self._draft_buffer is None:
+            raise RunStoreError(
+                "RunStore command commits require a command-local draft buffer"
+            )
+        for attempt in range(4):
+            loaded = self.load(
+                request.run_id,
+                command_id=request.command_id,
+                input_digest=request.input_digest,
+                task_id=request.task_id,
+            )
+            if loaded.decision is not None:
+                return loaded.decision
+            with self._draft_buffer.begin(request.run_id) as draft:
+                decision = request.build(draft)
+                if decision is None:
+                    return None
+                try:
+                    committed = self._commit_decision(decision)
+                except RunDecisionConflict:
+                    if not request.retry_conflicts or attempt >= 3:
+                        raise
+                    continue
+                draft.accept()
+                return committed
+        raise RunDecisionConflict(request.exhausted_message)
 
 
 def _legacy_workflow_definition(value: object) -> object:

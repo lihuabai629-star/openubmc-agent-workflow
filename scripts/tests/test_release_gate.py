@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import yaml
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "release_gate.py"
 SPEC = importlib.util.spec_from_file_location("openubmc_release_gate", SCRIPT)
@@ -238,34 +240,58 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertGreater(artifact["size_bytes"], 0)
 
     def test_release_workflow_restores_and_requires_execute_ab_evidence(self) -> None:
-        workflow = (Path.cwd() / ".github" / "workflows" / "release.yml").read_text(
-            encoding="utf-8"
+        workflow = yaml.load(
+            (Path.cwd() / ".github" / "workflows" / "release.yml").read_text(
+                encoding="utf-8"
+            ),
+            Loader=yaml.BaseLoader,
         )
+        self.assertIsInstance(workflow, dict)
+        dispatch = workflow["on"]["workflow_dispatch"]
+        self.assertEqual(
+            set(dispatch["inputs"]),
+            {
+                "current_ref",
+                "previous_ref",
+                "ab_bundle_base64",
+                "ab_bundle_sha256",
+                "promote",
+            },
+        )
+        self.assertEqual(workflow["permissions"]["actions"], "read")
+        self.assertEqual(workflow["permissions"]["checks"], "read")
 
-        for name in ("ab_bundle_base64", "ab_bundle_sha256"):
-            self.assertIn(name, workflow)
-        for obsolete in (
-            "ab_summary_base64",
-            "ab_metrics_base64",
-            "ab_schedule_base64",
-        ):
-            self.assertNotIn(obsolete, workflow)
-        self.assertIn("sha256sum --check", workflow)
-        self.assertIn("tar --extract --gzip", workflow)
-        self.assertIn("--no-same-owner", workflow)
-        self.assertIn("--ab-evidence agent-gateway-ab-evidence/summary.json", workflow)
-        self.assertIn("--github-repository \"${{ github.repository }}\"", workflow)
-        self.assertIn("--work-root release-gate-work", workflow)
-        self.assertIn("release-gate-work/github-ci-evidence.json", workflow)
-        expected_occurrences = {
-            "agent-gateway-ab-evidence/summary.json": 2,
-            "agent-gateway-ab-evidence/all_metrics.json": 1,
-            "agent-gateway-ab-evidence/schedule.json": 1,
-            "agent-gateway-ab-evidence.tar.gz": 5,
+        steps = {
+            step.get("name", step.get("uses", "")): step
+            for step in workflow["jobs"]["release-gate"]["steps"]
         }
-        for artifact, count in expected_occurrences.items():
-            self.assertEqual(workflow.count(artifact), count)
-        self.assertIn("python-version: \"3.12.13\"", workflow)
+        self.assertEqual(
+            steps["actions/setup-python@v5"]["with"]["python-version"],
+            "3.12.13",
+        )
+        restore = steps["Restore execute AB qualification evidence"]["run"]
+        self.assertIn("sha256sum --check --strict", restore)
+        self.assertIn("scripts/restore_ab_bundle.py", restore)
+        gate = steps["Run immutable release gates"]["run"]
+        self.assertIn("--ab-evidence agent-gateway-ab-evidence/summary.json", gate)
+        self.assertIn("--github-repository \"${{ github.repository }}\"", gate)
+        self.assertIn("--work-root release-gate-work", gate)
+        uploaded = set(
+            steps["Upload release evidence"]["with"]["path"].splitlines()
+        )
+        self.assertEqual(
+            uploaded,
+            {
+                "agent-gateway-ab-evidence/summary.json",
+                "agent-gateway-ab-evidence/all_metrics.json",
+                "agent-gateway-ab-evidence/run_evidence.json",
+                "agent-gateway-ab-evidence/schedule.json",
+                "agent-gateway-ab-evidence.tar.xz",
+                "release-gate.json",
+                "release-gate-work/github-ci-evidence.json",
+                "release-gate-work/runtime-qualification.json",
+            },
+        )
         self.assertEqual(
             release_gate.execute_release_gate.__kwdefaults__["github_repository"],
             "lihuabai629-star/openubmc-agent-workflow",

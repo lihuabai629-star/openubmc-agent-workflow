@@ -8,7 +8,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
 import time
-from typing import ContextManager, Protocol
+from typing import Protocol
 
 from .artifact_store import LocalArtifactStore
 from .semantic_runtime import (
@@ -39,8 +39,10 @@ from .semantic_runtime import (
 )
 from .run_store import (
     CommittedRunDecision,
+    RunCommitRequest,
     RunDecision,
     RunDecisionConflict,
+    RunDecisionDraft,
     RunEvent,
     RunStore,
 )
@@ -137,8 +139,24 @@ def _artifact_ref_schema(kind: str, *, require_version: bool) -> dict[str, objec
     }
 
 
-def gate_input_schema(phase_type: str, *, delivery_strategy: str) -> dict[str, object]:
+def gate_input_schema(
+    phase_type: str,
+    *,
+    delivery_strategy: str,
+    artifact_metadata: Mapping[str, object],
+) -> dict[str, object]:
     descriptor = DEFAULT_PHASE_REGISTRY.require(phase_type)
+    artifact_kind = _text(artifact_metadata.get("artifact_kind"))
+    artifact_schema = (
+        _artifact_ref_schema(
+            artifact_kind,
+            require_version=bool(
+                artifact_metadata.get("artifact_requires_version")
+            ),
+        )
+        if artifact_kind
+        else None
+    )
     if phase_type == "developer.change":
         payload_properties: dict[str, object] = {
             "source_revision": _string_schema(),
@@ -151,32 +169,37 @@ def gate_input_schema(phase_type: str, *, delivery_strategy: str) -> dict[str, o
                 "enum": ["local_only", "committed", "pushed", "pull_request"],
             },
             "known_gaps": _string_array_schema(),
-            "artifact_ref": _artifact_ref_schema(
-                "openubmc-live-patch", require_version=False
-            ),
             "remote_path": _string_schema(),
             "restart_scope": _string_schema(),
         }
+        if artifact_schema is not None:
+            payload_properties["artifact_ref"] = artifact_schema
         completed_required = [
             "source_revision",
             "authored_files",
             "verification_plan",
         ]
         if delivery_strategy == "live-patch":
+            if artifact_schema is None:
+                raise GateConflict(
+                    "live-patch delivery requires a registered artifact Domain Pack"
+                )
             completed_required.extend(
                 ["artifact_ref", "remote_path", "restart_scope"]
             )
     elif phase_type == "build.artifact":
         payload_properties = {
             "source_revision": _string_schema(),
-            "artifact_ref": _artifact_ref_schema(
-                "openubmc-hpm", require_version=True
-            ),
             "component_versions": {"type": "array"},
             "build_commands": _string_array_schema(),
             "build_logs": _string_array_schema(),
             "known_gaps": _string_array_schema(),
         }
+        if artifact_schema is None:
+            raise GateConflict(
+                "build-upgrade delivery requires a registered artifact Domain Pack"
+            )
+        payload_properties["artifact_ref"] = artifact_schema
         completed_required = ["source_revision", "artifact_ref"]
     else:
         raise GateConflict(f"unsupported Agent Gate phase: {phase_type}")
@@ -244,10 +267,11 @@ class RunDriver(Protocol):
 
     def run_snapshot(self, run_id: str) -> Mapping[str, object]: ...
 
-    def apply_transition(
+    def domain_metadata(self, operation: str) -> Mapping[str, object]: ...
+
+    def domain_artifact_metadata(
         self,
-        run_id: str,
-        transition: "RunTransition",
+        phase_type: str,
     ) -> Mapping[str, object]: ...
 
     def derive_closeout(
@@ -281,7 +305,7 @@ class RunDriver(Protocol):
         *,
         task_id: str,
         operation_id: str,
-    ) -> Mapping[str, object]: ...
+    ) -> "RunTransition | None": ...
 
 
 @dataclass(frozen=True)
@@ -293,31 +317,6 @@ class RunTransition:
     def __post_init__(self) -> None:
         if not self.events:
             raise ValueError("Run transition requires at least one event")
-
-class RunCommandTransaction(Protocol):
-    @property
-    def expected_revision(self) -> int: ...
-
-    @property
-    def events(self) -> tuple[RunEvent, ...]: ...
-
-    @property
-    def effect_intent(self) -> Mapping[str, object] | None: ...
-
-    def stage(
-        self,
-        *,
-        events: tuple[RunEvent, ...],
-        effect_intent: Mapping[str, object] | None = None,
-    ) -> None: ...
-
-    def accept(self) -> None: ...
-
-
-class RunCommandTransactions(Protocol):
-    def begin(self, run_id: str) -> ContextManager[RunCommandTransaction]: ...
-
-    def reattach(self, run_id: str, task_id: str) -> None: ...
 
 class ObservationEngine:
     """Collect, automatically assure when useful, and persist one observation."""
@@ -415,20 +414,20 @@ class RunEngine:
         driver: RunDriver,
         *,
         run_store: RunStore | None = None,
-        command_transactions: RunCommandTransactions | None = None,
         artifact_store: LocalArtifactStore | None = None,
         effect_runner: LocalEffectRunner | None = None,
+        fact_projector: Callable[
+            [Mapping[str, object]], tuple[Mapping[str, object], ...]
+        ] | None = None,
     ) -> None:
-        if run_store is None or command_transactions is None:
-            raise ValueError(
-                "RunStore and command transactions are required"
-            )
+        if run_store is None:
+            raise ValueError("RunStore is required")
         self.driver = driver
         self.run_store: RunStore = run_store
-        self.command_transactions: RunCommandTransactions = command_transactions
         self.artifact_store = artifact_store or LocalArtifactStore()
         self.effect_runner = effect_runner
-        self._active_transaction: ContextVar[RunCommandTransaction | None] = (
+        self.fact_projector = fact_projector
+        self._active_transaction: ContextVar[RunDecisionDraft | None] = (
             ContextVar(f"openubmc_run_decision_{id(self)}", default=None)
         )
 
@@ -447,35 +446,36 @@ class RunEngine:
         self,
         *,
         run_id: str,
-        build: Callable[[RunCommandTransaction], RunDecision | None],
+        command_id: str,
+        input_digest: str,
+        build: Callable[[RunDecisionDraft], RunDecision | None],
         retry_conflicts: bool,
         exhausted_message: str,
-        replay: Callable[[], CommittedRunDecision | None] | None = None,
+        task_id: str = "",
     ) -> CommittedRunDecision | None:
-        """Commit one atomic RunDecision with the shared revision retry protocol."""
+        """Commit one atomic RunDecision through the RunStore load/commit seam."""
 
-        for attempt in range(4):
-            if replay is not None:
-                replayed = replay()
-                if replayed is not None:
-                    return replayed
-            with self.command_transactions.begin(run_id) as transaction:
-                token = self._active_transaction.set(transaction)
-                try:
-                    decision = build(transaction)
-                    if decision is None:
-                        return None
-                    try:
-                        committed = self.run_store.commit(decision)
-                    except RunDecisionConflict as exc:
-                        if not retry_conflicts or attempt >= 3:
-                            raise CommandConflict(str(exc)) from exc
-                        continue
-                    transaction.accept()
-                    return committed
-                finally:
-                    self._active_transaction.reset(token)
-        raise CommandConflict(exhausted_message)
+        def build_with_context(draft: RunDecisionDraft) -> RunDecision | None:
+            token = self._active_transaction.set(draft)
+            try:
+                return build(draft)
+            finally:
+                self._active_transaction.reset(token)
+
+        try:
+            return self.run_store.commit(
+                RunCommitRequest(
+                    run_id=run_id,
+                    command_id=command_id,
+                    input_digest=input_digest,
+                    build=build_with_context,
+                    retry_conflicts=retry_conflicts,
+                    exhausted_message=exhausted_message,
+                    task_id=task_id,
+                )
+            )
+        except RunDecisionConflict as exc:
+            raise CommandConflict(str(exc)) from exc
 
     def _apply_transition(
         self,
@@ -609,10 +609,8 @@ class RunEngine:
             raise ValueError(
                 f"unsupported Run transition kind: {transition_kind.value}"
             )
-        return self.driver.apply_transition(
-            run_id,
-            RunTransition(events=events),
-        )
+        self._stage(events)
+        return self.driver.run_snapshot(run_id)
 
     @staticmethod
     def _run_id(snapshot: Mapping[str, object]) -> str:
@@ -663,7 +661,11 @@ class RunEngine:
         step_id = _text(continuation.get("required_workflow_step_id"))
         cycle_id = _text(continuation.get("workflow_cycle_id") or "cycle-1")
         delivery = _text(projection.get("delivery_strategy"))
-        schema = gate_input_schema(phase_type, delivery_strategy=delivery)
+        schema = gate_input_schema(
+            phase_type,
+            delivery_strategy=delivery,
+            artifact_metadata=self.driver.domain_artifact_metadata(phase_type),
+        )
         schema_digest = fingerprint(schema)
         prior_versions = [
             int(item.get("gate_version", 0))
@@ -962,9 +964,9 @@ class RunEngine:
             acceptance=raw.get("acceptance", []),
         )
 
-    @staticmethod
     def _unknown_mutation(
-        projection: Mapping[str, object]
+        self,
+        projection: Mapping[str, object],
     ) -> Mapping[str, object] | None:
         return next(
             (
@@ -975,8 +977,11 @@ class RunEngine:
                     _text(item.get("status")) == "mutation_outcome_unknown"
                     or (
                         _text(item.get("status")) == "blocked"
-                        and _text(item.get("operation"))
-                        in {"live_patch_run", "upgrade_run"}
+                        and bool(
+                            self.driver.domain_metadata(
+                                _text(item.get("operation"))
+                            ).get("mutation")
+                        )
                     )
                 )
             ),
@@ -1002,14 +1007,18 @@ class RunEngine:
             None,
         )
 
-    @staticmethod
     def _mutation_completed_before_verification(
-        projection: Mapping[str, object]
+        self,
+        projection: Mapping[str, object],
     ) -> bool:
         states = projection.get("workflow_step_states", {})
         return isinstance(states, Mapping) and any(
             isinstance(state, Mapping)
-            and _text(state.get("name")) in {"live_patch_run", "upgrade_run"}
+            and bool(
+                self.driver.domain_metadata(_text(state.get("name"))).get(
+                    "mutation"
+                )
+            )
             and _text(state.get("status")) in {"completed", "verified", "succeeded"}
             for state in states.values()
         )
@@ -1020,13 +1029,11 @@ class RunEngine:
         *,
         operation: str,
     ) -> None:
-        artifact_contract = {
-            "live_patch_run": ("developer.change", "openubmc-live-patch"),
-            "upgrade_run": ("build.artifact", "openubmc-hpm"),
-        }.get(operation)
-        if artifact_contract is None:
+        domain_metadata = self.driver.domain_metadata(operation)
+        phase_type = _text(domain_metadata.get("artifact_phase"))
+        artifact_kind = _text(domain_metadata.get("artifact_kind"))
+        if not phase_type or not artifact_kind:
             return
-        phase_type, artifact_kind = artifact_contract
         projection = _projection(snapshot)
         if any(
             isinstance(item, Mapping)
@@ -1112,6 +1119,11 @@ class RunEngine:
             state=state,
             next_action=next_action,
             observation_ref=observation_ref,
+            facts=(
+                self.fact_projector(projection)
+                if self.fact_projector is not None
+                else ()
+            ),
         )
 
     def _record_incident(
@@ -1180,11 +1192,14 @@ class RunEngine:
             ):
                 auto_reconcile_attempted = True
                 try:
-                    snapshot = self.driver.reconcile_run(
+                    transition = self.driver.reconcile_run(
                         self._run_id(snapshot),
                         task_id=task_id,
                         operation_id=f"{operation_id}-auto-reconcile",
                     )
+                    if transition is not None:
+                        self._stage(transition.events)
+                    snapshot = self.driver.run_snapshot(self._run_id(snapshot))
                 except Exception as exc:
                     snapshot = self.driver.run_snapshot(self._run_id(snapshot))
                     unknown = self._unknown_mutation(_projection(snapshot))
@@ -1542,11 +1557,14 @@ class RunEngine:
             )
         if isinstance(command, ReconcileRun):
             try:
-                snapshot = self.driver.reconcile_run(
+                transition = self.driver.reconcile_run(
                     command.run_id,
                     task_id=task_id,
                     operation_id=operation_id,
                 )
+                if transition is not None:
+                    self._stage(transition.events)
+                snapshot = self.driver.run_snapshot(command.run_id)
             except Exception as exc:
                 snapshot = self.driver.run_snapshot(command.run_id)
                 unknown = self._unknown_mutation(_projection(snapshot))
@@ -1621,17 +1639,7 @@ class RunEngine:
                 "effect_id": intent.effect_id,
             }
         )
-        try:
-            replayed = self.run_store.replay(
-                intent.run_id,
-                command_id,
-                input_digest,
-            )
-        except RunDecisionConflict as exc:
-            raise CommandConflict(str(exc)) from exc
-        if replayed is not None:
-            return replayed.turn
-        def build(transaction: RunCommandTransaction) -> RunDecision:
+        def build(transaction: RunDecisionDraft) -> RunDecision:
             snapshot = self._record_incident(
                 self.driver.run_snapshot(intent.run_id),
                 code="mutation_outcome_unknown",
@@ -1653,6 +1661,8 @@ class RunEngine:
 
         committed = self._commit_run_decision(
             run_id=intent.run_id,
+            command_id=command_id,
+            input_digest=input_digest,
             build=build,
             retry_conflicts=True,
             exhausted_message="recovery Incident decision could not converge",
@@ -1834,17 +1844,7 @@ class RunEngine:
             }
         input_digest = fingerprint(outcome_identity)
         command_id = "effect-result-" + input_digest[:32]
-        try:
-            replayed = self.run_store.replay(
-                intent.run_id,
-                command_id,
-                input_digest,
-            )
-        except RunDecisionConflict as exc:
-            raise CommandConflict(str(exc)) from exc
-        if replayed is not None:
-            return replayed
-        def build(transaction: RunCommandTransaction) -> RunDecision:
+        def build(transaction: RunDecisionDraft) -> RunDecision:
             transition = self.driver.effect_transition(
                 intent,
                 result=result,
@@ -1868,6 +1868,8 @@ class RunEngine:
 
         committed = self._commit_run_decision(
             run_id=intent.run_id,
+            command_id=command_id,
+            input_digest=input_digest,
             build=build,
             retry_conflicts=True,
             exhausted_message="Effect result decision could not converge",
@@ -1887,17 +1889,7 @@ class RunEngine:
                 "effect_id": intent.effect_id,
             }
         )
-        def replay() -> CommittedRunDecision | None:
-            try:
-                return self.run_store.replay(
-                    intent.run_id,
-                    command_id,
-                    input_digest,
-                )
-            except RunDecisionConflict as exc:
-                raise CommandConflict(str(exc)) from exc
-
-        def build(transaction: RunCommandTransaction) -> RunDecision | None:
+        def build(transaction: RunDecisionDraft) -> RunDecision | None:
             snapshot = self.driver.run_snapshot(intent.run_id)
             projection = _projection(snapshot)
             current = next(
@@ -1939,10 +1931,11 @@ class RunEngine:
 
         return self._commit_run_decision(
             run_id=intent.run_id,
+            command_id=command_id,
+            input_digest=input_digest,
             build=build,
             retry_conflicts=True,
             exhausted_message="Effect recovery decision could not converge",
-            replay=replay,
         ) is not None
 
     def execute(
@@ -1961,7 +1954,12 @@ class RunEngine:
         )
         run_id = run_id_for_command(command, command_id=command_id)
         try:
-            replayed = self.run_store.replay(run_id, command_id, input_digest)
+            replayed = self.run_store.load(
+                run_id,
+                command_id=command_id,
+                input_digest=input_digest,
+                task_id=task_id,
+            ).decision
         except RunDecisionConflict as exc:
             if isinstance(command, (SubmitGate, CancelRun)):
                 snapshot = self.driver.run_snapshot(command.run_id)
@@ -1970,14 +1968,13 @@ class RunEngine:
                     self._validate_duplicate_gate(command, prior)
             raise CommandConflict(str(exc)) from exc
         if replayed is not None:
-            self.command_transactions.reattach(run_id, task_id)
             return self._settle_effect(
                 replayed,
                 task_id=task_id,
                 deadline_at=deadline_at,
             )
 
-        def build(transaction: RunCommandTransaction) -> RunDecision:
+        def build(transaction: RunDecisionDraft) -> RunDecision:
             turn = self._execute_uncommitted(
                 command,
                 task_id=task_id,
@@ -1999,9 +1996,12 @@ class RunEngine:
 
         committed = self._commit_run_decision(
             run_id=run_id,
+            command_id=command_id,
+            input_digest=input_digest,
             build=build,
             retry_conflicts=isinstance(command, ResumeRun),
             exhausted_message="RunDecision could not converge",
+            task_id=task_id,
         )
         if committed is None:
             raise CommandConflict("RunDecision was not built")

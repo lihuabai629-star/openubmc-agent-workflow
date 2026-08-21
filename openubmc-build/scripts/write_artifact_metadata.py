@@ -29,16 +29,20 @@ def write_metadata(
     *,
     kind: str,
     product_version: str,
+    provenance: str = "openubmc-build",
 ) -> Path:
     artifact = path.expanduser().absolute()
     if not artifact.is_file():
         raise ValueError("artifact path must name an existing file")
     normalized_kind = kind.strip()
     normalized_version = product_version.strip()
+    normalized_provenance = provenance.strip()
     if not normalized_kind:
         raise ValueError("artifact kind must not be empty")
     if not normalized_version:
         raise ValueError("product version must not be empty")
+    if not normalized_provenance:
+        raise ValueError("artifact provenance must not be empty")
     digest, size = artifact_identity(artifact)
     destination = Path(str(artifact) + ".metadata.json")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -50,6 +54,7 @@ def write_metadata(
             "kind": normalized_kind,
         },
         "product_version": normalized_version,
+        "provenance": normalized_provenance,
     }
     encoded = json.dumps(
         payload,
@@ -82,11 +87,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--path", type=Path, required=True)
     parser.add_argument("--kind", default="openubmc-hpm")
     parser.add_argument("--product-version", required=True)
+    parser.add_argument("--provenance", default="openubmc-build")
     args = parser.parse_args(argv)
     output = write_metadata(
         args.path,
         kind=args.kind,
         product_version=args.product_version,
+        provenance=args.provenance,
     )
     print(output)
     return 0

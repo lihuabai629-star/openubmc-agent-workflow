@@ -138,12 +138,31 @@ def evaluate_check_runs(
     }
 
 
-def collect_evidence(
+def _json_line_items(value: str, *, label: str) -> list[Mapping[str, object]]:
+    items: list[Mapping[str, object]] = []
+    for line_number, line in enumerate(value.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"GitHub {label} page item {line_number} is invalid JSON"
+            ) from exc
+        if not isinstance(item, Mapping):
+            raise RuntimeError(f"GitHub {label} page item must be an object")
+        items.append(item)
+    return items
+
+
+def _collect_paginated_items(
     *,
-    repository: str,
-    commit: str,
-    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> dict[str, object]:
+    endpoint: str,
+    selector: str,
+    label: str,
+    fields: tuple[str, ...],
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> list[Mapping[str, object]]:
     command = [
         "gh",
         "api",
@@ -153,10 +172,13 @@ def collect_evidence(
         "Accept: application/vnd.github+json",
         "-H",
         "X-GitHub-Api-Version: 2022-11-28",
-        f"repos/{repository}/commits/{commit}/check-runs",
-        "-f",
-        "per_page=100",
+        "--paginate",
+        "--jq",
+        selector,
+        endpoint,
     ]
+    for field in fields:
+        command.extend(("-f", field))
     completed = runner(
         command,
         check=False,
@@ -166,41 +188,35 @@ def collect_evidence(
     )
     if completed.returncode:
         raise RuntimeError(
-            "GitHub Check Runs query failed: " + (completed.stderr or "").strip()
+            f"GitHub {label} query failed: " + (completed.stderr or "").strip()
         )
-    payload = json.loads(completed.stdout)
-    if not isinstance(payload, Mapping):
-        raise RuntimeError("GitHub Check Runs response must be an object")
-    workflow_command = [
-        "gh",
-        "api",
-        "--method",
-        "GET",
-        "-H",
-        "Accept: application/vnd.github+json",
-        "-H",
-        "X-GitHub-Api-Version: 2022-11-28",
-        f"repos/{repository}/actions/runs",
-        "-f",
-        f"head_sha={commit}",
-        "-f",
-        "per_page=100",
-    ]
-    workflow_completed = runner(
-        workflow_command,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if workflow_completed.returncode:
-        raise RuntimeError(
-            "GitHub workflow runs query failed: "
-            + (workflow_completed.stderr or "").strip()
+    return _json_line_items(completed.stdout, label=label)
+
+
+def collect_evidence(
+    *,
+    repository: str,
+    commit: str,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, object]:
+    payload = {
+        "check_runs": _collect_paginated_items(
+            endpoint=f"repos/{repository}/commits/{commit}/check-runs",
+            selector=".check_runs[]",
+            label="Check Runs",
+            fields=("per_page=100",),
+            runner=runner,
         )
-    workflow_payload = json.loads(workflow_completed.stdout)
-    if not isinstance(workflow_payload, Mapping):
-        raise RuntimeError("GitHub workflow runs response must be an object")
+    }
+    workflow_payload = {
+        "workflow_runs": _collect_paginated_items(
+            endpoint=f"repos/{repository}/actions/runs",
+            selector=".workflow_runs[]",
+            label="workflow runs",
+            fields=(f"head_sha={commit}", "per_page=100"),
+            runner=runner,
+        )
+    }
     return evaluate_check_runs(
         payload,
         workflow_payload,

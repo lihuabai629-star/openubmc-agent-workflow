@@ -31,22 +31,55 @@ EXPECTED_QUERIES = [
 ]
 
 
+def passing_run_fields():
+    return {
+        "exit_code": 0,
+        "semantic_acceptance": {"passed": True},
+        "scope_acceptance": True,
+        "scope_validation": {"passed": True},
+    }
+
+
 def passing_metrics(schedule):
-    metrics = []
-    for pair, first, second in schedule:
-        for order, arm in enumerate((first, second), 1):
-            value = 100 if arm == "A" else 80
-            metrics.append(
-                {
-                    "scenario": "execute-source-only",
-                    "arm": arm,
-                    "pair": pair,
-                    "order": order,
-                    "valid": True,
-                    **{metric: value for metric in module.METRICS},
-                }
-            )
-    return metrics
+    return module.metrics_from_run_evidence(passing_execute_run_evidence(schedule))
+
+
+def verify_passing_summary(
+    *,
+    candidate_commit: str,
+    baseline_commit: str,
+):
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        schedule = module.balanced_schedule(10, seed=7)
+        run_evidence = passing_execute_run_evidence(schedule)
+        metrics = module.metrics_from_run_evidence(run_evidence)
+        metrics_path = root / "all_metrics.json"
+        schedule_path = root / "schedule.json"
+        run_evidence_path = write_run_evidence(root, run_evidence)
+        metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+        schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+        analysis = module.analyze(metrics)
+        analysis["release_evidence"] = module.release_evidence(
+            scenario="execute-source-only",
+            requested_pairs=10,
+            candidate_source_commit=candidate_commit,
+            baseline_source_commit=baseline_commit,
+            model=module.QUALIFICATION_MODEL,
+            codex_config=module.QUALIFICATION_CODEX_CONFIG,
+            metrics_path=metrics_path,
+            schedule_path=schedule_path,
+            run_evidence_path=run_evidence_path,
+            analysis=analysis,
+            environment={"python": "3.12", "node": "v22"},
+        )
+        summary_path = root / "summary.json"
+        summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+        return module.verify_summary(
+            summary_path,
+            expected_source_commit=candidate_commit,
+            expected_baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
 
 
 def candidate_observe_event(*, queries=None, complete: bool = True):
@@ -180,7 +213,158 @@ def baseline_execute_event(tool: str, arguments, structured, *, elapsed: float):
     }
 
 
+def passing_execute_run_evidence(schedule):
+    runs = []
+    for pair, first, second in schedule:
+        for order, arm in enumerate((first, second), 1):
+            if arm == "B":
+                events = [
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "start"},
+                    },
+                    candidate_execute_event("start", "waiting_response", elapsed=0.5),
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "respond"},
+                    },
+                    candidate_execute_event("respond", "completed", elapsed=1.5),
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 80,
+                            "cached_input_tokens": 20,
+                            "output_tokens": 8,
+                        },
+                    },
+                ]
+                duration = 2.0
+            else:
+                phase_contract = {
+                    "case_id": "case-qualified",
+                    "expected_revision": 2,
+                    "idempotency_key": "qualification-development",
+                    "phase_type": "developer.change",
+                    "producer_identity": "openubmc-developer",
+                }
+                events = [
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "start"},
+                    },
+                    baseline_execute_event(
+                        "workflow.advance",
+                        {
+                            "ip": "10.121.136.200",
+                            "intent": "diagnose-and-fix",
+                            "delivery_strategy": "source-only",
+                            "final_purpose": "qualify Runtime source-only execution",
+                        },
+                        {
+                            "status": "waiting_phase_record",
+                            "required_skill": "openubmc-developer",
+                            "handoff_arguments": {
+                                "phase_record_contract": phase_contract,
+                            },
+                            "agent_envelope": {
+                                "case_id": "case-qualified",
+                                "revision": 5,
+                            },
+                        },
+                        elapsed=1.0,
+                    ),
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "record"},
+                    },
+                    baseline_execute_event(
+                        "phase_record",
+                        {
+                            **phase_contract,
+                            "expected_revision": 5,
+                            "status": "completed",
+                            "source_revision": "qualification-source",
+                            "summary": "qualification source-only receipt completed",
+                            "authored_files": ["src/qualification.lua"],
+                            "verification_plan": ["run qualification tests"],
+                        },
+                        {"status": "completed", "case_id": "case-qualified"},
+                        elapsed=2.0,
+                    ),
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "continue"},
+                    },
+                    baseline_execute_event(
+                        "workflow.next",
+                        {"case_id": "case-qualified"},
+                        {
+                            "status": "completed",
+                            "completed": True,
+                            "case_id": "case-qualified",
+                        },
+                        elapsed=3.0,
+                    ),
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 100,
+                            "cached_input_tokens": 20,
+                            "output_tokens": 10,
+                        },
+                    },
+                ]
+                duration = 4.0
+            events.append(
+                {
+                    "type": "runner.completed",
+                    "exit_code": 0,
+                    "duration_seconds": duration,
+                }
+            )
+            runs.append(
+                {
+                    "scenario": "execute-source-only",
+                    "arm": arm,
+                    "pair": pair,
+                    "order": order,
+                    "events": events,
+                    "final": "source-only Runtime Outcome completed",
+                }
+            )
+    return {"schema": module.RUN_EVIDENCE_SCHEMA, "runs": runs}
+
+
+def write_run_evidence(root: Path, value=None) -> Path:
+    path = root / "run_evidence.json"
+    document = value or {"schema": module.RUN_EVIDENCE_SCHEMA, "runs": []}
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
 class AgentGatewayAbTests(unittest.TestCase):
+    def test_pinned_source_check_rejects_candidate_ref_drift(self) -> None:
+        repo = Path("/repo")
+        candidate = Path("/candidate")
+        baseline = Path("/baseline")
+
+        def commit(root, ref):
+            if root == repo and ref == "HEAD":
+                return "c" * 40
+            return "a" * 40 if root == candidate else "b" * 40
+
+        with patch.object(module, "_require_clean_candidate"), patch.object(
+            module, "_git_commit", side_effect=commit
+        ), self.assertRaisesRegex(RuntimeError, "candidate source moved"):
+            module._require_pinned_sources(
+                repo=repo,
+                candidate_root=candidate,
+                baseline_root=baseline,
+                candidate_commit="a" * 40,
+                baseline_commit="b" * 40,
+                baseline_ref="baseline-ref",
+            )
+
     def test_run_benchmark_rejects_a_dirty_candidate_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -584,6 +768,7 @@ class AgentGatewayAbTests(unittest.TestCase):
                         "arm": "A",
                         "pair": pair,
                         "valid": True,
+                        **passing_run_fields(),
                         "total_tokens": 100,
                         "noncached_input_plus_output": 100,
                         "duration_seconds": 100,
@@ -595,6 +780,7 @@ class AgentGatewayAbTests(unittest.TestCase):
                         "arm": "B",
                         "pair": pair,
                         "valid": True,
+                        **passing_run_fields(),
                         "total_tokens": 105,
                         "noncached_input_plus_output": 105,
                         "duration_seconds": 105,
@@ -613,6 +799,31 @@ class AgentGatewayAbTests(unittest.TestCase):
         result = module.analyze(uncertain)
         self.assertEqual(result["decision"], "collect_more")
         self.assertEqual(result["next_pair_target"], 20)
+
+    def test_analyzer_recomputes_validity_from_raw_run_fields(self) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        for field, value in (
+            ("exit_code", 1),
+            ("semantic_acceptance", {"passed": False}),
+            ("scope_acceptance", False),
+            ("scope_validation", {"passed": False}),
+        ):
+            with self.subTest(field=field):
+                metrics = passing_metrics(schedule)
+                metrics[0][field] = value
+                metrics[0]["valid"] = True
+                tampered_arm = metrics[0]["arm"]
+
+                result = module.analyze(metrics)
+
+                self.assertEqual(result["decision"], "collect_more")
+                self.assertEqual(result["valid_pairs"], 9)
+                self.assertFalse(
+                    result["invalid_pairs"][0]["valid"][tampered_arm]
+                )
+                self.assertTrue(
+                    result["invalid_pairs"][0]["claimed_valid"][tampered_arm]
+                )
 
     def test_analyzer_marks_legacy_metrics_incomplete_instead_of_crashing(self) -> None:
         legacy = []
@@ -650,11 +861,12 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics,
                 schedule_path=schedule,
+                run_evidence_path=write_run_evidence(root),
                 analysis={"valid_pairs": 10, "invalid_pairs": []},
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -689,11 +901,12 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics,
                 schedule_path=schedule,
+                run_evidence_path=write_run_evidence(root),
                 analysis={"valid_pairs": 10, "invalid_pairs": []},
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -728,11 +941,12 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
+                run_evidence_path=write_run_evidence(root),
                 analysis=analysis,
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -748,7 +962,7 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertFalse(verified["promotable"], verified)
         self.assertTrue(
-            any("raw metrics" in error for error in verified["errors"]),
+            any("run evidence" in error for error in verified["errors"]),
             verified,
         )
 
@@ -771,11 +985,14 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
+                run_evidence_path=write_run_evidence(
+                    root, passing_execute_run_evidence(schedule)
+                ),
                 analysis=analysis,
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -793,12 +1010,27 @@ class AgentGatewayAbTests(unittest.TestCase):
         )
 
     def test_verify_summary_accepts_analysis_recomputed_from_a_balanced_run(self) -> None:
+        verified = verify_passing_summary(
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+
+        self.assertTrue(verified["promotable"], verified)
+        self.assertRegex(verified["summary_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_verify_summary_rejects_performance_fields_not_derived_from_runs(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             schedule = module.balanced_schedule(10, seed=7)
-            metrics = passing_metrics(schedule)
+            run_evidence = passing_execute_run_evidence(schedule)
+            metrics = module.metrics_from_run_evidence(run_evidence)
+            for metric in metrics:
+                if metric["arm"] == "B":
+                    for name in module.METRICS:
+                        metric[name] = 1
             metrics_path = root / "all_metrics.json"
             schedule_path = root / "schedule.json"
+            run_evidence_path = write_run_evidence(root, run_evidence)
             metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
             schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
             analysis = module.analyze(metrics)
@@ -806,11 +1038,12 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
+                run_evidence_path=run_evidence_path,
                 analysis=analysis,
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -821,8 +1054,35 @@ class AgentGatewayAbTests(unittest.TestCase):
                 summary_path, expected_source_commit="a" * 40
             )
 
-        self.assertTrue(verified["promotable"], verified)
-        self.assertRegex(verified["summary_sha256"], r"^[0-9a-f]{64}$")
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB raw metrics are not derived from the run evidence",
+            verified["errors"],
+        )
+
+    def test_verify_summary_rejects_a_noncanonical_baseline_commit(self) -> None:
+        verified = verify_passing_summary(
+            candidate_commit="a" * 40,
+            baseline_commit="a" * 40,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB baseline source commit does not match the qualification contract",
+            verified["errors"],
+        )
+
+    def test_verify_summary_rejects_the_candidate_as_its_own_baseline(self) -> None:
+        verified = verify_passing_summary(
+            candidate_commit=module.DEFAULT_BASELINE_REF,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB candidate source commit must differ from the baseline commit",
+            verified["errors"],
+        )
 
     def test_verify_summary_rejects_a_different_benchmark_model(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -838,11 +1098,14 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model="different-model",
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
+                run_evidence_path=write_run_evidence(
+                    root, passing_execute_run_evidence(schedule)
+                ),
                 analysis=analysis,
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -874,11 +1137,14 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
+                run_evidence_path=write_run_evidence(
+                    root, passing_execute_run_evidence(schedule)
+                ),
                 analysis=analysis,
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -891,7 +1157,7 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertFalse(verified["promotable"], verified)
         self.assertTrue(
-            any("schedule binding" in error for error in verified["errors"]),
+            any("raw metrics are not derived" in error for error in verified["errors"]),
             verified,
         )
 
@@ -909,11 +1175,14 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
+                run_evidence_path=write_run_evidence(
+                    root, passing_execute_run_evidence(schedule)
+                ),
                 analysis=analysis,
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -953,11 +1222,14 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
+                run_evidence_path=write_run_evidence(
+                    root, passing_execute_run_evidence(schedule)
+                ),
                 analysis=analysis,
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -970,7 +1242,7 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertFalse(verified["promotable"], verified)
         self.assertTrue(
-            any("cannot analyze" in error for error in verified["errors"]),
+            any("raw metrics are not derived" in error for error in verified["errors"]),
             verified,
         )
 
@@ -990,11 +1262,14 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
+                run_evidence_path=write_run_evidence(
+                    root, passing_execute_run_evidence(schedule)
+                ),
                 analysis=analysis,
                 environment={"python": "3.12", "node": "v22"},
             )
@@ -1032,11 +1307,12 @@ class AgentGatewayAbTests(unittest.TestCase):
                 scenario="execute-source-only",
                 requested_pairs=10,
                 candidate_source_commit="a" * 40,
-                baseline_source_commit="b" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=module.QUALIFICATION_CODEX_CONFIG,
                 metrics_path=metrics_path,
                 schedule_path=schedule_path,
+                run_evidence_path=write_run_evidence(root),
                 analysis=analysis,
                 environment={"python": "3.12"},
             )

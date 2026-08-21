@@ -21,6 +21,7 @@ from typing import Iterable, Mapping
 
 
 SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v2"
+RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v1"
 DEFAULT_BASELINE_REF = "35b36efb6503d05a811b51bf09fb5f8dead0e208"
 CHECKPOINTS = (10, 20, 30)
 METRICS = (
@@ -394,6 +395,197 @@ def _actionable_elapsed(
     return round(fallback, 3)
 
 
+@dataclass(frozen=True)
+class RunEvidenceRecord:
+    arm: str
+    pair: int
+    order: int
+    scenario: str
+    events: tuple[Mapping[str, object], ...]
+    final: str
+    exit_code: int
+    duration_seconds: float
+
+    @classmethod
+    def capture(
+        cls,
+        *,
+        arm: str,
+        pair: int,
+        order: int,
+        scenario: str,
+        events: Iterable[Mapping[str, object]],
+        final: str,
+        exit_code: int,
+        duration_seconds: float,
+    ) -> RunEvidenceRecord:
+        runner_event = {
+            "type": "runner.completed",
+            "exit_code": exit_code,
+            "duration_seconds": round(duration_seconds, 3),
+        }
+        return cls(
+            arm=arm,
+            pair=pair,
+            order=order,
+            scenario=scenario,
+            events=(*events, runner_event),
+            final=final,
+            exit_code=exit_code,
+            duration_seconds=round(duration_seconds, 3),
+        )
+
+    @classmethod
+    def parse(cls, value: object, *, index: int) -> RunEvidenceRecord:
+        run = _json_object(value)
+        arm = run.get("arm")
+        pair = run.get("pair")
+        order = run.get("order")
+        scenario = run.get("scenario")
+        events = run.get("events")
+        final = run.get("final")
+        if arm not in {"A", "B"}:
+            raise ValueError(f"AB run evidence item {index} has an invalid arm")
+        if not isinstance(pair, int) or isinstance(pair, bool) or pair < 1:
+            raise ValueError(f"AB run evidence item {index} has an invalid pair")
+        if not isinstance(order, int) or isinstance(order, bool) or order not in {1, 2}:
+            raise ValueError(f"AB run evidence item {index} has an invalid order")
+        if scenario not in {"observation", "execute-source-only"}:
+            raise ValueError(f"AB run evidence item {index} has an invalid scenario")
+        if not isinstance(events, list) or not all(
+            isinstance(event, Mapping) for event in events
+        ):
+            raise ValueError(f"AB run evidence item {index} has invalid events")
+        if not isinstance(final, str):
+            raise ValueError(f"AB run evidence item {index} has an invalid final output")
+        completed = [
+            event for event in events if event.get("type") == "runner.completed"
+        ]
+        if len(completed) != 1:
+            raise ValueError(
+                f"AB run evidence item {index} must contain one runner outcome"
+            )
+        exit_code = completed[0].get("exit_code")
+        duration = completed[0].get("duration_seconds")
+        if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+            raise ValueError(f"AB run evidence item {index} has an invalid exit code")
+        if (
+            not isinstance(duration, (int, float))
+            or isinstance(duration, bool)
+            or float(duration) <= 0
+        ):
+            raise ValueError(f"AB run evidence item {index} has an invalid duration")
+        return cls(
+            arm=str(arm),
+            pair=pair,
+            order=order,
+            scenario=str(scenario),
+            events=tuple(events),
+            final=final,
+            exit_code=exit_code,
+            duration_seconds=float(duration),
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "scenario": self.scenario,
+            "arm": self.arm,
+            "pair": self.pair,
+            "order": self.order,
+            "events": list(self.events),
+            "final": self.final,
+        }
+
+    def metric(self) -> dict[str, object]:
+        completed = [
+            event for event in self.events if event.get("type") == "turn.completed"
+        ]
+        usage = _json_object(completed[-1].get("usage")) if completed else {}
+        tools = []
+        for event in self.events:
+            if event.get("type") != "item.completed":
+                continue
+            item = _json_object(event.get("item"))
+            if item.get("type") in {"command_execution", "mcp_tool_call"}:
+                tools.append(item)
+        mcp_tools: dict[str, int] = {}
+        for item in tools:
+            if item.get("type") == "mcp_tool_call":
+                name = str(item.get("tool", ""))
+                mcp_tools[name] = mcp_tools.get(name, 0) + 1
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
+        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        acceptance = semantic_acceptance(self.final, scenario=self.scenario)
+        scope_validation = (
+            (
+                candidate_scope_acceptance(tools)
+                if self.scenario == "observation"
+                else candidate_execute_acceptance(tools)
+            )
+            if self.arm == "B"
+            else (
+                baseline_execute_acceptance(tools)
+                if self.scenario == "execute-source-only"
+                else {"passed": True, "errors": []}
+            )
+        )
+        scope_ok = bool(scope_validation["passed"])
+        model_turns = max(
+            1,
+            sum(
+                event.get("type") == "item.completed"
+                and _json_object(event.get("item")).get("type") == "agent_message"
+                for event in self.events
+            ),
+        )
+        return {
+            "scenario": self.scenario,
+            "arm": self.arm,
+            "pair": self.pair,
+            "order": self.order,
+            "exit_code": self.exit_code,
+            "duration_seconds": round(self.duration_seconds, 3),
+            "input_tokens": input_tokens,
+            "cached_input_tokens": cached_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_output_tokens": int(
+                usage.get("reasoning_output_tokens", 0) or 0
+            ),
+            "total_tokens": input_tokens + output_tokens,
+            "noncached_input_plus_output": input_tokens - cached_tokens + output_tokens,
+            "tool_events": len(tools),
+            "command_events": sum(
+                item.get("type") == "command_execution" for item in tools
+            ),
+            "mcp_events": sum(item.get("type") == "mcp_tool_call" for item in tools),
+            "tool_output_bytes": sum(_tool_output_bytes(item) for item in tools),
+            "model_turns": model_turns,
+            "time_to_next_actionable_turn_seconds": _actionable_elapsed(
+                list(self.events),
+                arm=self.arm,
+                scenario=self.scenario,
+                fallback=self.duration_seconds,
+            ),
+            "gate_roundtrips": int(scope_validation.get("gate_roundtrips", 0) or 0),
+            "resume_calls": int(scope_validation.get("resume_calls", 0) or 0),
+            "mcp_tools": [
+                {"tool": name, "count": count}
+                for name, count in sorted(mcp_tools.items())
+            ],
+            "final_chars": len(self.final),
+            "semantic_acceptance": acceptance,
+            "scope_acceptance": scope_ok,
+            "scope_validation": scope_validation,
+            "valid": (
+                self.exit_code == 0
+                and input_tokens + output_tokens > 0
+                and acceptance["passed"]
+                and scope_ok
+            ),
+        }
+
+
 def metric_from_run(
     *,
     arm: str,
@@ -406,92 +598,30 @@ def metric_from_run(
     scenario: str = "observation",
 ) -> dict[str, object]:
     events = _read_events(events_path)
-    completed = [event for event in events if event.get("type") == "turn.completed"]
-    usage = _json_object(completed[-1].get("usage")) if completed else {}
-    tools = []
-    for event in events:
-        if event.get("type") != "item.completed":
-            continue
-        item = _json_object(event.get("item"))
-        if item.get("type") in {"command_execution", "mcp_tool_call"}:
-            tools.append(item)
-    mcp_tools: dict[str, int] = {}
-    for item in tools:
-        if item.get("type") == "mcp_tool_call":
-            name = str(item.get("tool", ""))
-            mcp_tools[name] = mcp_tools.get(name, 0) + 1
     final = final_path.read_text(encoding="utf-8") if final_path.exists() else ""
-    input_tokens = int(usage.get("input_tokens", 0) or 0)
-    cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
-    output_tokens = int(usage.get("output_tokens", 0) or 0)
-    acceptance = semantic_acceptance(final, scenario=scenario)
-    scope_validation = (
-        (
-            candidate_scope_acceptance(tools)
-            if scenario == "observation"
-            else candidate_execute_acceptance(tools)
-        )
-        if arm == "B"
-        else (
-            baseline_execute_acceptance(tools)
-            if scenario == "execute-source-only"
-            else {"passed": True, "errors": []}
-        )
-    )
-    scope_ok = bool(scope_validation["passed"])
-    model_turns = max(
-        1,
-        sum(
-            event.get("type") == "item.completed"
-            and _json_object(event.get("item")).get("type") == "agent_message"
-            for event in events
-        ),
-    )
-    return {
-        "scenario": scenario,
-        "arm": arm,
-        "pair": pair,
-        "order": order,
-        "exit_code": exit_code,
-        "duration_seconds": round(duration_seconds, 3),
-        "input_tokens": input_tokens,
-        "cached_input_tokens": cached_tokens,
-        "output_tokens": output_tokens,
-        "reasoning_output_tokens": int(
-            usage.get("reasoning_output_tokens", 0) or 0
-        ),
-        "total_tokens": input_tokens + output_tokens,
-        "noncached_input_plus_output": input_tokens - cached_tokens + output_tokens,
-        "tool_events": len(tools),
-        "command_events": sum(
-            item.get("type") == "command_execution" for item in tools
-        ),
-        "mcp_events": sum(item.get("type") == "mcp_tool_call" for item in tools),
-        "tool_output_bytes": sum(_tool_output_bytes(item) for item in tools),
-        "model_turns": model_turns,
-        "time_to_next_actionable_turn_seconds": _actionable_elapsed(
-            events,
-            arm=arm,
-            scenario=scenario,
-            fallback=duration_seconds,
-        ),
-        "gate_roundtrips": int(scope_validation.get("gate_roundtrips", 0) or 0),
-        "resume_calls": int(scope_validation.get("resume_calls", 0) or 0),
-        "mcp_tools": [
-            {"tool": name, "count": count}
-            for name, count in sorted(mcp_tools.items())
-        ],
-        "final_chars": len(final),
-        "semantic_acceptance": acceptance,
-        "scope_acceptance": scope_ok,
-        "scope_validation": scope_validation,
-        "valid": (
-            exit_code == 0
-            and input_tokens + output_tokens > 0
-            and acceptance["passed"]
-            and scope_ok
-        ),
-    }
+    return RunEvidenceRecord.capture(
+        arm=arm,
+        pair=pair,
+        order=order,
+        scenario=scenario,
+        events=events,
+        final=final,
+        exit_code=exit_code,
+        duration_seconds=duration_seconds,
+    ).metric()
+
+
+def metrics_from_run_evidence(value: object) -> list[dict[str, object]]:
+    document = _json_object(value)
+    if document.get("schema") != RUN_EVIDENCE_SCHEMA:
+        raise ValueError("AB run evidence schema is invalid")
+    raw_runs = document.get("runs")
+    if not isinstance(raw_runs, list):
+        raise ValueError("AB run evidence must contain a runs array")
+    return [
+        RunEvidenceRecord.parse(raw_run, index=index).metric()
+        for index, raw_run in enumerate(raw_runs, 1)
+    ]
 
 
 def semantic_acceptance(
@@ -574,6 +704,18 @@ def bootstrap_upper(
     return _percentile(estimates, 0.95)
 
 
+def _raw_run_valid(item: Mapping[str, object]) -> bool:
+    exit_code = item.get("exit_code")
+    return (
+        isinstance(exit_code, int)
+        and not isinstance(exit_code, bool)
+        and exit_code == 0
+        and _json_object(item.get("semantic_acceptance")).get("passed") is True
+        and item.get("scope_acceptance") is True
+        and _json_object(item.get("scope_validation")).get("passed") is True
+    )
+
+
 def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
     paired: list[tuple[Mapping[str, object], Mapping[str, object]]] = []
     pair_ids = sorted({int(item.get("pair", 0)) for item in metrics})
@@ -581,6 +723,9 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
     for pair_id in pair_ids:
         members = [item for item in metrics if int(item.get("pair", 0)) == pair_id]
         by_arm = {str(item.get("arm")): item for item in members}
+        recomputed_validity = {
+            arm: _raw_run_valid(item) for arm, item in by_arm.items()
+        }
         metric_gaps = {
             arm: [
                 metric
@@ -593,14 +738,15 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
         }
         if (
             set(by_arm) != {"A", "B"}
-            or not all(bool(item.get("valid")) for item in by_arm.values())
+            or not all(recomputed_validity.values())
             or any(metric_gaps.values())
         ):
             invalid.append(
                 {
                     "pair": pair_id,
                     "arms": sorted(by_arm),
-                    "valid": {
+                    "valid": recomputed_validity,
+                    "claimed_valid": {
                         arm: bool(item.get("valid")) for arm, item in by_arm.items()
                     },
                     "missing_or_nonpositive_metrics": metric_gaps,
@@ -926,6 +1072,28 @@ def _require_clean_candidate(repo: Path) -> None:
         )
 
 
+def _require_pinned_sources(
+    *,
+    repo: Path,
+    candidate_root: Path,
+    baseline_root: Path,
+    candidate_commit: str,
+    baseline_commit: str,
+    baseline_ref: str,
+) -> None:
+    _require_clean_candidate(repo)
+    _require_clean_candidate(candidate_root)
+    _require_clean_candidate(baseline_root)
+    if _git_commit(candidate_root, "HEAD") != candidate_commit:
+        raise RuntimeError("AB candidate worktree drifted during qualification")
+    if _git_commit(baseline_root, "HEAD") != baseline_commit:
+        raise RuntimeError("AB baseline worktree drifted during qualification")
+    if _git_commit(repo, "HEAD") != candidate_commit:
+        raise RuntimeError("AB candidate source moved during qualification")
+    if _git_commit(repo, baseline_ref) != baseline_commit:
+        raise RuntimeError("AB baseline source moved during qualification")
+
+
 def _version(command: list[str]) -> str:
     completed = subprocess.run(
         command,
@@ -960,6 +1128,7 @@ def release_evidence(
     model: str,
     metrics_path: Path,
     schedule_path: Path,
+    run_evidence_path: Path,
     analysis: Mapping[str, object],
     environment: Mapping[str, object],
     codex_config: Iterable[str] = (),
@@ -997,6 +1166,11 @@ def release_evidence(
                 "sha256": _sha256(schedule_path),
                 "size_bytes": schedule_path.stat().st_size,
             },
+            "run_evidence": {
+                "path": run_evidence_path.name,
+                "sha256": _sha256(run_evidence_path),
+                "size_bytes": run_evidence_path.stat().st_size,
+            },
         },
     }
     evidence["evidence_digest"] = _fingerprint(evidence)
@@ -1004,7 +1178,10 @@ def release_evidence(
 
 
 def verify_summary(
-    summary_path: Path, *, expected_source_commit: str
+    summary_path: Path,
+    *,
+    expected_source_commit: str,
+    expected_baseline_commit: str = DEFAULT_BASELINE_REF,
 ) -> dict[str, object]:
     errors: list[str] = []
     try:
@@ -1045,6 +1222,12 @@ def verify_summary(
     source = _json_object(evidence.get("source"))
     if source.get("candidate_commit") != expected_source_commit:
         errors.append("AB candidate source commit does not match the release candidate")
+    if source.get("baseline_commit") != expected_baseline_commit:
+        errors.append(
+            "AB baseline source commit does not match the qualification contract"
+        )
+    if source.get("candidate_commit") == source.get("baseline_commit"):
+        errors.append("AB candidate source commit must differ from the baseline commit")
     samples = _json_object(evidence.get("samples"))
     if samples.get("valid_pairs") != valid_pairs or samples.get("invalid_pairs") != invalid_pairs:
         errors.append("AB release evidence sample counts do not match the summary")
@@ -1067,7 +1250,7 @@ def verify_summary(
 
     artifacts = _json_object(evidence.get("artifacts"))
     artifact_paths: dict[str, Path] = {}
-    for name in ("all_metrics", "schedule"):
+    for name in ("all_metrics", "schedule", "run_evidence"):
         artifact = _json_object(artifacts.get(name))
         path = Path(str(artifact.get("path", "")))
         if not path.is_absolute():
@@ -1095,27 +1278,47 @@ def verify_summary(
                 errors.append("AB raw metrics must contain an array of objects")
             else:
                 raw_metrics = loaded_metrics
-                try:
-                    recomputed = analyze(raw_metrics)
-                except (KeyError, OverflowError, TypeError, ValueError) as exc:
-                    errors.append(f"cannot analyze AB raw metrics: {type(exc).__name__}")
-                else:
-                    analysis_fields = (
-                        "schema",
-                        "valid_pairs",
-                        "invalid_pairs",
-                        "metrics",
-                        "decision",
-                        "next_pair_target",
-                        "thresholds",
-                    )
-                    if any(
-                        summary.get(name) != recomputed.get(name)
-                        for name in analysis_fields
-                    ):
-                        errors.append("AB summary is not derived from the raw metrics")
+    recomputed_metrics: list[dict[str, object]] | None = None
+    run_evidence_path = artifact_paths.get("run_evidence")
+    if run_evidence_path is not None:
+        try:
+            run_evidence_value = json.loads(
+                run_evidence_path.read_text(encoding="utf-8")
+            )
+            recomputed_metrics = metrics_from_run_evidence(run_evidence_value)
+        except (
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            errors.append(f"cannot recompute AB run metrics: {type(exc).__name__}")
+    if raw_metrics is not None and recomputed_metrics is not None:
+        if raw_metrics != recomputed_metrics:
+            errors.append("AB raw metrics are not derived from the run evidence")
+        try:
+            recomputed = analyze(recomputed_metrics)
+        except (KeyError, OverflowError, TypeError, ValueError) as exc:
+            errors.append(f"cannot analyze AB run evidence: {type(exc).__name__}")
+        else:
+            analysis_fields = (
+                "schema",
+                "valid_pairs",
+                "invalid_pairs",
+                "metrics",
+                "decision",
+                "next_pair_target",
+                "thresholds",
+            )
+            if any(
+                summary.get(name) != recomputed.get(name)
+                for name in analysis_fields
+            ):
+                errors.append("AB summary is not derived from the run evidence")
     schedule_path = artifact_paths.get("schedule")
-    if schedule_path is not None and raw_metrics is not None:
+    if schedule_path is not None and recomputed_metrics is not None:
         try:
             raw_schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1124,7 +1327,7 @@ def verify_summary(
             errors.extend(
                 validate_schedule(
                     raw_schedule,
-                    raw_metrics,
+                    recomputed_metrics,
                     requested_pairs=samples.get("requested_pairs"),
                     scenario=str(evidence.get("scenario", "")),
                 )
@@ -1157,9 +1360,12 @@ def run_benchmark(args: argparse.Namespace) -> int:
     if tuple(args.codex_config) != QUALIFICATION_CODEX_CONFIG:
         raise RuntimeError("qualification Codex config does not match the contract")
     work_root = args.work_root.resolve()
-    baseline_root = work_root / "variants" / "baseline"
-    _prepare_worktree(repo, baseline_root, args.baseline_ref)
-    candidate_root = repo
+    candidate_source_commit = _git_commit(repo, "HEAD")
+    baseline_source_commit = _git_commit(repo, args.baseline_ref)
+    baseline_root = work_root / "variants" / f"baseline-{baseline_source_commit[:12]}"
+    candidate_root = work_root / "variants" / f"candidate-{candidate_source_commit[:12]}"
+    _prepare_worktree(repo, baseline_root, baseline_source_commit)
+    _prepare_worktree(repo, candidate_root, candidate_source_commit)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output = args.output.resolve() if args.output else work_root / f"results-{stamp}"
     output.mkdir(parents=True, exist_ok=False)
@@ -1176,6 +1382,11 @@ def run_benchmark(args: argparse.Namespace) -> int:
     environment["OPENUBMC_CREDENTIALS_FILE"] = str(args.credentials)
     environment["OPENUBMC_DEBUG_CREDENTIALS_FILE"] = str(args.credentials)
     metrics: list[dict[str, object]] = []
+    run_evidence: dict[str, object] = {
+        "schema": RUN_EVIDENCE_SCHEMA,
+        "runs": [],
+    }
+    run_evidence_path = output / "run_evidence.json"
     for pair, first, second in schedule:
         ordered_arms = tuple(
             arm for arm in (first, second) if args.only_arm is None or arm == args.only_arm
@@ -1247,16 +1458,36 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 stderr=stderr_path,
             )
             duration = time.monotonic() - started
-            metric = metric_from_run(
+            events = _read_events(events_path)
+            final = final_path.read_text(encoding="utf-8") if final_path.exists() else ""
+            record = RunEvidenceRecord.capture(
                 arm=arm,
                 pair=pair,
                 order=order,
-                events_path=events_path,
-                final_path=final_path,
+                scenario=args.scenario,
+                events=events,
+                final=final,
                 exit_code=exit_code,
                 duration_seconds=duration,
-                scenario=args.scenario,
             )
+            with events_path.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(
+                        record.events[-1],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+            raw_runs = run_evidence["runs"]
+            assert isinstance(raw_runs, list)
+            raw_runs.append(record.to_mapping())
+            run_evidence_path.write_text(
+                json.dumps(run_evidence, ensure_ascii=False, separators=(",", ":"))
+                + "\n",
+                encoding="utf-8",
+            )
+            metric = record.metric()
             metrics.append(metric)
             (run_dir / "metrics.json").write_text(
                 json.dumps(metric, ensure_ascii=False, indent=2) + "\n",
@@ -1270,6 +1501,14 @@ def run_benchmark(args: argparse.Namespace) -> int:
             if args.pause_seconds:
                 time.sleep(args.pause_seconds)
     summary = analyze(metrics)
+    _require_pinned_sources(
+        repo=repo,
+        candidate_root=candidate_root,
+        baseline_root=baseline_root,
+        candidate_commit=candidate_source_commit,
+        baseline_commit=baseline_source_commit,
+        baseline_ref=args.baseline_ref,
+    )
     metrics_path = output / "all_metrics.json"
     schedule_path = output / "schedule.json"
     environment_record = {
@@ -1281,12 +1520,13 @@ def run_benchmark(args: argparse.Namespace) -> int:
     summary["release_evidence"] = release_evidence(
         scenario=args.scenario,
         requested_pairs=args.pairs,
-        candidate_source_commit=_git_commit(repo, "HEAD"),
-        baseline_source_commit=_git_commit(repo, args.baseline_ref),
+        candidate_source_commit=candidate_source_commit,
+        baseline_source_commit=baseline_source_commit,
         model=args.model,
         codex_config=args.codex_config,
         metrics_path=metrics_path,
         schedule_path=schedule_path,
+        run_evidence_path=run_evidence_path,
         analysis=summary,
         environment=environment_record,
     )
@@ -1336,10 +1576,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(analyze(value), ensure_ascii=False, indent=2))
         return 0
     if args.command == "verify":
-        expected = _git_commit(args.repo.resolve(), args.source_ref)
+        repo = args.repo.resolve()
+        expected = _git_commit(repo, args.source_ref)
+        expected_baseline = _git_commit(repo, DEFAULT_BASELINE_REF)
         verification = verify_summary(
             args.summary.expanduser().absolute(),
             expected_source_commit=expected,
+            expected_baseline_commit=expected_baseline,
         )
         print(json.dumps(verification, ensure_ascii=False, indent=2))
         return 0 if verification["promotable"] else 1
