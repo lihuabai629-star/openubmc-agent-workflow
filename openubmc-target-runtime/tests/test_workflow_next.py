@@ -256,12 +256,13 @@ class WorkflowNextTests(unittest.TestCase):
 
         assert response is not None
         structured = response["result"]["structuredContent"]
-        self.assertEqual(structured["status"], "waiting_phase_record")
-        self.assertEqual(structured["required_skill"], "openubmc-developer")
+        self.assertEqual(structured["status"], "waiting_response")
+        self.assertEqual(structured["state"], "waiting_response")
         self.assertEqual(
-            structured["handoff_arguments"]["phase_record_contract"]["phase_type"],
+            structured["gate"]["name"],
             "developer.change",
         )
+        self.assertEqual(structured["gate"]["owner"], "openubmc-developer")
         self.assertEqual(
             structured["agent_envelope"]["operation"]["name"],
             "workflow.next",

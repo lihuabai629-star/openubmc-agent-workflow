@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass
 import time
 from typing import ContextManager, Protocol
 
@@ -224,23 +226,17 @@ class RunDriver(Protocol):
 
     def run_snapshot(self, run_id: str) -> Mapping[str, object]: ...
 
-    def persist_gate(
+    def apply_transition(
         self,
         run_id: str,
-        gate: Gate,
-        *,
-        workflow_cycle_id: str,
-        workflow_step_id: str,
-        operation_id: str,
+        transition: "RunTransition",
     ) -> Mapping[str, object]: ...
 
-    def cancel_run(
+    def derive_closeout(
         self,
-        command: CancelRun,
+        run_id: str,
         *,
-        gate: Gate,
-        submission_digest: str,
-        operation_id: str,
+        terminal_status: str,
     ) -> Mapping[str, object]: ...
 
     def prepare_step(
@@ -260,38 +256,16 @@ class RunDriver(Protocol):
         operation_id: str,
     ) -> Mapping[str, object]: ...
 
-    def record_incident(
-        self,
-        run_id: str,
-        incident: Incident,
-        *,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
 
-    def resolve_incident(
-        self,
-        run_id: str,
-        incident_id: str,
-        *,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
+@dataclass(frozen=True)
+class RunTransition:
+    """One exact transition batch translated by the persistence adapter."""
 
-    def record_outcome(
-        self,
-        run_id: str,
-        *,
-        status: str,
-        summary: str,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
+    events: tuple[RunEvent, ...]
 
-    def defer_verification(
-        self,
-        run_id: str,
-        *,
-        workflow_step_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]: ...
+    def __post_init__(self) -> None:
+        if not self.events:
+            raise ValueError("Run transition requires at least one event")
 
 class RunCommandTransaction(Protocol):
     @property
@@ -303,6 +277,13 @@ class RunCommandTransaction(Protocol):
     @property
     def effect_intent(self) -> Mapping[str, object] | None: ...
 
+    def stage(
+        self,
+        *,
+        events: tuple[RunEvent, ...],
+        effect_intent: Mapping[str, object] | None = None,
+    ) -> None: ...
+
     def accept(self) -> None: ...
 
 
@@ -310,22 +291,6 @@ class RunCommandTransactions(Protocol):
     def begin(self, run_id: str) -> ContextManager[RunCommandTransaction]: ...
 
     def reattach(self, run_id: str, task_id: str) -> None: ...
-
-    def stage_effect(
-        self,
-        run_id: str,
-        *,
-        events: tuple[RunEvent, ...],
-        effect_intent: Mapping[str, object],
-    ) -> None: ...
-
-    def stage_events(
-        self,
-        run_id: str,
-        *,
-        events: tuple[RunEvent, ...],
-    ) -> None: ...
-
 
 class ObservationEngine:
     """Collect, automatically assure when useful, and persist one observation."""
@@ -436,6 +401,149 @@ class RunEngine:
         self.command_transactions: RunCommandTransactions = command_transactions
         self.artifact_store = artifact_store or LocalArtifactStore()
         self.effect_runner = effect_runner
+        self._active_transaction: ContextVar[RunCommandTransaction | None] = (
+            ContextVar(f"openubmc_run_decision_{id(self)}", default=None)
+        )
+
+    def _stage(
+        self,
+        events: tuple[RunEvent, ...],
+        *,
+        effect_intent: Mapping[str, object] | None = None,
+    ) -> None:
+        transaction = self._active_transaction.get()
+        if transaction is None:
+            raise CommandConflict("Run transition requires an active RunDecision")
+        transaction.stage(events=events, effect_intent=effect_intent)
+
+    def _apply_transition(
+        self,
+        run_id: str,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        operation_id: str,
+    ) -> Mapping[str, object]:
+        event_payload: Mapping[str, object]
+        events: tuple[RunEvent, ...]
+        if kind == "gate_opened":
+            gate = payload.get("gate")
+            if not isinstance(gate, Mapping):
+                raise ValueError("gate_opened transition requires a Gate")
+            event_payload = {"gate": dict(gate)}
+            events = (
+                RunEvent("RunGateOpened", event_payload, operation_id),
+            )
+        elif kind == "run_cancelled":
+            gate = payload.get("gate")
+            if not isinstance(gate, Mapping):
+                raise ValueError("run_cancelled transition requires a Gate")
+            event_payload = {
+                "gate_id": _text(gate.get("gate_id")),
+                "gate_version": int(gate.get("gate_version", 0)),
+                "schema_digest": _text(gate.get("schema_digest")),
+                "submission_id": _text(payload.get("submission_id")),
+                "submission_digest": _text(
+                    payload.get("submission_digest")
+                ),
+                "actor": "runtime",
+                "status": "cancelled",
+                "summary": "run cancelled at the current gate",
+                "recorded_at": time.time(),
+            }
+            events = (
+                RunEvent("RunCancelled", event_payload, operation_id),
+            )
+        elif kind == "incident_raised":
+            incident = payload.get("incident")
+            if not isinstance(incident, Mapping):
+                raise ValueError("incident_raised transition requires an Incident")
+            events = (
+                RunEvent(
+                    "RunIncidentRaised",
+                    {"incident": dict(incident)},
+                    operation_id,
+                ),
+            )
+        elif kind == "incident_resolved":
+            events = (
+                RunEvent(
+                    "RunIncidentResolved",
+                    {"incident_id": _text(payload.get("incident_id"))},
+                    operation_id,
+                ),
+            )
+        elif kind == "verification_deferred":
+            events = (
+                RunEvent(
+                    "RunVerificationDeferred",
+                    {
+                        "workflow_step_id": _text(
+                            payload.get("workflow_step_id")
+                        ),
+                        "next_action": (
+                            "resume the Run to retry fresh target verification"
+                        ),
+                    },
+                    operation_id,
+                ),
+            )
+        else:
+            normalized = _text(payload.get("status")).lower()
+            if normalized not in {"completed", "failed", "cancelled"}:
+                raise ValueError(
+                    "Run Outcome status must be completed, failed, or cancelled"
+                )
+            derived = self.driver.derive_closeout(
+                run_id,
+                terminal_status=normalized,
+            )
+            closeout = _mapping(derived.get("closeout"))
+            effective_status = normalized
+            if (
+                normalized == "completed"
+                and _text(closeout.get("closure_status"))
+                not in {"verified", "completed_in_scope"}
+            ):
+                effective_status = "failed"
+            summary = _text(payload.get("summary"))
+            outcome = {
+                "status": effective_status,
+                "summary": (
+                    _text(closeout.get("summary"))
+                    if effective_status != normalized
+                    else summary or _text(closeout.get("summary"))
+                ),
+                "acceptance": closeout.get(
+                    "checks", closeout.get("acceptance", [])
+                ),
+                "closeout_fingerprint": _text(closeout.get("fingerprint")),
+            }
+            outcome["outcome_id"] = "outcome-" + fingerprint(
+                {"run_id": run_id, **outcome}
+            )[:32]
+            events = (
+                RunEvent(
+                    "CloseoutRecorded",
+                    {
+                        "closeout": dict(closeout),
+                        "closeout_markdown": _text(
+                            derived.get("closeout_markdown")
+                        ),
+                        "closeout_bundle": derived.get("closeout_bundle"),
+                    },
+                    f"{operation_id}-closeout",
+                ),
+                RunEvent(
+                    "RunOutcomeRecorded",
+                    {"outcome": outcome},
+                    operation_id,
+                ),
+            )
+        return self.driver.apply_transition(
+            run_id,
+            RunTransition(events=events),
+        )
 
     @staticmethod
     def _run_id(snapshot: Mapping[str, object]) -> str:
@@ -517,11 +625,17 @@ class RunEngine:
             input_schema=schema,
             schema_digest=schema_digest,
         )
-        persisted_snapshot = self.driver.persist_gate(
+        persisted_snapshot = self._apply_transition(
             self._run_id(snapshot),
-            gate,
-            workflow_cycle_id=cycle_id,
-            workflow_step_id=step_id,
+            "gate_opened",
+            {
+                "gate": {
+                    **gate.to_public_dict(),
+                    "run_id": self._run_id(snapshot),
+                    "workflow_cycle_id": cycle_id,
+                    "workflow_step_id": step_id,
+                }
+            },
             operation_id=operation_id,
         )
         current = _projection(persisted_snapshot).get("current_gate")
@@ -680,7 +794,6 @@ class RunEngine:
                 expected_run_id=_text(projection.get("case_id")),
             )
             payload["artifact_ref"] = artifact_ref.to_public_dict()
-            payload["artifact_path"] = str(artifact_path)
             payload["artifact_sha256"] = artifact_ref.digest
             if artifact_ref.version:
                 payload["product_version"] = artifact_ref.version
@@ -946,8 +1059,11 @@ class RunEngine:
             message=message,
             effect_id=effect_id,
         )
-        return self.driver.record_incident(
-            run_id, incident, operation_id=operation_id
+        return self._apply_transition(
+            run_id,
+            "incident_raised",
+            {"incident": incident.to_public_dict()},
+            operation_id=operation_id,
         )
 
     def _advance(
@@ -966,10 +1082,13 @@ class RunEngine:
             if outcome is not None:
                 return self._turn(snapshot, observation_ref=observation_ref)
             if _text(projection.get("status")) == "cancelled":
-                snapshot = self.driver.record_outcome(
+                snapshot = self._apply_transition(
                     self._run_id(snapshot),
-                    status="cancelled",
-                    summary="run cancelled at the current gate",
+                    "outcome_recorded",
+                    {
+                        "status": "cancelled",
+                        "summary": "run cancelled at the current gate",
+                    },
                     operation_id=f"{operation_id}-cancelled-outcome",
                 )
                 continue
@@ -1004,9 +1123,10 @@ class RunEngine:
                     unknown = self._unknown_mutation(projection)
                     current_incident = self._current_incident(projection)
                     if unknown is None and current_incident is not None:
-                        snapshot = self.driver.resolve_incident(
+                        snapshot = self._apply_transition(
                             self._run_id(snapshot),
-                            current_incident.incident_id,
+                            "incident_resolved",
+                            {"incident_id": current_incident.incident_id},
                             operation_id=f"{operation_id}-incident-resolved",
                         )
                     if unknown is None:
@@ -1030,9 +1150,10 @@ class RunEngine:
                     and _text(terminal_step.get("status")) == "failed"
                     and self._mutation_completed_before_verification(projection)
                 ):
-                    snapshot = self.driver.defer_verification(
+                    snapshot = self._apply_transition(
                         self._run_id(snapshot),
-                        workflow_step_id=terminal_step_id,
+                        "verification_deferred",
+                        {"workflow_step_id": terminal_step_id},
                         operation_id=f"{operation_id}-verification-deferred",
                     )
                     return self._turn(
@@ -1041,19 +1162,22 @@ class RunEngine:
                         next_action="resume the Run to retry fresh target verification",
                     )
                 status = _text(terminal_step.get("status"))
-                snapshot = self.driver.record_outcome(
+                snapshot = self._apply_transition(
                     self._run_id(snapshot),
-                    status=status,
-                    summary=self._step_summary(projection, terminal_step),
+                    "outcome_recorded",
+                    {
+                        "status": status,
+                        "summary": self._step_summary(projection, terminal_step),
+                    },
                     operation_id=f"{operation_id}-outcome",
                 )
                 continue
             continuation = _continuation(snapshot)
             if bool(continuation.get("workflow_complete")):
-                snapshot = self.driver.record_outcome(
+                snapshot = self._apply_transition(
                     self._run_id(snapshot),
-                    status="completed",
-                    summary="workflow completed",
+                    "outcome_recorded",
+                    {"status": "completed", "summary": "workflow completed"},
                     operation_id=f"{operation_id}-outcome",
                 )
                 continue
@@ -1099,9 +1223,8 @@ class RunEngine:
                         task_id=task_id,
                     )
                     if prepared is not None:
-                        self.command_transactions.stage_effect(
-                            self._run_id(snapshot),
-                            events=(
+                        self._stage(
+                            (
                                 RunEvent(
                                     "OperationAccepted",
                                     prepared.accepted_payload,
@@ -1228,9 +1351,8 @@ class RunEngine:
             operation_id=response_operation_id,
             input_digest=submission_digest,
         )
-        self.command_transactions.stage_events(
-            command.run_id,
-            events=(
+        self._stage(
+            (
                 RunEvent(
                     "RunGateSubmitted",
                     {
@@ -1247,7 +1369,7 @@ class RunEngine:
                     },
                     response_operation_id,
                 ),
-            ),
+            )
         )
         snapshot = self.driver.run_snapshot(command.run_id)
         return self._advance(
@@ -1287,16 +1409,23 @@ class RunEngine:
             if gate is None:
                 raise GateConflict("Run is not waiting at a Gate")
             self._validate_gate(command, gate)
-            snapshot = self.driver.cancel_run(
-                command,
-                gate=gate,
-                submission_digest=submission_digest,
+            snapshot = self._apply_transition(
+                command.run_id,
+                "run_cancelled",
+                {
+                    "gate": gate.to_public_dict(),
+                    "submission_id": command.submission_id,
+                    "submission_digest": submission_digest,
+                },
                 operation_id=f"{operation_id}-cancel",
             )
-        snapshot = self.driver.record_outcome(
+        snapshot = self._apply_transition(
             command.run_id,
-            status="cancelled",
-            summary="run cancelled at the current gate",
+            "outcome_recorded",
+            {
+                "status": "cancelled",
+                "summary": "run cancelled at the current gate",
+            },
             operation_id=f"{operation_id}-outcome",
         )
         return self._turn(snapshot, state="cancelled")
@@ -1357,9 +1486,10 @@ class RunEngine:
                 current is not None
                 and self._unknown_mutation(_projection(snapshot)) is None
             ):
-                snapshot = self.driver.resolve_incident(
+                snapshot = self._apply_transition(
                     command.run_id,
-                    current.incident_id,
+                    "incident_resolved",
+                    {"incident_id": current.incident_id},
                     operation_id=f"{operation_id}-incident-resolved",
                 )
             return self._advance(
@@ -1400,6 +1530,63 @@ class RunEngine:
             ),
             None,
         )
+
+    def _commit_recovery_incident(self, intent: EffectIntent) -> RunTurn:
+        command_id = "incident-" + fingerprint(
+            {"run_id": intent.run_id, "effect_id": intent.effect_id}
+        )[:32]
+        input_digest = fingerprint(
+            {
+                "schema": "openubmc.semantic-runtime/recovery-incident-v1",
+                "run_id": intent.run_id,
+                "effect_id": intent.effect_id,
+            }
+        )
+        try:
+            replayed = self.run_store.replay(
+                intent.run_id,
+                command_id,
+                input_digest,
+            )
+        except RunDecisionConflict as exc:
+            raise CommandConflict(str(exc)) from exc
+        if replayed is not None:
+            return replayed.turn
+        for attempt in range(4):
+            with self.command_transactions.begin(intent.run_id) as transaction:
+                token = self._active_transaction.set(transaction)
+                try:
+                    snapshot = self._record_incident(
+                        self.driver.run_snapshot(intent.run_id),
+                        code="mutation_outcome_unknown",
+                        message=(
+                            "Mutation recovery could not prove the durable Effect "
+                            "outcome without reapplying it"
+                        ),
+                        effect_id=intent.effect_id,
+                        operation_id=f"{intent.effect_id}-recovery-incident",
+                    )
+                    turn = self._turn(snapshot, state="incident")
+                    try:
+                        committed = self.run_store.commit(
+                            RunDecision(
+                                run_id=intent.run_id,
+                                command_id=command_id,
+                                input_digest=input_digest,
+                                expected_revision=transaction.expected_revision,
+                                events=transaction.events,
+                                turn=turn,
+                            )
+                        )
+                    except RunDecisionConflict as exc:
+                        if attempt >= 3:
+                            raise CommandConflict(str(exc)) from exc
+                        continue
+                    transaction.accept()
+                    return committed.turn
+                finally:
+                    self._active_transaction.reset(token)
+        raise CommandConflict("recovery Incident decision could not converge")
 
     def _settle_effect(
         self,
@@ -1459,17 +1646,7 @@ class RunEngine:
             projection = _projection(snapshot)
             unknown = self._unknown_mutation(projection)
             if recovery_attempted and unknown is not None:
-                snapshot = self._record_incident(
-                    snapshot,
-                    code="mutation_outcome_unknown",
-                    message=(
-                        "Mutation recovery could not prove the durable Effect "
-                        "outcome without reapplying it"
-                    ),
-                    effect_id=intent.effect_id,
-                    operation_id=f"{intent.effect_id}-recovery-incident",
-                )
-                return self._turn(snapshot, state="incident")
+                return self._commit_recovery_incident(intent)
             active = self._active_effect_intent(projection)
             if isinstance(active, Mapping) and _text(
                 active.get("effect_id")
@@ -1534,85 +1711,61 @@ class RunEngine:
             if replayed is not None:
                 return True
             with self.command_transactions.begin(intent.run_id) as transaction:
-                snapshot = self.driver.run_snapshot(intent.run_id)
-                projection = _projection(snapshot)
-                current = next(
-                    (
-                        item
-                        for item in reversed(
-                            list(projection.get("operations", []))
-                        )
-                        if isinstance(item, Mapping)
-                        and _text(item.get("operation_id")) == intent.effect_id
-                    ),
-                    None,
-                )
-                if not isinstance(current, Mapping):
-                    raise CommandConflict(
-                        "persisted Effect is missing from its Run projection"
-                    )
-                if _text(current.get("operation")) != intent.operation:
-                    raise CommandConflict(
-                        "persisted Effect identity is bound to another operation"
-                    )
-                status = _text(current.get("status"))
-                if status not in {
-                    "accepted",
-                    "running",
-                    "mutation_outcome_unknown",
-                }:
-                    return False
-                if status != "mutation_outcome_unknown":
-                    self.command_transactions.stage_events(
-                        intent.run_id,
-                        events=(
-                            RunEvent(
-                                "OperationTerminal",
-                                {
-                                    "status": "mutation_outcome_unknown",
-                                    "summary": (
-                                        "the Runtime process ended after durable "
-                                        "Effect scheduling; reconcile the same identity"
-                                    ),
-                                    "canonical_error": {
-                                        "code": "effect_process_interrupted",
-                                        "message": (
-                                            "the Effect may have started before "
-                                            "process loss"
-                                        ),
-                                    },
-                                    "next_actions": [
-                                        "reconcile the mutation journal before retrying"
-                                    ],
-                                    "case_status": "open",
-                                },
-                                intent.effect_id,
-                            ),
-                        ),
-                    )
-                    snapshot = self.driver.run_snapshot(intent.run_id)
-                turn = self._turn(
-                    snapshot,
-                    state="running",
-                    next_action="reconcile the same durable Effect identity",
-                )
+                token = self._active_transaction.set(transaction)
                 try:
-                    self.run_store.commit(
-                        RunDecision(
-                            run_id=intent.run_id,
-                            command_id=command_id,
-                            input_digest=input_digest,
-                            expected_revision=transaction.expected_revision,
-                            events=transaction.events,
-                            turn=turn,
-                        )
+                    snapshot = self.driver.run_snapshot(intent.run_id)
+                    projection = _projection(snapshot)
+                    current = next(
+                        (
+                            item
+                            for item in reversed(
+                                list(projection.get("operations", []))
+                            )
+                            if isinstance(item, Mapping)
+                            and _text(item.get("operation_id")) == intent.effect_id
+                        ),
+                        None,
                     )
-                except RunDecisionConflict as exc:
-                    if attempt >= 3:
-                        raise CommandConflict(str(exc)) from exc
-                    continue
-                transaction.accept()
-                return True
+                    if not isinstance(current, Mapping):
+                        raise CommandConflict(
+                            "persisted Effect is missing from its Run projection"
+                        )
+                    if _text(current.get("operation")) != intent.operation:
+                        raise CommandConflict(
+                            "persisted Effect identity is bound to another operation"
+                        )
+                    status = _text(current.get("status"))
+                    if status not in {
+                        "accepted",
+                        "running",
+                        "mutation_outcome_unknown",
+                    }:
+                        return False
+                    turn = self._turn(
+                        snapshot,
+                        state="running",
+                        next_action="reconcile the same durable Effect identity",
+                    )
+                    try:
+                        self.run_store.commit(
+                            RunDecision(
+                                run_id=intent.run_id,
+                                command_id=command_id,
+                                input_digest=input_digest,
+                                expected_revision=transaction.expected_revision,
+                                events=transaction.events,
+                                turn=turn,
+                                effect_intent=intent.to_public_dict(),
+                            )
+                        )
+                    except RunDecisionConflict as exc:
+                        if attempt >= 3:
+                            raise CommandConflict(str(exc)) from exc
+                        continue
+                    transaction.accept()
+                    return True
+                finally:
+                    self._active_transaction.reset(token)
         raise CommandConflict("Effect recovery decision could not converge")
 
     def execute(
@@ -1650,33 +1803,37 @@ class RunEngine:
         committed = None
         for attempt in range(4):
             with self.command_transactions.begin(run_id) as transaction:
-                turn = self._execute_uncommitted(
-                    command,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-                if turn.run_id != run_id:
-                    raise CommandConflict(
-                        "Run command produced a Turn for a different Run"
-                    )
+                token = self._active_transaction.set(transaction)
                 try:
-                    committed = self.run_store.commit(
-                        RunDecision(
-                            run_id=run_id,
-                            command_id=command_id,
-                            input_digest=input_digest,
-                            expected_revision=transaction.expected_revision,
-                            events=transaction.events,
-                            turn=turn,
-                            effect_intent=transaction.effect_intent,
-                        )
+                    turn = self._execute_uncommitted(
+                        command,
+                        task_id=task_id,
+                        operation_id=operation_id,
                     )
-                except RunDecisionConflict as exc:
-                    if not isinstance(command, ResumeRun) or attempt >= 3:
-                        raise CommandConflict(str(exc)) from exc
-                    continue
-                transaction.accept()
-                break
+                    if turn.run_id != run_id:
+                        raise CommandConflict(
+                            "Run command produced a Turn for a different Run"
+                        )
+                    try:
+                        committed = self.run_store.commit(
+                            RunDecision(
+                                run_id=run_id,
+                                command_id=command_id,
+                                input_digest=input_digest,
+                                expected_revision=transaction.expected_revision,
+                                events=transaction.events,
+                                turn=turn,
+                                effect_intent=transaction.effect_intent,
+                            )
+                        )
+                    except RunDecisionConflict as exc:
+                        if not isinstance(command, ResumeRun) or attempt >= 3:
+                            raise CommandConflict(str(exc)) from exc
+                        continue
+                    transaction.accept()
+                    break
+                finally:
+                    self._active_transaction.reset(token)
         if committed is None:
             raise CommandConflict("RunDecision could not converge")
 

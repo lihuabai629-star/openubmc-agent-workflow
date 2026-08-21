@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -162,6 +163,34 @@ def baseline_execute_event(tool: str, arguments, structured, *, elapsed: float):
 
 
 class AgentGatewayAbTests(unittest.TestCase):
+    def test_run_benchmark_rejects_a_dirty_candidate_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            module.subprocess.run(["git", "init"], cwd=root, check=True)
+            module.subprocess.run(
+                ["git", "config", "user.email", "benchmark@example.invalid"],
+                cwd=root,
+                check=True,
+            )
+            module.subprocess.run(
+                ["git", "config", "user.name", "Benchmark Test"],
+                cwd=root,
+                check=True,
+            )
+            tracked = root / "tracked.txt"
+            tracked.write_text("clean\n", encoding="utf-8")
+            module.subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            module.subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True)
+            (root / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+            args = module.argparse.Namespace(repo=root)
+
+            with patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
+                RuntimeError, "clean candidate repository"
+            ):
+                module.run_benchmark(args)
+
+        prepare.assert_not_called()
+
     def test_prepare_arm_home_links_selected_skill_for_supported_clients(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

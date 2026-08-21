@@ -26,6 +26,11 @@ class LocalArtifactStore:
             return Path(unquote(parsed.path))
         return Path(handle)
 
+    def path_for(self, reference: ArtifactRef) -> Path:
+        """Resolve only the handle syntax without reading artifact content."""
+
+        return self._path(reference.handle)
+
     @staticmethod
     def _digest(path: Path) -> tuple[str, int]:
         digest = hashlib.sha256()

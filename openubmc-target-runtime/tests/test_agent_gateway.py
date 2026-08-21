@@ -23,6 +23,7 @@ from openubmc_target_runtime import (  # noqa: E402
     EventRunStore,
     GateConflict,
     InMemoryRuntimeRepository,
+    Incident,
     OBSERVATION_MAX_BYTES,
     RevisionConflict,
     ReferenceViolation,
@@ -37,6 +38,7 @@ from openubmc_target_runtime import (  # noqa: E402
     FilesystemBlobRepository,
     RunTurn,
     RuntimeMcpService,
+    RuntimeSDKContext,
     SQLiteRuntimeRepository,
     ScopeContract,
     ScopeViolation,
@@ -241,6 +243,7 @@ class SemanticBackend:
                 "target_epoch": 1,
             },
             "journal": {
+                "operation_id": context.operation_id,
                 "stage": "verified",
                 "action": "live_patch",
                 "expected_checksum": artifact_sha256,
@@ -261,7 +264,11 @@ class SemanticBackend:
                 "installed_version": product_version,
                 "target_epoch": 1,
             },
-            "journal": {"stage": "verified", "action": "upgrade"},
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "upgrade",
+            },
         }
 
 
@@ -314,7 +321,11 @@ class FailOnceUpgradeSemanticBackend(SemanticBackend):
                 "installed_version": str(arguments.get("product_version", "")),
                 "target_epoch": 1,
             },
-            "journal": {"stage": "verified", "action": "upgrade"},
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "upgrade",
+            },
         }
 
 
@@ -338,7 +349,11 @@ class IncompleteAcceptanceSemanticBackend(SemanticBackend):
             "ok": True,
             "summary": "live patch returned without integrity evidence",
             "target_epoch": 1,
-            "journal": {"stage": "verified", "action": "live_patch"},
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "live_patch",
+            },
         }
 
 
@@ -371,6 +386,7 @@ class RunningUpgradeSemanticBackend(SemanticBackend):
             return {
                 "ok": True,
                 "status": "running",
+                "operation_id": context.operation_id,
                 "summary": "firmware upload accepted",
                 "target_epoch": 1,
             }
@@ -382,7 +398,11 @@ class RunningUpgradeSemanticBackend(SemanticBackend):
                 "installed_version": str(arguments.get("product_version", "")),
                 "target_epoch": 1,
             },
-            "journal": {"stage": "verified", "action": "upgrade"},
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "upgrade",
+            },
         }
 
 
@@ -419,6 +439,7 @@ class BlockingLivePatchSemanticBackend(SemanticBackend):
                 "target_epoch": 1,
             },
             "journal": {
+                "operation_id": context.operation_id,
                 "stage": "verified",
                 "action": "live_patch",
                 "expected_checksum": str(arguments.get("artifact_sha256", "")),
@@ -661,10 +682,30 @@ class PersistentUnknownRunDriver:
         self.reconcile_calls += 1
         return self._snapshot()
 
-    def record_incident(self, _run_id: str, incident, *, operation_id: str):
-        del operation_id
-        self.incident = incident
+    def apply_transition(self, _run_id: str, transition):
+        if len(transition.events) != 1:
+            raise AssertionError("unexpected transition event batch")
+        event = transition.events[0]
+        if event.kind != "RunIncidentRaised":
+            raise AssertionError(f"unexpected transition: {event.kind}")
+        value = event.payload["incident"]
+        self.incident = Incident(
+            incident_id=str(value["incident_id"]),
+            code=str(value["code"]),
+            message=str(value["message"]),
+            effect_id=str(value.get("effect_id", "")),
+            recoverable=bool(value.get("recoverable", True)),
+        )
         return self._snapshot()
+
+    @staticmethod
+    def derive_closeout(_run_id: str, *, terminal_status: str):
+        del terminal_status
+        return {
+            "closeout": {},
+            "closeout_markdown": "",
+            "closeout_bundle": None,
+        }
 
 
 class AgentGatewayTests(unittest.TestCase):
@@ -2829,7 +2870,7 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="artifact-dispatch-boundary-start",
             )
             transactions = service.context_runtime.repository
-            original = transactions.stage_events
+            original = transactions.stage
 
             def replace_after_persist(*args, **kwargs):
                 result = original(*args, **kwargs)
@@ -2838,7 +2879,7 @@ class AgentGatewayTests(unittest.TestCase):
 
             with patch.object(
                 transactions,
-                "stage_events",
+                "stage",
                 side_effect=replace_after_persist,
             ):
                 blocked = service.call_exposed_tool(
@@ -3124,6 +3165,19 @@ class AgentGatewayTests(unittest.TestCase):
             live_patch_arguments["artifact_sha256"],
             hashlib.sha256(patch.read_bytes()).hexdigest(),
         )
+        projection = self.service.context_runtime.read_case(first["run_id"])
+        intent_arguments = next(
+            intent["arguments"]
+            for intent in projection["effect_intents"]
+            if intent.get("operation") == "live_patch_run"
+        )
+        self.assertEqual(
+            intent_arguments["artifact_ref"]["kind"],
+            "openubmc-live-patch",
+        )
+        self.assertEqual(intent_arguments["artifact_ref"]["run_id"], first["run_id"])
+        self.assertNotIn("local_path", intent_arguments)
+        self.assertNotIn("artifact_path", intent_arguments)
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
@@ -3931,6 +3985,9 @@ class AgentGatewayTests(unittest.TestCase):
             finally:
                 first.close()
 
+            persisted_effect_id = first.context_runtime.read_case(
+                running["run_id"]
+            )["effect_intents"][-1]["effect_id"]
             backend = RecoveryAwareLivePatchBackend()
             second = RuntimeMcpService(
                 backend,
@@ -3969,7 +4026,20 @@ class AgentGatewayTests(unittest.TestCase):
                 == "mutation_outcome_unknown"
                 for event in events
             ),
-            1,
+            0,
+        )
+        recovery_decisions = [
+            event["payload"]
+            for event in events
+            if event["kind"] == "RunDecisionCommitted"
+            and str(event["payload"].get("command_id", "")).startswith(
+                "recover-"
+            )
+        ]
+        self.assertEqual(len(recovery_decisions), 1)
+        self.assertEqual(
+            recovery_decisions[0]["effect_intent"]["effect_id"],
+            persisted_effect_id,
         )
 
     def test_verification_failure_is_deferred_and_resumed_without_reapplying(self) -> None:
@@ -4423,6 +4493,127 @@ class AgentGatewayTests(unittest.TestCase):
                 for event in events
             )
         )
+
+    def test_compatibility_controls_upcast_legacy_runs_before_transitioning(self) -> None:
+        compatibility = RuntimeMcpService(
+            SemanticBackend(), interface_profile="compatibility"
+        )
+        try:
+            opened = compatibility.call_exposed_tool(
+                "debug_run",
+                {
+                    "ip": "192.0.2.80",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "final_purpose": "verify legacy compatibility delegation",
+                },
+                task_id="compatibility-legacy",
+                operation_id="compatibility-legacy-debug",
+            )
+            run_id = opened.envelope["case_id"]
+            compatibility.call_exposed_tool(
+                "phase_record",
+                {
+                    "case_id": run_id,
+                    "expected_revision": compatibility.context_runtime.read_case(
+                        run_id
+                    )["revision"],
+                    "idempotency_key": "compatibility-legacy-phase",
+                    "phase_type": "developer.change",
+                    "producer_identity": "openubmc-developer",
+                    "status": "completed",
+                    "summary": "legacy source completed",
+                    "source_revision": "compatibility-legacy-source",
+                    "authored_files": ["src/legacy-fix.lua"],
+                    "verification_plan": ["run tests"],
+                },
+                task_id="compatibility-legacy",
+                operation_id="compatibility-legacy-phase",
+            )
+            final = compatibility.call_exposed_tool(
+                "workflow.next",
+                {"case_id": run_id},
+                task_id="compatibility-legacy",
+                operation_id="compatibility-legacy-next",
+            )
+            events = compatibility.context_runtime.repository.events(run_id)
+        finally:
+            compatibility.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationAccepted"
+                and event["payload"].get("operation")
+                in {"phase_record", "workflow.next"}
+                for event in events
+            )
+        )
+        self.assertTrue(any(event["kind"] == "RunDecisionCommitted" for event in events))
+
+    def test_compatibility_workflow_advance_starts_a_typed_run(self) -> None:
+        compatibility = RuntimeMcpService(
+            SemanticBackend(), interface_profile="compatibility"
+        )
+        try:
+            waiting = compatibility.call_exposed_tool(
+                "workflow.advance",
+                {
+                    "ip": "192.0.2.81",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "final_purpose": "verify typed compatibility start",
+                },
+                task_id="compatibility-advance",
+                operation_id="compatibility-advance-start",
+            )
+            run_id = waiting["run_id"]
+            events = compatibility.context_runtime.repository.events(run_id)
+        finally:
+            compatibility.close()
+
+        self.assertEqual(waiting["state"], "waiting_response")
+        self.assertTrue(any(event["kind"] == "RunDecisionCommitted" for event in events))
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationAccepted"
+                and event["payload"].get("operation") == "workflow.advance"
+                for event in events
+            )
+        )
+
+    def test_gateway_preserves_mutation_journal_owned_identity(self) -> None:
+        class JournalIdentityBackend(SemanticBackend):
+            def live_patch_run(self, task, arguments, context):
+                value = super().live_patch_run(task, arguments, context)
+                value["journal"] = {
+                    **value["journal"],
+                    "operation_id": "backend-owned-effect",
+                }
+                return value
+
+        service = RuntimeMcpService(JournalIdentityBackend())
+        try:
+            value = service._invoke_registered_domain_adapter(
+                "live_patch_run",
+                RuntimeSDKContext(
+                    task_id="journal-identity",
+                    operation_id="runtime-effect",
+                    timeout_seconds=5,
+                ),
+                {
+                    "ip": "192.0.2.82",
+                    "intent": "live-patch",
+                    "local_path": "/tmp/fix.lua",
+                    "artifact_sha256": "a" * 64,
+                    "remote_path": "/opt/bmc/apps/fix.lua",
+                },
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(value["journal"]["operation_id"], "backend-owned-effect")
+        self.assertNotIn("backend_operation_id", value["journal"])
 
     def test_agent_endpoint_rejects_raw_evidence_tool(self) -> None:
         endpoint = JsonRpcMcpEndpoint(self.service, session_task_id="agent-session")

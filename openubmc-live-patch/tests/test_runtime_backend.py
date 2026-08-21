@@ -4,12 +4,15 @@ import base64
 from collections.abc import Mapping
 import gzip
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -514,6 +517,75 @@ class BlockAfterTerminalLivePatchBackend(LivePatchMcpBackend):
 
 
 class LivePatchRuntimeBackendTests(unittest.TestCase):
+    def test_sigkill_at_real_backend_cuts_restarts_without_repeating_dangerous_steps(
+        self,
+    ) -> None:
+        helper = (
+            Path(__file__).resolve().parent
+            / "helpers"
+            / "live_patch_backend_crash_worker.py"
+        )
+        expected_counts = {
+            "backup": {"backup_commands": 1, "uploads": 0, "install_commands": 0},
+            "upload": {"backup_commands": 1, "uploads": 1, "install_commands": 0},
+            "install": {"backup_commands": 1, "uploads": 1, "install_commands": 1},
+            "restart": {
+                "backup_commands": 1,
+                "uploads": 1,
+                "install_commands": 1,
+                "restart_commands": 1,
+            },
+            "verification": {
+                "backup_commands": 1,
+                "uploads": 1,
+                "install_commands": 1,
+                "restart_commands": 1,
+            },
+        }
+        for cut, expected in expected_counts.items():
+            with self.subTest(cut=cut), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                process = subprocess.Popen(
+                    [sys.executable, str(helper), str(root), cut, "crash"],
+                    cwd=REPO_ROOT,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                marker = root / "marker"
+                deadline = time.monotonic() + 10
+                while not marker.exists() and process.poll() is None:
+                    if time.monotonic() >= deadline:
+                        stderr = process.communicate(timeout=1)[1]
+                        self.fail(f"backend crash worker did not reach {cut}: {stderr}")
+                    time.sleep(0.01)
+                self.assertIsNone(process.poll(), cut)
+                process.kill()
+                process.wait(timeout=5)
+                process.communicate(timeout=1)
+                self.assertLess(process.returncode, 0)
+
+                recovered = subprocess.run(
+                    [sys.executable, str(helper), str(root), cut, "recover"],
+                    cwd=REPO_ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=20,
+                    check=False,
+                )
+                self.assertEqual(recovered.returncode, 0, recovered.stderr)
+                state = json.loads((root / "remote-state.json").read_text())
+                result = json.loads((root / "result.json").read_text())
+                for name, count in expected.items():
+                    self.assertEqual(state[name], count, (cut, state))
+                self.assertIn(result["turn"]["state"], {"completed", "failed", "incident"})
+                self.assertEqual(len(result["journal_operation_ids"]), 1)
+                self.assertEqual(
+                    set(result["effect_operation_ids"]),
+                    set(result["journal_operation_ids"]),
+                )
+
     def test_execute_restart_replays_terminal_journal_before_run_fact_commit(
         self,
     ) -> None:

@@ -68,8 +68,8 @@ class _DomainBackend:
             {
                 "journal": {
                     "stage": "verified",
-                    "action": str(arguments.get("action", "apply")),
-                    "operation_id": "journal-live-patch",
+                    "action": "live_patch",
+                    "operation_id": context.operation_id,
                 },
                 "target_epoch": minimum + 1,
                 "deployment_integrity": "passed",
@@ -87,7 +87,7 @@ class _DomainBackend:
                 "journal": {
                     "stage": "verified",
                     "action": "upgrade",
-                    "operation_id": "journal-upgrade",
+                    "operation_id": context.operation_id,
                 },
                 "target_epoch": minimum + 1,
                 "artifact_sha256": arguments["artifact_sha256"],
@@ -251,7 +251,8 @@ class DomainSdkMigrationTests(unittest.TestCase):
         self.assertLessEqual(backend.remaining["upgrade_run"], 1800)
         self.assertEqual(upgraded["target_epoch"], 1)
         self.assertEqual(upgraded.envelope["continuation"]["target_epoch_floor"], 1)
-        self.assertEqual(upgraded["journal"]["operation_id"], "journal-upgrade")
+        self.assertEqual(upgraded["journal"]["operation_id"], "sdk-upgrade-apply")
+        self.assertNotIn("backend_operation_id", upgraded["journal"])
 
 
 if __name__ == "__main__":

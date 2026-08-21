@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 import hashlib
 import json
 import os
@@ -18,6 +19,12 @@ from .contracts import CredentialSelector, TargetIdentity, TargetSpec, _fingerpr
 
 
 MUTATION_JOURNAL_SCHEMA = "openubmc.target-runtime.v1/mutation-journal"
+
+
+class MutationRecoveryDisposition(str, Enum):
+    TERMINAL = "terminal"
+    RECOVER = "recover"
+    NEW = "new"
 
 
 class MutationAuthorizationDenied(PermissionError):
@@ -488,6 +495,16 @@ class MutationJournal:
     @property
     def blocks_target(self) -> bool:
         return not self.terminal and self.stage != "replan_required"
+
+    @property
+    def recovery_disposition(self) -> MutationRecoveryDisposition:
+        """Return the Journal-owned route for reattaching this identity."""
+
+        if self.terminal:
+            return MutationRecoveryDisposition.TERMINAL
+        if self.stage == "replan_required":
+            return MutationRecoveryDisposition.NEW
+        return MutationRecoveryDisposition.RECOVER
 
     def attach_store(
         self,

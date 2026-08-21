@@ -451,6 +451,7 @@ def _operation_identity_inputs(arguments: Mapping[str, object]) -> dict[str, obj
     allowed = {
         "action",
         "allow_insecure_tls",
+        "artifact_ref",
         "artifact_path",
         "artifact_sha256",
         "force_path",
@@ -1548,6 +1549,18 @@ class BufferedRunCommand:
     def effect_intent(self) -> Mapping[str, object] | None:
         return self.state.effect_intent
 
+    def stage(
+        self,
+        *,
+        events: tuple[RunEvent, ...],
+        effect_intent: Mapping[str, object] | None = None,
+    ) -> None:
+        self.repository.stage(
+            self.state.run_id,
+            events=events,
+            effect_intent=effect_intent,
+        )
+
     def accept(self) -> None:
         self.committed = True
 
@@ -1606,21 +1619,21 @@ class BufferedRuntimeRepository:
         state = self._state.get()
         return state is not None and state.run_id == run_id
 
-    def stage_effect(
+    def stage(
         self,
         run_id: str,
         *,
         events: tuple[RunEvent, ...],
-        effect_intent: Mapping[str, object],
+        effect_intent: Mapping[str, object] | None = None,
     ) -> None:
-        """Stage RunEngine-owned Effect facts in the active command buffer."""
+        """Stage the complete RunEngine transition in the command-local draft."""
 
         state = self._active(run_id)
         if state is None:
             raise ContextRuntimeError(
-                "Effect staging requires an active Run command transaction"
+                "Run transition staging requires an active Run command transaction"
             )
-        if state.effect_intent is not None:
+        if effect_intent is not None and state.effect_intent is not None:
             raise ContextRuntimeError(
                 "one RunDecision cannot schedule multiple Effects"
             )
@@ -1632,29 +1645,8 @@ class BufferedRuntimeRepository:
             )
             for event in events
         )
-        state.effect_intent = dict(effect_intent)
-
-    def stage_events(
-        self,
-        run_id: str,
-        *,
-        events: tuple[RunEvent, ...],
-    ) -> None:
-        """Stage RunEngine-owned events in the active command buffer."""
-
-        state = self._active(run_id)
-        if state is None:
-            raise ContextRuntimeError(
-                "Run event staging requires an active command transaction"
-            )
-        state.events.extend(
-            PendingCaseEvent(
-                kind=event.kind,
-                payload=dict(event.payload),
-                operation_id=event.operation_id,
-            )
-            for event in events
-        )
+        if effect_intent is not None:
+            state.effect_intent = dict(effect_intent)
 
     def reattach(self, run_id: str, task_id: str) -> None:
         if self.base_repository.load(run_id) is None:
@@ -6561,6 +6553,9 @@ class ContextRuntime:
             arguments.setdefault("no_freshness", False)
         if operation == "live_patch_run":
             developer = completed_phases.get("developer.change", {})
+            artifact_ref = developer.get("artifact_ref")
+            if isinstance(artifact_ref, Mapping) and artifact_ref:
+                arguments["artifact_ref"] = dict(artifact_ref)
             for source, destination in (
                 ("artifact_path", "local_path"),
                 ("artifact_sha256", "artifact_sha256"),
@@ -6568,15 +6563,25 @@ class ContextRuntime:
                 ("restart_scope", "restart_scope"),
                 ("verification_plan", "verification_checks"),
             ):
-                if source in developer and destination not in arguments:
+                if (
+                    source in developer
+                    and destination not in arguments
+                    and not (
+                        source in {"artifact_path", "artifact_sha256"}
+                        and "artifact_ref" in arguments
+                    )
+                ):
                     value = developer[source]
                     if source == "artifact_sha256" and not str(value).strip():
                         continue
                     arguments[destination] = value
         if operation == "upgrade_run":
             build = completed_phases.get("build.artifact", {})
+            artifact_ref = build.get("artifact_ref")
+            if isinstance(artifact_ref, Mapping) and artifact_ref:
+                arguments["artifact_ref"] = dict(artifact_ref)
             for name in ("artifact_path", "artifact_sha256", "product_version"):
-                if name in build:
+                if name in build and "artifact_ref" not in arguments:
                     arguments[name] = build[name]
         return arguments
 
@@ -6861,13 +6866,17 @@ class ContextRuntime:
                 arguments.get("_workflow_target_epoch", 0)
             ),
         }
+        intent_arguments = dict(_sanitize_runtime_inputs(arguments))
+        if isinstance(intent_arguments.get("artifact_ref"), Mapping):
+            for path_field in ("local_path", "artifact_path"):
+                intent_arguments.pop(path_field, None)
         intent = EffectIntent(
             run_id=run_id,
             effect_id=operation_id,
             operation=operation,
             effect_class=effect_class,
             request_fingerprint=request_fingerprint,
-            arguments=dict(_sanitize_runtime_inputs(arguments)),
+            arguments=intent_arguments,
         )
         return PreparedEffect(
             intent=intent,
@@ -7875,6 +7884,29 @@ class ContextRuntime:
                 )
             updated = dict(current)
         return self._cache(updated)
+
+    def derive_run_closeout(
+        self,
+        run_id: str,
+        *,
+        terminal_status: str,
+        include_bundle: bool = False,
+    ) -> dict[str, object]:
+        """Project closeout content without committing a Run transition."""
+
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        closeout, markdown, bundle = self._derive_closeout(
+            projection,
+            terminal_status=terminal_status,
+            include_bundle=include_bundle,
+        )
+        return {
+            "closeout": closeout,
+            "closeout_markdown": markdown,
+            "closeout_bundle": bundle,
+        }
 
     def defer_run_verification(
         self,

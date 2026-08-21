@@ -46,7 +46,7 @@ from openubmc_target_runtime import (  # noqa: E402
     TaskAuthorizationPolicy,
     effect_recovery_mode,
     load_selected_credentials_file,
-    require_effect_recovery_journal,
+    mutation_recovery_route,
 )
 
 
@@ -474,12 +474,12 @@ def _prepare_root_mount(
             raise RuntimeError("Live Patch root mount mode is unknown")
         return
     execution.mark_effects_started()
+    state.restored = False
     remounted = execution.run_telnet(
         "mount -o remount,rw / && echo remount_rw_ok",
         timeout=min(20.0, context.remaining()),
     )
     state.remounted = True
-    state.restored = False
     _telnet_stdout(remounted, marker="remount_rw_ok")
 
 
@@ -920,26 +920,27 @@ class LivePatchMcpBackend:
             }
 
         current_local_sha = _sha256(local) if local.is_file() else ""
-        journals = tuple(binding.task_run.mutation_journals())
-        matching_journal = next(
-            (
-                journal
-                for journal in journals
-                if journal.operation_id == context.operation_id
-                and journal.action == "live_patch"
-                and (journal.expected_checksum or current_local_sha)
-                and adapter.mutation_request(
-                    operation_id=journal.operation_id,
-                    restart_scope=restart_scope,
-                    operation=mutation_operation(
-                        journal.expected_checksum or current_local_sha
-                    ),
-                    action="live_patch",
-                ).fingerprint
-                == journal.operation_fingerprint
-            ),
-            None,
+        recovery_route = mutation_recovery_route(
+            recovery_mode,
+            binding.task_run.mutation_journals,
+            operation_id=context.operation_id,
+            action="live_patch",
+            label="Live Patch",
+            matches=lambda journal: bool(
+                getattr(journal, "expected_checksum", "") or current_local_sha
+            )
+            and adapter.mutation_request(
+                operation_id=str(getattr(journal, "operation_id", "")),
+                restart_scope=restart_scope,
+                operation=mutation_operation(
+                    str(getattr(journal, "expected_checksum", ""))
+                    or current_local_sha
+                ),
+                action="live_patch",
+            ).fingerprint
+            == str(getattr(journal, "operation_fingerprint", "")),
         )
+        matching_journal = recovery_route.journal
         if matching_journal is not None:
             if (
                 authored_local_sha
@@ -952,7 +953,7 @@ class LivePatchMcpBackend:
             operation = mutation_operation(
                 matching_journal.expected_checksum or current_local_sha
             )
-            if matching_journal.terminal:
+            if recovery_route.disposition == "terminal":
                 result = adapter.run(
                     operation_id=context.operation_id,
                     authorization=authorization,
@@ -968,9 +969,7 @@ class LivePatchMcpBackend:
                     operation_context=context,
                 )
                 return result.to_public_dict()
-            if matching_journal.stage == "replan_required":
-                matching_journal = None
-            else:
+            if recovery_route.disposition == "recover":
                 return self._recover_uncertain_live_patch(
                     binding=binding,
                     adapter=adapter,
@@ -985,14 +984,6 @@ class LivePatchMcpBackend:
                     expected_metadata=expected_metadata,
                 )
 
-        require_effect_recovery_journal(
-            recovery_mode,
-            journals,
-            operation_id=context.operation_id,
-            action="live_patch",
-            label="Live Patch",
-        )
-
         if not local.is_file():
             raise ValueError(f"Live Patch local_path is unavailable: {local}")
         local_sha = current_local_sha
@@ -1001,6 +992,9 @@ class LivePatchMcpBackend:
         operation = mutation_operation(local_sha)
 
         def apply(execution) -> dict[str, object]:
+            execution.journal.record_execution_evidence(
+                expected_checksum=local_sha,
+            )
             mount = _RootMountState()
             try:
                 guarded_paths = [

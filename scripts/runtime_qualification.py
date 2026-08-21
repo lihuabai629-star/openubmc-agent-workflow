@@ -24,6 +24,7 @@ QUALIFICATIONS = (
             "tests.test_agent_gateway.AgentGatewayTests.test_effect_identity_is_unique_across_concurrent_runs",
             "tests.test_agent_gateway.AgentGatewayTests.test_live_patch_submission_replays_after_internal_effect_decisions",
             "tests.test_agent_gateway.AgentGatewayTests.test_sqlite_restart_reconciles_a_persisted_mutation_without_reapply",
+            "tests.test_mutation_recovery.MutationRecoveryTests.test_sigkill_crash_cuts_preserve_identity_and_never_repeat_the_mutation",
         ),
     ),
     (
@@ -53,6 +54,11 @@ QUALIFICATIONS = (
 
 PARTIAL_RESULT_TESTS = (
     "tests.test_agent_gateway.AgentGatewayTests.test_auto_assurance_transport_failure_preserves_the_fast_observation",
+)
+
+LIVE_PATCH_CRASH_TESTS = (
+    "tests.test_runtime_backend.LivePatchRuntimeBackendTests."
+    "test_sigkill_at_real_backend_cuts_restarts_without_repeating_dangerous_steps",
 )
 
 
@@ -113,6 +119,26 @@ def qualify_runtime(
                 "stderr_tail": _tail(completed.stderr or ""),
             }
         )
+
+    live_patch_command = _test_command(LIVE_PATCH_CRASH_TESTS)
+    started = time.monotonic()
+    live_patch = executor(
+        live_patch_command,
+        cwd=workspace / "openubmc-live-patch",
+    )
+    live_patch_passed = live_patch.returncode == 0
+    violations["real_backend_crash_cuts"] = 0 if live_patch_passed else 1
+    results.append(
+        {
+            "name": "real_backend_crash_cuts",
+            "status": "passed" if live_patch_passed else "failed",
+            "tests": list(LIVE_PATCH_CRASH_TESTS),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "returncode": live_patch.returncode,
+            "stdout_tail": _tail(live_patch.stdout or ""),
+            "stderr_tail": _tail(live_patch.stderr or ""),
+        }
+    )
 
     partial_command = _test_command(PARTIAL_RESULT_TESTS)
     started = time.monotonic()

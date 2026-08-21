@@ -1261,7 +1261,11 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         self.assertIn("agent_envelope", projected)
         self.assertEqual(projected["closeout"], terminal["closeout"])
         self.assertEqual(projected["closeout_markdown"], terminal["closeout_markdown"])
-        self.assertEqual(projected["closeout_bundle"], terminal["closeout_bundle"])
+        self.assertIsNone(projected["closeout_bundle"])
+        self.assertEqual(
+            terminal["closeout_bundle"]["schema"],
+            "openubmc.target-runtime.v1/case-closeout-bundle",
+        )
         self.assertGreater(evidence["returned_bytes"], 0)
         self.assertIsInstance(evidence["body"], str)
         self.assertIsInstance(json.loads(evidence["body"]), dict)

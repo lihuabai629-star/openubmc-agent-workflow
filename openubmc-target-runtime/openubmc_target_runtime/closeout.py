@@ -665,6 +665,17 @@ def _selected_facts(
         ):
             if name in inputs:
                 facts[name] = inputs[name]
+            elif name in value:
+                facts[name] = value[name]
+        artifact_ref = _mapping(inputs.get("artifact_ref"))
+        if artifact_ref:
+            facts["artifact_ref"] = dict(artifact_ref)
+            facts.setdefault("artifact_path", artifact_ref.get("handle", ""))
+            facts.setdefault(
+                "artifact_sha256",
+                str(artifact_ref.get("digest", "")).removeprefix("sha256:"),
+            )
+            facts.setdefault("product_version", artifact_ref.get("version", ""))
         journal = _mapping(value.get("journal"))
         if journal:
             facts["journal"] = {
@@ -775,19 +786,26 @@ def _operation_artifacts(
 ) -> tuple[Mapping[str, object], ...]:
     artifacts: list[dict[str, object]] = []
     if stage == "upgrade":
-        path = str(inputs.get("artifact_path", ""))
-        digest = str(inputs.get("artifact_sha256", ""))
+        artifact_ref = _mapping(inputs.get("artifact_ref"))
+        path = str(inputs.get("artifact_path") or artifact_ref.get("handle", ""))
+        digest = str(
+            inputs.get("artifact_sha256") or artifact_ref.get("digest", "")
+        ).removeprefix("sha256:")
         if path or digest:
             artifacts.append(
                 {
                     "kind": "hpm",
                     "path": path,
                     "sha256": digest,
-                    "product_version": str(inputs.get("product_version", "")),
+                    "product_version": str(
+                        inputs.get("product_version")
+                        or artifact_ref.get("version", "")
+                    ),
                 }
             )
     elif stage == "live_patch":
-        path = str(inputs.get("local_path", ""))
+        artifact_ref = _mapping(inputs.get("artifact_ref"))
+        path = str(inputs.get("local_path") or artifact_ref.get("handle", ""))
         if path:
             artifacts.append({"kind": "runtime_artifact", "path": path})
     elif stage == "bundle":
@@ -822,6 +840,7 @@ def _phase_receipt(
             "design",
             "validation_results",
             "source_delivery",
+            "artifact_ref",
             "artifact_path",
             "artifact_sha256",
             "product_version",
@@ -834,15 +853,31 @@ def _phase_receipt(
         )
         if name in record and record[name] not in ("", [], None)
     }
+    artifact_ref = _mapping(record.get("artifact_ref"))
+    if artifact_ref:
+        facts.setdefault("artifact_path", artifact_ref.get("handle", ""))
+        facts.setdefault(
+            "artifact_sha256",
+            str(artifact_ref.get("digest", "")).removeprefix("sha256:"),
+        )
+        facts.setdefault("product_version", artifact_ref.get("version", ""))
     artifacts: list[dict[str, object]] = []
-    artifact_path = str(record.get("artifact_path", ""))
+    artifact_path = str(
+        record.get("artifact_path") or artifact_ref.get("handle", "")
+    )
     if artifact_path:
         artifacts.append(
             {
                 "kind": "hpm" if artifact_path.lower().endswith(".hpm") else "artifact",
                 "path": artifact_path,
-                "sha256": str(record.get("artifact_sha256", "")),
-                "product_version": str(record.get("product_version", "")),
+                "sha256": str(
+                    record.get("artifact_sha256")
+                    or artifact_ref.get("digest", "")
+                ).removeprefix("sha256:"),
+                "product_version": str(
+                    record.get("product_version")
+                    or artifact_ref.get("version", "")
+                ),
             }
         )
     if stage == "build":

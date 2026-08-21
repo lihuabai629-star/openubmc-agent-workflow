@@ -48,7 +48,7 @@ from openubmc_target_runtime import (  # noqa: E402
     TaskAuthorizationPolicy,
     effect_recovery_mode,
     load_selected_credentials_file,
-    require_effect_recovery_journal,
+    mutation_recovery_route,
 )
 
 
@@ -905,24 +905,22 @@ class UpgradeMcpBackend:
             "image_uri": _argument_text(arguments, "image_uri"),
         }
         recovery_mode = effect_recovery_mode(arguments)
-        journals = tuple(binding.task_run.mutation_journals())
-        matching_journal = next(
-            (
-                journal
-                for journal in journals
-                if journal.operation_id == context.operation_id
-                and journal.action == "upgrade"
-                and adapter.mutation_request(
-                    operation_id=journal.operation_id,
-                    artifact=artifact,
-                    mutation_options=mutation_options,
-                ).fingerprint
-                == journal.operation_fingerprint
-            ),
-            None,
+        recovery_route = mutation_recovery_route(
+            recovery_mode,
+            binding.task_run.mutation_journals,
+            operation_id=context.operation_id,
+            action="upgrade",
+            label="Upgrade",
+            matches=lambda journal: adapter.mutation_request(
+                operation_id=str(getattr(journal, "operation_id", "")),
+                artifact=artifact,
+                mutation_options=mutation_options,
+            ).fingerprint
+            == str(getattr(journal, "operation_fingerprint", "")),
         )
+        matching_journal = recovery_route.journal
         if matching_journal is not None:
-            if matching_journal.terminal:
+            if recovery_route.disposition == "terminal":
                 result = adapter.run(
                     operation_id=context.operation_id,
                     authorization=authorization,
@@ -950,9 +948,7 @@ class UpgradeMcpBackend:
                         "activation fallback; the artifact was not uploaded again"
                     )
                 return result.to_public_dict()
-            if matching_journal.stage == "replan_required":
-                matching_journal = None
-            else:
+            if recovery_route.disposition == "recover":
                 recovery = self._recover_uncertain_upgrade(
                     binding=binding,
                     adapter=adapter,
@@ -965,19 +961,15 @@ class UpgradeMcpBackend:
                 )
                 if recovery is not None:
                     return recovery
-        require_effect_recovery_journal(
-            recovery_mode,
-            journals,
-            operation_id=context.operation_id,
-            action="upgrade",
-            label="Upgrade",
-        )
         artifact_bytes, actual_sha = _read_stable_artifact(artifact_path)
         if actual_sha != artifact.sha256:
             raise ValueError("upgrade artifact SHA-256 does not match")
         mutation_observation: dict[str, object] = {}
 
         def apply(execution) -> dict[str, object]:
+            execution.journal.record_execution_evidence(
+                expected_checksum=artifact.sha256,
+            )
             result = execution.redfish_request(
                 "upgrade-upload",
                 callback=lambda session: self._apply_with_session(

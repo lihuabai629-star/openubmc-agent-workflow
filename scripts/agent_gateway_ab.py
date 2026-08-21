@@ -769,6 +769,21 @@ def _git_commit(repo: Path, ref: str) -> str:
     ).stdout.strip()
 
 
+def _require_clean_candidate(repo: Path) -> None:
+    completed = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    if completed.stdout.strip():
+        raise RuntimeError(
+            "AB qualification requires a clean candidate repository so the "
+            "recorded source commit identifies the tested source"
+        )
+
+
 def _version(command: list[str]) -> str:
     completed = subprocess.run(
         command,
@@ -925,6 +940,7 @@ def verify_summary(
 
 def run_benchmark(args: argparse.Namespace) -> int:
     repo = args.repo.resolve()
+    _require_clean_candidate(repo)
     work_root = args.work_root.resolve()
     baseline_root = work_root / "variants" / "baseline"
     _prepare_worktree(repo, baseline_root, args.baseline_ref)

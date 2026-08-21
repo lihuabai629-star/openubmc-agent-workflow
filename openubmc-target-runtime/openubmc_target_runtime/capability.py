@@ -12,6 +12,8 @@ from typing import Protocol
 
 from .catalog import OperationCatalogError, validate_json_schema
 from .contracts import RUNTIME_API_VERSION
+from .mutation import MutationRecoveryDisposition
+from .semantic_runtime import ArtifactRef
 
 
 CAPABILITY_REGISTRY_SCHEMA = f"{RUNTIME_API_VERSION}/capability-registry-v1"
@@ -175,7 +177,10 @@ class DomainReceipt:
         operation: str,
         value: Mapping[str, object],
     ) -> "DomainReceipt":
-        explicit = str(value.get("outcome_status", "")).strip().lower()
+        explicit = str(value.get("outcome_status") or "").strip().lower()
+        compatibility_status = str(value.get("status") or "").strip().lower()
+        if not explicit and compatibility_status in _OUTCOME_STATUSES:
+            explicit = compatibility_status
         status = explicit or (
             "failed" if value.get("ok") is False else "succeeded"
         )
@@ -292,17 +297,54 @@ class EffectRecoveryMode(str, Enum):
 
 
 @dataclass(frozen=True)
-class ArtifactMetadata:
-    path: str
-    sha256: str
-    version: str = ""
+class MutationRecoveryRoute:
+    journals: tuple[object, ...]
+    journal: object | None
+    disposition: MutationRecoveryDisposition
 
-    def to_public_dict(self) -> dict[str, object]:
-        return {
-            "path": self.path,
-            "sha256": self.sha256,
-            "version": self.version,
-        }
+
+def mutation_recovery_route(
+    mode: EffectRecoveryMode | None,
+    load_journals: Callable[[], Iterable[object]],
+    *,
+    operation_id: str,
+    action: str,
+    label: str,
+    matches: Callable[[object], bool],
+) -> MutationRecoveryRoute:
+    """Select one durable Mutation journal before any Domain re-execution."""
+
+    journals = tuple(load_journals())
+    journal = next(
+        (
+            candidate
+            for candidate in journals
+            if str(getattr(candidate, "operation_id", "")) == operation_id
+            and str(getattr(candidate, "action", "")) == action
+            and matches(candidate)
+        ),
+        None,
+    )
+    if journal is not None:
+        disposition = getattr(journal, "recovery_disposition", None)
+        if not isinstance(disposition, MutationRecoveryDisposition):
+            raise ValueError(
+                "MutationJournal did not provide a valid recovery disposition"
+            )
+        if disposition is not MutationRecoveryDisposition.NEW:
+            return MutationRecoveryRoute(journals, journal, disposition)
+    require_effect_recovery_journal(
+        mode,
+        journals,
+        operation_id=operation_id,
+        action=action,
+        label=label,
+    )
+    return MutationRecoveryRoute(
+        journals,
+        None,
+        MutationRecoveryDisposition.NEW,
+    )
 
 
 @dataclass(frozen=True)
@@ -310,6 +352,7 @@ class ArtifactContract:
     path_fields: tuple[str, ...]
     digest_field: str = "artifact_sha256"
     version_field: str = ""
+    artifact_kind: str = "runtime-artifact"
     required: bool = False
 
     def __post_init__(self) -> None:
@@ -317,8 +360,19 @@ class ArtifactContract:
             raise ValueError("Artifact contract requires path fields")
         if not self.digest_field.strip():
             raise ValueError("Artifact contract requires a digest field")
+        if not self.artifact_kind.strip():
+            raise ValueError("Artifact contract requires an ArtifactRef kind")
 
-    def bind(self, arguments: Mapping[str, object]) -> ArtifactMetadata | None:
+    def bind(
+        self,
+        arguments: Mapping[str, object],
+    ) -> ArtifactRef | None:
+        raw_reference = arguments.get("artifact_ref")
+        if isinstance(raw_reference, Mapping) and raw_reference:
+            reference = ArtifactRef.from_public_dict(raw_reference)
+            if reference.kind != self.artifact_kind:
+                raise ValueError("Domain Action ArtifactRef has the wrong kind")
+            return reference
         path = next(
             (
                 str(arguments.get(field, "")).strip()
@@ -338,12 +392,12 @@ class ArtifactContract:
         if not path:
             raise ValueError("Domain Action is missing its Artifact path")
         if not digest and not self.required:
-            return ArtifactMetadata(path=path, sha256="", version=version)
+            return None
         if _SHA256.fullmatch(digest) is None:
             raise ValueError("Domain Action Artifact digest must be SHA-256")
         if self.version_field and not version:
             raise ValueError("Domain Action is missing its Artifact version")
-        return ArtifactMetadata(path=path, sha256=digest, version=version)
+        return None
 
 
 @dataclass(frozen=True)
@@ -353,7 +407,7 @@ class DomainAction:
     pack_version: str
     context: RuntimeSDKContext
     arguments: Mapping[str, object]
-    artifact: ArtifactMetadata | None = None
+    artifact: ArtifactRef | None = None
 
     @property
     def effect_id(self) -> str:
@@ -376,6 +430,11 @@ class DomainAction:
             "pack": self.pack,
             "pack_version": self.pack_version,
             "arguments": dict(self.arguments),
+            "artifact_ref": (
+                self.artifact.to_public_dict()
+                if self.artifact is not None
+                else None
+            ),
             "artifact": (
                 self.artifact.to_public_dict()
                 if self.artifact is not None
@@ -385,6 +444,161 @@ class DomainAction:
 
 
 DomainVerifier = Callable[[DomainAction, DomainReceipt], bool]
+
+
+_MUTATION_JOURNAL_STAGES = frozenset(
+    {
+        "planned",
+        "applying",
+        "applied",
+        "verifying",
+        "verified",
+        "replan_required",
+        "mutation_failed",
+        "verification_failed",
+        "verification_failed_terminal",
+        "recovery_blocked",
+        "rolling_back",
+        "rollback_verifying",
+        "rollback_verified",
+        "rollback_failed",
+        "rollback_verification_failed",
+        "rollback_verification_failed_terminal",
+    }
+)
+
+
+def _mutation_journal_receipt_valid(
+    journal: Mapping[str, object],
+    *,
+    expected_operation_id: str,
+    expected_action: str,
+    expected_task_id: str = "",
+    expected_artifact_digest: str = "",
+    compatibility_identity: Mapping[str, object] | None = None,
+) -> bool:
+    schema = str(journal.get("schema", ""))
+    operation_id = str(journal.get("operation_id", ""))
+    compatible_operation_id = str(
+        (compatibility_identity or {}).get("operation_id", "")
+    )
+    if operation_id and operation_id != expected_operation_id:
+        return False
+    if not operation_id and (
+        schema or compatible_operation_id != expected_operation_id
+    ):
+        return False
+    action = str(journal.get("action", ""))
+    compatible_action = str((compatibility_identity or {}).get("action", ""))
+    if action and action != expected_action:
+        return False
+    if not action and (schema or compatible_action != expected_action):
+        return False
+    if str(journal.get("stage", "")) not in _MUTATION_JOURNAL_STAGES:
+        return False
+    if schema:
+        if schema != f"{RUNTIME_API_VERSION}/mutation-journal":
+            return False
+        if expected_task_id and str(journal.get("task_id", "")) != expected_task_id:
+            return False
+        if _SHA256.fullmatch(str(journal.get("operation_fingerprint", ""))) is None:
+            return False
+        if _SHA256.fullmatch(str(journal.get("target_fingerprint", ""))) is None:
+            return False
+    expected_checksum = str(journal.get("expected_checksum", ""))
+    if expected_artifact_digest:
+        if schema and expected_checksum != expected_artifact_digest:
+            return False
+        if expected_checksum and expected_checksum != expected_artifact_digest:
+            return False
+    return True
+
+
+def mutation_receipt_verifier(
+    action: DomainAction,
+    receipt: DomainReceipt,
+    *,
+    journal_action: str,
+) -> bool:
+    """Authenticate a Mutation receipt without equating validity with success."""
+
+    journal = receipt.value.get("journal")
+    expected_artifact_digest = (
+        action.artifact.digest
+        if action.artifact is not None
+        else str(action.arguments.get("artifact_sha256", ""))
+        .strip()
+        .lower()
+        .removeprefix("sha256:")
+    )
+    if not isinstance(journal, Mapping):
+        executions = receipt.value.get("executions")
+        if (
+            str(receipt.value.get("schema", ""))
+            == f"{RUNTIME_API_VERSION}/task-orchestration"
+            and isinstance(executions, Sequence)
+            and not isinstance(executions, (str, bytes, bytearray))
+        ):
+            expected_domain = (
+                "live_patch"
+                if action.operation == "live_patch_run"
+                else "upgrade"
+            )
+            return any(
+                isinstance(item, Mapping)
+                and str(item.get("domain", "")) == expected_domain
+                and str(item.get("phase", "")) == "mutation"
+                and str(item.get("status", ""))
+                in {
+                    "succeeded",
+                    "modified",
+                    "verified",
+                    "failed",
+                    "blocked",
+                    "not_executed",
+                }
+                and isinstance(item.get("value"), Mapping)
+                and isinstance(item["value"].get("journal"), Mapping)
+                and _mutation_journal_receipt_valid(
+                    item["value"]["journal"],
+                    expected_operation_id=str(item.get("operation_id", "")),
+                    expected_action=journal_action,
+                    expected_artifact_digest=expected_artifact_digest,
+                    compatibility_identity=(
+                        item["value"].get("_runtime_compatibility_receipt")
+                        if isinstance(
+                            item["value"].get("_runtime_compatibility_receipt"),
+                            Mapping,
+                        )
+                        else None
+                    ),
+                )
+                for item in executions
+            )
+        return (
+            receipt.status == "running"
+            and str(receipt.value.get("status", "")).strip().lower() == "running"
+            and str(receipt.value.get("operation_id", ""))
+            == action.context.operation_id
+        )
+    public_operation_id = str(receipt.value.get("operation_id", ""))
+    if public_operation_id and public_operation_id != action.context.operation_id:
+        return False
+    return _mutation_journal_receipt_valid(
+        journal,
+        expected_operation_id=action.context.operation_id,
+        expected_action=journal_action,
+        expected_task_id=action.context.task_id,
+        expected_artifact_digest=expected_artifact_digest,
+        compatibility_identity=(
+            receipt.value.get("_runtime_compatibility_receipt")
+            if isinstance(
+                receipt.value.get("_runtime_compatibility_receipt"),
+                Mapping,
+            )
+            else None
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -453,6 +667,7 @@ class DomainPack:
                     "path_fields": list(self.artifact_contract.path_fields),
                     "digest_field": self.artifact_contract.digest_field,
                     "version_field": self.artifact_contract.version_field,
+                    "artifact_kind": self.artifact_contract.artifact_kind,
                     "required": self.artifact_contract.required,
                 }
                 if self.artifact_contract is not None

@@ -530,7 +530,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                         {
                             "kind": "resume",
                             "run_id": developer["run_id"],
-                            "deadline": 1.0,
+                            "deadline": 5.0,
                         },
                         task_id="public-upgrade-resume",
                         operation_id="public-upgrade-resume",
@@ -1414,6 +1414,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         self.assertEqual(result["epoch_before"], 6)
         self.assertEqual(result["epoch_after"], 7)
         self.assertEqual(result["journal"]["stage"], "verified")
+        self.assertEqual(result["journal"]["expected_checksum"], digest)
         self.assertEqual(result["mutation"]["artifact_path"], str(artifact))
         self.assertEqual(result["mutation"]["product_version"], "2.0.0")
         self.assertEqual(result["verification"]["installed_version"], "2.0.0")

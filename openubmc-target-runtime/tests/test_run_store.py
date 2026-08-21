@@ -23,9 +23,29 @@ from openubmc_target_runtime import (  # noqa: E402
     project_case,
 )
 from openubmc_target_runtime.run_store import upcast_run_events  # noqa: E402
+from openubmc_target_runtime.run_engine import (  # noqa: E402
+    RunCommandTransaction,
+    RunCommandTransactions,
+    RunDriver,
+)
 
 
 class RunDecisionContractTests(unittest.TestCase):
+    def test_run_engine_persistence_protocol_exposes_one_typed_transition_seam(self) -> None:
+        retired = {
+            "persist_gate",
+            "record_incident",
+            "record_outcome",
+            "stage_effect",
+            "stage_events",
+        }
+        self.assertFalse(retired & set(RunDriver.__dict__))
+        self.assertFalse(retired & set(RunCommandTransactions.__dict__))
+        self.assertFalse(retired & set(RunCommandTransaction.__dict__))
+        self.assertIn("apply_transition", RunDriver.__dict__)
+        self.assertIn("derive_closeout", RunDriver.__dict__)
+        self.assertIn("stage", RunCommandTransaction.__dict__)
+
     def test_run_decision_is_a_versioned_typed_contract(self) -> None:
         decision = RunDecision(
             run_id="run-1",

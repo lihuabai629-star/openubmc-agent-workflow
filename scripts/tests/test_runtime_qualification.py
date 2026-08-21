@@ -33,10 +33,11 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "false_successes": 0,
                 "wrong_target_or_artifact_mutations": 0,
                 "unknown_new_identity_retries": 0,
+                "real_backend_crash_cuts": 0,
             },
         )
         self.assertTrue(report["ordinary_partial_result_accepted"])
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 6)
 
     def test_failed_safety_qualification_blocks_promotion(self) -> None:
         call_count = 0
@@ -55,7 +56,7 @@ class RuntimeQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["promotable"])
         self.assertGreater(report["violations"]["false_successes"], 0)
-        self.assertEqual(call_count, 5)
+        self.assertEqual(call_count, 6)
 
 
 if __name__ == "__main__":
