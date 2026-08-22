@@ -54,6 +54,23 @@ def signing_keys(root: Path) -> tuple[Path, Path]:
     return private_key, Path(f"{private_key}.pub")
 
 
+def initialize_git_repository(root: Path) -> None:
+    module.subprocess.run(["git", "init"], cwd=root, check=True)
+    module.subprocess.run(
+        ["git", "config", "user.email", "benchmark@example.invalid"],
+        cwd=root,
+        check=True,
+    )
+    module.subprocess.run(
+        ["git", "config", "user.name", "Benchmark Test"],
+        cwd=root,
+        check=True,
+    )
+    (root / "tracked.txt").write_text("clean\n", encoding="utf-8")
+    module.subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+    module.subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True)
+
+
 def signed_run_evidence(
     root: Path,
     value: dict[str, object],
@@ -509,7 +526,7 @@ class AgentGatewayAbTests(unittest.TestCase):
                 return "c" * 40
             return "a" * 40 if root == candidate else "b" * 40
 
-        with patch.object(module, "_require_clean_candidate"), patch.object(
+        with patch.object(module, "_require_clean_source"), patch.object(
             module, "_git_commit", side_effect=commit
         ), self.assertRaisesRegex(RuntimeError, "candidate source moved"):
             module._require_pinned_sources(
@@ -524,21 +541,7 @@ class AgentGatewayAbTests(unittest.TestCase):
     def test_run_benchmark_rejects_a_dirty_candidate_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            module.subprocess.run(["git", "init"], cwd=root, check=True)
-            module.subprocess.run(
-                ["git", "config", "user.email", "benchmark@example.invalid"],
-                cwd=root,
-                check=True,
-            )
-            module.subprocess.run(
-                ["git", "config", "user.name", "Benchmark Test"],
-                cwd=root,
-                check=True,
-            )
-            tracked = root / "tracked.txt"
-            tracked.write_text("clean\n", encoding="utf-8")
-            module.subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
-            module.subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True)
+            initialize_git_repository(root)
             (root / "untracked.txt").write_text("dirty\n", encoding="utf-8")
             args = module.argparse.Namespace(repo=root)
 
@@ -549,23 +552,54 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         prepare.assert_not_called()
 
+    def test_run_benchmark_rejects_a_dirty_reused_candidate_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            initialize_git_repository(repo)
+            source_commit = module._git_commit(repo, "HEAD")
+            work_root = root / "work"
+            baseline_root = work_root / "variants" / f"baseline-{source_commit[:12]}"
+            candidate_root = work_root / "variants" / f"candidate-{source_commit[:12]}"
+            module._prepare_worktree(repo, baseline_root, source_commit)
+            module._prepare_worktree(repo, candidate_root, source_commit)
+            (candidate_root / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+            private_key, public_key = signing_keys(root / "keys")
+            credentials = root / "credentials.env"
+            credentials.write_text("OPENUBMC_USERNAME=test\n", encoding="utf-8")
+            args = module.argparse.Namespace(
+                repo=repo,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+                attestation_private_key=private_key,
+                attestation_public_key=public_key,
+                work_root=work_root,
+                baseline_ref="HEAD",
+                output=None,
+                pairs=1,
+                seed=1,
+                credentials=credentials,
+                only_arm="B",
+                scenario="execute-source-only",
+                codex="codex",
+                codex_cwd=repo,
+                pause_seconds=0,
+            )
+
+            with patch.object(module, "prepare_arm_home"), patch.object(
+                module, "_run", side_effect=AssertionError("benchmark executed")
+            ) as execute, self.assertRaisesRegex(
+                RuntimeError, "clean benchmark worktree"
+            ):
+                module.run_benchmark(args)
+
+        execute.assert_not_called()
+
     def test_run_benchmark_rejects_a_noncanonical_model_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            module.subprocess.run(["git", "init"], cwd=root, check=True)
-            module.subprocess.run(
-                ["git", "config", "user.email", "benchmark@example.invalid"],
-                cwd=root,
-                check=True,
-            )
-            module.subprocess.run(
-                ["git", "config", "user.name", "Benchmark Test"],
-                cwd=root,
-                check=True,
-            )
-            (root / "tracked.txt").write_text("clean\n", encoding="utf-8")
-            module.subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
-            module.subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True)
+            initialize_git_repository(root)
             args = module.argparse.Namespace(
                 repo=root,
                 model="different-model",
@@ -582,20 +616,7 @@ class AgentGatewayAbTests(unittest.TestCase):
     def test_run_benchmark_rejects_an_untrusted_attestation_key_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as key_raw:
             root = Path(raw)
-            module.subprocess.run(["git", "init"], cwd=root, check=True)
-            module.subprocess.run(
-                ["git", "config", "user.email", "benchmark@example.invalid"],
-                cwd=root,
-                check=True,
-            )
-            module.subprocess.run(
-                ["git", "config", "user.name", "Benchmark Test"],
-                cwd=root,
-                check=True,
-            )
-            (root / "tracked.txt").write_text("clean\n", encoding="utf-8")
-            module.subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
-            module.subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True)
+            initialize_git_repository(root)
             private_key, _ = signing_keys(Path(key_raw) / "trusted")
             _, different_public_key = signing_keys(Path(key_raw) / "different")
             args = module.argparse.Namespace(

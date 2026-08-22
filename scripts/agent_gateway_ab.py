@@ -1129,6 +1129,21 @@ def _run(command: list[str], *, cwd: Path, env: Mapping[str, str], stdin: str, s
         return process.wait()
 
 
+def _require_clean_source(repo: Path, description: str) -> None:
+    completed = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    if completed.stdout.strip():
+        raise RuntimeError(
+            f"AB qualification requires a clean {description} so the "
+            "recorded source commit identifies the tested source"
+        )
+
+
 def _prepare_worktree(repo: Path, destination: Path, ref: str) -> None:
     if destination.exists():
         current = subprocess.run(
@@ -1148,6 +1163,7 @@ def _prepare_worktree(repo: Path, destination: Path, ref: str) -> None:
             check=True,
         ).stdout.strip()
         if current.returncode == 0 and current.stdout.strip() == expected:
+            _require_clean_source(destination, "benchmark worktree")
             return
         raise RuntimeError(f"benchmark worktree already exists at {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1256,21 +1272,6 @@ def _git_commit(repo: Path, ref: str) -> str:
     ).stdout.strip()
 
 
-def _require_clean_candidate(repo: Path) -> None:
-    completed = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=repo,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-    if completed.stdout.strip():
-        raise RuntimeError(
-            "AB qualification requires a clean candidate repository so the "
-            "recorded source commit identifies the tested source"
-        )
-
-
 def _require_pinned_sources(
     *,
     repo: Path,
@@ -1280,9 +1281,9 @@ def _require_pinned_sources(
     baseline_commit: str,
     baseline_ref: str,
 ) -> None:
-    _require_clean_candidate(repo)
-    _require_clean_candidate(candidate_root)
-    _require_clean_candidate(baseline_root)
+    _require_clean_source(repo, "candidate repository")
+    _require_clean_source(candidate_root, "candidate worktree")
+    _require_clean_source(baseline_root, "baseline worktree")
     if _git_commit(candidate_root, "HEAD") != candidate_commit:
         raise RuntimeError("AB candidate worktree drifted during qualification")
     if _git_commit(baseline_root, "HEAD") != baseline_commit:
@@ -1677,7 +1678,7 @@ def verify_summary(
 
 def run_benchmark(args: argparse.Namespace) -> int:
     repo = args.repo.resolve()
-    _require_clean_candidate(repo)
+    _require_clean_source(repo, "candidate repository")
     if args.model != QUALIFICATION_MODEL:
         raise RuntimeError(
             f"qualification model must be {QUALIFICATION_MODEL}"
