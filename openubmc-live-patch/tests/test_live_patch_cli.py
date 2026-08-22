@@ -143,6 +143,19 @@ class LivePatchCliTests(unittest.TestCase):
                                 text = "live_patch_paths_safe"
                         elif "live_patch_codec_ready" in command:
                             text = "live_patch_codec_ready"
+                        elif "live_patch_identity_inspected" in command:
+                            text = (
+                                "product_id=product-a\\nmachine_id=machine-a\\n"
+                                "firmware_id=firmware-1\\nreboot_anchor=boot-a\\n"
+                                "live_patch_identity_inspected"
+                            )
+                        elif "rollback_backup_inspected" in command:
+                            text = (
+                                "backup_sha256="
+                                + _fake_os.environ["FAKE_LOCAL_SHA256"]
+                                + "\\nbackup_mode=440\\nbackup_uid=104\\n"
+                                + "backup_gid=104\\nrollback_backup_inspected"
+                            )
                         elif "/proc/mounts" in command:
                             text = _fake_os.environ.get("FAKE_ROOT_MOUNT_OPTIONS", "ro,relatime")
                         elif "remount_rw_ok" in command:

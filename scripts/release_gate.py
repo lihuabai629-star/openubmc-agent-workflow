@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Sequence
+import hashlib
 import json
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -14,7 +16,15 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_GATE_SCHEMA = "openubmc-agent-workflow.release-gate.v1"
+sys.path.insert(0, str(ROOT / "openubmc-target-runtime"))
+
+from openubmc_target_runtime.release import (  # noqa: E402
+    ReleaseLockError,
+    verify_release_lock,
+)
+
+
+RELEASE_GATE_SCHEMA = "openubmc-agent-workflow.release-gate.v2"
 
 
 def _tail(value: str, *, limit: int = 4000) -> str:
@@ -64,18 +74,124 @@ def _installed_installer(home: Path) -> Path:
     )
 
 
+def _test_discovery(pattern: str, *, name_filter: str = "") -> tuple[str, ...]:
+    command = (
+        sys.executable,
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "openubmc-target-runtime/tests",
+        "-p",
+        pattern,
+    )
+    return (*command, "-k", name_filter) if name_filter else command
+
+
+def _fingerprint(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _environment() -> dict[str, str]:
+    return {
+        "python": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "platform": platform.platform(),
+    }
+
+
+def _artifact(path: Path) -> dict[str, object] | None:
+    if not path.is_file():
+        return None
+    content = path.read_bytes()
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "size_bytes": len(content),
+    }
+
+
+def _resolve_commit(workspace: Path, ref: str) -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", f"{ref}^{{commit}}"],
+        cwd=workspace,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return completed.stdout.strip() if completed.returncode == 0 else ref
+
+
+def _resolve_release_source_commit(workspace: Path, ref: str) -> str:
+    """Resolve the source parent recorded by an immutable lock-only ref."""
+
+    release_commit = _resolve_commit(workspace, ref)
+    workspace_commit = _resolve_commit(workspace, "HEAD")
+    if release_commit.lower() != workspace_commit.lower():
+        raise ValueError(
+            "release gate workspace HEAD must match --current-ref"
+        )
+    try:
+        identity = verify_release_lock(workspace)
+    except ReleaseLockError as exc:
+        raise ValueError(f"invalid immutable release ref: {exc}") from exc
+    source_commit = str(identity.get("source_commit", "")).strip().lower()
+    if source_commit == release_commit.lower():
+        raise ValueError(
+            "immutable release ref must be a lock-only child of source_commit"
+        )
+    return source_commit
+
+
 def gate_commands(
     *,
     current_ref: str,
     previous_ref: str,
     clean_home: Path,
     lifecycle_home: Path,
+    ab_evidence: Path | None = None,
+    source_commit: str = "",
+    github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
+    ab_attestation_public_key: Path | None = None,
 ) -> tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]:
     clean_install = tuple(_install_command(current_ref, clean_home))
     previous_install = tuple(_install_command(previous_ref, lifecycle_home))
     current_upgrade = tuple(_install_command(current_ref, lifecycle_home))
     installer = str(_installed_installer(lifecycle_home))
+    qualification_output = lifecycle_home.parent / "runtime-qualification.json"
+    selected_ab_evidence = (
+        ab_evidence
+        if ab_evidence is not None
+        else lifecycle_home.parent / "agent-gateway-ab-summary.json"
+    )
+    selected_attestation_public_key = (
+        ab_attestation_public_key
+        if ab_attestation_public_key is not None
+        else lifecycle_home.parent / "agent-gateway-ab-attestation.pub"
+    )
     return (
+        (
+            "github_ci",
+            (
+                (
+                    sys.executable,
+                    str(ROOT / "scripts" / "github_ci_evidence.py"),
+                    "--repository",
+                    github_repository,
+                    "--commit",
+                    source_commit,
+                    "--output",
+                    str(lifecycle_home.parent / "github-ci-evidence.json"),
+                ),
+            ),
+        ),
         ("clean_install", (clean_install,)),
         ("upgrade", (previous_install, current_upgrade)),
         (
@@ -94,18 +210,19 @@ def gate_commands(
         ),
         (
             "agent_interface",
-            (
-                (
-                    sys.executable,
-                    "-m",
-                    "unittest",
-                    "discover",
-                    "-s",
-                    "openubmc-target-runtime/tests",
-                    "-p",
-                    "test_agent_gateway.py",
-                ),
-            ),
+            ((_test_discovery("test_agent_gateway.py")),),
+        ),
+        (
+            "source_only",
+            ((_test_discovery("test_agent_gateway.py", name_filter="source_only")),),
+        ),
+        (
+            "live_patch",
+            ((_test_discovery("test_agent_gateway.py", name_filter="live_patch")),),
+        ),
+        (
+            "build_upgrade",
+            ((_test_discovery("test_agent_gateway.py", name_filter="build_upgrade")),),
         ),
         (
             "replay_smoke",
@@ -122,6 +239,44 @@ def gate_commands(
                 ),
             ),
         ),
+        (
+            "old_schema_compatibility",
+            ((_test_discovery("test_run_store.py")),),
+        ),
+        (
+            "domain_pack_conformance",
+            ((_test_discovery("test_domain_pack_conformance.py")),),
+        ),
+        (
+            "runtime_safety_qualification",
+            (
+                (
+                    sys.executable,
+                    str(ROOT / "scripts" / "runtime_qualification.py"),
+                    "--workspace",
+                    str(ROOT),
+                    "--output",
+                    str(qualification_output),
+                ),
+            ),
+        ),
+        (
+            "agent_gateway_ab_evidence",
+            (
+                (
+                    sys.executable,
+                    str(ROOT / "scripts" / "agent_gateway_ab.py"),
+                    "verify",
+                    str(selected_ab_evidence),
+                    "--source-ref",
+                    source_commit,
+                    "--repo",
+                    str(ROOT),
+                    "--attestation-public-key",
+                    str(selected_attestation_public_key),
+                ),
+            ),
+        ),
     )
 
 
@@ -132,16 +287,28 @@ def execute_release_gate(
     workspace: Path,
     work_root: Path,
     executor: Callable[..., subprocess.CompletedProcess[str]] = run_process,
+    source_commit: str | None = None,
+    ab_evidence: Path | None = None,
+    github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
+    ab_attestation_public_key: Path | None = None,
 ) -> dict[str, object]:
     clean_home = work_root / "clean-install-home"
     lifecycle_home = work_root / "lifecycle-home"
     results: list[dict[str, object]] = []
     blocked = False
+    resolved_source_commit = source_commit or _resolve_release_source_commit(
+        workspace,
+        current_ref,
+    )
     for name, commands in gate_commands(
         current_ref=current_ref,
         previous_ref=previous_ref,
         clean_home=clean_home,
         lifecycle_home=lifecycle_home,
+        ab_evidence=ab_evidence,
+        source_commit=resolved_source_commit,
+        github_repository=github_repository,
+        ab_attestation_public_key=ab_attestation_public_key,
     ):
         if blocked:
             results.append({"name": name, "status": "skipped", "commands": []})
@@ -170,13 +337,32 @@ def execute_release_gate(
             }
         )
     promotable = all(item["status"] == "passed" for item in results)
-    return {
+    environment = _environment()
+    qualification_path = work_root / "runtime-qualification.json"
+    artifacts = {}
+    qualification_artifact = _artifact(qualification_path)
+    if qualification_artifact is not None:
+        artifacts["runtime_qualification"] = qualification_artifact
+    github_ci_artifact = _artifact(work_root / "github-ci-evidence.json")
+    if github_ci_artifact is not None:
+        artifacts["github_ci"] = github_ci_artifact
+    if ab_evidence is not None:
+        ab_artifact = _artifact(ab_evidence)
+        if ab_artifact is not None:
+            artifacts["agent_gateway_ab"] = ab_artifact
+    report = {
         "schema": RELEASE_GATE_SCHEMA,
         "current_ref": current_ref,
         "previous_ref": previous_ref,
+        "source_commit": resolved_source_commit,
+        "environment": environment,
+        "environment_fingerprint": _fingerprint(environment),
         "promotable": promotable,
         "gates": results,
+        "artifacts": artifacts,
     }
+    report["evidence_digest"] = _fingerprint(report)
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -186,6 +372,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workspace", type=Path, default=ROOT)
     parser.add_argument("--work-root", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--ab-evidence", type=Path, required=True)
+    parser.add_argument(
+        "--ab-attestation-public-key",
+        type=Path,
+        required=True,
+    )
+    parser.add_argument(
+        "--github-repository",
+        default="lihuabai629-star/openubmc-agent-workflow",
+    )
     args = parser.parse_args(argv)
 
     if args.current_ref == args.previous_ref:
@@ -203,6 +399,11 @@ def main(argv: list[str] | None = None) -> int:
             previous_ref=args.previous_ref,
             workspace=args.workspace.expanduser().absolute(),
             work_root=work_root,
+            ab_evidence=args.ab_evidence.expanduser().absolute(),
+            github_repository=args.github_repository,
+            ab_attestation_public_key=(
+                args.ab_attestation_public_key.expanduser().absolute()
+            ),
         )
         encoded = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         if args.output is not None:

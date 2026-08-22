@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -15,12 +18,16 @@ sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-upgrade"))
 
 from openubmc_target_runtime import (  # noqa: E402
+    FilesystemBlobRepository,
+    OrchestratedMcpBackend,
     MutationAuthorizationDenied,
     MutationJournalStore,
     MutationOperationConflict,
     RuntimeMcpService,
+    SQLiteRuntimeRepository,
     TaskAuthorizationPolicy,
 )
+from openubmc_target_runtime.capability import EffectRecoveryMode  # noqa: E402
 from openubmc_upgrade.runtime_backend import (  # noqa: E402
     RedfishHttpSession,
     RedfishHttpError,
@@ -35,6 +42,101 @@ from openubmc_upgrade.runtime_backend import (  # noqa: E402
 
 
 TEST_DEADLINE_SECONDS = 30
+
+
+def artifact_ref(
+    path: Path,
+    *,
+    target: str,
+    run_id: str,
+    version: str,
+) -> dict[str, object]:
+    body = path.read_bytes()
+    Path(str(path) + ".metadata.json").write_text(
+        json.dumps(
+            {
+                "schema": "openubmc-agent-workflow/artifact-metadata-v1",
+                "artifact": {
+                    "sha256": hashlib.sha256(body).hexdigest(),
+                    "size": len(body),
+                    "kind": "openubmc-hpm",
+                },
+                "product_version": version,
+                "provenance": "upgrade-fault-matrix",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "handle": str(path),
+        "digest": "sha256:" + hashlib.sha256(body).hexdigest(),
+        "kind": "openubmc-hpm",
+        "size": len(body),
+        "provenance": "upgrade-fault-matrix",
+        "retention_hint": "run-lifetime",
+        "target": target,
+        "run_id": run_id,
+        "version": version,
+    }
+
+
+def gate_binding(turn: Mapping[str, object]) -> dict[str, object]:
+    gate = turn["gate"]
+    assert isinstance(gate, Mapping)
+    return {
+        "gate_id": gate["gate_id"],
+        "gate_version": gate["gate_version"],
+        "schema_digest": gate["schema_digest"],
+    }
+
+
+class WorkflowDebugBackend:
+    class Task:
+        def __init__(self, task_id: str) -> None:
+            self.task_id = task_id
+
+    @staticmethod
+    def open_task(task_id: str):
+        return WorkflowDebugBackend.Task(task_id)
+
+    @staticmethod
+    def close_task(_task) -> None:
+        return None
+
+    @staticmethod
+    def maintain_task(_task) -> int:
+        return 0
+
+    @staticmethod
+    def task_status(task) -> dict[str, object]:
+        return {"task_id": task.task_id}
+
+    @staticmethod
+    def debug_run(_task, _arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        return {"ok": True, "summary": "diagnosis completed"}
+
+    @staticmethod
+    def debug_collect(_task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        return {
+            "ok": True,
+            "observed_at": "2026-08-20T00:00:00Z",
+            "target_epoch": int(arguments.get("_minimum_target_epoch", 0)),
+            "business_acceptance": "passed",
+            "result": {
+                "capabilities": {
+                    "ssh_transport": True,
+                    "mdbctl": True,
+                    "busctl": False,
+                    "active_alarm_transport": True,
+                    "active_alarm_endpoint_verified": False,
+                    "active_alarms": True,
+                },
+                "lanes": {"ssh": {}},
+            },
+        }
 
 
 class FakeRedfishSession:
@@ -133,6 +235,8 @@ class UncertainUpgradeSession(FakeRedfishSession):
         if path == "/redfish/v1/UpdateService/upload":
             self.calls.append((method, path))
             self.transport.upload_attempts += 1
+            if self.transport.faulted is not None:
+                self.transport.faulted.set()
             raise OSError("upload connection lost")
         if path == "/redfish/v1/Managers/1":
             self.calls.append((method, path))
@@ -210,6 +314,7 @@ class UncertainUpgradeTransport(FakeRedfishTransport):
         active_version: str,
         available_version: str = "",
         pending: bool = False,
+        faulted: threading.Event | None = None,
     ) -> None:
         super().__init__()
         self.manager_versions = manager_versions
@@ -218,6 +323,7 @@ class UncertainUpgradeTransport(FakeRedfishTransport):
         self.pending = pending
         self.manager_reads = 0
         self.upload_attempts = 0
+        self.faulted = faulted
 
     def open_session(self, *, target, credentials) -> FakeRedfishSession:
         self.opens += 1
@@ -226,7 +332,401 @@ class UncertainUpgradeTransport(FakeRedfishTransport):
         return session
 
 
+class MissingTaskUriSession(FakeRedfishSession):
+    def request_json(self, method: str, path: str, **kwargs) -> RedfishResponse:
+        if path == "/redfish/v1/UpdateService/upload":
+            self.calls.append((method, path))
+            return RedfishResponse(status=202, headers={}, payload={})
+        return super().request_json(method, path, **kwargs)
+
+
+class MissingTaskUriTransport(FakeRedfishTransport):
+    def open_session(self, *, target, credentials) -> FakeRedfishSession:
+        self.opens += 1
+        session = MissingTaskUriSession(self.opens)
+        self.sessions.append(session)
+        return session
+
+
+class MonitorDisconnectSession(FakeRedfishSession):
+    def __init__(self, number: int, transport: "MonitorDisconnectTransport") -> None:
+        super().__init__(number)
+        self.transport = transport
+
+    def request_json(self, method: str, path: str, **kwargs) -> RedfishResponse:
+        if path == "/redfish/v1/UpdateService/upload":
+            self.calls.append((method, path))
+            self.transport.upload_attempts += 1
+            return RedfishResponse(
+                status=202,
+                headers={"Location": "/redfish/v1/TaskService/Tasks/1"},
+                payload={},
+            )
+        if path == "/redfish/v1/TaskService/Tasks/1":
+            self.calls.append((method, path))
+            raise OSError("task monitor disconnected during BMC reboot")
+        if path == "/redfish/v1/Managers/1":
+            self.calls.append((method, path))
+            self.transport.manager_reads += 1
+            versions = self.transport.manager_versions
+            version = versions[min(self.transport.manager_reads - 1, len(versions) - 1)]
+            return RedfishResponse(
+                status=200,
+                headers={},
+                payload={"FirmwareVersion": version},
+            )
+        if path == "/redfish/v1/UpdateService" and self.transport.upload_attempts:
+            self.calls.append((method, path))
+            return RedfishResponse(
+                status=200,
+                headers={},
+                payload={
+                    "FirmwareInventory": {
+                        "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory"
+                    },
+                    "Task": {"State": "Running"},
+                    "Oem": {
+                        "openUBMC": {
+                            "FirmwareToTakeEffect": ["BMC"],
+                            "BackgroundUpdateTasks": [],
+                            "SyncUpdateState": "Activating",
+                        }
+                    },
+                },
+            )
+        if path == "/redfish/v1/UpdateService/FirmwareInventory":
+            self.calls.append((method, path))
+            return RedfishResponse(
+                status=200,
+                headers={},
+                payload={
+                    "Members": [
+                        {
+                            "@odata.id": (
+                                "/redfish/v1/UpdateService/FirmwareInventory/ActiveBMC"
+                            )
+                        },
+                        {
+                            "@odata.id": (
+                                "/redfish/v1/UpdateService/FirmwareInventory/AvailableBMC"
+                            )
+                        },
+                    ]
+                },
+            )
+        if path.endswith("/ActiveBMC"):
+            self.calls.append((method, path))
+            return RedfishResponse(
+                status=200,
+                headers={},
+                payload={"Version": self.transport.active_version},
+            )
+        if path.endswith("/AvailableBMC"):
+            self.calls.append((method, path))
+            return RedfishResponse(
+                status=200,
+                headers={},
+                payload={"Version": "2.0.0"},
+            )
+        return super().request_json(method, path, **kwargs)
+
+
+class MonitorDisconnectTransport(FakeRedfishTransport):
+    def __init__(self, *, manager_versions: tuple[str, ...]) -> None:
+        super().__init__()
+        self.manager_versions = manager_versions
+        self.manager_reads = 0
+        self.upload_attempts = 0
+        self.active_version = manager_versions[0]
+
+    def open_session(self, *, target, credentials) -> FakeRedfishSession:
+        self.opens += 1
+        session = MonitorDisconnectSession(self.opens, self)
+        self.sessions.append(session)
+        return session
+
+
+class FastPollingUpgradeBackend(UpgradeMcpBackend):
+    def upgrade_run(self, task, arguments, context):
+        selected = dict(arguments)
+        selected.setdefault("version_poll_interval", 0.01)
+        return super().upgrade_run(task, selected, context)
+
+
 class UpgradeRuntimeBackendTests(unittest.TestCase):
+    def run_public_upgrade(
+        self,
+        transport: FakeRedfishTransport,
+        *,
+        deadline: float = 1.0,
+        backend_type=UpgradeMcpBackend,
+    ) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware-2.0.0")
+            debug = WorkflowDebugBackend()
+            upgrade = backend_type(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
+            )
+            service = RuntimeMcpService(
+                OrchestratedMcpBackend(
+                    {
+                        "debug_run": debug,
+                        "debug_collect": debug,
+                        "upgrade_run": upgrade,
+                    }
+                )
+            )
+            try:
+                developer = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "bmc.example",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "build-upgrade",
+                    },
+                    task_id="public-upgrade",
+                    operation_id="public-upgrade-start",
+                )
+                build = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer["run_id"],
+                        **gate_binding(developer),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair completed",
+                            "payload": {
+                                "source_revision": "public-upgrade-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["build and target verification"],
+                            },
+                        },
+                    },
+                    task_id="public-upgrade",
+                    operation_id="public-upgrade-developer",
+                )
+                turn = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer["run_id"],
+                        **gate_binding(build),
+                        "response": {
+                            "status": "completed",
+                            "summary": "firmware artifact completed",
+                            "payload": {
+                                "source_revision": "public-upgrade-source",
+                                "artifact_ref": artifact_ref(
+                                    artifact,
+                                    target="bmc.example",
+                                    run_id=developer["run_id"],
+                                    version="2.0.0",
+                                ),
+                            },
+                        },
+                        "deadline": deadline,
+                    },
+                    task_id="public-upgrade",
+                    operation_id="public-upgrade-build",
+                )
+                first_turn = turn
+                if turn["state"] == "running":
+                    turn = service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "resume",
+                            "run_id": developer["run_id"],
+                            "deadline": 5.0,
+                        },
+                        task_id="public-upgrade-resume",
+                        operation_id="public-upgrade-resume",
+                    )
+                projection = service.context_runtime.read_case(developer["run_id"])
+            finally:
+                service.close()
+        return {"first_turn": first_turn, "final": turn, "projection": projection}
+
+    def test_execute_upgrade_without_task_uri_verifies_installed_version(self) -> None:
+        transport = MissingTaskUriTransport()
+        result = self.run_public_upgrade(transport)
+
+        self.assertEqual(result["final"]["state"], "completed", result["final"])
+        uploads = [
+            call
+            for session in transport.sessions
+            for call in session.calls
+            if call[0] == "POST"
+        ]
+        self.assertEqual(len(uploads), 1)
+        self.assertNotIn("TaskService", str(result["final"]))
+
+    def test_execute_upgrade_survives_monitor_disconnect_and_reboot(self) -> None:
+        transport = MonitorDisconnectTransport(
+            manager_versions=("1.0.0", "2.0.0"),
+        )
+        result = self.run_public_upgrade(
+            transport,
+            deadline=0.000001,
+            backend_type=FastPollingUpgradeBackend,
+        )
+
+        self.assertEqual(result["first_turn"]["state"], "running")
+        self.assertEqual(result["final"]["state"], "completed", result["final"])
+        self.assertEqual(transport.upload_attempts, 1)
+        self.assertGreaterEqual(transport.manager_reads, 2)
+        self.assertNotIn("TaskService", str(result["final"]))
+
+    def test_execute_restart_recovers_accepted_upload_without_uploading_twice(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "upgrade-crash.sqlite3"
+            blobs = root / "blobs"
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware-2.0.0")
+            journals = MutationJournalStore(root / "journals")
+            faulted = threading.Event()
+            transport = UncertainUpgradeTransport(
+                manager_versions=("1.0.0", "2.0.0"),
+                active_version="1.0.0",
+                available_version="2.0.0",
+                pending=True,
+                faulted=faulted,
+            )
+            debug = WorkflowDebugBackend()
+            upgrade = UpgradeMcpBackend(
+                journal_store=journals,
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
+            )
+
+            def service() -> RuntimeMcpService:
+                return RuntimeMcpService(
+                    OrchestratedMcpBackend(
+                        {
+                            "debug_run": debug,
+                            "debug_collect": debug,
+                            "upgrade_run": upgrade,
+                        }
+                    ),
+                    context_repository=SQLiteRuntimeRepository(database),
+                    blob_repository=FilesystemBlobRepository(blobs),
+                )
+
+            first = service()
+            try:
+                developer = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "bmc.example",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "build-upgrade",
+                    },
+                    task_id="upgrade-upload-loss",
+                    operation_id="upgrade-upload-loss-start",
+                )
+                build = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer["run_id"],
+                        **gate_binding(developer),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair completed",
+                            "payload": {
+                                "source_revision": "upgrade-upload-loss-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["build and target verification"],
+                            },
+                        },
+                    },
+                    task_id="upgrade-upload-loss",
+                    operation_id="upgrade-upload-loss-developer",
+                )
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer["run_id"],
+                        **gate_binding(build),
+                        "response": {
+                            "status": "completed",
+                            "summary": "firmware artifact completed",
+                            "payload": {
+                                "source_revision": "upgrade-upload-loss-source",
+                                "artifact_ref": artifact_ref(
+                                    artifact,
+                                    target="bmc.example",
+                                    run_id=developer["run_id"],
+                                    version="2.0.0",
+                                ),
+                            },
+                        },
+                        "deadline": 0.000001,
+                    },
+                    task_id="upgrade-upload-loss",
+                    operation_id="upgrade-upload-loss-build",
+                )
+                self.assertTrue(faulted.wait(timeout=1))
+                first_projection = first.context_runtime.read_case(
+                    developer["run_id"]
+                )
+                effect_id = first_projection["effect_intents"][-1]["effect_id"]
+                mutation_id = journals.load_for_task(
+                    developer["run_id"]
+                )[0].operation_id
+            finally:
+                first.close()
+
+            second = service()
+            try:
+                final = second.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": developer["run_id"]},
+                    task_id="upgrade-upload-loss-resume",
+                    operation_id="upgrade-upload-loss-resume",
+                )
+                projection = second.context_runtime.read_case(developer["run_id"])
+                recovered_mutation_ids = {
+                    journal.operation_id
+                    for journal in journals.load_for_task(developer["run_id"])
+                    if journal.action == "upgrade"
+                }
+            finally:
+                second.close()
+
+        self.assertEqual(running["state"], "running")
+        self.assertEqual(final["state"], "completed", final)
+        self.assertEqual(transport.upload_attempts, 1)
+        self.assertEqual(recovered_mutation_ids, {mutation_id})
+        self.assertEqual(
+            {
+                operation["operation_id"]
+                for operation in projection["operations"]
+                if operation.get("operation") == "upgrade_run"
+            },
+            {effect_id},
+        )
+
     def test_internal_runtime_disables_tls_verification_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             backend = UpgradeMcpBackend(
@@ -931,6 +1431,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         self.assertEqual(result["epoch_before"], 6)
         self.assertEqual(result["epoch_after"], 7)
         self.assertEqual(result["journal"]["stage"], "verified")
+        self.assertEqual(result["journal"]["expected_checksum"], digest)
         self.assertEqual(result["mutation"]["artifact_path"], str(artifact))
         self.assertEqual(result["mutation"]["product_version"], "2.0.0")
         self.assertEqual(result["verification"]["installed_version"], "2.0.0")
@@ -943,6 +1444,128 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         ]
         self.assertEqual(len(uploads), 1)
         self.assertTrue(replayed["idempotent_replay"])
+
+    def test_recovery_without_a_durable_journal_never_uploads_firmware(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            transport = FakeRedfishTransport()
+            service = RuntimeMcpService(
+                UpgradeMcpBackend(
+                    journal_store=MutationJournalStore(root / "journals"),
+                    credential_loader=lambda _arguments: {
+                        "redfish": {
+                            "user": "Administrator",
+                            "password": "redfish-secret",
+                        }
+                    },
+                    redfish_transport_factory=lambda _arguments: transport,
+                )
+            )
+            try:
+                descriptor = service.catalog.require("upgrade_run")
+                with self.assertRaisesRegex(
+                    OSError, "no durable mutation journal"
+                ):
+                    service._execute_domain_value(
+                        "upgrade_run",
+                        descriptor,
+                        {
+                            "intent": "upgrade-and-verify",
+                            "delivery_strategy": "build-upgrade",
+                            "ip": "bmc.example",
+                            "artifact_path": str(artifact),
+                            "artifact_sha256": digest,
+                            "product_version": "2.0.0",
+                            "deadline": TEST_DEADLINE_SECONDS,
+                        },
+                        task_id="upgrade-recovery-without-journal",
+                        operation_id="upgrade-recovery-without-journal",
+                        recovery_mode=EffectRecoveryMode.RECONCILE,
+                    )
+            finally:
+                service.close()
+
+        uploads = [
+            call
+            for session in transport.sessions
+            for call in session.calls
+            if call[1] == "/redfish/v1/UpdateService/upload"
+        ]
+        self.assertEqual(uploads, [])
+
+    def test_terminal_journal_replays_after_upgrade_artifact_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            arguments = {
+                "intent": "upgrade-and-verify",
+                "delivery_strategy": "build-upgrade",
+                "ip": "bmc.example",
+                "artifact_path": str(artifact),
+                "artifact_sha256": digest,
+                "product_version": "2.0.0",
+                "deadline": TEST_DEADLINE_SECONDS,
+            }
+            first = RuntimeMcpService(
+                UpgradeMcpBackend(
+                    journal_store=journals,
+                    credential_loader=lambda _arguments: {
+                        "redfish": {
+                            "user": "Administrator",
+                            "password": "redfish-secret",
+                        }
+                    },
+                    redfish_transport_factory=lambda _arguments: (
+                        FakeRedfishTransport()
+                    ),
+                )
+            )
+            try:
+                first.call_tool(
+                    "upgrade_run",
+                    arguments,
+                    task_id="terminal-upgrade",
+                    operation_id="terminal-upgrade-effect",
+                )
+            finally:
+                first.close()
+            artifact.unlink()
+
+            transport = FakeRedfishTransport()
+            second = RuntimeMcpService(
+                UpgradeMcpBackend(
+                    journal_store=journals,
+                    credential_loader=lambda _arguments: {
+                        "redfish": {
+                            "user": "Administrator",
+                            "password": "redfish-secret",
+                        }
+                    },
+                    redfish_transport_factory=lambda _arguments: transport,
+                )
+            )
+            try:
+                descriptor = second.catalog.require("upgrade_run")
+                replayed = second._execute_domain_value(
+                    "upgrade_run",
+                    descriptor,
+                    arguments,
+                    task_id="terminal-upgrade",
+                    operation_id="terminal-upgrade-effect",
+                    recovery_mode=EffectRecoveryMode.RECONCILE,
+                )
+            finally:
+                second.close()
+
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(replayed["journal"]["stage"], "verified")
+        self.assertEqual(transport.sessions, [])
 
     def test_version_verification_waits_through_old_version_after_reboot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1149,7 +1772,9 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         ]
         self.assertEqual(len(uploads), 1)
 
-    def test_uncertain_upgrade_with_no_effect_becomes_replan_without_artifact(self) -> None:
+    def test_uncertain_upgrade_with_no_visible_effect_remains_blocked_without_reupload(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             artifact = root / "openubmc.hpm"
@@ -1166,18 +1791,43 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                 digest=digest,
                 transport=transport,
                 task_id="task-upgrade-recovery-no-effect",
+                remove_artifact=False,
             )
+            backend = UpgradeMcpBackend(
+                journal_store=store,
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                replayed = service.call_tool(
+                    "upgrade_run",
+                    {
+                        **self.arguments(artifact, digest),
+                        "version_poll_interval": 0.001,
+                    },
+                    task_id="task-upgrade-recovery-no-effect",
+                    operation_id="upgrade-recovery",
+                )
+            finally:
+                service.close()
             journal = store.load(
                 "task-upgrade-recovery-no-effect",
                 "upgrade-recovery",
             )
 
-        self.assertEqual(result["mutation"]["recovery"]["decision"], "replan")
+        self.assertEqual(result["mutation"]["recovery"]["decision"], "manual")
+        self.assertEqual(replayed["mutation"]["recovery"]["decision"], "manual")
         self.assertIsNone(result["verification"])
         self.assertIsNotNone(journal)
-        self.assertEqual(journal.stage, "replan_required")
-        self.assertFalse(journal.effects_started)
-        self.assertFalse(journal.blocks_target)
+        self.assertEqual(journal.stage, "recovery_blocked")
+        self.assertTrue(journal.effects_started)
+        self.assertTrue(journal.blocks_target)
         self.assertEqual(transport.upload_attempts, 1)
 
     def test_uncertain_upgrade_already_installed_verifies_without_artifact(self) -> None:

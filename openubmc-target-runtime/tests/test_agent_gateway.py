@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import io
 import json
@@ -7,6 +8,8 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -19,27 +22,36 @@ from openubmc_target_runtime import (  # noqa: E402
     AgentGatewayError,
     CommandConflict,
     EvidenceUnavailable,
+    EventRunStore,
     GateConflict,
     InMemoryRuntimeRepository,
+    Incident,
     OBSERVATION_MAX_BYTES,
     RevisionConflict,
     ReferenceViolation,
     ResumeRun,
+    RunDecision,
     RunEngine,
     STDIO_FRAME_MAX_BYTES,
     TOOLS_LIST_MAX_BYTES,
     TURN_MAX_BYTES,
     JsonRpcMcpEndpoint,
     FilesystemBlobRepository,
+    InMemoryBlobRepository,
     RunTurn,
     RuntimeMcpService,
+    RuntimeSDKContext,
     SQLiteRuntimeRepository,
     ScopeContract,
     ScopeViolation,
+    StartRun,
     StdioMcpServer,
+    SubmitGate,
 )
-
-
+from openubmc_target_runtime.context_runtime import (  # noqa: E402
+    BufferedRuntimeRepository,
+)
+from openubmc_target_runtime.run_store import RunCommitRequest  # noqa: E402
 def encoded_size(value: object) -> int:
     return len(
         json.dumps(
@@ -82,6 +94,22 @@ def artifact_ref(
     }
     if version:
         reference["version"] = version
+        Path(str(path) + ".metadata.json").write_text(
+            json.dumps(
+                {
+                    "schema": "openubmc-agent-workflow/artifact-metadata-v1",
+                    "artifact": {
+                        "sha256": hashlib.sha256(body).hexdigest(),
+                        "size": len(body),
+                        "kind": kind,
+                    },
+                    "product_version": version,
+                    "provenance": reference["provenance"],
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
     return reference
 
 
@@ -111,6 +139,50 @@ class CommitThenConflictRepository(InMemoryRuntimeRepository):
             self.conflicted = True
             raise RevisionConflict("simulated concurrent commit")
         return projection
+
+
+class RecordingCommitRepository(InMemoryRuntimeRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.commits: list[tuple[str, ...]] = []
+
+    def commit(self, case_id, *, expected_revision, events):
+        pending = tuple(events)
+        self.commits.append(tuple(event.kind for event in pending))
+        return super().commit(
+            case_id,
+            expected_revision=expected_revision,
+            events=pending,
+        )
+
+
+class FailOnceRunReceiptRepository(InMemoryRuntimeRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_completion = False
+        self.claims: dict[tuple[str, str], str] = {}
+
+    def claim_idempotency(self, case_id, key, fingerprint):
+        self.claims[(case_id, key)] = fingerprint
+        return super().claim_idempotency(case_id, key, fingerprint)
+
+    def complete_idempotency(self, case_id, key, receipt) -> None:
+        if self.fail_next_completion:
+            self.fail_next_completion = False
+            raise OSError("simulated Run receipt completion interruption")
+        super().complete_idempotency(case_id, key, receipt)
+
+
+class FailOnceBlobRepository(InMemoryBlobRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 1
+
+    def put(self, body: bytes) -> str:
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise OSError("simulated evidence persistence interruption")
+        return super().put(body)
 
 
 class SemanticBackend:
@@ -168,6 +240,9 @@ class SemanticBackend:
             "_minimum_target_epoch"
         ):
             value["business_acceptance"] = "passed"
+        minimum_epoch = arguments.get("_minimum_target_epoch")
+        if isinstance(minimum_epoch, int) and not isinstance(minimum_epoch, bool):
+            value["target_epoch"] = minimum_epoch
         return value
 
     def debug_run(self, task, arguments, context) -> dict[str, object]:
@@ -200,6 +275,7 @@ class SemanticBackend:
                 "target_epoch": 1,
             },
             "journal": {
+                "operation_id": context.operation_id,
                 "stage": "verified",
                 "action": "live_patch",
                 "expected_checksum": artifact_sha256,
@@ -220,7 +296,11 @@ class SemanticBackend:
                 "installed_version": product_version,
                 "target_epoch": 1,
             },
-            "journal": {"stage": "verified", "action": "upgrade"},
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "upgrade",
+            },
         }
 
 
@@ -273,7 +353,11 @@ class FailOnceUpgradeSemanticBackend(SemanticBackend):
                 "installed_version": str(arguments.get("product_version", "")),
                 "target_epoch": 1,
             },
-            "journal": {"stage": "verified", "action": "upgrade"},
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "upgrade",
+            },
         }
 
 
@@ -282,6 +366,13 @@ class FailLivePatchSemanticBackend(SemanticBackend):
         context.raise_if_stopped()
         self.calls.append(("live_patch_run", dict(arguments)))
         raise OSError("live patch connection lost")
+
+
+class MissingFreshEpochSemanticBackend(SemanticBackend):
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value.pop("target_epoch", None)
+        return value
 
 
 class IncompleteAcceptanceSemanticBackend(SemanticBackend):
@@ -297,7 +388,11 @@ class IncompleteAcceptanceSemanticBackend(SemanticBackend):
             "ok": True,
             "summary": "live patch returned without integrity evidence",
             "target_epoch": 1,
-            "journal": {"stage": "verified", "action": "live_patch"},
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "live_patch",
+            },
         }
 
 
@@ -330,6 +425,7 @@ class RunningUpgradeSemanticBackend(SemanticBackend):
             return {
                 "ok": True,
                 "status": "running",
+                "operation_id": context.operation_id,
                 "summary": "firmware upload accepted",
                 "target_epoch": 1,
             }
@@ -341,7 +437,312 @@ class RunningUpgradeSemanticBackend(SemanticBackend):
                 "installed_version": str(arguments.get("product_version", "")),
                 "target_epoch": 1,
             },
-            "journal": {"stage": "verified", "action": "upgrade"},
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "upgrade",
+            },
+        }
+
+
+class BlockingUnknownRecoveryUpgradeBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.recovery_started = threading.Event()
+        self.release_recovery = threading.Event()
+        self.apply_calls = 0
+        self.recovery_calls = 0
+        self.operation_ids: list[str] = []
+
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.operation_ids.append(str(context.operation_id))
+        if arguments.get("_runtime_effect_recovery") == "reconcile":
+            self.recovery_calls += 1
+            self.recovery_started.set()
+            self.release_recovery.wait(timeout=2)
+            return {
+                "ok": True,
+                "summary": "upgrade reconciled and verified",
+                "target_epoch": 1,
+                "verification": {
+                    "installed_version": str(
+                        arguments.get("product_version", "")
+                    ),
+                    "target_epoch": 1,
+                },
+                "journal": {
+                    "operation_id": context.operation_id,
+                    "stage": "verified",
+                    "action": "upgrade",
+                },
+            }
+        self.apply_calls += 1
+        raise OSError("upgrade result was lost after target execution started")
+
+
+class BlockingLivePatchSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.intent_was_persisted = False
+        self.inspect_persisted_intent = lambda _operation_id: False
+        self.operation_ids: list[str] = []
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.intent_was_persisted = bool(
+            self.inspect_persisted_intent(str(context.operation_id))
+        )
+        self.operation_ids.append(str(context.operation_id))
+        self.started.set()
+        self.release.wait(timeout=2)
+        context.raise_if_stopped()
+        self.calls.append(("live_patch_run", dict(arguments)))
+        return {
+            "ok": True,
+            "summary": "live patch verified after bounded wait",
+            "target_epoch": 1,
+            "mutation": {
+                "local_sha256": str(arguments.get("artifact_sha256", "")),
+                "remote_after_sha256": str(arguments.get("artifact_sha256", "")),
+                "root_mount_restored": True,
+            },
+            "verification": {
+                "remote_sha256": str(arguments.get("artifact_sha256", "")),
+                "target_epoch": 1,
+            },
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "live_patch",
+                "expected_checksum": str(arguments.get("artifact_sha256", "")),
+                "observed_checksum": str(arguments.get("artifact_sha256", "")),
+                "root_mount_restored": True,
+            },
+        }
+
+
+class DormantEffectRunner:
+    def __init__(self) -> None:
+        self.intents = []
+
+    def has_seen(self, _intent) -> bool:
+        return False
+
+    def ensure(self, intent, *, mode, settlement_generation=0, claim=None):
+        if claim is not None and not claim():
+            return None
+        self.intents.append((intent, mode, settlement_generation))
+        return SimpleNamespace(
+            mode=mode,
+            future=object(),
+            settlement_generation=settlement_generation,
+        )
+
+    @staticmethod
+    def wait(_future, _timeout: float) -> bool:
+        return False
+
+    @staticmethod
+    def close() -> None:
+        return None
+
+
+class RecoveryAwareLivePatchBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.apply_calls = 0
+        self.reconcile_calls = 0
+        self.operation_ids: list[str] = []
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.operation_ids.append(str(context.operation_id))
+        if arguments.get("_runtime_effect_recovery") == "reconcile":
+            self.reconcile_calls += 1
+        else:
+            self.apply_calls += 1
+        return super().live_patch_run(task, arguments, context)
+
+
+class MissingJournalRecoveryBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.apply_calls = 0
+        self.recovery_calls = 0
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        if arguments.get("_runtime_effect_recovery") == "reconcile":
+            self.recovery_calls += 1
+            raise OSError("no durable mutation journal")
+        self.apply_calls += 1
+        return super().live_patch_run(task, arguments, context)
+
+
+class FailThenBlockRecoveryLivePatchBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.apply_calls = 0
+        self.recovery_calls = 0
+        self.recovery_started = threading.Event()
+        self.release_recovery = threading.Event()
+        self.operation_ids: list[str] = []
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.operation_ids.append(str(context.operation_id))
+        if arguments.get("_runtime_effect_recovery") == "reconcile":
+            self.recovery_calls += 1
+            if self.recovery_calls == 1:
+                raise OSError("recovery inspection was temporarily unavailable")
+            self.recovery_started.set()
+            self.release_recovery.wait(timeout=2)
+            return super().live_patch_run(task, arguments, context)
+        self.apply_calls += 1
+        raise OSError("live patch result was lost after target execution started")
+
+
+class RecoveryBoundaryConflictOnceStore:
+    def __init__(self, delegate: EventRunStore) -> None:
+        self.delegate = delegate
+        self.raced = False
+
+    def load(self, run_id: str, **kwargs):
+        return self.delegate.load(run_id, **kwargs)
+
+    def commit(self, request):
+        if not isinstance(request, RunCommitRequest):
+            return self.delegate.commit(request)
+
+        def build(draft):
+            decision = request.build(draft)
+            if (
+                decision is not None
+                and request.command_id.startswith("recover-")
+                and not self.raced
+            ):
+                self.raced = True
+                self.delegate.commit(
+                    RunDecision(
+                        run_id=decision.run_id,
+                        command_id=(
+                            "concurrent-"
+                            + decision.command_id.removeprefix("recover-")
+                        ),
+                        input_digest="f" * 64,
+                        expected_revision=decision.expected_revision,
+                        events=(),
+                        turn=decision.turn,
+                    )
+                )
+            return decision
+
+        return self.delegate.commit(
+            RunCommitRequest(
+                run_id=request.run_id,
+                command_id=request.command_id,
+                input_digest=request.input_digest,
+                build=build,
+                retry_conflicts=request.retry_conflicts,
+                exhausted_message=request.exhausted_message,
+                task_id=request.task_id,
+            )
+        )
+
+
+class BlockingDebugSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.operation_ids: list[str] = []
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        if arguments.get("mdb_only"):
+            return self.debug_collect(task, arguments, context)
+        context.raise_if_stopped()
+        self.operation_ids.append(str(context.operation_id))
+        if len(self.operation_ids) >= 2:
+            self.started.set()
+        self.release.wait(timeout=2)
+        return super().debug_run(task, arguments, context)
+
+
+class BlockingOnceDebugSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        if arguments.get("mdb_only"):
+            return self.debug_collect(task, arguments, context)
+        self.started.set()
+        self.release.wait(timeout=2)
+        return super().debug_run(task, arguments, context)
+
+
+class SequencedEvidenceRetryBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._attempt = 0
+        self.first_started = threading.Event()
+        self.first_release = threading.Event()
+        self.second_started = threading.Event()
+        self.second_release = threading.Event()
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        if arguments.get("mdb_only"):
+            return self.debug_collect(task, arguments, context)
+        context.raise_if_stopped()
+        with self._lock:
+            self._attempt += 1
+            attempt = self._attempt
+        if attempt == 1:
+            self.first_started.set()
+            self.first_release.wait(timeout=3)
+        else:
+            self.second_started.set()
+            self.second_release.wait(timeout=3)
+        return {"ok": True, "summary": f"observation-{attempt}"}
+
+
+class PersistentlyRunningUpgradeBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.upgrade_attempts = 0
+
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.upgrade_attempts += 1
+        self.calls.append(("upgrade_run", dict(arguments)))
+        return {
+            "ok": True,
+            "status": "running",
+            "summary": "upgrade is still active",
+            "target_epoch": 1,
+        }
+
+
+class PersistentlyRunningDebugBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.debug_attempts = 0
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        if arguments.get("mdb_only"):
+            return self.debug_collect(task, arguments, context)
+        context.raise_if_stopped()
+        self.debug_attempts += 1
+        self.calls.append(("debug_run", dict(arguments)))
+        return {
+            "ok": True,
+            "status": "running",
+            "summary": "debug collection is still active",
         }
 
 
@@ -413,14 +814,23 @@ class OversizedGateTurnRuntime:
 
 
 class PersistentUnknownRunDriver:
-    def __init__(self) -> None:
-        self.reconcile_calls = 0
-        self.incident = None
+    def __init__(self, repository=None) -> None:
+        self.repository = repository
 
     def _snapshot(self) -> dict[str, object]:
+        persisted = (
+            self.repository.load("run-persistent-unknown")
+            if self.repository is not None
+            else None
+        )
+        incident = (
+            persisted.get("current_incident", {})
+            if isinstance(persisted, dict)
+            else {}
+        )
         projection: dict[str, object] = {
             "case_id": "run-persistent-unknown",
-            "status": "incident" if self.incident is not None else "open",
+            "status": "incident" if incident else "open",
             "operations": [
                 {
                     "operation": "live_patch_run",
@@ -429,24 +839,29 @@ class PersistentUnknownRunDriver:
                 }
             ],
             "workflow_step_states": {},
-            "current_incident": (
-                self.incident.to_public_dict() if self.incident is not None else {}
-            ),
+            "current_incident": incident,
         }
         return {"projection": projection, "continuation": {}}
 
     def run_snapshot(self, _run_id: str) -> dict[str, object]:
         return self._snapshot()
 
-    def reconcile_run(self, _run_id: str, *, task_id: str, operation_id: str):
-        del task_id, operation_id
-        self.reconcile_calls += 1
-        return self._snapshot()
+    @staticmethod
+    def domain_metadata(operation: str) -> dict[str, object]:
+        return {"mutation": operation == "live_patch_run"}
 
-    def record_incident(self, _run_id: str, incident, *, operation_id: str):
-        del operation_id
-        self.incident = incident
-        return self._snapshot()
+    @staticmethod
+    def domain_artifact_metadata(_phase_type: str) -> dict[str, object]:
+        return {}
+
+    @staticmethod
+    def derive_closeout(_run_id: str, *, terminal_status: str):
+        del terminal_status
+        return {
+            "closeout": {},
+            "closeout_markdown": "",
+            "closeout_bundle": None,
+        }
 
 
 class AgentGatewayTests(unittest.TestCase):
@@ -461,6 +876,47 @@ class AgentGatewayTests(unittest.TestCase):
             self.service.close()
         finally:
             self.artifact_directory.cleanup()
+
+    def assert_bounded_running_turn(
+        self,
+        call: Callable[[], dict[str, object]],
+        *,
+        started: threading.Event,
+        maximum_elapsed: float = 0.5,
+    ) -> dict[str, object]:
+        started_at = time.monotonic()
+        turn = call()
+        elapsed = time.monotonic() - started_at
+        self.assertTrue(started.wait(timeout=maximum_elapsed))
+        self.assertLess(elapsed, maximum_elapsed)
+        self.assertEqual(turn["state"], "running")
+        return turn
+
+    def test_agent_gateway_owns_bounded_run_fact_projection(self) -> None:
+        projection = {
+            "workflow_cycle_id": "cycle-1",
+            "operations": [
+                {
+                    "operation": f"domain_{index}",
+                    "status": "completed",
+                    "summary": f"completed {index}",
+                    "workflow_cycle_id": "cycle-1",
+                }
+                for index in range(10)
+            ],
+            "phase_records": [],
+        }
+        facts = self.service.agent_projector.run_facts(projection)
+        turn = RunTurn(
+            run_id="run-fact-projection",
+            state="running",
+            facts=facts,
+        )
+        projected = self.service.agent_projector.turn(turn)
+
+        self.assertEqual(len(projected["facts"]), 8)
+        self.assertEqual(projected["facts"][0]["name"], "domain_2")
+        self.assertEqual(projected["facts"][-1]["name"], "domain_9")
 
     def test_default_interface_has_two_small_semantic_tools(self) -> None:
         definitions = self.service.tool_definitions()
@@ -855,7 +1311,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(final["outcome_recorded"])
         self.assertLessEqual(encoded_size(final), TURN_MAX_BYTES)
         self.assertNotIn("phase_record", json.dumps(final, ensure_ascii=False))
-        self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
+        self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 0)
         replayed = self.service.call_exposed_tool(
             "execute",
             {"kind": "resume", "run_id": first["run_id"]},
@@ -870,7 +1326,691 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             [event["kind"] for event in events].count("CloseoutRecorded"), 1
         )
-        self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 1)
+        self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 0)
+
+    def test_operator_projects_session_outcome_from_the_persisted_run_outcome(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.76",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="run-session-outcome-authority",
+            operation_id="run-session-outcome-start",
+        )
+
+        final = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "operator-projection-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["run tests"],
+                    },
+                },
+            },
+            task_id="run-session-outcome-authority",
+            operation_id="run-session-outcome-finish",
+        )
+        before = self.service.context_runtime.repository.events(waiting["run_id"])
+        recorded = self.service.call_tool(
+            "session_outcome_record",
+            {"case_id": waiting["run_id"]},
+            task_id="run-session-outcome-authority",
+            operation_id="run-session-outcome-project",
+        )
+        after = self.service.context_runtime.repository.events(waiting["run_id"])
+
+        self.assertEqual(recorded["case_id"], waiting["run_id"])
+        self.assertEqual(recorded["outcome"], final["outcome"]["status"])
+        self.assertEqual(after, before)
+        self.assertEqual(
+            self.service.session_outcome_service.status()["outcome_count"],
+            1,
+        )
+
+    def test_existing_legacy_case_can_still_record_a_session_outcome(self) -> None:
+        result = self.service.call_tool(
+            "debug_run",
+            {
+                "case_id": "run-legacy-session-outcome",
+                "ip": "192.0.2.77",
+                "intent": "diagnosis-only",
+                "final_purpose": "preserve legacy governance compatibility",
+                "deadline": 10,
+            },
+            task_id="legacy-session-outcome",
+            operation_id="legacy-session-outcome-debug",
+        )
+        case_id = str(result.envelope["case_id"])
+
+        recorded = self.service.call_tool(
+            "session_outcome_record",
+            {
+                "session_id": "legacy-session-outcome",
+                "case_id": case_id,
+                "replay_fingerprint": "sha256:" + "a" * 64,
+                "workflow": "diagnosis-only",
+                "domain": "debug",
+                "outcome": "completed",
+                "summary": "legacy diagnosis completed",
+            },
+            task_id="legacy-session-outcome",
+            operation_id="legacy-session-outcome-record",
+        )
+
+        self.assertEqual(recorded["case_id"], case_id)
+
+    def test_gate_submission_does_not_coerce_numeric_summary_to_text(self) -> None:
+        waiting = self.service.semantic_runtime.execute(
+            StartRun(
+                target="192.0.2.81",
+                intent="diagnose-and-fix",
+                purpose="reject an invalid typed Gate response",
+                delivery_strategy="source-only",
+                command_id="typed-gate-schema-start",
+                input_digest="",
+            ),
+            task_id="typed-gate-schema",
+            operation_id="typed-gate-schema-start",
+        )
+        assert waiting.gate is not None
+
+        with self.assertRaisesRegex(GateConflict, "summary has the wrong type"):
+            self.service.semantic_runtime.execute(
+                SubmitGate(
+                    run_id=waiting.run_id,
+                    gate_id=waiting.gate.gate_id,
+                    gate_version=waiting.gate.version,
+                    schema_digest=waiting.gate.schema_digest,
+                    submission_id="typed-gate-schema-submit",
+                    command_id="typed-gate-schema-submit",
+                    input_digest="",
+                    response={
+                        "status": "completed",
+                        "summary": 42,
+                        "payload": {
+                            "source_revision": "typed-gate-schema-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["run regression tests"],
+                        },
+                    },
+                ),
+                task_id="typed-gate-schema",
+                operation_id="typed-gate-schema-submit",
+            )
+
+    def test_typed_runtime_normalizes_gate_input_before_command_replay(self) -> None:
+        start = StartRun(
+            target="192.0.2.78",
+            intent="diagnose-and-fix",
+            purpose="normalize a typed Gate submission",
+            delivery_strategy="source-only",
+            command_id="typed-normalized-start",
+            input_digest="",
+        )
+        waiting = self.service.semantic_runtime.execute(
+            start,
+            task_id="typed-normalized-start",
+            operation_id="typed-normalized-start",
+        )
+        self.assertIsInstance(waiting, RunTurn)
+        assert waiting.gate is not None
+        gate = waiting.gate
+        first_command = SubmitGate(
+            run_id=waiting.run_id,
+            response={
+                "status": "completed",
+                "summary": " source repair completed ",
+                "payload": {
+                    "source_revision": "typed-normalized-source",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["run regression tests"],
+                },
+            },
+            gate_id=gate.gate_id,
+            gate_version=gate.version,
+            schema_digest=gate.schema_digest,
+            submission_id="typed-normalized-submission",
+            command_id="typed-normalized-submission",
+            input_digest="",
+        )
+        first = self.service.semantic_runtime.execute(
+            first_command,
+            task_id="typed-normalized-first",
+            operation_id="typed-normalized-first",
+        )
+        replayed = self.service.semantic_runtime.execute(
+            SubmitGate(
+                **{
+                    **first_command.__dict__,
+                    "response": {
+                        **dict(first_command.response),
+                        "summary": "source repair completed",
+                    },
+                }
+            ),
+            task_id="typed-normalized-replay",
+            operation_id="typed-normalized-replay",
+        )
+
+        self.assertIsInstance(first, RunTurn)
+        self.assertEqual(first.state, "completed")
+        self.assertEqual(replayed.to_public_dict(), first.to_public_dict())
+        projection = self.service.context_runtime.read_case(waiting.run_id)
+        self.assertEqual(
+            sum(
+                item.get("command_id") == "typed-normalized-submission"
+                for item in projection["run_decisions"]
+            ),
+            1,
+        )
+
+    def test_replaying_an_old_start_command_returns_the_current_turn(self) -> None:
+        action = {
+            "kind": "start",
+            "target": "192.0.2.80",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+        }
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="current-turn-start",
+            operation_id="current-turn-start-command",
+        )
+        final = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "submission_id": "current-turn-submission",
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "current-turn-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["run regression tests"],
+                    },
+                },
+            },
+            task_id="current-turn-submit",
+            operation_id="current-turn-submit",
+        )
+
+        replayed_start = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="current-turn-replay",
+            operation_id="current-turn-start-command",
+        )
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(replayed_start["state"], "completed")
+        self.assertEqual(replayed_start["outcome"], final["outcome"])
+        self.assertIsNone(replayed_start["gate"])
+
+    def test_source_only_gate_response_is_carried_by_the_gate_submission(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.68",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="native-source-phase",
+            operation_id="native-source-phase-start",
+        )
+
+        self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "submission_id": "native-source-phase-submission",
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "native-source-phase",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["run regression tests"],
+                    },
+                },
+            },
+            task_id="native-source-phase",
+            operation_id="native-source-phase-respond",
+        )
+
+        events = self.service.context_runtime.repository.events(waiting["run_id"])
+        submission = next(
+            event for event in events if event["kind"] == "RunGateSubmitted"
+        )
+        self.assertEqual(submission["payload"]["actor"], "openubmc-developer")
+        self.assertEqual(
+            submission["payload"]["phase"]["phase_type"],
+            "developer.change",
+        )
+        self.assertEqual(
+            sum(event["kind"] == "RunPhaseRecorded" for event in events),
+            0,
+        )
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationProgressed"
+                and isinstance(event["payload"].get("phase_record"), dict)
+                for event in events
+            )
+        )
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationAccepted"
+                and event["payload"].get("operation")
+                in {"phase_record", "workflow.next"}
+                for event in events
+            )
+        )
+        self.assertEqual(
+            self.service.session_outcome_service.status()["outcome_count"],
+            0,
+        )
+
+    def test_source_only_terminal_response_is_one_complete_run_decision(self) -> None:
+        for response_status in ("completed", "failed"):
+            with self.subTest(response_status=response_status):
+                repository = RecordingCommitRepository()
+                service = RuntimeMcpService(
+                    SemanticBackend(),
+                    context_repository=repository,
+                )
+                try:
+                    waiting = service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "start",
+                            "target": "192.0.2.69",
+                            "intent": "diagnose-and-fix",
+                            "delivery_strategy": "source-only",
+                        },
+                        task_id=f"atomic-source-{response_status}",
+                        operation_id=f"atomic-source-{response_status}-start",
+                    )
+                    payload = (
+                        {
+                            "source_revision": f"atomic-{response_status}",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["run regression tests"],
+                        }
+                        if response_status == "completed"
+                        else {}
+                    )
+                    final = service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "respond",
+                            "run_id": waiting["run_id"],
+                            **gate_binding(waiting),
+                            "submission_id": f"atomic-{response_status}-submission",
+                            "response": {
+                                "status": response_status,
+                                "summary": f"source repair {response_status}",
+                                "payload": payload,
+                            },
+                        },
+                        task_id=f"atomic-source-{response_status}",
+                        operation_id=f"atomic-source-{response_status}-respond",
+                    )
+                    events = repository.events(waiting["run_id"])
+                finally:
+                    service.close()
+
+                decision = next(
+                    event
+                    for event in events
+                    if event["kind"] == "RunDecisionCommitted"
+                    and event["payload"].get("command_id")
+                    == f"atomic-{response_status}-submission"
+                )
+                self.assertEqual(decision["payload"]["turn"]["state"], response_status)
+                self.assertEqual(
+                    decision["payload"]["turn"]["outcome"]["status"],
+                    response_status,
+                )
+                self.assertEqual(
+                    decision["payload"]["turn"]["facts"],
+                    final["facts"],
+                )
+                self.assertEqual(
+                    decision["payload"]["turn"]["gaps"],
+                    final["gaps"],
+                )
+                self.assertEqual(final["state"], response_status)
+
+    def test_cancellation_is_one_complete_run_decision(self) -> None:
+        repository = RecordingCommitRepository()
+        service = RuntimeMcpService(
+            SemanticBackend(),
+            context_repository=repository,
+        )
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.70",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="atomic-cancel",
+                operation_id="atomic-cancel-start",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "control",
+                    "run_id": waiting["run_id"],
+                    "command": "cancel",
+                    "submission_id": "atomic-cancel-submission",
+                    **gate_binding(waiting),
+                },
+                task_id="atomic-cancel",
+                operation_id="atomic-cancel-control",
+            )
+            events = repository.events(waiting["run_id"])
+        finally:
+            service.close()
+
+        decision = next(
+            event
+            for event in events
+            if event["kind"] == "RunDecisionCommitted"
+            and event["payload"].get("command_id") == "atomic-cancel-submission"
+        )
+        self.assertEqual(decision["payload"]["turn"]["state"], "cancelled")
+        self.assertEqual(decision["payload"]["turn"]["outcome"]["status"], "cancelled")
+        self.assertEqual(decision["payload"]["turn"]["facts"], final["facts"])
+        self.assertEqual(decision["payload"]["turn"]["gaps"], final["gaps"])
+        self.assertEqual(final["state"], "cancelled")
+
+    def test_start_persists_effect_scheduling_then_returns_the_next_gate(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.71",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="atomic-start",
+            operation_id="atomic-start-command",
+        )
+
+        projection = self.service.context_runtime.read_case(waiting["run_id"])
+        decisions = [
+            item
+            for item in projection["run_decisions"]
+            if item.get("command_id") == "atomic-start-command"
+        ]
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["turn"]["state"], "running")
+        self.assertEqual(
+            decisions[0]["effect_intent"]["operation"],
+            "debug_run",
+        )
+        self.assertEqual(projection["current_turn"]["state"], "waiting_response")
+        self.assertEqual(projection["current_turn"]["gate"], waiting["gate"])
+
+    def test_build_source_submission_decision_contains_the_next_gate_turn(self) -> None:
+        developer_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.72",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+            },
+            task_id="atomic-build-gate",
+            operation_id="atomic-build-start",
+        )
+
+        build_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": developer_gate["run_id"],
+                **gate_binding(developer_gate),
+                "submission_id": "atomic-build-source-submission",
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "atomic-build-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["build and verify"],
+                    },
+                },
+            },
+            task_id="atomic-build-gate",
+            operation_id="atomic-build-source",
+        )
+
+        projection = self.service.context_runtime.read_case(developer_gate["run_id"])
+        decision = next(
+            item
+            for item in projection["run_decisions"]
+            if item.get("command_id") == "atomic-build-source-submission"
+        )
+
+        self.assertEqual(decision["turn"]["state"], "waiting_response")
+        self.assertEqual(decision["turn"]["gate"], build_gate["gate"])
+        self.assertEqual(decision["turn"]["gate"]["name"], "build.artifact")
+
+    def test_live_patch_submission_replays_after_internal_effect_decisions(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.73",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "live-patch",
+            },
+            task_id="atomic-live-patch",
+            operation_id="atomic-live-patch-start",
+        )
+        patch_file = self.artifact_root / "atomic-live-patch.lua"
+        patch_file.write_bytes(b"return 'atomic-live-patch'\n")
+        response = {
+            "kind": "respond",
+            "run_id": waiting["run_id"],
+            **gate_binding(waiting),
+            "submission_id": "atomic-live-patch-submission",
+            "response": {
+                "status": "completed",
+                "summary": "live patch source is ready",
+                "payload": {
+                    "source_revision": "atomic-live-patch-source",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["fresh target verification"],
+                    "artifact_ref": artifact_ref(
+                        patch_file,
+                        kind="openubmc-live-patch",
+                        target="192.0.2.73",
+                        run_id=waiting["run_id"],
+                    ),
+                    "remote_path": "/opt/bmc/apps/fix.lua",
+                    "restart_scope": "skynet",
+                },
+            },
+        }
+
+        final = self.service.call_exposed_tool(
+            "execute",
+            response,
+            task_id="atomic-live-patch",
+            operation_id="atomic-live-patch-response",
+        )
+        replayed = self.service.call_exposed_tool(
+            "execute",
+            response,
+            task_id="atomic-live-patch-replay",
+            operation_id="atomic-live-patch-retry",
+        )
+        projection = self.service.context_runtime.read_case(waiting["run_id"])
+        decisions = [
+            item
+            for item in projection["run_decisions"]
+            if item.get("command_id") == "atomic-live-patch-submission"
+        ]
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["turn"]["state"], "running")
+        self.assertEqual(
+            decisions[0]["effect_intent"]["operation"],
+            "live_patch_run",
+        )
+        self.assertEqual(projection["current_turn"]["outcome"], final["outcome"])
+        self.assertEqual(replayed["outcome"], final["outcome"])
+        self.assertEqual(
+            [name for name, _arguments in self.backend.calls].count("live_patch_run"),
+            1,
+        )
+
+    def test_resume_persists_and_replays_a_decision_by_operation_identity(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.74",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="atomic-resume",
+            operation_id="atomic-resume-start",
+        )
+        action = {"kind": "resume", "run_id": waiting["run_id"]}
+
+        first = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="atomic-resume-first",
+            operation_id="atomic-resume-command",
+        )
+        replayed = self.service.call_exposed_tool(
+            "execute",
+            action,
+            task_id="atomic-resume-replay",
+            operation_id="atomic-resume-command",
+        )
+        projection = self.service.context_runtime.read_case(waiting["run_id"])
+        decisions = [
+            item
+            for item in projection["run_decisions"]
+            if item.get("command_id") == "atomic-resume-command"
+        ]
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(first["gate"], waiting["gate"])
+        self.assertEqual(replayed["gate"], first["gate"])
+
+    def test_reconcile_command_replays_without_repeating_the_effect(self) -> None:
+        class FailOnceLivePatchSemanticBackend(SemanticBackend):
+            def __init__(self) -> None:
+                super().__init__()
+                self.live_patch_attempts = 0
+
+            def live_patch_run(self, task, arguments, context):
+                self.live_patch_attempts += 1
+                if self.live_patch_attempts <= 2:
+                    self.calls.append(("live_patch_run", dict(arguments)))
+                    raise OSError("live patch connection lost")
+                return super().live_patch_run(task, arguments, context)
+
+        backend = FailOnceLivePatchSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "atomic-reconcile-live-patch.lua"
+        patch_file.write_bytes(b"return 'atomic-reconcile'\n")
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.75",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="atomic-reconcile",
+                operation_id="atomic-reconcile-start",
+            )
+            incident = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair is ready",
+                        "payload": {
+                            "source_revision": "atomic-reconcile-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.75",
+                                run_id=waiting["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
+                    },
+                },
+                task_id="atomic-reconcile",
+                operation_id="atomic-reconcile-response",
+            )
+            self.assertEqual(incident["state"], "incident")
+            action = {
+                "kind": "control",
+                "run_id": waiting["run_id"],
+                "command": "reconcile",
+            }
+            reconciled = service.call_exposed_tool(
+                "execute",
+                action,
+                task_id="atomic-reconcile-first",
+                operation_id="atomic-reconcile-command",
+            )
+            effect_calls = [
+                name for name, _arguments in backend.calls
+            ].count("live_patch_run")
+            replayed = service.call_exposed_tool(
+                "execute",
+                action,
+                task_id="atomic-reconcile-replay",
+                operation_id="atomic-reconcile-command",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(reconciled["state"], "completed")
+        self.assertEqual(replayed["outcome"], reconciled["outcome"])
+        self.assertEqual(
+            [name for name, _arguments in backend.calls].count("live_patch_run"),
+            effect_calls,
+        )
 
     def test_start_command_identity_reattaches_across_task_ids(self) -> None:
         action = {
@@ -1138,6 +2278,311 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             [name for name, _arguments in self.backend.calls],
             ["debug_collect"],
+        )
+
+    def test_read_only_effect_retries_same_identity_after_evidence_failure(self) -> None:
+        backend = SemanticBackend()
+        service = RuntimeMcpService(
+            backend,
+            blob_repository=FailOnceBlobRepository(),
+        )
+        action = {
+            "kind": "start",
+            "target": "192.0.2.84",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+        }
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                action,
+                task_id="read-only-evidence-retry",
+                operation_id="read-only-evidence-retry-start",
+            )
+            replayed = service.call_exposed_tool(
+                "execute",
+                action,
+                task_id="read-only-evidence-retry-replay",
+                operation_id="read-only-evidence-retry-start",
+            )
+            events = service.context_runtime.repository.events(waiting["run_id"])
+            projection = service.context_runtime.read_case(waiting["run_id"])
+        finally:
+            service.close()
+
+        debug_calls = [
+            arguments
+            for name, arguments in backend.calls
+            if name == "debug_run"
+        ]
+        self.assertEqual(waiting["state"], "waiting_response")
+        self.assertEqual(replayed["state"], "waiting_response")
+        self.assertEqual(len(debug_calls), 2)
+        operation_ids = {
+            event["operation_id"]
+            for event in events
+            if event["kind"] == "OperationProgressed"
+            and event["payload"].get("canonical_error", {}).get("code")
+            == "evidence_not_persisted"
+        }
+        self.assertEqual(len(operation_ids), 1)
+        effect_id = next(iter(operation_ids))
+        self.assertTrue(
+            any(
+                event["kind"] == "EvidenceAttached"
+                and event["operation_id"] == effect_id
+                for event in events
+            )
+        )
+        self.assertEqual(
+            sum(
+                event["kind"] == "EvidenceAttached"
+                and event["operation_id"] == effect_id
+                for event in events
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(
+                event["kind"] == "OperationTerminal"
+                and event["operation_id"] == effect_id
+                for event in events
+            ),
+            1,
+        )
+        operation = next(
+            item
+            for item in projection["operations"]
+            if item["operation_id"] == effect_id
+        )
+        self.assertEqual(operation["status"], "completed")
+        self.assertEqual(operation["evidence_retry_generation"], 1)
+        self.assertNotIn("canonical_error", operation)
+
+    def test_concurrent_read_only_settlement_commits_one_terminal_decision(self) -> None:
+        backend = BlockingOnceDebugSemanticBackend()
+        service = RuntimeMcpService(backend)
+        action = {
+            "kind": "start",
+            "target": "192.0.2.85",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+        }
+        turns: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+
+        def execute(task_id: str) -> None:
+            try:
+                turns.append(
+                    service.call_exposed_tool(
+                        "execute",
+                        action,
+                        task_id=task_id,
+                        operation_id="concurrent-read-only-settlement-start",
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        first = threading.Thread(target=execute, args=("concurrent-read-only-a",))
+        second = threading.Thread(target=execute, args=("concurrent-read-only-b",))
+        try:
+            first.start()
+            self.assertTrue(backend.started.wait(timeout=1))
+            second.start()
+            time.sleep(0.05)
+            backend.release.set()
+            first.join(timeout=3)
+            second.join(timeout=3)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(turns), 2)
+            run_id = turns[0]["run_id"]
+            events = service.context_runtime.repository.events(run_id)
+        finally:
+            backend.release.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+            service.close()
+
+        terminal_effect_ids = [
+            event["operation_id"]
+            for event in events
+            if event["kind"] == "OperationTerminal"
+            and event["payload"].get("status") == "completed"
+        ]
+        self.assertEqual(len(terminal_effect_ids), 1)
+        effect_id = terminal_effect_ids[0]
+        self.assertEqual(
+            sum(
+                event["kind"] == "EvidenceAttached"
+                and event["operation_id"] == effect_id
+                for event in events
+            ),
+            1,
+        )
+
+    def test_stale_waiter_cannot_settle_as_a_new_evidence_retry_generation(
+        self,
+    ) -> None:
+        backend = SequencedEvidenceRetryBackend()
+        service = RuntimeMcpService(
+            backend,
+            blob_repository=FailOnceBlobRepository(),
+        )
+        engine = service.semantic_runtime.run_engine
+        original_commit = engine._commit_effect_result  # noqa: SLF001
+        original_ensure = service.effect_runner.ensure
+        original_acknowledge = service.effect_runner.acknowledge
+        scheduling_lock = threading.Lock()
+        old_execution: list[object | None] = [None]
+        old_waiters = [0]
+        stale_thread_ident: list[int | None] = [None]
+        both_old_waiters = threading.Event()
+        allow_stale_waiter = threading.Event()
+        stale_waiter_done = threading.Event()
+        stale_before_ensure = threading.Event()
+        allow_stale_ensure = threading.Event()
+        new_execution_acknowledged = threading.Event()
+
+        def ordered_commit(intent, execution, *, settlement_mode):
+            leader = False
+            stale_waiter = False
+            with scheduling_lock:
+                if old_execution[0] is None:
+                    old_execution[0] = execution
+                if execution is old_execution[0]:
+                    old_waiters[0] += 1
+                    leader = old_waiters[0] == 1
+                    stale_waiter = old_waiters[0] == 2
+                    if stale_waiter:
+                        stale_thread_ident[0] = threading.get_ident()
+                        both_old_waiters.set()
+            if leader:
+                self.assertTrue(both_old_waiters.wait(timeout=3))
+            if stale_waiter:
+                self.assertTrue(allow_stale_waiter.wait(timeout=3))
+            committed = original_commit(
+                intent,
+                execution,
+                settlement_mode=settlement_mode,
+            )
+            if stale_waiter:
+                stale_waiter_done.set()
+            return committed
+
+        def ordered_ensure(
+            intent,
+            *,
+            mode,
+            settlement_generation=0,
+            claim=None,
+        ):
+            if (
+                threading.get_ident() == stale_thread_ident[0]
+                and settlement_generation == 1
+            ):
+                stale_before_ensure.set()
+                self.assertTrue(allow_stale_ensure.wait(timeout=3))
+            return original_ensure(
+                intent,
+                mode=mode,
+                settlement_generation=settlement_generation,
+                claim=claim,
+            )
+
+        def ordered_acknowledge(
+            intent,
+            execution,
+            *,
+            retain_for_reattach,
+        ) -> None:
+            original_acknowledge(
+                intent,
+                execution,
+                retain_for_reattach=retain_for_reattach,
+            )
+            if (
+                execution is not old_execution[0]
+                and not retain_for_reattach
+            ):
+                new_execution_acknowledged.set()
+
+        engine._commit_effect_result = ordered_commit  # type: ignore[method-assign]
+        service.effect_runner.ensure = ordered_ensure  # type: ignore[method-assign]
+        service.effect_runner.acknowledge = (  # type: ignore[method-assign]
+            ordered_acknowledge
+        )
+        action = {
+            "kind": "start",
+            "target": "192.0.2.86",
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+            "deadline": 2.5,
+        }
+        turns: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+
+        def execute(task_id: str) -> None:
+            try:
+                turns.append(
+                    service.call_exposed_tool(
+                        "execute",
+                        action,
+                        task_id=task_id,
+                        operation_id="stale-generation-start",
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        first = threading.Thread(target=execute, args=("stale-generation-a",))
+        second = threading.Thread(target=execute, args=("stale-generation-b",))
+        try:
+            first.start()
+            self.assertTrue(backend.first_started.wait(timeout=1))
+            second.start()
+            backend.first_release.set()
+            self.assertTrue(backend.second_started.wait(timeout=2))
+            allow_stale_waiter.set()
+            self.assertTrue(stale_waiter_done.wait(timeout=2))
+            self.assertTrue(stale_before_ensure.wait(timeout=2))
+            backend.second_release.set()
+            self.assertTrue(new_execution_acknowledged.wait(timeout=2))
+            allow_stale_ensure.set()
+            first.join(timeout=4)
+            second.join(timeout=4)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(turns), 2)
+            events = service.context_runtime.repository.events(turns[0]["run_id"])
+        finally:
+            backend.first_release.set()
+            backend.second_release.set()
+            allow_stale_waiter.set()
+            allow_stale_ensure.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+            service.close()
+
+        terminal_effect_ids = [
+            event["operation_id"]
+            for event in events
+            if event["kind"] == "OperationTerminal"
+            and event["payload"].get("status") == "completed"
+        ]
+        self.assertEqual(backend._attempt, 2)
+        self.assertEqual(len(terminal_effect_ids), 1)
+        effect_id = terminal_effect_ids[0]
+        self.assertEqual(
+            sum(
+                event["kind"] == "EvidenceAttached"
+                and event["operation_id"] == effect_id
+                for event in events
+            ),
+            1,
         )
 
     def test_observation_ref_rejects_digest_tamper_and_target_mismatch(self) -> None:
@@ -1464,55 +2909,16 @@ class AgentGatewayTests(unittest.TestCase):
                     },
                 },
             }
-            driver = service.semantic_runtime.run_engine.driver
-            original = driver.record_gate_response
-            raced = False
-
-            def record_after_competitor(
-                command,
-                *,
-                gate,
+            final = service.call_exposed_tool(
+                "execute",
                 response,
-                submission_digest,
-                task_id,
-                operation_id,
-            ):
-                nonlocal raced
-                if not raced:
-                    raced = True
-                    original(
-                        command,
-                        gate=gate,
-                        response=response,
-                        submission_digest=submission_digest,
-                        task_id=task_id,
-                        operation_id=f"{operation_id}-winner",
-                    )
-                return original(
-                    command,
-                    gate=gate,
-                    response=response,
-                    submission_digest=submission_digest,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-
-            with patch.object(
-                driver,
-                "record_gate_response",
-                side_effect=record_after_competitor,
-            ):
-                final = service.call_exposed_tool(
-                    "execute",
-                    response,
-                    task_id="gate-race-window",
-                    operation_id="gate-race-window-response",
-                )
+                task_id="gate-race-window",
+                operation_id="gate-race-window-response",
+            )
             events = service.context_runtime.repository.events(waiting["run_id"])
         finally:
             service.close()
 
-        self.assertTrue(raced)
         self.assertEqual(final["state"], "completed")
         self.assertEqual(
             sum(event["kind"] == "RunGateSubmitted" for event in events),
@@ -1770,12 +3176,25 @@ class AgentGatewayTests(unittest.TestCase):
             wrong_run["run_id"] = "run-other"
             wrong_size = dict(valid)
             wrong_size["size"] = int(valid["size"]) + 1
+            wrong_version = dict(valid)
+            wrong_version["version"] = "9.9.9"
+            unbound_artifact = Path(raw) / "unbound-product.hpm"
+            unbound_artifact.write_bytes(b"unbound firmware bytes")
+            missing_metadata = artifact_ref(
+                unbound_artifact,
+                kind="openubmc-hpm",
+                target="192.0.2.44",
+                run_id=developer_gate["run_id"],
+            )
+            missing_metadata["version"] = "2.0.0"
             missing_target = dict(valid)
             missing_target.pop("target")
             missing_run = dict(valid)
             missing_run.pop("run_id")
             missing_provenance = dict(valid)
             missing_provenance["provenance"] = ""
+            wrong_provenance = dict(valid)
+            wrong_provenance["provenance"] = "forged-unverified-producer"
 
             invalid_cases = (
                 (
@@ -1809,6 +3228,18 @@ class AgentGatewayTests(unittest.TestCase):
                     ReferenceViolation,
                     "digest does not match stored content",
                 ),
+                (
+                    "wrong-version",
+                    wrong_version,
+                    ReferenceViolation,
+                    "version does not match artifact metadata",
+                ),
+                (
+                    "missing-metadata",
+                    missing_metadata,
+                    ReferenceViolation,
+                    "requires build artifact metadata",
+                ),
                 ("missing-target", missing_target, GateConflict, "required fields"),
                 ("missing-run", missing_run, GateConflict, "required fields"),
                 (
@@ -1816,6 +3247,12 @@ class AgentGatewayTests(unittest.TestCase):
                     missing_provenance,
                     GateConflict,
                     "must not be empty",
+                ),
+                (
+                    "wrong-provenance",
+                    wrong_provenance,
+                    ReferenceViolation,
+                    "provenance does not match artifact metadata",
                 ),
             )
             for name, reference, error, message in invalid_cases:
@@ -1839,6 +3276,11 @@ class AgentGatewayTests(unittest.TestCase):
                         task_id="artifact-ref-validation",
                         operation_id=f"artifact-ref-{name}",
                     )
+
+            self.assertNotIn(
+                "upgrade_run",
+                [operation for operation, _arguments in self.backend.calls],
+            )
 
             final = self.service.call_exposed_tool(
                 "execute",
@@ -1952,17 +3394,17 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="artifact-dispatch-boundary",
                 operation_id="artifact-dispatch-boundary-start",
             )
-            driver = service.semantic_runtime.run_engine.driver
-            original = driver.record_gate_response
+            transactions = service.context_runtime.repository
+            original = transactions.stage
 
             def replace_after_persist(*args, **kwargs):
-                snapshot = original(*args, **kwargs)
+                result = original(*args, **kwargs)
                 patch_file.write_bytes(b"return 'replaced-after-gate'\n")
-                return snapshot
+                return result
 
             with patch.object(
-                driver,
-                "record_gate_response",
+                transactions,
+                "stage",
                 side_effect=replace_after_persist,
             ):
                 blocked = service.call_exposed_tool(
@@ -2128,6 +3570,10 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             [event["kind"] for event in events].count("RunCancelled"), 1
         )
+        cancelled = next(
+            event for event in events if event["kind"] == "RunCancelled"
+        )
+        self.assertEqual(cancelled["payload"]["actor"], "runtime")
         self.assertFalse(
             any(
                 event["kind"] == "OperationProgressed"
@@ -2202,36 +3648,43 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(first["state"], "waiting_response")
         self.assertEqual(first["gate"]["name"], "developer.change")
-        patch = self.artifact_root / "execute-live-patch-fix.lua"
-        patch.write_bytes(b"return 'fixed'\n")
+        patch_file = self.artifact_root / "execute-live-patch-fix.lua"
+        patch_file.write_bytes(b"return 'fixed'\n")
 
-        final = self.service.call_exposed_tool(
-            "execute",
-            {
-                "kind": "respond",
-                "run_id": first["run_id"],
-                **gate_binding(first),
-                "response": {
-                    "status": "completed",
-                    "summary": "source repair is ready for live patching",
-                    "payload": {
-                        "source_revision": "live-patch-source",
-                        "authored_files": ["src/fix.lua"],
-                        "verification_plan": ["fresh target verification"],
-                        "artifact_ref": artifact_ref(
-                            patch,
-                            kind="openubmc-live-patch",
-                            target="192.0.2.21",
-                            run_id=first["run_id"],
-                        ),
-                        "remote_path": "/opt/bmc/apps/fix.lua",
-                        "restart_scope": "skynet",
+        with patch.object(
+            self.service.context_runtime,
+            "invoke_domain",
+            side_effect=AssertionError(
+                "typed Effect execution must not let ContextRuntime write transitions"
+            ),
+        ):
+            final = self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": first["run_id"],
+                    **gate_binding(first),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair is ready for live patching",
+                        "payload": {
+                            "source_revision": "live-patch-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh target verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.21",
+                                run_id=first["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
                     },
                 },
-            },
-            task_id="execute-live-patch",
-            operation_id="live-patch-respond",
-        )
+                task_id="execute-live-patch",
+                operation_id="live-patch-respond",
+            )
 
         self.assertEqual(final["state"], "completed")
         self.assertTrue(final["outcome_recorded"])
@@ -2242,8 +3695,35 @@ class AgentGatewayTests(unittest.TestCase):
         live_patch_arguments = self.backend.calls[1][1]
         self.assertEqual(
             live_patch_arguments["artifact_sha256"],
-            hashlib.sha256(patch.read_bytes()).hexdigest(),
+            hashlib.sha256(patch_file.read_bytes()).hexdigest(),
         )
+        projection = self.service.context_runtime.read_case(first["run_id"])
+        intent_arguments = next(
+            intent["arguments"]
+            for intent in projection["effect_intents"]
+            if intent.get("operation") == "live_patch_run"
+        )
+        effect_id = next(
+            intent["effect_id"]
+            for intent in projection["effect_intents"]
+            if intent.get("operation") == "live_patch_run"
+        )
+        effect_event_kinds = [
+            event["kind"]
+            for event in self.service.context_runtime.repository.events(
+                first["run_id"]
+            )
+            if event.get("operation_id") == effect_id
+        ]
+        self.assertIn("OperationTerminal", effect_event_kinds)
+        self.assertNotIn("OperationReconciled", effect_event_kinds)
+        self.assertEqual(
+            intent_arguments["artifact_ref"]["kind"],
+            "openubmc-live-patch",
+        )
+        self.assertEqual(intent_arguments["artifact_ref"]["run_id"], first["run_id"])
+        self.assertNotIn("local_path", intent_arguments)
+        self.assertNotIn("artifact_path", intent_arguments)
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
@@ -2293,10 +3773,13 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="incomplete-live-patch-response",
             )
             projection = service.context_runtime.read_case(waiting["run_id"])
-            replayed = service.context_runtime.record_run_outcome(
-                waiting["run_id"],
-                status="completed",
-                summary="workflow completed",
+            replayed = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": waiting["run_id"],
+                },
+                task_id="incomplete-live-patch-acceptance-replay",
                 operation_id="incomplete-live-patch-outcome-replay",
             )
             events = service.context_runtime.repository.events(waiting["run_id"])
@@ -2312,7 +3795,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(final["state"], "failed")
         self.assertEqual(final["outcome"]["status"], "failed")
         self.assertEqual(projection["run_outcome"]["status"], "failed")
-        self.assertEqual(replayed["run_outcome"], projection["run_outcome"])
+        self.assertEqual(replayed["outcome"], final["outcome"])
         self.assertEqual(closeout["closure_status"], "partial")
         self.assertEqual(closeout["business_acceptance"], "unverified")
         self.assertEqual(integrity["status"], "not_run")
@@ -2320,6 +3803,68 @@ class AgentGatewayTests(unittest.TestCase):
             sum(event["kind"] == "RunOutcomeRecorded" for event in events),
             1,
         )
+
+    def test_post_mutation_verification_requires_an_observed_target_epoch(self) -> None:
+        backend = MissingFreshEpochSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "missing-fresh-epoch.lua"
+        patch_file.write_bytes(b"return 'missing-epoch'\n")
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.69",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="missing-fresh-epoch",
+                operation_id="missing-fresh-epoch-start",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair ready",
+                        "payload": {
+                            "source_revision": "missing-fresh-epoch-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh target verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.69",
+                                run_id=waiting["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
+                    },
+                },
+                task_id="missing-fresh-epoch",
+                operation_id="missing-fresh-epoch-response",
+            )
+            for attempt in range(1, 4):
+                if final["state"] != "running":
+                    break
+                final = service.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": waiting["run_id"]},
+                    task_id="missing-fresh-epoch",
+                    operation_id=f"missing-fresh-epoch-resume-{attempt}",
+                )
+            projection = service.context_runtime.read_case(waiting["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(final["state"], "running")
+        self.assertIsNone(final["outcome"])
+        self.assertFalse(projection.get("run_outcome"))
+        self.assertIn("fresh target verification", final["next"])
 
     def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
         first = self.service.call_exposed_tool(
@@ -2395,18 +3940,57 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
 
-    def test_automatic_reconcile_attempts_an_unknown_mutation_only_once(self) -> None:
-        driver = PersistentUnknownRunDriver()
-        turn = RunEngine(driver).execute(
+    def test_unknown_mutation_without_a_durable_effect_stays_incident(self) -> None:
+        repository = InMemoryRuntimeRepository()
+        transactions = BufferedRuntimeRepository(repository)
+        driver = PersistentUnknownRunDriver(transactions)
+        engine = RunEngine(
+            driver,
+            run_store=EventRunStore(
+                repository,
+                draft_buffer=transactions,
+            ),
+        )
+        turn = engine.execute(
             ResumeRun("run-persistent-unknown"),
             task_id="persistent-unknown",
             operation_id="persistent-unknown-resume",
         )
+        resumed = engine.execute(
+            ResumeRun("run-persistent-unknown"),
+            task_id="persistent-unknown",
+            operation_id="persistent-unknown-resume-again",
+        )
 
-        self.assertEqual(driver.reconcile_calls, 1)
         self.assertEqual(turn.state, "incident")
         self.assertIsNotNone(turn.incident)
         self.assertEqual(turn.incident.code, "mutation_outcome_unknown")
+        self.assertEqual(resumed.state, "incident")
+
+    def test_run_engine_requires_durable_command_dependencies(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "RunStore is required",
+        ):
+            RunEngine(PersistentUnknownRunDriver())
+
+    def test_run_engine_rejects_unknown_transition_kinds(self) -> None:
+        repository = InMemoryRuntimeRepository()
+        engine = RunEngine(
+            PersistentUnknownRunDriver(),
+            run_store=EventRunStore(
+                repository,
+                draft_buffer=BufferedRuntimeRepository(repository),
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsupported Run transition kind"):
+            engine._apply_transition(  # noqa: SLF001 - architecture contract test
+                "run-persistent-unknown",
+                "outcome_typo",
+                {"status": "completed"},
+                operation_id="transition-typo",
+            )
 
     def test_execute_automatically_reconciles_an_unknown_mutation(self) -> None:
         backend = FailOnceUpgradeSemanticBackend()
@@ -2478,7 +4062,94 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(final["outcome_recorded"])
         self.assertEqual(backend.upgrade_attempts, 2)
 
-    def test_running_effect_reattaches_with_the_same_operation_identity(self) -> None:
+    def test_automatic_reconcile_returns_running_at_the_caller_deadline(self) -> None:
+        backend = BlockingUnknownRecoveryUpgradeBackend()
+        service = RuntimeMcpService(backend)
+        product = self.artifact_root / "bounded-reconcile-product.hpm"
+        product.write_bytes(b"firmware-2.1.0")
+        try:
+            developer_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.80",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                },
+                task_id="bounded-reconcile",
+                operation_id="bounded-reconcile-start",
+            )
+            build_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(developer_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "bounded-reconcile-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["build and verify"],
+                        },
+                    },
+                },
+                task_id="bounded-reconcile",
+                operation_id="bounded-reconcile-source",
+            )
+            self.assert_bounded_running_turn(
+                lambda: service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer_gate["run_id"],
+                        **gate_binding(build_gate),
+                        "response": {
+                            "status": "completed",
+                            "summary": "firmware artifact completed",
+                            "payload": {
+                                "source_revision": "bounded-reconcile-source",
+                                "artifact_ref": artifact_ref(
+                                    product,
+                                    kind="openubmc-hpm",
+                                    target="192.0.2.80",
+                                    run_id=developer_gate["run_id"],
+                                    version="2.1.0",
+                                ),
+                            },
+                        },
+                        "deadline": 0.05,
+                    },
+                    task_id="bounded-reconcile",
+                    operation_id="bounded-reconcile-build",
+                ),
+                started=backend.recovery_started,
+            )
+            self.assertEqual(backend.apply_calls, 1)
+            self.assertEqual(backend.recovery_calls, 1)
+            self.assertEqual(len(set(backend.operation_ids)), 1)
+
+            backend.release_recovery.set()
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": developer_gate["run_id"],
+                    "deadline": 1,
+                },
+                task_id="bounded-reconcile-final",
+                operation_id="bounded-reconcile-final",
+            )
+            self.assertEqual(final["state"], "completed")
+            self.assertEqual(backend.apply_calls, 1)
+            self.assertEqual(backend.recovery_calls, 1)
+            self.assertEqual(len(set(backend.operation_ids)), 1)
+        finally:
+            backend.release_recovery.set()
+            service.close()
+
+    def test_short_running_effect_reattaches_without_a_model_polling_turn(self) -> None:
         backend = RunningUpgradeSemanticBackend()
         service = RuntimeMcpService(backend)
         product = self.artifact_root / "running-upgrade-product.hpm"
@@ -2514,7 +4185,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="running-upgrade",
                 operation_id="running-upgrade-source",
             )
-            running = service.call_exposed_tool(
+            final = service.call_exposed_tool(
                 "execute",
                 {
                     "kind": "respond",
@@ -2538,17 +4209,8 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="running-upgrade",
                 operation_id="running-upgrade-build",
             )
-            self.assertEqual(running["state"], "running")
-            self.assertIn("reattach", running["next"])
             running_projection = service.context_runtime.read_case(
                 developer_gate["run_id"]
-            )
-
-            final = service.call_exposed_tool(
-                "execute",
-                {"kind": "resume", "run_id": developer_gate["run_id"]},
-                task_id="running-upgrade-resume",
-                operation_id="running-upgrade-resume-1",
             )
         finally:
             service.close()
@@ -2560,6 +4222,639 @@ class AgentGatewayTests(unittest.TestCase):
             len(set(backend.upgrade_operation_ids)),
             1,
             (backend.upgrade_operation_ids, running_projection["operations"]),
+        )
+
+    def test_execute_deadline_returns_running_after_persisting_effect_intent(self) -> None:
+        backend = BlockingLivePatchSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "bounded-live-patch.lua"
+        patch_file.write_bytes(b"return 'bounded'\n")
+        timer = threading.Timer(1, backend.release.set)
+        timer.start()
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.73",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="bounded-live-patch",
+                operation_id="bounded-live-patch-start",
+            )
+
+            def persisted(effect_id: str) -> bool:
+                for event in service.context_runtime.repository.events(
+                    waiting["run_id"]
+                ):
+                    intent = event["payload"].get("effect_intent")
+                    if (
+                        event["kind"] == "RunDecisionCommitted"
+                        and isinstance(intent, dict)
+                        and intent.get("effect_id") == effect_id
+                    ):
+                        return True
+                return False
+
+            backend.inspect_persisted_intent = persisted
+            started_at = time.monotonic()
+            response_action = {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "submission_id": "bounded-live-patch-submission",
+                "response": {
+                    "status": "completed",
+                    "summary": "patch is ready",
+                    "payload": {
+                        "source_revision": "bounded-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["verify replacement"],
+                        "artifact_ref": artifact_ref(
+                            patch_file,
+                            kind="openubmc-live-patch",
+                            target="192.0.2.73",
+                            run_id=waiting["run_id"],
+                        ),
+                        "remote_path": "/tmp/bounded-live-patch.lua",
+                        "restart_scope": "none",
+                    },
+                },
+                "deadline": 0.05,
+            }
+            running = service.call_exposed_tool(
+                "execute",
+                response_action,
+                task_id="bounded-live-patch",
+                operation_id="bounded-live-patch-submit",
+            )
+            elapsed = time.monotonic() - started_at
+
+            self.assertTrue(backend.started.wait(timeout=0.5))
+            self.assertLess(elapsed, 0.5)
+            self.assertEqual(running["state"], "running")
+            self.assertTrue(backend.intent_was_persisted)
+
+            replayed = service.call_exposed_tool(
+                "execute",
+                {**response_action, "deadline": 0.02},
+                task_id="bounded-live-patch-replay",
+                operation_id="bounded-live-patch-replay",
+            )
+            resumed = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": waiting["run_id"],
+                    "deadline": 0.02,
+                },
+                task_id="bounded-live-patch-resume",
+                operation_id="bounded-live-patch-resume",
+            )
+            self.assertEqual(replayed["state"], "running")
+            self.assertEqual(resumed["state"], "running")
+            self.assertEqual(len(backend.operation_ids), 1)
+
+            backend.release.set()
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": waiting["run_id"],
+                    "deadline": 1,
+                },
+                task_id="bounded-live-patch-final",
+                operation_id="bounded-live-patch-final",
+            )
+            self.assertEqual(final["state"], "completed")
+            self.assertEqual(len(backend.operation_ids), 1)
+            self.assertEqual(len(set(backend.operation_ids)), 1)
+        finally:
+            backend.release.set()
+            timer.cancel()
+            service.close()
+
+    def test_sqlite_restart_reexecutes_a_persisted_read_only_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "read-restart.sqlite3"
+            blobs = root / "read-restart-blobs"
+            first_backend = SemanticBackend()
+            first = RuntimeMcpService(
+                first_backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            dormant = DormantEffectRunner()
+            first.effect_runner.close()
+            first.effect_runner = dormant
+            first.semantic_runtime.run_engine.effect_runner = dormant
+            try:
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.74",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                        "deadline": 0.01,
+                    },
+                    task_id="read-restart",
+                    operation_id="read-restart-start",
+                )
+            finally:
+                first.close()
+
+            self.assertEqual(running["state"], "running")
+            self.assertEqual(first_backend.calls, [])
+            persisted_effect_id = first.context_runtime.read_case(
+                running["run_id"]
+            )["effect_intents"][-1]["effect_id"]
+
+            second_backend = SemanticBackend()
+            second = RuntimeMcpService(
+                second_backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                waiting = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="read-restart-resume",
+                    operation_id="read-restart-resume",
+                )
+                operations = second.context_runtime.read_case(
+                    running["run_id"]
+                )["operations"]
+            finally:
+                second.close()
+
+            self.assertEqual(waiting["state"], "waiting_response")
+            self.assertEqual(
+                [name for name, _arguments in second_backend.calls],
+                ["debug_run"],
+            )
+            self.assertEqual(
+                [
+                    item["operation_id"]
+                    for item in operations
+                    if item.get("operation") == "debug_run"
+                ],
+                [persisted_effect_id],
+            )
+
+    def test_effect_identity_is_unique_across_concurrent_runs(self) -> None:
+        backend = BlockingDebugSemanticBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            first = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.76",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "deadline": 0.02,
+                },
+                task_id="effect-identity-first",
+                operation_id="effect-identity-first",
+            )
+            second = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.76",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "deadline": 0.02,
+                },
+                task_id="effect-identity-second",
+                operation_id="effect-identity-second",
+            )
+
+            self.assertTrue(backend.started.wait(timeout=0.5))
+            self.assertNotEqual(first["run_id"], second["run_id"])
+            self.assertEqual(len(backend.operation_ids), 2)
+            self.assertEqual(len(set(backend.operation_ids)), 2)
+        finally:
+            backend.release.set()
+            service.close()
+
+    def test_running_effect_reattach_uses_bounded_internal_backoff(self) -> None:
+        backend = PersistentlyRunningDebugBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            started_at = time.monotonic()
+            running = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.77",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "deadline": 0.65,
+                },
+                task_id="running-backoff",
+                operation_id="running-backoff-start",
+            )
+            elapsed = time.monotonic() - started_at
+        finally:
+            service.close()
+
+        self.assertEqual(running["state"], "running")
+        self.assertGreaterEqual(elapsed, 0.5)
+        self.assertLessEqual(backend.debug_attempts, 3)
+
+    def test_sqlite_restart_reconciles_a_persisted_mutation_without_reapply(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "mutation-restart.sqlite3"
+            blobs = root / "mutation-restart-blobs"
+            first = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            patch_file = root / "mutation-restart.lua"
+            patch_file.write_bytes(b"return 'restart-safe'\n")
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.75",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="mutation-restart",
+                    operation_id="mutation-restart-start",
+                )
+                first.effect_runner.close()
+                dormant = DormantEffectRunner()
+                first.effect_runner = dormant
+                first.semantic_runtime.run_engine.effect_runner = dormant
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "mutation is durably scheduled",
+                            "payload": {
+                                "source_revision": "mutation-restart-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["verify after reconcile"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.75",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/tmp/mutation-restart.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 0.01,
+                    },
+                    task_id="mutation-restart",
+                    operation_id="mutation-restart-submit",
+                )
+            finally:
+                first.close()
+
+            persisted_effect_id = first.context_runtime.read_case(
+                running["run_id"]
+            )["effect_intents"][-1]["effect_id"]
+            backend = RecoveryAwareLivePatchBackend()
+            second = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                final = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="mutation-restart-resume",
+                    operation_id="mutation-restart-resume",
+                )
+            finally:
+                second.close()
+
+            self.assertEqual(final["state"], "completed")
+            self.assertEqual(backend.apply_calls, 0)
+            self.assertEqual(backend.reconcile_calls, 1)
+            self.assertEqual(backend.operation_ids, [persisted_effect_id])
+
+    def test_restart_recovery_without_journal_stays_incident_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "missing-journal.sqlite3"
+            blobs = root / "missing-journal-blobs"
+            patch_file = root / "missing-journal.lua"
+            patch_file.write_bytes(b"return 'never-reapply'\n")
+            first = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.78",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="missing-journal",
+                    operation_id="missing-journal-start",
+                )
+                first.effect_runner.close()
+                dormant = DormantEffectRunner()
+                first.effect_runner = dormant
+                first.semantic_runtime.run_engine.effect_runner = dormant
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "mutation is durably scheduled",
+                            "payload": {
+                                "source_revision": "missing-journal-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh verification"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.78",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/tmp/missing-journal.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 0.01,
+                    },
+                    task_id="missing-journal",
+                    operation_id="missing-journal-submit",
+                )
+            finally:
+                first.close()
+
+            backend = MissingJournalRecoveryBackend()
+            second = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                incident = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="missing-journal-recovery",
+                    operation_id="missing-journal-recovery",
+                )
+                repeated = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="missing-journal-repeated",
+                    operation_id="missing-journal-repeated",
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(incident["state"], "incident")
+        self.assertEqual(repeated["state"], "incident")
+        self.assertEqual(backend.apply_calls, 0)
+        self.assertEqual(backend.recovery_calls, 1)
+
+    def test_explicit_reconcile_returns_running_at_the_caller_deadline(self) -> None:
+        patch_file = self.artifact_root / "explicit-reconcile.lua"
+        patch_file.write_bytes(b"return 'explicit-reconcile'\n")
+        backend = FailThenBlockRecoveryLivePatchBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.81",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="explicit-reconcile",
+                operation_id="explicit-reconcile-start",
+            )
+            incident = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "mutation is ready",
+                        "payload": {
+                            "source_revision": "explicit-reconcile-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.81",
+                                run_id=waiting["run_id"],
+                            ),
+                            "remote_path": "/tmp/explicit-reconcile.lua",
+                            "restart_scope": "none",
+                        },
+                    },
+                    "deadline": 1,
+                },
+                task_id="explicit-reconcile",
+                operation_id="explicit-reconcile-submit",
+            )
+            self.assertEqual(incident["state"], "incident")
+
+            self.assert_bounded_running_turn(
+                lambda: service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "control",
+                        "command": "reconcile",
+                        "run_id": waiting["run_id"],
+                        "deadline": 0.05,
+                    },
+                    task_id="explicit-reconcile-control",
+                    operation_id="explicit-reconcile-control",
+                ),
+                started=backend.recovery_started,
+            )
+
+            backend.release_recovery.set()
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": waiting["run_id"],
+                    "deadline": 1,
+                },
+                task_id="explicit-reconcile-final",
+                operation_id="explicit-reconcile-final",
+            )
+        finally:
+            backend.release_recovery.set()
+            service.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(backend.apply_calls, 1)
+        self.assertEqual(backend.recovery_calls, 2)
+        self.assertEqual(len(set(backend.operation_ids)), 1)
+
+    def test_recovery_boundary_converges_after_a_concurrent_run_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "recovery-race.sqlite3"
+            blobs = root / "recovery-race-blobs"
+            patch_file = root / "recovery-race.lua"
+            patch_file.write_bytes(b"return 'recover-once'\n")
+            first = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                waiting = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.79",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="recovery-race",
+                    operation_id="recovery-race-start",
+                )
+                first.effect_runner.close()
+                dormant = DormantEffectRunner()
+                first.effect_runner = dormant
+                first.semantic_runtime.run_engine.effect_runner = dormant
+                running = first.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "mutation is durably scheduled",
+                            "payload": {
+                                "source_revision": "recovery-race-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh verification"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.79",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/tmp/recovery-race.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                        "deadline": 0.01,
+                    },
+                    task_id="recovery-race",
+                    operation_id="recovery-race-submit",
+                )
+            finally:
+                first.close()
+
+            persisted_effect_id = first.context_runtime.read_case(
+                running["run_id"]
+            )["effect_intents"][-1]["effect_id"]
+            backend = RecoveryAwareLivePatchBackend()
+            second = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            run_store = RecoveryBoundaryConflictOnceStore(
+                second.semantic_runtime.run_engine.run_store
+            )
+            second.semantic_runtime.run_engine.run_store = run_store
+            try:
+                final = second.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": running["run_id"],
+                        "deadline": 1,
+                    },
+                    task_id="recovery-race-resume",
+                    operation_id="recovery-race-resume",
+                )
+                events = second.context_runtime.repository.events(
+                    running["run_id"]
+                )
+            finally:
+                second.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertTrue(run_store.raced)
+        self.assertEqual(backend.apply_calls, 0)
+        self.assertEqual(backend.reconcile_calls, 1)
+        self.assertTrue(
+            any(
+                event["kind"] == "OperationReconciled"
+                and event.get("operation_id") == persisted_effect_id
+                for event in events
+            )
+        )
+        self.assertEqual(
+            sum(
+                event["kind"] == "OperationTerminal"
+                and event["payload"].get("status")
+                == "mutation_outcome_unknown"
+                for event in events
+            ),
+            0,
+        )
+        recovery_decisions = [
+            event["payload"]
+            for event in events
+            if event["kind"] == "RunDecisionCommitted"
+            and str(event["payload"].get("command_id", "")).startswith(
+                "recover-"
+            )
+        ]
+        self.assertEqual(len(recovery_decisions), 1)
+        self.assertEqual(
+            recovery_decisions[0]["effect_intent"]["effect_id"],
+            persisted_effect_id,
         )
 
     def test_verification_failure_is_deferred_and_resumed_without_reapplying(self) -> None:
@@ -2923,6 +5218,304 @@ class AgentGatewayTests(unittest.TestCase):
         finally:
             compatibility.close()
             operator.close()
+
+    def test_compatibility_calls_publish_anonymous_operation_counts(self) -> None:
+        compatibility = RuntimeMcpService(
+            SemanticBackend(), interface_profile="compatibility"
+        )
+        try:
+            compatibility.call_exposed_tool(
+                "debug_run",
+                {
+                    "ip": "192.0.2.78",
+                    "intent": "diagnosis-only",
+                    "final_purpose": "compatibility telemetry",
+                },
+                task_id="compatibility-telemetry-task",
+                operation_id="compatibility-telemetry-call",
+            )
+            status = compatibility.call_tool(
+                "runtime_status",
+                {},
+                task_id="compatibility-telemetry-status",
+                operation_id="compatibility-telemetry-status",
+            )
+        finally:
+            compatibility.close()
+
+        telemetry = status["compatibility_telemetry"]
+        self.assertEqual(telemetry["total_calls"], 1)
+        self.assertEqual(telemetry["operation_counts"], {"debug_run": 1})
+        self.assertNotIn("task", json.dumps(telemetry))
+        self.assertNotIn("192.0.2.78", json.dumps(telemetry))
+
+    def test_compatibility_controls_delegate_native_runs_to_typed_runtime(self) -> None:
+        compatibility = RuntimeMcpService(
+            SemanticBackend(), interface_profile="compatibility"
+        )
+        try:
+            waiting = compatibility.semantic_runtime.execute(
+                StartRun(
+                    target="192.0.2.79",
+                    intent="diagnose-and-fix",
+                    purpose="verify compatibility delegation",
+                    delivery_strategy="source-only",
+                    command_id="compatibility-native-start",
+                    input_digest="",
+                ),
+                task_id="compatibility-native",
+                operation_id="compatibility-native-start",
+            )
+            compatibility.call_exposed_tool(
+                "phase_record",
+                {
+                    "case_id": waiting.run_id,
+                    "expected_revision": compatibility.context_runtime.read_case(
+                        waiting.run_id
+                    )["revision"],
+                    "idempotency_key": "compatibility-native-phase",
+                    "phase_type": "developer.change",
+                    "producer_identity": "openubmc-developer",
+                    "status": "completed",
+                    "summary": "source completed",
+                    "source_revision": "compatibility-native-source",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["run tests"],
+                },
+                task_id="compatibility-native",
+                operation_id="compatibility-native-phase",
+            )
+            final = compatibility.call_exposed_tool(
+                "workflow.next",
+                {"case_id": waiting.run_id},
+                task_id="compatibility-native",
+                operation_id="compatibility-native-next",
+            )
+            events = compatibility.context_runtime.repository.events(waiting.run_id)
+        finally:
+            compatibility.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(
+            sum(event["kind"] == "RunGateSubmitted" for event in events),
+            1,
+        )
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationAccepted"
+                and event["payload"].get("operation")
+                in {"phase_record", "workflow.next"}
+                for event in events
+            )
+        )
+
+    def test_legacy_phase_writer_does_not_persist_a_native_gate_submission(self) -> None:
+        opened = self.service.call_tool(
+            "debug_run",
+            {
+                "ip": "192.0.2.82",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "final_purpose": "verify legacy phase isolation",
+            },
+            task_id="legacy-phase-isolation",
+            operation_id="legacy-phase-isolation-start",
+        )
+        run_id = opened.envelope["case_id"]
+
+        self.service.call_tool(
+            "phase_record",
+            {
+                "case_id": run_id,
+                "expected_revision": self.service.context_runtime.read_case(
+                    run_id
+                )["revision"],
+                "idempotency_key": "legacy-phase-isolation-submission",
+                "phase_type": "developer.change",
+                "producer_identity": "openubmc-developer",
+                "status": "completed",
+                "summary": "legacy source completed",
+                "source_revision": "legacy-phase-isolation-source",
+                "authored_files": ["src/legacy.lua"],
+                "verification_plan": ["run tests"],
+            },
+            task_id="legacy-phase-isolation",
+            operation_id="legacy-phase-isolation-submission",
+        )
+
+        events = self.service.context_runtime.repository.events(run_id)
+        projection = self.service.context_runtime.read_case(run_id)
+        self.assertFalse(any(event["kind"] == "RunGateSubmitted" for event in events))
+        self.assertTrue(
+            any(
+                event["kind"] == "OperationProgressed"
+                and isinstance(event["payload"].get("legacy_phase_record"), dict)
+                for event in events
+            )
+        )
+        self.assertEqual(
+            projection["phase_records"][-1]["source_revision"],
+            "legacy-phase-isolation-source",
+        )
+
+    def test_legacy_phase_writer_rejects_native_runs(self) -> None:
+        waiting = self.service.semantic_runtime.execute(
+            StartRun(
+                target="192.0.2.83",
+                intent="diagnose-and-fix",
+                purpose="verify native Gate authority",
+                delivery_strategy="source-only",
+                command_id="native-phase-authority-start",
+                input_digest="",
+            ),
+            task_id="native-phase-authority",
+            operation_id="native-phase-authority-start",
+        )
+
+        with self.assertRaisesRegex(
+            GateConflict,
+            "native Run phase transitions require RunEngine",
+        ):
+            self.service.call_tool(
+                "phase_record",
+                {
+                    "case_id": waiting.run_id,
+                    "expected_revision": self.service.context_runtime.read_case(
+                        waiting.run_id
+                    )["revision"],
+                    "idempotency_key": "native-phase-authority-submission",
+                    "phase_type": "developer.change",
+                    "producer_identity": "openubmc-developer",
+                    "status": "completed",
+                    "summary": "must use SubmitGate",
+                    "source_revision": "native-phase-authority-source",
+                    "authored_files": ["src/native.lua"],
+                    "verification_plan": ["run tests"],
+                },
+                task_id="native-phase-authority",
+                operation_id="native-phase-authority-submission",
+            )
+
+    def test_compatibility_controls_upcast_legacy_runs_before_transitioning(self) -> None:
+        compatibility = RuntimeMcpService(
+            SemanticBackend(), interface_profile="compatibility"
+        )
+        try:
+            opened = compatibility.call_exposed_tool(
+                "debug_run",
+                {
+                    "ip": "192.0.2.80",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "final_purpose": "verify legacy compatibility delegation",
+                },
+                task_id="compatibility-legacy",
+                operation_id="compatibility-legacy-debug",
+            )
+            run_id = opened.envelope["case_id"]
+            compatibility.call_exposed_tool(
+                "phase_record",
+                {
+                    "case_id": run_id,
+                    "expected_revision": compatibility.context_runtime.read_case(
+                        run_id
+                    )["revision"],
+                    "idempotency_key": "compatibility-legacy-phase",
+                    "phase_type": "developer.change",
+                    "producer_identity": "openubmc-developer",
+                    "status": "completed",
+                    "summary": "legacy source completed",
+                    "source_revision": "compatibility-legacy-source",
+                    "authored_files": ["src/legacy-fix.lua"],
+                    "verification_plan": ["run tests"],
+                },
+                task_id="compatibility-legacy",
+                operation_id="compatibility-legacy-phase",
+            )
+            final = compatibility.call_exposed_tool(
+                "workflow.next",
+                {"case_id": run_id},
+                task_id="compatibility-legacy",
+                operation_id="compatibility-legacy-next",
+            )
+            events = compatibility.context_runtime.repository.events(run_id)
+        finally:
+            compatibility.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationAccepted"
+                and event["payload"].get("operation")
+                in {"phase_record", "workflow.next"}
+                for event in events
+            )
+        )
+        self.assertTrue(any(event["kind"] == "RunDecisionCommitted" for event in events))
+
+    def test_compatibility_workflow_advance_starts_a_typed_run(self) -> None:
+        compatibility = RuntimeMcpService(
+            SemanticBackend(), interface_profile="compatibility"
+        )
+        try:
+            waiting = compatibility.call_exposed_tool(
+                "workflow.advance",
+                {
+                    "ip": "192.0.2.81",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "final_purpose": "verify typed compatibility start",
+                },
+                task_id="compatibility-advance",
+                operation_id="compatibility-advance-start",
+            )
+            run_id = waiting["run_id"]
+            events = compatibility.context_runtime.repository.events(run_id)
+        finally:
+            compatibility.close()
+
+        self.assertEqual(waiting["state"], "waiting_response")
+        self.assertTrue(any(event["kind"] == "RunDecisionCommitted" for event in events))
+        self.assertFalse(
+            any(
+                event["kind"] == "OperationAccepted"
+                and event["payload"].get("operation") == "workflow.advance"
+                for event in events
+            )
+        )
+
+    def test_gateway_preserves_mutation_journal_owned_identity(self) -> None:
+        class JournalIdentityBackend(SemanticBackend):
+            def live_patch_run(self, task, arguments, context):
+                value = super().live_patch_run(task, arguments, context)
+                value["journal"] = {
+                    **value["journal"],
+                    "operation_id": "backend-owned-effect",
+                }
+                return value
+
+        service = RuntimeMcpService(JournalIdentityBackend())
+        try:
+            value = service._invoke_registered_domain_adapter(
+                "live_patch_run",
+                RuntimeSDKContext(
+                    task_id="journal-identity",
+                    operation_id="runtime-effect",
+                    timeout_seconds=5,
+                ),
+                {
+                    "ip": "192.0.2.82",
+                    "intent": "live-patch",
+                    "local_path": "/tmp/fix.lua",
+                    "artifact_sha256": "a" * 64,
+                    "remote_path": "/opt/bmc/apps/fix.lua",
+                },
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(value["journal"]["operation_id"], "backend-owned-effect")
+        self.assertNotIn("backend_operation_id", value["journal"])
 
     def test_agent_endpoint_rejects_raw_evidence_tool(self) -> None:
         endpoint = JsonRpcMcpEndpoint(self.service, session_task_id="agent-session")

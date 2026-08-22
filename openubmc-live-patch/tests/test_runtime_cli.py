@@ -113,6 +113,18 @@ class FakeTelnetTransport:
                 returncode = 1
         elif "live_patch_codec_ready" in command:
             stdout = "live_patch_codec_ready"
+        elif "live_patch_identity_inspected" in command:
+            stdout = (
+                "product_id=product-a\nmachine_id=machine-a\n"
+                "firmware_id=firmware-1\nreboot_anchor=boot-a\n"
+                "live_patch_identity_inspected"
+            )
+        elif "rollback_backup_inspected" in command:
+            stdout = (
+                f"backup_sha256={self.digest}\nbackup_mode=440\n"
+                "backup_uid=104\nbackup_gid=104\n"
+                "rollback_backup_inspected"
+            )
         elif "/proc/mounts" in command:
             stdout = self.mount_options
         elif "remount_rw_ok" in command:

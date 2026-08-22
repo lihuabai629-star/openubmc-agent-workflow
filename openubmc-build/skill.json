@@ -25,6 +25,7 @@
     "scripts/preflight_build_env.sh",
     "scripts/run_bmcgo_background.sh",
     "scripts/run_bmcgo_checked.py",
+    "scripts/write_artifact_metadata.py",
     "scripts/update_manifest_conan_ref.py"
   ],
   "keywords": [

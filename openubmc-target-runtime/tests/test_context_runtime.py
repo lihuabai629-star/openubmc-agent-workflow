@@ -14,6 +14,7 @@ sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
     AGENT_ENVELOPE_MAX_BYTES,
+    EffectClass,
     FilesystemBlobRepository,
     IdempotencyConflict,
     InMemoryBlobRepository,
@@ -26,6 +27,10 @@ from openubmc_target_runtime import (  # noqa: E402
     RevisionConflict,
     RuntimeMcpService,
     SQLiteRuntimeRepository,
+)
+from openubmc_target_runtime.effect_runner import (  # noqa: E402
+    EffectIntent,
+    EffectSettlementMode,
 )
 
 
@@ -79,6 +84,9 @@ class FullFakeBackend:
         context.raise_if_stopped()
         value = self._result("debug_collect", task, arguments)
         value["profile"] = arguments.get("profile", "standard")
+        minimum_epoch = arguments.get("_minimum_target_epoch")
+        if isinstance(minimum_epoch, int) and not isinstance(minimum_epoch, bool):
+            value["target_epoch"] = minimum_epoch
         return value
 
     def log_bundle_collect(self, task, arguments, context) -> dict[str, object]:
@@ -240,6 +248,279 @@ class BlobRepositoryContractTests(unittest.TestCase):
 
 
 class ContextRuntimeIntegrationTests(unittest.TestCase):
+    def test_legacy_domain_invocation_requires_an_observed_target_epoch(self) -> None:
+        service = RuntimeMcpService(FullFakeBackend())
+        try:
+            result = service.context_runtime.invoke_domain(
+                service.catalog.require("debug_collect"),
+                {
+                    "ip": "192.0.2.70",
+                    "_minimum_target_epoch": 4,
+                },
+                task_id="legacy-missing-target-epoch",
+                operation_id="legacy-missing-target-epoch-collect",
+                executor=lambda: {
+                    "ok": True,
+                    "business_acceptance": "passed",
+                },
+            )
+        finally:
+            service.close()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.envelope["status"], "failed")
+        self.assertIn(
+            "fresh verification did not report the required target epoch",
+            result["error"],
+        )
+        self.assertNotIn("target_epoch", result)
+
+    def test_legacy_domain_invocation_uses_the_selected_targets_epoch(self) -> None:
+        service = RuntimeMcpService(FullFakeBackend())
+        try:
+            result = service.context_runtime.invoke_domain(
+                service.catalog.require("debug_collect"),
+                {
+                    "ip": "192.0.2.71",
+                    "target_id": "candidate",
+                    "_minimum_target_epoch": 4,
+                },
+                task_id="legacy-target-scoped-epoch",
+                operation_id="legacy-target-scoped-epoch-collect",
+                executor=lambda: {
+                    "ok": True,
+                    "business_acceptance": "passed",
+                    "result": {
+                        "runtime": {
+                            "status": {
+                                "targets": [
+                                    {
+                                        "target_id": "reference",
+                                        "epochs": {"target_epoch": 9},
+                                    },
+                                    {
+                                        "target_id": "candidate",
+                                        "epochs": {"target_epoch": 3},
+                                    },
+                                ]
+                            }
+                        }
+                    },
+                },
+            )
+        finally:
+            service.close()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.envelope["status"], "failed")
+        self.assertIn("observed 3, required 4", result["error"])
+
+    def test_legacy_domain_invocation_rejects_a_foreign_observed_epoch(self) -> None:
+        service = RuntimeMcpService(FullFakeBackend())
+        try:
+            result = service.context_runtime.invoke_domain(
+                service.catalog.require("debug_collect"),
+                {
+                    "ip": "192.0.2.72",
+                    "target_id": "candidate",
+                    "_minimum_target_epoch": 4,
+                },
+                task_id="legacy-foreign-target-epoch",
+                operation_id="legacy-foreign-target-epoch-collect",
+                executor=lambda: {
+                    "ok": True,
+                    "business_acceptance": "passed",
+                    "observed_target_epochs": {"reference": 9},
+                },
+            )
+        finally:
+            service.close()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.envelope["status"], "failed")
+        self.assertIn(
+            "fresh verification did not report the required target epoch",
+            result["error"],
+        )
+
+    def test_effect_transition_rejects_a_foreign_observed_epoch(self) -> None:
+        service = RuntimeMcpService(FullFakeBackend())
+        effect_id = "typed-foreign-target-epoch-collect"
+        try:
+            opened = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.73", "deadline": 10},
+                task_id="typed-foreign-target-epoch",
+                operation_id="typed-foreign-target-epoch-open",
+            )
+            run_id = opened.envelope["case_id"]
+            projection = service.context_runtime.read_case(run_id)
+            service.context_runtime.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {
+                            "operation": "debug_collect",
+                            "idempotency_key": effect_id,
+                            "request_fingerprint": "a" * 64,
+                            "target_id": "candidate",
+                        },
+                        effect_id,
+                    ),
+                    PendingCaseEvent("OperationStarted", {}, effect_id),
+                ),
+            )
+            events = service.context_runtime.prepare_effect_transition(
+                EffectIntent(
+                    run_id=run_id,
+                    effect_id=effect_id,
+                    operation="debug_collect",
+                    effect_class=EffectClass.READ_ONLY,
+                    request_fingerprint="a" * 64,
+                    arguments={
+                        "target_id": "candidate",
+                        "_minimum_target_epoch": 4,
+                    },
+                ),
+                result={
+                    "ok": True,
+                    "business_acceptance": "passed",
+                    "observed_target_epochs": {"reference": 9},
+                },
+                error=None,
+                settlement_mode=EffectSettlementMode.DISPATCH,
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(events[0].kind, "OperationTerminal")
+        self.assertEqual(events[0].payload["status"], "failed")
+        self.assertIn(
+            "fresh verification did not report the required target epoch",
+            events[0].payload["summary"],
+        )
+
+    def test_effect_transition_keeps_terminal_mutation_recoverable_when_evidence_fails(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(
+            FullFakeBackend(),
+            blob_repository=FailingBlobRepository(),
+        )
+        effect_id = "typed-terminal-mutation-evidence-failure"
+        try:
+            opened = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.74", "deadline": 10},
+                task_id="typed-terminal-mutation",
+                operation_id="typed-terminal-mutation-open",
+            )
+            run_id = opened.envelope["case_id"]
+            projection = service.context_runtime.read_case(run_id)
+            service.context_runtime.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {
+                            "operation": "live_patch_run",
+                            "idempotency_key": effect_id,
+                            "request_fingerprint": "b" * 64,
+                            "target_id": "candidate",
+                        },
+                        effect_id,
+                    ),
+                    PendingCaseEvent("OperationStarted", {}, effect_id),
+                ),
+            )
+            events = service.context_runtime.prepare_effect_transition(
+                EffectIntent(
+                    run_id=run_id,
+                    effect_id=effect_id,
+                    operation="live_patch_run",
+                    effect_class=EffectClass.RECONCILABLE_MUTATION,
+                    request_fingerprint="b" * 64,
+                    arguments={"target_id": "candidate"},
+                ),
+                result={
+                    "ok": True,
+                    "journal": {"stage": "verified"},
+                    "target_epoch": 2,
+                },
+                error=None,
+                settlement_mode=EffectSettlementMode.DISPATCH,
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "OperationTerminal")
+        self.assertEqual(events[0].payload["status"], "mutation_outcome_unknown")
+        self.assertIn("cannot persist mutation evidence", events[0].payload["summary"])
+
+    def test_effect_transition_keeps_read_only_effect_retryable_when_evidence_fails(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(
+            FullFakeBackend(),
+            blob_repository=FailingBlobRepository(),
+        )
+        effect_id = "typed-read-only-evidence-failure"
+        try:
+            opened = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.76", "deadline": 10},
+                task_id="typed-read-only",
+                operation_id="typed-read-only-open",
+            )
+            run_id = opened.envelope["case_id"]
+            projection = service.context_runtime.read_case(run_id)
+            service.context_runtime.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {
+                            "operation": "debug_collect",
+                            "idempotency_key": effect_id,
+                            "request_fingerprint": "c" * 64,
+                            "target_id": "candidate",
+                        },
+                        effect_id,
+                    ),
+                    PendingCaseEvent("OperationStarted", {}, effect_id),
+                ),
+            )
+            events = service.context_runtime.prepare_effect_transition(
+                EffectIntent(
+                    run_id=run_id,
+                    effect_id=effect_id,
+                    operation="debug_collect",
+                    effect_class=EffectClass.READ_ONLY,
+                    request_fingerprint="c" * 64,
+                    arguments={"target_id": "candidate"},
+                ),
+                result={"ok": True, "summary": "fresh observation completed"},
+                error=None,
+                settlement_mode=EffectSettlementMode.DISPATCH,
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "OperationProgressed")
+        self.assertEqual(events[0].payload["status"], "running")
+        self.assertEqual(
+            events[0].payload["canonical_error"]["code"],
+            "evidence_not_persisted",
+        )
+        self.assertEqual(events[0].payload["evidence_retry_generation"], 1)
+        self.assertIn("retry", events[0].payload["next_actions"][0])
+
     def test_json_rpc_error_uses_mutation_journal_outcome_classification(self) -> None:
         class RollbackFailedBackend(FullFakeBackend):
             def live_patch_run(self, task, arguments, context):
@@ -406,6 +687,53 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         self.assertIn("evidence_not_persisted", first.envelope["gaps"][0])
         self.assertTrue(replay["ok"])
         self.assertEqual(len(backend.calls), 1)
+
+    def test_direct_terminal_mutation_evidence_failure_stays_unknown(self) -> None:
+        backend = FullFakeBackend()
+        repository = InMemoryRuntimeRepository()
+        service = RuntimeMcpService(
+            backend,
+            context_repository=repository,
+            blob_repository=FailingBlobRepository(),
+        )
+        arguments = {
+            "ip": "192.0.2.75",
+            "intent": "live-patch",
+            "delivery_strategy": "live-patch",
+            "local_path": "/tmp/unit.lua",
+            "remote_path": "/opt/bmc/apps/demo/unit.lua",
+            "restart_scope": "none",
+            "deadline": 10,
+            "idempotency_key": "terminal-evidence-failure",
+        }
+        try:
+            with self.assertRaisesRegex(
+                MutationOutcomeUnknown,
+                "cannot persist mutation evidence",
+            ):
+                service.call_tool(
+                    "live_patch_run",
+                    arguments,
+                    task_id="terminal-evidence-failure-task",
+                    operation_id="terminal-evidence-failure-operation",
+                )
+            case_id = repository.case_for_task("terminal-evidence-failure-task")
+            case = service.call_tool(
+                "case_read",
+                {"case_id": case_id},
+                task_id="terminal-evidence-failure-reader",
+                operation_id="terminal-evidence-failure-read",
+            )
+        finally:
+            service.close()
+
+        mutation = next(
+            item
+            for item in case["operations"]
+            if item["operation_id"] == "terminal-evidence-failure-operation"
+        )
+        self.assertEqual(mutation["status"], "mutation_outcome_unknown")
+        self.assertEqual([name for name, _ in backend.calls], ["live_patch_run"])
 
     def test_unknown_mutation_blocks_advance_but_explicit_reconciliation_recovers(self) -> None:
         backend = FailOnceUpgradeBackend()

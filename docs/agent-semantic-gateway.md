@@ -116,8 +116,9 @@ secret Gate token.
 
 Patch and firmware inputs use `ArtifactRef`. The Runtime requires kind, content digest, byte size,
 provenance, retention hint, target, and Run binding, then streams the local content to verify its
-digest before any mutation begins. Missing content, cross-target or cross-Run references, wrong
-kind, size mismatch, and tampering fail before Domain execution.
+digest before any mutation begins. Versioned build artifacts also bind provenance and product
+version in adjacent digest-bound build metadata. Missing content, cross-target or cross-Run
+references, wrong kind, size or provenance mismatch, and tampering fail before Domain execution.
 
 When a mutation result is unknown, `RunEngine` automatically performs one reconcile attempt using
 the same durable operation ID and mutation journal. If the read-first recovery converges, execution
@@ -125,9 +126,10 @@ continues without another Agent Turn. If it cannot converge, the Runtime returns
 the affected Effect identity. Explicit `control=reconcile` remains as a compatibility and operator
 fallback rather than the normal Agent path.
 
-Terminal Runs first persist one authoritative Run Outcome. A redacted Session Outcome is then
-projected from that fact; retries do not create another Run Outcome or governance record. Review,
-approval, rejection, and promotion remain operator-only operations.
+Terminal Runs persist one authoritative Run Outcome. The Agent path does not write a Session
+Outcome. An operator may explicitly project the redacted governance record from the persisted Run
+Outcome; retries cannot create another Run Outcome or alter the Run ledger. Review, approval,
+rejection, and promotion remain operator-only operations.
 
 ## Descriptor direction
 
@@ -165,18 +167,52 @@ profile is retained as the baseline until the semantic interface meets that gate
 Use `scripts/agent_gateway_ab.py` to run or re-evaluate the qualification. The runner creates a
 balanced AB/BA schedule, isolates every Codex home, applies semantic and scope acceptance, and
 computes the paired geometric mean plus the one-sided 95% bootstrap upper bound for total tokens,
-non-cached input plus output, and wall time. Ten valid pairs are the first decision point; an
-uncertain result expands to twenty and then thirty pairs.
+non-cached input plus output, tool-output bytes, model turns, wall time, and time to the next
+actionable Turn. Ten valid pairs are the first decision point; an uncertain result expands to
+twenty and then thirty pairs. Each result records both source commits, the model and environment
+fingerprint, thresholds, valid and invalid pairs, and digests for the schedule, raw metrics, and
+the run events used to recompute every promoted metric.
 
 ```bash
 python scripts/agent_gateway_ab.py run \
   --work-root /path/to/benchmark-work \
   --credentials /path/to/private/credentials.env \
-  --model <fixed-model> \
-  --pairs 10
+  --attestation-private-key /path/to/private/ab-evidence-signing-key \
+  --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
+  --model gpt-5.6-sol \
+  --scenario execute-source-only \
+  --pairs 10 \
+  --codex-config 'features.shell_tool=false' \
+  --codex-config 'model_provider="cliproxy"' \
+  --codex-config 'model_providers.cliproxy.name="CLIProxyAPI"' \
+  --codex-config 'model_providers.cliproxy.base_url="http://82.156.104.157/v1"' \
+  --codex-config 'model_providers.cliproxy.env_key="CLI_PROXY_API_KEY"' \
+  --codex-config 'model_providers.cliproxy.wire_api="responses"' \
+  --codex-config 'model_providers.cliproxy.supports_websockets=false'
 
-python scripts/agent_gateway_ab.py analyze \
-  /path/to/benchmark-work/results-*/all_metrics.json
+python scripts/agent_gateway_ab.py verify \
+  /path/to/benchmark-work/results-*/summary.json \
+  --source-ref <candidate-commit> \
+  --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub
+```
+
+Every run record carries its tested source commit and a unique execution identity. The runner
+signs that record with the qualification key; verification uses a public key held outside the
+candidate checkout. The GitHub Release workflow restores that trust root from the
+`AB_ATTESTATION_PUBLIC_KEY_BASE64` repository variable managed outside source control, so editing
+a run or rebinding an old result to another candidate invalidates the evidence.
+
+For the GitHub Release workflow, package the four verified files as one xz-compressed,
+digest-bound input. The workflow rejects extra members and non-regular files before extraction.
+High-ratio xz compression keeps the evidence, including the run events, within the supported
+workflow-dispatch input:
+
+```bash
+tar -C /path/to/benchmark-work/results-YYYYMMDD-HHMMSS \
+  -cJf agent-gateway-ab-evidence.tar.xz \
+  summary.json all_metrics.json schedule.json run_evidence.json
+sha256sum agent-gateway-ab-evidence.tar.xz
+base64 -w0 agent-gateway-ab-evidence.tar.xz
 ```
 
 ## Recovery coverage

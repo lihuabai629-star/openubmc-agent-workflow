@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -19,6 +21,7 @@ from openubmc_target_runtime import (  # noqa: E402
     MutationJournal,
     MutationJournalCorrupt,
     MutationJournalStore,
+    MutationRecoveryEvidence,
     MutationRequest,
     MutationVerificationTerminalFailure,
     OpenUBMCTaskRun,
@@ -27,10 +30,40 @@ from openubmc_target_runtime import (  # noqa: E402
     TargetIdentity,
     TargetSpec,
     UnfinishedMutationExists,
+    decide_mutation_recovery,
 )
 
 
 class MutationRecoveryTests(unittest.TestCase):
+    def test_recovery_safety_is_distinct_from_target_reachability(self) -> None:
+        journal = MutationJournal(
+            task_id="recovery-safety",
+            operation_id="patch-recovery-safety",
+            operation_fingerprint="a" * 64,
+            action="live_patch",
+            original_intent="live-patch",
+            target_fingerprint="b" * 64,
+            target_identity=None,
+            epoch_before=0,
+            stage="applying",
+            effects_started=True,
+        )
+        evidence = MutationRecoveryEvidence.from_value(
+            {
+                "target_reachable": True,
+                "recovery_safe": False,
+                "safety_blockers": ["root_mount_not_restored"],
+            }
+        )
+
+        self.assertTrue(evidence.target_reachable)
+        self.assertFalse(evidence.recovery_safe)
+        self.assertEqual(
+            evidence.safety_blockers,
+            ("root_mount_not_restored",),
+        )
+        self.assertEqual(decide_mutation_recovery(journal, evidence), "manual")
+
     def setUp(self) -> None:
         self.selector = CredentialSelector.for_ssh(
             user="root",
@@ -80,6 +113,80 @@ class MutationRecoveryTests(unittest.TestCase):
             ),
             mutation_journal_store=store,
         )
+
+    def test_sigkill_crash_cuts_preserve_identity_and_never_repeat_the_mutation(self) -> None:
+        helper = RUNTIME_ROOT / "tests" / "helpers" / "mutation_crash_worker.py"
+        for cut in ("effect_started", "result_persisted", "terminal_committed"):
+            with self.subTest(cut=cut), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                process = subprocess.Popen(
+                    [sys.executable, str(helper), str(root), cut],
+                    cwd=RUNTIME_ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                deadline = time.monotonic() + 5
+                marker = root / "marker"
+                while not marker.exists() and process.poll() is None:
+                    if time.monotonic() >= deadline:
+                        self.fail(f"crash worker did not reach {cut}")
+                    time.sleep(0.01)
+                self.assertIsNone(process.poll())
+                process.kill()
+                process.wait(timeout=5)
+                process.communicate(timeout=1)
+                self.assertLess(process.returncode, 0)
+
+                store = MutationJournalStore(root / "journals")
+                journal = store.load("crash-task", "crash-effect-1")
+                self.assertIsNotNone(journal)
+                self.assertEqual(journal.operation_id, "crash-effect-1")
+                self.assertEqual((root / "apply-count").read_text(), "1")
+                restarted = OpenUBMCTaskRun(
+                    task_id="crash-task",
+                    credential_resolver=CredentialResolver(
+                        lambda _selector: ResolvedSshCredentials(
+                            user="root",
+                            password="test",
+                        )
+                    ),
+                    mutation_journal_store=store,
+                )
+                if cut == "terminal_committed":
+                    replay = restarted.run_mutation(
+                        self.request("crash-effect-1"),
+                        authorization=self.authorization,
+                        apply=lambda _context: self.fail(
+                            "terminal crash replay must not repeat the mutation"
+                        ),
+                        verify=lambda _context: self.fail(
+                            "terminal crash replay must not verify again"
+                        ),
+                    )
+                    self.assertTrue(replay.idempotent_replay)
+                    self.assertEqual(replay.journal.stage, "verified")
+                else:
+                    recovery = restarted.recover_mutation(
+                        self.request("crash-effect-1"),
+                        authorization=self.authorization,
+                        inspect=lambda _context: {
+                            "remote_checksum": "b" * 64,
+                            "root_mount_restored": True,
+                            "restart_observed": False,
+                        },
+                        verify=lambda context: context.run_read(
+                            self.read_request(f"crash-{cut}-verify"),
+                            lambda read_context: read_context.epochs.target_epoch,
+                        ),
+                    )
+                    if cut == "effect_started":
+                        self.assertEqual(recovery.decision, "manual")
+                        self.assertEqual(recovery.journal.stage, "recovery_blocked")
+                    else:
+                        self.assertEqual(recovery.decision, "verify")
+                        self.assertEqual(recovery.journal.stage, "verified")
+                self.assertEqual((root / "apply-count").read_text(), "1")
 
     def test_journal_rejects_invalid_authorized_recovery_actions(self) -> None:
         journal = MutationJournal(
@@ -579,6 +686,40 @@ class MutationRecoveryTests(unittest.TestCase):
             )
 
             self.assertEqual(inspected, ["read-only"])
+            self.assertEqual(status.decision, "replan")
+            self.assertEqual(status.journal.stage, "replan_required")
+
+    def test_replan_required_recovery_returns_the_durable_decision_without_inspection(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = MutationJournalStore(Path(raw) / "journals")
+            store.create(
+                MutationJournal(
+                    task_id="recovery-task",
+                    operation_id="patch-1",
+                    operation_fingerprint=self.request().fingerprint,
+                    action="live_patch",
+                    original_intent="diagnose-and-fix",
+                    target_fingerprint=self.target.fingerprint,
+                    target_identity=None,
+                    epoch_before=0,
+                    stage="replan_required",
+                    effects_started=False,
+                    verification_state="not_started",
+                    recovery_decision="replan",
+                )
+            )
+            restarted = self.task(store)
+
+            status = restarted.recover_mutation(
+                self.request(),
+                authorization=self.authorization,
+                inspect=lambda _context: self.fail(
+                    "durable replan recovery must not inspect the target"
+                ),
+                verify=lambda _context: self.fail("replan must not verify"),
+                rollback=lambda *_args: self.fail("replan must not rollback"),
+            )
+
             self.assertEqual(status.decision, "replan")
             self.assertEqual(status.journal.stage, "replan_required")
 

@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 import hashlib
 import json
 import os
@@ -18,6 +19,12 @@ from .contracts import CredentialSelector, TargetIdentity, TargetSpec, _fingerpr
 
 
 MUTATION_JOURNAL_SCHEMA = "openubmc.target-runtime.v1/mutation-journal"
+
+
+class MutationRecoveryDisposition(str, Enum):
+    TERMINAL = "terminal"
+    RECOVER = "recover"
+    NEW = "new"
 
 
 class MutationAuthorizationDenied(PermissionError):
@@ -426,6 +433,76 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalized_metadata(
+    value: object,
+    *,
+    field_name: str,
+) -> dict[str, int | str]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be an object")
+    normalized: dict[str, int | str] = {}
+    for name, item in value.items():
+        if not isinstance(name, str) or not name.strip():
+            raise TypeError(f"{field_name} keys must be non-empty strings")
+        if isinstance(item, bool) or not isinstance(item, (int, str)):
+            raise TypeError(
+                f"{field_name} values must be integers or strings"
+            )
+        normalized[name] = item
+    return normalized
+
+
+@dataclass(frozen=True)
+class MutationExpectedTargetState:
+    """Stable post-mutation target state used by restart reconciliation."""
+
+    checksum: str = ""
+    missing: bool | None = None
+    metadata: Mapping[str, int | str] = field(default_factory=dict)
+
+    @classmethod
+    def file(
+        cls,
+        checksum: str,
+        metadata: Mapping[str, int | str],
+    ) -> "MutationExpectedTargetState":
+        normalized_checksum = str(checksum).strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", normalized_checksum) is None:
+            raise ValueError("expected target checksum must be SHA-256")
+        normalized_metadata = _normalized_metadata(
+            metadata,
+            field_name="expected target metadata",
+        )
+        if not normalized_metadata:
+            raise ValueError("expected target file metadata must not be empty")
+        return cls(
+            checksum=normalized_checksum,
+            missing=False,
+            metadata=normalized_metadata,
+        )
+
+    @classmethod
+    def absent(cls) -> "MutationExpectedTargetState":
+        return cls(missing=True)
+
+    @classmethod
+    def unknown(cls) -> "MutationExpectedTargetState":
+        return cls()
+
+    def matches(self, evidence: "MutationRecoveryEvidence") -> bool:
+        if self.missing is True:
+            return not evidence.remote_checksum
+        if self.missing is not False or not self.checksum or not self.metadata:
+            return False
+        return (
+            evidence.remote_checksum == self.checksum
+            and all(
+                evidence.remote_metadata.get(name) == value
+                for name, value in self.metadata.items()
+            )
+        )
+
+
 @dataclass
 class MutationJournal:
     """Bounded, secret-free state for one mutation and its verification."""
@@ -446,6 +523,8 @@ class MutationJournal:
     artifact_reference: str = ""
     before_checksum: str = ""
     expected_checksum: str = ""
+    expected_missing: bool | None = None
+    expected_metadata: dict[str, int | str] = field(default_factory=dict)
     observed_checksum: str = ""
     root_mount_mode: str = "unknown"
     root_mount_restored: bool | None = None
@@ -453,6 +532,7 @@ class MutationJournal:
     verification_state: str = "pending"
     last_known_state: str = "planned"
     recovery_decision: str = ""
+    verification_attempts: int = 0
     authorized_recovery_actions: tuple[str, ...] = ()
     created_at: str = field(default_factory=_utc_now)
     updated_at: str = field(default_factory=_utc_now)
@@ -472,6 +552,26 @@ class MutationJournal:
         compare=False,
     )
 
+    VALID_STAGES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "planned",
+            "applying",
+            "applied",
+            "verifying",
+            "verified",
+            "replan_required",
+            "mutation_failed",
+            "verification_failed",
+            "verification_failed_terminal",
+            "recovery_blocked",
+            "rolling_back",
+            "rollback_verifying",
+            "rollback_verified",
+            "rollback_failed",
+            "rollback_verification_failed",
+            "rollback_verification_failed_terminal",
+        }
+    )
     TERMINAL_STAGES: ClassVar[frozenset[str]] = frozenset(
         {
             "verified",
@@ -481,6 +581,12 @@ class MutationJournal:
         }
     )
 
+    def __post_init__(self) -> None:
+        if self.stage not in self.VALID_STAGES:
+            raise ValueError(
+                f"unsupported mutation journal stage: {self.stage}"
+            )
+
     @property
     def terminal(self) -> bool:
         return self.stage in self.TERMINAL_STAGES
@@ -488,6 +594,16 @@ class MutationJournal:
     @property
     def blocks_target(self) -> bool:
         return not self.terminal and self.stage != "replan_required"
+
+    @property
+    def recovery_disposition(self) -> MutationRecoveryDisposition:
+        """Return the Journal-owned route for reattaching this identity."""
+
+        if self.terminal:
+            return MutationRecoveryDisposition.TERMINAL
+        if self.stage == "replan_required":
+            return MutationRecoveryDisposition.NEW
+        return MutationRecoveryDisposition.RECOVER
 
     def attach_store(
         self,
@@ -515,6 +631,8 @@ class MutationJournal:
         recovery_decision: str | None = None,
     ) -> None:
         with self._lock:
+            if stage not in self.VALID_STAGES:
+                raise ValueError(f"unsupported mutation journal stage: {stage}")
             self.stage = stage
             if epoch_after is not None:
                 self.epoch_after = epoch_after
@@ -567,6 +685,8 @@ class MutationJournal:
             self.artifact_reference = ""
             self.before_checksum = ""
             self.expected_checksum = ""
+            self.expected_missing = None
+            self.expected_metadata = {}
             self.observed_checksum = ""
             self.root_mount_mode = "unknown"
             self.root_mount_restored = None
@@ -574,6 +694,7 @@ class MutationJournal:
             self.verification_state = "pending"
             self.last_known_state = "replan-reset"
             self.recovery_decision = ""
+            self.verification_attempts = 0
             self.authorized_recovery_actions = ()
             self.updated_at = _utc_now()
         self._persist()
@@ -604,6 +725,44 @@ class MutationJournal:
             self.updated_at = _utc_now()
         self._persist()
 
+    def record_target_identity(self, identity: TargetIdentity) -> None:
+        """Persist the identity observed immediately before mutation effects."""
+
+        if not isinstance(identity, TargetIdentity):
+            raise TypeError("identity must be a TargetIdentity")
+        with self._lock:
+            self.target_identity = identity
+            self.updated_at = _utc_now()
+        self._persist()
+
+    @property
+    def expected_target_state(self) -> MutationExpectedTargetState:
+        if self.expected_missing is True:
+            return MutationExpectedTargetState.absent()
+        if (
+            self.expected_missing is False
+            and self.expected_checksum
+            and self.expected_metadata
+        ):
+            return MutationExpectedTargetState.file(
+                self.expected_checksum,
+                self.expected_metadata,
+            )
+        return MutationExpectedTargetState.unknown()
+
+    def record_expected_target_state(
+        self,
+        state: MutationExpectedTargetState,
+    ) -> None:
+        if not isinstance(state, MutationExpectedTargetState):
+            raise TypeError("state must be a MutationExpectedTargetState")
+        with self._lock:
+            self.expected_checksum = state.checksum
+            self.expected_missing = state.missing
+            self.expected_metadata = dict(state.metadata)
+            self.updated_at = _utc_now()
+        self._persist()
+
     def record_artifact(self, reference: str) -> None:
         value = str(reference)
         validator = self._artifact_validator
@@ -619,6 +778,8 @@ class MutationJournal:
         *,
         before_checksum: str | None = None,
         expected_checksum: str | None = None,
+        expected_missing: bool | None = None,
+        expected_metadata: Mapping[str, int | str] | None = None,
         observed_checksum: str | None = None,
         root_mount_mode: str | None = None,
         root_mount_restored: bool | None = None,
@@ -629,6 +790,15 @@ class MutationJournal:
                 self.before_checksum = str(before_checksum)
             if expected_checksum is not None:
                 self.expected_checksum = str(expected_checksum)
+            if expected_missing is not None:
+                if not isinstance(expected_missing, bool):
+                    raise TypeError("expected_missing must be a boolean")
+                self.expected_missing = expected_missing
+            if expected_metadata is not None:
+                self.expected_metadata = _normalized_metadata(
+                    expected_metadata,
+                    field_name="expected_metadata",
+                )
             if observed_checksum is not None:
                 self.observed_checksum = str(observed_checksum)
             if root_mount_mode is not None:
@@ -639,6 +809,16 @@ class MutationJournal:
                 self.restart_state = str(restart_state)
             self.updated_at = _utc_now()
         self._persist()
+
+    def begin_verification_attempt(self) -> int:
+        """Persist and return a unique ordinal for one fresh verification."""
+
+        with self._lock:
+            self.verification_attempts += 1
+            attempt = self.verification_attempts
+            self.updated_at = _utc_now()
+        self._persist()
+        return attempt
 
     def recovery_status(self) -> dict[str, object]:
         return {
@@ -678,6 +858,8 @@ class MutationJournal:
                 "artifact_reference": self.artifact_reference,
                 "before_checksum": self.before_checksum,
                 "expected_checksum": self.expected_checksum,
+                "expected_missing": self.expected_missing,
+                "expected_metadata": dict(self.expected_metadata),
                 "observed_checksum": self.observed_checksum,
                 "root_mount_mode": self.root_mount_mode,
                 "root_mount_restored": self.root_mount_restored,
@@ -685,6 +867,7 @@ class MutationJournal:
                 "verification_state": self.verification_state,
                 "last_known_state": self.last_known_state,
                 "recovery_decision": self.recovery_decision,
+                "verification_attempts": self.verification_attempts,
                 "authorized_recovery_actions": list(
                     self.authorized_recovery_actions
                 ),
@@ -696,6 +879,11 @@ class MutationJournal:
     def from_public_dict(cls, value: Mapping[str, object]) -> "MutationJournal":
         if value.get("schema") != MUTATION_JOURNAL_SCHEMA:
             raise MutationJournalCorrupt("unsupported mutation journal schema")
+        stage = str(value.get("stage", "planned"))
+        if stage not in cls.VALID_STAGES:
+            raise MutationJournalCorrupt(
+                f"unsupported mutation journal stage: {stage}"
+            )
         raw_recovery_actions = value.get("authorized_recovery_actions", [])
         if not isinstance(raw_recovery_actions, list):
             raise MutationJournalCorrupt(
@@ -731,6 +919,21 @@ class MutationJournal:
                 target_clock=str(identity_value.get("target_clock", "")),
             )
         try:
+            raw_expected_missing = value.get("expected_missing")
+            if raw_expected_missing is not None and not isinstance(
+                raw_expected_missing,
+                bool,
+            ):
+                raise TypeError("expected_missing must be a boolean")
+            verification_attempts = value.get("verification_attempts", 0)
+            if (
+                isinstance(verification_attempts, bool)
+                or not isinstance(verification_attempts, int)
+                or verification_attempts < 0
+            ):
+                raise TypeError(
+                    "verification_attempts must be a non-negative integer"
+                )
             return cls(
                 task_id=str(value["task_id"]),
                 operation_id=str(value["operation_id"]),
@@ -740,7 +943,7 @@ class MutationJournal:
                 target_fingerprint=str(value["target_fingerprint"]),
                 target_identity=identity,
                 epoch_before=int(value["epoch_before"]),
-                stage=str(value.get("stage", "planned")),
+                stage=stage,
                 effects_started=bool(value.get("effects_started", False)),
                 epoch_after=(
                     int(value["epoch_after"])
@@ -756,6 +959,15 @@ class MutationJournal:
                 artifact_reference=str(value.get("artifact_reference", "")),
                 before_checksum=str(value.get("before_checksum", "")),
                 expected_checksum=str(value.get("expected_checksum", "")),
+                expected_missing=(
+                    raw_expected_missing
+                    if raw_expected_missing is not None
+                    else None
+                ),
+                expected_metadata=_normalized_metadata(
+                    value.get("expected_metadata", {}),
+                    field_name="expected_metadata",
+                ),
                 observed_checksum=str(value.get("observed_checksum", "")),
                 root_mount_mode=str(value.get("root_mount_mode", "unknown")),
                 root_mount_restored=(
@@ -767,6 +979,7 @@ class MutationJournal:
                 verification_state=str(value.get("verification_state", "pending")),
                 last_known_state=str(value.get("last_known_state", "planned")),
                 recovery_decision=str(value.get("recovery_decision", "")),
+                verification_attempts=verification_attempts,
                 authorized_recovery_actions=normalized_recovery_actions,
                 created_at=str(value.get("created_at", _utc_now())),
                 updated_at=str(value.get("updated_at", _utc_now())),
@@ -823,7 +1036,10 @@ def mutation_journal_operation_status(
 class MutationRecoveryEvidence:
     target_identity: TargetIdentity | None = None
     target_reachable: bool = True
+    recovery_safe: bool = True
+    safety_blockers: tuple[str, ...] = ()
     remote_checksum: str = ""
+    remote_metadata: Mapping[str, int | str] = field(default_factory=dict)
     backup_exists: bool | None = None
     backup_checksum: str = ""
     root_mount_mode: str = "unknown"
@@ -849,10 +1065,24 @@ class MutationRecoveryEvidence:
                 reboot_anchor=str(identity_value.get("reboot_anchor", "")),
                 target_clock=str(identity_value.get("target_clock", "")),
             )
+        raw_safety_blockers = value.get("safety_blockers", [])
+        if not isinstance(raw_safety_blockers, (list, tuple)) or any(
+            not isinstance(item, str) or not item.strip()
+            for item in raw_safety_blockers
+        ):
+            raise TypeError(
+                "recovery safety_blockers must contain non-empty strings"
+            )
         return cls(
             target_identity=identity,
             target_reachable=bool(value.get("target_reachable", True)),
+            recovery_safe=bool(value.get("recovery_safe", True)),
+            safety_blockers=tuple(str(item) for item in raw_safety_blockers),
             remote_checksum=str(value.get("remote_checksum", "")),
+            remote_metadata=_normalized_metadata(
+                value.get("remote_metadata", {}),
+                field_name="remote_metadata",
+            ),
             backup_exists=(
                 bool(value["backup_exists"])
                 if value.get("backup_exists") is not None
@@ -880,7 +1110,10 @@ class MutationRecoveryEvidence:
                 else None
             ),
             "target_reachable": self.target_reachable,
+            "recovery_safe": self.recovery_safe,
+            "safety_blockers": list(self.safety_blockers),
             "remote_checksum": self.remote_checksum,
+            "remote_metadata": dict(self.remote_metadata),
             "backup_exists": self.backup_exists,
             "backup_checksum": self.backup_checksum,
             "root_mount_mode": self.root_mount_mode,
@@ -895,16 +1128,33 @@ def decide_mutation_recovery(
 ) -> str:
     """Choose a recovery action only from durable and read-only evidence."""
 
-    if not evidence.target_reachable:
+    if not evidence.target_reachable or not evidence.recovery_safe:
         return "manual"
+    identity_change = None
     if journal.target_identity is not None and evidence.target_identity is not None:
         change = journal.target_identity.change_kind(evidence.target_identity)
+        identity_change = change.value
         if change.value == "replacement" or (
             change.value == "firmware-change" and journal.action != "upgrade"
         ):
             return "manual"
+    if (
+        journal.effects_started
+        and journal.action in {"live_patch", "rollback"}
+        and journal.target_identity is not None
+        and (evidence.target_identity is None or identity_change == "unknown")
+    ):
+        return "manual"
     if journal.stage in {"planned", "replan_required"}:
         return "replan"
+    if journal.action == "rollback":
+        if not journal.effects_started:
+            return "replan"
+        if evidence.root_mount_restored is False:
+            return "manual"
+        if journal.expected_target_state.matches(evidence):
+            return "verify"
+        return "manual"
     backup_checksum_matches = (
         not journal.before_checksum
         or not evidence.backup_checksum
@@ -967,6 +1217,26 @@ class MutationRecoveryStatus(Generic[RecoveryValueT]):
             "inspection": self.inspection.to_public_dict(),
             "verification": verification,
             "rollback": self.rollback,
+        }
+
+    def to_transaction_dict(self, *, target_fingerprint: str) -> dict[str, object]:
+        """Project recovery through the normal mutation transaction envelope."""
+
+        epoch_after = (
+            self.journal.rollback_epoch
+            or self.journal.epoch_after
+            or self.journal.epoch_before
+        )
+        return {
+            "operation_id": self.operation_id,
+            "action": self.journal.action,
+            "target_fingerprint": target_fingerprint,
+            "epoch_before": self.journal.epoch_before,
+            "epoch_after": epoch_after,
+            "mutation": {"recovery": self.to_public_dict()},
+            "verification": self.verification,
+            "journal": self.journal.to_public_dict(),
+            "idempotent_replay": False,
         }
 
 

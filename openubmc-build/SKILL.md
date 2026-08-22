@@ -106,6 +106,8 @@ RUN_DIR=/tmp/openubmc-build PREFIX=product \
    - Verify output package path and package metadata include the new component versions.
 
 6. **Return artifact identity and route delivery**
+   - After the final HPM hash and product version are known, run `scripts/write_artifact_metadata.py --path <hpm> --product-version <version> --provenance openubmc-build` so Runtime can bind the declared version and producer provenance to those exact bytes before Upgrade.
+   - Keep the generated metadata adjacent to the HPM as `<hpm>.metadata.json`; it is Runtime-owned validation material and does not enter the Agent-facing typed Build payload.
    - Return the absolute HPM path, SHA-256, product version, and build evidence IDs as the typed Build result.
    - When the task carries a Context Runtime `case_id`, submit the same result through `phase_record` with this contract:
 

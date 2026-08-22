@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import re
@@ -490,6 +490,7 @@ class StartRun:
     input_digest: str
     observation_ref: ObservationRef | None = None
     legacy_observation_receipt: Mapping[str, object] | None = None
+    caller_deadline: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -500,11 +501,17 @@ class SubmitGate:
     gate_version: int
     schema_digest: str
     submission_id: str = ""
+    command_id: str = ""
+    input_digest: str = ""
+    caller_deadline: float = 120.0
 
 
 @dataclass(frozen=True)
 class ResumeRun:
     run_id: str
+    command_id: str = ""
+    input_digest: str = ""
+    caller_deadline: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -514,14 +521,144 @@ class CancelRun:
     gate_version: int
     schema_digest: str
     submission_id: str = ""
+    command_id: str = ""
+    input_digest: str = ""
+    caller_deadline: float = 120.0
 
 
 @dataclass(frozen=True)
 class ReconcileRun:
     run_id: str
+    command_id: str = ""
+    input_digest: str = ""
+    caller_deadline: float = 120.0
 
 
 RunCommand: TypeAlias = StartRun | SubmitGate | ResumeRun | CancelRun | ReconcileRun
+
+
+def _normalized_gate_submission(
+    response: Mapping[str, object],
+) -> dict[str, object]:
+    raw_payload = response.get("payload", {})
+    payload: object = (
+        dict(raw_payload) if isinstance(raw_payload, Mapping) else raw_payload
+    )
+    if isinstance(payload, dict):
+        raw_artifact_ref = payload.get("artifact_ref")
+        if isinstance(raw_artifact_ref, Mapping):
+            artifact_ref = dict(raw_artifact_ref)
+            if "handle" not in artifact_ref and "path" in artifact_ref:
+                artifact_ref["handle"] = artifact_ref.pop("path")
+            if "digest" not in artifact_ref and "sha256" in artifact_ref:
+                artifact_ref["digest"] = artifact_ref.pop("sha256")
+            raw_digest = artifact_ref.get("digest")
+            if isinstance(raw_digest, str):
+                digest = raw_digest.strip().removeprefix("sha256:").lower()
+                artifact_ref["digest"] = f"sha256:{digest}"
+            for name in (
+                "handle",
+                "kind",
+                "provenance",
+                "retention_hint",
+                "version",
+                "target",
+                "run_id",
+            ):
+                value = artifact_ref.get(name)
+                if isinstance(value, str):
+                    artifact_ref[name] = value.strip()
+            payload["artifact_ref"] = artifact_ref
+    raw_status = response.get("status")
+    raw_summary = response.get("summary")
+    return {
+        "status": (
+            raw_status.strip().lower()
+            if isinstance(raw_status, str)
+            else raw_status
+        ),
+        "summary": (
+            raw_summary.strip()
+            if isinstance(raw_summary, str)
+            else raw_summary
+        ),
+        "payload": payload,
+    }
+
+
+def _run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
+    if isinstance(command, SubmitGate):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/submit-gate-input-v1",
+            "run_id": command.run_id,
+            "gate_id": command.gate_id,
+            "gate_version": command.gate_version,
+            "schema_digest": command.schema_digest,
+            "response": _normalized_gate_submission(command.response),
+        }
+    if isinstance(command, CancelRun):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/cancel-run-input-v1",
+            "run_id": command.run_id,
+            "gate_id": command.gate_id,
+            "gate_version": command.gate_version,
+            "schema_digest": command.schema_digest,
+        }
+    if isinstance(command, ReconcileRun):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/reconcile-run-input-v1",
+            "run_id": command.run_id,
+        }
+    if isinstance(command, ResumeRun):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/resume-run-input-v1",
+            "run_id": command.run_id,
+        }
+    return {
+        "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
+        "target": command.target,
+        "intent": command.intent,
+        "purpose": command.purpose,
+        "delivery_strategy": command.delivery_strategy,
+        "observation_ref": (
+            command.observation_ref.to_public_dict()
+            if command.observation_ref is not None
+            else None
+        ),
+    }
+
+
+def run_command_identity(
+    command: RunCommand, *, operation_id: str
+) -> tuple[str, str]:
+    """Return the stable identity and canonical input digest for one command."""
+
+    command_id = _text(getattr(command, "command_id", "")) or _text(operation_id)
+    if _SAFE_ID.fullmatch(command_id) is None:
+        raise AgentGatewayError(
+            "Run command operation_id must be a safe 1-128 character identifier"
+        )
+    canonical_digest = fingerprint(_run_command_semantic_input(command))
+    persisted_digest = _text(getattr(command, "input_digest", ""))
+    if persisted_digest:
+        if _SHA256.fullmatch(persisted_digest) is None:
+            raise AgentGatewayError("Run command input_digest must be SHA-256")
+        if persisted_digest != canonical_digest:
+            raise AgentGatewayError(
+                "Run command input_digest does not match normalized input"
+            )
+    return command_id, canonical_digest
+
+
+def run_id_for_command(command: RunCommand, *, command_id: str) -> str:
+    if not isinstance(command, StartRun):
+        return command.run_id
+    return "run-" + fingerprint(
+        {
+            "schema": "openubmc.semantic-runtime/start-command-identity-v1",
+            "command_id": command_id,
+        }
+    )[:32]
 
 
 def _gate_version(value: object) -> int:
@@ -551,11 +688,24 @@ def _submission_id(value: object, *, binding: Mapping[str, object]) -> str:
     return selected
 
 
+def _caller_deadline(action: Mapping[str, object]) -> float:
+    value = action.get("deadline", 120)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AgentGatewayError("execute deadline must be a positive number")
+    deadline = float(value)
+    if deadline <= 0 or deadline > 120:
+        raise AgentGatewayError(
+            "execute deadline must be greater than zero and at most 120 seconds"
+        )
+    return deadline
+
+
 def decode_run_command(
     action: Mapping[str, object], *, operation_id: str
 ) -> RunCommand:
     bounded_request(action)
     kind = _text(action.get("kind")).lower()
+    caller_deadline = _caller_deadline(action)
     if kind == "start":
         command_id = _text(operation_id)
         if _SAFE_ID.fullmatch(command_id) is None:
@@ -596,30 +746,24 @@ def decode_run_command(
             )
             observation_ref = ObservationRef.from_public_dict(source)
         purpose = _text(action.get("purpose") or "complete the requested workflow")
-        semantic_input = {
-            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
-            "target": target,
-            "intent": intent,
-            "purpose": purpose,
-            "delivery_strategy": delivery,
-            "observation_ref": (
-                observation_ref.to_public_dict()
-                if observation_ref is not None
-                else None
-            ),
-        }
-        return StartRun(
+        command = StartRun(
             target=target,
             intent=intent,
             purpose=purpose,
             delivery_strategy=delivery,
             command_id=command_id,
-            input_digest=fingerprint(semantic_input),
+            input_digest="",
             observation_ref=observation_ref,
             legacy_observation_receipt=(
                 dict(legacy_receipt) if isinstance(legacy_receipt, Mapping) else None
             ),
+            caller_deadline=caller_deadline,
         )
+        _identity, digest = run_command_identity(
+            command,
+            operation_id=operation_id,
+        )
+        return replace(command, input_digest=digest)
     run_id = _text(action.get("run_id"))
     if not run_id:
         raise AgentGatewayError(f"{kind or 'execute'} requires run_id")
@@ -630,13 +774,52 @@ def decode_run_command(
         gate_id = _gate_id(action.get("gate_id"))
         gate_version = _gate_version(action.get("gate_version"))
         schema_digest = _schema_digest(action.get("schema_digest"))
-        return SubmitGate(
+        submission_id = _submission_id(
+            action.get("submission_id"),
+            binding={
+                "run_id": run_id,
+                "gate_id": gate_id,
+                "gate_version": gate_version,
+                "schema_digest": schema_digest,
+            },
+        )
+        command = SubmitGate(
             run_id=run_id,
-            response=dict(response),
+            response=_normalized_gate_submission(response),
             gate_id=gate_id,
             gate_version=gate_version,
             schema_digest=schema_digest,
-            submission_id=_submission_id(
+            submission_id=submission_id,
+            command_id=submission_id,
+            input_digest="",
+            caller_deadline=caller_deadline,
+        )
+        _identity, digest = run_command_identity(
+            command,
+            operation_id=operation_id,
+        )
+        return replace(command, input_digest=digest)
+    if kind == "resume":
+        command_id = _text(operation_id)
+        command = ResumeRun(
+            run_id,
+            command_id=command_id,
+            caller_deadline=caller_deadline,
+        )
+        identity, digest = run_command_identity(command, operation_id=operation_id)
+        return ResumeRun(
+            run_id,
+            command_id=identity,
+            input_digest=digest,
+            caller_deadline=caller_deadline,
+        )
+    if kind == "control":
+        command = _text(action.get("command")).lower()
+        if command == "cancel":
+            gate_id = _gate_id(action.get("gate_id"))
+            gate_version = _gate_version(action.get("gate_version"))
+            schema_digest = _schema_digest(action.get("schema_digest"))
+            submission_id = _submission_id(
                 action.get("submission_id"),
                 binding={
                     "run_id": run_id,
@@ -644,35 +827,59 @@ def decode_run_command(
                     "gate_version": gate_version,
                     "schema_digest": schema_digest,
                 },
-            ),
-        )
-    if kind == "resume":
-        return ResumeRun(run_id)
-    if kind == "control":
-        command = _text(action.get("command")).lower()
-        if command == "cancel":
-            gate_id = _gate_id(action.get("gate_id"))
-            gate_version = _gate_version(action.get("gate_version"))
-            schema_digest = _schema_digest(action.get("schema_digest"))
+            )
+            command = CancelRun(
+                run_id=run_id,
+                gate_id=gate_id,
+                gate_version=gate_version,
+                schema_digest=schema_digest,
+                submission_id=submission_id,
+                command_id=submission_id,
+                caller_deadline=caller_deadline,
+            )
+            identity, digest = run_command_identity(
+                command, operation_id=operation_id
+            )
             return CancelRun(
                 run_id=run_id,
                 gate_id=gate_id,
                 gate_version=gate_version,
                 schema_digest=schema_digest,
-                submission_id=_submission_id(
-                    action.get("submission_id"),
-                    binding={
-                        "run_id": run_id,
-                        "gate_id": gate_id,
-                        "gate_version": gate_version,
-                        "schema_digest": schema_digest,
-                    },
-                ),
+                submission_id=submission_id,
+                command_id=identity,
+                input_digest=digest,
+                caller_deadline=caller_deadline,
             )
         if command == "reconcile":
-            return ReconcileRun(run_id)
+            identity, digest = run_command_identity(
+                ReconcileRun(
+                    run_id,
+                    command_id=_text(operation_id),
+                    caller_deadline=caller_deadline,
+                ),
+                operation_id=operation_id,
+            )
+            return ReconcileRun(
+                run_id,
+                command_id=identity,
+                input_digest=digest,
+                caller_deadline=caller_deadline,
+            )
         if command == "continue":
-            return ResumeRun(run_id)
+            identity, digest = run_command_identity(
+                ResumeRun(
+                    run_id,
+                    command_id=_text(operation_id),
+                    caller_deadline=caller_deadline,
+                ),
+                operation_id=operation_id,
+            )
+            return ResumeRun(
+                run_id,
+                command_id=identity,
+                input_digest=digest,
+                caller_deadline=caller_deadline,
+            )
         raise AgentGatewayError("control command must be continue, reconcile, or cancel")
     raise AgentGatewayError("execute kind must be start, respond, resume, or control")
 
@@ -765,6 +972,63 @@ class RunTurn:
     observation_ref: ObservationRef | None = None
     outcome_recorded: bool = False
 
+    @classmethod
+    def from_public_dict(cls, value: Mapping[str, object]) -> "RunTurn":
+        raw_gate = value.get("gate")
+        gate = (
+            Gate.from_public_dict(raw_gate)
+            if isinstance(raw_gate, Mapping) and raw_gate
+            else None
+        )
+        raw_incident = value.get("incident")
+        incident = (
+            Incident(
+                incident_id=_text(raw_incident.get("incident_id")),
+                code=_text(raw_incident.get("code")),
+                message=_text(raw_incident.get("message")),
+                effect_id=_text(raw_incident.get("effect_id")),
+                recoverable=bool(raw_incident.get("recoverable", True)),
+            )
+            if isinstance(raw_incident, Mapping) and raw_incident
+            else None
+        )
+        raw_outcome = value.get("outcome")
+        outcome = (
+            Outcome(
+                status=_text(raw_outcome.get("status")),
+                summary=_text(raw_outcome.get("summary")),
+                acceptance=raw_outcome.get("acceptance", []),
+            )
+            if isinstance(raw_outcome, Mapping) and raw_outcome
+            else None
+        )
+        raw_facts = value.get("facts", [])
+        facts = tuple(
+            dict(item)
+            for item in raw_facts
+            if isinstance(item, Mapping)
+        ) if isinstance(raw_facts, list) else ()
+        raw_gaps = value.get("gaps", [])
+        gaps = tuple(raw_gaps) if isinstance(raw_gaps, list) else ()
+        raw_observation_ref = value.get("observation_ref")
+        observation_ref = (
+            ObservationRef.from_public_dict(raw_observation_ref)
+            if isinstance(raw_observation_ref, Mapping) and raw_observation_ref
+            else None
+        )
+        return cls(
+            run_id=_text(value.get("run_id")),
+            state=_text(value.get("state")),
+            gate=gate,
+            incident=incident,
+            facts=facts,
+            gaps=gaps,
+            outcome=outcome,
+            next_action=_text(value.get("next")),
+            observation_ref=observation_ref,
+            outcome_recorded=bool(value.get("outcome_recorded", False)),
+        )
+
     def to_public_dict(self) -> dict[str, object]:
         gate = (
             self.gate.to_public_dict()
@@ -792,6 +1056,110 @@ class RunTurn:
         if self.outcome_recorded:
             result["outcome_recorded"] = True
         return result
+
+
+def project_run_turn(
+    projection: Mapping[str, object],
+    *,
+    run_id: str,
+    gate: Gate | Mapping[str, object] | None = None,
+    use_current_gate: bool = False,
+    state: str = "",
+    next_action: str = "",
+    use_projected_next_action: bool = False,
+    observation_ref: ObservationRef | None = None,
+    base_turn: RunTurn | None = None,
+    facts: tuple[Mapping[str, object], ...] | None = None,
+) -> RunTurn:
+    """Build the current semantic Turn from one authoritative Run projection."""
+
+    selected_gate = gate
+    if use_current_gate:
+        raw_gate = projection.get("current_gate")
+        selected_gate = (
+            Gate.from_public_dict(raw_gate)
+            if isinstance(raw_gate, Mapping) and raw_gate
+            else None
+        )
+    raw_incident = projection.get("current_incident")
+    incident = (
+        Incident(
+            incident_id=_text(raw_incident.get("incident_id")),
+            code=_text(raw_incident.get("code")),
+            message=_text(raw_incident.get("message")),
+            effect_id=_text(raw_incident.get("effect_id")),
+            recoverable=bool(raw_incident.get("recoverable", True)),
+        )
+        if isinstance(raw_incident, Mapping) and raw_incident
+        else None
+    )
+    raw_outcome = projection.get("run_outcome")
+    outcome = (
+        Outcome(
+            status=_text(raw_outcome.get("status")),
+            summary=_text(raw_outcome.get("summary")),
+            acceptance=raw_outcome.get("acceptance", []),
+        )
+        if isinstance(raw_outcome, Mapping) and raw_outcome
+        else None
+    )
+    projection_status = _text(projection.get("status"))
+    selected_state = state or (
+        outcome.status
+        if outcome is not None
+        else "incident"
+        if incident is not None
+        else "waiting_response"
+        if selected_gate is not None
+        else "running"
+        if projection_status in {"open", "waiting_phase_record"}
+        else projection_status
+        or (base_turn.state if base_turn is not None else "running")
+    )
+    selected_next_action = next_action
+    if use_projected_next_action and not selected_next_action:
+        raw_next_actions = projection.get("next_actions", [])
+        if isinstance(raw_next_actions, list) and raw_next_actions:
+            selected_next_action = _text(raw_next_actions[0])
+        elif base_turn is not None and selected_state == base_turn.state:
+            selected_next_action = base_turn.next_action
+    if outcome is not None or selected_state in {
+        "cancelled",
+        "completed",
+        "failed",
+    }:
+        selected_next_action = ""
+    gaps = base_turn.gaps if base_turn is not None else ()
+    recovery_gap = _text(projection.get("closeout_recovery_gap"))
+    if recovery_gap and recovery_gap not in gaps:
+        gaps = (*gaps, recovery_gap)
+    return RunTurn(
+        run_id=run_id,
+        state=selected_state,
+        gate=selected_gate,
+        incident=incident,
+        facts=(
+            facts
+            if facts is not None
+            else base_turn.facts
+            if base_turn is not None
+            else ()
+        ),
+        gaps=gaps,
+        outcome=outcome,
+        next_action=selected_next_action,
+        observation_ref=(
+            observation_ref
+            if observation_ref is not None
+            else base_turn.observation_ref
+            if base_turn is not None
+            else None
+        ),
+        outcome_recorded=(
+            outcome is not None
+            or (base_turn.outcome_recorded if base_turn is not None else False)
+        ),
+    )
 
 
 @dataclass(frozen=True)

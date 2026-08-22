@@ -38,22 +38,6 @@ class RuntimeContractionContracts(unittest.TestCase):
             workflow_source,
         )
 
-    def test_orchestration_consumes_the_canonical_workflow_definition(self) -> None:
-        source = (
-            RUNTIME_ROOT / "openubmc_target_runtime/orchestration.py"
-        ).read_text(encoding="utf-8")
-        mcp_source = (
-            RUNTIME_ROOT / "openubmc_target_runtime/mcp.py"
-        ).read_text(encoding="utf-8")
-        workflow_body = mcp_source.split("def _run_workflow(", 1)[1].split(
-            "\n    def __getattr__", 1
-        )[0]
-
-        self.assertNotIn("def _workflow_steps(", source)
-        self.assertIn("DEFAULT_WORKFLOW_REGISTRY.resolve(", source)
-        self.assertNotIn("step.domain ==", workflow_body)
-        self.assertIn("step.canonical_name", workflow_body)
-
     def test_workflow_definitions_expose_one_deterministic_cursor(self) -> None:
         sys.path.insert(0, str(RUNTIME_ROOT))
         try:
@@ -160,25 +144,6 @@ class RuntimeContractionContracts(unittest.TestCase):
         self.assertIsInstance(runtime.executed, StartRun)
         self.assertEqual(receipt["status"], "complete")
         self.assertEqual(turn["run_id"], "run-typed")
-
-    def test_phase_and_terminal_derivation_have_canonical_owners(self) -> None:
-        workflow_source = (
-            RUNTIME_ROOT / "openubmc_target_runtime/workflow.py"
-        ).read_text(encoding="utf-8")
-        closeout_source = (
-            RUNTIME_ROOT / "openubmc_target_runtime/closeout.py"
-        ).read_text(encoding="utf-8")
-        runtime_source = (
-            RUNTIME_ROOT / "openubmc_target_runtime/context_runtime.py"
-        ).read_text(encoding="utf-8")
-
-        self.assertEqual(workflow_source.count("class PhaseRegistry"), 1)
-        self.assertIn("DEFAULT_PHASE_REGISTRY.canonical_producer(", runtime_source)
-        self.assertNotIn("compatible_producers =", runtime_source)
-        self.assertNotIn('"developer.edit": "developer.change"', runtime_source)
-        self.assertEqual(closeout_source.count("def case_terminal_status("), 1)
-        self.assertNotIn("def _terminal_status_from_projection(", runtime_source)
-        self.assertIn("case_terminal_status(projection)", runtime_source)
 
     def test_live_patch_clis_route_mutations_through_runtime(self) -> None:
         for name in ("deploy_live_file.py", "rollback_live_file.py"):

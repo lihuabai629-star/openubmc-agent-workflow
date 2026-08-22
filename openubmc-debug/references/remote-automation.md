@@ -300,8 +300,9 @@ visible in Runtime status.
 During active work, default MCP `structuredContent` is an `ObservationReceipt` or `Turn`. Start a
 stateful Run with `execute(kind=start)`, continue it with `resume`, and satisfy a returned phase Gate
 with `respond`. The Gateway wraps `workflow.advance`, `workflow.next`, and phase recording
-internally. Terminal Runs persist Closeout and a redacted Session Outcome, while raw Evidence,
-Replay, Case inspection, review, approval, and promotion stay in the operator profile.
+internally. Terminal Runs persist Closeout and one authoritative Run Outcome. Session Outcome is an
+explicit operator projection of that persisted fact; raw Evidence, Replay, Case inspection,
+review, approval, and promotion stay in the operator profile.
 
 ## Common JSON envelope
 

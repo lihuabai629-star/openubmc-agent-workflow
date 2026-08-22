@@ -46,7 +46,9 @@ from openubmc_target_runtime import (  # noqa: E402
     TargetPolicy,
     TargetSpec,
     TaskAuthorizationPolicy,
+    effect_recovery_mode,
     load_selected_credentials_file,
+    mutation_recovery_route,
 )
 
 
@@ -902,41 +904,92 @@ class UpgradeMcpBackend:
         mutation_options = {
             "image_uri": _argument_text(arguments, "image_uri"),
         }
-        matching_journal = next(
-            (
-                journal
-                for journal in binding.task_run.mutation_journals()
-                if journal.action == "upgrade"
-                and not journal.terminal
-                and journal.stage != "replan_required"
-                and adapter.mutation_request(
-                    operation_id=journal.operation_id,
-                    artifact=artifact,
-                    mutation_options=mutation_options,
-                ).fingerprint
-                == journal.operation_fingerprint
-            ),
-            None,
-        )
-        if matching_journal is not None:
-            recovery = self._recover_uncertain_upgrade(
-                binding=binding,
-                adapter=adapter,
-                journal=matching_journal,
+        recovery_mode = effect_recovery_mode(arguments)
+        recovery_route = mutation_recovery_route(
+            recovery_mode,
+            binding.task_run.mutation_journals,
+            operation_id=context.operation_id,
+            action="upgrade",
+            label="Upgrade",
+            matches=lambda journal: adapter.mutation_request(
+                operation_id=str(getattr(journal, "operation_id", "")),
                 artifact=artifact,
-                authorization=authorization,
-                arguments=arguments,
-                context=context,
                 mutation_options=mutation_options,
-            )
-            if recovery is not None:
-                return recovery
+            ).fingerprint
+            == str(getattr(journal, "operation_fingerprint", "")),
+        )
+        matching_journal = recovery_route.journal
+        if matching_journal is not None:
+            if recovery_route.disposition == "terminal":
+                result = adapter.run(
+                    operation_id=context.operation_id,
+                    authorization=authorization,
+                    artifact=artifact,
+                    apply=lambda _execution: (_ for _ in ()).throw(
+                        RuntimeError("terminal Upgrade replay invoked upload")
+                    ),
+                    read_installed_version=lambda _verification: (
+                        (_ for _ in ()).throw(
+                            RuntimeError(
+                                "terminal Upgrade replay invoked verification"
+                            )
+                        )
+                    ),
+                    debug_verify=None,
+                    mutation_options=mutation_options,
+                    operation_context=context,
+                )
+                if (
+                    result.journal.stage == "verification_failed_terminal"
+                    and result.journal.last_known_state == "activation-fallback"
+                ):
+                    raise UpgradeActivationReverted(
+                        "the existing upgrade operation already completed with an "
+                        "activation fallback; the artifact was not uploaded again"
+                    )
+                return result.to_public_dict()
+            if (
+                recovery_route.disposition == "new"
+                and recovery_mode is not None
+            ):
+                recovered = adapter.recover(
+                    operation_id=matching_journal.operation_id,
+                    authorization=authorization,
+                    artifact=artifact,
+                    inspection={"target_reachable": True},
+                    read_installed_version=lambda _verification: (
+                        (_ for _ in ()).throw(
+                            RuntimeError("replanned Upgrade recovery invoked verify")
+                        )
+                    ),
+                    mutation_options=mutation_options,
+                    operation_context=context,
+                )
+                return recovered.to_transaction_dict(
+                    target_fingerprint=binding.target.fingerprint
+                )
+            if recovery_route.disposition == "recover":
+                recovery = self._recover_uncertain_upgrade(
+                    binding=binding,
+                    adapter=adapter,
+                    journal=matching_journal,
+                    artifact=artifact,
+                    authorization=authorization,
+                    arguments=arguments,
+                    context=context,
+                    mutation_options=mutation_options,
+                )
+                if recovery is not None:
+                    return recovery
         artifact_bytes, actual_sha = _read_stable_artifact(artifact_path)
         if actual_sha != artifact.sha256:
             raise ValueError("upgrade artifact SHA-256 does not match")
         mutation_observation: dict[str, object] = {}
 
         def apply(execution) -> dict[str, object]:
+            execution.journal.record_execution_evidence(
+                expected_checksum=artifact.sha256,
+            )
             result = execution.redfish_request(
                 "upgrade-upload",
                 callback=lambda session: self._apply_with_session(
@@ -1031,12 +1084,11 @@ class UpgradeMcpBackend:
             and not pending
             and not expected_locations
         ):
-            journal.mark_effects_rejected()
             journal.transition(
-                "replan_required",
-                verification_state="not_started",
-                last_known_state="upgrade-recovery-found-no-artifact-effect",
-                recovery_decision="replan",
+                "recovery_blocked",
+                verification_state="blocked",
+                last_known_state="upgrade-recovery-evidence-insufficient",
+                recovery_decision="manual",
             )
             return {
                 "operation_id": journal.operation_id,
@@ -1046,7 +1098,7 @@ class UpgradeMcpBackend:
                 "epoch_after": journal.epoch_before,
                 "mutation": {
                     "recovery": {
-                        "decision": "replan",
+                        "decision": "manual",
                         "inspection": inspection,
                     }
                 },
