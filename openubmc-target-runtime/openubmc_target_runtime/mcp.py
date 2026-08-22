@@ -46,7 +46,6 @@ from .semantic_runtime import (
     GateConflict,
     ObservationQuery,
     RunTurn,
-    ResumeRun,
     StartRun,
     SubmitGate,
     bounded_request,
@@ -89,6 +88,7 @@ from .compatibility import (
     InMemoryCompatibilityTelemetryRepository,
     SQLiteCompatibilityTelemetryRepository,
 )
+from .compatibility_runtime import CompatibilityRuntimeAdapter
 from .replay import CaseReplayService
 from .session_outcome import (
     InMemorySessionOutcomeRepository,
@@ -2536,6 +2536,11 @@ class RuntimeMcpService:
                 fact_projector=self.agent_projector.run_facts,
             ),
         )
+        self.compatibility_runtime = CompatibilityRuntimeAdapter(
+            self.context_runtime,
+            self.semantic_runtime,
+            interface_profile=self.interface_profile,
+        )
         self.agent_gateway = AgentGateway(
             self.semantic_runtime,
             projector=self.agent_projector,
@@ -3491,212 +3496,6 @@ class RuntimeMcpService:
             arguments=bounded_arguments,
         )
 
-    def _translate_native_phase_record(
-        self,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> ContextToolResult | None:
-        case_id = str(arguments.get("case_id", "")).strip()
-        if not case_id:
-            return None
-        projection = self.context_runtime.repository.load(case_id)
-        if not isinstance(projection, Mapping):
-            raise CaseNotFound(case_id)
-        if (
-            not str(projection.get("start_command_id", ""))
-            and self.interface_profile != "compatibility"
-        ):
-            return None
-        raw_gate = projection.get("current_gate")
-        if not isinstance(raw_gate, Mapping) or not raw_gate:
-            self.semantic_runtime.execute(
-                ResumeRun(
-                    run_id=case_id,
-                    command_id=f"{operation_id}-open-gate",
-                ),
-                task_id=task_id,
-                operation_id=f"{operation_id}-open-gate",
-            )
-            projection = self.context_runtime.repository.load(case_id)
-            raw_gate = (
-                projection.get("current_gate")
-                if isinstance(projection, Mapping)
-                else None
-            )
-        if not isinstance(raw_gate, Mapping) or not raw_gate:
-            raise GateConflict("Run is not waiting at a compatibility phase Gate")
-        gate = Gate.from_public_dict(raw_gate)
-        if str(arguments.get("phase_type", "")) != gate.name:
-            raise GateConflict("phase_record targets a different Run Gate")
-        payload = {
-            key: value
-            for key, value in arguments.items()
-            if key
-            not in {
-                "case_id",
-                "expected_revision",
-                "idempotency_key",
-                "phase_type",
-                "producer_identity",
-                "status",
-                "summary",
-                "gate_id",
-                "gate_version",
-                "gate_schema_digest",
-                "submission_id",
-                "submission_digest",
-            }
-        }
-        submission_id = str(
-            arguments.get("idempotency_key") or operation_id
-        ).strip()
-        turn = self.semantic_runtime.execute(
-            SubmitGate(
-                run_id=case_id,
-                response={
-                    "status": str(arguments.get("status", "completed")),
-                    "summary": str(arguments.get("summary", "")),
-                    "payload": payload,
-                },
-                gate_id=gate.gate_id,
-                gate_version=gate.version,
-                schema_digest=gate.schema_digest,
-                submission_id=submission_id,
-                command_id=submission_id,
-            ),
-            task_id=task_id,
-            operation_id=operation_id,
-        )
-        updated = self.context_runtime.read_case(case_id)
-        record = next(
-            (
-                item
-                for item in reversed(updated.get("phase_records", []))
-                if isinstance(item, Mapping)
-                and str(item.get("submission_id", "")) == submission_id
-            ),
-            None,
-        )
-        if not isinstance(record, Mapping):
-            raise RuntimeError("typed Runtime did not project the submitted phase")
-        return self.context_runtime.wrap_read(
-            {**dict(record), "run_turn": turn.to_public_dict()},
-            operation="phase_record",
-            operation_id=operation_id,
-            case_id=case_id,
-            status=str(record.get("status", "completed")),
-        )
-
-    def _translate_native_workflow_advance(
-        self,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> ContextToolResult | None:
-        case_id = str(arguments.get("case_id", "")).strip()
-        if not case_id:
-            case_id = self.context_runtime.repository.case_for_task(task_id) or ""
-        if case_id:
-            projection = self.context_runtime.repository.load(case_id)
-            if not isinstance(projection, Mapping):
-                raise CaseNotFound(case_id)
-            command = ResumeRun(run_id=case_id, command_id=operation_id)
-        else:
-            target = str(arguments.get("ip", "")).strip()
-            if not target:
-                return None
-            intent = str(arguments.get("intent", "diagnosis-only")).strip().lower()
-            delivery = str(arguments.get("delivery_strategy", "")).strip().lower()
-            if not delivery and intent == "diagnose-and-fix":
-                delivery = "source-only"
-            command = StartRun(
-                target=target,
-                intent=intent,
-                purpose=str(
-                    arguments.get("final_purpose", "complete the requested workflow")
-                ).strip(),
-                delivery_strategy=delivery,
-                command_id=operation_id,
-                input_digest="",
-            )
-        turn = self.semantic_runtime.execute(
-            command,
-            task_id=task_id,
-            operation_id=operation_id,
-        )
-        projection = self.context_runtime.read_case(turn.run_id)
-        continuation = self.context_runtime.continuation_for(projection)
-        value = {
-            **turn.to_public_dict(),
-            **continuation,
-            "case_id": turn.run_id,
-            "revision": int(projection.get("revision", 0)),
-            "completed": turn.state == "completed",
-        }
-        if turn.state in {"completed", "failed", "cancelled"}:
-            requested_bundle = bool(arguments.get("include_closeout_bundle", True))
-            outcome = projection.get("run_outcome")
-            terminal_status = (
-                str(outcome.get("status", turn.state))
-                if isinstance(outcome, Mapping)
-                else turn.state
-            )
-            derived_closeout = self.context_runtime.derive_run_closeout(
-                turn.run_id,
-                terminal_status=terminal_status,
-                include_bundle=requested_bundle,
-            )
-            value.update(derived_closeout)
-            for name in ("closeout", "closeout_markdown"):
-                if name in projection:
-                    value[name] = projection[name]
-        for name in ("closeout", "closeout_markdown", "closeout_bundle"):
-            if name not in value and name in projection:
-                value[name] = projection[name]
-        return self.context_runtime.wrap_read(
-            value,
-            operation="workflow.advance",
-            operation_id=operation_id,
-            case_id=turn.run_id,
-            status=turn.state,
-        )
-
-    def _translate_native_workflow_next(
-        self,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> ContextToolResult | None:
-        case_id = str(arguments.get("case_id", "")).strip()
-        if not case_id:
-            case_id = self.context_runtime.repository.case_for_task(task_id) or ""
-        if not case_id:
-            return None
-        projection = self.context_runtime.repository.load(case_id)
-        if not isinstance(projection, Mapping):
-            raise CaseNotFound(case_id)
-        if (
-            not str(projection.get("start_command_id", ""))
-            and self.interface_profile != "compatibility"
-        ):
-            return None
-        turn = self.semantic_runtime.execute(
-            ResumeRun(run_id=case_id, command_id=operation_id),
-            task_id=task_id,
-            operation_id=operation_id,
-        )
-        return self.context_runtime.wrap_read(
-            turn.to_public_dict(),
-            operation="workflow.next",
-            operation_id=operation_id,
-            case_id=case_id,
-            status=turn.state,
-        )
-
     def _execute_domain_value(
         self,
         name: str,
@@ -4021,6 +3820,18 @@ class RuntimeMcpService:
                 operation_id=operation_id,
             )
         if descriptor.handler_name is None:
+            translated = (
+                self.compatibility_runtime.translate(
+                    name,
+                    arguments,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                )
+                if _compatibility_adapter
+                else None
+            )
+            if translated is not None:
+                return translated
             if name == "case_read":
                 case_id = str(arguments.get("case_id", "")).strip()
                 value = self.context_runtime.read_case(case_id)
@@ -4225,17 +4036,6 @@ class RuntimeMcpService:
                     case_id="",
                 )
             if name == "phase_record":
-                translated = (
-                    self._translate_native_phase_record(
-                        arguments,
-                        task_id=task_id,
-                        operation_id=operation_id,
-                    )
-                    if _compatibility_adapter
-                    else None
-                )
-                if translated is not None:
-                    return translated
                 return self.context_runtime.phase_record(
                     descriptor,
                     arguments,
@@ -4243,17 +4043,6 @@ class RuntimeMcpService:
                     operation_id=operation_id,
                 )
             if name == "workflow.advance":
-                translated = (
-                    self._translate_native_workflow_advance(
-                        arguments,
-                        task_id=task_id,
-                        operation_id=operation_id,
-                    )
-                    if _compatibility_adapter
-                    else None
-                )
-                if translated is not None:
-                    return translated
                 return self.context_runtime.workflow_advance(
                     descriptor,
                     arguments,
@@ -4270,17 +4059,6 @@ class RuntimeMcpService:
                     ),
                 )
             if name == "workflow.next":
-                translated = (
-                    self._translate_native_workflow_next(
-                        arguments,
-                        task_id=task_id,
-                        operation_id=operation_id,
-                    )
-                    if _compatibility_adapter
-                    else None
-                )
-                if translated is not None:
-                    return translated
                 return self.context_runtime.workflow_next(
                     descriptor,
                     arguments,
