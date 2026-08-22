@@ -269,8 +269,9 @@ class ReleaseGateTests(unittest.TestCase):
             step.get("name", step.get("uses", "")): step
             for step in workflow["jobs"]["release-gate"]["steps"]
         }
+        self.assertIn("actions/checkout@v7", steps)
         self.assertEqual(
-            steps["actions/setup-python@v5"]["with"]["python-version"],
+            steps["actions/setup-python@v7"]["with"]["python-version"],
             "3.12.13",
         )
         restore = steps["Restore execute AB qualification evidence"]["run"]

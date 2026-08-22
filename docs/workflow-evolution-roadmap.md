@@ -1,8 +1,9 @@
 # openUBMC Agent Workflow 后续演进档案
 
-日期：2026-08-19
-实现分支：`refactor/run-engine-core`
-实现基线：GitHub `main` 的 `4e6172f`
+日期：2026-08-22
+当前基线：GitHub `main` 的 `f9c312d`
+v2 候选 source：`89511ae`
+v2 候选 lock-only commit：`22ebc53`
 用途：后续讨论入口、决策索引和实施路线；详细论证仍以链接文档为准。
 
 ## 1. 当前总体判断
@@ -19,24 +20,25 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
     └─ 对分布式：等待明确规模和部署证据
 ```
 
-现阶段已经证明“外部语义收缩”有效，下一阶段应证明“内部状态权威、危险副作用恢复和完整 execute 路径”可靠。功能扩张应暂时让位于架构收敛和资格验证。
+M0 至 M5 已完成并通过完整 execute A/B、Release Gate 与 main CI。当前阶段不再扩张核心架构，重点转为 Incident 闭环、compatibility 退役、内部 Module locality 和长期运行资格。
 
 ### 1.1 当前实现检查点
 
 | 里程碑 | 当前状态 | 剩余工作 |
 | --- | --- | --- |
-| M0 资源边界与决策更新 | 256 KiB Agent request/stdio frame、有界 `readline`、后续请求恢复、ADR-0004 已完成 | 在正式发布配置上复核阈值 |
-| M1 typed seam 与 source-only | `SemanticRuntimePort.observe/execute`、RunEngine、持久 Gate、重启与提交幂等的纵向切片已完成 | 逐步删除仅服务旧调用方的输入形状 |
-| M2 Live Patch 可靠性 | DomainExecutor、Mutation 单次执行、自动 reconcile、Incident、deferred fresh verification 主路径已完成 | 补齐真实/仿真 target 的全部 effect-start cut points |
-| M3 Build-Upgrade Artifact flow | 强 target/run 绑定 ArtifactRef、build Gate、running reattach、upgrade reconcile 与重启主路径已完成 | 补 upload accepted 丢响应、activation/reboot 长任务矩阵 |
-| M4 权威收敛 | Agent 主路径 sequencing、Run Outcome 与 Session Outcome 投影已移入 RunEngine | 删除 `phase_record` persistence bridge，固化 Incident lifecycle、显式 old-event upcaster、compatibility telemetry 和剩余旧入口 |
-| M5 Domain Pack | 未开始 | 只从 Live Patch 与 Upgrade 已证明的共同 seam 抽取 contract/conformance suite |
-| M6 证据驱动扩展 | 未开始 | 根据真实调用缺口决定 selector、受限动态计划或分布式化 |
+| M0 资源边界与决策更新 | 完成 | 保持资源边界回归测试 |
+| M1 typed seam 与 source-only | 完成 | 退役仅服务旧调用方的输入形状 |
+| M2 Live Patch 可靠性 | 完成 | 继续扩充真实 target fault evidence |
+| M3 Build-Upgrade Artifact flow | 完成 | 继续扩充长时间 soak 与容量证据 |
+| M4 权威收敛 | 完成 | 集中并删除 compatibility writer；补全 Incident lifecycle |
+| M5 Domain Pack | 完成 | 根据真实调用选择首个 READ_ONLY Pack |
+| M6 证据驱动扩展 | 进行中 | 由兼容遥测、Incident 数据和容量证据决定扩展 |
 
-当前分支的本地 Runtime 测试为 333 项全部通过，openUBMC Debug Runtime backend 为
-16 项全部通过。正式 v2 仍需完成 M2/M3 的扩展 fault matrix、完整 execute A/B、release
-gate，并在最终 source commit 上重新生成
-`release-lock.json`；本分支不创建 v2 tag。
+v2 release qualification 基线包含 416 项 Runtime 测试；当前 operability 变更在本地完整
+验证中为 419 项。完整 execute A/B 为 10 组有效、0 无效，
+`decision=passed`；Release Gate 为 `promotable=true`；main CI run `32544813303` 的
+CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2`，是否创建
+`v2.0.0` tag 是独立发布决策。
 
 ### 1.2 产品北极星
 
@@ -92,7 +94,8 @@ gate，并在最终 source commit 上重新生成
 - non-cached input + output：`0.320367`；
 - wall time：`0.371208`。
 
-这组结果证明新的 Observation Interface 有效，但不能替代完整 `execute`、重启恢复和 Mutation fault injection。
+后续完整 execute 资格同样通过，证明两入口 Interface、重启恢复和 Mutation recovery
+已达到 v2 候选基线；后续 A/B 用于防回归和 M6 扩展判断。
 
 ### 2.3 会话与机器可读归档
 
@@ -122,8 +125,8 @@ gate，并在最终 source commit 上重新生成
   cache 与 assurance refresh 不扩大采集范围；
 - `execute` 支持 `start | respond | resume | control`；
 - Observation A/B 已证明两个语义入口的方向正确；
-- 当前真正风险不在工具数量，而在 compatibility 写入路径的收口、完整 execute
-  fault matrix、配对 A/B 和正式 release lock 资格。
+- 当前真正风险不在工具数量，而在 Incident 闭环、compatibility 写入路径退役、
+  Module locality 和长期运行数据。
 
 ### 3.2 内部状态权威
 
@@ -136,9 +139,9 @@ gate，并在最终 source commit 上重新生成
   Outcome 投影；
 - `DomainExecutor` 在 Runtime 构造时注册 Adapter，只读传输失败有限重试，Mutation 不盲目
   重放；
-- `ContextRuntime` 继续作为兼容存储和底层执行 Adapter；Agent Gate response 当前仍通过
-  `record_gate_submission -> phase_record` bridge 写入既有 Case events。它不再决定 Agent
-  sequencing，但在 M4 完成前仍是待删除的过渡写入路径；
+- `ContextRuntime` 继续承载兼容 Case、repository 与 Evidence 实现；原生 Agent Gate
+  response 由 RunEngine 提交持久 Gate，旧 `phase_record/workflow.next` 仅在 compatibility
+  profile 中保留，历史事件由显式 upcaster 转换；
 - Session Outcome 只从持久 `RunOutcomeRecorded` 投影，terminal replay 不重复写 Run Outcome、
   Closeout 或治理记录。
 
@@ -174,7 +177,7 @@ gate，并在最终 source commit 上重新生成
 | execute 结果 | 返回下一 Gate、Incident、running reattach point 或 Outcome 的 `Turn` | 已确认 |
 | CommandAck/polling | 不对普通 Agent 暴露；将来仅存在于 transport/worker Adapter 后 | 已确认 |
 | Gate | 使用 ID、版本、schema digest、submission identity 和输入 digest；内部研发不使用 secret token | 已实现 |
-| Incident | 自动 reconcile 仍无法收敛时形成明确 Turn | 已实现基线 |
+| Incident | 自动 reconcile 仍无法收敛时形成明确 Turn；补充 retry/cancel/resolve 闭环 | 持续深化 |
 | Artifact | 使用 handle + digest + metadata，Run state 不内联大对象 | 已实现基线 |
 | Event model | 局部 event-backed ledger，不全面 Event Sourcing/CQRS | 已确认 |
 | Model invocation | 当前留在 Runtime 外；未来作为非确定性 Effect | 已确认 |
@@ -295,30 +298,27 @@ Worker result 跨进程    -> Inbox + result dedupe
 | Observation handle 化 | Runtime 可从 handle/digest 重建；篡改、跨 target、GC 后 fail closed |
 | Gate 持久身份 | 重复提交幂等；并发单赢家；旧版本、错误 Gate 和不同输入 conflict |
 | Mutation 恢复证明 | Live Patch/Upgrade 每个切点不重复危险 Effect |
-| 发布证据 | 当前 333 项 Runtime 与 16 项 Debug backend 测试通过；正式发布前仍需完整 execute fault matrix、A/B 与 release gate |
+| 发布证据 | qualification 基线 416 项、当前本地 419 项 Runtime 测试；10 组 execute A/B、Release Gate 与 main CI 已通过 |
 | ADR | 产品 Interface、状态权威、Effect、Gate、Artifact 和分布式触发条件落盘 |
 
-### P1：v2.1 内部架构收敛
+### P1：v2.x 运行闭环与内部收敛
 
 | 目标 | 验收 |
 | --- | --- |
-| typed semantic seam | Gateway 只依赖 `observe/execute` typed seam |
-| 唯一 Run 状态权威 | `RunEngine` 是唯一 Run/Gate/Incident/Outcome 写入者 |
-| 定义与执行分离 | `WorkflowDefinitions` 不执行 I/O 或写状态 |
-| Domain locality | Adapter 预注册，execute/reconcile 经一个 DomainExecutor |
-| Artifact 统一 | Observation、Evidence、build product、patch 和日志使用统一 ArtifactRef |
-| 测试稳定 | contract tests 不依赖源码字符串和函数体切片 |
+| Incident 闭环 | 每种 Incident 都有确定的 retry、reconcile、correction Gate、cancel 或 terminal 路径 |
+| Compatibility 收敛 | feature-level 持久遥测驱动旧 writer 删除；old-event reader 保留 |
+| Module locality | compatibility、EvidenceStore、Runtime composition 从 MCP transport 中集中 |
+| 测试稳定 | property、duplicate storm、capacity 与 soak 验证公开 semantic seam |
 
 ### P2：v2.x 按遥测扩展
 
-1. Incident operator workflow；
-2. workflow version migration 与 old-run support；
-3. Artifact retention、ACL、redaction 和 GC；
-4. selector 并行与连接复用；
-5. D-Bus、active alarm、bounded log search 等按真实调用缺口增加；
-6. compatibility profile 使用遥测与退役；
-7. capacity、soak、property-based 和 network fault injection。
-8. 原型验证 `ModelInvocationRecord` 与受限 `PlanProposal -> PlanRevision`，模型只生成 Proposal。
+1. workflow version migration 与 old-run support；
+2. Artifact retention、redaction 和 GC；
+3. selector 并行与连接复用；
+4. D-Bus、active alarm、bounded log search 等按真实调用缺口增加；
+5. compatibility profile 使用遥测与退役；
+6. capacity、soak、property-based 和 network fault injection；
+7. 原型验证 `ModelInvocationRecord` 与受限 `PlanProposal -> PlanRevision`，模型只生成 Proposal。
 
 ### P3：v3 分布式执行
 
@@ -337,7 +337,9 @@ Mutation Worker 必须最后迁移，因为它需要最严格的 effect-start ha
 
 ### 8.1 `RunEngine.execute` 的原子提交模型
 
-推荐默认答案：一次 command 只形成一次持久 Decision，包含 Run events、Gate/Incident 变化和 Effect intent；Domain Effect 的真实执行结果通过同一 effect identity 回到 RunEngine。需要进一步定稿 RunStore transaction 和旧 Case events 的 upcaster。
+已落地答案：一次 command 形成一次持久 Decision，包含 Run events、Gate/Incident 变化和
+Effect intent；Domain Effect 的真实执行结果通过同一 Effect identity 回到 RunEngine。
+旧 Case/Run events 使用显式 upcaster，不按新定义静默改写。
 
 ### 8.2 Gate 的最小安全协议
 
@@ -359,9 +361,9 @@ submission identity 由 Adapter 从持久 Run/Gate binding 派生。详见 ADR-0
 
 ### 8.6 v2 与 v2.1 的发布边界
 
-当前 `v2.0.0` 尚未正式发布，因此本分支先完成 typed RunEngine 的候选实现，但不打 tag、
-不更新 release lock。只有 fault matrix、完整 execute A/B 和 release gate 在最终 source
-commit 上通过后，才重新生成发布锁；否则继续作为后续候选分支演进。
+`v2.0.0` 尚未正式发布，但资格已经完成。候选 source commit 为 `89511ae`，对应
+lock-only commit 为 `22ebc53`；完整 execute A/B、Release Gate 与 GitHub main CI 均通过。
+发布 tag 必须指向 lock-only commit，不能指向后续 merge commit。
 
 ## 9. 需要持续验证的假设
 

@@ -230,9 +230,10 @@ The three supported delivery paths are verified through the same `execute` Inter
 The Runtime Core remains the stable kernel. Future capability should deepen the two semantic
 operations instead of adding Agent-facing tools:
 
-1. replace the remaining `phase_record` persistence bridge with native Run events, then add
+1. use persistent compatibility telemetry to retire the remaining legacy writers while retaining
    explicit old-event upcasters;
-2. extract a Domain Pack contract only after Live Patch and Upgrade demonstrate the same seams;
+2. add the first READ_ONLY Domain Pack only from measured development demand; the shared contract
+   and conformance suite are already extracted from Live Patch and Upgrade;
 3. add selector Adapters for D-Bus properties, verified active alarms, and bounded log search only
    from measured development gaps;
 4. keep evidence inspection, Replay, governance, and lifecycle automation in the operator/CI plane;
