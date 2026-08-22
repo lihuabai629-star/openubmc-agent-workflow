@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
@@ -66,13 +67,26 @@ class SQLiteCompatibilityTelemetryRepository:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=NORMAL")
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            connection.close()
+            raise
         return connection
 
+    @contextmanager
+    def _connection(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS compatibility_telemetry (
@@ -99,7 +113,7 @@ class SQLiteCompatibilityTelemetryRepository:
             )
 
     def increment(self, metric_kind: str, metric_name: str) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO compatibility_telemetry
@@ -113,7 +127,7 @@ class SQLiteCompatibilityTelemetryRepository:
             )
 
     def metrics(self, metric_kind: str) -> Mapping[str, CompatibilityMetric]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 "SELECT metric_name, count, updated_at "
                 "FROM compatibility_telemetry "
@@ -129,7 +143,7 @@ class SQLiteCompatibilityTelemetryRepository:
         }
 
     def tracking_started_at(self) -> float:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT value FROM compatibility_telemetry_meta "
                 "WHERE key = 'tracking_started_at'"
