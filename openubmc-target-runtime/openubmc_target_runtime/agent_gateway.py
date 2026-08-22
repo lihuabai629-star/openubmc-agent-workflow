@@ -767,6 +767,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
             "gate_id": {"type": "string", "minLength": 1},
             "gate_version": {"type": "integer", "minimum": 1},
             "schema_digest": {"type": "string", "minLength": 64},
+            "incident_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "submission_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "response": {
                 "type": "object",

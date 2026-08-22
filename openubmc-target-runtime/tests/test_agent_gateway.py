@@ -3455,6 +3455,286 @@ class AgentGatewayTests(unittest.TestCase):
             [name for name, _arguments in backend.calls],
         )
 
+    def test_control_cancel_terminates_a_run_waiting_at_an_incident(self) -> None:
+        backend = SemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "cancel-incident-fix.lua"
+        original_body = b"return 'validated-content'\n"
+        patch_file.write_bytes(original_body)
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.91",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="cancel-incident",
+                operation_id="cancel-incident-start",
+            )
+            transactions = service.context_runtime.repository
+            original_stage = transactions.stage
+
+            def replace_after_persist(*args, **kwargs):
+                result = original_stage(*args, **kwargs)
+                patch_file.write_bytes(b"return 'tampered-after-gate'\n")
+                return result
+
+            with patch.object(
+                transactions,
+                "stage",
+                side_effect=replace_after_persist,
+            ):
+                blocked = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": "cancel-incident-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh verification"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.91",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/fix.lua",
+                                "restart_scope": "skynet",
+                            },
+                        },
+                    },
+                    task_id="cancel-incident",
+                    operation_id="cancel-incident-response",
+                )
+
+            with self.assertRaisesRegex(
+                CommandConflict,
+                "incident_id does not match the current Incident",
+            ):
+                service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "control",
+                        "run_id": waiting["run_id"],
+                        "command": "cancel",
+                        "incident_id": "incident-wrong-binding",
+                    },
+                    task_id="cancel-incident",
+                    operation_id="cancel-incident-wrong-binding",
+                )
+            still_blocked = service.context_runtime.read_case(waiting["run_id"])
+
+            cancellation = {
+                "kind": "control",
+                "run_id": waiting["run_id"],
+                "command": "cancel",
+                "incident_id": blocked["incident"]["incident_id"],
+            }
+            cancelled = service.call_exposed_tool(
+                "execute",
+                cancellation,
+                task_id="cancel-incident",
+                operation_id="cancel-incident-control",
+            )
+            replayed = service.call_exposed_tool(
+                "execute",
+                cancellation,
+                task_id="cancel-incident-replay",
+                operation_id="cancel-incident-control",
+            )
+            projection = service.context_runtime.read_case(waiting["run_id"])
+            events = service.context_runtime.repository.events(waiting["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(blocked["state"], "incident")
+        self.assertEqual(
+            still_blocked["current_incident"]["incident_id"],
+            blocked["incident"]["incident_id"],
+        )
+        self.assertEqual(cancelled["state"], "cancelled")
+        self.assertEqual(cancelled["outcome"]["status"], "cancelled")
+        self.assertEqual(replayed, cancelled)
+        self.assertEqual(projection["current_incident"], {})
+        self.assertEqual(projection["incidents"][-1]["status"], "resolved")
+        self.assertEqual(
+            sum(event["kind"] == "RunOutcomeRecorded" for event in events),
+            1,
+        )
+        self.assertNotIn(
+            "live_patch_run",
+            [name for name, _arguments in backend.calls],
+        )
+
+    def test_resume_revalidates_and_recovers_an_artifact_incident(self) -> None:
+        backend = SemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "resume-artifact-incident-fix.lua"
+        original_body = b"return 'validated-content'\n"
+        patch_file.write_bytes(original_body)
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.92",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="resume-artifact-incident",
+                operation_id="resume-artifact-incident-start",
+            )
+            transactions = service.context_runtime.repository
+            original_stage = transactions.stage
+
+            def replace_after_persist(*args, **kwargs):
+                result = original_stage(*args, **kwargs)
+                patch_file.write_bytes(b"return 'tampered-after-gate'\n")
+                return result
+
+            with patch.object(
+                transactions,
+                "stage",
+                side_effect=replace_after_persist,
+            ):
+                blocked = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": "resume-artifact-incident-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh verification"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.92",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/fix.lua",
+                                "restart_scope": "skynet",
+                            },
+                        },
+                    },
+                    task_id="resume-artifact-incident",
+                    operation_id="resume-artifact-incident-response",
+                )
+
+            patch_file.write_bytes(original_body)
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": waiting["run_id"],
+                },
+                task_id="resume-artifact-incident",
+                operation_id="resume-artifact-incident-resume",
+            )
+            projection = service.context_runtime.read_case(waiting["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(blocked["state"], "incident")
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(projection["current_incident"], {})
+        self.assertEqual(projection["incidents"][-1]["status"], "resolved")
+        self.assertEqual(
+            [name for name, _arguments in backend.calls].count("live_patch_run"),
+            1,
+        )
+
+    def test_resume_retries_a_domain_preparation_incident(self) -> None:
+        backend = SemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "resume-domain-incident-fix.lua"
+        patch_file.write_bytes(b"return 'domain-retry'\n")
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.93",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="resume-domain-incident",
+                operation_id="resume-domain-incident-start",
+            )
+            driver = service.semantic_runtime.run_engine.driver
+            original_prepare = driver.prepare_step
+            prepared_operations: list[str] = []
+
+            def fail_once(*args, **kwargs):
+                operation = str(kwargs.get("operation", ""))
+                prepared_operations.append(operation)
+                if prepared_operations.count("live_patch_run") == 1:
+                    raise OSError("domain preparation temporarily unavailable")
+                return original_prepare(*args, **kwargs)
+
+            with patch.object(driver, "prepare_step", side_effect=fail_once):
+                blocked = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": "resume-domain-incident-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh verification"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.93",
+                                    run_id=waiting["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/fix.lua",
+                                "restart_scope": "none",
+                            },
+                        },
+                    },
+                    task_id="resume-domain-incident",
+                    operation_id="resume-domain-incident-response",
+                )
+                final = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "resume",
+                        "run_id": waiting["run_id"],
+                    },
+                    task_id="resume-domain-incident",
+                    operation_id="resume-domain-incident-resume",
+                )
+            projection = service.context_runtime.read_case(waiting["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(blocked["state"], "incident")
+        self.assertEqual(blocked["incident"]["code"], "domain_execution_failed")
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(prepared_operations.count("live_patch_run"), 2)
+        self.assertEqual(prepared_operations.count("debug_collect"), 1)
+        self.assertEqual(projection["incidents"][-1]["status"], "resolved")
+        self.assertEqual(
+            projection["incidents"][-1]["resolution"],
+            "retrying domain preparation",
+        )
+
     def test_observation_receipt_reconstructs_after_process_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -4558,7 +4838,7 @@ class AgentGatewayTests(unittest.TestCase):
             self.assertEqual(backend.reconcile_calls, 1)
             self.assertEqual(backend.operation_ids, [persisted_effect_id])
 
-    def test_restart_recovery_without_journal_stays_incident_on_resume(self) -> None:
+    def test_each_resume_retries_unknown_recovery_without_reapplying(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             database = root / "missing-journal.sqlite3"
@@ -4650,7 +4930,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(incident["state"], "incident")
         self.assertEqual(repeated["state"], "incident")
         self.assertEqual(backend.apply_calls, 0)
-        self.assertEqual(backend.recovery_calls, 1)
+        self.assertEqual(backend.recovery_calls, 2)
 
     def test_explicit_reconcile_returns_running_at_the_caller_deadline(self) -> None:
         patch_file = self.artifact_root / "explicit-reconcile.lua"
@@ -5126,7 +5406,7 @@ class AgentGatewayTests(unittest.TestCase):
                 build_second.close()
             self.assertEqual(build_final["state"], "completed")
 
-    def test_live_patch_unknown_mutation_reconciles_after_process_restart(self) -> None:
+    def test_resume_reconciles_an_unknown_mutation_after_process_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             database = root / "live-failure.sqlite3"
@@ -5193,9 +5473,8 @@ class AgentGatewayTests(unittest.TestCase):
                 final = second.call_exposed_tool(
                     "execute",
                     {
-                        "kind": "control",
+                        "kind": "resume",
                         "run_id": gate["run_id"],
-                        "command": "reconcile",
                     },
                     task_id="restart-live-failure-reconcile",
                     operation_id="restart-live-failure-control",
