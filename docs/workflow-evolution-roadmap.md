@@ -34,8 +34,8 @@ M0 至 M5 已完成并通过完整 execute A/B、Release Gate 与 main CI。当�
 | M5 Domain Pack | 完成 | 根据真实调用选择首个 READ_ONLY Pack |
 | M6 证据驱动扩展 | 进行中 | 由兼容遥测、Incident 数据和容量证据决定扩展 |
 
-v2 release qualification 基线包含 416 项 Runtime 测试；当前 operability 变更在本地完整
-验证中为 419 项。完整 execute A/B 为 10 组有效、0 无效，
+v2 release qualification 基线包含 416 项 Runtime 测试；当前 compatibility telemetry
+候选在本地完整验证中为 423 项。完整 execute A/B 为 10 组有效、0 无效，
 `decision=passed`；Release Gate 为 `promotable=true`；main CI run `32544813303` 的
 CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2`，是否创建
 `v2.0.0` tag 是独立发布决策。
@@ -298,7 +298,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 | Observation handle 化 | Runtime 可从 handle/digest 重建；篡改、跨 target、GC 后 fail closed |
 | Gate 持久身份 | 重复提交幂等；并发单赢家；旧版本、错误 Gate 和不同输入 conflict |
 | Mutation 恢复证明 | Live Patch/Upgrade 每个切点不重复危险 Effect |
-| 发布证据 | qualification 基线 416 项、当前本地 419 项 Runtime 测试；10 组 execute A/B、Release Gate 与 main CI 已通过 |
+| 发布证据 | qualification 基线 416 项、当前本地 423 项 Runtime 测试；10 组 execute A/B、Release Gate 与 main CI 已通过 |
 | ADR | 产品 Interface、状态权威、Effect、Gate、Artifact 和分布式触发条件落盘 |
 
 ### P1：v2.x 运行闭环与内部收敛
@@ -306,7 +306,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 | 目标 | 验收 |
 | --- | --- |
 | Incident 闭环 | 每种 Incident 都有确定的 retry、reconcile、correction Gate、cancel 或 terminal 路径 |
-| Compatibility 收敛 | feature-level 持久遥测驱动旧 writer 删除；old-event reader 保留 |
+| Compatibility 收敛 | feature-level 持久遥测已落地；按 14 个活跃研发日和一次完整资格的零使用窗口删除旧 writer，old-event reader 保留 |
 | Module locality | compatibility、EvidenceStore、Runtime composition 从 MCP transport 中集中 |
 | 测试稳定 | property、duplicate storm、capacity 与 soak 验证公开 semantic seam |
 
