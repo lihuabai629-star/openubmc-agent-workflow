@@ -90,6 +90,13 @@ from .context_runtime import (
     bounded_envelope,
     project_case,
 )
+from .compatibility import (
+    CompatibilityMetric,
+    CompatibilityTelemetry,
+    CompatibilityTelemetryRepository,
+    InMemoryCompatibilityTelemetryRepository,
+    SQLiteCompatibilityTelemetryRepository,
+)
 from .closeout import (
     ACCEPTANCE_PLAN_SCHEMA,
     ACCEPTANCE_REQUIREMENT_SCHEMA,
@@ -437,6 +444,11 @@ __all__ = [
     "SQLiteRuntimeRepository",
     "bounded_envelope",
     "project_case",
+    "CompatibilityTelemetry",
+    "CompatibilityMetric",
+    "CompatibilityTelemetryRepository",
+    "InMemoryCompatibilityTelemetryRepository",
+    "SQLiteCompatibilityTelemetryRepository",
     "ACCEPTANCE_PLAN_SCHEMA",
     "ACCEPTANCE_REQUIREMENT_SCHEMA",
     "CASE_CLOSEOUT_SCHEMA",

@@ -81,6 +81,13 @@ from .context_runtime import (
     IdempotencyConflict,
     RevisionConflict,
     RuntimeRepository,
+    SQLiteRuntimeRepository,
+)
+from .compatibility import (
+    CompatibilityTelemetry,
+    CompatibilityTelemetryRepository,
+    InMemoryCompatibilityTelemetryRepository,
+    SQLiteCompatibilityTelemetryRepository,
 )
 from .replay import CaseReplayService
 from .session_outcome import (
@@ -2355,6 +2362,9 @@ class RuntimeMcpService:
         context_repository: RuntimeRepository | None = None,
         blob_repository: BlobRepository | None = None,
         session_outcome_repository: SessionOutcomeRepository | None = None,
+        compatibility_telemetry_repository: (
+            CompatibilityTelemetryRepository | None
+        ) = None,
         context_runtime: ContextRuntime | None = None,
         envelope_max_bytes: int = AGENT_ENVELOPE_MAX_BYTES,
         context_max_cached_projections: int = 64,
@@ -2482,8 +2492,19 @@ class RuntimeMcpService:
         self.session_outcome_service = SessionOutcomeService(
             session_outcome_repository or InMemorySessionOutcomeRepository()
         )
-        self._compatibility_telemetry_lock = threading.Lock()
-        self._compatibility_operation_counts: dict[str, int] = {}
+        base_context_repository = self.context_runtime.repository.base_repository
+        selected_telemetry_repository = compatibility_telemetry_repository
+        if selected_telemetry_repository is None:
+            selected_telemetry_repository = (
+                SQLiteCompatibilityTelemetryRepository(
+                    base_context_repository.path
+                )
+                if isinstance(base_context_repository, SQLiteRuntimeRepository)
+                else InMemoryCompatibilityTelemetryRepository()
+            )
+        self.compatibility_telemetry = CompatibilityTelemetry(
+            selected_telemetry_repository
+        )
         selected_interface_profile = str(interface_profile).strip().lower()
         if selected_interface_profile not in {
             "agent",
@@ -3366,11 +3387,10 @@ class RuntimeMcpService:
         if self.interface_profile == "agent":
             bounded_request(arguments)
         self.interface_catalog.validate_arguments(name, arguments)
+        if self.interface_profile == "agent":
+            self.compatibility_telemetry.record_agent_input(name, arguments)
         if self.interface_profile == "compatibility":
-            with self._compatibility_telemetry_lock:
-                self._compatibility_operation_counts[name] = (
-                    self._compatibility_operation_counts.get(name, 0) + 1
-                )
+            self.compatibility_telemetry.record_operation(name)
         if self.interface_profile == "agent":
             if name == "observe":
                 return self.agent_gateway.observe(
@@ -3944,6 +3964,12 @@ class RuntimeMcpService:
             raise TypeError("tool arguments must be an object")
         arguments = dict(arguments)
         descriptor = self.catalog.require(name)
+        if (
+            descriptor.exposure == "compatibility"
+            and not _context_workflow_step
+            and not _compatibility_adapter
+        ):
+            self.compatibility_telemetry.record_operation(name)
         external_context_marker = (
             arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True
             and not _context_workflow_step
@@ -3979,14 +4005,9 @@ class RuntimeMcpService:
                 self.domain_executor.pack_descriptors()
             )
             status["session_outcomes"] = self.session_outcome_service.status()
-            with self._compatibility_telemetry_lock:
-                compatibility_counts = dict(
-                    sorted(self._compatibility_operation_counts.items())
-                )
-            status["compatibility_telemetry"] = {
-                "total_calls": sum(compatibility_counts.values()),
-                "operation_counts": compatibility_counts,
-            }
+            status["compatibility_telemetry"] = (
+                self.compatibility_telemetry.status()
+            )
             status["context_maintenance"] = {
                 "attempts": self._context_maintenance_attempts,
                 "failures": self._context_maintenance_failures,

@@ -5496,8 +5496,186 @@ class AgentGatewayTests(unittest.TestCase):
         telemetry = status["compatibility_telemetry"]
         self.assertEqual(telemetry["total_calls"], 1)
         self.assertEqual(telemetry["operation_counts"], {"debug_run": 1})
+        self.assertGreater(
+            telemetry["last_seen_at"]["operations"]["debug_run"],
+            0,
+        )
         self.assertNotIn("task", json.dumps(telemetry))
         self.assertNotIn("192.0.2.78", json.dumps(telemetry))
+
+    def test_direct_legacy_dispatch_records_compatibility_operation(self) -> None:
+        service = RuntimeMcpService(SemanticBackend())
+        try:
+            service.call_tool(
+                "debug_run",
+                {
+                    "ip": "192.0.2.84",
+                    "intent": "diagnosis-only",
+                    "final_purpose": "legacy CLI compatibility telemetry",
+                },
+                task_id="direct-compatibility-telemetry",
+                operation_id="direct-compatibility-telemetry",
+            )
+            status = service.call_tool(
+                "runtime_status",
+                {},
+                task_id="direct-compatibility-status",
+                operation_id="direct-compatibility-status",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(
+            status["compatibility_telemetry"]["operation_counts"],
+            {"debug_run": 1},
+        )
+
+    def test_compatibility_telemetry_counts_legacy_agent_input_features(self) -> None:
+        service = RuntimeMcpService(SemanticBackend())
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.80",
+                    "selectors": [
+                        {"id": "caps", "kind": "capability", "names": ["ssh"]}
+                    ],
+                    "assurance": "assured",
+                },
+                task_id="compatibility-feature-observe",
+                operation_id="compatibility-feature-observe",
+            )
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.80",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                    "observation_receipt": receipt,
+                },
+                task_id="compatibility-feature-execute",
+                operation_id="compatibility-feature-execute",
+            )
+            service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "control",
+                    "run_id": waiting["run_id"],
+                    "command": "continue",
+                },
+                task_id="compatibility-feature-continue",
+                operation_id="compatibility-feature-continue",
+            )
+            status = service.call_tool(
+                "runtime_status",
+                {},
+                task_id="compatibility-feature-status",
+                operation_id="compatibility-feature-status",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(
+            status["compatibility_telemetry"]["feature_counts"],
+            {
+                "execute.control_continue": 1,
+                "execute.observation_receipt": 1,
+                "observe.assurance": 1,
+            },
+        )
+
+    def test_compatibility_telemetry_persists_across_restart_and_instances(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            database = Path(raw) / "compatibility-telemetry.sqlite3"
+            first = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                interface_profile="compatibility",
+            )
+            second = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                interface_profile="compatibility",
+            )
+            agent = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+            )
+            try:
+                for index, service in enumerate((first, second), start=1):
+                    service.call_exposed_tool(
+                        "debug_run",
+                        {
+                            "ip": f"192.0.2.{80 + index}",
+                            "intent": "diagnosis-only",
+                            "final_purpose": "persistent compatibility telemetry",
+                        },
+                        task_id=f"compatibility-persistent-{index}",
+                        operation_id=f"compatibility-persistent-{index}",
+                    )
+                agent.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.83",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["ssh"],
+                            }
+                        ],
+                        "assurance": "fast",
+                    },
+                    task_id="compatibility-persistent-feature",
+                    operation_id="compatibility-persistent-feature",
+                )
+                shared_status = first.call_tool(
+                    "runtime_status",
+                    {},
+                    task_id="compatibility-persistent-shared-status",
+                    operation_id="compatibility-persistent-shared-status",
+                )
+            finally:
+                first.close()
+                second.close()
+                agent.close()
+
+            reopened = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=SQLiteRuntimeRepository(database),
+                interface_profile="compatibility",
+            )
+            try:
+                restarted_status = reopened.call_tool(
+                    "runtime_status",
+                    {},
+                    task_id="compatibility-persistent-restarted-status",
+                    operation_id="compatibility-persistent-restarted-status",
+                )
+            finally:
+                reopened.close()
+
+        expected = {"debug_run": 2}
+        self.assertEqual(
+            shared_status["compatibility_telemetry"]["operation_counts"],
+            expected,
+        )
+        self.assertEqual(
+            restarted_status["compatibility_telemetry"]["operation_counts"],
+            expected,
+        )
+        for status in (shared_status, restarted_status):
+            self.assertEqual(
+                status["compatibility_telemetry"]["feature_counts"],
+                {"observe.assurance": 1},
+            )
+        self.assertEqual(
+            restarted_status["compatibility_telemetry"]["last_seen_at"],
+            shared_status["compatibility_telemetry"]["last_seen_at"],
+        )
 
     def test_compatibility_controls_delegate_native_runs_to_typed_runtime(self) -> None:
         compatibility = RuntimeMcpService(
@@ -5541,6 +5719,12 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="compatibility-native",
                 operation_id="compatibility-native-next",
             )
+            status = compatibility.call_tool(
+                "runtime_status",
+                {},
+                task_id="compatibility-native-status",
+                operation_id="compatibility-native-status",
+            )
             events = compatibility.context_runtime.repository.events(waiting.run_id)
         finally:
             compatibility.close()
@@ -5549,6 +5733,10 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             sum(event["kind"] == "RunGateSubmitted" for event in events),
             1,
+        )
+        self.assertEqual(
+            status["compatibility_telemetry"]["feature_counts"],
+            {"phase_record": 1, "workflow.next": 1},
         )
         self.assertFalse(
             any(

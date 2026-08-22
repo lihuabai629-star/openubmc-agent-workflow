@@ -154,6 +154,12 @@ class TargetRuntimeCliTests(unittest.TestCase):
 
         inspector = self.create_service()
         try:
+            status = inspector.call_tool(
+                "runtime_status",
+                {},
+                task_id="inspector-status",
+                operation_id="inspect-status",
+            )
             case = inspector.call_tool(
                 "case_read",
                 {"case_id": case_id},
@@ -162,6 +168,10 @@ class TargetRuntimeCliTests(unittest.TestCase):
             )
         finally:
             inspector.close()
+        self.assertEqual(
+            status["compatibility_telemetry"]["operation_counts"]["debug_run"],
+            3,
+        )
         self.assertEqual(len(case["operations"]), 2)
         self.assertEqual(
             [item["operation_id"] for item in case["operations"]],

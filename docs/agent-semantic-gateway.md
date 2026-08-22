@@ -131,6 +131,11 @@ Incident can instead be cancelled through `execute kind=control, command=cancel`
 `incident_id`; the Runtime derives a stable cancellation identity from the Run and Incident, so a
 transport retry returns the same cancelled Turn without appending another Outcome.
 
+Compatibility retirement is driven by persistent anonymous operation and feature counters exposed
+through Runtime status. SQLite-backed Runtime instances share the counters across processes; no
+task, target, payload, credential, or caller identity is recorded. The deletion order and zero-use
+window are defined in [Compatibility retirement](compatibility-retirement.md).
+
 Terminal Runs persist one authoritative Run Outcome. The Agent path does not write a Session
 Outcome. An operator may explicitly project the redacted governance record from the persisted Run
 Outcome; retries cannot create another Run Outcome or alter the Run ledger. Review, approval,
