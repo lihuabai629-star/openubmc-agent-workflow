@@ -131,7 +131,7 @@ class DomainSdkMigrationTests(unittest.TestCase):
         finally:
             service.close()
 
-        descriptor = service.capability_registry.require("log_bundle_collect")
+        descriptor = service._test.capability_registry.require("log_bundle_collect")
         self.assertEqual(descriptor.owner_skill, "openubmc-log-analyzer")
         self.assertLessEqual(backend.remaining["log_bundle_collect"], 600)
         self.assertEqual(collected["evidence_ids"], ["evidence-log_bundle_collect"])

@@ -302,7 +302,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 automatic_calls = list(calls)
                 automatic_scopes = list(preflight_scopes)
                 case_ids = [
-                    service.context_runtime.repository.case_for_task(task_id)
+                    service._test.context_runtime.repository.case_for_task(task_id)
                     for task_id in (
                         "agent-observe-task",
                         "agent-observe-mdb-only",

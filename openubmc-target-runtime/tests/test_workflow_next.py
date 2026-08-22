@@ -184,7 +184,7 @@ class WorkflowNextTests(unittest.TestCase):
                 _context_workflow_step=True,
             )
 
-        return self.service.context_runtime.workflow_next(
+        return self.service._test.context_runtime.workflow_next(
             WORKFLOW_NEXT,
             arguments,
             task_id=task_id,
@@ -346,7 +346,7 @@ class WorkflowNextTests(unittest.TestCase):
         self.assertTrue(policy["allow_insecure_tls"])
         self.assertTrue(policy["authorized_exceptions"]["no_backup"])
 
-        derived = self.service.context_runtime._domain_arguments(
+        derived = self.service._test.context_runtime._domain_arguments(
             projection,
             "upgrade_run",
             {},
@@ -564,7 +564,7 @@ class WorkflowNextTests(unittest.TestCase):
         self.assertEqual(len(second_next), 2)
         self.assertNotIn(
             "workflow.next",
-            self.service.context_runtime._operation_records(after_second),
+            self.service._test.context_runtime._operation_records(after_second),
         )
         self.assertNotEqual(
             first_next[0]["idempotency_key"],
@@ -746,7 +746,7 @@ class WorkflowNextTests(unittest.TestCase):
                     projected = repository.load(case_id)
                     assert projected is not None
                     self.assertEqual(projected["entry_domain"], entry_domain)
-                    derived = service.context_runtime._domain_arguments(
+                    derived = service._test.context_runtime._domain_arguments(
                         projected,
                         "debug_collect",
                         {},
@@ -916,7 +916,7 @@ class WorkflowNextTests(unittest.TestCase):
         self.assertIsNone(self.repository.case_for_task("terminal-reader"))
 
         assert terminal_before is not None
-        self.service.context_runtime.close_case(
+        self.service._test.context_runtime.close_case(
             "case-terminal",
             expected_revision=int(terminal_before["revision"]),
         )

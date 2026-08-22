@@ -109,7 +109,7 @@ def run(raw_bytes: int) -> dict[str, object]:
     replay_seconds = time.perf_counter() - started
     _, peak_bytes = tracemalloc.get_traced_memory()
     tracemalloc.stop()
-    status = service.context_runtime.status()
+    status = service._test.context_runtime.status()
     service.close()
     cold_envelope = cold["result"]["structuredContent"]
     warm_envelope = warm["result"]["structuredContent"]

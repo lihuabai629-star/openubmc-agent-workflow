@@ -21,11 +21,14 @@ sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-live-patch"))
 
 from openubmc_target_runtime import (  # noqa: E402
+    CancellationToken,
     FilesystemBlobRepository,
     OrchestratedMcpBackend,
     MutationAuthorizationDenied,
     MutationJournalStore,
     MutationOperationConflict,
+    OperationContext,
+    RUNTIME_EFFECT_RECOVERY_ARGUMENT,
     RuntimeMcpService,
     SQLiteRuntimeRepository,
     TelnetCommandResult,
@@ -40,6 +43,16 @@ from openubmc_live_patch.runtime_backend import (  # noqa: E402
 
 
 TEST_DEADLINE_SECONDS = 30
+
+
+def recovery_context(task_id: str, operation_id: str) -> OperationContext:
+    return OperationContext(
+        task_id=task_id,
+        operation_id=operation_id,
+        deadline_at=time.monotonic() + TEST_DEADLINE_SECONDS,
+        cancellation=CancellationToken(),
+        _clock=time.monotonic,
+    )
 
 
 def artifact_ref(path: Path, *, target: str, run_id: str) -> dict[str, object]:
@@ -774,7 +787,7 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     task_id="live-patch-terminal-resume",
                     operation_id="live-patch-terminal-resume",
                 )
-                projection = second.context_runtime.read_case(waiting["run_id"])
+                projection = second._test.context_runtime.read_case(waiting["run_id"])
             finally:
                 release.set()
                 first.close()
@@ -873,7 +886,7 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     operation_id="live-patch-dispatch-submit",
                 )
                 self.assertTrue(faulted.wait(timeout=1))
-                effect_id = first.context_runtime.read_case(
+                effect_id = first._test.context_runtime.read_case(
                     waiting["run_id"]
                 )["effect_intents"][-1]["effect_id"]
             finally:
@@ -983,7 +996,7 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     operation_id=f"live-patch-{cut}-submit",
                 )
                 self.assertTrue(faulted.wait(timeout=1), cut)
-                first_projection = first.context_runtime.read_case(waiting["run_id"])
+                first_projection = first._test.context_runtime.read_case(waiting["run_id"])
                 effect_id = first_projection["effect_intents"][-1]["effect_id"]
                 mutation_id = journals.load_for_task(waiting["run_id"])[0].operation_id
             finally:
@@ -1000,7 +1013,7 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     task_id=f"live-patch-{cut}-resume",
                     operation_id=f"live-patch-{cut}-resume",
                 )
-                projection = second.context_runtime.read_case(waiting["run_id"])
+                projection = second._test.context_runtime.read_case(waiting["run_id"])
                 recovered_mutation_ids = {
                     journal.operation_id
                     for journal in journals.load_for_task(waiting["run_id"])
@@ -1267,7 +1280,7 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     operation_id="lost-install-response-submit",
                 )
                 self.assertTrue(telnet.faulted.wait(timeout=1))
-                first_projection = first.context_runtime.read_case(waiting["run_id"])
+                first_projection = first._test.context_runtime.read_case(waiting["run_id"])
                 effect_id = first_projection["effect_intents"][-1]["effect_id"]
                 mutation_id = journals.load_for_task(waiting["run_id"])[
                     0
@@ -1296,7 +1309,7 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     task_id="lost-install-response-resume",
                     operation_id="lost-install-response-resume",
                 )
-                projection = second.context_runtime.read_case(waiting["run_id"])
+                projection = second._test.context_runtime.read_case(waiting["run_id"])
                 operations = projection["operations"]
                 recovered_mutation_ids = {
                     journal.operation_id
@@ -1642,25 +1655,23 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
             digest = hashlib.sha256(local.read_bytes()).hexdigest()
             ssh = FakeSshTransport()
             telnet = FakeTelnetTransport(digest)
-            service = RuntimeMcpService(
-                LivePatchMcpBackend(
-                    journal_store=MutationJournalStore(root / "journals"),
-                    credential_loader=lambda _arguments: {
-                        "ssh": {"user": "root", "password": "ssh-secret"},
-                        "telnet": {"user": "root", "password": "telnet-secret"},
-                    },
-                    ssh_transport_factory=lambda _arguments: ssh,
-                    telnet_transport_factory=lambda _arguments: telnet,
-                )
+            backend = LivePatchMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: ssh,
+                telnet_transport_factory=lambda _arguments: telnet,
             )
+            task_id = "live-patch-recovery-without-journal"
+            task = backend.open_task(task_id)
             try:
-                descriptor = service.catalog.require("live_patch_run")
                 with self.assertRaisesRegex(
                     OSError, "no durable mutation journal"
                 ):
-                    service._execute_domain_value(
-                        "live_patch_run",
-                        descriptor,
+                    backend.live_patch_run(
+                        task,
                         {
                             "intent": "diagnose-and-fix",
                             "delivery_strategy": "live-patch",
@@ -1670,13 +1681,14 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                             "remote_path": "/opt/bmc/apps/demo/unit.lua",
                             "restart_scope": "none",
                             "deadline": TEST_DEADLINE_SECONDS,
+                            RUNTIME_EFFECT_RECOVERY_ARGUMENT: (
+                                EffectRecoveryMode.RECONCILE
+                            ),
                         },
-                        task_id="live-patch-recovery-without-journal",
-                        operation_id="live-patch-recovery-without-journal",
-                        recovery_mode=EffectRecoveryMode.RECONCILE,
+                        recovery_context(task_id, task_id),
                     )
             finally:
-                service.close()
+                backend.close_task(task)
 
         self.assertEqual(ssh.uploads, [])
         self.assertEqual(telnet.commands, [])
@@ -1727,32 +1739,33 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
 
             ssh = FakeSshTransport()
             telnet = FakeTelnetTransport(digest)
-            second = RuntimeMcpService(
-                LivePatchMcpBackend(
-                    journal_store=journals,
-                    credential_loader=lambda _arguments: {
-                        "ssh": {"user": "root", "password": "ssh-secret"},
-                        "telnet": {
-                            "user": "root",
-                            "password": "telnet-secret",
-                        },
+            second = LivePatchMcpBackend(
+                journal_store=journals,
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {
+                        "user": "root",
+                        "password": "telnet-secret",
                     },
-                    ssh_transport_factory=lambda _arguments: ssh,
-                    telnet_transport_factory=lambda _arguments: telnet,
-                )
+                },
+                ssh_transport_factory=lambda _arguments: ssh,
+                telnet_transport_factory=lambda _arguments: telnet,
             )
+            task_id = "terminal-live-patch"
+            task = second.open_task(task_id)
             try:
-                descriptor = second.catalog.require("live_patch_run")
-                replayed = second._execute_domain_value(
-                    "live_patch_run",
-                    descriptor,
-                    arguments,
-                    task_id="terminal-live-patch",
-                    operation_id="terminal-live-patch-effect",
-                    recovery_mode=EffectRecoveryMode.RECONCILE,
+                replayed = second.live_patch_run(
+                    task,
+                    {
+                        **arguments,
+                        RUNTIME_EFFECT_RECOVERY_ARGUMENT: (
+                            EffectRecoveryMode.RECONCILE
+                        ),
+                    },
+                    recovery_context(task_id, "terminal-live-patch-effect"),
                 )
             finally:
-                second.close()
+                second.close_task(task)
 
         self.assertTrue(replayed["idempotent_replay"])
         self.assertEqual(replayed["journal"]["stage"], "verified")

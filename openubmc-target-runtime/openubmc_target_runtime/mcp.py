@@ -23,53 +23,24 @@ from .contracts import (
     TargetSpec,
     _fingerprint,
 )
-from .catalog import OperationCatalog, OperationDescriptor
+from .catalog import OperationCatalog
 from .agent_gateway import (
-    AgentGateway,
     OBSERVATION_MAX_BYTES,
-    ResultProjector,
     agent_operation_descriptors,
-)
-from .run_engine import (
-    ObservationEngine,
-    RunEngine,
-    RunTransition,
-    SemanticRuntime,
 )
 from .semantic_runtime import (
     AGENT_REQUEST_MAX_BYTES,
-    ArtifactRef,
     AssuranceUnavailable,
-    CancelRun,
-    CommandConflict,
-    Gate,
-    GateConflict,
-    ObservationQuery,
-    RunTurn,
-    StartRun,
-    SubmitGate,
+    SemanticRuntimePort,
     bounded_request,
-    run_id_for_command,
-)
-from .run_store import EventRunStore
-from .effect_runner import (
-    EffectIntent,
-    EffectSettlementMode,
-    LocalEffectRunner,
-    PreparedEffect,
 )
 from .capability import (
     CallableDomainAdapter,
-    CapabilityDescriptor,
     CapabilityRegistry,
-    DomainExecutor,
     DomainPack,
-    EffectClass,
-    EffectRecoveryMode,
     RUNTIME_EFFECT_RECOVERY_ARGUMENT,
     RuntimeSDKContext,
 )
-from .domain_packs import builtin_domain_packs
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     BlobRepository,
@@ -77,19 +48,17 @@ from .context_runtime import (
     CaseNotFound,
     ContextRuntime,
     ContextToolResult,
-    IdempotencyConflict,
     RevisionConflict,
     RuntimeRepository,
-    SQLiteRuntimeRepository,
 )
 from .compatibility import (
-    CompatibilityTelemetry,
     CompatibilityTelemetryRepository,
-    InMemoryCompatibilityTelemetryRepository,
-    SQLiteCompatibilityTelemetryRepository,
 )
-from .compatibility_runtime import CompatibilityRuntimeAdapter
-from .replay import CaseReplayService
+from .composition import RuntimeCompositionOptions, compose_runtime
+from .domain_runtime import (
+    canonicalize_tool_arguments,
+    validate_boolean_argument_types,
+)
 from .session_outcome import (
     InMemorySessionOutcomeRepository,
     SessionOutcomeRepository,
@@ -119,7 +88,6 @@ from .orchestration import (
     WorkflowStep,
 )
 from .workflow import DEFAULT_PHASE_REGISTRY
-from .artifact_store import LocalArtifactStore
 
 
 TaskT = TypeVar("TaskT")
@@ -152,9 +120,6 @@ class DebugMcpBackend(Protocol[TaskT]):
 
 
 _OPERATION_CONTRACTS = DEFAULT_OPERATION_CONTRACTS.contracts()
-_OPERATION_CONTRACT_BY_NAME = {
-    contract.name: contract for contract in _OPERATION_CONTRACTS
-}
 _TOOL_DOMAINS = {
     contract.name: contract.domain
     for contract in _OPERATION_CONTRACTS
@@ -2078,276 +2043,6 @@ class OrchestratedMcpBackend:
 
         return call
 
-class _RuntimeSemanticAdapter:
-    """Adapt ContextRuntime storage and domain calls to RunEngine primitives."""
-
-    def __init__(self, service: "RuntimeMcpService") -> None:
-        self.service = service
-
-    @staticmethod
-    def _reattach_gate_submission(
-        snapshot: Mapping[str, object],
-        command: SubmitGate | CancelRun,
-        *,
-        gate: Gate,
-        submission_digest: str,
-    ) -> bool:
-        projection = _mapping_or_empty(snapshot.get("projection"))
-        submissions = projection.get("gate_submissions", [])
-        prior = (
-            next(
-                (
-                    item
-                    for item in reversed(submissions)
-                    if isinstance(item, Mapping)
-                    and str(item.get("submission_id", ""))
-                    == command.submission_id
-                ),
-                None,
-            )
-            if isinstance(submissions, list)
-            else None
-        )
-        if not isinstance(prior, Mapping):
-            return False
-        if (
-            str(prior.get("gate_id", "")) != gate.gate_id
-            or int(prior.get("gate_version", 0)) != gate.version
-            or str(prior.get("schema_digest", "")).removeprefix("sha256:")
-            != gate.schema_digest
-        ):
-            raise GateConflict(
-                "concurrent submission targets a different Gate binding"
-            )
-        if str(prior.get("submission_digest", "")) != submission_digest:
-            raise CommandConflict(
-                "submission_id was concurrently used with different Gate input"
-            )
-        return True
-
-    def observe_once(
-        self,
-        query: ObservationQuery,
-        *,
-        assured: bool,
-        task_id: str,
-        operation_id: str,
-        prior: Mapping[str, object] | None = None,
-    ) -> Mapping[str, object]:
-        arguments = query.runtime_arguments(assured=assured)
-        if isinstance(prior, Mapping):
-            arguments["_agent_prior_observation"] = dict(prior)
-        return self.service._observe_domain_direct(
-            "debug_collect",
-            arguments,
-            task_id=task_id,
-            operation_id=operation_id,
-        )
-
-    def run_snapshot(self, run_id: str) -> Mapping[str, object]:
-        projection = self.service.context_runtime.read_case(run_id)
-        return {
-            "projection": projection,
-            "continuation": self.service.context_runtime.continuation_for(
-                projection
-            ),
-        }
-
-    def domain_metadata(self, operation: str) -> Mapping[str, object]:
-        return self.service.domain_executor.metadata_for(operation)
-
-    def domain_artifact_metadata(
-        self,
-        phase_type: str,
-    ) -> Mapping[str, object]:
-        return self.service.domain_executor.artifact_metadata_for_phase(phase_type)
-
-    def persist_observation(
-        self,
-        raw: Mapping[str, object],
-        *,
-        query: ObservationQuery,
-        assurance: str,
-    ) -> Mapping[str, object]:
-        return self.service.context_runtime.persist_observation(
-            raw,
-            scope=query.to_public_dict(),
-            assurance=assurance,
-        )
-
-    def start_run(
-        self,
-        command: StartRun,
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> Mapping[str, object]:
-        start_input = {
-            "schema": "openubmc.semantic-runtime/start-input-v1",
-            "target": command.target,
-            "intent": command.intent,
-            "purpose": command.purpose,
-            "delivery_strategy": command.delivery_strategy,
-            "observation_ref": (
-                command.observation_ref.to_public_dict()
-                if command.observation_ref is not None
-                else None
-            ),
-        }
-        run_id = run_id_for_command(command, command_id=command.command_id)
-        try:
-            existing = self.service.context_runtime.reattach_semantic_run(
-                run_id,
-                task_id=task_id,
-                start_command_id=command.command_id,
-                start_input_digest=command.input_digest,
-            )
-        except IdempotencyConflict as exc:
-            raise CommandConflict(str(exc)) from exc
-        if existing is not None:
-            return self.run_snapshot(run_id)
-        arguments: dict[str, object] = {
-            "ip": command.target,
-            "intent": command.intent,
-            "final_purpose": command.purpose,
-            "include_closeout_bundle": False,
-        }
-        if command.delivery_strategy:
-            arguments["delivery_strategy"] = command.delivery_strategy
-        seeded_raw: Mapping[str, object] | None = None
-        if command.observation_ref is not None:
-            source = command.observation_ref.to_source_dict()
-            stored = self.service.context_runtime.load_observation(source)
-            fresh_until = stored.get("fresh_until", 0)
-            if (
-                isinstance(fresh_until, bool)
-                or not isinstance(fresh_until, (int, float))
-                or float(fresh_until) < self.service.context_runtime.clock()
-            ):
-                raise ValueError(
-                    "ObservationRef is older than the Runtime reuse window"
-                )
-            stored_scope = _mapping_or_empty(stored.get("scope"))
-            query = ObservationQuery.from_query(stored_scope)
-            if query.target != command.target:
-                raise ValueError("ObservationRef target does not match the Run target")
-            if command.observation_ref.target != command.target:
-                raise ValueError("ObservationRef target metadata does not match the Run")
-            raw = _mapping_or_empty(stored.get("raw"))
-            expected = self.service.agent_projector.observation(
-                raw,
-                query,
-                assurance=str(stored.get("assurance", "fast")),
-                source=source,
-            )
-            if expected.get("status") != "complete":
-                raise ValueError("only a complete ObservationRef can seed a Run")
-            legacy_receipt = command.legacy_observation_receipt
-            if isinstance(legacy_receipt, Mapping):
-                comparable_expected = dict(expected)
-                comparable_legacy = dict(legacy_receipt)
-                for compatibility_field in ("assurance", "observation_ref"):
-                    if compatibility_field not in comparable_legacy:
-                        comparable_expected.pop(compatibility_field, None)
-                    if compatibility_field not in comparable_expected:
-                        comparable_legacy.pop(compatibility_field, None)
-                if comparable_expected != comparable_legacy:
-                    raise ValueError("ObservationReceipt failed source reconstruction")
-            seeded_raw = raw
-
-        try:
-            projection = self.service.context_runtime.open_semantic_run(
-                arguments,
-                task_id=task_id,
-                run_id=run_id,
-                start_command_id=command.command_id,
-                start_input_digest=command.input_digest,
-                start_input=start_input,
-            )
-        except IdempotencyConflict as exc:
-            raise CommandConflict(str(exc)) from exc
-        if seeded_raw is not None:
-            prepared, derived_id = (
-                self.service.context_runtime.prepare_semantic_run_operation(
-                    projection,
-                    operation="debug_run",
-                    workflow_step_id=str(
-                        self.service.context_runtime.continuation_for(projection).get(
-                            "required_workflow_step_id", ""
-                        )
-                    ),
-                )
-            )
-            self.service.context_runtime.invoke_domain(
-                self.service.catalog.require("debug_run"),
-                prepared,
-                task_id=run_id,
-                operation_id=derived_id,
-                executor=lambda: seeded_raw,
-            )
-        return self.run_snapshot(run_id)
-
-    def derive_closeout(
-        self,
-        run_id: str,
-        *,
-        terminal_status: str,
-    ) -> Mapping[str, object]:
-        return self.service.context_runtime.derive_run_closeout(
-            run_id,
-            terminal_status=terminal_status,
-        )
-
-    def prepare_step(
-        self,
-        run_id: str,
-        *,
-        operation: str,
-        workflow_step_id: str,
-        task_id: str,
-    ) -> PreparedEffect | None:
-        projection = self.service.context_runtime.read_case(run_id)
-        arguments, derived_id = (
-            self.service.context_runtime.prepare_semantic_run_operation(
-                projection,
-                operation=operation,
-                workflow_step_id=workflow_step_id,
-            )
-        )
-        policy = self.service.domain_executor.policy_for(operation)
-        return self.service.context_runtime.prepare_semantic_run_effect(
-            run_id,
-            operation=operation,
-            arguments=arguments,
-            operation_id=derived_id,
-            effect_class=policy.effect_class,
-        )
-
-    def execute_effect(self, intent: EffectIntent) -> Mapping[str, object]:
-        return self.service.execute_domain_effect(intent)
-
-    def recover_effect(self, intent: EffectIntent) -> Mapping[str, object]:
-        if intent.effect_class is EffectClass.READ_ONLY:
-            return self.execute_effect(intent)
-        return self.service.execute_domain_effect(intent, recovery=True)
-
-    def effect_transition(
-        self,
-        intent: EffectIntent,
-        *,
-        result: Mapping[str, object] | None,
-        error: BaseException | None,
-        settlement_mode: EffectSettlementMode,
-    ) -> RunTransition:
-        return RunTransition(
-            events=self.service.context_runtime.prepare_effect_transition(
-                intent,
-                result=result,
-                error=error,
-                settlement_mode=settlement_mode,
-            )
-        )
-
 def _mapping_or_empty(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
@@ -2399,112 +2094,6 @@ class RuntimeMcpService:
             **registry_options,
         )
         definitions = self._build_tool_definitions()
-        definition_names = tuple(str(definition["name"]) for definition in definitions)
-        definition_name_set = set(definition_names)
-        contract_names = tuple(
-            contract.name
-            for contract in _OPERATION_CONTRACTS
-            if contract.name in definition_name_set
-        )
-        if definition_names != contract_names or definition_name_set - set(
-            _OPERATION_CONTRACT_BY_NAME
-        ):
-            raise RuntimeError(
-                "operation definitions and contract metadata are out of sync"
-            )
-        self.catalog = OperationCatalog(
-            (
-                _OPERATION_CONTRACT_BY_NAME[
-                    str(definition["name"])
-                ].operation_descriptor(definition)
-                for definition in definitions
-            ),
-            backend=backend,
-        )
-        capability_descriptors: list[CapabilityDescriptor] = []
-        for operation_descriptor in self.catalog.descriptors():
-            contract = _OPERATION_CONTRACT_BY_NAME[operation_descriptor.name]
-            if not contract.domain:
-                continue
-            capability_descriptors.append(
-                contract.capability_descriptor(
-                    operation_descriptor.input_schema,
-                )
-            )
-        self.capability_registry = CapabilityRegistry(capability_descriptors)
-        domain_adapters = {
-            descriptor.operation: CallableDomainAdapter(
-                lambda sdk_context, sdk_arguments, operation=descriptor.operation: (
-                    self._invoke_registered_domain_adapter(
-                        operation,
-                        sdk_context,
-                        sdk_arguments,
-                    )
-                )
-            )
-            for descriptor in self.capability_registry.descriptors()
-        }
-        default_domain_packs = builtin_domain_packs(
-            self.capability_registry,
-            domain_adapters,
-        )
-        extension_packs = (
-            tuple(
-                domain_pack_extensions(
-                    self.capability_registry,
-                    domain_adapters,
-                )
-            )
-            if domain_pack_extensions is not None
-            else ()
-        )
-        default_operations = {
-            pack.descriptor.operation for pack in default_domain_packs
-        }
-        extension_operations = {
-            pack.descriptor.operation for pack in extension_packs
-        }
-        overlap = default_operations & extension_operations
-        if overlap:
-            raise ValueError(
-                "Domain Pack extensions cannot replace Runtime Packs: "
-                + ", ".join(sorted(overlap))
-            )
-        domain_packs = (*default_domain_packs, *extension_packs)
-        for pack in domain_packs:
-            domain_adapters.pop(pack.descriptor.operation, None)
-        self.domain_executor = DomainExecutor(
-            self.capability_registry,
-            domain_adapters,
-            packs=domain_packs,
-        )
-        self.context_runtime = context_runtime or ContextRuntime(
-            self.catalog,
-            repository=context_repository,
-            blob_repository=blob_repository,
-            envelope_max_bytes=envelope_max_bytes,
-            max_cached_projections=context_max_cached_projections,
-            max_cached_projection_bytes=context_max_cached_projection_bytes,
-            retention_seconds=context_retention_seconds,
-            storage_soft_limit_bytes=context_storage_soft_limit_bytes,
-        )
-        self.replay_service = CaseReplayService(self.context_runtime.repository)
-        self.session_outcome_service = SessionOutcomeService(
-            session_outcome_repository or InMemorySessionOutcomeRepository()
-        )
-        base_context_repository = self.context_runtime.repository.base_repository
-        selected_telemetry_repository = compatibility_telemetry_repository
-        if selected_telemetry_repository is None:
-            selected_telemetry_repository = (
-                SQLiteCompatibilityTelemetryRepository(
-                    base_context_repository.path
-                )
-                if isinstance(base_context_repository, SQLiteRuntimeRepository)
-                else InMemoryCompatibilityTelemetryRepository()
-            )
-        self.compatibility_telemetry = CompatibilityTelemetry(
-            selected_telemetry_repository
-        )
         selected_interface_profile = str(interface_profile).strip().lower()
         if selected_interface_profile not in {
             "agent",
@@ -2515,48 +2104,49 @@ class RuntimeMcpService:
                 "interface_profile must be agent, compatibility, or operator"
             )
         self.interface_profile = selected_interface_profile
-        self.agent_projector = ResultProjector()
-        semantic_adapter = _RuntimeSemanticAdapter(self)
-        self.effect_runner = LocalEffectRunner(
-            semantic_adapter.execute_effect,
-            semantic_adapter.recover_effect,
-        )
-        self.artifact_store = LocalArtifactStore()
-        self.semantic_runtime = SemanticRuntime(
-            ObservationEngine(semantic_adapter),
-            RunEngine(
-                semantic_adapter,
-                run_store=EventRunStore(
-                    self.context_runtime.repository.base_repository,
-                    draft_buffer=self.context_runtime.repository,
-                    fact_projector=self.agent_projector.run_facts,
+        self._runtime = compose_runtime(
+            definitions,
+            catalog_backend=backend,
+            invoke_domain_transport=self._invoke_registered_domain_adapter,
+            options=RuntimeCompositionOptions(
+                context_repository=context_repository,
+                blob_repository=blob_repository,
+                compatibility_telemetry_repository=(
+                    compatibility_telemetry_repository
                 ),
-                artifact_store=self.artifact_store,
-                effect_runner=self.effect_runner,
-                fact_projector=self.agent_projector.run_facts,
+                context_runtime=context_runtime,
+                envelope_max_bytes=envelope_max_bytes,
+                max_cached_projections=context_max_cached_projections,
+                max_cached_projection_bytes=(
+                    context_max_cached_projection_bytes
+                ),
+                retention_seconds=context_retention_seconds,
+                storage_soft_limit_bytes=context_storage_soft_limit_bytes,
+                interface_profile=self.interface_profile,
+                orchestrated_backend=isinstance(
+                    backend,
+                    OrchestratedMcpBackend,
+                ),
+                domain_pack_extensions=domain_pack_extensions,
             ),
         )
-        self.compatibility_runtime = CompatibilityRuntimeAdapter(
-            self.context_runtime,
-            self.semantic_runtime,
-            interface_profile=self.interface_profile,
-        )
-        self.agent_gateway = AgentGateway(
-            self.semantic_runtime,
-            projector=self.agent_projector,
+        self._test = self._runtime._test
+        self.replay_service = self._runtime.operator.replay_service()
+        self.session_outcome_service = SessionOutcomeService(
+            session_outcome_repository or InMemorySessionOutcomeRepository()
         )
         if self.interface_profile == "agent":
             interface_descriptors = agent_operation_descriptors()
         elif self.interface_profile == "operator":
             interface_descriptors = tuple(
                 descriptor
-                for descriptor in self.catalog.descriptors()
+                for descriptor in self._runtime.transport.descriptors()
                 if descriptor.exposure == "operator"
             )
         else:
             interface_descriptors = tuple(
                 descriptor
-                for descriptor in self.catalog.descriptors()
+                for descriptor in self._runtime.transport.descriptors()
                 if descriptor.exposure == "compatibility"
             )
         self.interface_catalog = OperationCatalog(interface_descriptors)
@@ -2571,6 +2161,10 @@ class RuntimeMcpService:
         self._context_maintenance_failures = 0
         self._context_maintenance_last_error = ""
         self._context_maintenance_last_result: dict[str, object] = {}
+
+    @property
+    def semantic_runtime(self) -> SemanticRuntimePort:
+        return self._runtime.agent.semantic_runtime
 
     def _close_task_resource(self, task: TaskT) -> None:
         self.backend.close_task(task)
@@ -2594,7 +2188,7 @@ class RuntimeMcpService:
             ):
                 return
             try:
-                maintenance_result = self.context_runtime.maintain()
+                maintenance_result = self._runtime.operator.maintain()
                 self._context_maintenance_last_result = (
                     dict(maintenance_result)
                     if isinstance(maintenance_result, Mapping)
@@ -3393,18 +2987,18 @@ class RuntimeMcpService:
             bounded_request(arguments)
         self.interface_catalog.validate_arguments(name, arguments)
         if self.interface_profile == "agent":
-            self.compatibility_telemetry.record_agent_input(name, arguments)
+            self._runtime.transport.record_agent_input(name, arguments)
         if self.interface_profile == "compatibility":
-            self.compatibility_telemetry.record_operation(name)
+            self._runtime.transport.record_compatibility_operation(name)
         if self.interface_profile == "agent":
             if name == "observe":
-                return self.agent_gateway.observe(
+                return self._runtime.agent.observe(
                     arguments,
                     task_id=task_id,
                     operation_id=operation_id,
                 )
             if name == "execute":
-                return self.agent_gateway.execute(
+                return self._runtime.agent.execute(
                     arguments,
                     task_id=task_id,
                     operation_id=operation_id,
@@ -3424,7 +3018,7 @@ class RuntimeMcpService:
         sdk_context: RuntimeSDKContext,
         arguments: Mapping[str, object],
     ) -> Mapping[str, object]:
-        descriptor = self.catalog.require(operation)
+        descriptor = self._runtime.transport.require_operation(operation)
         bounded_arguments = dict(arguments)
         if sdk_context.recovery_mode:
             bounded_arguments[RUNTIME_EFFECT_RECOVERY_ARGUMENT] = (
@@ -3487,266 +3081,7 @@ class RuntimeMcpService:
                 context,
             ),
         )
-        pack = self.domain_executor.pack_for(operation)
-        if pack is None:
-            return value
-        return pack.bind_compatibility_receipt(
-            value,
-            operation_id=sdk_context.operation_id,
-            arguments=bounded_arguments,
-        )
-
-    def _execute_domain_value(
-        self,
-        name: str,
-        descriptor: OperationDescriptor,
-        domain_arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-        recovery_mode: EffectRecoveryMode | None = None,
-    ) -> dict[str, object]:
-        capability_descriptor = self.capability_registry.require(name)
-        timeout = min(
-            self._timeout(domain_arguments), capability_descriptor.timeout_seconds
-        )
-        bounded_arguments = dict(domain_arguments)
-        raw_artifact_ref = bounded_arguments.get("artifact_ref")
-        if isinstance(raw_artifact_ref, Mapping) and raw_artifact_ref:
-            reference = ArtifactRef.from_public_dict(raw_artifact_ref)
-            pack = self.domain_executor.pack_for(name)
-            contract = pack.artifact_contract if pack is not None else None
-            if contract is None:
-                raise ValueError("Domain Effect does not accept an ArtifactRef")
-            expected_kind = contract.artifact_kind
-            expected_target = str(bounded_arguments.get("ip", "")).strip()
-            if expected_target and reference.target != expected_target:
-                raise ValueError("Domain Effect ArtifactRef targets another BMC")
-            if reference.run_id != task_id:
-                raise ValueError("Domain Effect ArtifactRef belongs to another Run")
-            artifact_path = (
-                self.artifact_store.path_for(reference)
-                if recovery_mode is EffectRecoveryMode.RECONCILE
-                else self.artifact_store.resolve(
-                    reference,
-                    expected_kinds=(expected_kind,) if expected_kind else (),
-                    expected_target=expected_target,
-                    expected_run_id=task_id,
-                )
-            )
-            bounded_arguments["artifact_ref"] = reference.to_public_dict()
-            bounded_arguments.update(
-                contract.runtime_arguments(reference, artifact_path)
-            )
-        execute = (
-            self.domain_executor.reconcile
-            if recovery_mode is EffectRecoveryMode.RECONCILE
-            else self.domain_executor.execute
-        )
-        result = dict(
-            execute(
-                name,
-                context=RuntimeSDKContext(
-                    task_id=task_id,
-                    operation_id=operation_id,
-                    timeout_seconds=timeout,
-                    target_id=str(bounded_arguments.get("target_id", "")),
-                    minimum_target_epoch=int(
-                        bounded_arguments.get("_minimum_target_epoch", 0)
-                    ),
-                    recovery_mode=recovery_mode,
-                ),
-                arguments=bounded_arguments,
-            ).value
-        )
-        if isinstance(raw_artifact_ref, Mapping) and raw_artifact_ref:
-            reference = ArtifactRef.from_public_dict(raw_artifact_ref)
-            result.setdefault("artifact_ref", reference.to_public_dict())
-            result.setdefault("artifact_sha256", reference.digest)
-            if reference.version:
-                result.setdefault("product_version", reference.version)
-        return result
-
-    def execute_domain_effect(
-        self,
-        intent: EffectIntent,
-        *,
-        recovery: bool = False,
-    ) -> Mapping[str, object]:
-        """Execute one persisted Effect without writing Run transitions."""
-
-        descriptor = self.catalog.require(intent.operation)
-        if recovery and not descriptor.mutation:
-            raise ValueError("only Mutation Effects require reconcile recovery")
-        context_arguments = dict(intent.arguments)
-        domain_arguments = {
-            key: value
-            for key, value in context_arguments.items()
-            if key not in {"case_id", "expected_revision", "idempotency_key"}
-            and not key.startswith("_workflow_")
-            and key
-            not in {
-                "_context_defaults_inferred",
-                CONTEXT_WORKFLOW_STEP_ARGUMENT,
-            }
-        }
-        if isinstance(self.backend, OrchestratedMcpBackend):
-            domain_arguments["_context_authoritative"] = True
-        return self._execute_domain_value(
-            intent.operation,
-            descriptor,
-            domain_arguments,
-            task_id=intent.run_id,
-            operation_id=intent.effect_id,
-            recovery_mode=(
-                EffectRecoveryMode.RECONCILE if recovery else None
-            ),
-        )
-
-    def _observe_domain_direct(
-        self,
-        name: str,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> dict[str, object]:
-        """Run a precise read without opening a Case or producing a Closeout."""
-
-        if name not in {"debug_collect", "debug_run"}:
-            raise ValueError(f"unsupported observation adapter: {name}")
-        descriptor = self.catalog.require(name)
-        raw_arguments = dict(arguments)
-        capability_names = raw_arguments.pop("_agent_capability_names", [])
-        assured = raw_arguments.pop("_agent_assured", False)
-        prior_observation = raw_arguments.pop("_agent_prior_observation", None)
-        if not isinstance(capability_names, list) or not all(
-            isinstance(item, str) for item in capability_names
-        ):
-            raise TypeError("_agent_capability_names must be an array of strings")
-        if not isinstance(assured, bool):
-            raise TypeError("_agent_assured must be a boolean")
-        if prior_observation is not None and not isinstance(prior_observation, Mapping):
-            raise TypeError("_agent_prior_observation must be an object")
-        canonical = self._canonicalize_tool_arguments(name, raw_arguments)
-        for internal_name in _INTERNAL_TASK_ARGUMENTS:
-            canonical.pop(internal_name, None)
-        self._validate_boolean_argument_types(descriptor, canonical)
-        self.catalog.validate_arguments(name, canonical)
-        domain_arguments = {
-            key: value
-            for key, value in canonical.items()
-            if key not in {"case_id", "expected_revision", "idempotency_key"}
-            and not key.startswith("_workflow_")
-            and key != "_context_defaults_inferred"
-        }
-        domain_arguments.pop(_WORKFLOW_ARGUMENT, None)
-        if isinstance(self.backend, OrchestratedMcpBackend):
-            domain_arguments["_context_authoritative"] = True
-        domain_arguments["_agent_observation"] = True
-        domain_arguments["_agent_capability_names"] = list(capability_names)
-        domain_arguments["_agent_assured"] = assured
-        if isinstance(prior_observation, Mapping):
-            domain_arguments["_agent_prior_observation"] = dict(
-                prior_observation
-            )
-        return self._execute_domain_value(
-            name,
-            descriptor,
-            domain_arguments,
-            task_id=task_id,
-            operation_id=operation_id,
-        )
-
-    @staticmethod
-    def _timeout(arguments: Mapping[str, object]) -> float:
-        raw = arguments.get("deadline", 600)
-        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-            raise ValueError("deadline must be a positive number")
-        timeout = float(raw)
-        if timeout <= 0:
-            raise ValueError("deadline must be a positive number")
-        return timeout
-
-    @staticmethod
-    def _canonicalize_tool_arguments(
-        name: str, arguments: Mapping[str, object]
-    ) -> dict[str, object]:
-        canonical = dict(arguments)
-        inferred_defaults = False
-        for field in ("intent", "delivery_strategy"):
-            value = canonical.get(field)
-            if isinstance(value, str):
-                canonical[field] = value.strip().lower().replace("_", "-")
-        intent = canonical.get("intent")
-        if not isinstance(intent, str) or not intent.strip():
-            inferred_intent = {
-                "live_patch_run": "live-patch",
-                "upgrade_run": "upgrade-and-verify",
-            }.get(name)
-            if inferred_intent:
-                canonical["intent"] = inferred_intent
-                inferred_defaults = True
-        if name == "live_patch_run":
-            action = canonical.get("action")
-            if isinstance(action, str):
-                normalized = action.strip().lower().replace("-", "_")
-                if normalized == "live_patch":
-                    canonical["action"] = "apply"
-            expected_current = canonical.get("expected_current_sha256")
-            if isinstance(expected_current, str) and not expected_current.strip():
-                canonical.pop("expected_current_sha256", None)
-        intent = canonical.get("intent")
-        delivery = canonical.get("delivery_strategy")
-        if (
-            intent == "diagnose-and-fix"
-            and (not isinstance(delivery, str) or not delivery.strip())
-        ):
-            workflow = canonical.get(_WORKFLOW_ARGUMENT)
-            inferred = ""
-            if isinstance(workflow, Mapping):
-                has_build_upgrade = "build" in workflow or "upgrade" in workflow
-                has_live_patch = "live_patch" in workflow
-                if has_build_upgrade and has_live_patch:
-                    raise ValueError(
-                        "diagnose-and-fix workflow cannot mix live_patch with build/upgrade"
-                    )
-                if has_build_upgrade:
-                    inferred = "build-upgrade"
-                elif has_live_patch:
-                    inferred = "live-patch"
-                elif "developer" in workflow:
-                    inferred = "source-only"
-            if not inferred and name == "live_patch_run":
-                inferred = "live-patch"
-            elif not inferred and name == "upgrade_run":
-                inferred = "build-upgrade"
-            canonical["delivery_strategy"] = inferred or "source-only"
-        elif not isinstance(delivery, str) or not delivery.strip():
-            if intent in {"live-patch", "rollback"}:
-                canonical["delivery_strategy"] = "live-patch"
-            elif intent == "upgrade-and-verify":
-                canonical["delivery_strategy"] = "build-upgrade"
-        if inferred_defaults:
-            canonical["_context_defaults_inferred"] = True
-        return canonical
-
-    @staticmethod
-    def _validate_boolean_argument_types(
-        descriptor: OperationDescriptor,
-        arguments: Mapping[str, object],
-    ) -> None:
-        properties = descriptor.input_schema.get("properties", {})
-        if not isinstance(properties, Mapping):
-            return
-        for field, schema in properties.items():
-            if (
-                field in arguments
-                and isinstance(schema, Mapping)
-                and schema.get("type") == "boolean"
-                and not isinstance(arguments[field], bool)
-            ):
-                raise TypeError(f"{field} must be a boolean")
+        return value
 
     def call_tool(
         self,
@@ -3762,19 +3097,19 @@ class RuntimeMcpService:
         if not isinstance(arguments, Mapping):
             raise TypeError("tool arguments must be an object")
         arguments = dict(arguments)
-        descriptor = self.catalog.require(name)
+        descriptor = self._runtime.transport.require_operation(name)
         if (
             descriptor.exposure == "compatibility"
             and not _context_workflow_step
             and not _compatibility_adapter
         ):
-            self.compatibility_telemetry.record_operation(name)
+            self._runtime.transport.record_compatibility_operation(name)
         external_context_marker = (
             arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True
             and not _context_workflow_step
         )
         if descriptor.handler_name is not None and not external_context_marker:
-            arguments = self.context_runtime.restore_domain_arguments(
+            arguments = self._runtime.operator.restore_domain_arguments(
                 task_id,
                 name,
                 arguments,
@@ -3782,9 +3117,9 @@ class RuntimeMcpService:
         for internal_name in _INTERNAL_TASK_ARGUMENTS:
             arguments.pop(internal_name, None)
         arguments.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
-        arguments = self._canonicalize_tool_arguments(name, arguments)
-        self._validate_boolean_argument_types(descriptor, arguments)
-        self.catalog.validate_arguments(name, arguments)
+        arguments = canonicalize_tool_arguments(name, arguments)
+        validate_boolean_argument_types(descriptor, arguments)
+        self._runtime.transport.validate_arguments(name, arguments)
         if _context_workflow_step:
             arguments[CONTEXT_WORKFLOW_STEP_ARGUMENT] = True
         if descriptor.lifecycle == "status":
@@ -3796,17 +3131,9 @@ class RuntimeMcpService:
             persistent_status = getattr(self.backend, "persistent_status", None)
             if callable(persistent_status):
                 status["persistent_task_contexts"] = persistent_status()
-            status["context_runtime"] = self.context_runtime.status()
-            status["capability_registry"] = (
-                self.capability_registry.to_public_dict()
-            )
-            status["domain_packs"] = list(
-                self.domain_executor.pack_descriptors()
-            )
+            status["context_runtime"] = self._runtime.operator.status()
+            status.update(self._runtime.transport.status())
             status["session_outcomes"] = self.session_outcome_service.status()
-            status["compatibility_telemetry"] = (
-                self.compatibility_telemetry.status()
-            )
             status["context_maintenance"] = {
                 "attempts": self._context_maintenance_attempts,
                 "failures": self._context_maintenance_failures,
@@ -3814,14 +3141,14 @@ class RuntimeMcpService:
                 "last_result": dict(self._context_maintenance_last_result),
             }
             status["context_mode"] = self.context_mode
-            return self.context_runtime.wrap_status(
+            return self._runtime.operator.wrap_status(
                 status,
                 task_id=task_id,
                 operation_id=operation_id,
             )
         if descriptor.handler_name is None:
             translated = (
-                self.compatibility_runtime.translate(
+                self._runtime.transport.translate_compatibility(
                     name,
                     arguments,
                     task_id=task_id,
@@ -3832,35 +3159,28 @@ class RuntimeMcpService:
             )
             if translated is not None:
                 return translated
-            if name == "case_read":
-                case_id = str(arguments.get("case_id", "")).strip()
-                value = self.context_runtime.read_case(case_id)
-                return self.context_runtime.wrap_read(
-                    value,
-                    operation=name,
-                    operation_id=operation_id,
-                    case_id=case_id,
-                )
-            if name == "evidence_read":
-                case_id = str(arguments.get("case_id", "")).strip()
-                value = self.context_runtime.read_evidence(
-                    case_id,
-                    str(arguments.get("evidence_id", "")).strip(),
-                    offset=int(arguments.get("offset", 0)),
-                    limit=int(arguments.get("limit", 65536)),
-                    target_id=str(arguments.get("target_id", "")),
-                    generation=str(arguments.get("generation", "")),
-                )
-                return self.context_runtime.wrap_read(
-                    value,
-                    operation=name,
-                    operation_id=operation_id,
-                    case_id=case_id,
-                )
+            operator_result = self._runtime.operator.dispatch(
+                name,
+                descriptor,
+                arguments,
+                task_id=task_id,
+                operation_id=operation_id,
+                domain_invoker=lambda operation, domain_arguments, derived_id: (
+                    self.call_tool(
+                        operation,
+                        domain_arguments,
+                        task_id=task_id,
+                        operation_id=derived_id,
+                        _context_workflow_step=True,
+                    )
+                ),
+            )
+            if operator_result is not None:
+                return operator_result
             if name == "case_replay_export":
                 case_id = str(arguments.get("case_id", "")).strip()
                 value = self.replay_service.export(case_id).to_public_dict()
-                return self.context_runtime.wrap_read(
+                return self._runtime.operator.wrap_read(
                     value,
                     operation=name,
                     operation_id=operation_id,
@@ -3871,7 +3191,7 @@ class RuntimeMcpService:
                 if not isinstance(bundle, Mapping):
                     raise TypeError("bundle must be an object")
                 value = self.replay_service.replay(bundle).to_public_dict()
-                return self.context_runtime.wrap_read(
+                return self._runtime.operator.wrap_read(
                     value,
                     operation=name,
                     operation_id=operation_id,
@@ -3883,7 +3203,9 @@ class RuntimeMcpService:
                     raise TypeError("details must be an object")
                 case_id = str(arguments.get("case_id", ""))
                 try:
-                    projection = self.context_runtime.read_case(case_id)
+                    projection = self._runtime.operator.read_case_projection(
+                        case_id
+                    )
                 except CaseNotFound:
                     projection = None
                 is_run = isinstance(projection, Mapping) and any(
@@ -3972,14 +3294,14 @@ class RuntimeMcpService:
                             arguments.get("architecture_decision", False)
                         ),
                     )
-                return self.context_runtime.wrap_read(
+                return self._runtime.operator.wrap_read(
                     record.to_public_dict(),
                     operation=name,
                     operation_id=operation_id,
                     case_id=record.case_id,
                 )
             if name == "session_outcome_summary":
-                return self.context_runtime.wrap_read(
+                return self._runtime.operator.wrap_read(
                     self.session_outcome_service.summary(),
                     operation=name,
                     operation_id=operation_id,
@@ -3991,7 +3313,7 @@ class RuntimeMcpService:
                     action=str(arguments.get("action", "")),
                     actor=str(arguments.get("actor", "")),
                 )
-                return self.context_runtime.wrap_read(
+                return self._runtime.operator.wrap_read(
                     record.to_public_dict(),
                     operation=name,
                     operation_id=operation_id,
@@ -4006,7 +3328,7 @@ class RuntimeMcpService:
                     target=str(arguments.get("target", "")),
                     payload=payload,
                 )
-                return self.context_runtime.wrap_read(
+                return self._runtime.operator.wrap_read(
                     value,
                     operation=name,
                     operation_id=operation_id,
@@ -4014,125 +3336,14 @@ class RuntimeMcpService:
                         "case://"
                     ),
                 )
-            if name == "case_close":
-                case_id = str(arguments.get("case_id", "")).strip()
-                value = self.context_runtime.close_case(
-                    case_id,
-                    expected_revision=int(arguments.get("expected_revision", -1)),
-                )
-                return self.context_runtime.wrap_read(
-                    value,
-                    operation=name,
-                    operation_id=operation_id,
-                    case_id=case_id,
-                )
-            if name == "case_forget":
-                case_id = str(arguments.get("case_id", "")).strip()
-                value = self.context_runtime.forget_case(case_id)
-                return self.context_runtime.wrap_read(
-                    value,
-                    operation=name,
-                    operation_id=operation_id,
-                    case_id="",
-                )
-            if name == "phase_record":
-                return self.context_runtime.phase_record(
-                    descriptor,
-                    arguments,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-            if name == "workflow.advance":
-                return self.context_runtime.workflow_advance(
-                    descriptor,
-                    arguments,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                    domain_invoker=lambda operation, domain_arguments, derived_id: (
-                        self.call_tool(
-                            operation,
-                            domain_arguments,
-                            task_id=task_id,
-                            operation_id=derived_id,
-                            _context_workflow_step=True,
-                        )
-                    ),
-                )
-            if name == "workflow.next":
-                return self.context_runtime.workflow_next(
-                    descriptor,
-                    arguments,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                    domain_invoker=lambda operation, domain_arguments, derived_id: (
-                        self.call_tool(
-                            operation,
-                            domain_arguments,
-                            task_id=task_id,
-                            operation_id=derived_id,
-                            _context_workflow_step=True,
-                        )
-                    ),
-                )
             raise RuntimeError(f"context operation is not implemented: {name}")
-        context_arguments = arguments
-        domain_arguments = {
-            key: value
-            for key, value in arguments.items()
-            if key not in {"case_id", "expected_revision", "idempotency_key"}
-            and not key.startswith("_workflow_")
-            and key != "_context_defaults_inferred"
-        }
-        if self.context_mode == "authoritative" and not external_context_marker:
-            domain_arguments.pop(_WORKFLOW_ARGUMENT, None)
-            if isinstance(self.backend, OrchestratedMcpBackend):
-                domain_arguments["_context_authoritative"] = True
-        if descriptor.mutation or name == "debug_collect":
-            minimum_target_epoch = self.context_runtime.minimum_target_epoch(
-                task_id,
-                arguments,
-            )
-            domain_arguments.setdefault(
-                "_minimum_target_epoch",
-                minimum_target_epoch,
-            )
-            if name == "debug_collect" and minimum_target_epoch > 0:
-                context_arguments = dict(arguments)
-                context_arguments.setdefault(
-                    "_minimum_target_epoch",
-                    minimum_target_epoch,
-                )
-        executor = lambda: self._execute_domain_value(
+        return self._runtime.transport.invoke_domain(
             name,
-            descriptor,
-            domain_arguments,
+            arguments,
             task_id=task_id,
             operation_id=operation_id,
-        )
-        if self.context_mode == "shadow":
-            legacy_value = executor()
-            if not isinstance(legacy_value, Mapping):
-                raise TypeError("domain operation must return an object")
-            return self.context_runtime.shadow_domain(
-                descriptor,
-                context_arguments,
-                task_id=task_id,
-                operation_id=operation_id,
-                value=legacy_value,
-            )
-        if external_context_marker and isinstance(
-            self.backend, OrchestratedMcpBackend
-        ):
-            legacy_value = executor()
-            if not isinstance(legacy_value, Mapping):
-                raise TypeError("domain operation must return an object")
-            return dict(legacy_value)
-        return self.context_runtime.invoke_domain(
-            descriptor,
-            context_arguments,
-            task_id=task_id,
-            operation_id=operation_id,
-            executor=executor,
+            context_mode=self.context_mode,
+            external_context_marker=external_context_marker,
         )
 
     def cancel_operation(self, task_id: str, operation_id: str) -> bool:
@@ -4140,7 +3351,7 @@ class RuntimeMcpService:
 
     def complete_task(self, task_id: str) -> bool:
         completed = self.registry.complete(task_id)
-        self.context_runtime.repository.unbind_task(task_id)
+        self._runtime.operator.unbind_task(task_id)
         return completed
 
     def error_result(
@@ -4153,8 +3364,8 @@ class RuntimeMcpService:
         operation_id: str,
     ) -> Mapping[str, object]:
         if name in {"observe", "execute"}:
-            return self.agent_gateway.error(name, exc)
-        return self.context_runtime.error_result(
+            return self._runtime.agent.error(name, exc)
+        return self._runtime.operator.error_result(
             exc,
             operation=name,
             arguments=arguments,
@@ -4163,7 +3374,7 @@ class RuntimeMcpService:
         )
 
     def close(self) -> None:
-        self.effect_runner.close()
+        self._runtime.lifecycle.close()
         self.registry.close()
 
 

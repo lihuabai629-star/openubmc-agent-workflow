@@ -251,8 +251,8 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
     def test_legacy_domain_invocation_requires_an_observed_target_epoch(self) -> None:
         service = RuntimeMcpService(FullFakeBackend())
         try:
-            result = service.context_runtime.invoke_domain(
-                service.catalog.require("debug_collect"),
+            result = service._test.context_runtime.invoke_domain(
+                service._test.catalog.require("debug_collect"),
                 {
                     "ip": "192.0.2.70",
                     "_minimum_target_epoch": 4,
@@ -278,8 +278,8 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
     def test_legacy_domain_invocation_uses_the_selected_targets_epoch(self) -> None:
         service = RuntimeMcpService(FullFakeBackend())
         try:
-            result = service.context_runtime.invoke_domain(
-                service.catalog.require("debug_collect"),
+            result = service._test.context_runtime.invoke_domain(
+                service._test.catalog.require("debug_collect"),
                 {
                     "ip": "192.0.2.71",
                     "target_id": "candidate",
@@ -318,8 +318,8 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
     def test_legacy_domain_invocation_rejects_a_foreign_observed_epoch(self) -> None:
         service = RuntimeMcpService(FullFakeBackend())
         try:
-            result = service.context_runtime.invoke_domain(
-                service.catalog.require("debug_collect"),
+            result = service._test.context_runtime.invoke_domain(
+                service._test.catalog.require("debug_collect"),
                 {
                     "ip": "192.0.2.72",
                     "target_id": "candidate",
@@ -354,8 +354,8 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 operation_id="typed-foreign-target-epoch-open",
             )
             run_id = opened.envelope["case_id"]
-            projection = service.context_runtime.read_case(run_id)
-            service.context_runtime.repository.commit(
+            projection = service._test.context_runtime.read_case(run_id)
+            service._test.context_runtime.repository.commit(
                 run_id,
                 expected_revision=int(projection["revision"]),
                 events=(
@@ -372,7 +372,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                     PendingCaseEvent("OperationStarted", {}, effect_id),
                 ),
             )
-            events = service.context_runtime.prepare_effect_transition(
+            events = service._test.context_runtime.prepare_effect_transition(
                 EffectIntent(
                     run_id=run_id,
                     effect_id=effect_id,
@@ -418,8 +418,8 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 operation_id="typed-terminal-mutation-open",
             )
             run_id = opened.envelope["case_id"]
-            projection = service.context_runtime.read_case(run_id)
-            service.context_runtime.repository.commit(
+            projection = service._test.context_runtime.read_case(run_id)
+            service._test.context_runtime.repository.commit(
                 run_id,
                 expected_revision=int(projection["revision"]),
                 events=(
@@ -436,7 +436,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                     PendingCaseEvent("OperationStarted", {}, effect_id),
                 ),
             )
-            events = service.context_runtime.prepare_effect_transition(
+            events = service._test.context_runtime.prepare_effect_transition(
                 EffectIntent(
                     run_id=run_id,
                     effect_id=effect_id,
@@ -477,8 +477,8 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 operation_id="typed-read-only-open",
             )
             run_id = opened.envelope["case_id"]
-            projection = service.context_runtime.read_case(run_id)
-            service.context_runtime.repository.commit(
+            projection = service._test.context_runtime.read_case(run_id)
+            service._test.context_runtime.repository.commit(
                 run_id,
                 expected_revision=int(projection["revision"]),
                 events=(
@@ -495,7 +495,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                     PendingCaseEvent("OperationStarted", {}, effect_id),
                 ),
             )
-            events = service.context_runtime.prepare_effect_transition(
+            events = service._test.context_runtime.prepare_effect_transition(
                 EffectIntent(
                     run_id=run_id,
                     effect_id=effect_id,
@@ -622,7 +622,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 task_id="shadow-task",
                 operation_id="shadow-one",
             )
-            status = service.context_runtime.status()
+            status = service._test.context_runtime.status()
         finally:
             service.close()
         self.assertTrue(result["ok"])
@@ -1456,7 +1456,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 task_id="waiting-task",
                 operation_id="advance-waiting",
             )
-            service.context_runtime.maintain()
+            service._test.context_runtime.maintain()
         finally:
             service.close()
         self.assertEqual(waiting["status"], "waiting_phase_record")
@@ -1465,7 +1465,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
     def test_projection_cache_is_bounded_and_rebuilds(self) -> None:
         backend = FullFakeBackend()
         service = RuntimeMcpService(backend)
-        service.context_runtime.max_cached_projections = 2
+        service._test.context_runtime.max_cached_projections = 2
         try:
             case_ids = []
             for index in range(5):
@@ -1476,7 +1476,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                     operation_id=f"op-{index}",
                 )
                 case_ids.append(result.envelope["case_id"])
-            status = service.context_runtime.status()
+            status = service._test.context_runtime.status()
             self.assertLessEqual(status["projection_cache_count"], 2)
             service.call_tool(
                 "case_read",
@@ -1485,7 +1485,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 operation_id="read-old",
             )
             self.assertGreater(
-                service.context_runtime.status()["metrics"]["projection_rebuilds"],
+                service._test.context_runtime.status()["metrics"]["projection_rebuilds"],
                 0,
             )
         finally:
@@ -1546,7 +1546,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
             blob_repository=blobs,
             context_retention_seconds=5,
         )
-        service.context_runtime.clock = lambda: now[0]
+        service._test.context_runtime.clock = lambda: now[0]
         try:
             first = service.call_tool(
                 "debug_run",
@@ -1560,7 +1560,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 operation_id="old-debug",
             )
             first_ref = first.envelope["evidence_refs"][0]
-            size_after_one = service.context_runtime.status()["storage_bytes"]
+            size_after_one = service._test.context_runtime.status()["storage_bytes"]
             now[0] = 2.0
             second = service.call_tool(
                 "debug_run",
@@ -1576,8 +1576,8 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
             second_ref = second.envelope["evidence_refs"][0]
             self.assertEqual(first_ref["blob_id"], second_ref["blob_id"])
             self.assertNotEqual(first_ref["evidence_id"], second_ref["evidence_id"])
-            size_after_two = service.context_runtime.status()["storage_bytes"]
-            service.context_runtime.storage_soft_limit_bytes = (
+            size_after_two = service._test.context_runtime.status()["storage_bytes"]
+            service._test.context_runtime.storage_soft_limit_bytes = (
                 size_after_one + size_after_two
             ) // 2
             now[0] = 3.0
@@ -1596,10 +1596,10 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 operation_id="touch-old-again",
             )
             self.assertGreater(
-                service.context_runtime.status()["metrics"]["capsule_cache_hits"],
+                service._test.context_runtime.status()["metrics"]["capsule_cache_hits"],
                 0,
             )
-            service.context_runtime.maintain()
+            service._test.context_runtime.maintain()
             self.assertIsNotNone(repository.load("case-old"))
             self.assertIsNone(repository.load("case-new"))
             self.assertEqual(
@@ -1607,8 +1607,8 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 blobs.read(second_ref["blob_id"], offset=0, limit=-1),
             )
             now[0] = 10.0
-            service.context_runtime.storage_soft_limit_bytes = 1024 * 1024
-            service.context_runtime.maintain()
+            service._test.context_runtime.storage_soft_limit_bytes = 1024 * 1024
+            service._test.context_runtime.maintain()
             self.assertIsNone(repository.load("case-old"))
             self.assertGreater(first_capsule_revision, 0)
         finally:

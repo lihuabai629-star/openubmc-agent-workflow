@@ -1453,9 +1453,9 @@ class WorkflowRegressionTests(unittest.TestCase):
                 context_repository=second,
                 context_retention_seconds=1,
             )
-            service.context_runtime.clock = lambda: 10.0
+            service._test.context_runtime.clock = lambda: 10.0
             try:
-                service.context_runtime.maintain()
+                service._test.context_runtime.maintain()
             finally:
                 service.close()
 
