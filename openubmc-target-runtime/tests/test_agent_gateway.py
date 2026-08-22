@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import io
 import json
@@ -444,6 +445,42 @@ class RunningUpgradeSemanticBackend(SemanticBackend):
         }
 
 
+class BlockingUnknownRecoveryUpgradeBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.recovery_started = threading.Event()
+        self.release_recovery = threading.Event()
+        self.apply_calls = 0
+        self.recovery_calls = 0
+        self.operation_ids: list[str] = []
+
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.operation_ids.append(str(context.operation_id))
+        if arguments.get("_runtime_effect_recovery") == "reconcile":
+            self.recovery_calls += 1
+            self.recovery_started.set()
+            self.release_recovery.wait(timeout=2)
+            return {
+                "ok": True,
+                "summary": "upgrade reconciled and verified",
+                "target_epoch": 1,
+                "verification": {
+                    "installed_version": str(
+                        arguments.get("product_version", "")
+                    ),
+                    "target_epoch": 1,
+                },
+                "journal": {
+                    "operation_id": context.operation_id,
+                    "stage": "verified",
+                    "action": "upgrade",
+                },
+            }
+        self.apply_calls += 1
+        raise OSError("upgrade result was lost after target execution started")
+
+
 class BlockingLivePatchSemanticBackend(SemanticBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -543,6 +580,29 @@ class MissingJournalRecoveryBackend(SemanticBackend):
             raise OSError("no durable mutation journal")
         self.apply_calls += 1
         return super().live_patch_run(task, arguments, context)
+
+
+class FailThenBlockRecoveryLivePatchBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.apply_calls = 0
+        self.recovery_calls = 0
+        self.recovery_started = threading.Event()
+        self.release_recovery = threading.Event()
+        self.operation_ids: list[str] = []
+
+    def live_patch_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.operation_ids.append(str(context.operation_id))
+        if arguments.get("_runtime_effect_recovery") == "reconcile":
+            self.recovery_calls += 1
+            if self.recovery_calls == 1:
+                raise OSError("recovery inspection was temporarily unavailable")
+            self.recovery_started.set()
+            self.release_recovery.wait(timeout=2)
+            return super().live_patch_run(task, arguments, context)
+        self.apply_calls += 1
+        raise OSError("live patch result was lost after target execution started")
 
 
 class RecoveryBoundaryConflictOnceStore:
@@ -755,7 +815,6 @@ class OversizedGateTurnRuntime:
 
 class PersistentUnknownRunDriver:
     def __init__(self, repository=None) -> None:
-        self.reconcile_calls = 0
         self.repository = repository
 
     def _snapshot(self) -> dict[str, object]:
@@ -795,11 +854,6 @@ class PersistentUnknownRunDriver:
     def domain_artifact_metadata(_phase_type: str) -> dict[str, object]:
         return {}
 
-    def reconcile_run(self, _run_id: str, *, task_id: str, operation_id: str):
-        del task_id, operation_id
-        self.reconcile_calls += 1
-        return None
-
     @staticmethod
     def derive_closeout(_run_id: str, *, terminal_status: str):
         del terminal_status
@@ -822,6 +876,21 @@ class AgentGatewayTests(unittest.TestCase):
             self.service.close()
         finally:
             self.artifact_directory.cleanup()
+
+    def assert_bounded_running_turn(
+        self,
+        call: Callable[[], dict[str, object]],
+        *,
+        started: threading.Event,
+        maximum_elapsed: float = 0.5,
+    ) -> dict[str, object]:
+        started_at = time.monotonic()
+        turn = call()
+        elapsed = time.monotonic() - started_at
+        self.assertTrue(started.wait(timeout=maximum_elapsed))
+        self.assertLess(elapsed, maximum_elapsed)
+        self.assertEqual(turn["state"], "running")
+        return turn
 
     def test_agent_gateway_owns_bounded_run_fact_projection(self) -> None:
         projection = {
@@ -1856,7 +1925,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(first["gate"], waiting["gate"])
         self.assertEqual(replayed["gate"], first["gate"])
 
-    def test_reconcile_persists_and_replays_the_incident_decision(self) -> None:
+    def test_reconcile_command_replays_without_repeating_the_effect(self) -> None:
         class FailOnceLivePatchSemanticBackend(SemanticBackend):
             def __init__(self) -> None:
                 super().__init__()
@@ -1933,22 +2002,9 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="atomic-reconcile-replay",
                 operation_id="atomic-reconcile-command",
             )
-            projection = service.context_runtime.read_case(waiting["run_id"])
         finally:
             service.close()
 
-        decisions = [
-            item
-            for item in projection["run_decisions"]
-            if item.get("command_id") == "atomic-reconcile-command"
-        ]
-        self.assertEqual(len(decisions), 1)
-        self.assertEqual(decisions[0]["turn"]["state"], "running")
-        self.assertEqual(
-            decisions[0]["effect_intent"]["operation"],
-            "debug_collect",
-        )
-        self.assertEqual(projection["current_turn"]["state"], "completed")
         self.assertEqual(reconciled["state"], "completed")
         self.assertEqual(replayed["outcome"], reconciled["outcome"])
         self.assertEqual(
@@ -3884,7 +3940,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
 
-    def test_automatic_reconcile_attempts_an_unknown_mutation_only_once(self) -> None:
+    def test_unknown_mutation_without_a_durable_effect_stays_incident(self) -> None:
         repository = InMemoryRuntimeRepository()
         transactions = BufferedRuntimeRepository(repository)
         driver = PersistentUnknownRunDriver(transactions)
@@ -3906,7 +3962,6 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="persistent-unknown-resume-again",
         )
 
-        self.assertEqual(driver.reconcile_calls, 1)
         self.assertEqual(turn.state, "incident")
         self.assertIsNotNone(turn.incident)
         self.assertEqual(turn.incident.code, "mutation_outcome_unknown")
@@ -4006,6 +4061,93 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIsNone(final["incident"])
         self.assertTrue(final["outcome_recorded"])
         self.assertEqual(backend.upgrade_attempts, 2)
+
+    def test_automatic_reconcile_returns_running_at_the_caller_deadline(self) -> None:
+        backend = BlockingUnknownRecoveryUpgradeBackend()
+        service = RuntimeMcpService(backend)
+        product = self.artifact_root / "bounded-reconcile-product.hpm"
+        product.write_bytes(b"firmware-2.1.0")
+        try:
+            developer_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.80",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                },
+                task_id="bounded-reconcile",
+                operation_id="bounded-reconcile-start",
+            )
+            build_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(developer_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "bounded-reconcile-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["build and verify"],
+                        },
+                    },
+                },
+                task_id="bounded-reconcile",
+                operation_id="bounded-reconcile-source",
+            )
+            self.assert_bounded_running_turn(
+                lambda: service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer_gate["run_id"],
+                        **gate_binding(build_gate),
+                        "response": {
+                            "status": "completed",
+                            "summary": "firmware artifact completed",
+                            "payload": {
+                                "source_revision": "bounded-reconcile-source",
+                                "artifact_ref": artifact_ref(
+                                    product,
+                                    kind="openubmc-hpm",
+                                    target="192.0.2.80",
+                                    run_id=developer_gate["run_id"],
+                                    version="2.1.0",
+                                ),
+                            },
+                        },
+                        "deadline": 0.05,
+                    },
+                    task_id="bounded-reconcile",
+                    operation_id="bounded-reconcile-build",
+                ),
+                started=backend.recovery_started,
+            )
+            self.assertEqual(backend.apply_calls, 1)
+            self.assertEqual(backend.recovery_calls, 1)
+            self.assertEqual(len(set(backend.operation_ids)), 1)
+
+            backend.release_recovery.set()
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": developer_gate["run_id"],
+                    "deadline": 1,
+                },
+                task_id="bounded-reconcile-final",
+                operation_id="bounded-reconcile-final",
+            )
+            self.assertEqual(final["state"], "completed")
+            self.assertEqual(backend.apply_calls, 1)
+            self.assertEqual(backend.recovery_calls, 1)
+            self.assertEqual(len(set(backend.operation_ids)), 1)
+        finally:
+            backend.release_recovery.set()
+            service.close()
 
     def test_short_running_effect_reattaches_without_a_model_polling_turn(self) -> None:
         backend = RunningUpgradeSemanticBackend()
@@ -4509,6 +4651,88 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(repeated["state"], "incident")
         self.assertEqual(backend.apply_calls, 0)
         self.assertEqual(backend.recovery_calls, 1)
+
+    def test_explicit_reconcile_returns_running_at_the_caller_deadline(self) -> None:
+        patch_file = self.artifact_root / "explicit-reconcile.lua"
+        patch_file.write_bytes(b"return 'explicit-reconcile'\n")
+        backend = FailThenBlockRecoveryLivePatchBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.81",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="explicit-reconcile",
+                operation_id="explicit-reconcile-start",
+            )
+            incident = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "mutation is ready",
+                        "payload": {
+                            "source_revision": "explicit-reconcile-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.81",
+                                run_id=waiting["run_id"],
+                            ),
+                            "remote_path": "/tmp/explicit-reconcile.lua",
+                            "restart_scope": "none",
+                        },
+                    },
+                    "deadline": 1,
+                },
+                task_id="explicit-reconcile",
+                operation_id="explicit-reconcile-submit",
+            )
+            self.assertEqual(incident["state"], "incident")
+
+            self.assert_bounded_running_turn(
+                lambda: service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "control",
+                        "command": "reconcile",
+                        "run_id": waiting["run_id"],
+                        "deadline": 0.05,
+                    },
+                    task_id="explicit-reconcile-control",
+                    operation_id="explicit-reconcile-control",
+                ),
+                started=backend.recovery_started,
+            )
+
+            backend.release_recovery.set()
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "resume",
+                    "run_id": waiting["run_id"],
+                    "deadline": 1,
+                },
+                task_id="explicit-reconcile-final",
+                operation_id="explicit-reconcile-final",
+            )
+        finally:
+            backend.release_recovery.set()
+            service.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(backend.apply_calls, 1)
+        self.assertEqual(backend.recovery_calls, 2)
+        self.assertEqual(len(set(backend.operation_ids)), 1)
 
     def test_recovery_boundary_converges_after_a_concurrent_run_revision(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

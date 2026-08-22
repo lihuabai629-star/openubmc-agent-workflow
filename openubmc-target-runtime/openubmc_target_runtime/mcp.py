@@ -2341,61 +2341,6 @@ class _RuntimeSemanticAdapter:
             )
         )
 
-    def reconcile_run(
-        self,
-        run_id: str,
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> RunTransition:
-        projection = self.service.context_runtime.read_case(run_id)
-        unknown = next(
-            (
-                item
-                for item in reversed(list(projection.get("operations", [])))
-                if isinstance(item, Mapping)
-                and item.get("status")
-                in {"mutation_outcome_unknown", "blocked"}
-                and str(item.get("operation", "")) in self.service.catalog.names()
-                and self.service.catalog.require(
-                    str(item.get("operation", ""))
-                ).mutation
-            ),
-            None,
-        )
-        if not isinstance(unknown, Mapping):
-            raise ValueError("run has no unknown mutation to reconcile")
-        blocked_operation = str(unknown.get("operation", ""))
-        blocked_operation_id = str(unknown.get("operation_id", ""))
-        if not blocked_operation_id:
-            raise ValueError("unknown mutation is missing its durable operation id")
-        raw_intent = next(
-            (
-                item
-                for item in reversed(list(projection.get("effect_intents", [])))
-                if isinstance(item, Mapping)
-                and str(item.get("effect_id", "")) == blocked_operation_id
-            ),
-            None,
-        )
-        if not isinstance(raw_intent, Mapping):
-            raise ValueError("unknown mutation is missing its durable Effect intent")
-        intent = EffectIntent.from_mapping(raw_intent)
-        if intent.operation != blocked_operation:
-            raise ValueError("unknown mutation Effect intent has the wrong operation")
-        try:
-            result = self.service.execute_domain_effect(intent, recovery=True)
-            error: BaseException | None = None
-        except Exception as exc:
-            result = None
-            error = exc
-        return self.effect_transition(
-            intent,
-            result=result,
-            error=error,
-            settlement_mode=EffectSettlementMode.RECONCILE,
-        )
-
 def _mapping_or_empty(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 

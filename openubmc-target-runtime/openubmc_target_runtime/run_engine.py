@@ -58,6 +58,9 @@ from .workflow import DEFAULT_PHASE_REGISTRY, DEFAULT_WORKFLOW_DEFINITIONS
 
 
 WORKFLOW_INTERNAL_MAX_STEPS = 64
+EFFECT_SETTLEMENT_STATUSES = frozenset(
+    {"accepted", "running", "blocked", "mutation_outcome_unknown"}
+)
 _CAPABILITY_KEYS = {
     "ssh": "ssh_transport",
     "telnet": "remote_log_file",
@@ -298,15 +301,6 @@ class RunDriver(Protocol):
         error: BaseException | None,
         settlement_mode: EffectSettlementMode,
     ) -> "RunTransition": ...
-
-    def reconcile_run(
-        self,
-        run_id: str,
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> "RunTransition | None": ...
-
 
 @dataclass(frozen=True)
 class RunTransition:
@@ -1156,6 +1150,41 @@ class RunEngine:
             operation_id=operation_id,
         )
 
+    def _schedule_unknown_recovery(
+        self,
+        snapshot: Mapping[str, object],
+        *,
+        operation_id: str,
+    ) -> RunTurn:
+        projection = _projection(snapshot)
+        unknown = self._unknown_mutation(projection)
+        if unknown is None:
+            raise ValueError("run has no unknown mutation to reconcile")
+        effect_id = _text(unknown.get("operation_id"))
+        intent = self._effect_intent_for_operation(
+            projection,
+            effect_id=effect_id,
+            operation=_text(unknown.get("operation")),
+        )
+        if intent is not None and self.effect_runner is not None:
+            self._stage((), effect_intent=intent.to_public_dict())
+            return self._turn(
+                snapshot,
+                state="running",
+                next_action="reconcile the same durable Effect identity",
+            )
+        snapshot = self._record_incident(
+            snapshot,
+            code="mutation_outcome_unknown",
+            message=(
+                "mutation outcome cannot be reconciled without its durable "
+                "Effect intent and local EffectRunner"
+            ),
+            effect_id=effect_id,
+            operation_id=f"{operation_id}-incident",
+        )
+        return self._turn(snapshot, state="incident")
+
     def _advance(
         self,
         snapshot: Mapping[str, object],
@@ -1163,9 +1192,7 @@ class RunEngine:
         task_id: str,
         operation_id: str,
         observation_ref: ObservationRef | None = None,
-        allow_auto_reconcile: bool = True,
     ) -> RunTurn:
-        auto_reconcile_attempted = False
         for _step_index in range(WORKFLOW_INTERNAL_MAX_STEPS):
             projection = _projection(snapshot)
             outcome = self._outcome(projection)
@@ -1185,54 +1212,23 @@ class RunEngine:
             current_incident = self._current_incident(projection)
             unknown = self._unknown_mutation(projection)
             if (
-                unknown is not None
-                and current_incident is None
-                and allow_auto_reconcile
-                and not auto_reconcile_attempted
+                unknown is None
+                and current_incident is not None
+                and current_incident.code == "mutation_outcome_unknown"
             ):
-                auto_reconcile_attempted = True
-                try:
-                    transition = self.driver.reconcile_run(
-                        self._run_id(snapshot),
-                        task_id=task_id,
-                        operation_id=f"{operation_id}-auto-reconcile",
-                    )
-                    if transition is not None:
-                        self._stage(transition.events)
-                    snapshot = self.driver.run_snapshot(self._run_id(snapshot))
-                except Exception as exc:
-                    snapshot = self.driver.run_snapshot(self._run_id(snapshot))
-                    unknown = self._unknown_mutation(_projection(snapshot))
-                    if unknown is not None:
-                        snapshot = self._record_incident(
-                            snapshot,
-                            code="mutation_outcome_unknown",
-                            message=f"{type(exc).__name__}: {exc}",
-                            effect_id=_text(unknown.get("operation_id")),
-                            operation_id=f"{operation_id}-incident",
-                        )
-                        return self._turn(snapshot, state="incident")
-                else:
-                    projection = _projection(snapshot)
-                    unknown = self._unknown_mutation(projection)
-                    current_incident = self._current_incident(projection)
-                    if unknown is None and current_incident is not None:
-                        snapshot = self._apply_transition(
-                            self._run_id(snapshot),
-                            RunTransitionKind.INCIDENT_RESOLVED,
-                            {"incident_id": current_incident.incident_id},
-                            operation_id=f"{operation_id}-incident-resolved",
-                        )
-                    if unknown is None:
-                        continue
-            if unknown is not None:
-                snapshot = self._record_incident(
-                    snapshot,
-                    code="mutation_outcome_unknown",
-                    message="mutation outcome remains unknown after automatic reconcile",
-                    effect_id=_text(unknown.get("operation_id")),
-                    operation_id=f"{operation_id}-incident",
+                snapshot = self._apply_transition(
+                    self._run_id(snapshot),
+                    RunTransitionKind.INCIDENT_RESOLVED,
+                    {"incident_id": current_incident.incident_id},
+                    operation_id=f"{operation_id}-incident-resolved",
                 )
+                continue
+            if unknown is not None and current_incident is None:
+                return self._schedule_unknown_recovery(
+                    snapshot,
+                    operation_id=f"{operation_id}-auto-reconcile",
+                )
+            if unknown is not None:
                 return self._turn(snapshot, state="incident")
             if current_incident is not None:
                 return self._turn(snapshot, state="incident")
@@ -1556,44 +1552,10 @@ class RunEngine:
                 operation_id=operation_id,
             )
         if isinstance(command, ReconcileRun):
-            try:
-                transition = self.driver.reconcile_run(
-                    command.run_id,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-                if transition is not None:
-                    self._stage(transition.events)
-                snapshot = self.driver.run_snapshot(command.run_id)
-            except Exception as exc:
-                snapshot = self.driver.run_snapshot(command.run_id)
-                unknown = self._unknown_mutation(_projection(snapshot))
-                if unknown is None:
-                    raise
-                snapshot = self._record_incident(
-                    snapshot,
-                    code="mutation_outcome_unknown",
-                    message=f"{type(exc).__name__}: {exc}",
-                    effect_id=_text(unknown.get("operation_id")),
-                    operation_id=f"{operation_id}-incident",
-                )
-                return self._turn(snapshot, state="incident")
-            current = self._current_incident(_projection(snapshot))
-            if (
-                current is not None
-                and self._unknown_mutation(_projection(snapshot)) is None
-            ):
-                snapshot = self._apply_transition(
-                    command.run_id,
-                    RunTransitionKind.INCIDENT_RESOLVED,
-                    {"incident_id": current.incident_id},
-                    operation_id=f"{operation_id}-incident-resolved",
-                )
-            return self._advance(
+            snapshot = self.driver.run_snapshot(command.run_id)
+            return self._schedule_unknown_recovery(
                 snapshot,
-                task_id=task_id,
                 operation_id=operation_id,
-                allow_auto_reconcile=False,
             )
         if isinstance(command, ResumeRun):
             return self._advance(
@@ -1604,6 +1566,32 @@ class RunEngine:
         raise TypeError(f"unsupported RunCommand: {type(command).__name__}")
 
     @staticmethod
+    def _effect_intent_for_operation(
+        projection: Mapping[str, object],
+        *,
+        effect_id: str,
+        operation: str,
+    ) -> EffectIntent | None:
+        intents = projection.get("effect_intents", [])
+        if not isinstance(intents, list):
+            return None
+        raw_intent = next(
+            (
+                item
+                for item in reversed(intents)
+                if isinstance(item, Mapping)
+                and _text(item.get("effect_id")) == effect_id
+                and _text(item.get("operation")) == operation
+            ),
+            None,
+        )
+        return (
+            EffectIntent.from_mapping(raw_intent)
+            if isinstance(raw_intent, Mapping)
+            else None
+        )
+
+    @staticmethod
     def _active_effect_intent(
         projection: Mapping[str, object],
     ) -> Mapping[str, object] | None:
@@ -1611,7 +1599,7 @@ class RunEngine:
             _text(item.get("operation_id"))
             for item in projection.get("operations", [])
             if isinstance(item, Mapping)
-            and _text(item.get("status")) in {"accepted", "running"}
+            and _text(item.get("status")) in EFFECT_SETTLEMENT_STATUSES
         }
         if not active_ids:
             return None
@@ -1685,8 +1673,20 @@ class RunEngine:
         if not isinstance(raw_intent, Mapping):
             return committed.turn
         intent = EffectIntent.from_mapping(raw_intent)
+        if (
+            committed.turn.state == "incident"
+            and not self.effect_runner.has_seen(intent)
+        ):
+            return committed.turn
+        unknown = self._unknown_mutation(projection)
+        recovery_required = (
+            isinstance(unknown, Mapping)
+            and _text(unknown.get("operation_id")) == intent.effect_id
+        )
         mode = (
-            EffectRunMode.DISPATCH
+            EffectRunMode.RECOVER
+            if recovery_required
+            else EffectRunMode.DISPATCH
             if isinstance(committed.effect_intent, Mapping)
             and _text(committed.effect_intent.get("effect_id")) == intent.effect_id
             and not committed.replayed
@@ -1694,19 +1694,7 @@ class RunEngine:
             if self.effect_runner.has_seen(intent)
             else EffectRunMode.RECOVER
         )
-        starts_recovery = (
-            mode is EffectRunMode.RECOVER
-            and intent.effect_class is not EffectClass.READ_ONLY
-        )
-        if starts_recovery:
-            starts_recovery = self._persist_effect_recovery_boundary(intent)
-            if not starts_recovery:
-                snapshot = self.driver.run_snapshot(intent.run_id)
-                return self._turn(
-                    snapshot,
-                    state="running",
-                    next_action="resume the Run after the settled Effect",
-                )
+        recovery_boundary_persisted = False
         reattach_attempt = 0
         while True:
             latest_snapshot = self.driver.run_snapshot(intent.run_id)
@@ -1740,6 +1728,27 @@ class RunEngine:
                     task_id=task_id,
                     operation_id=resume_operation_id,
                 )
+            latest_unknown = self._unknown_mutation(latest_projection)
+            if (
+                isinstance(latest_unknown, Mapping)
+                and _text(latest_unknown.get("operation_id")) == intent.effect_id
+            ):
+                mode = EffectRunMode.RECOVER
+            if (
+                mode is EffectRunMode.RECOVER
+                and intent.effect_class is not EffectClass.READ_ONLY
+                and not recovery_boundary_persisted
+            ):
+                recovery_boundary_persisted = (
+                    self._persist_effect_recovery_boundary(intent)
+                )
+                if not recovery_boundary_persisted:
+                    snapshot = self.driver.run_snapshot(intent.run_id)
+                    return self._turn(
+                        snapshot,
+                        state="running",
+                        next_action="resume the Run after the settled Effect",
+                    )
             settlement_generation = 0
             if intent.effect_class is EffectClass.READ_ONLY:
                 operation = next(
@@ -1768,6 +1777,14 @@ class RunEngine:
                 ):
                     return False
                 if intent.effect_class is not EffectClass.READ_ONLY:
+                    claimed_unknown = self._unknown_mutation(claimed_projection)
+                    if (
+                        mode is not EffectRunMode.RECOVER
+                        and isinstance(claimed_unknown, Mapping)
+                        and _text(claimed_unknown.get("operation_id"))
+                        == intent.effect_id
+                    ):
+                        return False
                     return True
                 claimed_operation = next(
                     (
@@ -1847,6 +1864,12 @@ class RunEngine:
                 retain_for_reattach=effect_remains_active,
             )
             if effect_remains_active:
+                if (
+                    isinstance(unknown, Mapping)
+                    and _text(unknown.get("operation_id")) == intent.effect_id
+                ):
+                    mode = EffectRunMode.RECOVER
+                    continue
                 mode = EffectRunMode.REATTACH
                 delay = min(1.0, 0.2 * (2 ** min(reattach_attempt, 3)))
                 reattach_attempt += 1
@@ -1996,11 +2019,7 @@ class RunEngine:
                 raise CommandConflict(
                     "persisted Effect identity is bound to another operation"
                 )
-            if _text(current.get("status")) not in {
-                "accepted",
-                "running",
-                "mutation_outcome_unknown",
-            }:
+            if _text(current.get("status")) not in EFFECT_SETTLEMENT_STATUSES:
                 return None
             return RunDecision(
                 run_id=intent.run_id,
