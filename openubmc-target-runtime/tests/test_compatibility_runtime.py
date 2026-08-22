@@ -26,7 +26,7 @@ class CompatibilityRuntimeAdapterTests(unittest.TestCase):
         self.service.close()
 
     def _start_run(self):
-        return self.service.compatibility_runtime.translate(
+        return self.service._test.compatibility_runtime.translate(
             "workflow.advance",
             {
                 "ip": "192.0.2.90",
@@ -51,7 +51,7 @@ class CompatibilityRuntimeAdapterTests(unittest.TestCase):
         assert started is not None
         contract = started["handoff_arguments"]["phase_record_contract"]
 
-        result = self.service.compatibility_runtime.translate(
+        result = self.service._test.compatibility_runtime.translate(
             "phase_record",
             {
                 key: contract[key]
@@ -87,7 +87,7 @@ class CompatibilityRuntimeAdapterTests(unittest.TestCase):
         started = self._start_run()
         assert started is not None
 
-        result = self.service.compatibility_runtime.translate(
+        result = self.service._test.compatibility_runtime.translate(
             "workflow.next",
             {"case_id": started["case_id"]},
             task_id="compatibility-module",

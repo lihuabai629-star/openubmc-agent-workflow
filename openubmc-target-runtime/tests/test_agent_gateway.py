@@ -916,7 +916,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id=scenario,
                 operation_id=f"{scenario}-start",
             )
-            transactions = service.context_runtime.repository
+            transactions = service._test.context_runtime.repository
             original_stage = transactions.stage
 
             def replace_after_persist(*args, **kwargs):
@@ -975,13 +975,13 @@ class AgentGatewayTests(unittest.TestCase):
             ],
             "phase_records": [],
         }
-        facts = self.service.agent_projector.run_facts(projection)
+        facts = self.service._test.projector.run_facts(projection)
         turn = RunTurn(
             run_id="run-fact-projection",
             state="running",
             facts=facts,
         )
-        projected = self.service.agent_projector.turn(turn)
+        projected = self.service._test.projector.turn(turn)
 
         self.assertEqual(len(projected["facts"]), 8)
         self.assertEqual(projected["facts"][0]["name"], "domain_2")
@@ -1023,7 +1023,7 @@ class AgentGatewayTests(unittest.TestCase):
             all(claim["receipt_id"] == receipt["receipt_id"] for claim in receipt["claims"])
         )
         self.assertIsNone(
-            self.service.context_runtime.repository.case_for_task("observe-task")
+            self.service._test.context_runtime.repository.case_for_task("observe-task")
         )
 
     def test_one_receipt_fits_four_capabilities_and_nine_exact_getprop_values(self) -> None:
@@ -1387,7 +1387,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="execute-task-replay",
             operation_id="execute-3",
         )
-        events = self.service.context_runtime.repository.events(first["run_id"])
+        events = self.service._test.context_runtime.repository.events(first["run_id"])
         self.assertEqual(replayed["outcome"], final["outcome"])
         self.assertEqual(
             [event["kind"] for event in events].count("RunOutcomeRecorded"), 1
@@ -1429,14 +1429,14 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="run-session-outcome-authority",
             operation_id="run-session-outcome-finish",
         )
-        before = self.service.context_runtime.repository.events(waiting["run_id"])
+        before = self.service._test.context_runtime.repository.events(waiting["run_id"])
         recorded = self.service.call_tool(
             "session_outcome_record",
             {"case_id": waiting["run_id"]},
             task_id="run-session-outcome-authority",
             operation_id="run-session-outcome-project",
         )
-        after = self.service.context_runtime.repository.events(waiting["run_id"])
+        after = self.service._test.context_runtime.repository.events(waiting["run_id"])
 
         self.assertEqual(recorded["case_id"], waiting["run_id"])
         self.assertEqual(recorded["outcome"], final["outcome"]["status"])
@@ -1574,7 +1574,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIsInstance(first, RunTurn)
         self.assertEqual(first.state, "completed")
         self.assertEqual(replayed.to_public_dict(), first.to_public_dict())
-        projection = self.service.context_runtime.read_case(waiting.run_id)
+        projection = self.service._test.context_runtime.read_case(waiting.run_id)
         self.assertEqual(
             sum(
                 item.get("command_id") == "typed-normalized-submission"
@@ -1663,7 +1663,7 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="native-source-phase-respond",
         )
 
-        events = self.service.context_runtime.repository.events(waiting["run_id"])
+        events = self.service._test.context_runtime.repository.events(waiting["run_id"])
         submission = next(
             event for event in events if event["kind"] == "RunGateSubmitted"
         )
@@ -1826,7 +1826,7 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="atomic-start-command",
         )
 
-        projection = self.service.context_runtime.read_case(waiting["run_id"])
+        projection = self.service._test.context_runtime.read_case(waiting["run_id"])
         decisions = [
             item
             for item in projection["run_decisions"]
@@ -1876,7 +1876,7 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="atomic-build-source",
         )
 
-        projection = self.service.context_runtime.read_case(developer_gate["run_id"])
+        projection = self.service._test.context_runtime.read_case(developer_gate["run_id"])
         decision = next(
             item
             for item in projection["run_decisions"]
@@ -1937,7 +1937,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="atomic-live-patch-replay",
             operation_id="atomic-live-patch-retry",
         )
-        projection = self.service.context_runtime.read_case(waiting["run_id"])
+        projection = self.service._test.context_runtime.read_case(waiting["run_id"])
         decisions = [
             item
             for item in projection["run_decisions"]
@@ -1983,7 +1983,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="atomic-resume-replay",
             operation_id="atomic-resume-command",
         )
-        projection = self.service.context_runtime.read_case(waiting["run_id"])
+        projection = self.service._test.context_runtime.read_case(waiting["run_id"])
         decisions = [
             item
             for item in projection["run_decisions"]
@@ -2101,8 +2101,8 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="start-command-second-task",
             operation_id="start-command-shared-id",
         )
-        projection = self.service.context_runtime.read_case(first["run_id"])
-        events = self.service.context_runtime.repository.events(first["run_id"])
+        projection = self.service._test.context_runtime.read_case(first["run_id"])
+        events = self.service._test.context_runtime.repository.events(first["run_id"])
 
         self.assertEqual(replay["run_id"], first["run_id"])
         self.assertEqual(replay["gate"], first["gate"])
@@ -2128,7 +2128,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="start-command-conflict",
             operation_id="start-command-conflict-id",
         )
-        before = self.service.context_runtime.read_case(first["run_id"])
+        before = self.service._test.context_runtime.read_case(first["run_id"])
 
         conflicting = dict(action)
         conflicting["target"] = "192.0.2.61"
@@ -2141,7 +2141,7 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="start-command-conflict-id",
             )
 
-        after = self.service.context_runtime.read_case(first["run_id"])
+        after = self.service._test.context_runtime.read_case(first["run_id"])
         self.assertEqual(after["revision"], before["revision"])
         self.assertEqual(after["targets"], before["targets"])
         self.assertEqual(after["final_purpose"], before["final_purpose"])
@@ -2187,7 +2187,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="start-command-sqlite-second",
                     operation_id="start-command-sqlite-id",
                 )
-                events = second_service.context_runtime.repository.events(
+                events = second_service._test.context_runtime.repository.events(
                     first["run_id"]
                 )
             finally:
@@ -2222,7 +2222,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="start-conflict-sqlite-first",
                     operation_id="start-conflict-sqlite-id",
                 )
-                before = first_service.context_runtime.read_case(first["run_id"])
+                before = first_service._test.context_runtime.read_case(first["run_id"])
             finally:
                 first_service.close()
 
@@ -2242,7 +2242,7 @@ class AgentGatewayTests(unittest.TestCase):
                         task_id="start-conflict-sqlite-second",
                         operation_id="start-conflict-sqlite-id",
                     )
-                after = second_service.context_runtime.read_case(first["run_id"])
+                after = second_service._test.context_runtime.read_case(first["run_id"])
             finally:
                 second_service.close()
 
@@ -2262,7 +2262,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="start-command-two-runs",
             operation_id="start-command-first-id",
         )
-        first_before = self.service.context_runtime.read_case(first["run_id"])
+        first_before = self.service._test.context_runtime.read_case(first["run_id"])
         second = self.service.call_exposed_tool(
             "execute",
             {
@@ -2274,7 +2274,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="start-command-two-runs",
             operation_id="start-command-second-id",
         )
-        first_after = self.service.context_runtime.read_case(first["run_id"])
+        first_after = self.service._test.context_runtime.read_case(first["run_id"])
 
         self.assertNotEqual(second["run_id"], first["run_id"])
         self.assertEqual(first_after["revision"], first_before["revision"])
@@ -2374,8 +2374,8 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="read-only-evidence-retry-replay",
                 operation_id="read-only-evidence-retry-start",
             )
-            events = service.context_runtime.repository.events(waiting["run_id"])
-            projection = service.context_runtime.read_case(waiting["run_id"])
+            events = service._test.context_runtime.repository.events(waiting["run_id"])
+            projection = service._test.context_runtime.read_case(waiting["run_id"])
         finally:
             service.close()
 
@@ -2468,7 +2468,7 @@ class AgentGatewayTests(unittest.TestCase):
             self.assertEqual(errors, [])
             self.assertEqual(len(turns), 2)
             run_id = turns[0]["run_id"]
-            events = service.context_runtime.repository.events(run_id)
+            events = service._test.context_runtime.repository.events(run_id)
         finally:
             backend.release.set()
             first.join(timeout=1)
@@ -2500,10 +2500,10 @@ class AgentGatewayTests(unittest.TestCase):
             backend,
             blob_repository=FailOnceBlobRepository(),
         )
-        engine = service.semantic_runtime.run_engine
+        engine = service._test.run_engine
         original_commit = engine._commit_effect_result  # noqa: SLF001
-        original_ensure = service.effect_runner.ensure
-        original_acknowledge = service.effect_runner.acknowledge
+        original_ensure = service._test.effect_runner.ensure
+        original_acknowledge = service._test.effect_runner.acknowledge
         scheduling_lock = threading.Lock()
         old_execution: list[object | None] = [None]
         old_waiters = [0]
@@ -2579,8 +2579,8 @@ class AgentGatewayTests(unittest.TestCase):
                 new_execution_acknowledged.set()
 
         engine._commit_effect_result = ordered_commit  # type: ignore[method-assign]
-        service.effect_runner.ensure = ordered_ensure  # type: ignore[method-assign]
-        service.effect_runner.acknowledge = (  # type: ignore[method-assign]
+        service._test.effect_runner.ensure = ordered_ensure  # type: ignore[method-assign]
+        service._test.effect_runner.acknowledge = (  # type: ignore[method-assign]
             ordered_acknowledge
         )
         action = {
@@ -2626,7 +2626,7 @@ class AgentGatewayTests(unittest.TestCase):
             self.assertFalse(second.is_alive())
             self.assertEqual(errors, [])
             self.assertEqual(len(turns), 2)
-            events = service.context_runtime.repository.events(turns[0]["run_id"])
+            events = service._test.context_runtime.repository.events(turns[0]["run_id"])
         finally:
             backend.first_release.set()
             backend.second_release.set()
@@ -2683,7 +2683,7 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="observation-ref-tampered",
             )
         self.assertIsNone(
-            self.service.context_runtime.repository.case_for_task(
+            self.service._test.context_runtime.repository.case_for_task(
                 "observation-ref-validation"
             )
         )
@@ -2713,7 +2713,7 @@ class AgentGatewayTests(unittest.TestCase):
                         operation_id=f"{task_id}-start",
                     )
                 self.assertIsNone(
-                    self.service.context_runtime.repository.case_for_task(task_id)
+                    self.service._test.context_runtime.repository.case_for_task(task_id)
                 )
 
         with self.assertRaisesRegex(ValueError, "target does not match"):
@@ -2730,7 +2730,7 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="observation-ref-wrong-target",
             )
         self.assertIsNone(
-            self.service.context_runtime.repository.case_for_task(
+            self.service._test.context_runtime.repository.case_for_task(
                 "observation-ref-validation"
             )
         )
@@ -2747,8 +2747,8 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="observation-expiry-observe",
             operation_id="observation-expiry-observe-1",
         )
-        observed_clock = self.service.context_runtime.clock()
-        self.service.context_runtime.clock = lambda: observed_clock + 16 * 60
+        observed_clock = self.service._test.context_runtime.clock()
+        self.service._test.context_runtime.clock = lambda: observed_clock + 16 * 60
 
         with self.assertRaisesRegex(ValueError, "older than"):
             self.service.call_exposed_tool(
@@ -2764,7 +2764,7 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="observation-expiry-run-1",
             )
         self.assertIsNone(
-            self.service.context_runtime.repository.case_for_task(
+            self.service._test.context_runtime.repository.case_for_task(
                 "observation-expiry-run"
             )
         )
@@ -2880,7 +2880,7 @@ class AgentGatewayTests(unittest.TestCase):
                         task_id="gate-restart-resumed",
                         operation_id="gate-restart-conflict",
                     )
-                projection = second.context_runtime.read_case(waiting["run_id"])
+                projection = second._test.context_runtime.read_case(waiting["run_id"])
             finally:
                 second.close()
 
@@ -2984,7 +2984,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="gate-race-window",
                 operation_id="gate-race-window-response",
             )
-            events = service.context_runtime.repository.events(waiting["run_id"])
+            events = service._test.context_runtime.repository.events(waiting["run_id"])
         finally:
             service.close()
 
@@ -3463,7 +3463,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="artifact-dispatch-boundary",
                 operation_id="artifact-dispatch-boundary-start",
             )
-            transactions = service.context_runtime.repository
+            transactions = service._test.context_runtime.repository
             original = transactions.stage
 
             def replace_after_persist(*args, **kwargs):
@@ -3503,7 +3503,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="artifact-dispatch-boundary",
                     operation_id="artifact-dispatch-boundary-response",
                 )
-            projection = service.context_runtime.read_case(waiting["run_id"])
+            projection = service._test.context_runtime.read_case(waiting["run_id"])
         finally:
             service.close()
 
@@ -3548,7 +3548,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="cancel-incident",
                     operation_id="cancel-incident-wrong-binding",
                 )
-            still_blocked = service.context_runtime.read_case(blocked["run_id"])
+            still_blocked = service._test.context_runtime.read_case(blocked["run_id"])
 
             cancellation = {
                 "kind": "control",
@@ -3568,8 +3568,8 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="cancel-incident-replay",
                 operation_id="cancel-incident-retry-after-disconnect",
             )
-            projection = service.context_runtime.read_case(blocked["run_id"])
-            events = service.context_runtime.repository.events(blocked["run_id"])
+            projection = service._test.context_runtime.read_case(blocked["run_id"])
+            events = service._test.context_runtime.repository.events(blocked["run_id"])
         finally:
             service.close()
 
@@ -3612,7 +3612,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="resume-artifact-incident",
                 operation_id="resume-artifact-incident-resume",
             )
-            projection = service.context_runtime.read_case(blocked["run_id"])
+            projection = service._test.context_runtime.read_case(blocked["run_id"])
         finally:
             service.close()
 
@@ -3642,7 +3642,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="resume-domain-incident",
                 operation_id="resume-domain-incident-start",
             )
-            driver = service.semantic_runtime.run_engine.driver
+            driver = service._test.run_engine.driver
             original_prepare = driver.prepare_step
             prepared_operations: list[str] = []
 
@@ -3690,7 +3690,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="resume-domain-incident",
                     operation_id="resume-domain-incident-resume",
                 )
-            projection = service.context_runtime.read_case(waiting["run_id"])
+            projection = service._test.context_runtime.read_case(waiting["run_id"])
         finally:
             service.close()
 
@@ -3816,7 +3816,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIsNone(final["gate"])
         self.assertEqual(final["outcome"]["status"], "cancelled")
         self.assertTrue(final["outcome_recorded"])
-        events = self.service.context_runtime.repository.events(first["run_id"])
+        events = self.service._test.context_runtime.repository.events(first["run_id"])
         self.assertEqual(
             [event["kind"] for event in events].count("RunCancelled"), 1
         )
@@ -3902,7 +3902,7 @@ class AgentGatewayTests(unittest.TestCase):
         patch_file.write_bytes(b"return 'fixed'\n")
 
         with patch.object(
-            self.service.context_runtime,
+            self.service._test.context_runtime,
             "invoke_domain",
             side_effect=AssertionError(
                 "typed Effect execution must not let ContextRuntime write transitions"
@@ -3947,7 +3947,7 @@ class AgentGatewayTests(unittest.TestCase):
             live_patch_arguments["artifact_sha256"],
             hashlib.sha256(patch_file.read_bytes()).hexdigest(),
         )
-        projection = self.service.context_runtime.read_case(first["run_id"])
+        projection = self.service._test.context_runtime.read_case(first["run_id"])
         intent_arguments = next(
             intent["arguments"]
             for intent in projection["effect_intents"]
@@ -3960,7 +3960,7 @@ class AgentGatewayTests(unittest.TestCase):
         )
         effect_event_kinds = [
             event["kind"]
-            for event in self.service.context_runtime.repository.events(
+            for event in self.service._test.context_runtime.repository.events(
                 first["run_id"]
             )
             if event.get("operation_id") == effect_id
@@ -4022,7 +4022,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="incomplete-live-patch-acceptance",
                 operation_id="incomplete-live-patch-response",
             )
-            projection = service.context_runtime.read_case(waiting["run_id"])
+            projection = service._test.context_runtime.read_case(waiting["run_id"])
             replayed = service.call_exposed_tool(
                 "execute",
                 {
@@ -4032,7 +4032,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="incomplete-live-patch-acceptance-replay",
                 operation_id="incomplete-live-patch-outcome-replay",
             )
-            events = service.context_runtime.repository.events(waiting["run_id"])
+            events = service._test.context_runtime.repository.events(waiting["run_id"])
         finally:
             service.close()
 
@@ -4107,7 +4107,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="missing-fresh-epoch",
                     operation_id=f"missing-fresh-epoch-resume-{attempt}",
                 )
-            projection = service.context_runtime.read_case(waiting["run_id"])
+            projection = service._test.context_runtime.read_case(waiting["run_id"])
         finally:
             service.close()
 
@@ -4459,7 +4459,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="running-upgrade",
                 operation_id="running-upgrade-build",
             )
-            running_projection = service.context_runtime.read_case(
+            running_projection = service._test.context_runtime.read_case(
                 developer_gate["run_id"]
             )
         finally:
@@ -4495,7 +4495,7 @@ class AgentGatewayTests(unittest.TestCase):
             )
 
             def persisted(effect_id: str) -> bool:
-                for event in service.context_runtime.repository.events(
+                for event in service._test.context_runtime.repository.events(
                     waiting["run_id"]
                 ):
                     intent = event["payload"].get("effect_intent")
@@ -4597,9 +4597,9 @@ class AgentGatewayTests(unittest.TestCase):
                 blob_repository=FilesystemBlobRepository(blobs),
             )
             dormant = DormantEffectRunner()
-            first.effect_runner.close()
-            first.effect_runner = dormant
-            first.semantic_runtime.run_engine.effect_runner = dormant
+            first._test.effect_runner.close()
+            first._test.effect_runner = dormant
+            first._test.run_engine.effect_runner = dormant
             try:
                 running = first.call_exposed_tool(
                     "execute",
@@ -4618,7 +4618,7 @@ class AgentGatewayTests(unittest.TestCase):
 
             self.assertEqual(running["state"], "running")
             self.assertEqual(first_backend.calls, [])
-            persisted_effect_id = first.context_runtime.read_case(
+            persisted_effect_id = first._test.context_runtime.read_case(
                 running["run_id"]
             )["effect_intents"][-1]["effect_id"]
 
@@ -4639,7 +4639,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="read-restart-resume",
                     operation_id="read-restart-resume",
                 )
-                operations = second.context_runtime.read_case(
+                operations = second._test.context_runtime.read_case(
                     running["run_id"]
                 )["operations"]
             finally:
@@ -4745,10 +4745,10 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="mutation-restart",
                     operation_id="mutation-restart-start",
                 )
-                first.effect_runner.close()
+                first._test.effect_runner.close()
                 dormant = DormantEffectRunner()
-                first.effect_runner = dormant
-                first.semantic_runtime.run_engine.effect_runner = dormant
+                first._test.effect_runner = dormant
+                first._test.run_engine.effect_runner = dormant
                 running = first.call_exposed_tool(
                     "execute",
                     {
@@ -4780,7 +4780,7 @@ class AgentGatewayTests(unittest.TestCase):
             finally:
                 first.close()
 
-            persisted_effect_id = first.context_runtime.read_case(
+            persisted_effect_id = first._test.context_runtime.read_case(
                 running["run_id"]
             )["effect_intents"][-1]["effect_id"]
             backend = RecoveryAwareLivePatchBackend()
@@ -4832,10 +4832,10 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="missing-journal",
                     operation_id="missing-journal-start",
                 )
-                first.effect_runner.close()
+                first._test.effect_runner.close()
                 dormant = DormantEffectRunner()
-                first.effect_runner = dormant
-                first.semantic_runtime.run_engine.effect_runner = dormant
+                first._test.effect_runner = dormant
+                first._test.run_engine.effect_runner = dormant
                 running = first.call_exposed_tool(
                     "execute",
                     {
@@ -5008,10 +5008,10 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="recovery-race",
                     operation_id="recovery-race-start",
                 )
-                first.effect_runner.close()
+                first._test.effect_runner.close()
                 dormant = DormantEffectRunner()
-                first.effect_runner = dormant
-                first.semantic_runtime.run_engine.effect_runner = dormant
+                first._test.effect_runner = dormant
+                first._test.run_engine.effect_runner = dormant
                 running = first.call_exposed_tool(
                     "execute",
                     {
@@ -5043,7 +5043,7 @@ class AgentGatewayTests(unittest.TestCase):
             finally:
                 first.close()
 
-            persisted_effect_id = first.context_runtime.read_case(
+            persisted_effect_id = first._test.context_runtime.read_case(
                 running["run_id"]
             )["effect_intents"][-1]["effect_id"]
             backend = RecoveryAwareLivePatchBackend()
@@ -5053,9 +5053,9 @@ class AgentGatewayTests(unittest.TestCase):
                 blob_repository=FilesystemBlobRepository(blobs),
             )
             run_store = RecoveryBoundaryConflictOnceStore(
-                second.semantic_runtime.run_engine.run_store
+                second._test.run_engine.run_store
             )
-            second.semantic_runtime.run_engine.run_store = run_store
+            second._test.run_engine.run_store = run_store
             try:
                 final = second.call_exposed_tool(
                     "execute",
@@ -5067,7 +5067,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="recovery-race-resume",
                     operation_id="recovery-race-resume",
                 )
-                events = second.context_runtime.repository.events(
+                events = second._test.context_runtime.repository.events(
                     running["run_id"]
                 )
             finally:
@@ -5151,10 +5151,10 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="deferred-verification",
                 operation_id="deferred-verification-source",
             )
-            projection = service.context_runtime.read_case(developer_gate["run_id"])
+            projection = service._test.context_runtime.read_case(developer_gate["run_id"])
             deferred_events = [
                 event
-                for event in service.context_runtime.repository.events(
+                for event in service._test.context_runtime.repository.events(
                     developer_gate["run_id"]
                 )
                 if event["kind"] == "RunVerificationDeferred"
@@ -5698,7 +5698,7 @@ class AgentGatewayTests(unittest.TestCase):
                 "phase_record",
                 {
                     "case_id": waiting.run_id,
-                    "expected_revision": compatibility.context_runtime.read_case(
+                    "expected_revision": compatibility._test.context_runtime.read_case(
                         waiting.run_id
                     )["revision"],
                     "idempotency_key": "compatibility-native-phase",
@@ -5725,7 +5725,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="compatibility-native-status",
                 operation_id="compatibility-native-status",
             )
-            events = compatibility.context_runtime.repository.events(waiting.run_id)
+            events = compatibility._test.context_runtime.repository.events(waiting.run_id)
         finally:
             compatibility.close()
 
@@ -5765,7 +5765,7 @@ class AgentGatewayTests(unittest.TestCase):
             "phase_record",
             {
                 "case_id": run_id,
-                "expected_revision": self.service.context_runtime.read_case(
+                "expected_revision": self.service._test.context_runtime.read_case(
                     run_id
                 )["revision"],
                 "idempotency_key": "legacy-phase-isolation-submission",
@@ -5781,8 +5781,8 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="legacy-phase-isolation-submission",
         )
 
-        events = self.service.context_runtime.repository.events(run_id)
-        projection = self.service.context_runtime.read_case(run_id)
+        events = self.service._test.context_runtime.repository.events(run_id)
+        projection = self.service._test.context_runtime.read_case(run_id)
         self.assertFalse(any(event["kind"] == "RunGateSubmitted" for event in events))
         self.assertTrue(
             any(
@@ -5818,7 +5818,7 @@ class AgentGatewayTests(unittest.TestCase):
                 "phase_record",
                 {
                     "case_id": waiting.run_id,
-                    "expected_revision": self.service.context_runtime.read_case(
+                    "expected_revision": self.service._test.context_runtime.read_case(
                         waiting.run_id
                     )["revision"],
                     "idempotency_key": "native-phase-authority-submission",
@@ -5855,7 +5855,7 @@ class AgentGatewayTests(unittest.TestCase):
                 "phase_record",
                 {
                     "case_id": run_id,
-                    "expected_revision": compatibility.context_runtime.read_case(
+                    "expected_revision": compatibility._test.context_runtime.read_case(
                         run_id
                     )["revision"],
                     "idempotency_key": "compatibility-legacy-phase",
@@ -5876,7 +5876,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="compatibility-legacy",
                 operation_id="compatibility-legacy-next",
             )
-            events = compatibility.context_runtime.repository.events(run_id)
+            events = compatibility._test.context_runtime.repository.events(run_id)
         finally:
             compatibility.close()
 
@@ -5908,7 +5908,7 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="compatibility-advance-start",
             )
             run_id = waiting["run_id"]
-            events = compatibility.context_runtime.repository.events(run_id)
+            events = compatibility._test.context_runtime.repository.events(run_id)
         finally:
             compatibility.close()
 

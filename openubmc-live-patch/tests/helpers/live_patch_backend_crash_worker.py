@@ -384,7 +384,7 @@ def recover(root: Path, cut: str) -> None:
             task_id=f"backend-crash-{cut}-resume",
             operation_id=f"backend-crash-{cut}-resume",
         )
-        projection = runtime.context_runtime.read_case(run_id)
+        projection = runtime._test.context_runtime.read_case(run_id)
         journals = MutationJournalStore(root / "journals").load_for_task(run_id)
     finally:
         runtime.close()

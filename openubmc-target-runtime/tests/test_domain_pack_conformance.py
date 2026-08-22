@@ -646,7 +646,7 @@ class DomainPackConformanceTests(unittest.TestCase):
         try:
             packs = {
                 item["operation"]: item
-                for item in service.domain_executor.pack_descriptors()
+                for item in service._test.domain_executor.pack_descriptors()
             }
         finally:
             service.close()
@@ -720,7 +720,7 @@ class DomainPackConformanceTests(unittest.TestCase):
         )
         try:
             registered = {
-                item["operation"] for item in service.domain_executor.pack_descriptors()
+                item["operation"] for item in service._test.domain_executor.pack_descriptors()
             }
             completed = service.call_exposed_tool(
                 "execute",

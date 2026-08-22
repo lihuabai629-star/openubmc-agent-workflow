@@ -2184,8 +2184,8 @@ class SemanticRuntime(SemanticRuntimePort):
         observation_engine: ObservationEngine,
         run_engine: RunEngine,
     ) -> None:
-        self.observation_engine = observation_engine
-        self.run_engine = run_engine
+        self._observation_engine = observation_engine
+        self._run_engine = run_engine
 
     def observe(
         self,
@@ -2194,7 +2194,7 @@ class SemanticRuntime(SemanticRuntimePort):
         task_id: str,
         operation_id: str,
     ) -> ObservationResult:
-        return self.observation_engine.observe(
+        return self._observation_engine.observe(
             query,
             task_id=task_id,
             operation_id=operation_id,
@@ -2207,7 +2207,7 @@ class SemanticRuntime(SemanticRuntimePort):
         task_id: str,
         operation_id: str,
     ) -> RunTurn:
-        return self.run_engine.execute(
+        return self._run_engine.execute(
             command,
             task_id=task_id,
             operation_id=operation_id,

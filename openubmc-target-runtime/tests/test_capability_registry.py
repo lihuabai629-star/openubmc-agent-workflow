@@ -123,7 +123,7 @@ class CapabilityRegistryTests(unittest.TestCase):
         finally:
             service.close()
 
-        descriptor = service.capability_registry.require("debug_run")
+        descriptor = service._test.capability_registry.require("debug_run")
         self.assertEqual(descriptor.owner_skill, "openubmc-debug")
         self.assertEqual(descriptor.runtime_api_version, RUNTIME_API_VERSION)
         self.assertEqual(result["profile"], "mdb")

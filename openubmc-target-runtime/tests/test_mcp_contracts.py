@@ -171,7 +171,7 @@ class RuntimeMcpServiceTests(unittest.TestCase):
 
     def test_catalog_metadata_is_derived_from_one_operation_contract_registry(self) -> None:
         contracts = runtime_mcp._OPERATION_CONTRACTS
-        descriptors = self.service.catalog.descriptors()
+        descriptors = self.service._test.catalog.descriptors()
         descriptor_names = {descriptor.name for descriptor in descriptors}
         active_contracts = tuple(
             contract for contract in contracts if contract.name in descriptor_names
@@ -240,7 +240,7 @@ class RuntimeMcpServiceTests(unittest.TestCase):
 
     def test_catalog_is_the_source_for_listing_and_dispatch(self) -> None:
         self.assertEqual(
-            self.service.catalog.names(),
+            self.service._test.catalog.names(),
             (
                 "debug_run",
                 "debug_collect",
@@ -274,10 +274,10 @@ class RuntimeMcpServiceTests(unittest.TestCase):
             self.service.tool_definitions(),
             self.service.interface_catalog.tool_definitions(),
         )
-        debug = self.service.catalog.require("debug_run")
+        debug = self.service._test.catalog.require("debug_run")
         self.assertEqual(debug.handler_name, "debug_run")
         self.assertEqual(debug.lifecycle, "invoke")
-        status = self.service.catalog.require("runtime_status")
+        status = self.service._test.catalog.require("runtime_status")
         self.assertIsNone(status.handler_name)
         self.assertEqual(status.lifecycle, "status")
 

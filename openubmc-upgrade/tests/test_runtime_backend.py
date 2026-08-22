@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -18,11 +19,14 @@ sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-upgrade"))
 
 from openubmc_target_runtime import (  # noqa: E402
+    CancellationToken,
     FilesystemBlobRepository,
     OrchestratedMcpBackend,
     MutationAuthorizationDenied,
     MutationJournalStore,
     MutationOperationConflict,
+    OperationContext,
+    RUNTIME_EFFECT_RECOVERY_ARGUMENT,
     RuntimeMcpService,
     SQLiteRuntimeRepository,
     TaskAuthorizationPolicy,
@@ -42,6 +46,16 @@ from openubmc_upgrade.runtime_backend import (  # noqa: E402
 
 
 TEST_DEADLINE_SECONDS = 30
+
+
+def recovery_context(task_id: str, operation_id: str) -> OperationContext:
+    return OperationContext(
+        task_id=task_id,
+        operation_id=operation_id,
+        deadline_at=time.monotonic() + TEST_DEADLINE_SECONDS,
+        cancellation=CancellationToken(),
+        _clock=time.monotonic,
+    )
 
 
 def artifact_ref(
@@ -552,7 +566,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                         task_id="public-upgrade-resume",
                         operation_id="public-upgrade-resume",
                     )
-                projection = service.context_runtime.read_case(developer["run_id"])
+                projection = service._test.context_runtime.read_case(developer["run_id"])
             finally:
                 service.close()
         return {"first_turn": first_turn, "final": turn, "projection": projection}
@@ -687,7 +701,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                     operation_id="upgrade-upload-loss-build",
                 )
                 self.assertTrue(faulted.wait(timeout=1))
-                first_projection = first.context_runtime.read_case(
+                first_projection = first._test.context_runtime.read_case(
                     developer["run_id"]
                 )
                 effect_id = first_projection["effect_intents"][-1]["effect_id"]
@@ -705,7 +719,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                     task_id="upgrade-upload-loss-resume",
                     operation_id="upgrade-upload-loss-resume",
                 )
-                projection = second.context_runtime.read_case(developer["run_id"])
+                projection = second._test.context_runtime.read_case(developer["run_id"])
                 recovered_mutation_ids = {
                     journal.operation_id
                     for journal in journals.load_for_task(developer["run_id"])
@@ -1452,26 +1466,24 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
             artifact.write_bytes(b"firmware")
             digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
             transport = FakeRedfishTransport()
-            service = RuntimeMcpService(
-                UpgradeMcpBackend(
-                    journal_store=MutationJournalStore(root / "journals"),
-                    credential_loader=lambda _arguments: {
-                        "redfish": {
-                            "user": "Administrator",
-                            "password": "redfish-secret",
-                        }
-                    },
-                    redfish_transport_factory=lambda _arguments: transport,
-                )
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
             )
+            task_id = "upgrade-recovery-without-journal"
+            task = backend.open_task(task_id)
             try:
-                descriptor = service.catalog.require("upgrade_run")
                 with self.assertRaisesRegex(
                     OSError, "no durable mutation journal"
                 ):
-                    service._execute_domain_value(
-                        "upgrade_run",
-                        descriptor,
+                    backend.upgrade_run(
+                        task,
                         {
                             "intent": "upgrade-and-verify",
                             "delivery_strategy": "build-upgrade",
@@ -1480,13 +1492,14 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                             "artifact_sha256": digest,
                             "product_version": "2.0.0",
                             "deadline": TEST_DEADLINE_SECONDS,
+                            RUNTIME_EFFECT_RECOVERY_ARGUMENT: (
+                                EffectRecoveryMode.RECONCILE
+                            ),
                         },
-                        task_id="upgrade-recovery-without-journal",
-                        operation_id="upgrade-recovery-without-journal",
-                        recovery_mode=EffectRecoveryMode.RECONCILE,
+                        recovery_context(task_id, task_id),
                     )
             finally:
-                service.close()
+                backend.close_task(task)
 
         uploads = [
             call
@@ -1538,30 +1551,31 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
             artifact.unlink()
 
             transport = FakeRedfishTransport()
-            second = RuntimeMcpService(
-                UpgradeMcpBackend(
-                    journal_store=journals,
-                    credential_loader=lambda _arguments: {
-                        "redfish": {
-                            "user": "Administrator",
-                            "password": "redfish-secret",
-                        }
-                    },
-                    redfish_transport_factory=lambda _arguments: transport,
-                )
+            second = UpgradeMcpBackend(
+                journal_store=journals,
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
             )
+            task_id = "terminal-upgrade"
+            task = second.open_task(task_id)
             try:
-                descriptor = second.catalog.require("upgrade_run")
-                replayed = second._execute_domain_value(
-                    "upgrade_run",
-                    descriptor,
-                    arguments,
-                    task_id="terminal-upgrade",
-                    operation_id="terminal-upgrade-effect",
-                    recovery_mode=EffectRecoveryMode.RECONCILE,
+                replayed = second.upgrade_run(
+                    task,
+                    {
+                        **arguments,
+                        RUNTIME_EFFECT_RECOVERY_ARGUMENT: (
+                            EffectRecoveryMode.RECONCILE
+                        ),
+                    },
+                    recovery_context(task_id, "terminal-upgrade-effect"),
                 )
             finally:
-                second.close()
+                second.close_task(task)
 
         self.assertTrue(replayed["idempotent_replay"])
         self.assertEqual(replayed["journal"]["stage"], "verified")
