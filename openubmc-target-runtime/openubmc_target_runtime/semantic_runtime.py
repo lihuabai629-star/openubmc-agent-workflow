@@ -517,11 +517,19 @@ class ResumeRun:
 @dataclass(frozen=True)
 class CancelRun:
     run_id: str
-    gate_id: str = ""
-    gate_version: int = 0
-    schema_digest: str = ""
-    incident_id: str = ""
+    gate_id: str
+    gate_version: int
+    schema_digest: str
     submission_id: str = ""
+    command_id: str = ""
+    input_digest: str = ""
+    caller_deadline: float = 120.0
+
+
+@dataclass(frozen=True)
+class CancelIncident:
+    run_id: str
+    incident_id: str
     command_id: str = ""
     input_digest: str = ""
     caller_deadline: float = 120.0
@@ -535,7 +543,9 @@ class ReconcileRun:
     caller_deadline: float = 120.0
 
 
-RunCommand: TypeAlias = StartRun | SubmitGate | ResumeRun | CancelRun | ReconcileRun
+RunCommand: TypeAlias = (
+    StartRun | SubmitGate | ResumeRun | CancelRun | CancelIncident | ReconcileRun
+)
 
 
 def _normalized_gate_submission(
@@ -597,13 +607,13 @@ def _run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
             "schema_digest": command.schema_digest,
             "response": _normalized_gate_submission(command.response),
         }
+    if isinstance(command, CancelIncident):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/cancel-incident-input-v1",
+            "run_id": command.run_id,
+            "incident_id": command.incident_id,
+        }
     if isinstance(command, CancelRun):
-        if command.incident_id:
-            return {
-                "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/cancel-incident-input-v1",
-                "run_id": command.run_id,
-                "incident_id": command.incident_id,
-            }
         return {
             "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/cancel-run-input-v1",
             "run_id": command.run_id,
@@ -833,12 +843,26 @@ def decode_run_command(
             raw_incident_id = _text(action.get("incident_id"))
             if raw_incident_id:
                 incident_id = _incident_id(raw_incident_id)
-                gate_id = ""
-                gate_version = 0
-                schema_digest = ""
-                submission_id = ""
+                command_id = "incident-cancel-" + fingerprint(
+                    {"run_id": run_id, "incident_id": incident_id}
+                )[:32]
+                command = CancelIncident(
+                    run_id=run_id,
+                    incident_id=incident_id,
+                    command_id=command_id,
+                    caller_deadline=caller_deadline,
+                )
+                identity, digest = run_command_identity(
+                    command, operation_id=operation_id
+                )
+                return CancelIncident(
+                    run_id=run_id,
+                    incident_id=incident_id,
+                    command_id=identity,
+                    input_digest=digest,
+                    caller_deadline=caller_deadline,
+                )
             else:
-                incident_id = ""
                 gate_id = _gate_id(action.get("gate_id"))
                 gate_version = _gate_version(action.get("gate_version"))
                 schema_digest = _schema_digest(action.get("schema_digest"))
@@ -856,7 +880,6 @@ def decode_run_command(
                 gate_id=gate_id,
                 gate_version=gate_version,
                 schema_digest=schema_digest,
-                incident_id=incident_id,
                 submission_id=submission_id,
                 command_id=submission_id,
                 caller_deadline=caller_deadline,
@@ -869,7 +892,6 @@ def decode_run_command(
                 gate_id=gate_id,
                 gate_version=gate_version,
                 schema_digest=schema_digest,
-                incident_id=incident_id,
                 submission_id=submission_id,
                 command_id=identity,
                 input_digest=digest,

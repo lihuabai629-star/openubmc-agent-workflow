@@ -13,6 +13,7 @@ from .artifact_store import LocalArtifactStore
 from .semantic_runtime import (
     ArtifactRef,
     AssuranceUnavailable,
+    CancelIncident,
     CancelRun,
     CommandConflict,
     Gate,
@@ -1242,14 +1243,6 @@ class RunEngine:
                     operation_id=f"{operation_id}-auto-reconcile",
                 )
             if unknown is not None:
-                if (
-                    current_incident is not None
-                    and current_incident.code == "mutation_outcome_unknown"
-                ):
-                    return self._schedule_unknown_recovery(
-                        snapshot,
-                        operation_id=f"{operation_id}-auto-reconcile",
-                    )
                 return self._turn(snapshot, state="incident")
             if current_incident is not None:
                 if current_incident.code == "artifact_reference_invalid":
@@ -1517,14 +1510,14 @@ class RunEngine:
 
     def _cancel_run(
         self,
-        command: CancelRun,
+        command: CancelRun | CancelIncident,
         *,
         task_id: str,
         operation_id: str,
     ) -> RunTurn:
         snapshot = self.driver.run_snapshot(command.run_id)
         summary: str
-        if command.incident_id:
+        if isinstance(command, CancelIncident):
             incident = self._current_incident(_projection(snapshot))
             if incident is None:
                 raise CommandConflict("Run is not waiting at an Incident")
@@ -1533,7 +1526,7 @@ class RunEngine:
             snapshot = self._apply_transition(
                 command.run_id,
                 RunTransitionKind.INCIDENT_RESOLVED,
-                {"incident_id": incident.incident_id, "resolution": "resolved"},
+                {"incident_id": incident.incident_id, "resolution": "cancelled"},
                 operation_id=f"{operation_id}-incident-resolved",
             )
             snapshot = self._apply_transition(
@@ -1603,7 +1596,7 @@ class RunEngine:
                 operation_id=operation_id,
                 observation_ref=command.observation_ref,
             )
-        if isinstance(command, CancelRun):
+        if isinstance(command, (CancelRun, CancelIncident)):
             return self._cancel_run(
                 command,
                 task_id=task_id,

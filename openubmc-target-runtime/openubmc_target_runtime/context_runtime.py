@@ -1276,7 +1276,9 @@ def project_case(
             resolution = str(payload.get("resolution", "resolved")) or "resolved"
             for incident in reversed(incidents):
                 if str(incident.get("incident_id", "")) == incident_id:
-                    incident["status"] = "resolved"
+                    incident["status"] = (
+                        "cancelled" if resolution == "cancelled" else "resolved"
+                    )
                     incident["resolution"] = resolution
                     break
             current_incident = projection.get("current_incident")
