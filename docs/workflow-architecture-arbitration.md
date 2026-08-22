@@ -45,8 +45,9 @@
 Closeout 均位于 `ContextRuntime.workflow_advance`，`workflow.next` 只是其 continuation
 入口。当前 Agent 主路径已由 `RunEngine.execute` 选择 Gate 或单个 Domain step，不再调用
 `workflow.next`；`ContextRuntime` 保留 definition cursor、event repository 和 Domain
-invocation Adapter。Gate response 暂时仍经 `record_gate_submission -> phase_record` bridge
-写入旧事件模型，这是 M4 尚未完成的边界。
+invocation Adapter。当前 Agent Gate response 由 `RunEngine` 写入原生
+`RunGateSubmitted`，旧事件只通过显式 upcaster 进入统一投影；`phase_record` writer 仅留在
+compatibility profile。
 
 因此实现没有增加第二个状态机，而是把 Agent-visible transition authority 从巨型
 `ContextRuntime` 纵向迁到 `RunEngine`。`WorkflowKernel` 已校正为
@@ -580,10 +581,10 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 3. `WorkflowKernel` 改为 `WorkflowDefinitions`：已完成，保留兼容 alias。
 4. 建立唯一 `RunEngine.execute` 并保持现有 event/storage 兼容读取：已完成主路径。
 5. observation persistence、Gate 决策、Run Outcome 和 Session Outcome 投影移入 Runtime：
-   已完成主路径；Gate persistence 仍复用旧 `phase_record` bridge。
+   已完成；Agent Gate persistence 使用原生 `RunGateSubmitted`。
 6. Domain Adapters 构造时注册，`DomainExecutor` 统一执行策略：已完成基线。
-7. Gate、Submission、Incident 和 Outcome 已有版本化持久事实；Incident lifecycle、原生
-   Gate submission event writer 与显式 old-event upcaster 继续演进。
+7. Gate、Submission、Incident 和 Outcome 已有版本化持久事实；原生 Gate event writer 与
+   old-event upcaster 已完成，Incident lifecycle 继续深化。
 8. 行为 contract tests 和 fake Adapters：已补主路径，旧源码 contraction tests 逐步退役。
 9. 继续按变化原因收缩 `context_runtime.py` 与 `mcp.py`，不以文件行数为单独目标。
 
@@ -706,12 +707,11 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 - `WorkflowDefinitions` 已校正为纯定义 Module；
 - typed `SemanticRuntimePort` 与 `RunEngine` 已接管 Gateway 的 8 方法协调、自动 reconcile
   和 Session Outcome 投影；
-- M4 尚未完成：`phase_record` persistence bridge、old-event upcaster 与 compatibility
-  telemetry 仍需收口；
+- M4 主路径权威收敛已完成；后续用 compatibility telemetry 驱动旧 writer 退役；
 - 保留 Turn-to-next-Gate，隐藏 Ack、polling、scheduler 与未来 Worker；
 - v2 做本地 typed event-backed Process Manager，不做分布式平台；
-- 继续固化 Incident lifecycle、旧 event upcaster、compatibility telemetry 和完整 execute
-  fault matrix；
+- 继续固化 Incident lifecycle、compatibility telemetry、writer 退役和长期 execute
+  fault/capacity/soak 验证；
 - 只有规模与部署证据出现后，才把 Outbox/Inbox、Worker、共享 fencing 与 durable backend 作为一个完整 v3 演进包引入。
 
 这条路线具有最高 Interface depth：Agent 学习的概念最少，Runtime 提供的行为最多；同时把状态、安全与恢复规则集中到一个可测试 seam，获得更高 leverage 和 locality。

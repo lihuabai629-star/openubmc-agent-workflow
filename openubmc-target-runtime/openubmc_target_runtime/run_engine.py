@@ -13,6 +13,7 @@ from .artifact_store import LocalArtifactStore
 from .semantic_runtime import (
     ArtifactRef,
     AssuranceUnavailable,
+    CancelIncident,
     CancelRun,
     CommandConflict,
     Gate,
@@ -495,21 +496,31 @@ class RunEngine:
             )
         elif transition_kind is RunTransitionKind.RUN_CANCELLED:
             gate = payload.get("gate")
-            if not isinstance(gate, Mapping):
-                raise ValueError("run_cancelled transition requires a Gate")
-            event_payload = {
-                "gate_id": _text(gate.get("gate_id")),
-                "gate_version": int(gate.get("gate_version", 0)),
-                "schema_digest": _text(gate.get("schema_digest")),
-                "submission_id": _text(payload.get("submission_id")),
-                "submission_digest": _text(
-                    payload.get("submission_digest")
-                ),
-                "actor": "runtime",
-                "status": "cancelled",
-                "summary": "run cancelled at the current gate",
-                "recorded_at": time.time(),
-            }
+            incident = payload.get("incident")
+            if isinstance(gate, Mapping):
+                event_payload = {
+                    "gate_id": _text(gate.get("gate_id")),
+                    "gate_version": int(gate.get("gate_version", 0)),
+                    "schema_digest": _text(gate.get("schema_digest")),
+                    "submission_id": _text(payload.get("submission_id")),
+                    "submission_digest": _text(
+                        payload.get("submission_digest")
+                    ),
+                    "actor": "runtime",
+                    "status": "cancelled",
+                    "summary": "run cancelled at the current gate",
+                    "recorded_at": time.time(),
+                }
+            elif isinstance(incident, Mapping):
+                event_payload = {
+                    "incident_id": _text(incident.get("incident_id")),
+                    "actor": "runtime",
+                    "status": "cancelled",
+                    "summary": "run cancelled at the current incident",
+                    "recorded_at": time.time(),
+                }
+            else:
+                raise ValueError("run_cancelled transition requires a Gate or Incident")
             events = (
                 RunEvent("RunCancelled", event_payload, operation_id),
             )
@@ -528,7 +539,10 @@ class RunEngine:
             events = (
                 RunEvent(
                     "RunIncidentResolved",
-                    {"incident_id": _text(payload.get("incident_id"))},
+                    {
+                        "incident_id": _text(payload.get("incident_id")),
+                        "resolution": _text(payload.get("resolution")) or "resolved",
+                    },
                     operation_id,
                 ),
             )
@@ -1231,6 +1245,32 @@ class RunEngine:
             if unknown is not None:
                 return self._turn(snapshot, state="incident")
             if current_incident is not None:
+                if current_incident.code == "artifact_reference_invalid":
+                    try:
+                        self._validate_step_artifact(
+                            snapshot,
+                            operation=current_incident.effect_id,
+                        )
+                    except (OSError, ReferenceViolation):
+                        return self._turn(snapshot, state="incident")
+                    snapshot = self._apply_transition(
+                        self._run_id(snapshot),
+                        RunTransitionKind.INCIDENT_RESOLVED,
+                        {"incident_id": current_incident.incident_id},
+                        operation_id=f"{operation_id}-incident-resolved",
+                    )
+                    continue
+                if current_incident.code == "domain_execution_failed":
+                    snapshot = self._apply_transition(
+                        self._run_id(snapshot),
+                        RunTransitionKind.INCIDENT_RESOLVED,
+                        {
+                            "incident_id": current_incident.incident_id,
+                            "resolution": "retrying domain preparation",
+                        },
+                        operation_id=f"{operation_id}-incident-resolved",
+                    )
+                    continue
                 return self._turn(snapshot, state="incident")
             terminal = self._terminal_step(projection)
             if terminal is not None:
@@ -1470,51 +1510,68 @@ class RunEngine:
 
     def _cancel_run(
         self,
-        command: CancelRun,
+        command: CancelRun | CancelIncident,
         *,
         task_id: str,
         operation_id: str,
     ) -> RunTurn:
         snapshot = self.driver.run_snapshot(command.run_id)
-        response = {
-            "status": "cancelled",
-            "summary": "run cancelled at the current gate",
-            "payload": {},
-        }
-        _command_id, submission_digest = run_command_identity(
-            command,
-            operation_id=operation_id,
-        )
-        prior = self._submission_record(snapshot, command.submission_id)
-        if prior is not None:
-            self._validate_duplicate_gate(command, prior)
-            if _text(prior.get("submission_digest")) != submission_digest:
-                raise CommandConflict(
-                    "submission_id was already used with different Gate input"
-                )
-        else:
-            gate = self._current_gate(
-                snapshot, operation_id=f"{operation_id}-gate"
+        summary: str
+        if isinstance(command, CancelIncident):
+            incident = self._current_incident(_projection(snapshot))
+            if incident is None:
+                raise CommandConflict("Run is not waiting at an Incident")
+            if incident.incident_id != command.incident_id:
+                raise CommandConflict("incident_id does not match the current Incident")
+            snapshot = self._apply_transition(
+                command.run_id,
+                RunTransitionKind.INCIDENT_RESOLVED,
+                {"incident_id": incident.incident_id, "resolution": "cancelled"},
+                operation_id=f"{operation_id}-incident-resolved",
             )
-            if gate is None:
-                raise GateConflict("Run is not waiting at a Gate")
-            self._validate_gate(command, gate)
             snapshot = self._apply_transition(
                 command.run_id,
                 RunTransitionKind.RUN_CANCELLED,
-                {
-                    "gate": gate.to_public_dict(),
-                    "submission_id": command.submission_id,
-                    "submission_digest": submission_digest,
-                },
+                {"incident": incident.to_public_dict()},
                 operation_id=f"{operation_id}-cancel",
             )
+            summary = "run cancelled at the current incident"
+        else:
+            _command_id, submission_digest = run_command_identity(
+                command,
+                operation_id=operation_id,
+            )
+            prior = self._submission_record(snapshot, command.submission_id)
+            if prior is not None:
+                self._validate_duplicate_gate(command, prior)
+                if _text(prior.get("submission_digest")) != submission_digest:
+                    raise CommandConflict(
+                        "submission_id was already used with different Gate input"
+                    )
+            else:
+                gate = self._current_gate(
+                    snapshot, operation_id=f"{operation_id}-gate"
+                )
+                if gate is None:
+                    raise GateConflict("Run is not waiting at a Gate")
+                self._validate_gate(command, gate)
+                snapshot = self._apply_transition(
+                    command.run_id,
+                    RunTransitionKind.RUN_CANCELLED,
+                    {
+                        "gate": gate.to_public_dict(),
+                        "submission_id": command.submission_id,
+                        "submission_digest": submission_digest,
+                    },
+                    operation_id=f"{operation_id}-cancel",
+                )
+            summary = "run cancelled at the current gate"
         snapshot = self._apply_transition(
             command.run_id,
             RunTransitionKind.OUTCOME_RECORDED,
             {
                 "status": "cancelled",
-                "summary": "run cancelled at the current gate",
+                "summary": summary,
             },
             operation_id=f"{operation_id}-outcome",
         )
@@ -1539,7 +1596,7 @@ class RunEngine:
                 operation_id=operation_id,
                 observation_ref=command.observation_ref,
             )
-        if isinstance(command, CancelRun):
+        if isinstance(command, (CancelRun, CancelIncident)):
             return self._cancel_run(
                 command,
                 task_id=task_id,

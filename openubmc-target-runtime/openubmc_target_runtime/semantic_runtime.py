@@ -527,6 +527,15 @@ class CancelRun:
 
 
 @dataclass(frozen=True)
+class CancelIncident:
+    run_id: str
+    incident_id: str
+    command_id: str = ""
+    input_digest: str = ""
+    caller_deadline: float = 120.0
+
+
+@dataclass(frozen=True)
 class ReconcileRun:
     run_id: str
     command_id: str = ""
@@ -534,7 +543,9 @@ class ReconcileRun:
     caller_deadline: float = 120.0
 
 
-RunCommand: TypeAlias = StartRun | SubmitGate | ResumeRun | CancelRun | ReconcileRun
+RunCommand: TypeAlias = (
+    StartRun | SubmitGate | ResumeRun | CancelRun | CancelIncident | ReconcileRun
+)
 
 
 def _normalized_gate_submission(
@@ -595,6 +606,12 @@ def _run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
             "gate_version": command.gate_version,
             "schema_digest": command.schema_digest,
             "response": _normalized_gate_submission(command.response),
+        }
+    if isinstance(command, CancelIncident):
+        return {
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/cancel-incident-input-v1",
+            "run_id": command.run_id,
+            "incident_id": command.incident_id,
         }
     if isinstance(command, CancelRun):
         return {
@@ -671,6 +688,13 @@ def _gate_id(value: object) -> str:
     selected = _text(value)
     if _SAFE_ID.fullmatch(selected) is None:
         raise AgentGatewayError("gate_id must be a safe 1-128 character identifier")
+    return selected
+
+
+def _incident_id(value: object) -> str:
+    selected = _text(value)
+    if _SAFE_ID.fullmatch(selected) is None:
+        raise AgentGatewayError("incident_id must be a safe 1-128 character identifier")
     return selected
 
 
@@ -816,18 +840,41 @@ def decode_run_command(
     if kind == "control":
         command = _text(action.get("command")).lower()
         if command == "cancel":
-            gate_id = _gate_id(action.get("gate_id"))
-            gate_version = _gate_version(action.get("gate_version"))
-            schema_digest = _schema_digest(action.get("schema_digest"))
-            submission_id = _submission_id(
-                action.get("submission_id"),
-                binding={
-                    "run_id": run_id,
-                    "gate_id": gate_id,
-                    "gate_version": gate_version,
-                    "schema_digest": schema_digest,
-                },
-            )
+            raw_incident_id = _text(action.get("incident_id"))
+            if raw_incident_id:
+                incident_id = _incident_id(raw_incident_id)
+                command_id = "incident-cancel-" + fingerprint(
+                    {"run_id": run_id, "incident_id": incident_id}
+                )[:32]
+                command = CancelIncident(
+                    run_id=run_id,
+                    incident_id=incident_id,
+                    command_id=command_id,
+                    caller_deadline=caller_deadline,
+                )
+                identity, digest = run_command_identity(
+                    command, operation_id=operation_id
+                )
+                return CancelIncident(
+                    run_id=run_id,
+                    incident_id=incident_id,
+                    command_id=identity,
+                    input_digest=digest,
+                    caller_deadline=caller_deadline,
+                )
+            else:
+                gate_id = _gate_id(action.get("gate_id"))
+                gate_version = _gate_version(action.get("gate_version"))
+                schema_digest = _schema_digest(action.get("schema_digest"))
+                submission_id = _submission_id(
+                    action.get("submission_id"),
+                    binding={
+                        "run_id": run_id,
+                        "gate_id": gate_id,
+                        "gate_version": gate_version,
+                        "schema_digest": schema_digest,
+                    },
+                )
             command = CancelRun(
                 run_id=run_id,
                 gate_id=gate_id,

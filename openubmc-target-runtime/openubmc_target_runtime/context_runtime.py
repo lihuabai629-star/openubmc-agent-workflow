@@ -1247,18 +1247,20 @@ def project_case(
         elif kind == "RunCancelled":
             gate_id = str(payload.get("gate_id", ""))
             gate_version = int(payload.get("gate_version", 0))
-            for gate in reversed(run_gates):
-                if (
-                    str(gate.get("gate_id", "")) == gate_id
-                    and int(gate.get("gate_version", 0)) == gate_version
-                ):
-                    gate["status"] = "cancelled"
-                    gate["submission_id"] = str(
-                        payload.get("submission_id", "")
-                    )
-                    break
-            gate_submissions.append(dict(payload))
+            if gate_id:
+                for gate in reversed(run_gates):
+                    if (
+                        str(gate.get("gate_id", "")) == gate_id
+                        and int(gate.get("gate_version", 0)) == gate_version
+                    ):
+                        gate["status"] = "cancelled"
+                        gate["submission_id"] = str(
+                            payload.get("submission_id", "")
+                        )
+                        break
+                gate_submissions.append(dict(payload))
             projection["current_gate"] = {}
+            projection["current_incident"] = {}
             projection["status"] = "cancelled"
             projection["next_actions"] = []
         elif kind == "RunIncidentRaised":
@@ -1271,9 +1273,13 @@ def project_case(
                 projection["status"] = "incident"
         elif kind == "RunIncidentResolved":
             incident_id = str(payload.get("incident_id", ""))
+            resolution = str(payload.get("resolution", "resolved")) or "resolved"
             for incident in reversed(incidents):
                 if str(incident.get("incident_id", "")) == incident_id:
-                    incident["status"] = "resolved"
+                    incident["status"] = (
+                        "cancelled" if resolution == "cancelled" else "resolved"
+                    )
+                    incident["resolution"] = resolution
                     break
             current_incident = projection.get("current_incident")
             if (

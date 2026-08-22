@@ -51,9 +51,9 @@ operation identities, retry safety, target fencing, or terminal success.
 
 ## Ownership rules
 
-This table is the target authority model. Until the v2.1 migration is complete, compatibility
-paths may still contain transitional writes; each such path must converge on, then be deleted in
-favour of, the listed owner.
+This table is the target authority model. Until compatibility retirement is complete, legacy
+profiles may still translate old commands or persist legacy Case facts; each such path must
+delegate native Run transitions to, then be deleted in favour of, the listed owner.
 
 | Fact or transition | Sole owner |
 | --- | --- |

@@ -126,6 +126,11 @@ continues without another Agent Turn. If it cannot converge, the Runtime returns
 the affected Effect identity. Explicit `control=reconcile` remains as a compatibility and operator
 fallback rather than the normal Agent path.
 
+Recoverable Artifact and domain-preparation Incidents can be retried with `resume`. Any current
+Incident can instead be cancelled through `execute kind=control, command=cancel` bound to its
+`incident_id`; the Runtime derives a stable cancellation identity from the Run and Incident, so a
+transport retry returns the same cancelled Turn without appending another Outcome.
+
 Terminal Runs persist one authoritative Run Outcome. The Agent path does not write a Session
 Outcome. An operator may explicitly project the redacted governance record from the persisted Run
 Outcome; retries cannot create another Run Outcome or alter the Run ledger. Review, approval,
@@ -230,9 +235,10 @@ The three supported delivery paths are verified through the same `execute` Inter
 The Runtime Core remains the stable kernel. Future capability should deepen the two semantic
 operations instead of adding Agent-facing tools:
 
-1. replace the remaining `phase_record` persistence bridge with native Run events, then add
+1. use persistent compatibility telemetry to retire the remaining legacy writers while retaining
    explicit old-event upcasters;
-2. extract a Domain Pack contract only after Live Patch and Upgrade demonstrate the same seams;
+2. add the first READ_ONLY Domain Pack only from measured development demand; the shared contract
+   and conformance suite are already extracted from Live Patch and Upgrade;
 3. add selector Adapters for D-Bus properties, verified active alarms, and bounded log search only
    from measured development gaps;
 4. keep evidence inspection, Replay, governance, and lifecycle automation in the operator/CI plane;

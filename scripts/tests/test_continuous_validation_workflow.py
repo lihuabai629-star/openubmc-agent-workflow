@@ -61,8 +61,12 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
         self.assertEqual(concurrency["cancel-in-progress"], "true")
 
     def test_toolchains_and_dependency_locks_are_explicit(self) -> None:
+        checkout = next(
+            step for step in self.steps() if step.get("name") == "Check out repository"
+        )
+        self.assertEqual(checkout["uses"], "actions/checkout@v7")
         python = self.step("Set up Python")
-        self.assertEqual(python["uses"], "actions/setup-python@v5")
+        self.assertEqual(python["uses"], "actions/setup-python@v7")
         self.assertEqual(python["with"]["python-version"], "3.12.13")
         self.assertEqual(
             self.step("Install locked Python validation dependencies")["run"],
@@ -87,7 +91,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
             "    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8\n",
         )
         node = self.step("Set up Node.js")
-        self.assertEqual(node["uses"], "actions/setup-node@v4")
+        self.assertEqual(node["uses"], "actions/setup-node@v7")
         self.assertEqual(node["with"]["node-version"], "22.23.2")
         self.assertEqual(node["with"]["cache"], "npm")
         self.assertEqual(
