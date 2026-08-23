@@ -37,10 +37,24 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertEqual(storm["command_decisions"], 1)
         self.assertEqual(storm["outcome_events"], 1)
         self.assertTrue(storm["same_key_different_hash_rejected"])
+        gate = report["scenarios"]["gate_concurrency"]
+        self.assertEqual(gate["status"], "passed")
+        self.assertEqual(gate["gate_submissions"], 1)
+        self.assertEqual(gate["outcome_events"], 1)
         soak = report["scenarios"]["restart_soak"]
         self.assertEqual(soak["status"], "passed")
         self.assertEqual(soak["invalid_runs"], 0)
         self.assertEqual(soak["open_incidents"], 0)
+        self.assertEqual(soak["failed_calls"], 0)
+        self.assertEqual(soak["replay_mismatches"], 0)
+        self.assertEqual(
+            sum(soak["events_per_cycle"]),
+            soak["total_events"],
+        )
+        self.assertEqual(
+            soak["cumulative_events_by_cycle"][-1],
+            soak["total_events"],
+        )
         self.assertEqual(
             soak["completed_runs"],
             report["parameters"]["soak_restart_cycles"]

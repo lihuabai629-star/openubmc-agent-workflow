@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -15,17 +16,82 @@ SPEC.loader.exec_module(qualification)
 
 
 class RuntimeQualificationTests(unittest.TestCase):
+    @staticmethod
+    def stability_report(source_commit: str) -> str:
+        report = {
+            "schema": "openubmc-agent-workflow.runtime-stability.v1",
+            "source_commit": source_commit,
+            "environment": {
+                "python": "3.11.0",
+                "python_implementation": "CPython",
+                "platform": "test",
+            },
+            "parameters": {
+                "storm_workers": 16,
+                "gate_workers": 8,
+                "soak_restart_cycles": 4,
+                "soak_runs_per_cycle": 16,
+                "max_soak_seconds": 30.0,
+                "max_soak_peak_bytes": 134217728,
+                "max_soak_storage_bytes": 33554432,
+                "max_events_per_run": 16,
+            },
+            "scenarios": {
+                "duplicate_storm": {
+                    "status": "passed",
+                    "execute_calls": 18,
+                    "failed_calls": 0,
+                    "unique_runs": 1,
+                    "operation_count": 1,
+                    "command_decisions": 1,
+                    "outcome_events": 1,
+                    "open_incidents": 0,
+                    "same_key_different_hash_rejected": True,
+                },
+                "gate_concurrency": {
+                    "status": "passed",
+                    "execute_calls": 8,
+                    "failed_calls": 0,
+                    "unique_runs": 1,
+                    "gate_submissions": 1,
+                    "outcome_events": 1,
+                    "open_incidents": 0,
+                },
+                "restart_soak": {
+                    "status": "passed",
+                    "execute_calls": 128,
+                    "failed_calls": 0,
+                    "completed_turns": 128,
+                    "completed_runs": 64,
+                    "replay_mismatches": 0,
+                    "invalid_runs": 0,
+                    "outcome_events": 64,
+                    "open_incidents": 0,
+                    "total_events": 704,
+                    "events_per_cycle": [176, 176, 176, 176],
+                    "cumulative_events_by_cycle": [176, 352, 528, 704],
+                    "storage_bytes_by_cycle": [1000, 2000, 3000, 4000],
+                    "max_events_per_run": 11,
+                    "storage_bytes": 4000,
+                    "peak_traced_memory_bytes": 1000000,
+                    "elapsed_seconds": 5.0,
+                },
+            },
+            "promotable": True,
+        }
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+        return json.dumps(report)
+
     def test_all_safety_qualifications_must_pass_with_zero_violations(self) -> None:
         calls: list[tuple[str, ...]] = []
 
         def succeed(command, *, cwd):
             self.assertTrue(cwd.is_dir())
             calls.append(tuple(command))
-            stdout = (
-                '{"schema":"runtime-stability","promotable":true}'
-                if any("runtime_stability.py" in str(item) for item in command)
-                else "ok"
-            )
+            stdout = "ok"
+            if any("runtime_stability.py" in str(item) for item in command):
+                source = command[command.index("--source-commit") + 1]
+                stdout = self.stability_report(source)
             return subprocess.CompletedProcess(command, 0, stdout, "")
 
         report = qualification.qualify_runtime(
@@ -43,13 +109,12 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "false_successes": 0,
                 "wrong_target_or_artifact_mutations": 0,
                 "unknown_new_identity_retries": 0,
-                "runtime_concurrency": 0,
                 "real_backend_crash_cuts": 0,
                 "runtime_stability": 0,
             },
         )
         self.assertTrue(report["ordinary_partial_result_accepted"])
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 7)
         self.assertEqual(report["source_commit"], "a" * 40)
         self.assertEqual(
             report["environment"],
@@ -72,11 +137,10 @@ class RuntimeQualificationTests(unittest.TestCase):
         def fail_second(command, *, cwd):
             nonlocal call_count
             call_count += 1
-            stdout = (
-                '{"schema":"runtime-stability","promotable":true}'
-                if any("runtime_stability.py" in str(item) for item in command)
-                else ""
-            )
+            stdout = ""
+            if any("runtime_stability.py" in str(item) for item in command):
+                source = command[command.index("--source-commit") + 1]
+                stdout = self.stability_report(source)
             return subprocess.CompletedProcess(
                 command,
                 7 if call_count == 2 else 0,
@@ -88,7 +152,61 @@ class RuntimeQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["promotable"])
         self.assertGreater(report["violations"]["false_successes"], 0)
-        self.assertEqual(call_count, 8)
+        self.assertEqual(call_count, 7)
+
+    def test_incomplete_stability_report_blocks_promotion(self) -> None:
+        def incomplete(command, *, cwd):
+            del cwd
+            stdout = (
+                '{"promotable":true}'
+                if any("runtime_stability.py" in str(item) for item in command)
+                else "ok"
+            )
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        report = qualification.qualify_runtime(
+            Path.cwd(),
+            executor=incomplete,
+            source_commit="a" * 40,
+        )
+
+        self.assertFalse(report["promotable"])
+        self.assertEqual(report["violations"]["runtime_stability"], 1)
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertIn("schema", stability_result["verification_error"])
+
+    def test_stability_report_over_a_hard_threshold_blocks_promotion(self) -> None:
+        def over_threshold(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            soak = report["scenarios"]["restart_soak"]
+            soak["total_events"] = 2048
+            soak["cumulative_events_by_cycle"][-1] = 2048
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            Path.cwd(),
+            executor=over_threshold,
+            source_commit="a" * 40,
+        )
+
+        self.assertFalse(report["promotable"])
+        self.assertEqual(report["violations"]["runtime_stability"], 1)
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertIn("threshold", stability_result["verification_error"])
 
 
 if __name__ == "__main__":
