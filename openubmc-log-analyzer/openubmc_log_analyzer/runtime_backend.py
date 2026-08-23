@@ -423,6 +423,7 @@ class LogBundleStages:
                 provenance="log-bundle-query-redaction",
                 retention_hint="run-lifetime",
                 created_by_effect=operation_id,
+                max_bytes=MAX_QUERY_BYTES,
             )
         return {
             "stage": "query",
@@ -486,6 +487,7 @@ class LogBundleStages:
                 provenance="log-bundle-export-redaction",
                 retention_hint="run-lifetime",
                 created_by_effect=operation_id,
+                max_bytes=MAX_REPORT_BYTES,
             )
         return {
             "stage": "export",

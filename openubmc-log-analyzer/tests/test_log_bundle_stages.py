@@ -130,6 +130,54 @@ class LogBundleStageTests(unittest.TestCase):
                     operation_id="effect-export",
                 )
 
+    def test_export_enforces_the_budget_after_redaction_derives_new_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            store = LocalArtifactStore(content_root=root / "artifacts")
+            stages = LogBundleStages(store)
+            query_path = root / "query.json"
+            query_path.write_text('{"summary":"clean"}', encoding="utf-8")
+            raw_reference = store.put(
+                query_path,
+                kind=runtime_backend.LOG_QUERY_RAW_KIND,
+                provenance="test-query",
+                retention_hint="temporary",
+                target="192.0.2.45",
+                run_id="run-final-report-budget",
+                created_by_effect="effect-query-raw",
+            )
+            query_reference = store.redact(
+                raw_reference,
+                kind=runtime_backend.LOG_QUERY_KIND,
+                provenance="test-query-redaction",
+                retention_hint="run-lifetime",
+                created_by_effect="effect-query",
+            )
+            query = json.loads(
+                store.resolve(query_reference, require_redacted=True).read_text(
+                    encoding="utf-8"
+                )
+            )
+            report = (
+                "# openUBMC Log Bundle Report\n\n"
+                + str(query.get("summary", ""))
+                + "\n\n```json\n"
+                + json.dumps(query, ensure_ascii=False, sort_keys=True, indent=2)
+                + "\n```\n"
+            )
+
+            with patch.object(
+                runtime_backend,
+                "MAX_REPORT_BYTES",
+                len(report.encode("utf-8")),
+            ), self.assertRaisesRegex(ReferenceViolation, "byte budget"):
+                stages.export(
+                    query_reference,
+                    target="192.0.2.45",
+                    run_id="run-final-report-budget",
+                    operation_id="effect-export",
+                )
+
     def test_sqlite_runtime_rebinds_the_same_persistent_artifact_store_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

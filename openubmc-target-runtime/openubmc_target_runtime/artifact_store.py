@@ -812,8 +812,12 @@ class LocalArtifactStore:
         provenance: str,
         created_by_effect: str,
         retention_hint: str | None = None,
+        max_bytes: int = 0,
     ) -> ArtifactRef:
         """Derive new redacted bytes; never mutate or relabel source content."""
+
+        if max_bytes < 0:
+            raise ValueError("redacted Artifact byte budget must be non-negative")
 
         source = self.resolve(reference)
         body = source.read_bytes()
@@ -827,6 +831,8 @@ class LocalArtifactStore:
             redacted_body = _json_bytes(self._redact_value(decoded))
         if redacted_body == body:
             redacted_body += b"\n"
+        if max_bytes and len(redacted_body) > max_bytes:
+            raise ReferenceViolation("Redacted Artifact exceeds its byte budget")
         descriptor, raw_path = tempfile.mkstemp(
             prefix="artifact-redacted-",
             suffix=".json",
