@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import platform
 import random
+import re
 import statistics
 import subprocess
 import sys
@@ -79,10 +80,22 @@ BENCHMARK_MDB_QUERIES = (
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.DriveStatus Health",
 )
 SKILL_DISCLOSURE_CAPABILITIES = ("mdbctl",)
-SKILL_DISCLOSURE_MDB_QUERIES = (
-    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
-    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive ResourceId",
-    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Presence",
+SKILL_DISCLOSURE_MDB_FIELDS = (
+    (
+        "name",
+        "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
+    ),
+    (
+        "resourceid",
+        "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive ResourceId",
+    ),
+    (
+        "presence",
+        "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Presence",
+    ),
+)
+SKILL_DISCLOSURE_MDB_QUERIES = tuple(
+    query for _, query in SKILL_DISCLOSURE_MDB_FIELDS
 )
 BASELINE_PHASE_CONTRACT_STABLE_FIELDS = (
     "receipt_schema",
@@ -121,7 +134,7 @@ def _tool_output_bytes(item: Mapping[str, object]) -> int:
     )
 
 
-def candidate_scope_acceptance(
+def observe_scope_acceptance(
     tools: list[Mapping[str, object]], *, scenario: str = "observation"
 ) -> dict[str, object]:
     errors: list[str] = []
@@ -148,9 +161,9 @@ def candidate_scope_acceptance(
         and item.get("server") == "openubmc-target-runtime"
     ]
     if len(calls) != 1 or calls[0].get("tool") != "observe":
-        return {"passed": False, "errors": ["candidate must call observe exactly once"]}
+        return {"passed": False, "errors": ["arm must call observe exactly once"]}
     if any(item.get("type") == "command_execution" for item in tools):
-        errors.append("candidate must not execute shell commands")
+        errors.append("arm must not execute shell commands")
     call = calls[0]
     arguments = _json_object(call.get("arguments"))
     if arguments.get("target") != BENCHMARK_TARGET:
@@ -197,7 +210,7 @@ def candidate_scope_acceptance(
     )
     receipt_id = str(receipt.get("receipt_id", ""))
     if not receipt_id or receipt.get("status") != "complete":
-        errors.append("candidate must return a complete ObservationReceipt")
+        errors.append("arm must return a complete ObservationReceipt")
     coverage = _json_object(receipt.get("coverage"))
     expected_coverage = {
         "requested": len(expected_capabilities) + len(expected_queries),
@@ -296,9 +309,9 @@ def _skill_disclosure_observed_values(
                 and item.get("status") == "available"
                 and "value" in item
             }
-            for index, query in enumerate(SKILL_DISCLOSURE_MDB_QUERIES):
+            for index, (field, _) in enumerate(SKILL_DISCLOSURE_MDB_FIELDS):
                 if index in by_index:
-                    observed[query.rsplit(" ", 1)[-1].lower()] = by_index[index]
+                    observed[field] = by_index[index]
         return observed
     return {}
 
@@ -725,12 +738,12 @@ class RunEvidenceRecord:
             ),
         )
         if self.scenario == "skill-disclosure":
-            scope_validation = candidate_scope_acceptance(
+            scope_validation = observe_scope_acceptance(
                 tools, scenario=self.scenario
             )
         elif self.arm == "B":
             scope_validation = (
-                candidate_scope_acceptance(tools)
+                observe_scope_acceptance(tools)
                 if self.scenario == "observation"
                 else candidate_execute_acceptance(tools)
             )
@@ -963,6 +976,27 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
     ) and "resourceid" in folded and "异常" in text
 
 
+def _reported_skill_value(
+    lines: Iterable[str],
+    *,
+    field: str,
+    value: object,
+) -> bool:
+    field_lines = [line for line in lines if field in line]
+    expected = str(value).lower().replace('"', "").replace("'", "")
+    if field == "mdbctl" and expected == "available":
+        return any(
+            re.search(r"(?<![0-9a-z_])available(?![0-9a-z_])", line)
+            is not None
+            or ("可用" in line and "不可用" not in line)
+            for line in field_lines
+        )
+    pattern = re.compile(
+        rf"(?<![0-9a-z_]){re.escape(expected)}(?![0-9a-z_])"
+    )
+    return any(pattern.search(line) is not None for line in field_lines)
+
+
 def semantic_acceptance(
     text: str,
     *,
@@ -992,8 +1026,10 @@ def semantic_acceptance(
             ]
             for field, value in observed_values.items():
                 expected = str(value).lower().replace('"', "").replace("'", "")
-                if not any(
-                    field in line and expected in line for line in normalized_lines
+                if not _reported_skill_value(
+                    normalized_lines,
+                    field=field,
+                    value=value,
                 ):
                     missing.append(f"{field}={expected}")
         conclusion = _resource_id_conclusion_supported(text, folded)

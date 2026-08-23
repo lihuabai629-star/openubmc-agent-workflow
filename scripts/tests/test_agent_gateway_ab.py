@@ -307,7 +307,7 @@ def skill_disclosure_observe_event():
     return candidate_observe_event(
         queries=SKILL_DISCLOSURE_QUERIES,
         capabilities=("MDBCTL",),
-        mdb_values=(0, 1, 2),
+        mdb_values=("Disk0", 0, 1),
     )
 
 
@@ -610,7 +610,7 @@ def passing_skill_disclosure_run_evidence(
                 )
             )
             final = (
-                "MDBCTL=available Name=0 ResourceId=1 Presence=2，"
+                "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1，"
                 "不能证明 ResourceId 异常。"
                 if is_valid
                 else "无法证明 ResourceId 异常。"
@@ -861,7 +861,7 @@ class AgentGatewayAbTests(unittest.TestCase):
             },
         ]
         final = (
-            "MDBCTL=available Name=0 ResourceId=1 Presence=2，"
+            "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1，"
             "不能证明 ResourceId 异常。"
         )
 
@@ -900,9 +900,66 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertFalse(metric["valid"])
         self.assertIn("mdbctl=available", metric["semantic_acceptance"]["missing"])
-        self.assertIn("name=0", metric["semantic_acceptance"]["missing"])
-        self.assertIn("resourceid=1", metric["semantic_acceptance"]["missing"])
-        self.assertIn("presence=2", metric["semantic_acceptance"]["missing"])
+        self.assertIn("name=disk0", metric["semantic_acceptance"]["missing"])
+        self.assertIn("resourceid=0", metric["semantic_acceptance"]["missing"])
+        self.assertIn("presence=1", metric["semantic_acceptance"]["missing"])
+
+    def test_skill_disclosure_accepts_localized_available_status(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="A",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "MDBCTL 可用。Name：Disk0；ResourceId：0；Presence：1。"
+                "这些证据不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        self.assertTrue(record.metric()["valid"])
+
+    def test_skill_disclosure_rejects_superstring_value_mismatches(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "MDBCTL=unavailable Name=Disk01 ResourceId=10 Presence=11，"
+                "不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        metric = record.metric()
+
+        self.assertFalse(metric["valid"])
+        self.assertEqual(
+            metric["semantic_acceptance"]["missing"],
+            [
+                "mdbctl=available",
+                "name=disk0",
+                "resourceid=0",
+                "presence=1",
+            ],
+        )
 
     def test_candidate_scope_rejects_unrelated_mcp_discovery(self) -> None:
         tools = [
@@ -916,7 +973,7 @@ class AgentGatewayAbTests(unittest.TestCase):
             candidate_observe_event()["item"],
         ]
 
-        validation = module.candidate_scope_acceptance(tools)
+        validation = module.observe_scope_acceptance(tools)
 
         self.assertFalse(validation["passed"])
         self.assertIn("unrelated MCP tools", validation["errors"])
@@ -925,7 +982,7 @@ class AgentGatewayAbTests(unittest.TestCase):
         observe = candidate_observe_event()["item"]
         observe["arguments"]["assurance"] = "auto"
 
-        validation = module.candidate_scope_acceptance([observe])
+        validation = module.observe_scope_acceptance([observe])
 
         self.assertFalse(validation["passed"])
         self.assertIn("legacy assurance input", validation["errors"])
