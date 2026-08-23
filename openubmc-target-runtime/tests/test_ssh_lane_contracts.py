@@ -384,6 +384,23 @@ class SshLaneContractTests(unittest.TestCase):
         self.assertEqual(transport.opens, 1)
         self.assertEqual(transport.max_active_channels, 2)
 
+    def test_target_epoch_advance_never_reuses_the_previous_master(self) -> None:
+        lane = self.lane()
+        first = lane.run_channel("before-epoch", timeout=2)
+
+        observed_epoch = self.task.ensure_target_epoch(
+            self.target,
+            1,
+            reason="selector-refresh",
+        )
+        second = lane.run_channel("after-epoch", timeout=2)
+
+        self.assertEqual(first.stdout, "before-epoch\n")
+        self.assertEqual(second.stdout, "after-epoch\n")
+        self.assertEqual(observed_epoch, 1)
+        self.assertEqual(self.transport.opens, 2)
+        self.assertEqual(self.transport.closes, 1)
+
     def test_master_loss_does_not_replay_current_request_and_next_request_reconnects(self) -> None:
         lane = self.lane()
         lane.get_dbus_environment(lambda: {"DBUS_SESSION_BUS_ADDRESS": "old"})

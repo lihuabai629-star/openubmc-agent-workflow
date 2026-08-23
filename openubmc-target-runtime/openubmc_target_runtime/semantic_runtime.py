@@ -326,6 +326,9 @@ class ObservationQuery:
                 for name in selector.names
             ],
             "_agent_assured": assured,
+            "_agent_selectors": [
+                selector.to_public_dict() for selector in self.selectors
+            ],
             "profile": "mdb",
         }
 
@@ -1286,7 +1289,8 @@ class ObservationResult:
     query: ObservationQuery
     raw: Mapping[str, object]
     assurance: str
-    observation_ref: ObservationRef
+    observation_ref: ObservationRef | None
+    source: Mapping[str, object] = field(default_factory=dict)
 
 
 class SemanticRuntimePort(Protocol):

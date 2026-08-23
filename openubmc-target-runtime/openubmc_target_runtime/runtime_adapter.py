@@ -207,6 +207,10 @@ class RuntimeSemanticAdapter:
         if command.observation_ref is not None:
             source = command.observation_ref.to_source_dict()
             stored = self.context_runtime.load_observation(source)
+            if stored.get("reusable", True) is not True:
+                raise ValueError(
+                    "ObservationRef does not contain a temporally coherent live scope"
+                )
             fresh_until = stored.get("fresh_until", 0)
             if (
                 isinstance(fresh_until, bool)

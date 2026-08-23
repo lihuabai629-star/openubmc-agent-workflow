@@ -97,6 +97,24 @@ class RuntimeContractionContracts(unittest.TestCase):
                         query=query,
                         raw={
                             "observed_at": "2026-08-20T00:00:00Z",
+                            "observation_timing": {
+                                "started_at": "2026-08-20T00:00:00Z",
+                                "completed_at": "2026-08-20T00:00:00Z",
+                                "selectors": [
+                                    {
+                                        "selector_id": "selector-1",
+                                        "kind": "capability",
+                                        "started_at": "2026-08-20T00:00:00Z",
+                                        "completed_at": "2026-08-20T00:00:00Z",
+                                        "status": "observed",
+                                    }
+                                ],
+                                "classification": "coherent",
+                                "max_skew_seconds": 5.0,
+                                "observed_skew_seconds": 0.0,
+                                "reusable": True,
+                                "gaps": [],
+                            },
                             "result": {
                                 "capabilities": {"ssh_transport": True},
                                 "lanes": {"ssh": {}},

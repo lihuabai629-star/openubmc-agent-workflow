@@ -20,6 +20,7 @@ from .semantic_runtime import (
     decode_run_command,
     fingerprint,
 )
+from .observation import observation_consistency
 
 
 AGENT_GATEWAY_SCHEMA = f"{RUNTIME_API_VERSION}/agent-gateway-v1"
@@ -219,12 +220,6 @@ class CostGovernor:
             "receipt_id": _bounded_text(result.get("receipt_id"), 128),
             "status": "incomplete",
             "scope": result.get("scope", {}),
-            "observation_ref": _compact_value(
-                result.get("observation_ref", {}),
-                max_depth=2,
-                max_items=8,
-                max_string=128,
-            ),
             "freshness": _compact_value(
                 result.get("freshness", {}),
                 max_depth=2,
@@ -238,6 +233,12 @@ class CostGovernor:
                 max_string=128,
             ),
             "results": {},
+            "consistency": _compact_value(
+                result.get("consistency", {}),
+                max_depth=3,
+                max_items=16,
+                max_string=128,
+            ),
             "coverage": {
                 "requested": coverage.get("requested", 0),
                 "available": 0,
@@ -250,9 +251,16 @@ class CostGovernor:
             "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
             "content_compacted": True,
         }
+        if result.get("observation_ref"):
+            fallback["observation_ref"] = _compact_value(
+                result.get("observation_ref"),
+                max_depth=2,
+                max_items=8,
+                max_string=128,
+            )
         if len(_json_bytes(fallback)) <= OBSERVATION_MAX_BYTES:
             return fallback
-        return {
+        minimal = {
             "schema": OBSERVATION_RECEIPT_SCHEMA,
             "receipt_id": _bounded_text(result.get("receipt_id"), 128),
             "status": "incomplete",
@@ -260,12 +268,6 @@ class CostGovernor:
                 "fingerprint": _fingerprint(result.get("scope", {})),
                 "content_compacted": True,
             },
-            "observation_ref": _compact_value(
-                result.get("observation_ref", {}),
-                max_depth=2,
-                max_items=8,
-                max_string=128,
-            ),
             "freshness": {"status": "unknown"},
             "target": {},
             "results": {},
@@ -281,6 +283,14 @@ class CostGovernor:
             "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
             "content_compacted": True,
         }
+        if result.get("observation_ref"):
+            minimal["observation_ref"] = _compact_value(
+                result.get("observation_ref"),
+                max_depth=2,
+                max_items=8,
+                max_string=128,
+            )
+        return minimal
 
     @staticmethod
     def turn(document: Mapping[str, object]) -> dict[str, object]:
@@ -547,11 +557,13 @@ class ResultProjector:
             or _text(result.get("completed_at"))
             or _text(result.get("started_at"))
         )
+        consistency = observation_consistency(raw)
         target_detail = self._target_identity(result)
+        source_reusable = source is not None and source.get("reusable", True) is True
         observation_ref = (
             ObservationRef.from_public_dict(source).to_public_dict()
-            if source
-            else {}
+            if source and source_reusable
+            else None
         )
         receipt_seed = {
             "scope": scope.to_public_dict(),
@@ -583,31 +595,46 @@ class ResultProjector:
         )
         if counts["not_checked"]:
             gaps.append(f"{counts['not_checked']} requested observations were not checked")
+        consistency_gaps = consistency.get("gaps", [])
+        if isinstance(consistency_gaps, list):
+            gaps.extend(_bounded_text(item, 256) for item in consistency_gaps[:8])
+        temporally_coherent = consistency.get("classification") == "coherent"
+        if not temporally_coherent:
+            for claim in claims:
+                claim["status"] = "partial"
         document = {
             "schema": OBSERVATION_RECEIPT_SCHEMA,
             "receipt_id": receipt_id,
-            "status": "complete" if counts["not_checked"] == 0 else "incomplete",
-            "observation_ref": observation_ref,
+            "status": (
+                "complete"
+                if counts["not_checked"] == 0 and temporally_coherent
+                else "incomplete"
+            ),
             "scope": scope.to_public_dict(),
             "freshness": {
                 "mode": scope.freshness_mode,
                 "max_age_seconds": scope.max_age_seconds,
                 "observed_at": observed_at,
-                "status": "live" if observed_at else "unknown",
+                "status": (
+                    "live" if observed_at and temporally_coherent else "unknown"
+                ),
             },
             "target": {"selector": scope.target, "identity": target_detail},
             "results": observations,
+            "consistency": consistency,
             "coverage": {
                 "requested": requested,
                 "available": counts["available"],
                 "unavailable": counts["unavailable"],
                 "not_checked": counts["not_checked"],
-                "complete": counts["not_checked"] == 0,
+                "complete": counts["not_checked"] == 0 and temporally_coherent,
             },
             "claims": claims,
             "evidence": evidence,
-            "gaps": gaps,
+            "gaps": list(dict.fromkeys(gaps))[:16],
         }
+        if observation_ref is not None:
+            document["observation_ref"] = observation_ref
         return CostGovernor.observation(document)
 
     def turn(self, turn: RunTurn) -> dict[str, object]:
@@ -641,11 +668,14 @@ class AgentGateway:
             task_id=task_id,
             operation_id=operation_id,
         )
+        source = dict(result.source)
+        if not source and result.observation_ref is not None:
+            source = result.observation_ref.to_source_dict()
         return self.projector.observation(
             result.raw,
             result.query,
             assurance=result.assurance,
-            source=result.observation_ref.to_source_dict(),
+            source=source or None,
         )
 
     def execute(

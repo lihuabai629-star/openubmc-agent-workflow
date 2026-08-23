@@ -750,6 +750,7 @@ class AutoAssuranceSemanticBackend(SemanticBackend):
     def __init__(self) -> None:
         super().__init__()
         self.assurance_calls: list[bool] = []
+        self.selector_scopes: list[list[dict[str, object]]] = []
         self.mdb_collections = 0
 
     def observe_query(self, task, arguments, context) -> dict[str, object]:
@@ -757,14 +758,59 @@ class AutoAssuranceSemanticBackend(SemanticBackend):
         assured = bool(arguments.get("assured"))
         prior = arguments.get("prior_observation")
         self.assurance_calls.append(assured)
+        self.selector_scopes.append(
+            [
+                dict(selector)
+                for selector in arguments.get("selectors", [])
+                if isinstance(selector, dict)
+            ]
+        )
         if isinstance(prior, dict):
             value = json.loads(json.dumps(prior))
             value["result"]["capabilities"]["remote_log_file"] = True
             value["observed_at"] = "2026-08-19T00:00:01Z"
+            value["observation_timing"] = {
+                "started_at": "2026-08-19T00:00:00Z",
+                "completed_at": "2026-08-19T00:00:01Z",
+                "selectors": [
+                    {
+                        "selector_id": str(selector.get("id", "")),
+                        "kind": str(selector.get("kind", "")),
+                        "started_at": "2026-08-19T00:00:00Z",
+                        "completed_at": (
+                            "2026-08-19T00:00:01Z"
+                            if selector.get("kind") == "capability"
+                            else "2026-08-19T00:00:00Z"
+                        ),
+                        "status": "observed",
+                    }
+                    for selector in arguments.get("selectors", [])
+                    if isinstance(selector, dict)
+                ],
+            }
             return value
         self.mdb_collections += 1
         value = self.debug_collect(task, arguments, context)
         value["result"]["capabilities"].pop("remote_log_file", None)
+        value["observation_timing"] = {
+            "started_at": "2026-08-19T00:00:00Z",
+            "completed_at": "2026-08-19T00:00:00Z",
+            "selectors": [
+                {
+                    "selector_id": str(selector.get("id", "")),
+                    "kind": str(selector.get("kind", "")),
+                    "started_at": "2026-08-19T00:00:00Z",
+                    "completed_at": "2026-08-19T00:00:00Z",
+                    "status": (
+                        "missing"
+                        if selector.get("kind") == "capability"
+                        else "observed"
+                    ),
+                }
+                for selector in arguments.get("selectors", [])
+                if isinstance(selector, dict)
+            ],
+        }
         return value
 
 
@@ -774,6 +820,92 @@ class FailingAssuranceSemanticBackend(AutoAssuranceSemanticBackend):
             self.assurance_calls.append(True)
             raise OSError("assurance transport is temporarily unavailable")
         return super().observe_query(task, arguments, context)
+
+
+class SelectorTimingSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.selector_scopes: list[list[dict[str, object]]] = []
+
+    def observe_query(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        selectors = arguments.get("selectors")
+        if not isinstance(selectors, list):
+            raise TypeError("selectors must reach the observation adapter")
+        self.selector_scopes.append(
+            [dict(selector) for selector in selectors if isinstance(selector, dict)]
+        )
+        value = self.debug_collect(task, arguments, context)
+        value["observation_timing"] = {
+            "started_at": "2026-08-19T00:00:00Z",
+            "completed_at": "2026-08-19T00:00:02Z",
+            "selectors": [
+                {
+                    "selector_id": "mdb-second",
+                    "kind": "mdb",
+                    "started_at": "2026-08-19T00:00:00Z",
+                    "completed_at": "2026-08-19T00:00:01Z",
+                    "status": "observed",
+                },
+                {
+                    "selector_id": "caps-first",
+                    "kind": "capability",
+                    "started_at": "2026-08-19T00:00:01Z",
+                    "completed_at": "2026-08-19T00:00:02Z",
+                    "status": "observed",
+                },
+            ],
+        }
+        return value
+
+
+class MissingSelectorTimingSemanticBackend(SelectorTimingSemanticBackend):
+    def observe_query(self, task, arguments, context) -> dict[str, object]:
+        value = super().observe_query(task, arguments, context)
+        value["observation_timing"]["selectors"][0].update(
+            {"started_at": "", "completed_at": "", "status": "missing"}
+        )
+        return value
+
+
+class StaleSelectorTimingSemanticBackend(SelectorTimingSemanticBackend):
+    def observe_query(self, task, arguments, context) -> dict[str, object]:
+        value = super().observe_query(task, arguments, context)
+        value["observation_timing"]["started_at"] = "2026-08-19T00:00:01Z"
+        value["observation_timing"]["selectors"][0].update(
+            {
+                "started_at": "2026-08-19T00:00:00Z",
+                "completed_at": "2026-08-19T00:00:00Z",
+            }
+        )
+        return value
+
+
+class SkewedSelectorTimingSemanticBackend(SelectorTimingSemanticBackend):
+    def observe_query(self, task, arguments, context) -> dict[str, object]:
+        value = super().observe_query(task, arguments, context)
+        value["observation_timing"]["completed_at"] = "2026-08-19T00:00:20Z"
+        value["observation_timing"]["selectors"][1]["started_at"] = (
+            "2026-08-19T00:00:19Z"
+        )
+        value["observation_timing"]["selectors"][1]["completed_at"] = (
+            "2026-08-19T00:00:20Z"
+        )
+        return value
+
+
+class NonImprovingAssuranceSemanticBackend(AutoAssuranceSemanticBackend):
+    def observe_query(self, task, arguments, context) -> dict[str, object]:
+        value = super().observe_query(task, arguments, context)
+        if arguments.get("assured"):
+            value["result"]["lanes"]["ssh"]["mdbctl"]["payload"]["result"] = {
+                "properties": {"AssuredValue": {"Value": "must-not-win"}}
+            }
+            value["observation_timing"]["completed_at"] = "2026-08-19T00:00:20Z"
+            value["observation_timing"]["selectors"][0]["completed_at"] = (
+                "2026-08-19T00:00:20Z"
+            )
+        return value
 
 
 class OversizedTurnRuntime:
@@ -1168,6 +1300,17 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="oversized-scope-1",
             )
 
+        with self.assertRaisesRegex(ScopeViolation, "undeclared fields"):
+            ScopeContract.from_query(
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"kind": "mdb", "queries": ["lsprop Object0"]}
+                    ],
+                    "mdb_concurrency": "unbounded",
+                }
+            )
+
     def test_scope_contract_rejects_duplicate_selector_ids(self) -> None:
         with self.assertRaisesRegex(ScopeViolation, "selector ids must be unique"):
             ScopeContract.from_query(
@@ -1274,6 +1417,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "complete")
         self.assertNotIn("assurance", receipt)
         self.assertEqual(backend.assurance_calls, [False, True])
+        self.assertEqual(backend.selector_scopes[0], backend.selector_scopes[1])
         self.assertEqual(backend.mdb_collections, 1)
         with self.assertRaises(ScopeViolation):
             ScopeContract.from_query(
@@ -1312,6 +1456,204 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertTrue(
             any("automatic assurance failed" in gap for gap in receipt["gaps"]),
+            receipt["gaps"],
+        )
+
+    def test_selector_order_and_timing_survive_adapter_persistence_and_projection(
+        self,
+    ) -> None:
+        backend = SelectorTimingSemanticBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {
+                            "id": "mdb-second",
+                            "kind": "mdb",
+                            "queries": ["lsprop Object0"],
+                        },
+                        {
+                            "id": "caps-first",
+                            "kind": "capability",
+                            "names": ["ssh"],
+                        },
+                    ],
+                },
+                task_id="selector-timing",
+                operation_id="selector-timing-1",
+            )
+            reference = receipt["observation_ref"]
+            stored = service._test.context_runtime.load_observation(
+                {
+                    "schema": "openubmc.runtime.v1/observation-source-v1",
+                    "blob_id": str(reference["digest"]).removeprefix("sha256:"),
+                    "sha256": str(reference["digest"]).removeprefix("sha256:"),
+                    "uri": reference["handle"],
+                    "byte_count": reference["size"],
+                    "kind": reference["kind"],
+                    "provenance": reference["provenance"],
+                    "retention_hint": reference["retention_hint"],
+                    "target": reference["target"],
+                    "scope_digest": str(reference["scope_digest"]).removeprefix(
+                        "sha256:"
+                    ),
+                    "observed_at": reference["observed_at"],
+                    "target_fingerprint": reference["target_fingerprint"],
+                    "target_epoch": reference["target_epoch"],
+                }
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(
+            [selector["id"] for selector in backend.selector_scopes[0]],
+            ["mdb-second", "caps-first"],
+        )
+        self.assertEqual(
+            list(receipt["results"]),
+            ["mdb-second", "caps-first"],
+        )
+        self.assertEqual(receipt["consistency"]["classification"], "coherent")
+        self.assertEqual(
+            [
+                selector["selector_id"]
+                for selector in receipt["consistency"]["selectors"]
+            ],
+            ["mdb-second", "caps-first"],
+        )
+        self.assertEqual(
+            stored["raw"]["observation_timing"],
+            receipt["consistency"],
+        )
+        self.assertEqual(
+            stored["observation_timing"],
+            receipt["consistency"],
+        )
+        self.assertTrue(stored["reusable"])
+
+    def test_over_skew_observation_remains_visible_but_has_no_reusable_ref(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(SkewedSelectorTimingSemanticBackend())
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {
+                            "id": "mdb-second",
+                            "kind": "mdb",
+                            "queries": ["lsprop Object0"],
+                        },
+                        {
+                            "id": "caps-first",
+                            "kind": "capability",
+                            "names": ["ssh"],
+                        },
+                    ],
+                },
+                task_id="selector-skew",
+                operation_id="selector-skew-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(receipt["consistency"]["classification"], "inconsistent")
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any("skew" in gap for gap in receipt["gaps"]),
+            receipt["gaps"],
+        )
+        self.assertEqual(receipt["results"]["mdb-second"]["kind"], "mdb")
+        self.assertTrue(
+            all(item["uri"].startswith("blob://") for item in receipt["evidence"])
+        )
+
+    def test_missing_and_stale_selector_timing_are_explicit_non_reusable_gaps(
+        self,
+    ) -> None:
+        for backend_type, expected in (
+            (MissingSelectorTimingSemanticBackend, "missing"),
+            (StaleSelectorTimingSemanticBackend, "stale"),
+        ):
+            with self.subTest(expected=expected):
+                service = RuntimeMcpService(backend_type())
+                try:
+                    receipt = service.call_exposed_tool(
+                        "observe",
+                        {
+                            "target": "192.0.2.10",
+                            "selectors": [
+                                {
+                                    "id": "mdb-second",
+                                    "kind": "mdb",
+                                    "queries": ["lsprop Object0"],
+                                },
+                                {
+                                    "id": "caps-first",
+                                    "kind": "capability",
+                                    "names": ["ssh"],
+                                },
+                            ],
+                        },
+                        task_id=f"selector-{expected}",
+                        operation_id=f"selector-{expected}-1",
+                    )
+                finally:
+                    service.close()
+
+                self.assertEqual(receipt["status"], "incomplete")
+                self.assertEqual(
+                    receipt["consistency"]["classification"], "partial"
+                )
+                self.assertNotIn("observation_ref", receipt)
+                self.assertTrue(
+                    any(expected in gap for gap in receipt["gaps"]),
+                    receipt["gaps"],
+                )
+
+    def test_assurance_keeps_fast_scope_when_temporal_consistency_does_not_improve(
+        self,
+    ) -> None:
+        backend = NonImprovingAssuranceSemanticBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {
+                            "id": "caps",
+                            "kind": "capability",
+                            "names": ["telnet"],
+                        },
+                        {
+                            "id": "mdb",
+                            "kind": "mdb",
+                            "queries": ["lsprop Object0"],
+                        },
+                    ],
+                },
+                task_id="selector-assurance-fallback",
+                operation_id="selector-assurance-fallback-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(backend.assurance_calls, [False, True])
+        self.assertEqual(receipt["consistency"]["classification"], "partial")
+        self.assertIn(
+            "Object0",
+            receipt["results"]["mdb"]["values"][0]["value"]["properties"],
+        )
+        self.assertTrue(
+            any("did not improve" in gap for gap in receipt["gaps"]),
             receipt["gaps"],
         )
 

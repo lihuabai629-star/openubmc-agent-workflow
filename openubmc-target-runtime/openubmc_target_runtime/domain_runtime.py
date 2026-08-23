@@ -256,12 +256,17 @@ class RuntimeDomainExecution:
         descriptor = self.catalog.require(name)
         raw_arguments = dict(arguments)
         capability_names = raw_arguments.pop("_agent_capability_names", [])
+        selectors = raw_arguments.pop("_agent_selectors", [])
         assured = raw_arguments.pop("_agent_assured", False)
         prior_observation = raw_arguments.pop("_agent_prior_observation", None)
         if not isinstance(capability_names, list) or not all(
             isinstance(item, str) for item in capability_names
         ):
             raise TypeError("_agent_capability_names must be an array of strings")
+        if not isinstance(selectors, list) or not all(
+            isinstance(item, Mapping) for item in selectors
+        ):
+            raise TypeError("_agent_selectors must be an array of objects")
         if not isinstance(assured, bool):
             raise TypeError("_agent_assured must be a boolean")
         if prior_observation is not None and not isinstance(
@@ -292,6 +297,7 @@ class RuntimeDomainExecution:
             domain_arguments["_context_authoritative"] = True
         domain_arguments["_agent_observation"] = True
         domain_arguments["_agent_capability_names"] = list(capability_names)
+        domain_arguments["_agent_selectors"] = [dict(item) for item in selectors]
         domain_arguments["_agent_assured"] = assured
         if isinstance(prior_observation, Mapping):
             domain_arguments["_agent_prior_observation"] = dict(

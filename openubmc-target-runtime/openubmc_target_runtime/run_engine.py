@@ -55,6 +55,13 @@ from .effect_runner import (
     PreparedEffect,
 )
 from .capability import EffectClass
+from .observation import (
+    observation_consistency,
+    observation_consistency_score,
+    observation_reusable,
+    qualify_observation,
+    selected_scope_complete,
+)
 from .workflow import (
     DEFAULT_PHASE_REGISTRY,
     DEFAULT_WORKFLOW_DEFINITIONS,
@@ -66,16 +73,6 @@ WORKFLOW_INTERNAL_MAX_STEPS = 64
 EFFECT_SETTLEMENT_STATUSES = frozenset(
     {"accepted", "running", "blocked", "mutation_outcome_unknown"}
 )
-_CAPABILITY_KEYS = {
-    "ssh": "ssh_transport",
-    "telnet": "remote_log_file",
-    "mdbctl": "mdbctl",
-    "busctl": "busctl",
-    "dbus": "dbus_env",
-    "alarms": "active_alarm_endpoint_verified",
-}
-
-
 class RunTransitionKind(str, Enum):
     GATE_OPENED = "gate_opened"
     RUN_CANCELLED = "run_cancelled"
@@ -327,29 +324,11 @@ class ObservationEngine:
     def _needs_assurance(
         raw: Mapping[str, object], query: ObservationQuery
     ) -> bool:
+        consistency = observation_consistency(raw)
+        if consistency and consistency.get("classification") != "coherent":
+            return True
         result = _mapping(raw.get("result"))
-        capabilities = _mapping(result.get("capabilities"))
-        lanes = _mapping(result.get("lanes"))
-        ssh = _mapping(lanes.get("ssh"))
-        mdb_index = 0
-        for selector in query.selectors:
-            if selector.kind == "capability":
-                if any(
-                    _CAPABILITY_KEYS[name] not in capabilities
-                    or (
-                        name == "alarms"
-                        and capabilities.get(_CAPABILITY_KEYS[name]) is not True
-                    )
-                    for name in selector.names
-                ):
-                    return True
-                continue
-            for _query in selector.queries:
-                name = "mdbctl" if mdb_index == 0 else f"mdbctl_{mdb_index + 1}"
-                mdb_index += 1
-                if name not in ssh:
-                    return True
-        return not bool(
+        return not selected_scope_complete(raw, query) or not bool(
             _text(raw.get("observed_at"))
             or _text(result.get("completed_at"))
             or _text(result.get("started_at"))
@@ -368,6 +347,12 @@ class ObservationEngine:
             task_id=task_id,
             operation_id=operation_id,
         )
+        raw = qualify_observation(
+            raw,
+            query,
+            scope_complete=selected_scope_complete(raw, query),
+        )
+        fast_raw = raw
         assurance = "fast"
         if self._needs_assurance(raw, query):
             try:
@@ -377,6 +362,11 @@ class ObservationEngine:
                     task_id=task_id,
                     operation_id=f"{operation_id}-assured",
                     prior=raw,
+                )
+                raw = qualify_observation(
+                    raw,
+                    query,
+                    scope_complete=selected_scope_complete(raw, query),
                 )
             except AssuranceUnavailable:
                 pass
@@ -391,7 +381,19 @@ class ObservationEngine:
                 fallback["gaps"] = gaps
                 raw = fallback
             else:
-                assurance = "assured"
+                if observation_consistency_score(
+                    raw
+                ) > observation_consistency_score(fast_raw):
+                    assurance = "assured"
+                else:
+                    fallback = dict(fast_raw)
+                    raw_gaps = fallback.get("gaps", [])
+                    gaps = list(raw_gaps) if isinstance(raw_gaps, list) else []
+                    gaps.append(
+                        "automatic assurance did not improve selector temporal consistency"
+                    )
+                    fallback["gaps"] = gaps
+                    raw = fallback
         source = self.driver.persist_observation(
             raw,
             query=query,
@@ -401,7 +403,12 @@ class ObservationEngine:
             query=query,
             raw=dict(raw),
             assurance=assurance,
-            observation_ref=ObservationRef.from_public_dict(source),
+            observation_ref=(
+                ObservationRef.from_public_dict(source)
+                if observation_reusable(raw)
+                else None
+            ),
+            source=dict(source),
         )
 
 

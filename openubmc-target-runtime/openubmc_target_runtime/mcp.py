@@ -3123,6 +3123,7 @@ class RuntimeMcpService:
             )
         observation_mode = bounded_arguments.pop("_agent_observation", False)
         capability_names = bounded_arguments.pop("_agent_capability_names", [])
+        selectors = bounded_arguments.pop("_agent_selectors", [])
         assured = bounded_arguments.pop("_agent_assured", False)
         prior_observation = bounded_arguments.pop(
             "_agent_prior_observation", None
@@ -3130,6 +3131,9 @@ class RuntimeMcpService:
         if observation_mode:
             observed_arguments = dict(bounded_arguments)
             observed_arguments["capability_names"] = list(capability_names)
+            observed_arguments["selectors"] = [
+                dict(item) for item in selectors if isinstance(item, Mapping)
+            ]
             observed_arguments["assured"] = assured
             if isinstance(prior_observation, Mapping):
                 observed_arguments["prior_observation"] = dict(prior_observation)
