@@ -1122,12 +1122,19 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
             and not uncertainty
         ):
             return False
-        carry_finality = bool(
+        if (
             re.fullmatch(
                 r"(?:最终|结论|结果|最终结论|最终结果)(?:是|为|[:：])?",
                 clause,
             )
-        )
+            or re.match(
+                r"^(?:最终结论|最终结果|结论|结果)(?:是|为|[:：])",
+                clause,
+            )
+        ):
+            carry_finality = True
+        elif "异常" in clause:
+            carry_finality = False
     return True
 
 
