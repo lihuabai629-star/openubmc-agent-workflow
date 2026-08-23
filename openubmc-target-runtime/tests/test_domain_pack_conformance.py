@@ -20,6 +20,7 @@ from openubmc_target_runtime import (  # noqa: E402
     DomainExecutor,
     DomainPack,
     DomainPackAuthorContract,
+    DomainPackConformanceExample,
     DomainPackConformanceSuite,
     DomainReceipt,
     EffectClass,
@@ -54,6 +55,23 @@ def descriptor(
         timeout_seconds=10,
         evidence_types=("test-result",),
         mutation=mutation,
+    )
+
+
+def example(
+    operation: str,
+    *,
+    status: str = "succeeded",
+    arguments: dict[str, object] | None = None,
+    value: dict[str, object] | None = None,
+) -> DomainPackConformanceExample:
+    return DomainPackConformanceExample(
+        arguments=lambda _context: dict(arguments or {}),
+        receipt=lambda _action: DomainReceipt(
+            operation=operation,
+            status=status,
+            value=dict(value or {"ok": True}),
+        ),
     )
 
 
@@ -137,6 +155,7 @@ class DomainPackConformanceTests(unittest.TestCase):
             effect_class=EffectClass.READ_ONLY,
             adapter=adapter,
             verifier=lambda _action, receipt: receipt.status == "succeeded",
+            conformance_example=example("fake_read"),
         )
 
         pack = contract.build(registry)
@@ -157,6 +176,7 @@ class DomainPackConformanceTests(unittest.TestCase):
                 adapter=adapter,
                 reconciler=adapter,
                 verifier=lambda _action, _receipt: True,
+                conformance_example=example("first_read"),
             )
         with self.assertRaisesRegex(ValueError, "reconciler and journal action"):
             DomainPackAuthorContract(
@@ -166,6 +186,7 @@ class DomainPackConformanceTests(unittest.TestCase):
                 effect_class=EffectClass.RECONCILABLE_MUTATION,
                 adapter=adapter,
                 verifier=lambda _action, _receipt: True,
+                conformance_example=example("second_read"),
             )
         contract = DomainPackAuthorContract(
             name="mismatched",
@@ -174,6 +195,7 @@ class DomainPackConformanceTests(unittest.TestCase):
             effect_class=EffectClass.READ_ONLY,
             adapter=adapter,
             verifier=lambda _action, _receipt: True,
+            conformance_example=example("fake_mutation"),
         )
         with self.assertRaisesRegex(ValueError, "Effect class"):
             contract.build(CapabilityRegistry((descriptor("fake_mutation"),)))
@@ -185,6 +207,7 @@ class DomainPackConformanceTests(unittest.TestCase):
                 effect_class=EffectClass.READ_ONLY,
                 adapter=adapter,
                 verifier=lambda _action, _receipt: True,
+                conformance_example=example("second_read"),
                 artifact_contract=ArtifactContract(
                     path_fields=("artifact_path",),
                     artifact_kind="redacted-input",
@@ -202,6 +225,7 @@ class DomainPackConformanceTests(unittest.TestCase):
                 effect_class=EffectClass.READ_ONLY,
                 adapter=adapter,
                 verifier=lambda _action, _receipt: True,
+                conformance_example=example("first_read"),
                 artifact_contract=ArtifactContract(
                     path_fields=("_artifact_path",),
                     artifact_kind="first-artifact",
@@ -216,6 +240,7 @@ class DomainPackConformanceTests(unittest.TestCase):
                 effect_class=EffectClass.READ_ONLY,
                 adapter=adapter,
                 verifier=lambda _action, _receipt: True,
+                conformance_example=example("second_read"),
                 artifact_contract=ArtifactContract(
                     path_fields=("_artifact_path",),
                     artifact_kind="second-artifact",
@@ -243,6 +268,7 @@ class DomainPackConformanceTests(unittest.TestCase):
                 effect_class=EffectClass.READ_ONLY,
                 adapter=adapter,
                 verifier=lambda _action, _receipt: True,
+                conformance_example=example("second_read"),
                 artifact_contract=contracts[1].artifact_contract,
                 artifact_phase="shared.phase",
             ),
@@ -259,6 +285,7 @@ class DomainPackConformanceTests(unittest.TestCase):
                 effect_class=EffectClass.READ_ONLY,
                 adapter=adapter,
                 verifier=lambda _action, _receipt: True,
+                conformance_example=example("first_read"),
             ),
         )
         with self.assertRaisesRegex(ValueError, "duplicate Domain Pack operation"):
@@ -271,10 +298,45 @@ class DomainPackConformanceTests(unittest.TestCase):
             effect_class=EffectClass.READ_ONLY,
             adapter=adapter,
             verifier=lambda _action, _receipt: True,
+            conformance_example=example("first_read"),
             capability_requirements=("test.not-registered",),
         )
         with self.assertRaisesRegex(ValueError, "unregistered capability"):
             DomainPackConformanceSuite().bind(registry, (missing_capability,))
+
+        legacy_pack = DomainPack(
+            name="legacy",
+            version="1",
+            descriptor=registry.require("first_read"),
+            effect_class=EffectClass.READ_ONLY,
+            adapter=adapter,
+            verifier=lambda _action, _receipt: True,
+        )
+        with self.assertRaisesRegex(TypeError, "author contract"):
+            DomainPackConformanceSuite().bind(registry, (legacy_pack,))
+
+    def test_pack_set_bind_executes_each_typed_behavioral_example(self) -> None:
+        adapter = CallableDomainAdapter(lambda _context, _arguments: {})
+        contract = DomainPackAuthorContract(
+            name="invalid-recovery-example",
+            version="1",
+            operation="fake_mutation",
+            effect_class=EffectClass.RECONCILABLE_MUTATION,
+            adapter=adapter,
+            reconciler=adapter,
+            verifier=lambda _action, receipt: receipt.status == "verified",
+            journal_action=lambda _arguments: "",
+            conformance_example=example(
+                "fake_mutation",
+                status="verified",
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "journal action"):
+            DomainPackConformanceSuite().bind(
+                CapabilityRegistry((descriptor("fake_mutation"),)),
+                (contract,),
+            )
 
     def test_behavioral_conformance_verifies_identity_receipt_and_effect_classification(self) -> None:
         adapter = CallableDomainAdapter(lambda _context, _arguments: {})
@@ -292,6 +354,7 @@ class DomainPackConformanceTests(unittest.TestCase):
             effect_class=EffectClass.READ_ONLY,
             adapter=adapter,
             verifier=lambda _action, receipt: receipt.status == "succeeded",
+            conformance_example=example("fake_read"),
         ).build(CapabilityRegistry((descriptor("fake_read", mutation=False),)))
 
         read_report = suite.verify_example(
@@ -318,6 +381,10 @@ class DomainPackConformanceTests(unittest.TestCase):
             adapter=adapter,
             reconciler=adapter,
             verifier=lambda _action, receipt: receipt.status == "verified",
+            conformance_example=example(
+                "fake_mutation",
+                status="verified",
+            ),
             journal_action=lambda _arguments: "mutate",
         ).build(CapabilityRegistry((descriptor("fake_mutation"),)))
         mutation_report = suite.verify_example(
@@ -354,6 +421,7 @@ class DomainPackConformanceTests(unittest.TestCase):
             effect_class=EffectClass.READ_ONLY,
             adapter=adapter,
             verifier=lambda _action, _receipt: "yes",
+            conformance_example=example("fake_read"),
         ).build(CapabilityRegistry((descriptor("fake_read", mutation=False),)))
         with self.assertRaisesRegex(ValueError, "boolean"):
             suite.verify_example(
@@ -1045,6 +1113,13 @@ class DomainPackConformanceTests(unittest.TestCase):
                         receipt.status == "succeeded"
                         and receipt.value.get("summary") == "fake log bundle collected"
                     ),
+                    conformance_example=example(
+                        "log_bundle_collect",
+                        value={
+                            "ok": True,
+                            "summary": "fake log bundle collected",
+                        },
+                    ),
                 ),
             )
 
@@ -1091,6 +1166,28 @@ class DomainPackConformanceTests(unittest.TestCase):
             conformance["operations"],
             ["live_patch_run", "log_bundle_collect"],
         )
+
+    def test_runtime_rejects_an_extension_that_bypasses_the_author_contract(self) -> None:
+        class FullBackend(Backend):
+            log_bundle_collect = Backend.debug_run
+
+        def raw_pack_extension(registry, adapters):
+            return (
+                DomainPack(
+                    name="raw-log-bundle",
+                    version="1",
+                    descriptor=registry.require("log_bundle_collect"),
+                    effect_class=EffectClass.READ_ONLY,
+                    adapter=adapters["log_bundle_collect"],
+                    verifier=lambda _action, _receipt: True,
+                ),
+            )
+
+        with self.assertRaisesRegex(TypeError, "author contracts"):
+            RuntimeMcpService(
+                FullBackend(),
+                domain_pack_extensions=raw_pack_extension,
+            )
 
 
 if __name__ == "__main__":

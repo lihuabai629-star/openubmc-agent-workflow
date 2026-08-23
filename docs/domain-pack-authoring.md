@@ -19,6 +19,13 @@ contract = DomainPackAuthorContract(
     verifier=lambda action, receipt: (
         result_contract.bind(action, receipt) is not None
     ),
+    conformance_example=DomainPackConformanceExample(
+        arguments=lambda context: {
+            "ip": context.target_id,
+            "artifact_ref": hermetic_bundle_ref(context),
+        },
+        receipt=lambda action: hermetic_index_receipt(action),
+    ),
     artifact_contract=ArtifactContract(
         path_fields=("_artifact_path",),
         artifact_kind="openubmc-log-bundle",
@@ -45,6 +52,10 @@ contract = DomainPackAuthorContract(
     adapter=upgrade_adapter,
     reconciler=upgrade_adapter,
     verifier=verify_upgrade_receipt,
+    conformance_example=DomainPackConformanceExample(
+        arguments=lambda context: hermetic_upgrade_arguments(context),
+        receipt=lambda action: hermetic_verified_upgrade_receipt(action),
+    ),
     journal_action=lambda arguments: "upgrade",
     artifact_contract=ArtifactContract(
         path_fields=("artifact_path",),
@@ -62,7 +73,9 @@ Mutation Pack 固定单次执行尝试。结果未知时只能由 reconciler 使
 
 ## 注册与一致性
 
-扩展 callback 可以返回一个或多个 `DomainPackAuthorContract`。Runtime composition 使用
+扩展 callback 只能返回一个或多个 `DomainPackAuthorContract`，不能返回预构造的裸
+`DomainPack`。每个作者契约必须携带 `DomainPackConformanceExample`。样例只使用本地 typed
+值，不访问真实 BMC、凭据、网络或私网资源。Runtime composition 使用
 `DomainPackConformanceSuite.bind()` 统一构造内建与扩展 Pack，并拒绝：
 
 - operation 重复或同名同版本 Pack 重复；
@@ -71,8 +84,9 @@ Mutation Pack 固定单次执行尝试。结果未知时只能由 reconciler 使
 - 多个 Pack 占用同一 Artifact phase；
 - recovery、Artifact input/output 或 verifier 契约不完整。
 
-作者可用 `verify_example()` 提供一个代表性 typed receipt，验证 Effect identity、receipt
-operation、verifier、只读重试分类和 mutation recovery 分类。该验证不调用真实 BMC。
+composition 会强制运行每个契约的样例，通过 `verify_example()` 验证 Effect identity、
+receipt operation、verifier、只读重试分类和 mutation recovery 分类。该验证不调用真实
+BMC。
 
 ## 版本与兼容规则
 

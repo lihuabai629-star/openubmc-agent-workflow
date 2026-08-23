@@ -765,6 +765,14 @@ class DomainPack:
 
 
 @dataclass(frozen=True)
+class DomainPackConformanceExample:
+    """Hermetic typed example executed before a Pack enters composition."""
+
+    arguments: Callable[[RuntimeSDKContext], Mapping[str, object]]
+    receipt: Callable[[DomainAction], DomainReceipt]
+
+
+@dataclass(frozen=True)
 class DomainPackAuthorContract:
     """One typed authoring interface for an internal Runtime Domain Pack."""
 
@@ -774,6 +782,7 @@ class DomainPackAuthorContract:
     effect_class: EffectClass
     adapter: DomainAdapter
     verifier: DomainVerifier
+    conformance_example: DomainPackConformanceExample
     reconciler: DomainAdapter | None = None
     artifact_contract: ArtifactContract | None = None
     result_artifact_contract: ResultArtifactContract | None = None
@@ -784,6 +793,8 @@ class DomainPackAuthorContract:
     def __post_init__(self) -> None:
         if not self.operation.strip():
             raise ValueError("Domain Pack author contract requires an operation")
+        if not isinstance(self.conformance_example, DomainPackConformanceExample):
+            raise TypeError("Domain Pack author contract requires a conformance example")
         if self.effect_class not in {
             EffectClass.READ_ONLY,
             EffectClass.RECONCILABLE_MUTATION,
@@ -904,15 +915,32 @@ class DomainPackConformanceSuite:
     def bind(
         self,
         registry: CapabilityRegistry,
-        contracts: Iterable[DomainPackAuthorContract | DomainPack],
+        contracts: Iterable[DomainPackAuthorContract],
     ) -> tuple[DomainPack, ...]:
-        packs = tuple(
-            contract
-            if isinstance(contract, DomainPack)
-            else contract.build(registry)
-            for contract in contracts
-        )
+        authored = tuple(contracts)
+        if any(
+            not isinstance(contract, DomainPackAuthorContract)
+            for contract in authored
+        ):
+            raise TypeError("Domain Pack binding requires an author contract")
+        packs = tuple(contract.build(registry) for contract in authored)
         self.validate(registry, packs)
+        for contract, pack in zip(authored, packs, strict=True):
+            example = contract.conformance_example
+            context = RuntimeSDKContext(
+                task_id=f"conformance-{contract.operation}",
+                operation_id=f"effect-conformance-{contract.operation}",
+                timeout_seconds=pack.descriptor.timeout_seconds,
+                target_id="conformance-target",
+            )
+            arguments = dict(example.arguments(context))
+            action = pack.action(context, arguments)
+            self.verify_example(
+                pack,
+                context=context,
+                arguments=arguments,
+                receipt=example.receipt(action),
+            )
         return packs
 
     def verify_example(

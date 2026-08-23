@@ -51,7 +51,7 @@ DomainTransportInvoker = Callable[
 ]
 DomainPackExtensions = Callable[
     [CapabilityRegistry, Mapping[str, CallableDomainAdapter]],
-    Iterable[DomainPack | DomainPackAuthorContract],
+    Iterable[DomainPackAuthorContract],
 ]
 
 
@@ -586,13 +586,16 @@ def compose_runtime(
         if options.domain_pack_extensions is not None
         else ()
     )
+    if any(
+        not isinstance(definition, DomainPackAuthorContract)
+        for definition in extension_definitions
+    ):
+        raise TypeError("Domain Pack extensions require author contracts")
     default_operations = {
         contract.operation for contract in default_domain_pack_contracts
     }
     extension_operations = {
-        definition.descriptor.operation
-        if isinstance(definition, DomainPack)
-        else definition.operation
+        definition.operation
         for definition in extension_definitions
     }
     overlap = default_operations & extension_operations

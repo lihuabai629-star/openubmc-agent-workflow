@@ -10,7 +10,9 @@ from .capability import (
     DomainAdapter,
     DomainPack,
     DomainPackAuthorContract,
+    DomainPackConformanceExample,
     DomainPackConformanceSuite,
+    DomainReceipt,
     EffectClass,
     ResultArtifactContract,
     mutation_receipt_verifier,
@@ -25,6 +27,87 @@ def _live_patch_journal_action(arguments: Mapping[str, object]) -> str:
 
 def _upgrade_journal_action(_arguments: Mapping[str, object]) -> str:
     return "upgrade"
+
+
+def _mutation_conformance_example(
+    operation: str,
+    *,
+    arguments: Mapping[str, object],
+    journal_action: str,
+) -> DomainPackConformanceExample:
+    def receipt(action) -> DomainReceipt:
+        digest = str(action.arguments.get("artifact_sha256", "")).removeprefix(
+            "sha256:"
+        )
+        return DomainReceipt(
+            operation=operation,
+            status="verified",
+            value={
+                "operation_id": action.context.operation_id,
+                "journal": {
+                    "schema": "openubmc.target-runtime.v1/mutation-journal",
+                    "task_id": action.context.task_id,
+                    "operation_id": action.context.operation_id,
+                    "operation_fingerprint": "a" * 64,
+                    "target_fingerprint": "b" * 64,
+                    "action": journal_action,
+                    "stage": "verified",
+                    "effects_started": True,
+                    "expected_checksum": digest,
+                },
+            },
+        )
+
+    return DomainPackConformanceExample(
+        arguments=lambda context: {
+            **dict(arguments),
+            "ip": context.target_id,
+        },
+        receipt=receipt,
+    )
+
+
+def _artifact_ref(kind: str, *, target: str, run_id: str) -> dict[str, object]:
+    digest = "c" * 64
+    return {
+        "handle": f"artifact://sha256/{digest}",
+        "digest": digest,
+        "kind": kind,
+        "size": 1,
+        "provenance": "domain-pack-conformance",
+        "retention_hint": "temporary",
+        "target": target,
+        "run_id": run_id,
+    }
+
+
+def _artifact_stage_conformance_example(
+    operation: str,
+    *,
+    input_kind: str,
+    output_kind: str,
+) -> DomainPackConformanceExample:
+    return DomainPackConformanceExample(
+        arguments=lambda context: {
+            "ip": context.target_id,
+            "artifact_ref": _artifact_ref(
+                input_kind,
+                target=context.target_id,
+                run_id=context.task_id,
+            ),
+        },
+        receipt=lambda action: DomainReceipt(
+            operation=operation,
+            status="succeeded",
+            value={
+                "artifact_ref": _artifact_ref(
+                    output_kind,
+                    target=str(action.arguments.get("ip", "")),
+                    run_id=action.context.task_id,
+                )
+            },
+        ),
+    )
 
 
 def builtin_domain_pack_contracts(
@@ -42,6 +125,15 @@ def builtin_domain_pack_contracts(
                 artifact_kind="openubmc-live-patch",
             ),
             "journal_action": _live_patch_journal_action,
+            "conformance_example": _mutation_conformance_example(
+                "live_patch_run",
+                arguments={
+                    "action": "apply",
+                    "local_path": "/conformance/unit.lua",
+                    "artifact_sha256": "d" * 64,
+                },
+                journal_action="live_patch",
+            ),
         },
         "upgrade_run": {
             "name": "upgrade",
@@ -54,6 +146,15 @@ def builtin_domain_pack_contracts(
                 required=True,
             ),
             "journal_action": _upgrade_journal_action,
+            "conformance_example": _mutation_conformance_example(
+                "upgrade_run",
+                arguments={
+                    "artifact_path": "/conformance/product.hpm",
+                    "artifact_sha256": "e" * 64,
+                    "product_version": "1.0.0",
+                },
+                journal_action="upgrade",
+            ),
         },
     }
     contracts: list[DomainPackAuthorContract] = []
@@ -82,6 +183,7 @@ def builtin_domain_pack_contracts(
                 artifact_contract=definition["artifact_contract"],
                 artifact_phase=str(definition["artifact_phase"]),
                 journal_action=journal_action,
+                conformance_example=definition["conformance_example"],
             )
         )
     for stage in LOG_BUNDLE_STAGE_CONTRACTS:
@@ -113,6 +215,11 @@ def builtin_domain_pack_contracts(
                     require_redacted=stage.input_redacted,
                 ),
                 result_artifact_contract=result_contract,
+                conformance_example=_artifact_stage_conformance_example(
+                    stage.operation,
+                    input_kind=stage.input_kind,
+                    output_kind=stage.output_kind,
+                ),
             )
         )
     return tuple(contracts)
