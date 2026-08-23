@@ -120,6 +120,10 @@ class ReleaseGateTests(unittest.TestCase):
         qualification = gates["runtime_safety_qualification"][0]
         self.assertIn("runtime_qualification.py", qualification[1])
         self.assertIn("--output", qualification)
+        self.assertEqual(
+            qualification[qualification.index("--source-commit") + 1],
+            "a" * 40,
+        )
         ab_evidence = gates["agent_gateway_ab_evidence"][0]
         self.assertIn("agent_gateway_ab.py", ab_evidence[1])
         self.assertIn("verify", ab_evidence)

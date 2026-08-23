@@ -641,7 +641,15 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 - 断言 effect identity 恒定、危险 Effect 不重复、unknown 必须 reconcile；
 - `verified` journal 与 Run event 之间的 crash 必须通过 idempotent replay 收敛。
 
-### 14.4 Execute A/B
+### 14.4 Runtime stability qualification
+
+当前 CI qualification 通过公开 Agent/Operator Interface 运行 hermetic duplicate storm、
+SQLite revision-race、64 Run restart soak 和既有 crash-cut matrix。报告绑定 source commit、
+环境、参数、原始指标与 digest；重复 Outcome、未收敛 Incident/operation、同 identity 接受不同
+输入、事件/存储/内存/耗时超限都会阻断 promotion。并发 storm 允许返回 `running` reattach
+Turn，但必须用同一 command identity 收敛到唯一 terminal Outcome。
+
+### 14.5 Execute A/B
 
 使用现有配对 AB/BA 方法，固定模型、prompt、target snapshot 与 commit：
 
@@ -712,8 +720,8 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 - M4 主路径权威收敛已完成；后续用 compatibility telemetry 驱动旧 writer 退役；
 - 保留 Turn-to-next-Gate，隐藏 Ack、polling、scheduler 与未来 Worker；
 - v2 做本地 typed event-backed Process Manager，不做分布式平台；
-- 继续用 Incident 运行数据驱动 SLO，并推进 compatibility writer 退役和长期 execute
-  fault/capacity/soak 验证；
+- 继续用 Incident 运行数据驱动 SLO，并推进 compatibility writer 退役、长时 soak、property
+  和 network fault injection；
 - 只有规模与部署证据出现后，才把 Outbox/Inbox、Worker、共享 fencing 与 durable backend 作为一个完整 v3 演进包引入。
 
 这条路线具有最高 Interface depth：Agent 学习的概念最少，Runtime 提供的行为最多；同时把状态、安全与恢复规则集中到一个可测试 seam，获得更高 leverage 和 locality。

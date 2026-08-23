@@ -251,6 +251,8 @@ def gate_commands(
                     str(ROOT),
                     "--output",
                     str(qualification_output),
+                    "--source-commit",
+                    source_commit,
                 ),
             ),
         ),
