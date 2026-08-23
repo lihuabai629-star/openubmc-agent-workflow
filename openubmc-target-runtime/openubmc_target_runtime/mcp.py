@@ -59,6 +59,12 @@ from .domain_runtime import (
     canonicalize_tool_arguments,
     validate_boolean_argument_types,
 )
+from .evidence_store import (
+    EVIDENCE_QUERY_DEFAULT_ITEMS,
+    EVIDENCE_QUERY_MAX_CASE_ID,
+    EVIDENCE_QUERY_MAX_FILTER,
+    EVIDENCE_QUERY_MAX_ITEMS,
+)
 from .session_outcome import (
     InMemorySessionOutcomeRepository,
     SessionOutcomeRepository,
@@ -2721,6 +2727,44 @@ class RuntimeMcpService:
                     },
                 },
                 {
+                    "name": "evidence_query",
+                    "description": (
+                        "Find bounded Evidence metadata for operator review without "
+                        "loading Evidence bodies."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "case_id": {
+                                "type": "string",
+                                "maxLength": EVIDENCE_QUERY_MAX_CASE_ID,
+                            },
+                            "target_id": {
+                                "type": "string",
+                                "maxLength": EVIDENCE_QUERY_MAX_FILTER,
+                            },
+                            "producer": {
+                                "type": "string",
+                                "maxLength": EVIDENCE_QUERY_MAX_FILTER,
+                            },
+                            "workflow_definition_id": {
+                                "type": "string",
+                                "maxLength": EVIDENCE_QUERY_MAX_FILTER,
+                            },
+                            "observed_after": {"type": "number", "minimum": 0},
+                            "observed_before": {"type": "number", "minimum": 0},
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": EVIDENCE_QUERY_MAX_ITEMS,
+                                "default": EVIDENCE_QUERY_DEFAULT_ITEMS,
+                            },
+                            "deduplicate": {"type": "boolean", "default": True},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                {
                     "name": "evidence_read",
                     "description": (
                         "Read one bounded verified slice of evidence referenced by a Case."
@@ -3822,6 +3866,7 @@ class JsonRpcMcpEndpoint:
         if isinstance(value, ContextToolResult):
             if tool_name in {
                 "case_read",
+                "evidence_query",
                 "evidence_read",
                 "case_close",
                 "case_forget",

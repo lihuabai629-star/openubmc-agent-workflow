@@ -12,7 +12,9 @@ RUNTIME_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
+    EVIDENCE_QUERY_MAX_BYTES,
     InMemoryBlobRepository,
+    JsonRpcMcpEndpoint,
     PendingCaseEvent,
     RuntimeMcpService,
     SQLiteRuntimeRepository,
@@ -47,6 +49,244 @@ class _Backend:
 
 
 class EvidenceIndexTests(unittest.TestCase):
+    def test_operator_query_rejects_non_finite_observation_times(self) -> None:
+        service = RuntimeMcpService(_Backend(), interface_profile="operator")
+        try:
+            for value in (float("nan"), float("inf"), float("-inf")):
+                with self.subTest(value=value), self.assertRaisesRegex(
+                    ValueError, "finite"
+                ):
+                    service.call_tool(
+                        "evidence_query",
+                        {"observed_after": value},
+                        task_id="evidence-operator",
+                        operation_id="query-non-finite-time",
+                    )
+        finally:
+            service.close()
+
+    def test_operator_mcp_query_returns_structured_evidence_results(self) -> None:
+        service = RuntimeMcpService(_Backend(), interface_profile="operator")
+        endpoint = JsonRpcMcpEndpoint(service, session_task_id="operator-session")
+        try:
+            service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.69"},
+                task_id="evidence-mcp-source",
+                operation_id="debug-mcp-source",
+            )
+            response = endpoint.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "evidence_query", "arguments": {}},
+                }
+            )
+        finally:
+            service.close()
+
+        structured = response["result"]["structuredContent"]
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(structured["returned_item_count"], 1)
+        self.assertEqual(len(structured["items"]), 1)
+
+    def test_operator_query_response_stays_bounded_for_oversized_filters(self) -> None:
+        service = RuntimeMcpService(_Backend(), interface_profile="operator")
+        endpoint = JsonRpcMcpEndpoint(service, session_task_id="operator-session")
+        try:
+            response = endpoint.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "evidence_query",
+                        "arguments": {
+                            "producer": "x" * (EVIDENCE_QUERY_MAX_BYTES * 2)
+                        },
+                    },
+                }
+            )
+        finally:
+            service.close()
+
+        result = response["result"]
+        self.assertTrue(result["isError"])
+        self.assertLessEqual(
+            len(json.dumps(result, separators=(",", ":")).encode("utf-8")),
+            EVIDENCE_QUERY_MAX_BYTES,
+        )
+
+    def test_operator_query_deduplicates_content_and_returns_a_readable_reference(self) -> None:
+        service = RuntimeMcpService(_Backend(), interface_profile="operator")
+        try:
+            first = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.70"},
+                task_id="evidence-query-one",
+                operation_id="debug-query-one",
+            )
+            second = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.70"},
+                task_id="evidence-query-two",
+                operation_id="debug-query-two",
+            )
+
+            result = service.call_tool(
+                "evidence_query",
+                {"target_id": "target-1", "limit": 10},
+                task_id="evidence-operator",
+                operation_id="query-duplicate-content",
+            )
+            item = result["items"][0]
+            loaded = service.call_tool(
+                "evidence_read",
+                {
+                    "case_id": item["case_id"],
+                    "evidence_id": item["evidence_id"],
+                },
+                task_id="evidence-operator",
+                operation_id="read-query-result",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(result["matched_reference_count"], 2)
+        self.assertEqual(result["unique_content_count"], 1)
+        self.assertEqual(result["returned_item_count"], 1)
+        self.assertEqual(item["reference_count"], 2)
+        self.assertEqual(item["case_count"], 2)
+        self.assertEqual(item["target_count"], 1)
+        self.assertEqual(item["generation_count"], 1)
+        self.assertIn(
+            item["case_id"],
+            {first.envelope["case_id"], second.envelope["case_id"]},
+        )
+        self.assertEqual(json.loads(loaded["body"])["schema"], "test/debug")
+
+    def test_operator_query_filters_orders_and_bounds_exact_references(self) -> None:
+        service = RuntimeMcpService(_Backend(), interface_profile="operator")
+        try:
+            first = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.73"},
+                task_id="evidence-filter-one",
+                operation_id="debug-filter-one",
+            )
+            second = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.73"},
+                task_id="evidence-filter-two",
+                operation_id="debug-filter-two",
+            )
+
+            exact = service.call_tool(
+                "evidence_query",
+                {
+                    "producer": "debug_run",
+                    "deduplicate": False,
+                    "limit": 1,
+                },
+                task_id="evidence-operator",
+                operation_id="query-exact-references",
+            )
+            scoped = service.call_tool(
+                "evidence_query",
+                {"case_id": first.envelope["case_id"]},
+                task_id="evidence-operator",
+                operation_id="query-one-case",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(exact["matched_reference_count"], 2)
+        self.assertEqual(exact["unique_content_count"], 1)
+        self.assertEqual(exact["returned_item_count"], 1)
+        self.assertTrue(exact["truncated"])
+        self.assertEqual(exact["items"][0]["case_id"], second.envelope["case_id"])
+        self.assertEqual(exact["items"][0]["reference_count"], 1)
+        self.assertEqual(scoped["matched_reference_count"], 1)
+        self.assertEqual(scoped["items"][0]["case_id"], first.envelope["case_id"])
+
+    def test_content_folding_reports_cross_target_scope_counts(self) -> None:
+        service = RuntimeMcpService(_Backend(), interface_profile="operator")
+        try:
+            service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.75", "target_id": "bmc-a"},
+                task_id="evidence-target-one",
+                operation_id="debug-target-one",
+            )
+            service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.76", "target_id": "bmc-b"},
+                task_id="evidence-target-two",
+                operation_id="debug-target-two",
+            )
+            result = service.call_tool(
+                "evidence_query",
+                {},
+                task_id="evidence-operator",
+                operation_id="query-cross-target-content",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(result["matched_reference_count"], 2)
+        self.assertEqual(result["unique_content_count"], 1)
+        self.assertEqual(result["returned_item_count"], 1)
+        self.assertEqual(result["items"][0]["target_count"], 2)
+
+    def test_sqlite_operator_query_matches_in_memory_shape(self) -> None:
+        def collect(service: RuntimeMcpService) -> dict[str, object]:
+            service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.74"},
+                task_id="evidence-parity-one",
+                operation_id="debug-parity-one",
+            )
+            service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.74"},
+                task_id="evidence-parity-two",
+                operation_id="debug-parity-two",
+            )
+            result = service.call_tool(
+                "evidence_query",
+                {"target_id": "target-1"},
+                task_id="evidence-operator",
+                operation_id="query-parity",
+            )
+            return {
+                "matched_reference_count": result["matched_reference_count"],
+                "unique_content_count": result["unique_content_count"],
+                "returned_item_count": result["returned_item_count"],
+                "reference_count": result["items"][0]["reference_count"],
+                "case_count": result["items"][0]["case_count"],
+            }
+
+        memory = RuntimeMcpService(_Backend(), interface_profile="operator")
+        try:
+            memory_shape = collect(memory)
+        finally:
+            memory.close()
+        with tempfile.TemporaryDirectory() as raw:
+            sqlite = RuntimeMcpService(
+                _Backend(),
+                interface_profile="operator",
+                context_repository=SQLiteRuntimeRepository(
+                    Path(raw) / "runtime.sqlite3"
+                ),
+            )
+            try:
+                sqlite_shape = collect(sqlite)
+            finally:
+                sqlite.close()
+
+        self.assertEqual(sqlite_shape, memory_shape)
+
     def test_earliest_evidence_remains_readable_after_projection_truncation(self) -> None:
         service = RuntimeMcpService(_Backend())
         try:

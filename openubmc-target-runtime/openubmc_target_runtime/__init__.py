@@ -96,6 +96,13 @@ from .context_runtime import (
     bounded_envelope,
     project_case,
 )
+from .evidence_store import (
+    EVIDENCE_QUERY_MAX_BYTES,
+    EVIDENCE_QUERY_MAX_ITEMS,
+    EVIDENCE_QUERY_SCHEMA,
+    EvidenceQuery,
+    EvidenceQueryService,
+)
 from .compatibility import (
     CompatibilityMetric,
     CompatibilityTelemetry,
@@ -517,7 +524,12 @@ __all__ = [
     "CancellationToken",
     "DuplicateRequestSuppressed",
     "EvidenceLedger",
+    "EvidenceQuery",
+    "EvidenceQueryService",
     "EvidenceRecord",
+    "EVIDENCE_QUERY_MAX_BYTES",
+    "EVIDENCE_QUERY_MAX_ITEMS",
+    "EVIDENCE_QUERY_SCHEMA",
     "EngineSwitchProhibited",
     "EngineUnavailable",
     "EpochState",
