@@ -246,6 +246,35 @@ class ArtifactLifecycleTests(unittest.TestCase):
             self.assertIn(b"<redacted>", store.resolve(redacted, require_redacted=True).read_bytes())
             self.assertIn(b"secret", store.resolve(reference).read_bytes())
 
+    def test_redaction_without_sensitive_matches_still_derives_new_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "clean.json"
+            source.write_text('{"message":"clean"}', encoding="utf-8")
+            store = LocalArtifactStore(content_root=root / "content")
+            reference = store.put(
+                source,
+                kind="clean-raw",
+                provenance="test",
+                retention_hint="temporary",
+                target="192.0.2.9",
+                run_id="run-clean-redaction",
+                created_by_effect="effect-clean-raw",
+            )
+
+            redacted = store.redact(
+                reference,
+                kind="clean-redacted",
+                provenance="test-redaction",
+                created_by_effect="effect-clean-redacted",
+            )
+
+            self.assertNotEqual(redacted.digest, reference.digest)
+            self.assertNotEqual(
+                store.resolve(redacted, require_redacted=True).read_bytes(),
+                store.resolve(reference).read_bytes(),
+            )
+
     def test_redaction_boundary_never_certifies_arbitrary_derivative_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -60,6 +60,7 @@ LOG_REPORT_RAW_KIND = "openubmc-log-report-raw"
 LOG_REPORT_KIND = "openubmc-log-report"
 MAX_INDEX_ENTRIES = 4096
 MAX_QUERY_BYTES = 64 * 1024
+MAX_REPORT_BYTES = 128 * 1024
 
 
 def _runtime_failure(reason: str) -> SystemExit:
@@ -445,6 +446,8 @@ class LogBundleStages:
             expected_run_id=run_id,
             require_redacted=True,
         )
+        if query_path.stat().st_size > MAX_QUERY_BYTES:
+            raise ValueError("Log Bundle query exceeds the export byte budget")
         existing = self.artifact_store.find(
             kind=LOG_REPORT_KIND,
             target=target,
@@ -462,9 +465,12 @@ class LogBundleStages:
             + json.dumps(query, ensure_ascii=False, sort_keys=True, indent=2)
             + "\n```\n"
         )
+        report_body = report.encode("utf-8")
+        if len(report_body) > MAX_REPORT_BYTES:
+            raise ValueError("Log Bundle report exceeds its byte budget")
         with tempfile.TemporaryDirectory(prefix="openubmc-log-report-") as raw:
             report_path = Path(raw) / "report.md"
-            report_path.write_text(report, encoding="utf-8")
+            self._write(report_path, report_body)
             raw_reference = self.artifact_store.put(
                 report_path,
                 kind=LOG_REPORT_RAW_KIND,

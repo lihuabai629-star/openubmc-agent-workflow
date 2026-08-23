@@ -44,7 +44,8 @@ Log Analyzer 的 Runtime Module 使用同一个 ArtifactStore，并将原来的�
 Index 保存归档内相对路径、大小与 SHA-256。Query 重新读取 bundle 时先验证 index
 清单，并从分析视图移除未进入有界清单的文件，随后才执行日志选择与证据抽取。
 Export 先把派生报告登记为原始 Artifact，再由 ArtifactStore 的红化操作生成新字节与
-新 digest；调用方不能自行把任意派生字节认证为已红化。
+新 digest；调用方不能自行把任意派生字节认证为已红化。Export 同时拒绝超过 Query
+输入预算或 Report 输出预算的 Artifact，避免兼容或内部入口绕过有界阶段。
 
 四阶段是 Runtime 内部 operation/Domain Pack contract。默认 Agent Interface 仍只有
 `observe` 与 `execute`；CLI 与 compatibility Adapter 可以组合阶段，但不能改变 Runtime

@@ -35,7 +35,7 @@ def _json_bytes(value: object) -> bytes:
 
 
 @dataclass(frozen=True)
-class ArtifactIdentity:
+class ArtifactBindingIdentity:
     digest: str
     kind: str
     target: str
@@ -52,7 +52,7 @@ class ArtifactIdentity:
 
 
 @dataclass(frozen=True)
-class ArtifactEffectIdentity:
+class ArtifactEffectBindingIdentity:
     created_by_effect: str
     kind: str
     target: str
@@ -95,8 +95,8 @@ class ArtifactRecord:
             raise ReferenceViolation("Artifact record timestamps must be non-negative")
 
     @property
-    def identity(self) -> ArtifactIdentity:
-        return ArtifactIdentity(
+    def identity(self) -> ArtifactBindingIdentity:
+        return ArtifactBindingIdentity(
             digest=self.reference.digest,
             kind=self.reference.kind,
             target=self.reference.target,
@@ -104,8 +104,8 @@ class ArtifactRecord:
         )
 
     @property
-    def effect_identity(self) -> ArtifactEffectIdentity:
-        return ArtifactEffectIdentity(
+    def effect_identity(self) -> ArtifactEffectBindingIdentity:
+        return ArtifactEffectBindingIdentity(
             created_by_effect=self.created_by_effect,
             kind=self.reference.kind,
             target=self.reference.target,
@@ -141,7 +141,7 @@ class ArtifactRepository(Protocol):
 
     def find(
         self,
-        identity: ArtifactEffectIdentity,
+        identity: ArtifactEffectBindingIdentity,
     ) -> ArtifactRecord | None: ...
 
     def touch(self, reference: ArtifactRef, *, at: float) -> None: ...
@@ -157,8 +157,8 @@ class ArtifactRepository(Protocol):
 
 class InMemoryArtifactRepository:
     def __init__(self) -> None:
-        self._records: dict[ArtifactIdentity, ArtifactRecord] = {}
-        self._effects: dict[ArtifactEffectIdentity, ArtifactIdentity] = {}
+        self._records: dict[ArtifactBindingIdentity, ArtifactRecord] = {}
+        self._effects: dict[ArtifactEffectBindingIdentity, ArtifactBindingIdentity] = {}
         self._lock = threading.RLock()
 
     def put(self, record: ArtifactRecord) -> ArtifactRecord:
@@ -191,7 +191,7 @@ class InMemoryArtifactRepository:
     def load(self, reference: ArtifactRef) -> ArtifactRecord | None:
         with self._lock:
             return self._records.get(
-                ArtifactIdentity(
+                ArtifactBindingIdentity(
                     digest=reference.digest,
                     kind=reference.kind,
                     target=reference.target,
@@ -201,7 +201,7 @@ class InMemoryArtifactRepository:
 
     def find(
         self,
-        identity: ArtifactEffectIdentity,
+        identity: ArtifactEffectBindingIdentity,
     ) -> ArtifactRecord | None:
         with self._lock:
             bound = self._effects.get(identity)
@@ -209,7 +209,7 @@ class InMemoryArtifactRepository:
 
     def touch(self, reference: ArtifactRef, *, at: float) -> None:
         with self._lock:
-            identity = ArtifactIdentity(
+            identity = ArtifactBindingIdentity(
                 digest=reference.digest,
                 kind=reference.kind,
                 target=reference.target,
@@ -241,7 +241,7 @@ class InMemoryArtifactRepository:
             return tuple(self._records.values())
 
     def delete(self, reference: ArtifactRef) -> bool:
-        identity = ArtifactIdentity(
+        identity = ArtifactBindingIdentity(
             digest=reference.digest,
             kind=reference.kind,
             target=reference.target,
@@ -414,7 +414,7 @@ class SQLiteArtifactRepository:
 
     def find(
         self,
-        identity: ArtifactEffectIdentity,
+        identity: ArtifactEffectBindingIdentity,
     ) -> ArtifactRecord | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
@@ -671,7 +671,7 @@ class LocalArtifactStore:
             run_id=run_id,
         )
         existing = self.repository.find(
-            ArtifactEffectIdentity(
+            ArtifactEffectBindingIdentity(
                 created_by_effect=created_by_effect,
                 kind=kind,
                 target=target,
@@ -739,7 +739,7 @@ class LocalArtifactStore:
             actual_digest=actual_digest,
             actual_size=actual_size,
         )
-        effect_identity = ArtifactEffectIdentity(
+        effect_identity = ArtifactEffectBindingIdentity(
             created_by_effect=created_by_effect,
             kind=reference.kind,
             target=reference.target,
@@ -825,6 +825,8 @@ class LocalArtifactStore:
             )
         else:
             redacted_body = _json_bytes(self._redact_value(decoded))
+        if redacted_body == body:
+            redacted_body += b"\n"
         descriptor, raw_path = tempfile.mkstemp(
             prefix="artifact-redacted-",
             suffix=".json",
@@ -860,7 +862,7 @@ class LocalArtifactStore:
         created_by_effect: str,
     ) -> ArtifactRef | None:
         record = self.repository.find(
-            ArtifactEffectIdentity(
+            ArtifactEffectBindingIdentity(
                 created_by_effect=created_by_effect,
                 kind=kind,
                 target=target,

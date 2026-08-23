@@ -95,6 +95,41 @@ class LogBundleStageTests(unittest.TestCase):
             self.assertEqual(evidence, [])
             self.assertIn("found 0 existing paths", body["summary"])
 
+    def test_export_rejects_a_verified_query_that_exceeds_the_query_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            store = LocalArtifactStore(content_root=root / "artifacts")
+            stages = LogBundleStages(store)
+            oversized = root / "oversized.json"
+            oversized.write_text(
+                json.dumps({"summary": "x" * (runtime_backend.MAX_QUERY_BYTES + 1)}),
+                encoding="utf-8",
+            )
+            raw_reference = store.put(
+                oversized,
+                kind=runtime_backend.LOG_QUERY_RAW_KIND,
+                provenance="test-query",
+                retention_hint="temporary",
+                target="192.0.2.46",
+                run_id="run-oversized-export",
+                created_by_effect="effect-query-raw",
+            )
+            query_reference = store.redact(
+                raw_reference,
+                kind=runtime_backend.LOG_QUERY_KIND,
+                provenance="test-query-redaction",
+                retention_hint="run-lifetime",
+                created_by_effect="effect-query",
+            )
+
+            with self.assertRaisesRegex(ValueError, "byte budget"):
+                stages.export(
+                    query_reference,
+                    target="192.0.2.46",
+                    run_id="run-oversized-export",
+                    operation_id="effect-export",
+                )
+
     def test_sqlite_runtime_rebinds_the_same_persistent_artifact_store_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
