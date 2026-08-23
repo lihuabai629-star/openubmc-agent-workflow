@@ -199,7 +199,6 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
             "tool": "observe",
             "arguments": {
                 "target": "10.121.136.200",
-                "assurance": "auto",
                 "freshness": {"mode": "live", "max_age_seconds": 0},
                 "selectors": [
                     {
@@ -686,6 +685,90 @@ class AgentGatewayAbTests(unittest.TestCase):
         )
         self.assertIn("response 内只含 status、summary、payload", prompt)
         self.assertNotIn("response 只含上述固定 receipt", prompt)
+
+    def test_skill_disclosure_uses_the_same_agent_profile_and_prompt_semantics(self) -> None:
+        baseline = Path("/tmp/baseline/openubmc-debug/SKILL.md")
+        candidate = Path("/tmp/candidate/openubmc-debug/SKILL.md")
+
+        configs = module.run_configs(
+            "skill-disclosure",
+            baseline.parent.parent,
+            candidate.parent.parent,
+        )
+        first = module._prompt(baseline, scenario="skill-disclosure", arm="A")
+        second = module._prompt(candidate, scenario="skill-disclosure", arm="B")
+
+        self.assertEqual(configs["A"].interface_profile, "agent")
+        self.assertEqual(configs["B"].interface_profile, "agent")
+        self.assertEqual(first, second)
+        self.assertIn("$openubmc-debug", first)
+        self.assertNotIn(str(baseline), first)
+        self.assertNotIn(str(candidate), second)
+        self.assertIn("按需读取直接链接的 references", first)
+        self.assertIn("openubmc-target-runtime.observe", first)
+        self.assertIn("不要列出 MCP resources/templates", first)
+        self.assertNotIn("assurance", first)
+        self.assertIn(
+            '"freshness":{"max_age_seconds":0,"mode":"live"}', first
+        )
+        self.assertIn(
+            '"selectors":[{"id":"capabilities","kind":"capability",'
+            '"names":["SSH","Telnet","MDBCTL","BUSCTL"]},'
+            '{"id":"drive","kind":"mdb","queries":[',
+            first,
+        )
+
+    def test_skill_disclosure_metrics_apply_candidate_scope_to_both_arms(self) -> None:
+        events = [
+            candidate_observe_event(),
+            {
+                "type": "turn.completed",
+                "usage": {"input_tokens": 100, "output_tokens": 10},
+            },
+        ]
+        final = (
+            "SSH Telnet MDBCTL BUSCTL Name Protocol ResourceId SlotNumber Presence "
+            "TemperatureCelsius Type SocketId Health，不能证明 ResourceId 异常。"
+        )
+
+        for arm in ("A", "B"):
+            record = module.RunEvidenceRecord.capture(
+                arm=arm,
+                pair=1,
+                order=1 if arm == "A" else 2,
+                scenario="skill-disclosure",
+                events=events,
+                final=final,
+                exit_code=0,
+                duration_seconds=1,
+            )
+            self.assertTrue(record.metric()["valid"], arm)
+
+    def test_candidate_scope_rejects_unrelated_mcp_discovery(self) -> None:
+        tools = [
+            {
+                "type": "mcp_tool_call",
+                "server": "codex",
+                "tool": "list_mcp_resources",
+                "arguments": {},
+                "result": {"structured_content": {}},
+            },
+            candidate_observe_event()["item"],
+        ]
+
+        validation = module.candidate_scope_acceptance(tools)
+
+        self.assertFalse(validation["passed"])
+        self.assertIn("unrelated MCP tools", validation["errors"])
+
+    def test_candidate_scope_rejects_legacy_assurance_input(self) -> None:
+        observe = candidate_observe_event()["item"]
+        observe["arguments"]["assurance"] = "auto"
+
+        validation = module.candidate_scope_acceptance([observe])
+
+        self.assertFalse(validation["passed"])
+        self.assertIn("legacy assurance input", validation["errors"])
 
     def test_documented_qualification_command_locks_model_and_codex_config(self) -> None:
         documentation = (
@@ -1413,6 +1496,74 @@ class AgentGatewayAbTests(unittest.TestCase):
                 "prompt_digest": module.QUALIFICATION_PROMPT_DIGEST,
                 "codex_config": list(module.QUALIFICATION_CODEX_CONFIG),
             },
+        )
+
+    def test_skill_disclosure_records_its_own_prompt_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            metrics = root / "all_metrics.json"
+            schedule = root / "schedule.json"
+            metrics.write_text("[]\n", encoding="utf-8")
+            schedule.write_text("[]\n", encoding="utf-8")
+
+            evidence = module.release_evidence(
+                scenario="skill-disclosure",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
+                metrics_path=metrics,
+                schedule_path=schedule,
+                run_evidence_path=write_run_evidence(root),
+                analysis={"valid_pairs": 10, "invalid_pairs": []},
+                environment={"python": "3.12", "node": "v22"},
+            )
+
+        self.assertEqual(
+            evidence["benchmark"]["prompt_digest"],
+            "sha256:00e1a37bce6a65c5f6782ebde771a05b17f8b684e56ef8751bb9f99a9196a3e5",
+        )
+        self.assertNotEqual(
+            evidence["benchmark"]["prompt_digest"],
+            module.QUALIFICATION_PROMPT_DIGEST,
+        )
+
+    def test_documentation_covers_the_skill_disclosure_scenario(self) -> None:
+        documentation = (
+            Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("--scenario skill-disclosure", documentation)
+        self.assertIn("same Agent profile", documentation)
+        self.assertIn("valid pairs", documentation)
+
+    def test_verify_cli_uses_the_selected_baseline_ref(self) -> None:
+        with patch.object(
+            module, "_git_commit", side_effect=lambda _repo, ref: ref
+        ), patch.object(
+            module,
+            "verify_summary",
+            return_value={"promotable": True},
+        ) as verify, patch("builtins.print"):
+            result = module.main(
+                [
+                    "verify",
+                    "summary.json",
+                    "--source-ref",
+                    "candidate",
+                    "--baseline-ref",
+                    "github/main",
+                    "--scenario",
+                    "skill-disclosure",
+                    "--attestation-public-key",
+                    "key.pub",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            verify.call_args.kwargs["expected_baseline_commit"], "github/main"
         )
 
     def test_verify_summary_rejects_claims_not_derived_from_raw_metrics(self) -> None:

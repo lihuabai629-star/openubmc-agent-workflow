@@ -112,6 +112,12 @@ def _tool_output_bytes(item: Mapping[str, object]) -> int:
 
 def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, object]:
     errors: list[str] = []
+    if any(
+        item.get("type") == "mcp_tool_call"
+        and item.get("server") != "openubmc-target-runtime"
+        for item in tools
+    ):
+        errors.append("unrelated MCP tools")
     calls = [
         item
         for item in tools
@@ -129,8 +135,8 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
     freshness = _json_object(arguments.get("freshness"))
     if freshness != {"mode": "live", "max_age_seconds": 0}:
         errors.append("freshness must request one live observation")
-    if str(arguments.get("assurance", "auto")).lower() != "auto":
-        errors.append("assurance must be auto")
+    if "assurance" in arguments:
+        errors.append("legacy assurance input")
     selectors = arguments.get("selectors")
     selector_values = selectors if isinstance(selectors, list) else []
     capability_selectors = [
@@ -261,6 +267,30 @@ def _qualification_respond_template() -> str:
     return encoded.replace(
         '"gate_version":"<structured_content.gate.gate_version>"',
         '"gate_version":<structured_content.gate.gate_version>',
+    )
+
+
+def _qualification_observe_template() -> str:
+    return json.dumps(
+        {
+            "target": BENCHMARK_TARGET,
+            "freshness": {"mode": "live", "max_age_seconds": 0},
+            "selectors": [
+                {
+                    "id": "capabilities",
+                    "kind": "capability",
+                    "names": ["SSH", "Telnet", "MDBCTL", "BUSCTL"],
+                },
+                {
+                    "id": "drive",
+                    "kind": "mdb",
+                    "queries": list(BENCHMARK_MDB_QUERIES),
+                },
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
@@ -443,7 +473,10 @@ def _actionable_elapsed(
         item = _json_object(event.get("item"))
         if item.get("type") != "mcp_tool_call":
             continue
-        if scenario == "observation" and item.get("tool") != "observe":
+        if (
+            scenario in {"observation", "skill-disclosure"}
+            and item.get("tool") != "observe"
+        ):
             continue
         if scenario == "execute-source-only":
             structured = _structured_tool_result(item)
@@ -526,7 +559,11 @@ class RunEvidenceRecord:
             raise ValueError(f"AB run evidence item {index} has an invalid pair")
         if not isinstance(order, int) or isinstance(order, bool) or order not in {1, 2}:
             raise ValueError(f"AB run evidence item {index} has an invalid order")
-        if scenario not in {"observation", "execute-source-only"}:
+        if scenario not in {
+            "observation",
+            "skill-disclosure",
+            "execute-source-only",
+        }:
             raise ValueError(f"AB run evidence item {index} has an invalid scenario")
         if not isinstance(events, list) or not all(
             isinstance(event, Mapping) for event in events
@@ -593,19 +630,20 @@ class RunEvidenceRecord:
         cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
         acceptance = semantic_acceptance(self.final, scenario=self.scenario)
-        scope_validation = (
-            (
+        if self.scenario == "skill-disclosure":
+            scope_validation = candidate_scope_acceptance(tools)
+        elif self.arm == "B":
+            scope_validation = (
                 candidate_scope_acceptance(tools)
                 if self.scenario == "observation"
                 else candidate_execute_acceptance(tools)
             )
-            if self.arm == "B"
-            else (
+        else:
+            scope_validation = (
                 baseline_execute_acceptance(tools)
                 if self.scenario == "execute-source-only"
                 else {"passed": True, "errors": []}
             )
-        )
         scope_ok = bool(scope_validation["passed"])
         model_turns = max(
             1,
@@ -1177,6 +1215,21 @@ def _prepare_worktree(repo: Path, destination: Path, ref: str) -> None:
 def _prompt(
     skill_path: Path, *, scenario: str = "observation", arm: str = "B"
 ) -> str:
+    if scenario == "skill-disclosure":
+        return "\n".join(
+            (
+                "这是一次真实 BMC 环境下的 openubmc-debug Skill 渐进披露配对基准。",
+                "使用已安装的 $openubmc-debug，并按需读取直接链接的 references。",
+                "只使用 openubmc-debug 与 openubmc-target-runtime.observe；不得使用其他 Skill、知识库、网络搜索、源码、日志或 shell。",
+                "不要列出 MCP resources/templates，不要做工具发现；直接调用 openubmc-target-runtime.observe。",
+                f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
+                "执行一次只读现场核验。唯一一次 observe 必须严格使用下面的完整 JSON 参数，不得增删字段、拆分调用或重试：",
+                _qualification_observe_template(),
+                "该请求使用 Runtime 默认自动策略和 live freshness；不得枚举其他对象或属性。",
+                "报告原始值，并判断这些证据能否单独证明 ResourceId=0 异常，不得臆测源码语义。",
+                "中文回答，不超过 500 字。",
+            )
+        ) + "\n"
     if scenario == "execute-source-only":
         if arm == "A":
             return "\n".join(
@@ -1226,21 +1279,27 @@ def _prompt(
     ) + "\n"
 
 
-QUALIFICATION_PROMPT_DIGEST = "sha256:" + hashlib.sha256(
-    json.dumps(
-        {
-            arm: _prompt(
-                Path("<skill-path>"),
-                scenario="execute-source-only",
-                arm=arm,
-            )
-            for arm in ("A", "B")
-        },
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-).hexdigest()
+SCENARIOS = ("observation", "skill-disclosure", "execute-source-only")
+
+
+def prompt_digest(scenario: str) -> str:
+    if scenario not in SCENARIOS:
+        raise ValueError(f"unsupported AB scenario: {scenario}")
+    payload = {
+        arm: _prompt(Path("<skill-path>"), scenario=scenario, arm=arm)
+        for arm in ("A", "B")
+    }
+    return "sha256:" + hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+QUALIFICATION_PROMPT_DIGEST = prompt_digest("execute-source-only")
 
 
 @dataclass(frozen=True)
@@ -1248,6 +1307,21 @@ class RunConfig:
     arm: str
     source_root: Path
     interface_profile: str
+
+
+def run_configs(
+    scenario: str,
+    baseline_root: Path,
+    candidate_root: Path,
+) -> dict[str, RunConfig]:
+    return {
+        "A": RunConfig(
+            "A",
+            baseline_root,
+            "agent" if scenario == "skill-disclosure" else "",
+        ),
+        "B": RunConfig("B", candidate_root, "agent"),
+    }
 
 
 def prepare_arm_home(home: Path, source_root: Path) -> None:
@@ -1453,7 +1527,7 @@ def release_evidence(
         "model": model,
         "benchmark": {
             "target": BENCHMARK_TARGET,
-            "prompt_digest": QUALIFICATION_PROMPT_DIGEST,
+            "prompt_digest": prompt_digest(scenario),
             "codex_config": list(codex_config),
         },
         "environment": environment_record,
@@ -1491,6 +1565,7 @@ def verify_summary(
     *,
     expected_source_commit: str,
     expected_baseline_commit: str = DEFAULT_BASELINE_REF,
+    expected_scenario: str = "execute-source-only",
     attestation_public_key: Path | None = None,
 ) -> dict[str, object]:
     errors: list[str] = []
@@ -1527,8 +1602,8 @@ def verify_summary(
             errors.append(f"AB metric did not pass: {metric}")
 
     evidence = _json_object(summary.get("release_evidence"))
-    if evidence.get("scenario") != "execute-source-only":
-        errors.append("AB release evidence is not execute-source-only")
+    if evidence.get("scenario") != expected_scenario:
+        errors.append("AB release evidence scenario does not match verification")
     source = _json_object(evidence.get("source"))
     if source.get("candidate_commit") != expected_source_commit:
         errors.append("AB candidate source commit does not match the release candidate")
@@ -1550,7 +1625,7 @@ def verify_summary(
     benchmark = _json_object(evidence.get("benchmark"))
     if benchmark.get("target") != BENCHMARK_TARGET:
         errors.append("AB benchmark target does not match the qualification contract")
-    if benchmark.get("prompt_digest") != QUALIFICATION_PROMPT_DIGEST:
+    if benchmark.get("prompt_digest") != prompt_digest(expected_scenario):
         errors.append("AB benchmark prompt does not match the qualification contract")
     if benchmark.get("codex_config") != list(QUALIFICATION_CODEX_CONFIG):
         errors.append("AB Codex config does not match the qualification contract")
@@ -1713,10 +1788,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
         json.dumps(schedule, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    configs = {
-        "A": RunConfig("A", baseline_root, ""),
-        "B": RunConfig("B", candidate_root, "agent"),
-    }
+    configs = run_configs(args.scenario, baseline_root, candidate_root)
     environment = os.environ.copy()
     environment["OPENUBMC_CREDENTIALS_FILE"] = str(args.credentials)
     environment["OPENUBMC_DEBUG_CREDENTIALS_FILE"] = str(args.credentials)
@@ -1901,6 +1973,12 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("summary", type=Path)
     verify_parser.add_argument("--source-ref", required=True)
+    verify_parser.add_argument("--baseline-ref", default=DEFAULT_BASELINE_REF)
+    verify_parser.add_argument(
+        "--scenario",
+        choices=SCENARIOS,
+        default="execute-source-only",
+    )
     verify_parser.add_argument("--repo", type=Path, default=Path.cwd())
     verify_parser.add_argument(
         "--attestation-public-key",
@@ -1933,7 +2011,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--only-arm", choices=("A", "B"))
     run_parser.add_argument(
         "--scenario",
-        choices=("observation", "execute-source-only"),
+        choices=SCENARIOS,
         default="observation",
     )
     args = parser.parse_args(argv)
@@ -1946,11 +2024,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "verify":
         repo = args.repo.resolve()
         expected = _git_commit(repo, args.source_ref)
-        expected_baseline = _git_commit(repo, DEFAULT_BASELINE_REF)
+        expected_baseline = _git_commit(repo, args.baseline_ref)
         verification = verify_summary(
             args.summary.expanduser().absolute(),
             expected_source_commit=expected,
             expected_baseline_commit=expected_baseline,
+            expected_scenario=args.scenario,
             attestation_public_key=args.attestation_public_key.expanduser().absolute(),
         )
         print(json.dumps(verification, ensure_ascii=False, indent=2))

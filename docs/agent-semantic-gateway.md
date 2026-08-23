@@ -227,6 +227,41 @@ python scripts/agent_gateway_ab.py verify \
   --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub
 ```
 
+For a Skill-only progressive-disclosure comparison, run both variants through the same Agent profile
+and the same semantic observation prompt:
+
+```bash
+python scripts/agent_gateway_ab.py run \
+  --work-root /path/to/benchmark-work \
+  --credentials /path/to/private/credentials.env \
+  --attestation-private-key /path/to/private/ab-evidence-signing-key \
+  --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
+  --model gpt-5.6-sol \
+  --baseline-ref github/main \
+  --scenario skill-disclosure \
+  --pairs 10 \
+  --codex-config 'features.shell_tool=false' \
+  --codex-config 'model_provider="cliproxy"' \
+  --codex-config 'model_providers.cliproxy.name="CLIProxyAPI"' \
+  --codex-config 'model_providers.cliproxy.base_url="http://82.156.104.157/v1"' \
+  --codex-config 'model_providers.cliproxy.env_key="CLI_PROXY_API_KEY"' \
+  --codex-config 'model_providers.cliproxy.wire_api="responses"' \
+  --codex-config 'model_providers.cliproxy.supports_websockets=false'
+
+python scripts/agent_gateway_ab.py verify \
+  /path/to/benchmark-work/results-*/summary.json \
+  --scenario skill-disclosure \
+  --source-ref <candidate-commit> \
+  --baseline-ref github/main \
+  --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub
+```
+
+The candidate is acceptable only when semantic and exact-scope checks pass for both arms, there
+are at least ten valid pairs with no invalid pairs, and every bounded regression metric passes.
+The scenario records its own prompt digest, source commits, schedule, raw metrics, environment,
+and signed run evidence. It evaluates Skill disclosure behavior; the default release qualification
+remains `execute-source-only`.
+
 Every run record carries its tested source commit and a unique execution identity. The runner
 signs that record with the qualification key; verification uses a public key held outside the
 candidate checkout. The GitHub Release workflow restores that trust root from the
