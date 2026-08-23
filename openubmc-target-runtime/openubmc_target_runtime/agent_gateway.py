@@ -738,6 +738,15 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
             "run_id": {"type": "string", "minLength": 1},
             "target": {"type": "string", "minLength": 1},
             "intent": {"type": "string"},
+            "entry_operation": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": (
+                    "Optional registered Domain Pack operation for a one-step "
+                    "diagnosis-only Run."
+                ),
+            },
             "purpose": {"type": "string"},
             "delivery_strategy": {
                 "type": "string",

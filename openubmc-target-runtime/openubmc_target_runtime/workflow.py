@@ -334,6 +334,24 @@ class WorkflowRegistry:
             registered[key] = route
         self._routes = tuple(routes)
 
+    def extend(
+        self,
+        *,
+        operation_owners: Mapping[str, str],
+        routes: Sequence["WorkflowRoute"] = (),
+    ) -> "WorkflowRegistry":
+        combined_owners = dict(self.operation_owners)
+        for operation, owner in operation_owners.items():
+            current = combined_owners.get(operation)
+            if current is not None and current != owner:
+                raise ValueError(f"workflow operation owner drift: {operation}")
+            combined_owners[operation] = owner
+        return WorkflowRegistry(
+            phases=self.phases,
+            operation_owners=combined_owners,
+            routes=(*self._routes, *routes),
+        )
+
     def _step(self, index: int, kind: str, name: str) -> WorkflowStepDefinition:
         step_id = f"step-{index:02d}-{name.replace('.', '-')}"
         if kind == "phase":

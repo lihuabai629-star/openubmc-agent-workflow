@@ -363,6 +363,20 @@ class OperationCatalog:
     def descriptors(self) -> tuple[OperationDescriptor, ...]:
         return self._ordered
 
+    def extend(
+        self,
+        descriptors: Iterable[OperationDescriptor],
+    ) -> "OperationCatalog":
+        combined = {descriptor.name: descriptor for descriptor in self._ordered}
+        for descriptor in descriptors:
+            current = combined.get(descriptor.name)
+            if current is not None and current != descriptor:
+                raise OperationCatalogError(
+                    f"operation catalog drift: {descriptor.name}"
+                )
+            combined[descriptor.name] = descriptor
+        return OperationCatalog(combined.values())
+
     def names(self) -> tuple[str, ...]:
         return tuple(descriptor.name for descriptor in self._ordered)
 

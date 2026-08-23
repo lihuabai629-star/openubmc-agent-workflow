@@ -35,19 +35,21 @@ def _mutation_conformance_example(
     arguments: Mapping[str, object],
     journal_action: str,
 ) -> DomainPackConformanceExample:
-    def receipt(action) -> DomainReceipt:
-        digest = str(action.arguments.get("artifact_sha256", "")).removeprefix(
-            "sha256:"
-        )
-        return DomainReceipt(
+    digest = str(arguments.get("artifact_sha256", "")).removeprefix("sha256:")
+    return DomainPackConformanceExample(
+        arguments={
+            **dict(arguments),
+            "ip": "conformance-target",
+        },
+        receipt=DomainReceipt(
             operation=operation,
             status="verified",
             value={
-                "operation_id": action.context.operation_id,
+                "operation_id": f"effect-conformance-{operation}",
                 "journal": {
                     "schema": "openubmc.target-runtime.v1/mutation-journal",
-                    "task_id": action.context.task_id,
-                    "operation_id": action.context.operation_id,
+                    "task_id": f"conformance-{operation}",
+                    "operation_id": f"effect-conformance-{operation}",
                     "operation_fingerprint": "a" * 64,
                     "target_fingerprint": "b" * 64,
                     "action": journal_action,
@@ -56,14 +58,7 @@ def _mutation_conformance_example(
                     "expected_checksum": digest,
                 },
             },
-        )
-
-    return DomainPackConformanceExample(
-        arguments=lambda context: {
-            **dict(arguments),
-            "ip": context.target_id,
-        },
-        receipt=receipt,
+        ),
     )
 
 
@@ -87,23 +82,24 @@ def _artifact_stage_conformance_example(
     input_kind: str,
     output_kind: str,
 ) -> DomainPackConformanceExample:
+    task_id = f"conformance-{operation}"
     return DomainPackConformanceExample(
-        arguments=lambda context: {
-            "ip": context.target_id,
+        arguments={
+            "ip": "conformance-target",
             "artifact_ref": _artifact_ref(
                 input_kind,
-                target=context.target_id,
-                run_id=context.task_id,
+                target="conformance-target",
+                run_id=task_id,
             ),
         },
-        receipt=lambda action: DomainReceipt(
+        receipt=DomainReceipt(
             operation=operation,
             status="succeeded",
             value={
                 "artifact_ref": _artifact_ref(
                     output_kind,
-                    target=str(action.arguments.get("ip", "")),
-                    run_id=action.context.task_id,
+                    target="conformance-target",
+                    run_id=task_id,
                 )
             },
         ),
@@ -111,6 +107,7 @@ def _artifact_stage_conformance_example(
 
 
 def builtin_domain_pack_contracts(
+    registry: CapabilityRegistry,
     adapters: Mapping[str, DomainAdapter],
 ) -> tuple[DomainPackAuthorContract, ...]:
     """Author Runtime-owned mutation and local Artifact stage contracts."""
@@ -118,6 +115,7 @@ def builtin_domain_pack_contracts(
     definitions = {
         "live_patch_run": {
             "name": "live-patch",
+            "closeout_stage": "live_patch",
             "artifact_phase": "developer.change",
             "artifact_contract": ArtifactContract(
                 path_fields=("local_path", "backup_path"),
@@ -137,6 +135,7 @@ def builtin_domain_pack_contracts(
         },
         "upgrade_run": {
             "name": "upgrade",
+            "closeout_stage": "upgrade",
             "artifact_phase": "build.artifact",
             "artifact_contract": ArtifactContract(
                 path_fields=("artifact_path",),
@@ -165,9 +164,9 @@ def builtin_domain_pack_contracts(
         journal_action = definition["journal_action"]
         contracts.append(
             DomainPackAuthorContract(
+                descriptor=registry.require(operation),
                 name=str(definition["name"]),
                 version="1",
-                operation=operation,
                 effect_class=EffectClass.RECONCILABLE_MUTATION,
                 adapter=adapter,
                 reconciler=adapter,
@@ -184,6 +183,7 @@ def builtin_domain_pack_contracts(
                 artifact_phase=str(definition["artifact_phase"]),
                 journal_action=journal_action,
                 conformance_example=definition["conformance_example"],
+                closeout_stage=str(definition["closeout_stage"]),
             )
         )
     for stage in LOG_BUNDLE_STAGE_CONTRACTS:
@@ -196,9 +196,9 @@ def builtin_domain_pack_contracts(
         )
         contracts.append(
             DomainPackAuthorContract(
+                descriptor=registry.require(stage.operation),
                 name=stage.operation.replace("_", "-"),
                 version="1",
-                operation=stage.operation,
                 effect_class=EffectClass.READ_ONLY,
                 adapter=adapter,
                 verifier=(
@@ -233,5 +233,5 @@ def builtin_domain_packs(
 
     return DomainPackConformanceSuite().bind(
         registry,
-        builtin_domain_pack_contracts(adapters),
+        builtin_domain_pack_contracts(registry, adapters),
     )

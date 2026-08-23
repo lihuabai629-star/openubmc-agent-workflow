@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from .capability import CapabilityDescriptor
+from .capability import CapabilityDescriptor, EffectClass
 from .catalog import OperationDescriptor
 from .contracts import RUNTIME_API_VERSION
 
@@ -20,6 +20,7 @@ class RuntimeOperationContract:
     lifecycle: str = "invoke"
     handler_name: str | None = None
     mutation: bool = False
+    effect_class: EffectClass | None = None
     workflow_entry: bool = False
     credential_values: bool = False
     capability: str = ""
@@ -63,6 +64,7 @@ class RuntimeOperationContract:
                 self.workflow_entry,
                 self.credential_values,
                 self.mutation,
+                self.effect_class,
             )
         ):
             raise ValueError(
@@ -91,6 +93,11 @@ class RuntimeOperationContract:
     ) -> CapabilityDescriptor:
         if not self.domain:
             raise ValueError(f"control operation {self.name} has no Runtime capability")
+        effect_class = self.effect_class or (
+            EffectClass.RECONCILABLE_MUTATION
+            if self.mutation
+            else EffectClass.READ_ONLY
+        )
         return CapabilityDescriptor(
             operation=self.name,
             capability=self.capability,
@@ -99,7 +106,8 @@ class RuntimeOperationContract:
             output_schema={"type": "object", "additionalProperties": True},
             timeout_seconds=self.timeout_seconds,
             evidence_types=self.evidence_types,
-            mutation=self.mutation,
+            mutation=effect_class is not EffectClass.READ_ONLY,
+            effect_class=effect_class,
         )
 
 
@@ -234,6 +242,14 @@ class RuntimeOperationContractRegistry:
                     "lifecycle": contract.lifecycle,
                     "handler_name": contract.handler_name,
                     "mutation": contract.mutation,
+                    "effect_class": (
+                        contract.effect_class
+                        or (
+                            EffectClass.RECONCILABLE_MUTATION
+                            if contract.mutation
+                            else EffectClass.READ_ONLY
+                        )
+                    ).value,
                     "workflow_entry": contract.workflow_entry,
                     "credential_values": contract.credential_values,
                     "capability": contract.capability,
@@ -307,6 +323,7 @@ DEFAULT_OPERATION_CONTRACTS = RuntimeOperationContractRegistry(
             evidence_types=("diagnostic-bundle", "collection-outcome"),
             orchestration_phase="bundle",
             closeout_stage="bundle",
+            effect_class=EffectClass.IDEMPOTENT_MUTATION,
         ),
         *(stage.operation_contract() for stage in LOG_BUNDLE_STAGE_CONTRACTS),
         RuntimeOperationContract(

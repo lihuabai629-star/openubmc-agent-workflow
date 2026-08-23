@@ -50,6 +50,7 @@ from .semantic_runtime import GateConflict
 from .workflow import (
     DEFAULT_PHASE_REGISTRY,
     DEFAULT_WORKFLOW_DEFINITIONS,
+    WorkflowDefinitions,
     WorkflowStepDefinition,
 )
 
@@ -2855,6 +2856,8 @@ class ContextRuntime:
         retention_seconds: float = DEFAULT_CASE_RETENTION_SECONDS,
         storage_soft_limit_bytes: int = DEFAULT_STORAGE_SOFT_LIMIT_BYTES,
         clock: Callable[[], float] = time.time,
+        workflow_definitions: WorkflowDefinitions = DEFAULT_WORKFLOW_DEFINITIONS,
+        operation_stages: Mapping[str, str] | None = None,
     ) -> None:
         if envelope_max_bytes <= 1024:
             raise ValueError("agent envelope byte limit is too small")
@@ -2876,6 +2879,8 @@ class ContextRuntime:
         self.retention_seconds = float(retention_seconds)
         self.storage_soft_limit_bytes = int(storage_soft_limit_bytes)
         self.clock = clock
+        self.workflow_definitions = workflow_definitions
+        self.operation_stages = dict(operation_stages or {})
         self._projection_cache: OrderedDict[str, dict[str, object]] = OrderedDict()
         self._projection_cache_sizes: dict[str, int] = {}
         self._projection_cache_bytes = 0
@@ -3205,7 +3210,7 @@ class ContextRuntime:
             },
             frozen_at=self.clock(),
         )
-        revised_workflow = DEFAULT_WORKFLOW_DEFINITIONS.registry.resolve(
+        revised_workflow = self.workflow_definitions.registry.resolve(
             intent=intent,
             entry_domain=_case_entry_domain(projection),
             entry_operation=str(projection.get("entry_operation", "")),
@@ -3377,7 +3382,7 @@ class ContextRuntime:
                     frozen_at=self.clock(),
                 ).to_public_dict()
                 payload["workflow_definition"] = (
-                    DEFAULT_WORKFLOW_DEFINITIONS.registry.resolve(
+                    self.workflow_definitions.registry.resolve(
                         intent=str(revised_arguments["intent"]),
                         entry_domain=str(
                             payload.get(
@@ -3508,7 +3513,7 @@ class ContextRuntime:
             authorized_exceptions=opened_arguments.get("authorized_exceptions"),
             allow_insecure_tls=allow_insecure_tls,
         )
-        workflow_definition = DEFAULT_WORKFLOW_DEFINITIONS.registry.resolve(
+        workflow_definition = self.workflow_definitions.registry.resolve(
             intent=str(opened_arguments.get("intent", "diagnosis-only")),
             entry_domain=str(opened_arguments.get("entry_domain", "")),
             entry_operation=str(
@@ -4069,6 +4074,7 @@ class ContextRuntime:
             projection,
             read_closeout_evidence,
             terminal_status=terminal_status,
+            operation_stages=self.operation_stages,
         )
         payload = closeout.to_public_dict()
         markdown = render_markdown(closeout)

@@ -489,6 +489,7 @@ class StartRun:
     delivery_strategy: str
     command_id: str
     input_digest: str
+    entry_operation: str = ""
     observation_ref: ObservationRef | None = None
     legacy_observation_receipt: Mapping[str, object] | None = None
     caller_deadline: float = 120.0
@@ -636,6 +637,7 @@ def _run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
         "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
         "target": command.target,
         "intent": command.intent,
+        "entry_operation": command.entry_operation,
         "purpose": command.purpose,
         "delivery_strategy": command.delivery_strategy,
         "observation_ref": (
@@ -745,6 +747,15 @@ def decode_run_command(
         if not target:
             raise AgentGatewayError("start requires target")
         intent = _text(action.get("intent") or "diagnosis-only").lower()
+        entry_operation = _text(action.get("entry_operation"))
+        if entry_operation and _SAFE_ID.fullmatch(entry_operation) is None:
+            raise AgentGatewayError(
+                "entry_operation must be a safe 1-128 character identifier"
+            )
+        if entry_operation and intent != "diagnosis-only":
+            raise AgentGatewayError(
+                "entry_operation is supported only for diagnosis-only Runs"
+            )
         raw_delivery = _text(action.get("delivery_strategy")).lower()
         delivery = raw_delivery or (
             "source-only" if intent == "diagnose-and-fix" else ""
@@ -778,6 +789,7 @@ def decode_run_command(
             delivery_strategy=delivery,
             command_id=command_id,
             input_digest="",
+            entry_operation=entry_operation,
             observation_ref=observation_ref,
             legacy_observation_receipt=(
                 dict(legacy_receipt) if isinstance(legacy_receipt, Mapping) else None
