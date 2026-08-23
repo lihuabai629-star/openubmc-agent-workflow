@@ -1148,13 +1148,22 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
 def _parenthetical_annotation_matches(annotation: str, expected: str) -> bool:
     marker = re.match(
         r"^(?:原始(?:返回|值)?|实际(?:返回|值)?|返回(?:值)?|raw(?:\s+value)?|value)"
-        r"\s*(?:[:：=]|为|是)?\s*(?P<value>.+?)\s*$",
+        r"\s*(?:[:：=]|为|是)\s*(?P<value>.+?)\s*$",
         annotation,
     )
     if marker is None:
         return False
     annotated_value = marker.group("value").strip(" \t\r\n\\\"'`")
     return annotated_value == expected
+
+
+def _parenthetical_annotation_describes_quotes(annotation: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?:原始(?:值|返回)?|实际值?)?(?:含|包含)(?:双)?引号",
+            annotation.strip(),
+        )
+    )
 
 
 def _reported_value_matches(reported: str, expected: str) -> bool:
@@ -1172,7 +1181,10 @@ def _reported_value_matches(reported: str, expected: str) -> bool:
             annotation = remainder[1:close_index]
             suffix = remainder[close_index + 1:]
             if (
-                _parenthetical_annotation_matches(annotation, expected)
+                (
+                    _parenthetical_annotation_matches(annotation, expected)
+                    or _parenthetical_annotation_describes_quotes(annotation)
+                )
                 and all(character in terminal for character in suffix)
             ):
                 return True
