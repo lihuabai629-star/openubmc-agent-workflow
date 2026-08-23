@@ -125,6 +125,7 @@ def verify_runtime_stability_report(
             _integer(gate.get("gate_submissions"), "gate submissions") == 1,
             _integer(gate.get("outcome_events"), "gate outcome events") == 1,
             _integer(gate.get("open_incidents"), "gate open incidents") == 0,
+            _integer(gate.get("unique_turns"), "gate unique Turns") == 1,
         )
     ):
         raise ValueError("Runtime stability Gate concurrency did not converge")
@@ -254,6 +255,11 @@ def verify_runtime_stability_report(
             _integer(soak.get("completed_runs"), "soak completed runs")
             == expected_runs,
             _integer(soak.get("replay_mismatches"), "soak replay mismatches")
+            == 0,
+            _integer(
+                soak.get("replay_backend_read_calls"),
+                "soak replay backend calls",
+            )
             == 0,
             _integer(soak.get("invalid_runs"), "soak invalid runs") == 0,
             _integer(soak.get("outcome_events"), "soak outcome events")

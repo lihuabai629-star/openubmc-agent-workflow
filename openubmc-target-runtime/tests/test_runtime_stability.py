@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-import tempfile
+import subprocess
 import unittest
 
 
@@ -18,11 +18,16 @@ class RuntimeStabilityTests(unittest.TestCase):
     def test_public_semantic_seams_survive_storm_capacity_and_restart_soak(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            report = stability.qualify_runtime_stability(
-                Path(raw),
-                source_commit="b" * 40,
-            )
+        report = stability.qualify_runtime_stability(
+            ROOT,
+            source_commit=subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ROOT,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout.strip(),
+        )
 
         self.assertTrue(report["promotable"])
         self.assertEqual(
@@ -31,7 +36,16 @@ class RuntimeStabilityTests(unittest.TestCase):
         )
         self.assertTrue(report["evidence_digest"].startswith("sha256:"))
         self.assertTrue(report["environment_fingerprint"].startswith("sha256:"))
-        self.assertEqual(report["source_commit"], "b" * 40)
+        self.assertEqual(
+            report["source_commit"],
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ROOT,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout.strip(),
+        )
         storm = report["scenarios"]["duplicate_storm"]
         self.assertEqual(storm["status"], "passed")
         self.assertEqual(storm["unique_runs"], 1)
@@ -42,6 +56,7 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertEqual(gate["status"], "passed")
         self.assertEqual(gate["gate_submissions"], 1)
         self.assertEqual(gate["outcome_events"], 1)
+        self.assertEqual(gate["unique_turns"], 1)
         capacity = report["scenarios"]["capacity"]
         self.assertEqual(capacity["status"], "passed")
         self.assertEqual(capacity["completed_runs"], 128)
@@ -59,6 +74,7 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertEqual(soak["incomplete_operations"], 0)
         self.assertEqual(soak["failed_calls"], 0)
         self.assertEqual(soak["replay_mismatches"], 0)
+        self.assertEqual(soak["replay_backend_read_calls"], 0)
         self.assertEqual(
             sum(soak["events_per_cycle"]),
             soak["total_events"],

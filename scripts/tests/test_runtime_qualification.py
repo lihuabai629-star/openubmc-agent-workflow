@@ -9,6 +9,14 @@ import unittest
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "runtime_qualification.py"
+WORKSPACE = SCRIPT.parents[1]
+SOURCE_COMMIT = subprocess.run(
+    ["git", "rev-parse", "HEAD"],
+    cwd=WORKSPACE,
+    check=True,
+    text=True,
+    stdout=subprocess.PIPE,
+).stdout.strip()
 SPEC = importlib.util.spec_from_file_location("runtime_qualification", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 qualification = importlib.util.module_from_spec(SPEC)
@@ -61,6 +69,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "execute_calls": 8,
                     "failed_calls": 0,
                     "unique_runs": 1,
+                    "unique_turns": 1,
                     "gate_submissions": 1,
                     "outcome_events": 1,
                     "open_incidents": 0,
@@ -92,6 +101,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "completed_turns": 128,
                     "completed_runs": 64,
                     "replay_mismatches": 0,
+                    "replay_backend_read_calls": 0,
                     "invalid_runs": 0,
                     "outcome_events": 64,
                     "open_incidents": 0,
@@ -128,9 +138,9 @@ class RuntimeQualificationTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, stdout, "")
 
         report = qualification.qualify_runtime(
-            Path.cwd(),
+            WORKSPACE,
             executor=succeed,
-            source_commit="a" * 40,
+            source_commit=SOURCE_COMMIT,
             environment={"python": "3.11.0", "platform": "test"},
         )
 
@@ -148,7 +158,7 @@ class RuntimeQualificationTests(unittest.TestCase):
         )
         self.assertTrue(report["ordinary_partial_result_accepted"])
         self.assertEqual(len(calls), 7)
-        self.assertEqual(report["source_commit"], "a" * 40)
+        self.assertEqual(report["source_commit"], SOURCE_COMMIT)
         self.assertEqual(
             report["environment"],
             {"platform": "test", "python": "3.11.0"},
@@ -165,7 +175,7 @@ class RuntimeQualificationTests(unittest.TestCase):
         )
         self.assertEqual(
             stability_call[stability_call.index("--source-commit") + 1],
-            "a" * 40,
+            SOURCE_COMMIT,
         )
 
     def test_failed_safety_qualification_blocks_promotion(self) -> None:
@@ -185,7 +195,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "qualified invariant failed" if call_count == 2 else "",
             )
 
-        report = qualification.qualify_runtime(Path.cwd(), executor=fail_second)
+        report = qualification.qualify_runtime(WORKSPACE, executor=fail_second)
 
         self.assertFalse(report["promotable"])
         self.assertGreater(report["violations"]["false_successes"], 0)
@@ -202,9 +212,9 @@ class RuntimeQualificationTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, stdout, "")
 
         report = qualification.qualify_runtime(
-            Path.cwd(),
+            WORKSPACE,
             executor=incomplete,
-            source_commit="a" * 40,
+            source_commit=SOURCE_COMMIT,
         )
 
         self.assertFalse(report["promotable"])
@@ -231,9 +241,9 @@ class RuntimeQualificationTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
 
         report = qualification.qualify_runtime(
-            Path.cwd(),
+            WORKSPACE,
             executor=over_threshold,
-            source_commit="a" * 40,
+            source_commit=SOURCE_COMMIT,
         )
 
         self.assertFalse(report["promotable"])
@@ -260,9 +270,9 @@ class RuntimeQualificationTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
 
         report = qualification.qualify_runtime(
-            Path.cwd(),
+            WORKSPACE,
             executor=wrong_fingerprint,
-            source_commit="a" * 40,
+            source_commit=SOURCE_COMMIT,
         )
 
         stability_result = next(
@@ -286,9 +296,9 @@ class RuntimeQualificationTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
 
         report = qualification.qualify_runtime(
-            Path.cwd(),
+            WORKSPACE,
             executor=over_rss,
-            source_commit="a" * 40,
+            source_commit=SOURCE_COMMIT,
         )
 
         stability_result = next(
@@ -298,6 +308,13 @@ class RuntimeQualificationTests(unittest.TestCase):
         )
         self.assertFalse(report["promotable"])
         self.assertIn("capacity", stability_result["verification_error"])
+
+    def test_unrelated_source_commit_is_rejected_before_qualification(self) -> None:
+        with self.assertRaisesRegex(ValueError, "workspace HEAD"):
+            qualification.qualify_runtime(
+                WORKSPACE,
+                source_commit="a" * 40,
+            )
 
 
 if __name__ == "__main__":

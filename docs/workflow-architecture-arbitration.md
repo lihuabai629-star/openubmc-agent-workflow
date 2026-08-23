@@ -650,7 +650,9 @@ matrix。报告绑定 source commit、环境指纹、参数、Agent 调用/失�
 重新验证 schema、source、参数、digest 和全部硬阈值。重复 Outcome、未收敛
 Incident/operation、同 identity 接受不同输入或增长超限都会阻断 promotion。并发 storm
 允许返回 `running` reattach Turn，但必须用同一 command identity 收敛到唯一 terminal
-Outcome。
+Outcome；Gate 并发要求所有等价 caller 返回相同 terminal Turn；soak replay 必须发生在
+Runtime reopen 之后且不得再次调用 backend。source 绑定仅接受当前 HEAD，或合法 release-lock
+child 记录的唯一父提交。
 
 ### 14.5 Execute A/B
 

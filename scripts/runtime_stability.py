@@ -305,6 +305,7 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
         str(waiting["run_id"]),
     )
     run_ids = {str(turn["run_id"]) for turn in turns}
+    unique_turns = len({evidence_fingerprint(turn) for turn in turns})
     gate_submissions = len(projection["gate_submissions"])
     outcome_events = sum(
         event["kind"] == "RunOutcomeRecorded" for event in replay
@@ -313,6 +314,7 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
         (
             not errors,
             run_ids == {str(waiting["run_id"])},
+            unique_turns == 1,
             gate_submissions == 1,
             outcome_events == 1,
             projection["run_outcome"].get("status") == "completed",
@@ -325,6 +327,7 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
         "failed_calls": len(errors),
         "errors": errors,
         "unique_runs": len(run_ids),
+        "unique_turns": unique_turns,
         "turn_states": dict(
             sorted(Counter(str(turn["state"]) for turn in turns).items())
         ),
@@ -466,6 +469,7 @@ def _restart_soak(root: Path) -> dict[str, object]:
     blobs = FilesystemBlobRepository(storage.blobs)
     run_ids: list[str] = []
     backend_calls = 0
+    replay_backend_calls = 0
     execute_calls = 0
     failed_calls = 0
     completed_turns = 0
@@ -485,6 +489,7 @@ def _restart_soak(root: Path) -> dict[str, object]:
     try:
         for cycle in range(SOAK_RESTART_CYCLES):
             cycle_start = len(run_ids)
+            cycle_actions: list[tuple[str, dict[str, object], dict[str, object]]] = []
             backend, agent = _agent(storage)
             try:
                 for index in range(SOAK_RUNS_PER_CYCLE):
@@ -508,9 +513,17 @@ def _restart_soak(root: Path) -> dict[str, object]:
                         continue
                     completed_turns += int(first["state"] == "completed")
                     run_ids.append(str(first["run_id"]))
+                    cycle_actions.append((operation_id, action, first))
+            finally:
+                backend_calls += backend.calls
+                agent.close()
+
+            replay_backend, replay_agent = _agent(storage)
+            try:
+                for operation_id, action, first in cycle_actions:
                     execute_calls += 1
                     try:
-                        replayed = agent.call_exposed_tool(
+                        replayed = replay_agent.call_exposed_tool(
                             "execute",
                             action,
                             task_id=f"{operation_id}-replay",
@@ -522,8 +535,8 @@ def _restart_soak(root: Path) -> dict[str, object]:
                     completed_turns += int(replayed["state"] == "completed")
                     replay_mismatches += int(first != replayed)
             finally:
-                backend_calls += backend.calls
-                agent.close()
+                replay_backend_calls += replay_backend.calls
+                replay_agent.close()
             cycle_run_ids = run_ids[cycle_start:]
             cycle_events = 0
             for run_id in cycle_run_ids:
@@ -577,6 +590,7 @@ def _restart_soak(root: Path) -> dict[str, object]:
             failed_calls == 0,
             completed_turns == expected_runs * 2,
             replay_mismatches == 0,
+            replay_backend_calls == 0,
             invalid_runs == 0,
             outcome_events == expected_runs,
             max_events_per_run <= MAX_EVENTS_PER_RUN,
@@ -598,6 +612,7 @@ def _restart_soak(root: Path) -> dict[str, object]:
         "replay_mismatches": replay_mismatches,
         "invalid_runs": invalid_runs,
         "backend_read_calls": backend_calls,
+        "replay_backend_read_calls": replay_backend_calls,
         "outcome_events": outcome_events,
         "open_incidents": open_incidents,
         "incomplete_operations": incomplete_operations,

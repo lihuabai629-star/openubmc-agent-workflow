@@ -18,9 +18,9 @@ release gate consumes the resulting aggregate report.
 | Scenario | Workload | Promotion invariant |
 | --- | --- | --- |
 | duplicate storm | 16 simultaneous deliveries plus terminal replay and a conflicting retry | one Run, one original command Decision, one Outcome, no Incident, conflicting input rejected |
-| Gate concurrency | eight SQLite-backed Runtime instances submit the same Gate receipt | one Gate submission, one Outcome, equivalent callers reattach without conflict |
+| Gate concurrency | eight SQLite-backed Runtime instances submit the same Gate receipt | one Gate submission, one Outcome, and byte-equivalent terminal Turns for every caller |
 | capacity | 128 hermetic diagnosis Runs measured in four batches | bounded linear event/storage growth, no failed call, duplicate Outcome, open Incident, or incomplete operation |
-| restart soak | 64 terminal diagnosis Runs across four SQLite process lifecycles, each replayed | every replay returns the terminal Turn; one Outcome per Run; no open Incident or unsettled operation |
+| restart soak | 64 terminal diagnosis Runs across four SQLite process lifecycles, each replayed only after reopening the Runtime | every cross-restart replay returns the terminal Turn without another backend call; one Outcome per Run; no open Incident or unsettled operation |
 | crash-cut matrix | journal and real Live Patch backend durable cuts | stable Effect identity and no repeated dangerous mutation |
 
 The CI profile blocks promotion when any of these limits is exceeded:
@@ -40,6 +40,8 @@ Agent execute calls, failures, completions, per-cycle and cumulative event growt
 total process RSS, Python allocations, thresholds, pass/fail status, and a SHA-256 digest over the complete report. The aggregate Runtime
 qualification validates the child schema, source binding, canonical parameters, digest, raw metrics,
 and every hard threshold before accepting it.
+An explicit source commit must equal the tested workspace HEAD. The only exception is an immutable
+release-lock child, where it must equal that commit's sole parent and the lock's recorded source.
 Scenario assertions read projections and events through the public persistent repository contract;
 they do not depend on Operator-only case tools or private test hooks.
 Intermediate `running` Turns during a duplicate storm are valid reattach points; the decisive
