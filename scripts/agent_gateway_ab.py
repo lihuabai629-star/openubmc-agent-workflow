@@ -935,6 +935,23 @@ def _run_prompt_binding_errors(
     return errors
 
 
+def _run_environment_binding_errors(
+    value: object,
+    *,
+    expected_fingerprint: object,
+) -> list[str]:
+    document = _json_object(value)
+    runs = document.get("runs")
+    if not isinstance(runs, list):
+        return []
+    return [
+        f"AB run environment does not match the release evidence at item {index}"
+        for index, value in enumerate(runs, 1)
+        if _json_object(value).get("environment_fingerprint")
+        != expected_fingerprint
+    ]
+
+
 def _run_attestation_errors(
     value: object, *, public_key: Path
 ) -> list[str]:
@@ -1029,14 +1046,20 @@ def _run_attestation_errors(
 
 
 def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
+    cautious_patterns = (
+        r"(?:不能|无法|不足以)[^，,。；;！？!?\n]{0,32}(?:证明|说明|表明|判断|认定|确认)",
+        r"(?:不代表|不等于|并非|不是|不属于)[^，,。；;！？!?\n]{0,32}异常",
+    )
     cautious = (
-        "不能" in text or "无法" in text
-    ) and "resourceid" in folded and "异常" in text
+        "resourceid" in folded
+        and "异常" in text
+        and any(re.search(pattern, folded) for pattern in cautious_patterns)
+    )
     if not cautious:
         return False
     negative_terms = ("不能", "无法", "不足以", "不代表", "不等于", "并非", "不是", "不属于")
     clauses = re.split(
-        r"[，,。；;！？!?\n]+|(?=但(?:是)?|然而|不过|可是)",
+        r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)",
         folded,
     )
     return not any(
@@ -1051,15 +1074,16 @@ def _reported_value_matches(reported: str, expected: str) -> bool:
     if not reported.startswith(expected):
         return False
     tail = reported[len(expected):]
-    if not tail.strip(" \t\\"):
+    terminal = set(" \t\r\n\\，,；;.。！？!?、：:）)]}】》」』")
+    if all(character in terminal for character in tail):
         return True
-    remainder = tail.lstrip()
-    first = remainder[0]
-    if first in "，,；;。！？!?、：:）)]}】》」』（([{":
-        return True
-    if first == ".":
-        return len(remainder) == 1 or not remainder[1].isalnum()
-    return False
+    remainder = tail.lstrip(" \t\\")
+    if not remainder or remainder[0] not in "，,；;。！？!?":
+        return False
+    conclusion = remainder[1:].lstrip()
+    return conclusion.startswith(
+        ("不能", "无法", "不足以", "这些", "证据", "结论", "本次", "现有")
+    )
 
 
 def _reported_skill_value(
@@ -2139,6 +2163,14 @@ def verify_summary(
                     expected_scenario=expected_scenario,
                 )
             )
+            errors.extend(
+                _run_environment_binding_errors(
+                    run_evidence_value,
+                    expected_fingerprint=evidence.get(
+                        "environment_fingerprint"
+                    ),
+                )
+            )
             if attestation_public_key is None:
                 errors.append("AB run attestation public key is required")
             else:
@@ -2256,6 +2288,13 @@ def run_benchmark(args: argparse.Namespace) -> int:
     environment = os.environ.copy()
     environment["OPENUBMC_CREDENTIALS_FILE"] = str(args.credentials)
     environment["OPENUBMC_DEBUG_CREDENTIALS_FILE"] = str(args.credentials)
+    environment_record = {
+        "python": platform.python_version(),
+        "node": _version(["node", "--version"]),
+        "codex": _version([args.codex, "--version"]),
+        "platform": platform.platform(),
+    }
+    environment_fingerprint = _fingerprint(environment_record)
     metrics: list[dict[str, object]] = []
     run_evidence: dict[str, object] = {
         "schema": RUN_EVIDENCE_SCHEMA,
@@ -2334,6 +2373,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
             run_mapping["execution_id"] = _execution_identity(events)
             run_mapping["prompt"] = prompt
             run_mapping["prompt_sha256"] = _text_sha256(prompt)
+            run_mapping["environment_fingerprint"] = environment_fingerprint
             raw_runs.append(
                 attest_run_record(
                     run_mapping,
@@ -2369,12 +2409,6 @@ def run_benchmark(args: argparse.Namespace) -> int:
     )
     metrics_path = output / "all_metrics.json"
     schedule_path = output / "schedule.json"
-    environment_record = {
-        "python": platform.python_version(),
-        "node": _version(["node", "--version"]),
-        "codex": _version([args.codex, "--version"]),
-        "platform": platform.platform(),
-    }
     summary["release_evidence"] = release_evidence(
         scenario=args.scenario,
         requested_pairs=args.pairs,

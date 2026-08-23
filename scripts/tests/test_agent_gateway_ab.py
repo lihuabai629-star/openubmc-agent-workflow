@@ -107,6 +107,10 @@ def signed_run_evidence(
             "prompt_sha256",
             "sha256:" + hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         )
+        run.setdefault(
+            "environment_fingerprint",
+            module._fingerprint({"python": "3.12", "node": "v22"}),
+        )
         payload = root / f"run-{index}.json"
         payload.write_text(
             json.dumps(
@@ -189,6 +193,7 @@ def verify_passing_summary(
     baseline_commit: str,
     run_candidate_commit: str | None = None,
     run_prompt_override: str | None = None,
+    release_environment: dict[str, str] | None = None,
 ):
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
@@ -230,7 +235,11 @@ def verify_passing_summary(
             schedule_path=schedule_path,
             run_evidence_path=run_evidence_path,
             analysis=analysis,
-            environment={"python": "3.12", "node": "v22"},
+            environment=(
+                release_environment
+                if release_environment is not None
+                else {"python": "3.12", "node": "v22"}
+            ),
         )
         summary_path = root / "summary.json"
         summary_path.write_text(json.dumps(analysis), encoding="utf-8")
@@ -1020,6 +1029,8 @@ class AgentGatewayAbTests(unittest.TestCase):
         finals = (
             "MDBCTL=available Name=Disk0-wrong ResourceId=0 Presence=1，"
             "不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0,wrong ResourceId=0 Presence=1，"
+            "不能证明 ResourceId 异常。",
             "MDBCTL=available Name=Disk0 ResourceId=0.0 Presence=1，"
             "不能证明 ResourceId 异常。",
             "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1 wrong，"
@@ -1048,30 +1059,40 @@ class AgentGatewayAbTests(unittest.TestCase):
                 self.assertFalse(record.metric()["valid"])
 
     def test_skill_disclosure_rejects_a_contradictory_conclusion(self) -> None:
-        record = module.RunEvidenceRecord.capture(
-            arm="B",
-            pair=1,
-            order=1,
-            scenario="skill-disclosure",
-            events=[
-                skill_disclosure_observe_event(),
-                {
-                    "type": "turn.completed",
-                    "usage": {"input_tokens": 100, "output_tokens": 10},
-                },
-            ],
-            final=(
-                "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1。"
-                "不能证明 ResourceId 异常，但最终结论是 ResourceId 异常。"
-            ),
-            exit_code=0,
-            duration_seconds=1,
+        conclusions = (
+            "不能证明 ResourceId 异常，但最终结论是 ResourceId 异常。",
+            "不能证明 ResourceId 异常却判定 ResourceId 异常。",
+            "无法排除 ResourceId 异常。",
         )
 
-        metric = record.metric()
+        for conclusion in conclusions:
+            with self.subTest(conclusion=conclusion):
+                record = module.RunEvidenceRecord.capture(
+                    arm="B",
+                    pair=1,
+                    order=1,
+                    scenario="skill-disclosure",
+                    events=[
+                        skill_disclosure_observe_event(),
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 100, "output_tokens": 10},
+                        },
+                    ],
+                    final=(
+                        "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1。"
+                        + conclusion
+                    ),
+                    exit_code=0,
+                    duration_seconds=1,
+                )
 
-        self.assertFalse(metric["valid"])
-        self.assertFalse(metric["semantic_acceptance"]["conclusion_supported"])
+                metric = record.metric()
+
+                self.assertFalse(metric["valid"])
+                self.assertFalse(
+                    metric["semantic_acceptance"]["conclusion_supported"]
+                )
 
     def test_skill_disclosure_rejects_values_swapped_between_fields(self) -> None:
         record = module.RunEvidenceRecord.capture(
@@ -2195,6 +2216,19 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertFalse(verified["promotable"], verified)
         self.assertTrue(
             any("prompt contract" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_rejects_environment_not_bound_to_attested_runs(self) -> None:
+        verified = verify_passing_summary(
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            release_environment={"python": "rewritten", "node": "v22"},
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("run environment" in error for error in verified["errors"]),
             verified,
         )
 
