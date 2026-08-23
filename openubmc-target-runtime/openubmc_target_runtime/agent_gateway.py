@@ -738,6 +738,24 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
             "run_id": {"type": "string", "minLength": 1},
             "target": {"type": "string", "minLength": 1},
             "intent": {"type": "string"},
+            "entry_operation": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": (
+                    "Optional registered Domain Pack entry. READ_ONLY entries run as "
+                    "one-step diagnosis-only Runs; mutation entries require a typed "
+                    "Runtime-owned route for the selected intent."
+                ),
+            },
+            "entry_arguments": {
+                "type": "object",
+                "description": (
+                    "Typed arguments for the selected entry_operation; Runtime-owned "
+                    "identity, target, intent, and authorization fields are forbidden."
+                ),
+                "additionalProperties": True,
+            },
             "purpose": {"type": "string"},
             "delivery_strategy": {
                 "type": "string",

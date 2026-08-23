@@ -38,6 +38,36 @@ _CAPABILITY_ALIASES = frozenset(
 )
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_RUNTIME_OWNED_ENTRY_ARGUMENTS = frozenset(
+    {
+        "ip",
+        "target",
+        "targets",
+        "target_id",
+        "target_role",
+        "role",
+        "intent",
+        "entry_domain",
+        "entry_operation",
+        "final_purpose",
+        "purpose",
+        "delivery_strategy",
+        "workflow",
+        "case_id",
+        "authorized_exceptions",
+        "allow_insecure_tls",
+        "observation_ref",
+        "observation_receipt",
+        "change_boundary",
+        "include_closeout_bundle",
+        "max_steps",
+        "deadline",
+        "expected_revision",
+        "idempotency_key",
+        "command_id",
+        "input_digest",
+    }
+)
 
 
 class SemanticRuntimeError(ValueError):
@@ -489,6 +519,8 @@ class StartRun:
     delivery_strategy: str
     command_id: str
     input_digest: str
+    entry_operation: str = ""
+    entry_arguments: Mapping[str, object] | None = None
     observation_ref: ObservationRef | None = None
     legacy_observation_receipt: Mapping[str, object] | None = None
     caller_deadline: float = 120.0
@@ -636,6 +668,8 @@ def _run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
         "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
         "target": command.target,
         "intent": command.intent,
+        "entry_operation": command.entry_operation,
+        "entry_arguments": dict(command.entry_arguments or {}),
         "purpose": command.purpose,
         "delivery_strategy": command.delivery_strategy,
         "observation_ref": (
@@ -745,6 +779,26 @@ def decode_run_command(
         if not target:
             raise AgentGatewayError("start requires target")
         intent = _text(action.get("intent") or "diagnosis-only").lower()
+        entry_operation = _text(action.get("entry_operation"))
+        if entry_operation and _SAFE_ID.fullmatch(entry_operation) is None:
+            raise AgentGatewayError(
+                "entry_operation must be a safe 1-128 character identifier"
+            )
+        raw_entry_arguments = action.get("entry_arguments", {})
+        if not isinstance(raw_entry_arguments, Mapping):
+            raise AgentGatewayError("entry_arguments must be an object")
+        entry_arguments = dict(raw_entry_arguments)
+        if any(
+            name in _RUNTIME_OWNED_ENTRY_ARGUMENTS or name.startswith("_")
+            for name in entry_arguments
+        ):
+            raise AgentGatewayError(
+                "entry_arguments cannot override Runtime-owned fields"
+            )
+        if entry_arguments and not entry_operation:
+            raise AgentGatewayError(
+                "entry_arguments requires entry_operation"
+            )
         raw_delivery = _text(action.get("delivery_strategy")).lower()
         delivery = raw_delivery or (
             "source-only" if intent == "diagnose-and-fix" else ""
@@ -778,6 +832,8 @@ def decode_run_command(
             delivery_strategy=delivery,
             command_id=command_id,
             input_digest="",
+            entry_operation=entry_operation,
+            entry_arguments=entry_arguments,
             observation_ref=observation_ref,
             legacy_observation_receipt=(
                 dict(legacy_receipt) if isinstance(legacy_receipt, Mapping) else None

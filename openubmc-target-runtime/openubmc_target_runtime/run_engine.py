@@ -55,7 +55,11 @@ from .effect_runner import (
     PreparedEffect,
 )
 from .capability import EffectClass
-from .workflow import DEFAULT_PHASE_REGISTRY, DEFAULT_WORKFLOW_DEFINITIONS
+from .workflow import (
+    DEFAULT_PHASE_REGISTRY,
+    DEFAULT_WORKFLOW_DEFINITIONS,
+    WorkflowDefinitions,
+)
 
 
 WORKFLOW_INTERNAL_MAX_STEPS = 64
@@ -414,6 +418,7 @@ class RunEngine:
         fact_projector: Callable[
             [Mapping[str, object]], tuple[Mapping[str, object], ...]
         ] | None = None,
+        workflow_definitions: WorkflowDefinitions = DEFAULT_WORKFLOW_DEFINITIONS,
     ) -> None:
         if run_store is None:
             raise ValueError("RunStore is required")
@@ -422,6 +427,7 @@ class RunEngine:
         self.artifact_store = artifact_store or LocalArtifactStore()
         self.effect_runner = effect_runner
         self.fact_projector = fact_projector
+        self.workflow_definitions = workflow_definitions
         self._active_transaction: ContextVar[RunDecisionDraft | None] = (
             ContextVar(f"openubmc_run_decision_{id(self)}", default=None)
         )
@@ -896,8 +902,8 @@ class RunEngine:
                 payload["product_version"] = artifact_ref.version
         return {"status": status, "summary": summary, "payload": payload}
 
-    @staticmethod
     def _phase_fact(
+        self,
         command: SubmitGate,
         *,
         gate: Gate,
@@ -914,7 +920,7 @@ class RunEngine:
             or "cycle-1"
         )
         step_id = _text(persisted_gate.get("workflow_step_id"))
-        definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(projection)
+        definition = self.workflow_definitions.definition_for(projection)
         step = next(
             candidate for candidate in definition.steps if candidate.step_id == step_id
         )
@@ -926,7 +932,7 @@ class RunEngine:
             and _text(item.get("workflow_cycle_id")) == cycle_id
         ]
         attempt = max(prior_attempts, default=0) + 1
-        identity = DEFAULT_WORKFLOW_DEFINITIONS.step_identity(
+        identity = self.workflow_definitions.step_identity(
             projection,
             step=step,
             attempt=attempt,

@@ -162,6 +162,8 @@ class RuntimeSemanticAdapter:
             "schema": "openubmc.semantic-runtime/start-input-v1",
             "target": command.target,
             "intent": command.intent,
+            "entry_operation": command.entry_operation,
+            "entry_arguments": dict(command.entry_arguments or {}),
             "purpose": command.purpose,
             "delivery_strategy": command.delivery_strategy,
             "observation_ref": (
@@ -182,12 +184,23 @@ class RuntimeSemanticAdapter:
             raise CommandConflict(str(exc)) from exc
         if existing is not None:
             return self.run_snapshot(run_id)
+        if command.entry_operation and command.intent == "diagnosis-only":
+            entry_policy = self.domain_executor.policy_for(
+                command.entry_operation
+            )
+            if entry_policy.effect_class is not EffectClass.READ_ONLY:
+                raise ValueError(
+                    "entry_operation must select a READ_ONLY Domain Pack"
+                )
         arguments: dict[str, object] = {
             "ip": command.target,
             "intent": command.intent,
             "final_purpose": command.purpose,
             "include_closeout_bundle": False,
         }
+        if command.entry_operation:
+            arguments["_context_entry_operation"] = command.entry_operation
+            arguments["entry_arguments"] = dict(command.entry_arguments or {})
         if command.delivery_strategy:
             arguments["delivery_strategy"] = command.delivery_strategy
         seeded_raw: Mapping[str, object] | None = None

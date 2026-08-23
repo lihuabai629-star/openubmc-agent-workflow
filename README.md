@@ -58,6 +58,7 @@ are maintained in the following records:
 - [Market workflow design research](docs/workflow-design-market-research.md)
 - [External research reconciliation](docs/external-workflow-research-reconciliation.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)
+- [Domain Pack authoring contract](docs/domain-pack-authoring.md)
 
 ## Credentials
 

@@ -31,7 +31,7 @@ M0 至 M5 已完成并通过完整 execute A/B、Release Gate 与 main CI。当�
 | M2 Live Patch 可靠性 | 完成 | 继续扩充真实 target fault evidence |
 | M3 Build-Upgrade Artifact flow | 完成 | 继续扩充长时间 soak 与容量证据 |
 | M4 权威收敛 | 完成 | 集中并删除 compatibility writer；补全 Incident lifecycle |
-| M5 Domain Pack | 完成 | Log Bundle 已拆成 collect/index/query/export；后三阶段形成真实本地 READ_ONLY Pack，继续补作者契约与跨 Pack 一致性套件 |
+| M5 Domain Pack | 完成 | 内建与扩展 Pack 共用 typed 作者契约和 Pack-set conformance suite；Log Bundle index/query/export 为真实本地 READ_ONLY Pack |
 | M6 证据驱动扩展 | 进行中 | 由兼容遥测、Incident 数据和容量证据决定扩展 |
 
 v2 release qualification 基线包含 416 项 Runtime 测试；当前 Runtime composition

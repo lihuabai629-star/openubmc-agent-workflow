@@ -13,8 +13,9 @@ from .capability import (
     DomainAdapter,
     DomainExecutor,
     DomainPack,
+    DomainPackAuthorContract,
+    DomainPackConformanceSuite,
     DomainReceipt,
-    EffectClass,
     RuntimeSDKContext,
 )
 from .catalog import OperationCatalog, OperationDescriptor
@@ -32,7 +33,7 @@ from .context_runtime import (
     RuntimeRepository,
     SQLiteRuntimeRepository,
 )
-from .domain_packs import builtin_domain_packs
+from .domain_packs import builtin_domain_pack_contracts
 from .domain_runtime import RuntimeDomainExecution
 from .effect_runner import LocalEffectRunner
 from .incident import IncidentMetrics
@@ -41,6 +42,11 @@ from .run_engine import ObservationEngine, RunEngine, SemanticRuntime
 from .run_store import EventRunStore
 from .runtime_adapter import RuntimeSemanticAdapter
 from .semantic_runtime import SemanticRuntimePort
+from .workflow import (
+    DEFAULT_WORKFLOW_DEFINITIONS,
+    WorkflowDefinitions,
+    WorkflowRoute,
+)
 
 
 DomainTransportInvoker = Callable[
@@ -49,7 +55,7 @@ DomainTransportInvoker = Callable[
 ]
 DomainPackExtensions = Callable[
     [CapabilityRegistry, Mapping[str, CallableDomainAdapter]],
-    Iterable[DomainPack],
+    Iterable[DomainPackAuthorContract],
 ]
 
 
@@ -343,6 +349,7 @@ class _RuntimeTransportPort:
         return {
             "capability_registry": self._capability_registry.to_public_dict(),
             "domain_packs": list(self._domain_executor.pack_descriptors()),
+            "domain_pack_conformance": self._domain_executor.conformance_report(),
             "compatibility_telemetry": self._compatibility_telemetry.status(),
             "incident_metrics": self._incident_metrics.status(),
             "artifact_store": self._artifact_store.status(),
@@ -570,11 +577,11 @@ def compose_runtime(
         )
         for descriptor in capability_registry.descriptors()
     }
-    default_domain_packs = builtin_domain_packs(
+    default_domain_pack_contracts = builtin_domain_pack_contracts(
         capability_registry,
         transport_adapters,
     )
-    extension_packs = (
+    extension_definitions = (
         tuple(
             options.domain_pack_extensions(
                 capability_registry,
@@ -584,11 +591,58 @@ def compose_runtime(
         if options.domain_pack_extensions is not None
         else ()
     )
+    if any(
+        not isinstance(definition, DomainPackAuthorContract)
+        for definition in extension_definitions
+    ):
+        raise TypeError("Domain Pack extensions require author contracts")
+    capability_registry = capability_registry.extend(
+        definition.descriptor for definition in extension_definitions
+    )
+    catalog_names = set(catalog.names())
+    new_extension_operations = {
+        definition.operation
+        for definition in extension_definitions
+        if definition.operation not in catalog_names
+    }
+    catalog = catalog.extend(
+        definition.operation_descriptor()
+        for definition in extension_definitions
+        if definition.operation in new_extension_operations
+    )
+    workflow_definitions = WorkflowDefinitions(
+        DEFAULT_WORKFLOW_DEFINITIONS.registry.extend(
+            operation_owners={
+                definition.operation: definition.descriptor.owner_skill
+                for definition in extension_definitions
+            },
+            routes=tuple(
+                WorkflowRoute(
+                    definition.workflow.intent,
+                    (
+                        ("operation", definition.operation),
+                        (
+                            "operation",
+                            definition.workflow.verification_operation,
+                        ),
+                    ),
+                    entry_operation=definition.operation,
+                )
+                for definition in extension_definitions
+                if definition.workflow is not None
+            ),
+            strict_entry_operations=frozenset(
+                definition.operation
+                for definition in extension_definitions
+            ),
+        )
+    )
     default_operations = {
-        pack.descriptor.operation for pack in default_domain_packs
+        contract.operation for contract in default_domain_pack_contracts
     }
     extension_operations = {
-        pack.descriptor.operation for pack in extension_packs
+        definition.operation
+        for definition in extension_definitions
     }
     overlap = default_operations & extension_operations
     if overlap:
@@ -596,9 +650,18 @@ def compose_runtime(
             "Domain Pack extensions cannot replace Runtime Packs: "
             + ", ".join(sorted(overlap))
         )
+    conformance_suite = DomainPackConformanceSuite()
+    authored_packs = conformance_suite.bind(
+        capability_registry,
+        (*default_domain_pack_contracts, *extension_definitions),
+    )
     domain_packs = tuple(
         _bind_compatibility_receipts(pack)
-        for pack in (*default_domain_packs, *extension_packs)
+        for pack in authored_packs
+    )
+    conformance_report = conformance_suite.validate(
+        capability_registry,
+        domain_packs,
     )
     for pack in domain_packs:
         transport_adapters.pop(pack.descriptor.operation, None)
@@ -606,12 +669,12 @@ def compose_runtime(
         capability_registry,
         transport_adapters,
         packs=domain_packs,
-        effect_classes=(
-            {"log_bundle_collect": EffectClass.IDEMPOTENT_MUTATION}
-            if "log_bundle_collect" in definition_name_set
-            else {}
-        ),
+        conformance_report=conformance_report,
     )
+    if options.context_runtime is not None and new_extension_operations:
+        raise ValueError(
+            "new Domain Pack operations require Runtime-owned ContextRuntime"
+        )
     context_runtime = options.context_runtime or ContextRuntime(
         catalog,
         repository=options.context_repository,
@@ -621,6 +684,12 @@ def compose_runtime(
         max_cached_projection_bytes=options.max_cached_projection_bytes,
         retention_seconds=options.retention_seconds,
         storage_soft_limit_bytes=options.storage_soft_limit_bytes,
+        workflow_definitions=workflow_definitions,
+        operation_stages={
+            definition.operation: definition.closeout_stage
+            for definition in extension_definitions
+            if definition.closeout_stage
+        },
     )
     base_context_repository = context_runtime.repository.base_repository
     telemetry_repository = options.compatibility_telemetry_repository
@@ -670,6 +739,7 @@ def compose_runtime(
         artifact_store=artifact_store,
         effect_runner=effect_runner,
         fact_projector=agent_projector.run_facts,
+        workflow_definitions=workflow_definitions,
     )
     semantic_runtime = SemanticRuntime(
         observation_engine,

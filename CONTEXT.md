@@ -102,3 +102,4 @@ commands and records, but it must delegate the authoritative transition to the o
 - [Architecture arbitration](docs/workflow-architecture-arbitration.md)
 - [Market workflow design research](docs/workflow-design-market-research.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)
+- [Domain Pack authoring contract](docs/domain-pack-authoring.md)

@@ -1315,6 +1315,7 @@ def aggregate_case_closeout(
     evidence_reader: Callable[[Mapping[str, object]], Mapping[str, object] | None],
     *,
     terminal_status: str = "completed",
+    operation_stages: Mapping[str, str] | None = None,
 ) -> CaseCloseout:
     """Derive a conservative closeout from one Case projection and its blobs."""
 
@@ -1352,10 +1353,11 @@ def aggregate_case_closeout(
                 return evidence_ids, loaded, True
         return evidence_ids, {}, False
 
+    selected_operation_stages = {**_OPERATION_STAGES, **dict(operation_stages or {})}
     operation_receipts: dict[tuple[str, str], tuple[int, StageReceipt]] = {}
     for operation in operations:
         operation_name = str(operation.get("operation", ""))
-        stage = _OPERATION_STAGES.get(operation_name)
+        stage = selected_operation_stages.get(operation_name)
         if stage is None:
             continue
         operation_evidence_ids, value, evidence_loaded = operation_evidence(operation)
