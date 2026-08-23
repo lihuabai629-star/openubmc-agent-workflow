@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 
 def evidence_fingerprint(value: object) -> str:
@@ -35,21 +36,21 @@ def _resolve_git_ref(workspace: Path, ref: str) -> str:
     return completed.stdout.strip().lower() if completed.returncode == 0 else ""
 
 
-def _release_lock_parent(workspace: Path, head: str) -> str:
-    path = workspace / "release-lock.json"
+def _verified_release_lock_source(workspace: Path) -> str:
+    runtime_root = workspace / "openubmc-target-runtime"
+    if str(runtime_root) not in sys.path:
+        sys.path.insert(0, str(runtime_root))
     try:
-        lock = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        from openubmc_target_runtime.release import (  # noqa: PLC0415
+            ReleaseLockError,
+            verify_release_lock,
+        )
+
+        identity = verify_release_lock(workspace)
+    except (ImportError, ReleaseLockError):
         return ""
-    source = str(lock.get("source_commit", "")).strip().lower()
-    if (
-        lock.get("schema") != "openubmc-agent-workflow.release-lock.v1"
-        or lock.get("source_commit_policy") != "lock-finalization-parent-v1"
-        or not _is_lower_hex(source, length=40)
-    ):
-        return ""
-    parents = _resolve_git_ref(workspace, f"{head}^@").splitlines()
-    return source if parents == [source] else ""
+    source = str(identity.get("source_commit", "")).strip().lower()
+    return source if _is_lower_hex(source, length=40) else ""
 
 
 def source_commit(value: str, *, workspace: Path) -> str:
@@ -59,7 +60,7 @@ def source_commit(value: str, *, workspace: Path) -> str:
     selected = value.strip().lower() or head
     if not _is_lower_hex(selected, length=40):
         raise ValueError("source commit must be a 40-character Git commit")
-    if selected not in {head, _release_lock_parent(workspace, head)}:
+    if selected != head and selected != _verified_release_lock_source(workspace):
         raise ValueError(
             "source commit must match workspace HEAD or the release-lock parent"
         )

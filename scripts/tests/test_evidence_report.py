@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "evidence_report.py"
@@ -41,7 +42,7 @@ class EvidenceReportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "workspace HEAD"):
                 evidence.source_commit("a" * 40, workspace=repository)
 
-    def test_release_lock_parent_is_accepted_only_by_its_lock_child(self) -> None:
+    def test_release_lock_parent_requires_canonical_lock_verification(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository = Path(raw)
             _git(repository, "init", "-q")
@@ -64,16 +65,18 @@ class EvidenceReportTests(unittest.TestCase):
             _git(repository, "add", "release-lock.json")
             _git(repository, "commit", "-qm", "release lock")
 
-            self.assertEqual(
-                evidence.source_commit(source, workspace=repository),
-                source,
-            )
-
-            (repository / "tracked.txt").write_text("two\n", encoding="utf-8")
-            _git(repository, "add", "tracked.txt")
-            _git(repository, "commit", "-qm", "after release")
             with self.assertRaisesRegex(ValueError, "release-lock parent"):
                 evidence.source_commit(source, workspace=repository)
+            with mock.patch.object(
+                evidence,
+                "_verified_release_lock_source",
+                return_value=source,
+            ) as verify:
+                self.assertEqual(
+                    evidence.source_commit(source, workspace=repository),
+                    source,
+                )
+            verify.assert_called_once_with(repository)
 
 
 if __name__ == "__main__":
