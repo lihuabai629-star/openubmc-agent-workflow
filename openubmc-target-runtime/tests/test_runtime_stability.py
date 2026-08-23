@@ -58,6 +58,8 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertEqual(gate["outcome_events"], 1)
         self.assertEqual(gate["unique_turns"], 1)
         self.assertEqual(gate["turn_states"], {"completed": 8})
+        self.assertTrue(gate["canonical_turn_matches"])
+        self.assertEqual(gate["canonical_reattach_backend_calls"], 0)
         capacity = report["scenarios"]["capacity"]
         self.assertEqual(capacity["status"], "passed")
         self.assertEqual(capacity["completed_runs"], 128)

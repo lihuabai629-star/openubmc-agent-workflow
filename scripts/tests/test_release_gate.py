@@ -289,27 +289,30 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("base64 --decode", trust_root["run"])
         self.assertIn("$RUNNER_TEMP/agent-gateway-ab-attestation.pub", trust_root["run"])
         gate = steps["Run immutable release gates"]["run"]
-        self.assertIn("--ab-evidence agent-gateway-ab-evidence/summary.json", gate)
+        self.assertIn(
+            '--ab-evidence "$RUNNER_TEMP/agent-gateway-ab-evidence/summary.json"',
+            gate,
+        )
         self.assertIn(
             '--ab-attestation-public-key "$RUNNER_TEMP/agent-gateway-ab-attestation.pub"',
             gate,
         )
         self.assertIn("--github-repository \"${{ github.repository }}\"", gate)
-        self.assertIn("--work-root release-gate-work", gate)
+        self.assertIn('--work-root "$RUNNER_TEMP/release-gate-work"', gate)
         uploaded = set(
             steps["Upload release evidence"]["with"]["path"].splitlines()
         )
         self.assertEqual(
             uploaded,
             {
-                "agent-gateway-ab-evidence/summary.json",
-                "agent-gateway-ab-evidence/all_metrics.json",
-                "agent-gateway-ab-evidence/run_evidence.json",
-                "agent-gateway-ab-evidence/schedule.json",
-                "agent-gateway-ab-evidence.tar.xz",
-                "release-gate.json",
-                "release-gate-work/github-ci-evidence.json",
-                "release-gate-work/runtime-qualification.json",
+                "${{ runner.temp }}/agent-gateway-ab-evidence/summary.json",
+                "${{ runner.temp }}/agent-gateway-ab-evidence/all_metrics.json",
+                "${{ runner.temp }}/agent-gateway-ab-evidence/run_evidence.json",
+                "${{ runner.temp }}/agent-gateway-ab-evidence/schedule.json",
+                "${{ runner.temp }}/agent-gateway-ab-evidence.tar.xz",
+                "${{ runner.temp }}/release-gate.json",
+                "${{ runner.temp }}/release-gate-work/github-ci-evidence.json",
+                "${{ runner.temp }}/release-gate-work/runtime-qualification.json",
             },
         )
         self.assertEqual(

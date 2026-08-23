@@ -119,7 +119,7 @@ def verify_runtime_stability_report(
     if not all(
         (
             _integer(gate.get("execute_calls"), "gate execute calls")
-            == GATE_WORKERS,
+            == GATE_WORKERS + 1,
             _integer(gate.get("failed_calls"), "gate failed calls") == 0,
             _integer(gate.get("unique_runs"), "gate unique runs") == 1,
             _integer(gate.get("gate_submissions"), "gate submissions") == 1,
@@ -127,6 +127,13 @@ def verify_runtime_stability_report(
             _integer(gate.get("open_incidents"), "gate open incidents") == 0,
             _integer(gate.get("unique_turns"), "gate unique Turns") == 1,
             gate.get("turn_states") == {"completed": GATE_WORKERS},
+            gate.get("canonical_turn_state") == "completed",
+            gate.get("canonical_turn_matches") is True,
+            _integer(
+                gate.get("canonical_reattach_backend_calls"),
+                "gate canonical reattach backend calls",
+            )
+            == 0,
         )
     ):
         raise ValueError("Runtime stability Gate concurrency did not converge")

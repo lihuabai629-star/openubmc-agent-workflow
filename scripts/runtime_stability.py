@@ -298,6 +298,17 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
         for _backend, service in adapters:
             service.close()
 
+    canonical_backend, canonical_agent = _agent(storage)
+    try:
+        canonical_turn = canonical_agent.call_exposed_tool(
+            "execute",
+            response,
+            task_id="gate-concurrency-canonical",
+            operation_id="gate-concurrency-canonical",
+        )
+    finally:
+        canonical_agent.close()
+
     turns = [turn for turn, _error in results if turn is not None]
     errors = [error for _turn, error in results if error]
     projection, replay = _case_record(
@@ -307,6 +318,10 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
     run_ids = {str(turn["run_id"]) for turn in turns}
     unique_turns = len({evidence_fingerprint(turn) for turn in turns})
     turn_states = Counter(str(turn["state"]) for turn in turns)
+    canonical_turn_matches = all(
+        evidence_fingerprint(turn) == evidence_fingerprint(canonical_turn)
+        for turn in turns
+    )
     gate_submissions = len(projection["gate_submissions"])
     outcome_events = sum(
         event["kind"] == "RunOutcomeRecorded" for event in replay
@@ -317,6 +332,9 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
             run_ids == {str(waiting["run_id"])},
             unique_turns == 1,
             turn_states == {"completed": GATE_WORKERS},
+            canonical_turn["state"] == "completed",
+            canonical_turn_matches,
+            canonical_backend.calls == 0,
             gate_submissions == 1,
             outcome_events == 1,
             projection["run_outcome"].get("status") == "completed",
@@ -325,12 +343,15 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
     )
     return {
         "status": "passed" if passed else "failed",
-        "execute_calls": GATE_WORKERS,
+        "execute_calls": GATE_WORKERS + 1,
         "failed_calls": len(errors),
         "errors": errors,
         "unique_runs": len(run_ids),
         "unique_turns": unique_turns,
         "turn_states": dict(sorted(turn_states.items())),
+        "canonical_turn_state": canonical_turn["state"],
+        "canonical_turn_matches": canonical_turn_matches,
+        "canonical_reattach_backend_calls": canonical_backend.calls,
         "gate_submissions": gate_submissions,
         "outcome_events": outcome_events,
         "open_incidents": len(projection["incidents"]),

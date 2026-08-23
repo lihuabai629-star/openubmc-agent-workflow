@@ -48,11 +48,11 @@ jobs:
           AB_BUNDLE_BASE64: ${{ inputs.ab_bundle_base64 }}
           AB_BUNDLE_SHA256: ${{ inputs.ab_bundle_sha256 }}
         run: |
-          printf '%s' "$AB_BUNDLE_BASE64" | base64 --decode > agent-gateway-ab-evidence.tar.xz
-          printf '%s  %s\n' "$AB_BUNDLE_SHA256" agent-gateway-ab-evidence.tar.xz | sha256sum --check --strict
+          printf '%s' "$AB_BUNDLE_BASE64" | base64 --decode > "$RUNNER_TEMP/agent-gateway-ab-evidence.tar.xz"
+          printf '%s  %s\n' "$AB_BUNDLE_SHA256" "$RUNNER_TEMP/agent-gateway-ab-evidence.tar.xz" | sha256sum --check --strict
           python3 scripts/restore_ab_bundle.py \
-            --archive agent-gateway-ab-evidence.tar.xz \
-            --destination agent-gateway-ab-evidence
+            --archive "$RUNNER_TEMP/agent-gateway-ab-evidence.tar.xz" \
+            --destination "$RUNNER_TEMP/agent-gateway-ab-evidence"
 
       - name: Restore AB attestation trust root
         env:
@@ -70,10 +70,10 @@ jobs:
           --current-ref "${{ inputs.current_ref }}"
           --previous-ref "${{ inputs.previous_ref }}"
           --github-repository "${{ github.repository }}"
-          --work-root release-gate-work
-          --ab-evidence agent-gateway-ab-evidence/summary.json
+          --work-root "$RUNNER_TEMP/release-gate-work"
+          --ab-evidence "$RUNNER_TEMP/agent-gateway-ab-evidence/summary.json"
           --ab-attestation-public-key "$RUNNER_TEMP/agent-gateway-ab-attestation.pub"
-          --output release-gate.json
+          --output "$RUNNER_TEMP/release-gate.json"
 
       - name: Upload release evidence
         if: always()
@@ -81,14 +81,14 @@ jobs:
         with:
           name: release-gate-${{ inputs.current_ref }}
           path: |
-            agent-gateway-ab-evidence/summary.json
-            agent-gateway-ab-evidence/all_metrics.json
-            agent-gateway-ab-evidence/run_evidence.json
-            agent-gateway-ab-evidence/schedule.json
-            agent-gateway-ab-evidence.tar.xz
-            release-gate.json
-            release-gate-work/github-ci-evidence.json
-            release-gate-work/runtime-qualification.json
+            ${{ runner.temp }}/agent-gateway-ab-evidence/summary.json
+            ${{ runner.temp }}/agent-gateway-ab-evidence/all_metrics.json
+            ${{ runner.temp }}/agent-gateway-ab-evidence/run_evidence.json
+            ${{ runner.temp }}/agent-gateway-ab-evidence/schedule.json
+            ${{ runner.temp }}/agent-gateway-ab-evidence.tar.xz
+            ${{ runner.temp }}/release-gate.json
+            ${{ runner.temp }}/release-gate-work/github-ci-evidence.json
+            ${{ runner.temp }}/release-gate-work/runtime-qualification.json
           if-no-files-found: error
 
   promote:
