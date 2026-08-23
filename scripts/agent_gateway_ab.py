@@ -254,6 +254,55 @@ def _structured_tool_result(call: Mapping[str, object]) -> Mapping[str, object]:
     )
 
 
+def _skill_disclosure_observed_values(
+    tools: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    for call in tools:
+        if (
+            call.get("type") != "mcp_tool_call"
+            or call.get("server") != "openubmc-target-runtime"
+            or call.get("tool") != "observe"
+        ):
+            continue
+        arguments = _json_object(call.get("arguments"))
+        selectors = arguments.get("selectors")
+        selector_values = selectors if isinstance(selectors, list) else []
+        capability_id = ""
+        mdb_id = ""
+        for selector in selector_values:
+            if not isinstance(selector, Mapping):
+                continue
+            kind = str(selector.get("kind", "")).lower()
+            if kind == "capability":
+                capability_id = str(selector.get("id", ""))
+            elif kind == "mdb":
+                mdb_id = str(selector.get("id", ""))
+        results = _json_object(_structured_tool_result(call).get("results"))
+        observed: dict[str, object] = {}
+        capabilities = _json_object(results.get(capability_id)).get("values", [])
+        if isinstance(capabilities, list):
+            for item in capabilities:
+                if (
+                    isinstance(item, Mapping)
+                    and str(item.get("name", "")).lower() == "mdbctl"
+                ):
+                    observed["mdbctl"] = item.get("status")
+        values = _json_object(results.get(mdb_id)).get("values", [])
+        if isinstance(values, list):
+            by_index = {
+                item.get("query_index"): item.get("value")
+                for item in values
+                if isinstance(item, Mapping)
+                and item.get("status") == "available"
+                and "value" in item
+            }
+            for index, query in enumerate(SKILL_DISCLOSURE_MDB_QUERIES):
+                if index in by_index:
+                    observed[query.rsplit(" ", 1)[-1].lower()] = by_index[index]
+        return observed
+    return {}
+
+
 def _result_case_identity(result: Mapping[str, object]) -> tuple[str, bool]:
     top_level = str(result.get("case_id") or "")
     envelope = _json_object(result.get("agent_envelope"))
@@ -293,7 +342,10 @@ def _qualification_respond_template() -> str:
     )
 
 
-def _qualification_observe_template() -> str:
+def _observe_template(
+    capabilities: Iterable[str],
+    queries: Iterable[str],
+) -> str:
     return json.dumps(
         {
             "target": BENCHMARK_TARGET,
@@ -302,12 +354,12 @@ def _qualification_observe_template() -> str:
                 {
                     "id": "capabilities",
                     "kind": "capability",
-                    "names": ["SSH", "Telnet", "MDBCTL", "BUSCTL"],
+                    "names": [name.upper() for name in capabilities],
                 },
                 {
                     "id": "drive",
                     "kind": "mdb",
-                    "queries": list(BENCHMARK_MDB_QUERIES),
+                    "queries": list(queries),
                 },
             ],
         },
@@ -317,27 +369,14 @@ def _qualification_observe_template() -> str:
     )
 
 
+def _qualification_observe_template() -> str:
+    return _observe_template(BENCHMARK_CAPABILITIES, BENCHMARK_MDB_QUERIES)
+
+
 def _skill_disclosure_observe_template() -> str:
-    return json.dumps(
-        {
-            "target": BENCHMARK_TARGET,
-            "freshness": {"mode": "live", "max_age_seconds": 0},
-            "selectors": [
-                {
-                    "id": "capabilities",
-                    "kind": "capability",
-                    "names": ["MDBCTL"],
-                },
-                {
-                    "id": "drive",
-                    "kind": "mdb",
-                    "queries": list(SKILL_DISCLOSURE_MDB_QUERIES),
-                },
-            ],
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+    return _observe_template(
+        SKILL_DISCLOSURE_CAPABILITIES,
+        SKILL_DISCLOSURE_MDB_QUERIES,
     )
 
 
@@ -676,7 +715,15 @@ class RunEvidenceRecord:
         input_tokens = int(usage.get("input_tokens", 0) or 0)
         cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
-        acceptance = semantic_acceptance(self.final, scenario=self.scenario)
+        acceptance = semantic_acceptance(
+            self.final,
+            scenario=self.scenario,
+            observed_values=(
+                _skill_disclosure_observed_values(tools)
+                if self.scenario == "skill-disclosure"
+                else None
+            ),
+        )
         if self.scenario == "skill-disclosure":
             scope_validation = candidate_scope_acceptance(
                 tools, scenario=self.scenario
@@ -910,8 +957,17 @@ def _run_attestation_errors(
     return errors
 
 
+def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
+    return (
+        "不能" in text or "无法" in text
+    ) and "resourceid" in folded and "异常" in text
+
+
 def semantic_acceptance(
-    text: str, *, scenario: str = "observation"
+    text: str,
+    *,
+    scenario: str = "observation",
+    observed_values: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if scenario == "execute-source-only":
         folded = text.lower().replace("`", "")
@@ -926,9 +982,21 @@ def semantic_acceptance(
         folded = text.lower().replace("`", "")
         required = ("mdbctl", "name", "resourceid", "presence")
         missing = [token for token in required if token not in folded]
-        conclusion = (
-            "不能" in text or "无法" in text
-        ) and "resourceid" in folded and "异常" in text
+        if observed_values:
+            normalized_lines = [
+                line.lower()
+                .replace("`", "")
+                .replace('"', "")
+                .replace("'", "")
+                for line in text.splitlines()
+            ]
+            for field, value in observed_values.items():
+                expected = str(value).lower().replace('"', "").replace("'", "")
+                if not any(
+                    field in line and expected in line for line in normalized_lines
+                ):
+                    missing.append(f"{field}={expected}")
+        conclusion = _resource_id_conclusion_supported(text, folded)
         return {
             "passed": not missing and conclusion,
             "missing": missing,
@@ -955,9 +1023,7 @@ def semantic_acceptance(
         for token in tokens
         if token not in folded
     ]
-    conclusion = (
-        "不能" in text or "无法" in text
-    ) and "resourceid" in folded and "异常" in text
+    conclusion = _resource_id_conclusion_supported(text, folded)
     return {
         "passed": not missing and conclusion,
         "missing": missing,

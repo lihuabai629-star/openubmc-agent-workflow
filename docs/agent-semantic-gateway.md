@@ -271,6 +271,12 @@ The scenario records its own prompt digest, source commits, schedule, raw metric
 and signed run evidence. It evaluates Skill disclosure behavior; the default release qualification
 remains `execute-source-only`.
 
+Treat each checkpoint as a complete preregistered experiment. If a 10-pair result says
+`collect_more`, start a new independent run at the full 20-pair target. If that result is still
+uncertain, start another new independent run at the full 30-pair target. Never append, merge, or
+selectively reuse pairs from an earlier checkpoint; verify and promote only the single complete
+result directory for the final checkpoint.
+
 Every run record carries its tested source commit and a unique execution identity. The runner
 signs that record with the qualification key; verification uses a public key held outside the
 candidate checkout. The GitHub Release workflow restores that trust root from the

@@ -220,8 +220,25 @@ def verify_passing_summary(
         )
 
 
-def candidate_observe_event(*, queries=None, complete: bool = True):
+def candidate_observe_event(
+    *,
+    queries=None,
+    capabilities=None,
+    mdb_values=None,
+    complete: bool = True,
+):
     selected_queries = EXPECTED_QUERIES if queries is None else queries
+    selected_capabilities = (
+        ("ssh", "telnet", "mdbctl", "busctl")
+        if capabilities is None
+        else tuple(name.lower() for name in capabilities)
+    )
+    selected_mdb_values = (
+        tuple(range(len(selected_queries)))
+        if mdb_values is None
+        else tuple(mdb_values)
+    )
+    requested = len(selected_capabilities) + len(selected_queries)
     receipt_id = "observation-test"
     return {
         "type": "item.completed",
@@ -236,7 +253,7 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
                     {
                         "id": "capabilities",
                         "kind": "capability",
-                        "names": ["SSH", "Telnet", "MDBCTL", "BUSCTL"],
+                        "names": [name.upper() for name in selected_capabilities],
                     },
                     {"id": "drive", "kind": "mdb", "queries": selected_queries},
                 ],
@@ -246,8 +263,8 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
                     "receipt_id": receipt_id,
                     "status": "complete" if complete else "incomplete",
                     "coverage": {
-                        "requested": 13,
-                        "available": 13 if complete else 12,
+                        "requested": requested,
+                        "available": requested if complete else requested - 1,
                         "unavailable": 0,
                         "not_checked": 0 if complete else 1,
                         "complete": complete,
@@ -257,14 +274,18 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
                             "kind": "capability",
                             "values": [
                                 {"name": name, "status": "available"}
-                                for name in ("ssh", "telnet", "mdbctl", "busctl")
+                                for name in selected_capabilities
                             ],
                         },
                         "drive": {
                             "kind": "mdb",
                             "values": [
-                                {"query_index": index, "status": "available", "value": index}
-                                for index in range(9)
+                                {
+                                    "query_index": index,
+                                    "status": "available",
+                                    "value": value,
+                                }
+                                for index, value in enumerate(selected_mdb_values)
                             ],
                         },
                     },
@@ -283,25 +304,11 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
 
 
 def skill_disclosure_observe_event():
-    event = candidate_observe_event(queries=SKILL_DISCLOSURE_QUERIES)
-    item = event["item"]
-    item["arguments"]["selectors"][0]["names"] = ["MDBCTL"]
-    receipt = item["result"]["structured_content"]
-    receipt["coverage"] = {
-        "requested": 4,
-        "available": 4,
-        "unavailable": 0,
-        "not_checked": 0,
-        "complete": True,
-    }
-    receipt["results"]["capabilities"]["values"] = [
-        {"name": "mdbctl", "status": "available"}
-    ]
-    receipt["results"]["drive"]["values"] = [
-        {"query_index": index, "status": "available", "value": index}
-        for index in range(3)
-    ]
-    return event
+    return candidate_observe_event(
+        queries=SKILL_DISCLOSURE_QUERIES,
+        capabilities=("MDBCTL",),
+        mdb_values=(0, 1, 2),
+    )
 
 
 def candidate_execute_event(kind: str, state: str, *, elapsed: float):
@@ -603,7 +610,8 @@ def passing_skill_disclosure_run_evidence(
                 )
             )
             final = (
-                "MDBCTL Name ResourceId Presence，不能证明 ResourceId 异常。"
+                "MDBCTL=available Name=0 ResourceId=1 Presence=2，"
+                "不能证明 ResourceId 异常。"
                 if is_valid
                 else "无法证明 ResourceId 异常。"
             )
@@ -853,7 +861,8 @@ class AgentGatewayAbTests(unittest.TestCase):
             },
         ]
         final = (
-            "MDBCTL Name ResourceId Presence，不能证明 ResourceId 异常。"
+            "MDBCTL=available Name=0 ResourceId=1 Presence=2，"
+            "不能证明 ResourceId 异常。"
         )
 
         for arm in ("A", "B"):
@@ -868,6 +877,32 @@ class AgentGatewayAbTests(unittest.TestCase):
                 duration_seconds=1,
             )
             self.assertTrue(record.metric()["valid"], arm)
+
+    def test_skill_disclosure_rejects_a_final_without_observed_raw_values(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final="MDBCTL Name ResourceId Presence，不能证明 ResourceId 异常。",
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        metric = record.metric()
+
+        self.assertFalse(metric["valid"])
+        self.assertIn("mdbctl=available", metric["semantic_acceptance"]["missing"])
+        self.assertIn("name=0", metric["semantic_acceptance"]["missing"])
+        self.assertIn("resourceid=1", metric["semantic_acceptance"]["missing"])
+        self.assertIn("presence=2", metric["semantic_acceptance"]["missing"])
 
     def test_candidate_scope_rejects_unrelated_mcp_discovery(self) -> None:
         tools = [
@@ -916,6 +951,22 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertEqual(models, [module.QUALIFICATION_MODEL])
         self.assertEqual(tuple(codex_config), module.QUALIFICATION_CODEX_CONFIG)
+
+    def test_documentation_requires_independent_full_expansion_runs(self) -> None:
+        documentation = (
+            Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join(documentation.split())
+
+        self.assertIn(
+            "start a new independent run at the full 20-pair target",
+            normalized,
+        )
+        self.assertIn(
+            "start another new independent run at the full 30-pair target",
+            normalized,
+        )
+        self.assertIn("Never append, merge, or selectively reuse pairs", normalized)
 
     def test_candidate_execute_acceptance_binds_response_to_the_start_gate(self) -> None:
         start = candidate_execute_event(
