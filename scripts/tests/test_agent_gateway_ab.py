@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -93,6 +94,19 @@ def signed_run_evidence(
     assert isinstance(runs, list)
     for index, run in enumerate(runs, 1):
         assert isinstance(run, dict)
+        prompt = run.setdefault(
+            "prompt",
+            module._prompt(
+                Path("<skill-path>"),
+                scenario=str(run["scenario"]),
+                arm=str(run["arm"]),
+            ),
+        )
+        assert isinstance(prompt, str)
+        run.setdefault(
+            "prompt_sha256",
+            "sha256:" + hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        )
         payload = root / f"run-{index}.json"
         payload.write_text(
             json.dumps(
@@ -174,6 +188,7 @@ def verify_passing_summary(
     candidate_commit: str,
     baseline_commit: str,
     run_candidate_commit: str | None = None,
+    run_prompt_override: str | None = None,
 ):
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
@@ -183,6 +198,13 @@ def verify_passing_summary(
             candidate_commit=run_candidate_commit or candidate_commit,
             baseline_commit=baseline_commit,
         )
+        if run_prompt_override is not None:
+            first_run = run_evidence["runs"][0]
+            first_run["prompt"] = run_prompt_override
+            first_run["prompt_sha256"] = (
+                "sha256:"
+                + hashlib.sha256(run_prompt_override.encode("utf-8")).hexdigest()
+            )
         private_key, public_key = signing_keys(root)
         signed_run_evidence(
             root,
@@ -2160,6 +2182,19 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertFalse(verified["promotable"], verified)
         self.assertTrue(
             any("run source commit" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_rejects_attested_runs_from_a_different_prompt(self) -> None:
+        verified = verify_passing_summary(
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            run_prompt_override="Use a different qualification prompt.\n",
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("prompt contract" in error for error in verified["errors"]),
             verified,
         )
 

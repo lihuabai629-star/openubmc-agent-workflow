@@ -879,6 +879,62 @@ def _run_source_binding_errors(
     return errors
 
 
+def _text_sha256(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _normalize_prompt_skill_path(prompt: str, *, scenario: str) -> str:
+    if scenario == "execute-source-only":
+        return re.sub(
+            r"(?m)^(使用已安装的 ).+( 所定义的(?:原生 Case Continuation 路径|Agent Gateway 路径)。)$",
+            r"\1<skill-path>\2",
+            prompt,
+            count=1,
+        )
+    if scenario == "observation":
+        return re.sub(
+            r"(?m)^(完整读取并严格遵循 ).+(。)$",
+            r"\1<skill-path>\2",
+            prompt,
+            count=1,
+        )
+    return prompt
+
+
+def _run_prompt_binding_errors(
+    value: object,
+    *,
+    expected_scenario: str,
+) -> list[str]:
+    document = _json_object(value)
+    runs = document.get("runs")
+    if not isinstance(runs, list):
+        return []
+    errors: list[str] = []
+    for index, value in enumerate(runs, 1):
+        run = _json_object(value)
+        prompt = run.get("prompt")
+        prompt_sha256 = run.get("prompt_sha256")
+        if not isinstance(prompt, str) or not prompt:
+            errors.append(f"AB run prompt is unavailable at item {index}")
+            continue
+        if prompt_sha256 != _text_sha256(prompt):
+            errors.append(f"AB run prompt digest is invalid at item {index}")
+        arm = run.get("arm")
+        if arm in {"A", "B"} and _normalize_prompt_skill_path(
+            prompt,
+            scenario=expected_scenario,
+        ) != _prompt(
+                Path("<skill-path>"),
+                scenario=expected_scenario,
+                arm=str(arm),
+        ):
+            errors.append(
+                f"AB run prompt does not match the qualification prompt contract at item {index}"
+            )
+    return errors
+
+
 def _run_attestation_errors(
     value: object, *, public_key: Path
 ) -> list[str]:
@@ -2077,6 +2133,12 @@ def verify_summary(
                     expected_baseline_commit=expected_baseline_commit,
                 )
             )
+            errors.extend(
+                _run_prompt_binding_errors(
+                    run_evidence_value,
+                    expected_scenario=expected_scenario,
+                )
+            )
             if attestation_public_key is None:
                 errors.append("AB run attestation public key is required")
             else:
@@ -2270,6 +2332,8 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 candidate_source_commit if arm == "B" else baseline_source_commit
             )
             run_mapping["execution_id"] = _execution_identity(events)
+            run_mapping["prompt"] = prompt
+            run_mapping["prompt_sha256"] = _text_sha256(prompt)
             raw_runs.append(
                 attest_run_record(
                     run_mapping,
