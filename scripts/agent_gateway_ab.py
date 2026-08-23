@@ -1091,7 +1091,9 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
     clauses = [
         clause.strip()
         for clause in re.split(
-            r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)",
+            r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)|"
+            r"(?=(?:而|同时|并且)(?:最终|明确|正式|已|已经|结论|结果|"
+            r"判定|认定|确认))",
             folded,
         )
         if clause.strip()
