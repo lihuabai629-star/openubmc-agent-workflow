@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Sequence
-import hashlib
+from collections.abc import Callable, Mapping, Sequence
 import json
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -15,7 +15,17 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = ROOT / "openubmc-target-runtime"
-SCHEMA = "openubmc-agent-workflow.runtime-qualification.v1"
+sys.path.insert(0, str(ROOT))
+
+from scripts.evidence_report import (  # noqa: E402
+    evidence_fingerprint,
+    source_commit as selected_source_commit,
+)
+from scripts.runtime_stability_contract import (  # noqa: E402
+    verify_runtime_stability_report,
+)
+
+SCHEMA = "openubmc-agent-workflow.runtime-qualification.v2"
 
 QUALIFICATIONS = (
     (
@@ -64,7 +74,6 @@ LIVE_PATCH_CRASH_TESTS = (
     "test_sigkill_at_real_backend_cuts_restarts_without_repeating_dangerous_steps",
 )
 
-
 def _tail(value: str, *, limit: int = 4000) -> str:
     text = value.strip()
     return text[-limit:] if len(text) > limit else text
@@ -87,22 +96,26 @@ def _test_command(tests: Sequence[str]) -> tuple[str, ...]:
     return (sys.executable, "-m", "unittest", *tests)
 
 
-def _fingerprint(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+def _environment() -> dict[str, str]:
+    return {
+        "python": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "platform": platform.platform(),
+    }
 
 
 def qualify_runtime(
     workspace: Path,
     *,
     executor: Callable[..., subprocess.CompletedProcess[str]] = run_process,
+    source_commit: str = "",
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     runtime_root = workspace / "openubmc-target-runtime"
+    resolved_source_commit = selected_source_commit(
+        source_commit,
+        workspace=workspace,
+    )
     results: list[dict[str, object]] = []
     violations: dict[str, int] = {}
     for violation, tests in QUALIFICATIONS:
@@ -143,6 +156,52 @@ def qualify_runtime(
         }
     )
 
+    stability_command = (
+        sys.executable,
+        str(workspace / "scripts" / "runtime_stability.py"),
+        "--workspace",
+        str(workspace),
+        "--source-commit",
+        resolved_source_commit,
+    )
+    started = time.monotonic()
+    stability = executor(stability_command, cwd=workspace)
+    raw_stability_report: Mapping[str, object] | None = None
+    try:
+        decoded = json.loads(stability.stdout or "")
+        if isinstance(decoded, Mapping):
+            raw_stability_report = decoded
+    except json.JSONDecodeError:
+        pass
+    stability_verification_error = ""
+    try:
+        if raw_stability_report is None:
+            raise ValueError("Runtime stability report is not a JSON object")
+        verify_runtime_stability_report(
+            raw_stability_report,
+            expected_source_commit=resolved_source_commit,
+            require_promotable=True,
+        )
+    except ValueError as exc:
+        stability_verification_error = str(exc)
+    stability_passed = (
+        stability.returncode == 0 and not stability_verification_error
+    )
+    violations["runtime_stability"] = 0 if stability_passed else 1
+    results.append(
+        {
+            "name": "runtime_stability",
+            "status": "passed" if stability_passed else "failed",
+            "command": list(stability_command),
+            "verification_error": stability_verification_error,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "returncode": stability.returncode,
+            "report": dict(raw_stability_report or {}),
+            "stdout_tail": _tail(stability.stdout or ""),
+            "stderr_tail": _tail(stability.stderr or ""),
+        }
+    )
+
     partial_command = _test_command(PARTIAL_RESULT_TESTS)
     started = time.monotonic()
     partial = executor(partial_command, cwd=runtime_root)
@@ -158,14 +217,25 @@ def qualify_runtime(
             "stderr_tail": _tail(partial.stderr or ""),
         }
     )
+    environment_record = dict(sorted((environment or _environment()).items()))
     report: dict[str, object] = {
         "schema": SCHEMA,
+        "source_commit": resolved_source_commit,
+        "environment": environment_record,
+        "environment_fingerprint": evidence_fingerprint(environment_record),
+        "parameters": {
+            "stability_profile": "ci",
+            "qualification_groups": [name for name, _tests in QUALIFICATIONS],
+            "stability_runner": "scripts/runtime_stability.py",
+            "ordinary_partial_result_tests": list(PARTIAL_RESULT_TESTS),
+            "real_backend_crash_tests": list(LIVE_PATCH_CRASH_TESTS),
+        },
         "promotable": not any(violations.values()) and partial_accepted,
         "violations": violations,
         "ordinary_partial_result_accepted": partial_accepted,
         "qualifications": results,
     }
-    report["evidence_digest"] = _fingerprint(report)
+    report["evidence_digest"] = evidence_fingerprint(report)
     return report
 
 
@@ -173,8 +243,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=ROOT)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--source-commit", default="")
     args = parser.parse_args(argv)
-    report = qualify_runtime(args.workspace.expanduser().absolute())
+    report = qualify_runtime(
+        args.workspace.expanduser().absolute(),
+        source_commit=args.source_commit,
+    )
     encoded = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if args.output is not None:
         output = args.output.expanduser().absolute()

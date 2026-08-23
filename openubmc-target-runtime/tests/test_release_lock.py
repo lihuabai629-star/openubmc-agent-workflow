@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,7 @@ from openubmc_target_runtime import (  # noqa: E402
     build_release_lock,
     verify_release_lock,
 )
+from openubmc_target_runtime import release  # noqa: E402
 
 
 class ReleaseLockTests(unittest.TestCase):
@@ -74,6 +76,25 @@ class ReleaseLockTests(unittest.TestCase):
     def test_source_commit_must_be_a_full_immutable_commit(self) -> None:
         with self.assertRaisesRegex(ReleaseLockError, "full Git commit"):
             build_release_lock(REPO_ROOT, source_commit="main")
+
+    def test_release_lock_child_must_have_exactly_one_parent(self) -> None:
+        source = "a" * 40
+        current = "b" * 40
+        other_parent = "c" * 40
+
+        def git_result(_root: Path, *arguments: str) -> str:
+            if arguments == ("rev-list", "--parents", "-n", "1", "HEAD"):
+                return f"{current} {source} {other_parent}"
+            if arguments == ("diff", "--name-only", source, current):
+                return "release-lock.json"
+            self.fail(f"unexpected git arguments: {arguments}")
+
+        with (
+            mock.patch.object(release, "repository_commit", return_value=current),
+            mock.patch.object(release, "_git", side_effect=git_result),
+            self.assertRaisesRegex(ReleaseLockError, "lock-only child"),
+        ):
+            release._validate_release_commit_topology(REPO_ROOT, source)
 
 
 if __name__ == "__main__":

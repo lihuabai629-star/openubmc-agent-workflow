@@ -301,13 +301,14 @@ def _validate_release_commit_topology(root: Path, source_commit: str) -> None:
     current = repository_commit(root).lower()
     if current == source_commit:
         return
-    parent = _git(root, "rev-parse", "HEAD^1^{commit}").lower()
+    topology = _git(root, "rev-list", "--parents", "-n", "1", "HEAD").split()
+    parents = tuple(value.lower() for value in topology[1:])
     changed = tuple(
         line
         for line in _git(root, "diff", "--name-only", source_commit, current).splitlines()
         if line
     )
-    if parent != source_commit or changed != ("release-lock.json",):
+    if parents != (source_commit,) or changed != ("release-lock.json",):
         raise ReleaseLockError(
             "release commit must equal source_commit or be a lock-only child"
         )

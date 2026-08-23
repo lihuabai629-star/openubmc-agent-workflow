@@ -76,6 +76,7 @@ CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2
 | [市场工作流方法调研](workflow-design-market-research.md) | Temporal、Durable Functions、Step Functions、Camunda、DAG、Agent Framework 与分布式模式的统一比较 | 完成 |
 | [架构裁决](workflow-architecture-arbitration.md) | WorkflowDefinitions/RunEngine、Turn/Ack、Outbox/Inbox、Incident、模型边界和故障切点的最终取舍 | 完成 |
 | [Agent Semantic Gateway](agent-semantic-gateway.md) | 当前 `observe/execute` Interface、profile、预算与恢复能力 | 已实现基线 |
+| [Runtime Stability Qualification](runtime-stability-qualification.md) | duplicate storm、SQLite 并发、crash-cut、容量和 restart soak 的可复核资格 | 已实现 CI 基线 |
 | [领域上下文](../CONTEXT.md) | 产品边界、统一术语、事实所有权和跨版本不变量 | 完成 |
 | [架构决策记录](adr/README.md) | 四项难以逆转的已接受决策及其触发条件 | 完成 |
 | [外部深度研究对照](external-workflow-research-reconciliation.md) | 对 ChatGPT Share 深度报告逐项裁决，区分直接采纳、改造采纳和延后项 | 完成 |
@@ -308,7 +309,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 | Incident 闭环 | 内建 Incident 已有确定的 retry、reconcile、correction-then-resume、cancel 或 terminal 路径；Operator 指标从持久 Run ledger 派生并支持重启恢复 |
 | Compatibility 收敛 | feature-level 持久遥测和 Operator 退役判定证据已落地；按 14 个 canonical main 活跃研发日和一次同 source 完整资格的零使用窗口删除旧 writer，old-event reader 保留 |
 | Module locality | compatibility、EvidenceStore、Runtime composition 从 MCP transport 中集中 |
-| 测试稳定 | property、duplicate storm、capacity 与 soak 验证公开 semantic seam |
+| 测试稳定 | duplicate storm、SQLite 并发、crash-cut、capacity 与 restart soak 已纳入 release qualification；property 与 network fault injection 继续深化 |
 
 ### P2：v2.x 按遥测扩展
 
@@ -317,7 +318,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 3. selector 并行与连接复用；
 4. D-Bus、active alarm、bounded log search 等按真实调用缺口增加；
 5. compatibility profile 使用遥测与退役；
-6. capacity、soak、property-based 和 network fault injection；
+6. 扩展长时 soak、property-based 和 network fault injection；
 7. 原型验证 `ModelInvocationRecord` 与受限 `PlanProposal -> PlanRevision`，模型只生成 Proposal。
 
 ### P3：v3 分布式执行

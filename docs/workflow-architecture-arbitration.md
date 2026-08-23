@@ -641,7 +641,20 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 - 断言 effect identity 恒定、危险 Effect 不重复、unknown 必须 reconcile；
 - `verified` journal 与 Run event 之间的 crash 必须通过 idempotent replay 收敛。
 
-### 14.4 Execute A/B
+### 14.4 Runtime stability qualification
+
+当前 CI qualification 通过公开 Agent execute seam 与持久 repository 运行 hermetic duplicate
+storm、SQLite Gate 并发单赢家、独立 128 Run capacity、64 Run restart soak 和既有 crash-cut
+matrix。报告绑定 source commit、环境指纹、参数、Agent 调用/失败/完成数、逐 batch/cycle 事件与
+存储增长、进程峰值 RSS、Python allocation、耗时和 digest；聚合资格会
+重新验证 schema、source、参数、digest 和全部硬阈值。重复 Outcome、未收敛
+Incident/operation、同 identity 接受不同输入或增长超限都会阻断 promotion。并发 storm
+允许返回 `running` reattach Turn，但必须用同一 command identity 收敛到唯一 terminal
+Outcome；Gate 并发要求所有等价 caller 返回语义相同的 terminal Turn；soak replay 必须发生在
+Runtime reopen 之后且不得再次调用 backend。source 绑定仅接受当前 HEAD，或合法 release-lock
+child 记录的唯一父提交。
+
+### 14.5 Execute A/B
 
 使用现有配对 AB/BA 方法，固定模型、prompt、target snapshot 与 commit：
 
@@ -712,8 +725,8 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 - M4 主路径权威收敛已完成；后续用 compatibility telemetry 驱动旧 writer 退役；
 - 保留 Turn-to-next-Gate，隐藏 Ack、polling、scheduler 与未来 Worker；
 - v2 做本地 typed event-backed Process Manager，不做分布式平台；
-- 继续用 Incident 运行数据驱动 SLO，并推进 compatibility writer 退役和长期 execute
-  fault/capacity/soak 验证；
+- 继续用 Incident 运行数据驱动 SLO，并推进 compatibility writer 退役、长时 soak、property
+  和 network fault injection；
 - 只有规模与部署证据出现后，才把 Outbox/Inbox、Worker、共享 fencing 与 durable backend 作为一个完整 v3 演进包引入。
 
 这条路线具有最高 Interface depth：Agent 学习的概念最少，Runtime 提供的行为最多；同时把状态、安全与恢复规则集中到一个可测试 seam，获得更高 leverage 和 locality。
