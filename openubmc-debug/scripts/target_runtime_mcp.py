@@ -219,12 +219,38 @@ def workflow_arguments_from_namespace(args) -> dict[str, object]:
 
 
 def _credential_binding_fingerprint(
+    args,
     credential_values: Mapping[str, str] | None,
 ) -> str:
-    if not credential_values:
-        return ""
+    bindings = {
+        f"value:{key}": str(value)
+        for key, value in (credential_values or {}).items()
+    }
+    for field, fallback in (
+        ("ssh_user_env", "OPENUBMC_SSH_USER"),
+        ("ssh_password_env", "OPENUBMC_SSH_PASSWORD"),
+        ("telnet_user_env", "OPENUBMC_TELNET_USER"),
+        ("telnet_password_env", "OPENUBMC_TELNET_PASSWORD"),
+    ):
+        selector = str(getattr(args, field, "") or fallback).strip()
+        bindings[f"env:{selector}"] = os.environ.get(selector, "")
+    for field in ("ssh_password", "telnet_password"):
+        bindings[f"inline:{field}"] = str(getattr(args, field, ""))
+    for selector in (
+        "OPENUBMC_CREDENTIALS_FILE",
+        "OPENUBMC_DEBUG_CREDENTIALS_FILE",
+    ):
+        path = os.environ.get(selector, "").strip()
+        if not path:
+            continue
+        try:
+            bindings[f"file:{selector}:{path}"] = hashlib.sha256(
+                Path(path).read_bytes()
+            ).hexdigest()
+        except OSError:
+            bindings[f"file:{selector}:{path}"] = "unavailable"
     body = "\n".join(
-        f"{key}={credential_values[key]}" for key in sorted(credential_values)
+        f"{key}={bindings[key]}" for key in sorted(bindings)
     ).encode("utf-8")
     return hashlib.sha256(body).hexdigest()
 
@@ -249,18 +275,16 @@ def _lease_key(
         str(args.ssh_user),
         str(args.ssh_user_env),
         str(args.ssh_password_env),
-        str(getattr(args, "ssh_password", "")),
         str(args.ssh_identity_file),
         str(args.telnet_user),
         str(args.telnet_user_env),
         str(args.telnet_password_env),
-        str(getattr(args, "telnet_password", "")),
         host_key_policy,
         known_hosts_file,
         bool(getattr(args, "allow_insecure_host_key", False)),
         os.environ.get("OPENUBMC_CREDENTIALS_FILE", ""),
         os.environ.get("OPENUBMC_DEBUG_CREDENTIALS_FILE", ""),
-        _credential_binding_fingerprint(credential_values),
+        _credential_binding_fingerprint(args, credential_values),
     )
 
 
@@ -717,14 +741,7 @@ class DebugMcpBackend:
         )
         selector_facts: list[dict[str, object]] = []
         mdb_index = 0
-        capability_keys = {
-            "ssh": "ssh_transport",
-            "telnet": "remote_log_file",
-            "mdbctl": "mdbctl",
-            "busctl": "busctl",
-            "dbus": "dbus_env",
-            "alarms": "active_alarm_endpoint_verified",
-        }
+        runtime = _load_runtime_module()
         capability_started, capability_completed = _result_window(
             preflight_end or preflight
         )
@@ -735,13 +752,9 @@ class DebugMcpBackend:
                 raise ValueError("selector identity and kind must be explicit")
             if kind == "capability":
                 names = selector.get("names", [])
-                observed = isinstance(names, list) and all(
-                    capability_keys.get(str(name)) in capabilities
-                    and (
-                        str(name) != "alarms"
-                        or capabilities.get(capability_keys[str(name)]) is True
-                    )
-                    for name in names
+                observed = isinstance(names, list) and runtime.capability_selector_complete(
+                    capabilities,
+                    [str(name) for name in names],
                 )
                 selector_facts.append(
                     {
@@ -793,7 +806,9 @@ class DebugMcpBackend:
                     ),
                     "status": (
                         "observed"
-                        if len(children) == expected_queries and expected_queries > 0
+                        if len(children) == expected_queries
+                        and expected_queries > 0
+                        and all(child.get("ok") is True for child in children)
                         else "missing"
                     ),
                 }

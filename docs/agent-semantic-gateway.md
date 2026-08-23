@@ -84,8 +84,9 @@ MDB values. Each attempt records its start and completion plus the same facts fo
 The Runtime classifies the selected facts as `coherent`, `partial`, or `inconsistent` using a fixed
 five-second completion-skew window. Assurance replaces the fast result only when this classification
 or its selector coverage improves; otherwise the Runtime retains the fast result with an explicit
-gap. Legacy `assurance` input remains accepted during migration but is normalized to this single
-policy and is not returned in the Agent projection.
+gap. An Adapter that omits selector timing cannot produce a coherent reusable snapshot. Legacy
+`assurance` input remains accepted during migration but is normalized to this single policy and is
+not returned in the Agent projection.
 
 An `ObservationReceipt` contains semantic values, tri-state capability results
 (`available | unavailable | not_checked`), coverage, observation time, target identity when

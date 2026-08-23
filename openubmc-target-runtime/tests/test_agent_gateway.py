@@ -245,6 +245,26 @@ class SemanticBackend:
             value["target_epoch"] = minimum_epoch
         return value
 
+    def observe_query(self, task, arguments, context) -> dict[str, object]:
+        value = self.debug_collect(task, arguments, context)
+        anchor = str(value.get("observed_at", ""))
+        value["observation_timing"] = {
+            "started_at": anchor,
+            "completed_at": anchor,
+            "selectors": [
+                {
+                    "selector_id": str(selector.get("id", "")),
+                    "kind": str(selector.get("kind", "")),
+                    "started_at": anchor,
+                    "completed_at": anchor,
+                    "status": "observed",
+                }
+                for selector in arguments.get("selectors", [])
+                if isinstance(selector, dict)
+            ],
+        }
+        return value
+
     def debug_run(self, task, arguments, context) -> dict[str, object]:
         if arguments.get("mdb_only"):
             return self.debug_collect(task, arguments, context)
@@ -881,6 +901,24 @@ class StaleSelectorTimingSemanticBackend(SelectorTimingSemanticBackend):
         return value
 
 
+class NoSelectorTimingSemanticBackend(SelectorTimingSemanticBackend):
+    def observe_query(self, task, arguments, context) -> dict[str, object]:
+        value = super().observe_query(task, arguments, context)
+        value.pop("observation_timing", None)
+        return value
+
+
+class AssuranceUnavailableSemanticBackend(SemanticBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.observe_query = None
+
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value["result"]["capabilities"].pop("remote_log_file", None)
+        return value
+
+
 class SkewedSelectorTimingSemanticBackend(SelectorTimingSemanticBackend):
     def observe_query(self, task, arguments, context) -> dict[str, object]:
         value = super().observe_query(task, arguments, context)
@@ -898,12 +936,13 @@ class NonImprovingAssuranceSemanticBackend(AutoAssuranceSemanticBackend):
     def observe_query(self, task, arguments, context) -> dict[str, object]:
         value = super().observe_query(task, arguments, context)
         if arguments.get("assured"):
+            value["result"]["capabilities"].pop("remote_log_file", None)
             value["result"]["lanes"]["ssh"]["mdbctl"]["payload"]["result"] = {
                 "properties": {"AssuredValue": {"Value": "must-not-win"}}
             }
-            value["observation_timing"]["completed_at"] = "2026-08-19T00:00:20Z"
+            value["observation_timing"]["selectors"][0]["status"] = "missing"
             value["observation_timing"]["selectors"][0]["completed_at"] = (
-                "2026-08-19T00:00:20Z"
+                "2026-08-19T00:00:01Z"
             )
         return value
 
@@ -1230,6 +1269,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "incomplete")
         self.assertFalse(receipt["coverage"]["complete"])
         self.assertTrue(receipt["content_compacted"])
+        self.assertNotIn("observation_ref", receipt)
 
     def test_observe_hard_limit_survives_oversized_target_metadata(self) -> None:
         service = RuntimeMcpService(OversizedObservationBackend())
@@ -1277,6 +1317,32 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertLessEqual(encoded_size(receipt), OBSERVATION_MAX_BYTES)
         self.assertEqual(receipt["status"], "incomplete")
         self.assertTrue(receipt["content_compacted"])
+
+    def test_compacted_observation_preserves_selector_identity_and_order(self) -> None:
+        service = RuntimeMcpService(OversizedObservationBackend())
+        selector_ids = [f"selector-{index:02d}" for index in range(16)]
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"id": selector_id, "kind": "capability", "names": ["ssh"]}
+                        for selector_id in selector_ids
+                    ],
+                },
+                task_id="observe-selector-identity-compaction",
+                operation_id="observe-selector-identity-compaction-1",
+            )
+        finally:
+            service.close()
+
+        self.assertLessEqual(encoded_size(receipt), OBSERVATION_MAX_BYTES)
+        self.assertTrue(receipt["content_compacted"])
+        self.assertEqual(
+            [selector["id"] for selector in receipt["scope"]["selectors"]],
+            selector_ids,
+        )
 
     def test_scope_contract_fails_closed_for_undeclared_surface_or_freshness(self) -> None:
         with self.assertRaises(ScopeViolation):
@@ -1616,6 +1682,65 @@ class AgentGatewayTests(unittest.TestCase):
                     any(expected in gap for gap in receipt["gaps"]),
                     receipt["gaps"],
                 )
+
+    def test_missing_selector_timing_is_not_inferred_as_a_coherent_snapshot(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(NoSelectorTimingSemanticBackend())
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {
+                            "id": "facts",
+                            "kind": "mdb",
+                            "queries": ["lsprop Object0"],
+                        }
+                    ],
+                },
+                task_id="selector-timing-absent",
+                operation_id="selector-timing-absent-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["consistency"]["classification"], "partial")
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any("missing" in gap for gap in receipt["gaps"]),
+            receipt["gaps"],
+        )
+
+    def test_assurance_unavailable_retains_fast_result_with_an_explicit_gap(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(AssuranceUnavailableSemanticBackend())
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {
+                            "id": "caps",
+                            "kind": "capability",
+                            "names": ["telnet"],
+                        }
+                    ],
+                },
+                task_id="assurance-unavailable",
+                operation_id="assurance-unavailable-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertTrue(
+            any("assurance unavailable" in gap for gap in receipt["gaps"]),
+            receipt["gaps"],
+        )
 
     def test_assurance_keeps_fast_scope_when_temporal_consistency_does_not_improve(
         self,

@@ -57,7 +57,7 @@ from .effect_runner import (
 from .capability import EffectClass
 from .observation import (
     observation_consistency,
-    observation_consistency_score,
+    observation_improves,
     observation_reusable,
     qualify_observation,
     selected_scope_complete,
@@ -369,7 +369,14 @@ class ObservationEngine:
                     scope_complete=selected_scope_complete(raw, query),
                 )
             except AssuranceUnavailable:
-                pass
+                fallback = dict(raw)
+                raw_gaps = fallback.get("gaps", [])
+                gaps = list(raw_gaps) if isinstance(raw_gaps, list) else []
+                gaps.append(
+                    "automatic assurance unavailable; preserved the fast observation"
+                )
+                fallback["gaps"] = gaps
+                raw = fallback
             except (ConnectionError, OSError, TimeoutError) as exc:
                 fallback = dict(raw)
                 raw_gaps = fallback.get("gaps", [])
@@ -381,9 +388,7 @@ class ObservationEngine:
                 fallback["gaps"] = gaps
                 raw = fallback
             else:
-                if observation_consistency_score(
-                    raw
-                ) > observation_consistency_score(fast_raw):
+                if observation_improves(raw, fast_raw):
                     assurance = "assured"
                 else:
                     fallback = dict(fast_raw)

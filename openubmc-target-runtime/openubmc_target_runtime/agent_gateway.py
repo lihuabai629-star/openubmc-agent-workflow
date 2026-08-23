@@ -70,6 +70,51 @@ def _bounded_text(value: object, max_bytes: int) -> str:
     return encoded[: max_bytes - 3].decode("utf-8", errors="ignore") + "..."
 
 
+def _selector_identity_scope(value: object) -> dict[str, object]:
+    scope = _mapping(value)
+    raw_selectors = scope.get("selectors", [])
+    selectors = [
+        {
+            "id": _bounded_text(_mapping(item).get("id"), 64),
+            "kind": _bounded_text(_mapping(item).get("kind"), 16),
+        }
+        for item in (raw_selectors if isinstance(raw_selectors, list) else [])[:16]
+    ]
+    return {
+        "target": _bounded_text(scope.get("target"), 512),
+        "selectors": selectors,
+        "freshness": _compact_value(
+            scope.get("freshness", {}),
+            max_depth=2,
+            max_items=4,
+            max_string=64,
+        ),
+    }
+
+
+def _selector_identity_consistency(value: object) -> dict[str, object]:
+    consistency = _mapping(value)
+    raw_selectors = consistency.get("selectors", [])
+    return {
+        "classification": _bounded_text(
+            consistency.get("classification"), 32
+        ),
+        "selectors": [
+            {
+                "selector_id": _bounded_text(
+                    _mapping(item).get("selector_id"), 64
+                ),
+                "kind": _bounded_text(_mapping(item).get("kind"), 16),
+                "status": _bounded_text(_mapping(item).get("status"), 16),
+            }
+            for item in (
+                raw_selectors if isinstance(raw_selectors, list) else []
+            )[:16]
+        ],
+        "reusable": False,
+    }
+
+
 def _compact_value(
     value: object,
     *,
@@ -202,6 +247,7 @@ class CostGovernor:
             return result
         compacted = dict(result)
         compacted["content_compacted"] = True
+        compacted.pop("observation_ref", None)
         compacted["results"] = _compact_value(
             result.get("results", {}), max_depth=3, max_items=10, max_string=192
         )
@@ -219,7 +265,7 @@ class CostGovernor:
             "schema": OBSERVATION_RECEIPT_SCHEMA,
             "receipt_id": _bounded_text(result.get("receipt_id"), 128),
             "status": "incomplete",
-            "scope": result.get("scope", {}),
+            "scope": _selector_identity_scope(result.get("scope", {})),
             "freshness": _compact_value(
                 result.get("freshness", {}),
                 max_depth=2,
@@ -233,11 +279,8 @@ class CostGovernor:
                 max_string=128,
             ),
             "results": {},
-            "consistency": _compact_value(
-                result.get("consistency", {}),
-                max_depth=3,
-                max_items=16,
-                max_string=128,
+            "consistency": _selector_identity_consistency(
+                result.get("consistency", {})
             ),
             "coverage": {
                 "requested": coverage.get("requested", 0),
@@ -251,24 +294,17 @@ class CostGovernor:
             "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
             "content_compacted": True,
         }
-        if result.get("observation_ref"):
-            fallback["observation_ref"] = _compact_value(
-                result.get("observation_ref"),
-                max_depth=2,
-                max_items=8,
-                max_string=128,
-            )
         if len(_json_bytes(fallback)) <= OBSERVATION_MAX_BYTES:
             return fallback
         minimal = {
             "schema": OBSERVATION_RECEIPT_SCHEMA,
             "receipt_id": _bounded_text(result.get("receipt_id"), 128),
             "status": "incomplete",
-            "scope": {
-                "fingerprint": _fingerprint(result.get("scope", {})),
-                "content_compacted": True,
-            },
+            "scope": _selector_identity_scope(result.get("scope", {})),
             "freshness": {"status": "unknown"},
+            "consistency": _selector_identity_consistency(
+                result.get("consistency", {})
+            ),
             "target": {},
             "results": {},
             "coverage": {
@@ -283,13 +319,6 @@ class CostGovernor:
             "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
             "content_compacted": True,
         }
-        if result.get("observation_ref"):
-            minimal["observation_ref"] = _compact_value(
-                result.get("observation_ref"),
-                max_depth=2,
-                max_items=8,
-                max_string=128,
-            )
         return minimal
 
     @staticmethod

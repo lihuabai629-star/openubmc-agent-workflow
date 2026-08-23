@@ -42,12 +42,17 @@ def _instant(value: object) -> datetime | None:
     return parsed
 
 
-def _anchor(raw: Mapping[str, object]) -> str:
-    result = _mapping(raw.get("result"))
-    return _text(
-        raw.get("observed_at")
-        or result.get("completed_at")
-        or result.get("started_at")
+def capability_selector_complete(
+    capabilities: Mapping[str, object],
+    names: tuple[str, ...] | list[str],
+) -> bool:
+    return all(
+        _CAPABILITY_KEYS.get(name) in capabilities
+        and (
+            name != "alarms"
+            or capabilities.get(_CAPABILITY_KEYS[name]) is True
+        )
+        for name in names
     )
 
 
@@ -61,20 +66,14 @@ def selected_scope_complete(
     mdb_index = 0
     for selector in query.selectors:
         if selector.kind == "capability":
-            if any(
-                _CAPABILITY_KEYS[name] not in capabilities
-                or (
-                    name == "alarms"
-                    and capabilities.get(_CAPABILITY_KEYS[name]) is not True
-                )
-                for name in selector.names
-            ):
+            if not capability_selector_complete(capabilities, selector.names):
                 return False
             continue
         for _query in selector.queries:
             name = "mdbctl" if mdb_index == 0 else f"mdbctl_{mdb_index + 1}"
             mdb_index += 1
-            if name not in ssh:
+            child = _mapping(ssh.get(name))
+            if not child or child.get("ok") is not True:
                 return False
     return True
 
@@ -92,8 +91,6 @@ def qualify_observation(
     raw_selectors = supplied.get("selectors")
     expected = [(selector.selector_id, selector.kind) for selector in query.selectors]
     selector_facts: list[dict[str, object]] = []
-    compatibility_anchor = _anchor(raw)
-
     if isinstance(raw_selectors, list):
         actual = [
             (_text(_mapping(item).get("selector_id")), _text(_mapping(item).get("kind")))
@@ -117,17 +114,6 @@ def qualify_observation(
                     "status": status,
                 }
             )
-    elif scope_complete and _instant(compatibility_anchor) is not None:
-        selector_facts = [
-            {
-                "selector_id": selector.selector_id,
-                "kind": selector.kind,
-                "started_at": compatibility_anchor,
-                "completed_at": compatibility_anchor,
-                "status": "observed",
-            }
-            for selector in query.selectors
-        ]
     else:
         selector_facts = [
             {
@@ -238,20 +224,29 @@ def observation_consistency(raw: Mapping[str, object]) -> dict[str, object]:
     return dict(timing)
 
 
-def observation_consistency_score(
-    raw: Mapping[str, object],
-) -> tuple[int, int, float]:
-    timing = _mapping(raw.get(OBSERVATION_TIMING_FIELD))
+def observation_improves(
+    candidate: Mapping[str, object],
+    baseline: Mapping[str, object],
+) -> bool:
+    candidate_timing = _mapping(candidate.get(OBSERVATION_TIMING_FIELD))
+    baseline_timing = _mapping(baseline.get(OBSERVATION_TIMING_FIELD))
     ranks = {"inconsistent": 0, "partial": 1, "coherent": 2}
-    selectors = timing.get("selectors", [])
-    observed = sum(
+    candidate_selectors = candidate_timing.get("selectors", [])
+    baseline_selectors = baseline_timing.get("selectors", [])
+    candidate_observed = sum(
         _mapping(item).get("status") == "observed"
-        for item in (selectors if isinstance(selectors, list) else [])
+        for item in (
+            candidate_selectors if isinstance(candidate_selectors, list) else []
+        )
     )
-    raw_skew = timing.get("observed_skew_seconds", 0.0)
-    skew = float(raw_skew) if isinstance(raw_skew, (int, float)) else 0.0
+    baseline_observed = sum(
+        _mapping(item).get("status") == "observed"
+        for item in (
+            baseline_selectors if isinstance(baseline_selectors, list) else []
+        )
+    )
     return (
-        ranks.get(_text(timing.get("classification")), 0),
-        observed,
-        -skew,
+        ranks.get(_text(candidate_timing.get("classification")), 0)
+        > ranks.get(_text(baseline_timing.get("classification")), 0)
+        or candidate_observed > baseline_observed
     )
