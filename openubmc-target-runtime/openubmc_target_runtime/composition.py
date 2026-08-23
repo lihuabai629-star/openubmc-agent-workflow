@@ -13,6 +13,8 @@ from .capability import (
     DomainAdapter,
     DomainExecutor,
     DomainPack,
+    DomainPackAuthorContract,
+    DomainPackConformanceSuite,
     DomainReceipt,
     EffectClass,
     RuntimeSDKContext,
@@ -32,7 +34,7 @@ from .context_runtime import (
     RuntimeRepository,
     SQLiteRuntimeRepository,
 )
-from .domain_packs import builtin_domain_packs
+from .domain_packs import builtin_domain_pack_contracts
 from .domain_runtime import RuntimeDomainExecution
 from .effect_runner import LocalEffectRunner
 from .incident import IncidentMetrics
@@ -49,7 +51,7 @@ DomainTransportInvoker = Callable[
 ]
 DomainPackExtensions = Callable[
     [CapabilityRegistry, Mapping[str, CallableDomainAdapter]],
-    Iterable[DomainPack],
+    Iterable[DomainPack | DomainPackAuthorContract],
 ]
 
 
@@ -343,6 +345,7 @@ class _RuntimeTransportPort:
         return {
             "capability_registry": self._capability_registry.to_public_dict(),
             "domain_packs": list(self._domain_executor.pack_descriptors()),
+            "domain_pack_conformance": self._domain_executor.conformance_report(),
             "compatibility_telemetry": self._compatibility_telemetry.status(),
             "incident_metrics": self._incident_metrics.status(),
             "artifact_store": self._artifact_store.status(),
@@ -570,11 +573,10 @@ def compose_runtime(
         )
         for descriptor in capability_registry.descriptors()
     }
-    default_domain_packs = builtin_domain_packs(
-        capability_registry,
+    default_domain_pack_contracts = builtin_domain_pack_contracts(
         transport_adapters,
     )
-    extension_packs = (
+    extension_definitions = (
         tuple(
             options.domain_pack_extensions(
                 capability_registry,
@@ -585,10 +587,13 @@ def compose_runtime(
         else ()
     )
     default_operations = {
-        pack.descriptor.operation for pack in default_domain_packs
+        contract.operation for contract in default_domain_pack_contracts
     }
     extension_operations = {
-        pack.descriptor.operation for pack in extension_packs
+        definition.descriptor.operation
+        if isinstance(definition, DomainPack)
+        else definition.operation
+        for definition in extension_definitions
     }
     overlap = default_operations & extension_operations
     if overlap:
@@ -596,9 +601,18 @@ def compose_runtime(
             "Domain Pack extensions cannot replace Runtime Packs: "
             + ", ".join(sorted(overlap))
         )
+    conformance_suite = DomainPackConformanceSuite()
+    authored_packs = conformance_suite.bind(
+        capability_registry,
+        (*default_domain_pack_contracts, *extension_definitions),
+    )
     domain_packs = tuple(
         _bind_compatibility_receipts(pack)
-        for pack in (*default_domain_packs, *extension_packs)
+        for pack in authored_packs
+    )
+    conformance_report = conformance_suite.validate(
+        capability_registry,
+        domain_packs,
     )
     for pack in domain_packs:
         transport_adapters.pop(pack.descriptor.operation, None)
@@ -606,6 +620,7 @@ def compose_runtime(
         capability_registry,
         transport_adapters,
         packs=domain_packs,
+        conformance_report=conformance_report,
         effect_classes=(
             {"log_bundle_collect": EffectClass.IDEMPOTENT_MUTATION}
             if "log_bundle_collect" in definition_name_set

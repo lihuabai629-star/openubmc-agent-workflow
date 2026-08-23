@@ -19,6 +19,8 @@ from openubmc_target_runtime import (  # noqa: E402
     CapabilityRegistry,
     DomainExecutor,
     DomainPack,
+    DomainPackAuthorContract,
+    DomainPackConformanceSuite,
     DomainReceipt,
     EffectClass,
     EffectRecoveryMode,
@@ -29,7 +31,10 @@ from openubmc_target_runtime import (  # noqa: E402
     mutation_receipt_verifier,
     mutation_recovery_route,
 )
-from openubmc_target_runtime.domain_packs import builtin_domain_packs  # noqa: E402
+from openubmc_target_runtime.domain_packs import (  # noqa: E402
+    builtin_domain_pack_contracts,
+    builtin_domain_packs,
+)
 from openubmc_target_runtime.operation_contracts import (  # noqa: E402
     DEFAULT_OPERATION_CONTRACTS,
 )
@@ -82,6 +87,287 @@ class Backend:
 
 
 class DomainPackConformanceTests(unittest.TestCase):
+    def test_builtin_packs_use_the_public_author_contract(self) -> None:
+        operations = (
+            "live_patch_run",
+            "upgrade_run",
+            "log_bundle_index",
+            "log_bundle_query",
+            "log_bundle_export",
+        )
+        descriptors = tuple(
+            descriptor(
+                operation,
+                mutation=operation in {"live_patch_run", "upgrade_run"},
+            )
+            for operation in operations
+        )
+        registry = CapabilityRegistry(descriptors)
+        adapter = CallableDomainAdapter(lambda _context, _arguments: {})
+        contracts = builtin_domain_pack_contracts(
+            {operation: adapter for operation in operations}
+        )
+
+        self.assertTrue(
+            all(
+                isinstance(contract, DomainPackAuthorContract)
+                for contract in contracts
+            )
+        )
+        packs = DomainPackConformanceSuite().bind(registry, contracts)
+        self.assertEqual(
+            {pack.descriptor.operation for pack in packs},
+            set(operations),
+        )
+
+    def test_author_contract_builds_a_read_only_pack_from_the_registry_seam(self) -> None:
+        pack_descriptor = descriptor("fake_read", mutation=False)
+        registry = CapabilityRegistry((pack_descriptor,))
+        adapter = CallableDomainAdapter(
+            lambda _context, _arguments: DomainReceipt(
+                operation="fake_read",
+                status="succeeded",
+                value={"ok": True},
+            )
+        )
+        contract = DomainPackAuthorContract(
+            name="fake-read",
+            version="1",
+            operation="fake_read",
+            effect_class=EffectClass.READ_ONLY,
+            adapter=adapter,
+            verifier=lambda _action, receipt: receipt.status == "succeeded",
+        )
+
+        pack = contract.build(registry)
+
+        self.assertEqual(pack.descriptor, pack_descriptor)
+        self.assertEqual(pack.name, "fake-read")
+        self.assertIs(pack.effect_class, EffectClass.READ_ONLY)
+        self.assertIs(pack.adapter, adapter)
+
+    def test_author_contract_rejects_effect_and_recovery_mismatches(self) -> None:
+        adapter = CallableDomainAdapter(lambda _context, _arguments: {})
+        with self.assertRaisesRegex(ValueError, "mutation recovery"):
+            DomainPackAuthorContract(
+                name="invalid-read",
+                version="1",
+                operation="fake_read",
+                effect_class=EffectClass.READ_ONLY,
+                adapter=adapter,
+                reconciler=adapter,
+                verifier=lambda _action, _receipt: True,
+            )
+        with self.assertRaisesRegex(ValueError, "reconciler and journal action"):
+            DomainPackAuthorContract(
+                name="invalid-mutation",
+                version="1",
+                operation="fake_mutation",
+                effect_class=EffectClass.RECONCILABLE_MUTATION,
+                adapter=adapter,
+                verifier=lambda _action, _receipt: True,
+            )
+        contract = DomainPackAuthorContract(
+            name="mismatched",
+            version="1",
+            operation="fake_mutation",
+            effect_class=EffectClass.READ_ONLY,
+            adapter=adapter,
+            verifier=lambda _action, _receipt: True,
+        )
+        with self.assertRaisesRegex(ValueError, "Effect class"):
+            contract.build(CapabilityRegistry((descriptor("fake_mutation"),)))
+        with self.assertRaisesRegex(ValueError, "redacted.*reference"):
+            DomainPackAuthorContract(
+                name="invalid-artifact",
+                version="1",
+                operation="fake_read",
+                effect_class=EffectClass.READ_ONLY,
+                adapter=adapter,
+                verifier=lambda _action, _receipt: True,
+                artifact_contract=ArtifactContract(
+                    path_fields=("artifact_path",),
+                    artifact_kind="redacted-input",
+                    require_redacted=True,
+                ),
+            )
+
+    def test_pack_set_conformance_rejects_duplicate_identity_and_artifact_phase(self) -> None:
+        adapter = CallableDomainAdapter(lambda _context, _arguments: {})
+        contracts = (
+            DomainPackAuthorContract(
+                name="duplicate-pack",
+                version="1",
+                operation="first_read",
+                effect_class=EffectClass.READ_ONLY,
+                adapter=adapter,
+                verifier=lambda _action, _receipt: True,
+                artifact_contract=ArtifactContract(
+                    path_fields=("_artifact_path",),
+                    artifact_kind="first-artifact",
+                    reference_required=True,
+                ),
+                artifact_phase="shared.phase",
+            ),
+            DomainPackAuthorContract(
+                name="duplicate-pack",
+                version="1",
+                operation="second_read",
+                effect_class=EffectClass.READ_ONLY,
+                adapter=adapter,
+                verifier=lambda _action, _receipt: True,
+                artifact_contract=ArtifactContract(
+                    path_fields=("_artifact_path",),
+                    artifact_kind="second-artifact",
+                    reference_required=True,
+                ),
+                artifact_phase="shared.phase",
+            ),
+        )
+        registry = CapabilityRegistry(
+            (
+                descriptor("first_read", mutation=False),
+                descriptor("second_read", mutation=False),
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "duplicate Domain Pack identity"):
+            DomainPackConformanceSuite().bind(registry, contracts)
+
+        distinct = (
+            contracts[0],
+            DomainPackAuthorContract(
+                name="second-pack",
+                version="1",
+                operation="second_read",
+                effect_class=EffectClass.READ_ONLY,
+                adapter=adapter,
+                verifier=lambda _action, _receipt: True,
+                artifact_contract=contracts[1].artifact_contract,
+                artifact_phase="shared.phase",
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "artifact phase"):
+            DomainPackConformanceSuite().bind(registry, distinct)
+
+        duplicate_operation = (
+            contracts[0],
+            DomainPackAuthorContract(
+                name="another-first-pack",
+                version="1",
+                operation="first_read",
+                effect_class=EffectClass.READ_ONLY,
+                adapter=adapter,
+                verifier=lambda _action, _receipt: True,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate Domain Pack operation"):
+            DomainPackConformanceSuite().bind(registry, duplicate_operation)
+
+        missing_capability = DomainPackAuthorContract(
+            name="missing-capability",
+            version="1",
+            operation="first_read",
+            effect_class=EffectClass.READ_ONLY,
+            adapter=adapter,
+            verifier=lambda _action, _receipt: True,
+            capability_requirements=("test.not-registered",),
+        )
+        with self.assertRaisesRegex(ValueError, "unregistered capability"):
+            DomainPackConformanceSuite().bind(registry, (missing_capability,))
+
+    def test_behavioral_conformance_verifies_identity_receipt_and_effect_classification(self) -> None:
+        adapter = CallableDomainAdapter(lambda _context, _arguments: {})
+        context = RuntimeSDKContext(
+            task_id="conformance-run",
+            operation_id="effect-conformance",
+            timeout_seconds=10,
+            target_id="192.0.2.1",
+        )
+        suite = DomainPackConformanceSuite(read_attempts=2)
+        read_pack = DomainPackAuthorContract(
+            name="fake-read",
+            version="1",
+            operation="fake_read",
+            effect_class=EffectClass.READ_ONLY,
+            adapter=adapter,
+            verifier=lambda _action, receipt: receipt.status == "succeeded",
+        ).build(CapabilityRegistry((descriptor("fake_read", mutation=False),)))
+
+        read_report = suite.verify_example(
+            read_pack,
+            context=context,
+            arguments={"query": "health"},
+            receipt=DomainReceipt(
+                operation="fake_read",
+                status="succeeded",
+                value={"ok": True},
+            ),
+        )
+
+        self.assertEqual(read_report["effect_identity"], "stable")
+        self.assertEqual(read_report["receipt_binding"], "verified")
+        self.assertEqual(read_report["retry_classification"], "bounded-read-retry:2")
+        self.assertEqual(read_report["recovery_classification"], "none")
+
+        mutation_pack = DomainPackAuthorContract(
+            name="fake-mutation",
+            version="1",
+            operation="fake_mutation",
+            effect_class=EffectClass.RECONCILABLE_MUTATION,
+            adapter=adapter,
+            reconciler=adapter,
+            verifier=lambda _action, receipt: receipt.status == "verified",
+            journal_action=lambda _arguments: "mutate",
+        ).build(CapabilityRegistry((descriptor("fake_mutation"),)))
+        mutation_report = suite.verify_example(
+            mutation_pack,
+            context=context,
+            arguments={"value": 1},
+            receipt=DomainReceipt(
+                operation="fake_mutation",
+                status="verified",
+                value={"ok": True},
+            ),
+        )
+        self.assertEqual(mutation_report["retry_classification"], "single-attempt")
+        self.assertEqual(
+            mutation_report["recovery_classification"],
+            "reconcile-same-effect",
+        )
+
+        with self.assertRaisesRegex(ValueError, "receipt operation"):
+            suite.verify_example(
+                read_pack,
+                context=context,
+                arguments={},
+                receipt=DomainReceipt(
+                    operation="another_read",
+                    status="succeeded",
+                    value={"ok": True},
+                ),
+            )
+        non_boolean_verifier = DomainPackAuthorContract(
+            name="non-boolean-verifier",
+            version="1",
+            operation="fake_read",
+            effect_class=EffectClass.READ_ONLY,
+            adapter=adapter,
+            verifier=lambda _action, _receipt: "yes",
+        ).build(CapabilityRegistry((descriptor("fake_read", mutation=False),)))
+        with self.assertRaisesRegex(ValueError, "boolean"):
+            suite.verify_example(
+                non_boolean_verifier,
+                context=context,
+                arguments={},
+                receipt=DomainReceipt(
+                    operation="fake_read",
+                    status="succeeded",
+                    value={"ok": True},
+                ),
+            )
+
+
     def test_log_bundle_stage_contracts_are_internal_and_artifact_bound(self) -> None:
         operations = {
             "log_bundle_index": ("openubmc-log-bundle", "openubmc-log-index"),
@@ -733,7 +1019,7 @@ class DomainPackConformanceTests(unittest.TestCase):
         calls: list[str] = []
 
         def pack_extensions(registry, _adapters):
-            pack_descriptor = registry.require("log_bundle_collect")
+            registry.require("log_bundle_collect")
 
             def execute(context, arguments):
                 calls.append(context.operation_id)
@@ -749,10 +1035,10 @@ class DomainPackConformanceTests(unittest.TestCase):
 
             adapter = CallableDomainAdapter(execute)
             return (
-                DomainPack(
+                DomainPackAuthorContract(
                     name="fake-log-bundle",
                     version="1",
-                    descriptor=pack_descriptor,
+                    operation="log_bundle_collect",
                     effect_class=EffectClass.READ_ONLY,
                     adapter=adapter,
                     verifier=lambda _action, receipt: (
@@ -781,6 +1067,7 @@ class DomainPackConformanceTests(unittest.TestCase):
             registered = {
                 item["operation"] for item in status["domain_packs"]
             }
+            conformance = status["domain_pack_conformance"]
             completed = service.call_exposed_tool(
                 "execute",
                 {
@@ -799,6 +1086,11 @@ class DomainPackConformanceTests(unittest.TestCase):
         self.assertEqual(completed["state"], "completed", completed)
         self.assertEqual(len(calls), 1)
         self.assertEqual(registered, {"live_patch_run", "log_bundle_collect"})
+        self.assertTrue(conformance["valid"])
+        self.assertEqual(
+            conformance["operations"],
+            ["live_patch_run", "log_bundle_collect"],
+        )
 
 
 if __name__ == "__main__":

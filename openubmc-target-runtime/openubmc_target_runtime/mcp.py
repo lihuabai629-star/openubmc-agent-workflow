@@ -38,6 +38,7 @@ from .capability import (
     CallableDomainAdapter,
     CapabilityRegistry,
     DomainPack,
+    DomainPackAuthorContract,
     RUNTIME_EFFECT_RECOVERY_ARGUMENT,
     RuntimeSDKContext,
 )
@@ -2095,7 +2096,7 @@ class RuntimeMcpService:
         interface_profile: str = "agent",
         domain_pack_extensions: Callable[
             [CapabilityRegistry, Mapping[str, CallableDomainAdapter]],
-            Iterable[DomainPack],
+            Iterable[DomainPack | DomainPackAuthorContract],
         ]
         | None = None,
         artifact_store: LocalArtifactStore | None = None,

@@ -22,6 +22,7 @@ DOMAIN_RECEIPT_SCHEMA = f"{RUNTIME_API_VERSION}/domain-receipt-v1"
 DOMAIN_ACTION_SCHEMA = f"{RUNTIME_API_VERSION}/domain-action-v1"
 DOMAIN_RESULT_SCHEMA = f"{RUNTIME_API_VERSION}/domain-result-v1"
 DOMAIN_PACK_SCHEMA = f"{RUNTIME_API_VERSION}/domain-pack-v1"
+DOMAIN_PACK_CONFORMANCE_SCHEMA = f"{RUNTIME_API_VERSION}/domain-pack-conformance-v1"
 RUNTIME_EFFECT_RECOVERY_ARGUMENT = "_runtime_effect_recovery"
 _OUTCOME_STATUSES = frozenset(
     {
@@ -764,6 +765,202 @@ class DomainPack:
 
 
 @dataclass(frozen=True)
+class DomainPackAuthorContract:
+    """One typed authoring interface for an internal Runtime Domain Pack."""
+
+    name: str
+    version: str
+    operation: str
+    effect_class: EffectClass
+    adapter: DomainAdapter
+    verifier: DomainVerifier
+    reconciler: DomainAdapter | None = None
+    artifact_contract: ArtifactContract | None = None
+    result_artifact_contract: ResultArtifactContract | None = None
+    artifact_phase: str = ""
+    capability_requirements: tuple[str, ...] = ()
+    journal_action: Callable[[Mapping[str, object]], str] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.operation.strip():
+            raise ValueError("Domain Pack author contract requires an operation")
+        if self.effect_class not in {
+            EffectClass.READ_ONLY,
+            EffectClass.RECONCILABLE_MUTATION,
+        }:
+            raise ValueError(
+                "Domain Pack authors may declare only read-only or reconcilable mutation Effects"
+            )
+        if self.effect_class is EffectClass.READ_ONLY and (
+            self.reconciler is not None or self.journal_action is not None
+        ):
+            raise ValueError("read-only Domain Pack cannot declare mutation recovery")
+        if self.effect_class is EffectClass.RECONCILABLE_MUTATION and (
+            self.reconciler is None or self.journal_action is None
+        ):
+            raise ValueError(
+                "reconcilable mutation Domain Pack requires reconciler and journal action"
+            )
+        if self.artifact_phase and self.artifact_contract is None:
+            raise ValueError("Domain Pack artifact phase requires an Artifact contract")
+        if (
+            self.artifact_contract is not None
+            and self.artifact_contract.require_redacted
+            and not self.artifact_contract.reference_required
+        ):
+            raise ValueError(
+                "redacted Domain Pack Artifact input requires an ArtifactRef reference"
+            )
+
+    def build(self, registry: CapabilityRegistry) -> DomainPack:
+        descriptor = registry.require(self.operation)
+        mutation = self.effect_class is EffectClass.RECONCILABLE_MUTATION
+        if descriptor.mutation != mutation:
+            raise ValueError(
+                "Domain Pack Effect class does not match its capability descriptor"
+            )
+        return DomainPack(
+            name=self.name,
+            version=self.version,
+            descriptor=descriptor,
+            effect_class=self.effect_class,
+            adapter=self.adapter,
+            verifier=self.verifier,
+            reconciler=self.reconciler,
+            artifact_contract=self.artifact_contract,
+            result_artifact_contract=self.result_artifact_contract,
+            artifact_phase=self.artifact_phase,
+            capability_requirements=self.capability_requirements,
+            journal_action=self.journal_action,
+        )
+
+
+class DomainPackConformanceSuite:
+    """Bind authored Packs and verify cross-Pack and behavioral invariants."""
+
+    def __init__(self, *, read_attempts: int = 2) -> None:
+        if read_attempts <= 0:
+            raise ValueError("Domain Pack read attempts must be positive")
+        self.read_attempts = read_attempts
+
+    @staticmethod
+    def _require_unique(packs: Sequence[DomainPack]) -> None:
+        operations = [pack.descriptor.operation for pack in packs]
+        if len(set(operations)) != len(operations):
+            raise ValueError("duplicate Domain Pack operation")
+        identities = [(pack.name, pack.version) for pack in packs]
+        if len(set(identities)) != len(identities):
+            raise ValueError("duplicate Domain Pack identity")
+        phases = [pack.artifact_phase for pack in packs if pack.artifact_phase]
+        if len(set(phases)) != len(phases):
+            raise ValueError("multiple Domain Packs bind the same artifact phase")
+
+    @staticmethod
+    def _require_registry_alignment(
+        registry: CapabilityRegistry,
+        packs: Sequence[DomainPack],
+    ) -> None:
+        available = {
+            descriptor.capability for descriptor in registry.descriptors()
+        }
+        for pack in packs:
+            if registry.require(pack.descriptor.operation) != pack.descriptor:
+                raise ValueError(
+                    f"Domain Pack {pack.name} does not match the capability registry"
+                )
+            mutation = pack.effect_class is EffectClass.RECONCILABLE_MUTATION
+            if pack.descriptor.mutation != mutation:
+                raise ValueError(
+                    "Domain Pack Effect class does not match its capability descriptor"
+                )
+            if any(
+                requirement not in available
+                for requirement in pack.capability_requirements
+            ):
+                raise ValueError(
+                    f"Domain Pack {pack.name} requires an unregistered capability"
+                )
+            if pack.artifact_phase and pack.artifact_contract is None:
+                raise ValueError("Domain Pack artifact phase requires an Artifact contract")
+
+    def validate(
+        self,
+        registry: CapabilityRegistry,
+        packs: Iterable[DomainPack],
+    ) -> dict[str, object]:
+        selected = tuple(packs)
+        self._require_unique(selected)
+        self._require_registry_alignment(registry, selected)
+        return {
+            "schema": DOMAIN_PACK_CONFORMANCE_SCHEMA,
+            "valid": True,
+            "pack_count": len(selected),
+            "operations": sorted(
+                pack.descriptor.operation for pack in selected
+            ),
+            "read_attempts": self.read_attempts,
+        }
+
+    def bind(
+        self,
+        registry: CapabilityRegistry,
+        contracts: Iterable[DomainPackAuthorContract | DomainPack],
+    ) -> tuple[DomainPack, ...]:
+        packs = tuple(
+            contract
+            if isinstance(contract, DomainPack)
+            else contract.build(registry)
+            for contract in contracts
+        )
+        self.validate(registry, packs)
+        return packs
+
+    def verify_example(
+        self,
+        pack: DomainPack,
+        *,
+        context: RuntimeSDKContext,
+        arguments: Mapping[str, object],
+        receipt: DomainReceipt,
+    ) -> dict[str, str]:
+        action = pack.action(context, arguments)
+        replayed = pack.action(context, arguments)
+        if action.effect_id != replayed.effect_id:
+            raise ValueError("Domain Pack Effect identity is unstable")
+        if receipt.operation != pack.descriptor.operation:
+            raise ValueError("domain receipt operation does not match capability")
+        verified = pack.verifier(action, receipt)
+        if not isinstance(verified, bool):
+            raise ValueError("Domain Pack verifier must return a boolean")
+        if not verified:
+            raise ValueError("Domain Pack verifier rejected its conformance example")
+        retry = (
+            f"bounded-read-retry:{self.read_attempts}"
+            if pack.effect_class is EffectClass.READ_ONLY
+            else "single-attempt"
+        )
+        recovery = "none"
+        if pack.effect_class is EffectClass.RECONCILABLE_MUTATION:
+            if pack.journal_action is None or not pack.journal_action(arguments).strip():
+                raise ValueError(
+                    "reconcilable mutation Domain Pack produced an invalid journal action"
+                )
+            recovery_action = pack.action(
+                replace(context, recovery_mode=EffectRecoveryMode.RECONCILE),
+                arguments,
+            )
+            if recovery_action.effect_id != action.effect_id:
+                raise ValueError("Domain Pack recovery changed Effect identity")
+            recovery = "reconcile-same-effect"
+        return {
+            "effect_identity": "stable",
+            "receipt_binding": "verified",
+            "retry_classification": retry,
+            "recovery_classification": recovery,
+        }
+
+
+@dataclass(frozen=True)
 class DomainResult:
     action: DomainAction
     receipt: DomainReceipt
@@ -853,6 +1050,7 @@ class DomainExecutor:
         packs: Iterable[DomainPack] = (),
         effect_classes: Mapping[str, EffectClass] | None = None,
         read_attempts: int = 2,
+        conformance_report: Mapping[str, object] | None = None,
     ) -> None:
         if read_attempts <= 0:
             raise ValueError("read_attempts must be positive")
@@ -885,6 +1083,13 @@ class DomainExecutor:
             }
         )
         self.read_attempts = read_attempts
+        self._conformance_report = dict(
+            conformance_report
+            or DomainPackConformanceSuite(read_attempts=read_attempts).validate(
+                registry,
+                registered_packs,
+            )
+        )
         missing = [
             descriptor.operation
             for descriptor in registry.descriptors()
@@ -1025,3 +1230,6 @@ class DomainExecutor:
             pack.to_public_dict()
             for pack in sorted(self.packs.values(), key=lambda item: item.name)
         )
+
+    def conformance_report(self) -> dict[str, object]:
+        return dict(self._conformance_report)

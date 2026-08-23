@@ -9,6 +9,8 @@ from .capability import (
     CapabilityRegistry,
     DomainAdapter,
     DomainPack,
+    DomainPackAuthorContract,
+    DomainPackConformanceSuite,
     EffectClass,
     ResultArtifactContract,
     mutation_receipt_verifier,
@@ -25,11 +27,10 @@ def _upgrade_journal_action(_arguments: Mapping[str, object]) -> str:
     return "upgrade"
 
 
-def builtin_domain_packs(
-    registry: CapabilityRegistry,
+def builtin_domain_pack_contracts(
     adapters: Mapping[str, DomainAdapter],
-) -> tuple[DomainPack, ...]:
-    """Register Runtime-owned mutation and local Artifact stage contracts."""
+) -> tuple[DomainPackAuthorContract, ...]:
+    """Author Runtime-owned mutation and local Artifact stage contracts."""
 
     definitions = {
         "live_patch_run": {
@@ -55,17 +56,17 @@ def builtin_domain_packs(
             "journal_action": _upgrade_journal_action,
         },
     }
-    packs: list[DomainPack] = []
+    contracts: list[DomainPackAuthorContract] = []
     for operation, definition in definitions.items():
         adapter = adapters.get(operation)
         if adapter is None:
             continue
         journal_action = definition["journal_action"]
-        packs.append(
-            DomainPack(
+        contracts.append(
+            DomainPackAuthorContract(
                 name=str(definition["name"]),
                 version="1",
-                descriptor=registry.require(operation),
+                operation=operation,
                 effect_class=EffectClass.RECONCILABLE_MUTATION,
                 adapter=adapter,
                 reconciler=adapter,
@@ -91,11 +92,11 @@ def builtin_domain_packs(
             stage.output_kind,
             require_redacted=stage.output_redacted,
         )
-        packs.append(
-            DomainPack(
+        contracts.append(
+            DomainPackAuthorContract(
                 name=stage.operation.replace("_", "-"),
                 version="1",
-                descriptor=registry.require(stage.operation),
+                operation=stage.operation,
                 effect_class=EffectClass.READ_ONLY,
                 adapter=adapter,
                 verifier=(
@@ -114,4 +115,16 @@ def builtin_domain_packs(
                 result_artifact_contract=result_contract,
             )
         )
-    return tuple(packs)
+    return tuple(contracts)
+
+
+def builtin_domain_packs(
+    registry: CapabilityRegistry,
+    adapters: Mapping[str, DomainAdapter],
+) -> tuple[DomainPack, ...]:
+    """Bind built-in author contracts through the public conformance seam."""
+
+    return DomainPackConformanceSuite().bind(
+        registry,
+        builtin_domain_pack_contracts(adapters),
+    )
