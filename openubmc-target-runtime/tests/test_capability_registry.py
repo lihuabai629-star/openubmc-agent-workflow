@@ -106,15 +106,16 @@ class CapabilityRegistryTests(unittest.TestCase):
 
     def test_debug_public_call_is_declared_and_routed_by_capability_registry(self) -> None:
         backend = _Backend()
-        service = RuntimeMcpService(backend)
+        service = RuntimeMcpService(backend, interface_profile="compatibility")
+        operator = RuntimeMcpService(backend, interface_profile="operator")
         try:
-            result = service.call_tool(
+            result = service.call_exposed_tool(
                 "debug_run",
                 {"ip": "192.0.2.75", "profile": "mdb"},
                 task_id="registry-debug",
                 operation_id="registry-debug",
             )
-            status = service.call_tool(
+            status = operator.call_exposed_tool(
                 "runtime_status",
                 {},
                 task_id="registry-debug",
@@ -122,17 +123,18 @@ class CapabilityRegistryTests(unittest.TestCase):
             )
         finally:
             service.close()
+            operator.close()
 
-        descriptor = service._test.capability_registry.require("debug_run")
-        self.assertEqual(descriptor.owner_skill, "openubmc-debug")
-        self.assertEqual(descriptor.runtime_api_version, RUNTIME_API_VERSION)
+        descriptor = next(
+            item
+            for item in status["capability_registry"]["capabilities"]
+            if item["operation"] == "debug_run"
+        )
+        self.assertEqual(descriptor["owner_skill"], "openubmc-debug")
+        self.assertEqual(descriptor["runtime_api_version"], RUNTIME_API_VERSION)
         self.assertEqual(result["profile"], "mdb")
         self.assertEqual(backend.calls, 1)
-        operations = {
-            item["operation"]
-            for item in status["capability_registry"]["capabilities"]
-        }
-        self.assertIn("debug_run", operations)
+        self.assertEqual(descriptor["capability"], "openubmc.debug.diagnose")
 
     def test_domain_executor_retries_transient_read_failures(self) -> None:
         attempts = 0

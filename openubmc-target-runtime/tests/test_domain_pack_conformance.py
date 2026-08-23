@@ -642,11 +642,17 @@ class DomainPackConformanceTests(unittest.TestCase):
             live_patch_run = Backend.debug_run
             upgrade_run = Backend.debug_run
 
-        service = RuntimeMcpService(FullBackend())
+        service = RuntimeMcpService(FullBackend(), interface_profile="operator")
         try:
+            status = service.call_exposed_tool(
+                "runtime_status",
+                {},
+                task_id="domain-pack-status",
+                operation_id="domain-pack-status",
+            )
             packs = {
                 item["operation"]: item
-                for item in service._test.domain_executor.pack_descriptors()
+                for item in status["domain_packs"]
             }
         finally:
             service.close()
@@ -718,9 +724,20 @@ class DomainPackConformanceTests(unittest.TestCase):
             FullBackend(),
             domain_pack_extensions=pack_extensions,
         )
+        operator = RuntimeMcpService(
+            FullBackend(),
+            domain_pack_extensions=pack_extensions,
+            interface_profile="operator",
+        )
         try:
+            status = operator.call_exposed_tool(
+                "runtime_status",
+                {},
+                task_id="fake-pack-status",
+                operation_id="fake-pack-status",
+            )
             registered = {
-                item["operation"] for item in service._test.domain_executor.pack_descriptors()
+                item["operation"] for item in status["domain_packs"]
             }
             completed = service.call_exposed_tool(
                 "execute",
@@ -735,6 +752,7 @@ class DomainPackConformanceTests(unittest.TestCase):
             )
         finally:
             service.close()
+            operator.close()
 
         self.assertEqual(completed["state"], "completed", completed)
         self.assertEqual(len(calls), 1)

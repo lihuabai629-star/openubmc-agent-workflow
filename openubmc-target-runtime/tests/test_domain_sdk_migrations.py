@@ -103,13 +103,16 @@ class _DomainBackend:
 class DomainSdkMigrationTests(unittest.TestCase):
     def test_log_analyzer_uses_registry_deadline_evidence_and_public_workflow(self) -> None:
         backend = _DomainBackend()
+        domain_backends = {
+            "log_bundle_collect": backend,
+            "debug_run": backend,
+        }
         service = RuntimeMcpService(
-            OrchestratedMcpBackend(
-                {
-                    "log_bundle_collect": backend,
-                    "debug_run": backend,
-                }
-            )
+            OrchestratedMcpBackend(domain_backends),
+        )
+        operator = RuntimeMcpService(
+            OrchestratedMcpBackend(domain_backends),
+            interface_profile="operator",
         )
         try:
             collected = service.call_tool(
@@ -128,11 +131,22 @@ class DomainSdkMigrationTests(unittest.TestCase):
                 task_id="sdk-log",
                 operation_id="sdk-log-next",
             )
+            status = operator.call_exposed_tool(
+                "runtime_status",
+                {},
+                task_id="sdk-log",
+                operation_id="sdk-log-status",
+            )
         finally:
             service.close()
+            operator.close()
 
-        descriptor = service._test.capability_registry.require("log_bundle_collect")
-        self.assertEqual(descriptor.owner_skill, "openubmc-log-analyzer")
+        descriptor = next(
+            item
+            for item in status["capability_registry"]["capabilities"]
+            if item["operation"] == "log_bundle_collect"
+        )
+        self.assertEqual(descriptor["owner_skill"], "openubmc-log-analyzer")
         self.assertLessEqual(backend.remaining["log_bundle_collect"], 600)
         self.assertEqual(collected["evidence_ids"], ["evidence-log_bundle_collect"])
         self.assertEqual(
