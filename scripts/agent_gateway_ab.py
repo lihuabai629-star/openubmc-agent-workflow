@@ -1110,14 +1110,17 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         has_finality = carry_finality or any(
             term in clause for term in finality_terms
         )
+        positive = (
+            "异常" in clause
+            and any(re.search(pattern, clause) for pattern in positive_patterns)
+        )
         uncertainty = (
             not any(term in clause for term in action_terms)
             and (explicit_uncertainty or not has_finality)
             and any(re.search(pattern, clause) for pattern in uncertainty_patterns)
         )
         if (
-            "异常" in clause
-            and any(re.search(pattern, clause) for pattern in positive_patterns)
+            positive
             and not any(term in clause for term in negative_terms)
             and not uncertainty
         ):
@@ -1133,7 +1136,7 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
             )
         ):
             carry_finality = True
-        elif "异常" in clause:
+        elif positive or uncertainty:
             carry_finality = False
     return True
 

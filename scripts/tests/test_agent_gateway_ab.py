@@ -1135,6 +1135,10 @@ class AgentGatewayAbTests(unittest.TestCase):
             "判定异常仍需补充证据。",
             "不能证明 ResourceId 异常。结论：综合当前结果；"
             "认定异常仍需接口规范。",
+            "不能证明 ResourceId 异常。最终，异常相关背景如下，"
+            "判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。最终，关于异常的背景如下，"
+            "认定异常仍需接口规范。",
             "不能证明 ResourceId 异常却判定 ResourceId 异常。",
             "无法排除 ResourceId 异常。",
         )
