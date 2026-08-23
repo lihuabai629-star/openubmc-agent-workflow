@@ -32,11 +32,11 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
         self.assertIn("directly call `observe`", normalized)
         self.assertIn("Do not check whether the tool exists", normalized)
         self.assertIn(
-            "server=`openubmc-target-runtime`, tool=`observe`",
+            "MCP tool `openubmc-target-runtime.observe`",
             normalized,
         )
-        self.assertIn("not a local or JavaScript function", normalized)
-        self.assertIn("tools.openubmc_target_runtime_observe", normalized)
+        self.assertIn("not a local function", normalized)
+        self.assertNotIn("tools.openubmc_target_runtime_observe", normalized)
 
     def test_transport_and_runtime_mechanics_are_disclosed_on_demand(self) -> None:
         for detail in (
