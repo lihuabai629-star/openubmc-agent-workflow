@@ -1084,7 +1084,7 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         rf"(?:是否异常|异常(?:是否|与否))"
         rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
         rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}\s*$",
-        rf"{uncertainty_verb}[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}"
+        rf"^{uncertainty_verb}[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}"
         rf"[^，,。；;！？!?\n]{{0,24}}"
         rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常\s*$",
     )
@@ -1125,7 +1125,9 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
             and not uncertainty
         ):
             return False
-        if (
+        if positive or uncertainty:
+            carry_finality = False
+        elif (
             re.fullmatch(
                 r"(?:最终|结论|结果|判断|最终结论|最终结果|最终判断)"
                 r"(?:是|为|[:：]|如下(?:所示)?[:：]?)?",
@@ -1138,8 +1140,6 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
             )
         ):
             carry_finality = True
-        elif positive or uncertainty:
-            carry_finality = False
     return True
 
 
