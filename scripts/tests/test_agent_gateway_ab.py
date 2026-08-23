@@ -794,6 +794,37 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(orders.count(("A", "B")), 5)
         self.assertEqual(orders.count(("B", "A")), 5)
 
+    def test_codex_command_allows_slow_mcp_startup_for_both_arms(self) -> None:
+        args = module.argparse.Namespace(
+            codex="codex",
+            codex_cwd=Path("/workspace"),
+            model=module.QUALIFICATION_MODEL,
+            codex_config=[],
+        )
+        configs = module.run_configs(
+            "skill-disclosure",
+            Path("/variants/baseline"),
+            Path("/variants/candidate"),
+        )
+
+        for arm in ("A", "B"):
+            command = module.codex_exec_command(
+                args,
+                configs[arm],
+                Path(f"/results/{arm}/final.md"),
+            )
+
+            self.assertIn(
+                "mcp_servers.openubmc-target-runtime.startup_timeout_sec=120",
+                command,
+                arm,
+            )
+            self.assertIn(
+                "mcp_servers.openubmc-target-runtime.tool_timeout_sec=900",
+                command,
+                arm,
+            )
+
     def test_candidate_execute_prompt_uses_the_current_gate_response_shape(self) -> None:
         prompt = module._prompt(
             Path("/tmp/openubmc-debug/SKILL.md"),

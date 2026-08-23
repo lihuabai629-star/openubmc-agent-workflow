@@ -67,6 +67,8 @@ QUALIFICATION_CODEX_CONFIG = (
     'model_providers.cliproxy.wire_api="responses"',
     "model_providers.cliproxy.supports_websockets=false",
 )
+MCP_STARTUP_TIMEOUT_SECONDS = 120
+MCP_TOOL_TIMEOUT_SECONDS = 900
 BENCHMARK_CAPABILITIES = ("ssh", "telnet", "mdbctl", "busctl")
 BENCHMARK_MDB_QUERIES = (
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
@@ -1622,6 +1624,64 @@ def prepare_arm_home(home: Path, source_root: Path) -> None:
             link.symlink_to(skill_source, target_is_directory=True)
 
 
+def codex_exec_command(
+    args: argparse.Namespace,
+    config: RunConfig,
+    final_path: Path,
+) -> list[str]:
+    """Build the fixed Codex command used by either qualification arm."""
+    command = [
+        args.codex,
+        "exec",
+        "--ignore-user-config",
+        "--ephemeral",
+        "--json",
+        "--sandbox",
+        "danger-full-access",
+        "--skip-git-repo-check",
+        "-C",
+        str(args.codex_cwd),
+        "-m",
+        args.model,
+        "-o",
+        str(final_path),
+    ]
+    for value in args.codex_config:
+        command.extend(("-c", value))
+    command.extend(
+        (
+            "-c",
+            'mcp_servers.openubmc-target-runtime.command="/usr/bin/python3"',
+            "-c",
+            (
+                "mcp_servers.openubmc-target-runtime.args=["
+                + json.dumps(
+                    str(
+                        config.source_root
+                        / "openubmc-debug"
+                        / "scripts"
+                        / "target_runtime_mcp.py"
+                    )
+                )
+                + "]"
+            ),
+            "-c",
+            'mcp_servers.openubmc-target-runtime.env_vars=["OPENUBMC_CREDENTIALS_FILE","OPENUBMC_DEBUG_CREDENTIALS_FILE","OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE"]',
+            "-c",
+            (
+                "mcp_servers.openubmc-target-runtime.startup_timeout_sec="
+                f"{MCP_STARTUP_TIMEOUT_SECONDS}"
+            ),
+            "-c",
+            (
+                "mcp_servers.openubmc-target-runtime.tool_timeout_sec="
+                f"{MCP_TOOL_TIMEOUT_SECONDS}"
+            ),
+        )
+    )
+    return command
+
+
 def _git_commit(repo: Path, ref: str) -> str:
     return subprocess.run(
         ["git", "rev-parse", f"{ref}^{{commit}}"],
@@ -2137,40 +2197,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
             final_path = run_dir / "final.md"
             events_path = run_dir / "events.jsonl"
             stderr_path = run_dir / "stderr.log"
-            command = [
-                args.codex,
-                "exec",
-                "--ignore-user-config",
-                "--ephemeral",
-                "--json",
-                "--sandbox",
-                "danger-full-access",
-                "--skip-git-repo-check",
-                "-C",
-                str(args.codex_cwd),
-                "-m",
-                args.model,
-                "-o",
-                str(final_path),
-            ]
-            for value in args.codex_config:
-                command.extend(("-c", value))
-            command.extend(
-                (
-                    "-c",
-                    'mcp_servers.openubmc-target-runtime.command="/usr/bin/python3"',
-                    "-c",
-                    (
-                        "mcp_servers.openubmc-target-runtime.args=["
-                        + json.dumps(str(config.source_root / "openubmc-debug" / "scripts" / "target_runtime_mcp.py"))
-                        + "]"
-                    ),
-                    "-c",
-                    'mcp_servers.openubmc-target-runtime.env_vars=["OPENUBMC_CREDENTIALS_FILE","OPENUBMC_DEBUG_CREDENTIALS_FILE","OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE"]',
-                    "-c",
-                    "mcp_servers.openubmc-target-runtime.tool_timeout_sec=900",
-                )
-            )
+            command = codex_exec_command(args, config, final_path)
             run_env = dict(environment)
             run_env["HOME"] = str(home)
             run_env["CODEX_HOME"] = os.environ.get("CODEX_HOME", "/root/.codex")
