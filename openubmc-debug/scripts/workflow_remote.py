@@ -254,6 +254,17 @@ class TypedDebugToolRunner:
         )
         return refresh_checks
 
+    def prepare_assurance_refresh(self, args: argparse.Namespace) -> bool:
+        """Restore epoch-valid capability truth for a refresh-only assured pass."""
+
+        cache_reader = self.runtime_lease.cached_preflight_checks
+        checks = cache_reader(args)
+        if not checks:
+            return False
+        self._preflight_args = args
+        self._preflight_checks = checks
+        return True
+
     def _invoke_preflight_main(
         self,
         args: argparse.Namespace,
