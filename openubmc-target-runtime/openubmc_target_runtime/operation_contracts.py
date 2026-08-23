@@ -87,17 +87,21 @@ class RuntimeOperationContract:
             result_projector=self.result_projector,
         )
 
+    @property
+    def resolved_effect_class(self) -> EffectClass:
+        return self.effect_class or (
+            EffectClass.RECONCILABLE_MUTATION
+            if self.mutation
+            else EffectClass.READ_ONLY
+        )
+
     def capability_descriptor(
         self,
         input_schema: Mapping[str, object],
     ) -> CapabilityDescriptor:
         if not self.domain:
             raise ValueError(f"control operation {self.name} has no Runtime capability")
-        effect_class = self.effect_class or (
-            EffectClass.RECONCILABLE_MUTATION
-            if self.mutation
-            else EffectClass.READ_ONLY
-        )
+        effect_class = self.resolved_effect_class
         return CapabilityDescriptor(
             operation=self.name,
             capability=self.capability,
@@ -242,14 +246,7 @@ class RuntimeOperationContractRegistry:
                     "lifecycle": contract.lifecycle,
                     "handler_name": contract.handler_name,
                     "mutation": contract.mutation,
-                    "effect_class": (
-                        contract.effect_class
-                        or (
-                            EffectClass.RECONCILABLE_MUTATION
-                            if contract.mutation
-                            else EffectClass.READ_ONLY
-                        )
-                    ).value,
+                    "effect_class": contract.resolved_effect_class.value,
                     "workflow_entry": contract.workflow_entry,
                     "credential_values": contract.credential_values,
                     "capability": contract.capability,
