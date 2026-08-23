@@ -45,9 +45,11 @@ def _verified_release_lock_source(workspace: Path) -> str:
             ReleaseLockError,
             verify_release_lock,
         )
-
+    except ImportError:
+        return ""
+    try:
         identity = verify_release_lock(workspace)
-    except (ImportError, ReleaseLockError):
+    except ReleaseLockError:
         return ""
     source = str(identity.get("source_commit", "")).strip().lower()
     return source if _is_lower_hex(source, length=40) else ""
