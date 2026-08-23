@@ -16,15 +16,19 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "openubmc-target-runtime"))
+
+from scripts.release_gate_contract import (  # noqa: E402
+    RELEASE_GATE_SCHEMA,
+    evidence_fingerprint,
+    verify_release_gate_report,
+)
 
 from openubmc_target_runtime.release import (  # noqa: E402
     ReleaseLockError,
     verify_release_lock,
 )
-
-
-RELEASE_GATE_SCHEMA = "openubmc-agent-workflow.release-gate.v2"
 
 
 def _tail(value: str, *, limit: int = 4000) -> str:
@@ -86,16 +90,6 @@ def _test_discovery(pattern: str, *, name_filter: str = "") -> tuple[str, ...]:
         pattern,
     )
     return (*command, "-k", name_filter) if name_filter else command
-
-
-def _fingerprint(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _environment() -> dict[str, str]:
@@ -311,7 +305,14 @@ def execute_release_gate(
         ab_attestation_public_key=ab_attestation_public_key,
     ):
         if blocked:
-            results.append({"name": name, "status": "skipped", "commands": []})
+            results.append(
+                {
+                    "name": name,
+                    "status": "skipped",
+                    "elapsed_seconds": 0.0,
+                    "commands": [],
+                }
+            )
             continue
         command_results: list[dict[str, object]] = []
         started = time.monotonic()
@@ -356,12 +357,13 @@ def execute_release_gate(
         "previous_ref": previous_ref,
         "source_commit": resolved_source_commit,
         "environment": environment,
-        "environment_fingerprint": _fingerprint(environment),
+        "environment_fingerprint": evidence_fingerprint(environment),
         "promotable": promotable,
         "gates": results,
         "artifacts": artifacts,
     }
-    report["evidence_digest"] = _fingerprint(report)
+    report["evidence_digest"] = evidence_fingerprint(report)
+    verify_release_gate_report(report)
     return report
 
 

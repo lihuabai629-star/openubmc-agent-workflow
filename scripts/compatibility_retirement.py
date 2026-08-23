@@ -1,0 +1,663 @@
+#!/usr/bin/env python3
+"""Produce compatibility-writer retirement evidence for Operator and CI use."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+
+BASELINE_SCHEMA = (
+    "openubmc-agent-workflow.compatibility-retirement-baseline.v1"
+)
+INCREMENT_SCHEMA = (
+    "openubmc-agent-workflow.compatibility-retirement-increment.v1"
+)
+DECISION_SCHEMA = (
+    "openubmc-agent-workflow.compatibility-retirement-decision.v1"
+)
+REQUIRED_ACTIVE_DEVELOPMENT_DAYS = 14
+WRITER_METRICS = {
+    "observe.assurance": (("feature", "observe.assurance"),),
+    "execute.control_continue": (
+        ("feature", "execute.control_continue"),
+    ),
+    "execute.observation_receipt": (
+        ("feature", "execute.observation_receipt"),
+    ),
+    "phase_record": (
+        ("feature", "phase_record"),
+        ("operation", "phase_record"),
+    ),
+    "workflow.next": (
+        ("feature", "workflow.next"),
+        ("operation", "workflow.next"),
+    ),
+}
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.release_gate_contract import (  # noqa: E402
+    REQUIRED_RELEASE_GATES,
+    RETIREMENT_RELEASE_ARTIFACTS,
+    verify_release_gate_report,
+)
+
+
+def _fingerprint(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _full_commit(value: str, *, name: str = "source_commit") -> str:
+    commit = value.strip().lower()
+    if len(commit) != 40 or any(
+        character not in "0123456789abcdef" for character in commit
+    ):
+        raise ValueError(f"{name} must be a full Git commit SHA")
+    return commit
+
+
+def _counts(value: object, *, name: str) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"compatibility telemetry {name} must be an object")
+    normalized: dict[str, int] = {}
+    for raw_metric, raw_count in value.items():
+        metric = str(raw_metric).strip()
+        if not metric:
+            raise ValueError(f"compatibility telemetry {name} has an empty metric")
+        if isinstance(raw_count, bool) or not isinstance(raw_count, int):
+            raise ValueError(f"compatibility telemetry {name}.{metric} must be an integer")
+        if raw_count < 0:
+            raise ValueError(f"compatibility telemetry {name}.{metric} cannot be negative")
+        normalized[metric] = raw_count
+    return dict(sorted(normalized.items()))
+
+
+def _timestamps(
+    value: object,
+    *,
+    name: str,
+    counts: Mapping[str, int],
+) -> dict[str, float]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"compatibility telemetry {name} must be an object")
+    normalized: dict[str, float] = {}
+    for raw_metric, raw_timestamp in value.items():
+        metric = str(raw_metric).strip()
+        if isinstance(raw_timestamp, bool) or not isinstance(
+            raw_timestamp, (int, float)
+        ):
+            raise ValueError(f"compatibility telemetry {name}.{metric} must be numeric")
+        timestamp = float(raw_timestamp)
+        if timestamp <= 0:
+            raise ValueError(f"compatibility telemetry {name}.{metric} must be positive")
+        normalized[metric] = timestamp
+    if set(normalized) != set(counts):
+        raise ValueError(f"compatibility telemetry {name} must match its counts")
+    return dict(sorted(normalized.items()))
+
+
+def _normalize_telemetry(value: Mapping[str, object]) -> dict[str, object]:
+    try:
+        tracking_started_at = float(value["tracking_started_at"])
+        total_calls = int(value["total_calls"])
+        total_features = int(value["total_features"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("compatibility telemetry summary is incomplete") from exc
+    if tracking_started_at <= 0:
+        raise ValueError("compatibility telemetry tracking_started_at must be positive")
+    operations = _counts(value.get("operation_counts"), name="operation_counts")
+    features = _counts(value.get("feature_counts"), name="feature_counts")
+    if total_calls != sum(operations.values()):
+        raise ValueError("compatibility telemetry total_calls does not match counts")
+    if total_features != sum(features.values()):
+        raise ValueError("compatibility telemetry total_features does not match counts")
+    raw_last_seen = value.get("last_seen_at")
+    if not isinstance(raw_last_seen, Mapping):
+        raise ValueError("compatibility telemetry last_seen_at must be an object")
+    operation_seen = _timestamps(
+        raw_last_seen.get("operations"),
+        name="last_seen_at.operations",
+        counts=operations,
+    )
+    feature_seen = _timestamps(
+        raw_last_seen.get("features"),
+        name="last_seen_at.features",
+        counts=features,
+    )
+    if any(timestamp < tracking_started_at for timestamp in operation_seen.values()):
+        raise ValueError("operation last_seen_at predates telemetry tracking")
+    if any(timestamp < tracking_started_at for timestamp in feature_seen.values()):
+        raise ValueError("feature last_seen_at predates telemetry tracking")
+    return {
+        "tracking_started_at": tracking_started_at,
+        "total_calls": total_calls,
+        "operation_counts": operations,
+        "total_features": total_features,
+        "feature_counts": features,
+        "last_seen_at": {
+            "operations": operation_seen,
+            "features": feature_seen,
+        },
+    }
+
+
+def _telemetry_from_status(value: Mapping[str, object]) -> dict[str, object]:
+    selected = value.get("result", value)
+    if not isinstance(selected, Mapping):
+        raise ValueError("Runtime status result must be an object")
+    telemetry = selected.get("compatibility_telemetry", selected)
+    if not isinstance(telemetry, Mapping):
+        raise ValueError("Runtime status compatibility_telemetry must be an object")
+    return _normalize_telemetry(telemetry)
+
+
+def _verify_evidence(
+    value: Mapping[str, object],
+    *,
+    schema: str,
+    label: str,
+) -> None:
+    if value.get("schema") != schema:
+        raise ValueError(f"{label} schema is unsupported")
+    expected = value.get("evidence_digest")
+    unsigned = dict(value)
+    unsigned.pop("evidence_digest", None)
+    if expected != _fingerprint(unsigned):
+        raise ValueError(f"{label} evidence digest is invalid")
+
+
+def create_baseline(
+    runtime_status: Mapping[str, object],
+    *,
+    source_commit: str,
+    captured_at: float,
+) -> dict[str, object]:
+    commit = _full_commit(source_commit)
+    captured = float(captured_at)
+    telemetry = _telemetry_from_status(runtime_status)
+    latest_seen = max(
+        [telemetry["tracking_started_at"]]
+        + list(telemetry["last_seen_at"]["operations"].values())
+        + list(telemetry["last_seen_at"]["features"].values())
+    )
+    if captured < latest_seen:
+        raise ValueError("baseline captured_at predates compatibility telemetry")
+    report: dict[str, object] = {
+        "schema": BASELINE_SCHEMA,
+        "source_commit": commit,
+        "captured_at": captured,
+        "telemetry": telemetry,
+    }
+    report["evidence_digest"] = _fingerprint(report)
+    return report
+
+
+def _metric_deltas(
+    baseline: Mapping[str, int], current: Mapping[str, int]
+) -> dict[str, int]:
+    deltas = {
+        metric: current.get(metric, 0) - baseline.get(metric, 0)
+        for metric in sorted(set(baseline) | set(current))
+    }
+    regressions = [metric for metric, delta in deltas.items() if delta < 0]
+    if regressions:
+        raise ValueError(
+            "compatibility telemetry count regressed for " + ", ".join(regressions)
+        )
+    return deltas
+
+
+def _changed_timestamps_without_count(
+    baseline: Mapping[str, float],
+    current: Mapping[str, float],
+    deltas: Mapping[str, int],
+) -> list[str]:
+    changed = []
+    for metric in sorted(set(baseline) | set(current)):
+        current_seen = current.get(metric, 0.0)
+        baseline_seen = baseline.get(metric, 0.0)
+        if deltas.get(metric, 0) == 0 and current_seen != baseline_seen:
+            changed.append(metric)
+    return changed
+
+
+def _counts_without_newer_timestamp(
+    baseline: Mapping[str, float],
+    current: Mapping[str, float],
+    deltas: Mapping[str, int],
+) -> list[str]:
+    return [
+        metric
+        for metric, delta in sorted(deltas.items())
+        if delta > 0
+        and current.get(metric, 0.0) <= baseline.get(metric, 0.0)
+    ]
+
+
+def create_increment(
+    baseline: Mapping[str, object],
+    runtime_status: Mapping[str, object],
+    *,
+    source_commit: str,
+    captured_at: float,
+    active_development_dates: Iterable[str],
+) -> dict[str, object]:
+    _verify_evidence(
+        baseline,
+        schema=BASELINE_SCHEMA,
+        label="compatibility baseline",
+    )
+    current_commit = _full_commit(source_commit)
+    baseline_commit = _full_commit(
+        str(baseline.get("source_commit", "")),
+        name="baseline source_commit",
+    )
+    baseline_captured = float(baseline.get("captured_at", 0.0))
+    current_captured = float(captured_at)
+    if current_captured < baseline_captured:
+        raise ValueError("increment captured_at predates the baseline")
+    baseline_telemetry = _normalize_telemetry(baseline["telemetry"])
+    current_telemetry = _telemetry_from_status(runtime_status)
+    latest_current_seen = max(
+        [current_telemetry["tracking_started_at"]]
+        + list(current_telemetry["last_seen_at"]["operations"].values())
+        + list(current_telemetry["last_seen_at"]["features"].values())
+    )
+    if current_captured < latest_current_seen:
+        raise ValueError("increment captured_at predates current telemetry")
+    if (
+        current_telemetry["tracking_started_at"]
+        != baseline_telemetry["tracking_started_at"]
+    ):
+        raise ValueError("compatibility telemetry tracking identity changed")
+    operation_deltas = _metric_deltas(
+        baseline_telemetry["operation_counts"],
+        current_telemetry["operation_counts"],
+    )
+    feature_deltas = _metric_deltas(
+        baseline_telemetry["feature_counts"],
+        current_telemetry["feature_counts"],
+    )
+    changed_without_count = {
+        "operations": _changed_timestamps_without_count(
+            baseline_telemetry["last_seen_at"]["operations"],
+            current_telemetry["last_seen_at"]["operations"],
+            operation_deltas,
+        ),
+        "features": _changed_timestamps_without_count(
+            baseline_telemetry["last_seen_at"]["features"],
+            current_telemetry["last_seen_at"]["features"],
+            feature_deltas,
+        ),
+    }
+    changed_metrics = [
+        f"{kind}.{metric}"
+        for kind, metrics in changed_without_count.items()
+        for metric in metrics
+    ]
+    if changed_metrics:
+        raise ValueError(
+            "compatibility telemetry last_seen_at changed without a count: "
+            + ", ".join(changed_metrics)
+        )
+    stale_count_timestamps = {
+        "operations": _counts_without_newer_timestamp(
+            baseline_telemetry["last_seen_at"]["operations"],
+            current_telemetry["last_seen_at"]["operations"],
+            operation_deltas,
+        ),
+        "features": _counts_without_newer_timestamp(
+            baseline_telemetry["last_seen_at"]["features"],
+            current_telemetry["last_seen_at"]["features"],
+            feature_deltas,
+        ),
+    }
+    stale_metrics = [
+        f"{kind}.{metric}"
+        for kind, metrics in stale_count_timestamps.items()
+        for metric in metrics
+    ]
+    if stale_metrics:
+        raise ValueError(
+            "compatibility telemetry count increased without newer last_seen_at: "
+            + ", ".join(stale_metrics)
+        )
+    dates = sorted({str(value) for value in active_development_dates})
+    report: dict[str, object] = {
+        "schema": INCREMENT_SCHEMA,
+        "baseline_digest": baseline["evidence_digest"],
+        "baseline_source_commit": baseline_commit,
+        "source_commit": current_commit,
+        "captured_at": current_captured,
+        "active_development_dates": dates,
+        "active_development_day_count": len(dates),
+        "operation_deltas": operation_deltas,
+        "feature_deltas": feature_deltas,
+        "telemetry": current_telemetry,
+    }
+    report["evidence_digest"] = _fingerprint(report)
+    return report
+
+
+def _verify_release_gate(
+    report: Mapping[str, object], *, source_commit: str
+) -> None:
+    verify_release_gate_report(
+        report,
+        expected_source_commit=source_commit,
+        require_promotable=True,
+        required_artifacts=RETIREMENT_RELEASE_ARTIFACTS,
+    )
+
+
+def _active_day_blocker(active_days: int) -> str | None:
+    if active_days >= REQUIRED_ACTIVE_DEVELOPMENT_DAYS:
+        return None
+    return (
+        f"only {active_days} active development days elapsed; "
+        f"{REQUIRED_ACTIVE_DEVELOPMENT_DAYS} required"
+    )
+
+
+def _writer_decision(
+    metrics: tuple[tuple[str, str], ...],
+    *,
+    increment: Mapping[str, object],
+) -> dict[str, object]:
+    blockers: list[str] = []
+    metric_values: list[dict[str, object]] = []
+    for kind, metric in metrics:
+        deltas = increment[f"{kind}_deltas"]
+        delta = int(deltas.get(metric, 0))
+        metric_values.append({"kind": kind, "name": metric, "delta": delta})
+        if delta > 0:
+            blockers.append(f"{kind} count increased by {delta}")
+    active_days = int(increment["active_development_day_count"])
+    window_blocker = _active_day_blocker(active_days)
+    if window_blocker is not None:
+        blockers.append(window_blocker)
+    return {
+        "ready": not blockers,
+        "stage": "remove_compatibility_writer",
+        "metrics": metric_values,
+        "blockers": blockers,
+    }
+
+
+def evaluate_retirement(
+    increment: Mapping[str, object],
+    release_gate: Mapping[str, object],
+) -> dict[str, object]:
+    _verify_evidence(
+        increment,
+        schema=INCREMENT_SCHEMA,
+        label="compatibility increment",
+    )
+    source_commit = _full_commit(str(increment.get("source_commit", "")))
+    _verify_release_gate(release_gate, source_commit=source_commit)
+    writers = {
+        name: _writer_decision(metrics, increment=increment)
+        for name, metrics in WRITER_METRICS.items()
+    }
+    profile_blockers: list[str] = []
+    operation_increase = sum(
+        int(value) for value in increment["operation_deltas"].values()
+    )
+    feature_increase = sum(
+        int(value) for value in increment["feature_deltas"].values()
+    )
+    if operation_increase:
+        profile_blockers.append(
+            f"compatibility operation count increased by {operation_increase}"
+        )
+    if feature_increase:
+        profile_blockers.append(
+            f"compatibility feature count increased by {feature_increase}"
+        )
+    active_days = int(increment["active_development_day_count"])
+    window_blocker = _active_day_blocker(active_days)
+    if window_blocker is not None:
+        profile_blockers.append(window_blocker)
+    report: dict[str, object] = {
+        "schema": DECISION_SCHEMA,
+        "source_commit": source_commit,
+        "increment_digest": increment["evidence_digest"],
+        "release_gate_digest": release_gate["evidence_digest"],
+        "required_active_development_days": REQUIRED_ACTIVE_DEVELOPMENT_DAYS,
+        "active_development_day_count": active_days,
+        "writers": writers,
+        "compatibility_profile": {
+            "ready": not profile_blockers,
+            "stage": "remove_compatibility_profile",
+            "blockers": profile_blockers,
+        },
+        "preserved_readers": ["old_event_upcasters"],
+    }
+    report["evidence_digest"] = _fingerprint(report)
+    return report
+
+
+def git_active_development_dates(
+    repository: Path,
+    *,
+    baseline_commit: str,
+    current_commit: str,
+    canonical_main_commit: str | None = None,
+    after_timestamp: float | None = None,
+) -> list[str]:
+    baseline = _full_commit(baseline_commit, name="baseline_commit")
+    current = _full_commit(current_commit, name="current_commit")
+    if canonical_main_commit is not None:
+        canonical_main = _full_commit(
+            canonical_main_commit,
+            name="canonical_main_commit",
+        )
+        history = subprocess.run(
+            ["git", "rev-list", "--first-parent", canonical_main],
+            cwd=repository,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if history.returncode:
+            raise ValueError(
+                history.stderr.strip() or "cannot read canonical main history"
+            )
+        first_parent_commits = set(history.stdout.splitlines())
+        if baseline not in first_parent_commits or current not in first_parent_commits:
+            raise ValueError(
+                "baseline and current source must be on canonical main first-parent history"
+            )
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", baseline, current],
+        cwd=repository,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if ancestor.returncode != 0:
+        raise ValueError("baseline commit is not an ancestor of current commit")
+    completed = subprocess.run(
+        [
+            "git",
+            "log",
+            "--first-parent",
+            "--format=%ct%x09%cs",
+            f"{baseline}..{current}",
+        ],
+        cwd=repository,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode:
+        raise ValueError(completed.stderr.strip() or "cannot read Git activity")
+    threshold = float(after_timestamp) if after_timestamp is not None else 0.0
+    dates: set[str] = set()
+    for line in completed.stdout.splitlines():
+        raw_timestamp, separator, raw_date = line.partition("\t")
+        if not separator:
+            raise ValueError("Git activity output is malformed")
+        if float(raw_timestamp) > threshold:
+            dates.add(raw_date.strip())
+    return sorted(dates)
+
+
+def _read_json(path: Path, *, label: str) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read {label}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must contain one JSON object")
+    return value
+
+
+def _resolve_source_commit(
+    repository: Path,
+    *,
+    source_commit: str | None,
+    source_ref: str,
+) -> str:
+    if source_commit:
+        return _full_commit(source_commit)
+    completed = subprocess.run(
+        ["git", "rev-parse", f"{source_ref}^{{commit}}"],
+        cwd=repository,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode:
+        raise ValueError(completed.stderr.strip() or "cannot resolve source ref")
+    return _full_commit(completed.stdout.strip())
+
+
+def _write_report(report: Mapping[str, object], output: Path | None) -> None:
+    encoded = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(encoded, encoding="utf-8")
+    print(encoded, end="")
+
+
+def _add_source_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--repo", type=Path, default=ROOT)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--source-commit")
+    source.add_argument("--source-ref", default="HEAD")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    baseline_parser = commands.add_parser(
+        "baseline", description="Capture a digest-bound compatibility telemetry baseline."
+    )
+    baseline_parser.add_argument("--runtime-status", type=Path, required=True)
+    baseline_parser.add_argument("--captured-at", type=float)
+    baseline_parser.add_argument("--output", type=Path)
+    _add_source_options(baseline_parser)
+
+    increment_parser = commands.add_parser(
+        "increment", description="Compare Runtime status with a baseline."
+    )
+    increment_parser.add_argument("--baseline", type=Path, required=True)
+    increment_parser.add_argument("--runtime-status", type=Path, required=True)
+    increment_parser.add_argument("--captured-at", type=float)
+    increment_parser.add_argument("--main-ref", default="github/main")
+    increment_parser.add_argument("--output", type=Path)
+    _add_source_options(increment_parser)
+
+    evaluate_parser = commands.add_parser(
+        "evaluate", description="Bind zero-use evidence to a complete Release Gate."
+    )
+    evaluate_parser.add_argument("--increment", type=Path, required=True)
+    evaluate_parser.add_argument("--release-gate", type=Path, required=True)
+    evaluate_parser.add_argument("--output", type=Path)
+    evaluate_parser.add_argument(
+        "--writer",
+        choices=sorted(WRITER_METRICS),
+        help="Return success only when this writer is ready; defaults to the profile.",
+    )
+
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "baseline":
+            repository = args.repo.expanduser().absolute()
+            commit = _resolve_source_commit(
+                repository,
+                source_commit=args.source_commit,
+                source_ref=args.source_ref,
+            )
+            report = create_baseline(
+                _read_json(args.runtime_status, label="Runtime status"),
+                source_commit=commit,
+                captured_at=args.captured_at or time.time(),
+            )
+        elif args.command == "increment":
+            repository = args.repo.expanduser().absolute()
+            baseline = _read_json(args.baseline, label="compatibility baseline")
+            commit = _resolve_source_commit(
+                repository,
+                source_commit=args.source_commit,
+                source_ref=args.source_ref,
+            )
+            canonical_main = _resolve_source_commit(
+                repository,
+                source_commit=None,
+                source_ref=args.main_ref,
+            )
+            dates = git_active_development_dates(
+                repository,
+                baseline_commit=str(baseline.get("source_commit", "")),
+                current_commit=commit,
+                canonical_main_commit=canonical_main,
+                after_timestamp=float(baseline.get("captured_at", 0.0)),
+            )
+            report = create_increment(
+                baseline,
+                _read_json(args.runtime_status, label="Runtime status"),
+                source_commit=commit,
+                captured_at=args.captured_at or time.time(),
+                active_development_dates=dates,
+            )
+        else:
+            report = evaluate_retirement(
+                _read_json(args.increment, label="compatibility increment"),
+                _read_json(args.release_gate, label="Release Gate"),
+            )
+        _write_report(report, args.output)
+        if args.command == "evaluate":
+            selected = (
+                report["writers"][args.writer]
+                if args.writer
+                else report["compatibility_profile"]
+            )
+            return 0 if selected["ready"] else 1
+        return 0
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
