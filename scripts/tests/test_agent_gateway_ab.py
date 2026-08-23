@@ -1118,6 +1118,8 @@ class AgentGatewayAbTests(unittest.TestCase):
             "不能证明 ResourceId 异常，但最终结论是异常。",
             "不能证明 ResourceId 异常，但最终结论：异常。",
             "不能证明 ResourceId 异常，但最终结论为异常。",
+            "不能证明 ResourceId 异常。最终结论是异常仍需处理。",
+            "不能证明 ResourceId 异常。最终结论是异常需要立即维修。",
             "不能证明 ResourceId 异常却判定 ResourceId 异常。",
             "无法排除 ResourceId 异常。",
         )
@@ -1150,6 +1152,38 @@ class AgentGatewayAbTests(unittest.TestCase):
                 self.assertFalse(
                     metric["semantic_acceptance"]["conclusion_supported"]
                 )
+
+    def test_skill_disclosure_rejects_mismatched_parenthetical_raw_values(self) -> None:
+        finals = (
+            "MDBCTL=available Name=Disk0（原始返回：Disk01） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0（实际值：NotDisk0Value） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+        )
+
+        for final in finals:
+            with self.subTest(final=final):
+                record = module.RunEvidenceRecord.capture(
+                    arm="B",
+                    pair=1,
+                    order=1,
+                    scenario="skill-disclosure",
+                    events=[
+                        skill_disclosure_observe_event(),
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 100, "output_tokens": 10},
+                        },
+                    ],
+                    final=final,
+                    exit_code=0,
+                    duration_seconds=1,
+                )
+
+                metric = record.metric()
+
+                self.assertFalse(metric["valid"])
+                self.assertIn("name=disk0", metric["semantic_acceptance"]["missing"])
 
     def test_skill_disclosure_rejects_values_swapped_between_fields(self) -> None:
         record = module.RunEvidenceRecord.capture(

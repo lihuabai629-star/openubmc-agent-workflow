@@ -1058,7 +1058,20 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
     if not cautious:
         return False
     negative_terms = ("不能", "无法", "不足以", "不代表", "不等于", "并非", "不是", "不属于")
-    uncertainty_terms = ("仍需", "还需", "需要", "尚需", "有待", "取决于")
+    uncertainty_verb = r"(?:仍需|还需|需要|尚需|有待|取决于)"
+    uncertainty_evidence = (
+        r"(?:证据|接口|规范|契约|预期|基线|参考|对照|定义|语义|上下文)"
+    )
+    uncertainty_patterns = (
+        rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常"
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}",
+        rf"异常(?:是否|与否)[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}",
+        rf"{uncertainty_verb}[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}"
+        rf"[^，,。；;！？!?\n]{{0,24}}"
+        rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常",
+    )
     clauses = re.split(
         r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)",
         folded,
@@ -1074,11 +1087,22 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
     return not any(
         "异常" in clause
         and any(re.search(pattern, clause) for pattern in positive_patterns)
-        and not any(
-            term in clause for term in (*negative_terms, *uncertainty_terms)
-        )
+        and not any(term in clause for term in negative_terms)
+        and not any(re.search(pattern, clause) for pattern in uncertainty_patterns)
         for clause in clauses
     )
+
+
+def _parenthetical_annotation_matches(annotation: str, expected: str) -> bool:
+    marker = re.match(
+        r"^(?:原始(?:返回|值)?|实际(?:返回|值)?|返回(?:值)?|raw(?:\s+value)?|value)"
+        r"\s*(?:[:：=]|为|是)?\s*(?P<value>.+?)\s*$",
+        annotation,
+    )
+    if marker is None:
+        return False
+    annotated_value = marker.group("value").strip(" \t\r\n\\\"'`")
+    return annotated_value == expected
 
 
 def _reported_value_matches(reported: str, expected: str) -> bool:
@@ -1096,11 +1120,7 @@ def _reported_value_matches(reported: str, expected: str) -> bool:
             annotation = remainder[1:close_index]
             suffix = remainder[close_index + 1:]
             if (
-                expected in annotation
-                and any(
-                    marker in annotation
-                    for marker in ("原始", "实际", "返回", "raw", "value")
-                )
+                _parenthetical_annotation_matches(annotation, expected)
                 and all(character in terminal for character in suffix)
             ):
                 return True
