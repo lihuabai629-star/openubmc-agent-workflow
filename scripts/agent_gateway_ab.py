@@ -1058,6 +1058,7 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
     if not cautious:
         return False
     negative_terms = ("不能", "无法", "不足以", "不代表", "不等于", "并非", "不是", "不属于")
+    uncertainty_terms = ("仍需", "还需", "需要", "尚需", "有待", "取决于")
     clauses = re.split(
         r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)",
         folded,
@@ -1073,7 +1074,9 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
     return not any(
         "异常" in clause
         and any(re.search(pattern, clause) for pattern in positive_patterns)
-        and not any(term in clause for term in negative_terms)
+        and not any(
+            term in clause for term in (*negative_terms, *uncertainty_terms)
+        )
         for clause in clauses
     )
 
@@ -1086,6 +1089,21 @@ def _reported_value_matches(reported: str, expected: str) -> bool:
     if all(character in terminal for character in tail):
         return True
     remainder = tail.lstrip(" \t\\")
+    if remainder.startswith(("（", "(")):
+        closing = "）" if remainder[0] == "（" else ")"
+        close_index = remainder.find(closing, 1)
+        if close_index > 0:
+            annotation = remainder[1:close_index]
+            suffix = remainder[close_index + 1:]
+            if (
+                expected in annotation
+                and any(
+                    marker in annotation
+                    for marker in ("原始", "实际", "返回", "raw", "value")
+                )
+                and all(character in terminal for character in suffix)
+            ):
+                return True
     if not remainder or remainder[0] not in "，,；;。！？!?":
         return False
     conclusion = remainder[1:].lstrip()
