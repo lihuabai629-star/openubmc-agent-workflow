@@ -1078,7 +1078,7 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         r"对照(?:值|标准)|契约(?:证据)?|语义(?:定义|契约)|上下文(?:证据)?)"
     )
     uncertainty_patterns = (
-        rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常"
+        rf"^(?:判定|判断|确定|确认|认定)(?:是否)?异常"
         rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
         rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}\s*$",
         rf"(?:是否异常|异常(?:是否|与否))"
@@ -1127,11 +1127,13 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
             return False
         if (
             re.fullmatch(
-                r"(?:最终|结论|结果|最终结论|最终结果)(?:是|为|[:：])?",
+                r"(?:最终|结论|结果|判断|最终结论|最终结果|最终判断)"
+                r"(?:是|为|[:：]|如下(?:所示)?[:：]?)?",
                 clause,
             )
             or re.match(
-                r"^(?:最终结论|最终结果|结论|结果)(?:是|为|[:：])",
+                r"^(?:最终结论|最终结果|最终判断|结论|结果|判断)"
+                r"(?:是|为|[:：]|如下(?:所示)?[:：]?)",
                 clause,
             )
         ):
