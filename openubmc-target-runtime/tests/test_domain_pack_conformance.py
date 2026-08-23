@@ -30,9 +30,16 @@ from openubmc_target_runtime import (  # noqa: E402
     mutation_recovery_route,
 )
 from openubmc_target_runtime.domain_packs import builtin_domain_packs  # noqa: E402
+from openubmc_target_runtime.operation_contracts import (  # noqa: E402
+    DEFAULT_OPERATION_CONTRACTS,
+)
 
 
-def descriptor(operation: str = "fake_mutation") -> CapabilityDescriptor:
+def descriptor(
+    operation: str = "fake_mutation",
+    *,
+    mutation: bool = True,
+) -> CapabilityDescriptor:
     return CapabilityDescriptor(
         operation=operation,
         capability=f"test.{operation}",
@@ -41,7 +48,7 @@ def descriptor(operation: str = "fake_mutation") -> CapabilityDescriptor:
         output_schema={"type": "object", "additionalProperties": True},
         timeout_seconds=10,
         evidence_types=("test-result",),
-        mutation=True,
+        mutation=mutation,
     )
 
 
@@ -75,6 +82,41 @@ class Backend:
 
 
 class DomainPackConformanceTests(unittest.TestCase):
+    def test_log_bundle_stage_contracts_are_internal_and_artifact_bound(self) -> None:
+        operations = {
+            "log_bundle_index": ("openubmc-log-bundle", "openubmc-log-index"),
+            "log_bundle_query": ("openubmc-log-index", "openubmc-log-query"),
+            "log_bundle_export": ("openubmc-log-query", "openubmc-log-report"),
+        }
+        descriptors = tuple(
+            descriptor(operation, mutation=False) for operation in operations
+        )
+        registry = CapabilityRegistry(descriptors)
+        adapter = CallableDomainAdapter(lambda _context, _arguments: {})
+
+        registered = builtin_domain_packs(
+            registry,
+            {item.operation: adapter for item in descriptors},
+        )
+        packs = {pack.descriptor.operation: pack for pack in registered}
+
+        self.assertEqual(set(packs), set(operations))
+        for operation, (input_kind, output_kind) in operations.items():
+            with self.subTest(operation=operation):
+                contract = DEFAULT_OPERATION_CONTRACTS.require(operation)
+                self.assertEqual(contract.exposure, "internal")
+                self.assertEqual(contract.audience, "internal")
+                self.assertIs(packs[operation].effect_class, EffectClass.READ_ONLY)
+                self.assertEqual(
+                    packs[operation].artifact_contract.artifact_kind,
+                    input_kind,
+                )
+                self.assertTrue(packs[operation].artifact_contract.reference_required)
+                self.assertEqual(
+                    packs[operation].result_artifact_contract.artifact_kind,
+                    output_kind,
+                )
+
     def test_builtin_mutation_packs_own_artifact_phase_and_kind_metadata(self) -> None:
         descriptors = (descriptor("live_patch_run"), descriptor("upgrade_run"))
         registry = CapabilityRegistry(descriptors)

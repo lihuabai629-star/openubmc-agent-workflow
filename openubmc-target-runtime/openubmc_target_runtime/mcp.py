@@ -1496,6 +1496,30 @@ class OrchestratedMcpBackend:
                 + ", ".join(sorted(invalid_phase_adapters))
             )
 
+    @property
+    def artifact_store(self):
+        stores = {
+            id(store): store
+            for store in (
+                getattr(backend, "artifact_store", None)
+                for backend in self.tool_backends.values()
+            )
+            if store is not None
+        }
+        if len(stores) > 1:
+            raise ValueError("domain backends must share one Runtime ArtifactStore")
+        return next(iter(stores.values()), None)
+
+    def bind_artifact_store(self, artifact_store: LocalArtifactStore) -> None:
+        seen: set[int] = set()
+        for backend in self.tool_backends.values():
+            if id(backend) in seen:
+                continue
+            seen.add(id(backend))
+            binder = getattr(backend, "bind_artifact_store", None)
+            if callable(binder):
+                binder(artifact_store)
+
     def open_task(self, task_id: str) -> _OrchestratedMcpTask:
         return _OrchestratedMcpTask(
             task_id,
@@ -2074,6 +2098,7 @@ class RuntimeMcpService:
             Iterable[DomainPack],
         ]
         | None = None,
+        artifact_store: LocalArtifactStore | None = None,
         **registry_options: object,
     ) -> None:
         selected_context_mode = str(context_mode).strip().lower()
@@ -2128,8 +2153,15 @@ class RuntimeMcpService:
                     OrchestratedMcpBackend,
                 ),
                 domain_pack_extensions=domain_pack_extensions,
+                artifact_store=(
+                    artifact_store
+                    or getattr(backend, "artifact_store", None)
+                ),
             ),
         )
+        bind_artifact_store = getattr(backend, "bind_artifact_store", None)
+        if callable(bind_artifact_store):
+            bind_artifact_store(self._runtime.artifact_store)
         self._test = self._runtime._test
         self.replay_service = self._runtime.operator.replay_service()
         self.session_outcome_service = SessionOutcomeService(
@@ -2442,6 +2474,89 @@ class RuntimeMcpService:
                             },
                             "problem": {"type": "string"},
                             "extract": {"type": "boolean", "default": True},
+                        },
+                        "additionalProperties": True,
+                    },
+                }
+            )
+        artifact_ref_schema = {
+            "type": "object",
+            "required": [
+                "handle",
+                "digest",
+                "kind",
+                "size",
+                "provenance",
+                "retention_hint",
+                "target",
+                "run_id",
+            ],
+            "properties": {
+                "schema": {"type": "string"},
+                "handle": {"type": "string", "minLength": 1},
+                "digest": {"type": "string", "minLength": 64},
+                "kind": {"type": "string", "minLength": 1},
+                "size": {"type": "integer", "minimum": 0},
+                "provenance": {"type": "string", "minLength": 1},
+                "retention_hint": {"type": "string", "minLength": 1},
+                "version": {"type": "string"},
+                "target": {"type": "string", "minLength": 1},
+                "run_id": {"type": "string", "minLength": 1},
+            },
+            "additionalProperties": False,
+        }
+        if callable(getattr(self.backend, "log_bundle_index", None)):
+            definitions.append(
+                {
+                    "name": "log_bundle_index",
+                    "description": "Build a bounded local index for a verified Log Bundle ArtifactRef.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["artifact_ref"],
+                        "properties": {
+                            **orchestration_properties,
+                            "ip": common_target,
+                            "deadline": deadline,
+                            "artifact_ref": artifact_ref_schema,
+                        },
+                        "additionalProperties": True,
+                    },
+                }
+            )
+        if callable(getattr(self.backend, "log_bundle_query", None)):
+            definitions.append(
+                {
+                    "name": "log_bundle_query",
+                    "description": "Run one bounded redacted query over a verified Log Bundle index.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["artifact_ref", "problem"],
+                        "properties": {
+                            **orchestration_properties,
+                            "ip": common_target,
+                            "deadline": deadline,
+                            "artifact_ref": artifact_ref_schema,
+                            "problem": {"type": "string", "minLength": 1},
+                            "max_files": {"type": "integer", "minimum": 1, "maximum": 32},
+                            "max_lines": {"type": "integer", "minimum": 1, "maximum": 256},
+                        },
+                        "additionalProperties": True,
+                    },
+                }
+            )
+        if callable(getattr(self.backend, "log_bundle_export", None)):
+            definitions.append(
+                {
+                    "name": "log_bundle_export",
+                    "description": "Persist one redacted report from a verified Log Bundle query ArtifactRef.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["artifact_ref"],
+                        "properties": {
+                            **orchestration_properties,
+                            "ip": common_target,
+                            "deadline": deadline,
+                            "artifact_ref": artifact_ref_schema,
                         },
                         "additionalProperties": True,
                     },

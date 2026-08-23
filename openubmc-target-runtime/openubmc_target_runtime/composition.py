@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
 from .agent_gateway import AgentGateway, ResultProjector
-from .artifact_store import LocalArtifactStore
+from .artifact_store import LocalArtifactStore, SQLiteArtifactRepository
 from .capability import (
     CallableDomainAdapter,
     CapabilityDescriptor,
@@ -14,6 +14,7 @@ from .capability import (
     DomainExecutor,
     DomainPack,
     DomainReceipt,
+    EffectClass,
     RuntimeSDKContext,
 )
 from .catalog import OperationCatalog, OperationDescriptor
@@ -68,6 +69,7 @@ class RuntimeCompositionOptions:
     interface_profile: str = "agent"
     orchestrated_backend: bool = False
     domain_pack_extensions: DomainPackExtensions | None = None
+    artifact_store: LocalArtifactStore | None = None
 
 
 class _AgentRuntimePort:
@@ -114,8 +116,13 @@ class _AgentRuntimePort:
 
 
 class _RuntimeOperatorPort:
-    def __init__(self, context_runtime: ContextRuntime) -> None:
+    def __init__(
+        self,
+        context_runtime: ContextRuntime,
+        artifact_store: LocalArtifactStore,
+    ) -> None:
         self._context_runtime = context_runtime
+        self._artifact_store = artifact_store
 
     def replay_service(self):
         from .replay import CaseReplayService
@@ -123,10 +130,16 @@ class _RuntimeOperatorPort:
         return CaseReplayService(self._context_runtime.repository)
 
     def maintain(self) -> Mapping[str, object]:
-        return self._context_runtime.maintain()
+        return {
+            **dict(self._context_runtime.maintain()),
+            "artifact_gc": self._artifact_store.garbage_collect(),
+        }
 
     def status(self) -> Mapping[str, object]:
-        return self._context_runtime.status()
+        return {
+            **dict(self._context_runtime.status()),
+            "artifact_store": self._artifact_store.status(),
+        }
 
     def restore_domain_arguments(
         self,
@@ -289,6 +302,7 @@ class _RuntimeTransportPort:
         incident_metrics: IncidentMetrics,
         domain_runtime: RuntimeDomainExecution,
         context_runtime: ContextRuntime,
+        artifact_store: LocalArtifactStore,
         orchestrated_backend: bool,
     ) -> None:
         self._catalog = catalog
@@ -299,6 +313,7 @@ class _RuntimeTransportPort:
         self._incident_metrics = incident_metrics
         self._domain_runtime = domain_runtime
         self._context_runtime = context_runtime
+        self._artifact_store = artifact_store
         self._orchestrated_backend = orchestrated_backend
 
     def descriptors(self) -> tuple[object, ...]:
@@ -330,6 +345,7 @@ class _RuntimeTransportPort:
             "domain_packs": list(self._domain_executor.pack_descriptors()),
             "compatibility_telemetry": self._compatibility_telemetry.status(),
             "incident_metrics": self._incident_metrics.status(),
+            "artifact_store": self._artifact_store.status(),
         }
 
     def translate_compatibility(
@@ -464,6 +480,7 @@ class _RuntimeComposition:
     transport: _RuntimeTransportPort
     operator: _RuntimeOperatorPort
     lifecycle: _RuntimeLifecyclePort
+    artifact_store: LocalArtifactStore
     _test: _RuntimeTestSupport
 
 
@@ -589,6 +606,11 @@ def compose_runtime(
         capability_registry,
         transport_adapters,
         packs=domain_packs,
+        effect_classes=(
+            {"log_bundle_collect": EffectClass.IDEMPOTENT_MUTATION}
+            if "log_bundle_collect" in definition_name_set
+            else {}
+        ),
     )
     context_runtime = options.context_runtime or ContextRuntime(
         catalog,
@@ -610,7 +632,15 @@ def compose_runtime(
         )
     compatibility_telemetry = CompatibilityTelemetry(telemetry_repository)
     agent_projector = ResultProjector()
-    artifact_store = LocalArtifactStore()
+    if options.artifact_store is not None:
+        artifact_store = options.artifact_store
+    elif isinstance(base_context_repository, SQLiteRuntimeRepository):
+        artifact_store = LocalArtifactStore(
+            content_root=base_context_repository.path.parent / "artifacts",
+            repository=SQLiteArtifactRepository(base_context_repository.path),
+        )
+    else:
+        artifact_store = LocalArtifactStore()
     domain_runtime = RuntimeDomainExecution(
         catalog=catalog,
         capability_registry=capability_registry,
@@ -670,10 +700,12 @@ def compose_runtime(
             incident_metrics=incident_metrics,
             domain_runtime=domain_runtime,
             context_runtime=context_runtime,
+            artifact_store=artifact_store,
             orchestrated_backend=options.orchestrated_backend,
         ),
-        operator=_RuntimeOperatorPort(context_runtime),
+        operator=_RuntimeOperatorPort(context_runtime, artifact_store),
         lifecycle=lifecycle,
+        artifact_store=artifact_store,
         _test=_RuntimeTestSupport(
             catalog=catalog,
             capability_registry=capability_registry,

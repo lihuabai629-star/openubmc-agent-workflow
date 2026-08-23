@@ -137,12 +137,6 @@ class ScriptedSshTransport:
 class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
     def test_orchestrated_bundle_uses_credentials_file_without_manual_exports(self) -> None:
         redfish = CallbackRedfishTransport()
-        stage = runtime_pull_bundle.BundleStageResult(
-            remote_bundle_path="/tmp/dump.tar.gz",
-            local_bundle_path=Path("/tmp/dump.tar.gz"),
-            generation_ran=True,
-            transport="redfish",
-        )
         manager = {"UUID": "machine-a", "FirmwareVersion": "1.0"}
         runtime = target_runtime_adapter._load_runtime_module()
         backend = target_runtime_adapter.LogBundleMcpBackend(
@@ -150,6 +144,14 @@ class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
             ssh_transport_factory=lambda _args: ScriptedSshTransport([]),
         )
         with tempfile.TemporaryDirectory() as raw:
+            bundle_path = Path(raw) / "dump.tar.gz"
+            bundle_path.write_bytes(b"bundle")
+            stage = runtime_pull_bundle.BundleStageResult(
+                remote_bundle_path="/tmp/dump.tar.gz",
+                local_bundle_path=bundle_path,
+                generation_ran=True,
+                transport="redfish",
+            )
             credentials_path = Path(raw) / "credentials.env"
             credentials_path.write_text(
                 "REDFISH_USERNAME=file-user\n"
@@ -283,59 +285,62 @@ class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
 
     def test_mcp_log_bundle_tool_reuses_task_owned_session(self) -> None:
         redfish = CallbackRedfishTransport()
-        stage = runtime_pull_bundle.BundleStageResult(
-            remote_bundle_path="/tmp/dump.tar.gz",
-            local_bundle_path=Path("/tmp/dump.tar.gz"),
-            generation_ran=True,
-            transport="redfish",
-        )
         manager = {"UUID": "machine-a", "FirmwareVersion": "1.0"}
         runtime = target_runtime_adapter._load_runtime_module()
         backend = target_runtime_adapter.LogBundleMcpBackend(
             redfish_transport_factory=lambda _args: redfish,
             ssh_transport_factory=lambda _args: ScriptedSshTransport([]),
         )
-        with (
-            mock.patch.object(
-                runtime_pull_bundle,
-                "redfish_request_json",
-                return_value=manager,
-            ),
-            mock.patch.object(
-                runtime_pull_bundle,
-                "run_redfish_bundle_flow_with_session",
-                return_value=stage,
-            ),
-        ):
-            service = runtime.RuntimeMcpService(backend)
-            try:
-                names = [tool["name"] for tool in service.tool_definitions()]
-                first = service.call_tool(
-                    "log_bundle_collect",
-                    {
-                        "ip": "bmc.example",
-                        "transport": "redfish",
-                        "redfish_password": "redfish-secret",
-                        "extract": False,
-                        "deadline": 10,
-                    },
-                    task_id="codex-task",
-                    operation_id="bundle-1",
-                )
-                second = service.call_tool(
-                    "log_bundle_collect",
-                    {
-                        "ip": "bmc.example",
-                        "transport": "redfish",
-                        "redfish_password": "redfish-secret",
-                        "extract": False,
-                        "deadline": 10,
-                    },
-                    task_id="codex-task",
-                    operation_id="bundle-2",
-                )
-            finally:
-                service.close()
+        with tempfile.TemporaryDirectory() as raw:
+            bundle_path = Path(raw) / "dump.tar.gz"
+            bundle_path.write_bytes(b"bundle")
+            stage = runtime_pull_bundle.BundleStageResult(
+                remote_bundle_path="/tmp/dump.tar.gz",
+                local_bundle_path=bundle_path,
+                generation_ran=True,
+                transport="redfish",
+            )
+            with (
+                mock.patch.object(
+                    runtime_pull_bundle,
+                    "redfish_request_json",
+                    return_value=manager,
+                ),
+                mock.patch.object(
+                    runtime_pull_bundle,
+                    "run_redfish_bundle_flow_with_session",
+                    return_value=stage,
+                ),
+            ):
+                service = runtime.RuntimeMcpService(backend)
+                try:
+                    names = [tool["name"] for tool in service.tool_definitions()]
+                    first = service.call_tool(
+                        "log_bundle_collect",
+                        {
+                            "ip": "bmc.example",
+                            "transport": "redfish",
+                            "redfish_password": "redfish-secret",
+                            "extract": False,
+                            "deadline": 10,
+                        },
+                        task_id="codex-task",
+                        operation_id="bundle-1",
+                    )
+                    second = service.call_tool(
+                        "log_bundle_collect",
+                        {
+                            "ip": "bmc.example",
+                            "transport": "redfish",
+                            "redfish_password": "redfish-secret",
+                            "extract": False,
+                            "deadline": 10,
+                        },
+                        task_id="codex-task",
+                        operation_id="bundle-2",
+                    )
+                finally:
+                    service.close()
 
         self.assertEqual(names, ["observe", "execute"])
         self.assertEqual(first["result"]["transport"], "redfish")

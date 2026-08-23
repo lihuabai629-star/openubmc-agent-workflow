@@ -803,12 +803,14 @@ _LIVE_PATCH_MODULE = None
 _UPGRADE_MODULE = None
 
 
-def _load_log_analyzer_backend():
+def _load_log_analyzer_backend(*, artifact_store=None):
     """Load the sibling domain through its public Python integration surface."""
 
     global _LOG_ANALYZER_MODULE
     if _LOG_ANALYZER_MODULE is not None:
-        return _LOG_ANALYZER_MODULE.LogBundleMcpBackend()
+        return _LOG_ANALYZER_MODULE.LogBundleMcpBackend(
+            artifact_store=artifact_store
+        )
     skill_root = (
         Path(__file__).resolve().parents[2]
         / "openubmc-log-analyzer"
@@ -830,7 +832,7 @@ def _load_log_analyzer_backend():
             except ValueError:
                 pass
     _LOG_ANALYZER_MODULE = module
-    return module.LogBundleMcpBackend()
+    return module.LogBundleMcpBackend(artifact_store=artifact_store)
 
 
 def _load_public_domain_module(skill_name: str, package_name: str, module_name: str):
@@ -883,6 +885,12 @@ def create_service():
     state_dir = _runtime_state_dir()
     artifact_dir = state_dir / "artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_store = runtime.LocalArtifactStore(
+        content_root=artifact_dir / "content",
+        repository=runtime.SQLiteArtifactRepository(
+            state_dir / "artifact-lifecycle.sqlite3"
+        ),
+    )
     journal_store = runtime.MutationJournalStore(
         state_dir / "mutations",
         artifact_roots=(artifact_dir,),
@@ -897,9 +905,15 @@ def create_service():
         "debug_run": debug_backend,
         "debug_collect": debug_backend,
     }
-    log_backend = _load_log_analyzer_backend()
+    log_backend = _load_log_analyzer_backend(artifact_store=artifact_store)
     if log_backend is not None:
-        tool_backends["log_bundle_collect"] = log_backend
+        for operation in (
+            "log_bundle_collect",
+            "log_bundle_index",
+            "log_bundle_query",
+            "log_bundle_export",
+        ):
+            tool_backends[operation] = log_backend
     live_patch_backend = _load_live_patch_backend(journal_store)
     if live_patch_backend is not None:
         tool_backends["live_patch_run"] = live_patch_backend
@@ -939,6 +953,7 @@ def create_service():
         blob_repository=runtime.FilesystemBlobRepository(
             state_dir / "evidence-blobs"
         ),
+        artifact_store=artifact_store,
         envelope_max_bytes=_positive_env_int(
             "OPENUBMC_TARGET_RUNTIME_ENVELOPE_MAX_BYTES", 24 * 1024
         ),
