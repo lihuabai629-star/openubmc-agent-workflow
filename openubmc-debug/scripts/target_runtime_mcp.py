@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager
+from datetime import datetime
+import hashlib
 import importlib
 import math
 import os
@@ -216,7 +218,55 @@ def workflow_arguments_from_namespace(args) -> dict[str, object]:
     return result
 
 
-def _lease_key(args) -> tuple[object, ...]:
+def _credential_binding_fingerprint(
+    args,
+    credential_values: Mapping[str, str] | None,
+) -> str:
+    bindings = {
+        f"value:{key}": str(value)
+        for key, value in (credential_values or {}).items()
+    }
+    for field, fallback in (
+        ("ssh_user_env", "OPENUBMC_SSH_USER"),
+        ("ssh_password_env", "OPENUBMC_SSH_PASSWORD"),
+        ("telnet_user_env", "OPENUBMC_TELNET_USER"),
+        ("telnet_password_env", "OPENUBMC_TELNET_PASSWORD"),
+    ):
+        selector = str(getattr(args, field, "") or fallback).strip()
+        bindings[f"env:{selector}"] = os.environ.get(selector, "")
+    for field in ("ssh_password", "telnet_password"):
+        bindings[f"inline:{field}"] = str(getattr(args, field, ""))
+    identity_file = str(getattr(args, "ssh_identity_file", "")).strip()
+    if identity_file:
+        try:
+            bindings[f"identity:{identity_file}"] = hashlib.sha256(
+                Path(identity_file).read_bytes()
+            ).hexdigest()
+        except OSError:
+            bindings[f"identity:{identity_file}"] = "unavailable"
+    for selector in (
+        "OPENUBMC_CREDENTIALS_FILE",
+        "OPENUBMC_DEBUG_CREDENTIALS_FILE",
+    ):
+        path = os.environ.get(selector, "").strip()
+        if not path:
+            continue
+        try:
+            bindings[f"file:{selector}:{path}"] = hashlib.sha256(
+                Path(path).read_bytes()
+            ).hexdigest()
+        except OSError:
+            bindings[f"file:{selector}:{path}"] = "unavailable"
+    body = "\n".join(
+        f"{key}={bindings[key]}" for key in sorted(bindings)
+    ).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
+def _lease_key(
+    args,
+    credential_values: Mapping[str, str] | None = None,
+) -> tuple[object, ...]:
     host_key_policy = str(
         getattr(args, "ssh_host_key_policy", "")
         or os.environ.get(SSH_HOST_KEY_POLICY_ENV, "")
@@ -233,17 +283,56 @@ def _lease_key(args) -> tuple[object, ...]:
         str(args.ssh_user),
         str(args.ssh_user_env),
         str(args.ssh_password_env),
-        str(getattr(args, "ssh_password", "")),
         str(args.ssh_identity_file),
         str(args.telnet_user),
         str(args.telnet_user_env),
         str(args.telnet_password_env),
-        str(getattr(args, "telnet_password", "")),
         host_key_policy,
         known_hosts_file,
         bool(getattr(args, "allow_insecure_host_key", False)),
         os.environ.get("OPENUBMC_CREDENTIALS_FILE", ""),
         os.environ.get("OPENUBMC_DEBUG_CREDENTIALS_FILE", ""),
+        _credential_binding_fingerprint(args, credential_values),
+    )
+
+
+def _observation_instant(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _result_window(value: object) -> tuple[str, str]:
+    result = value if isinstance(value, Mapping) else {}
+    payload = result.get("payload")
+    payload = payload if isinstance(payload, Mapping) else {}
+    anchor = str(payload.get("observed_at", "")).strip()
+    started = str(result.get("started_at") or anchor).strip()
+    completed = str(result.get("completed_at") or anchor or started).strip()
+    return started, completed
+
+
+def _attempt_window(
+    selector_facts: list[dict[str, object]],
+) -> tuple[str, str]:
+    starts = [
+        (instant, str(fact.get("started_at", "")))
+        for fact in selector_facts
+        if (instant := _observation_instant(fact.get("started_at"))) is not None
+    ]
+    completions = [
+        (instant, str(fact.get("completed_at", "")))
+        for fact in selector_facts
+        if (instant := _observation_instant(fact.get("completed_at"))) is not None
+    ]
+    return (
+        min(starts, key=lambda item: item[0])[1] if starts else "",
+        max(completions, key=lambda item: item[0])[1] if completions else "",
     )
 
 
@@ -275,10 +364,18 @@ class DebugMcpTask:
         credential_values: Mapping[str, str] | None = None,
         pin: bool = False,
     ):
-        key = _lease_key(args)
+        key = _lease_key(args, credential_values)
         victim = None
         with self._lock:
             existing = self._leases.get(key)
+            if existing is not None:
+                if bool(
+                    getattr(existing, "closed", False)
+                    or getattr(existing, "_closed", False)
+                ):
+                    self._leases.pop(key, None)
+                    self._active_lease_keys.pop(key, None)
+                    existing = None
             if existing is not None:
                 self._leases.move_to_end(key)
                 if (
@@ -367,7 +464,7 @@ class DebugMcpTask:
         *,
         credential_values: Mapping[str, str] | None = None,
     ):
-        key = _lease_key(args)
+        key = _lease_key(args, credential_values)
         lease = self._lease_for(
             args,
             credential_values=credential_values,
@@ -507,6 +604,12 @@ class DebugMcpBackend:
         context.raise_if_stopped()
         bounded = dict(arguments)
         bounded.pop("_context_authoritative", None)
+        selectors = bounded.pop("selectors", [])
+        if not isinstance(selectors, list) or not all(
+            isinstance(item, Mapping) for item in selectors
+        ):
+            raise TypeError("selectors must be an array of objects")
+        normalized_selectors = [dict(item) for item in selectors]
         capability_names = bounded.pop("capability_names", [])
         if not isinstance(capability_names, list) or not all(
             isinstance(item, str) for item in capability_names
@@ -520,6 +623,22 @@ class DebugMcpBackend:
             raise TypeError("prior_observation must be an object")
         if prior_observation is not None and not assured:
             raise ValueError("prior_observation is only valid for assured upgrade")
+        declared_capability_names = [
+            str(name)
+            for selector in normalized_selectors
+            if selector.get("kind") == "capability"
+            for name in selector.get("names", [])
+        ]
+        declared_mdb_queries = [
+            str(query)
+            for selector in normalized_selectors
+            if selector.get("kind") == "mdb"
+            for query in selector.get("queries", [])
+        ]
+        if declared_capability_names != capability_names:
+            raise ValueError("capability selector scope does not match Runtime arguments")
+        if declared_mdb_queries != list(bounded.get("mdb_queries", [])):
+            raise ValueError("MDB selector scope does not match Runtime arguments")
         credential_values = bounded.pop("_credential_values", None)
         minimum_target_epoch = bounded.pop("_minimum_target_epoch", 0)
         preflight_checks: set[str] = set()
@@ -537,6 +656,7 @@ class DebugMcpBackend:
         if bounded.get("mdb_queries"):
             preflight_checks.update({"SSH", "MDBCTL"})
         bounded["mdb_only"] = preflight_checks <= {"SSH", "MDBCTL"}
+        bounded["mdb_concurrency"] = "auto"
         bounded["skip_telnet"] = "TELNET" not in preflight_checks
         bounded["no_freshness"] = True
         bounded["no_source_correlation"] = True
@@ -627,6 +747,81 @@ class DebugMcpBackend:
             if isinstance(preflight_payload, Mapping)
             else ""
         )
+        selector_facts: list[dict[str, object]] = []
+        mdb_index = 0
+        runtime = _load_runtime_module()
+        capability_started, capability_completed = _result_window(
+            preflight_end or preflight
+        )
+        for selector in normalized_selectors:
+            selector_id = str(selector.get("id", ""))
+            kind = str(selector.get("kind", ""))
+            if not selector_id or kind not in {"capability", "mdb"}:
+                raise ValueError("selector identity and kind must be explicit")
+            if kind == "capability":
+                names = selector.get("names", [])
+                observed = isinstance(names, list) and runtime.capability_selector_complete(
+                    capabilities,
+                    [str(name) for name in names],
+                )
+                selector_facts.append(
+                    {
+                        "selector_id": selector_id,
+                        "kind": kind,
+                        "started_at": capability_started,
+                        "completed_at": capability_completed,
+                        "status": "observed" if observed else "missing",
+                    }
+                )
+                continue
+            queries = selector.get("queries", [])
+            children: list[Mapping[str, object]] = []
+            for _query in queries if isinstance(queries, list) else []:
+                name = "mdbctl" if mdb_index == 0 else f"mdbctl_{mdb_index + 1}"
+                mdb_index += 1
+                child = mdb_results.get(name)
+                if isinstance(child, Mapping):
+                    children.append(child)
+            windows = [_result_window(child) for child in children]
+            starts = [
+                (instant, value)
+                for value, _completed in windows
+                if (instant := _observation_instant(value)) is not None
+            ]
+            completions = [
+                (instant, value)
+                for _started, value in windows
+                if (instant := _observation_instant(value)) is not None
+            ]
+            expected_queries = len(queries) if isinstance(queries, list) else 0
+            selector_facts.append(
+                {
+                    "selector_id": selector_id,
+                    "kind": kind,
+                    "started_at": (
+                        min(starts, key=lambda item: item[0])[1]
+                        if starts
+                        else observed_at
+                        if len(children) == expected_queries and expected_queries > 0
+                        else ""
+                    ),
+                    "completed_at": (
+                        max(completions, key=lambda item: item[0])[1]
+                        if completions
+                        else observed_at
+                        if len(children) == expected_queries and expected_queries > 0
+                        else ""
+                    ),
+                    "status": (
+                        "observed"
+                        if len(children) == expected_queries
+                        and expected_queries > 0
+                        and all(child.get("ok") is True for child in children)
+                        else "missing"
+                    ),
+                }
+            )
+        attempt_started, attempt_completed = _attempt_window(selector_facts)
         return {
             "schema_version": "openubmc-debug.v1",
             "tool": "agent_observe",
@@ -637,6 +832,11 @@ class DebugMcpBackend:
             ),
             "code": str(freshness_anchor.get("code", "ok")),
             "returncode": int(freshness_anchor.get("returncode", 0)),
+            "observation_timing": {
+                "started_at": attempt_started,
+                "completed_at": attempt_completed,
+                "selectors": selector_facts,
+            },
             "result": {
                 "capabilities": capabilities,
                 "preflight_start": preflight,

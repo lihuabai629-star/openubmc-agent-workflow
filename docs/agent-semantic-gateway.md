@@ -67,6 +67,12 @@ Agent preflight step: the internal Adapter performs capability discovery and the
 the same observation. Callers split a query only after an explicit incomplete Receipt requests a
 narrower scope.
 
+Selector execution is a Runtime-owned bounded plan. Selector IDs and declaration order remain
+stable through the Domain Adapter, persisted source, and Receipt. Independent MDB reads may overlap
+on one target-scoped lease, with a Runtime maximum of four active reads; the Agent cannot select an
+unbounded policy. Lease reuse is bound to target and credential identity, while target epoch changes
+invalidate transport sessions before another read.
+
 Freshness is a time property. The Agent Interface currently accepts only live evidence with
 `max_age_seconds=0`; the old `freshness` and `log-file` profiles are rejected because profiles
 describe evidence scope, not evidence age.
@@ -74,9 +80,14 @@ describe evidence scope, not evidence age.
 The Runtime owns one automatic observation policy. It first performs the exact read and upgrades to
 a scope-preserving assurance pass only when coverage contains `not_checked` values or freshness
 cannot be established. The Adapter receives the prior observation and can reuse already collected
-MDB values. If no precise assurance Adapter exists, the Runtime retains the bounded result and its
-explicit gaps. Legacy `assurance` input remains accepted during migration but is normalized to this
-single policy and is not returned in the Agent projection.
+MDB values. Each attempt records its start and completion plus the same facts for every selector.
+The Runtime classifies the selected facts as `coherent`, `partial`, or `inconsistent` using a fixed
+five-second completion-skew window. Assurance replaces the fast result only when its classification
+improves, or when selector coverage improves without degrading the classification; otherwise the
+Runtime retains the fast result with an explicit gap. An Adapter that omits selector timing cannot
+produce a coherent reusable snapshot. Legacy
+`assurance` input remains accepted during migration but is normalized to this single policy and is
+not returned in the Agent projection.
 
 An `ObservationReceipt` contains semantic values, tri-state capability results
 (`available | unavailable | not_checked`), coverage, observation time, target identity when
@@ -84,8 +95,10 @@ available, grounded claims, and receipt-local evidence references. It does not o
 generate a Closeout. The model-visible document is limited to 4 KiB; a result that cannot fit is
 returned as an incomplete receipt requesting narrower selectors.
 
-The redacted raw observation is persisted in the Runtime Core as a content-addressed source. A
-complete Receipt carries an `ObservationRef` and can seed `execute(kind=start)`. The Runtime
+The redacted raw observation and its selector timing are persisted in the Runtime Core as a
+content-addressed source. Partial evidence remains available through receipt-local source links,
+but only a complete, temporally coherent Receipt carries an `ObservationRef` and can seed
+`execute(kind=start)`. The Runtime
 reconstructs the observation, verifies its digest and target scope, and then uses it as the first
 diagnostic evidence, so it does not recollect the same evidence and remains reusable after a
 process restart. Validation also binds the persisted scope digest, observation time, target

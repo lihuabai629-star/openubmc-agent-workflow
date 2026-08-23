@@ -20,6 +20,7 @@ from .semantic_runtime import (
     decode_run_command,
     fingerprint,
 )
+from .observation import observation_consistency
 
 
 AGENT_GATEWAY_SCHEMA = f"{RUNTIME_API_VERSION}/agent-gateway-v1"
@@ -67,6 +68,57 @@ def _bounded_text(value: object, max_bytes: int) -> str:
     if len(encoded) <= max_bytes:
         return text
     return encoded[: max_bytes - 3].decode("utf-8", errors="ignore") + "..."
+
+
+def _selector_identity_scope(value: object) -> dict[str, object]:
+    scope = _mapping(value)
+    raw_selectors = scope.get("selectors", [])
+    selectors = [
+        {
+            "id": _bounded_text(_mapping(item).get("id"), 64),
+            "kind": _bounded_text(_mapping(item).get("kind"), 16),
+        }
+        for item in (raw_selectors if isinstance(raw_selectors, list) else [])[:16]
+    ]
+    return {
+        "target": _bounded_text(scope.get("target"), 512),
+        "selectors": selectors,
+        "freshness": _compact_value(
+            scope.get("freshness", {}),
+            max_depth=2,
+            max_items=4,
+            max_string=64,
+        ),
+    }
+
+
+def _selector_identity_consistency(
+    value: object,
+    *,
+    include_selectors: bool = True,
+) -> dict[str, object]:
+    consistency = _mapping(value)
+    raw_selectors = consistency.get("selectors", [])
+    result: dict[str, object] = {
+        "classification": _bounded_text(
+            consistency.get("classification"), 32
+        ),
+        "reusable": False,
+    }
+    if include_selectors:
+        result["selectors"] = [
+            {
+                "selector_id": _bounded_text(
+                    _mapping(item).get("selector_id"), 64
+                ),
+                "kind": _bounded_text(_mapping(item).get("kind"), 16),
+                "status": _bounded_text(_mapping(item).get("status"), 16),
+            }
+            for item in (
+                raw_selectors if isinstance(raw_selectors, list) else []
+            )[:16]
+        ]
+    return result
 
 
 def _compact_value(
@@ -201,6 +253,7 @@ class CostGovernor:
             return result
         compacted = dict(result)
         compacted["content_compacted"] = True
+        compacted.pop("observation_ref", None)
         compacted["results"] = _compact_value(
             result.get("results", {}), max_depth=3, max_items=10, max_string=192
         )
@@ -218,13 +271,7 @@ class CostGovernor:
             "schema": OBSERVATION_RECEIPT_SCHEMA,
             "receipt_id": _bounded_text(result.get("receipt_id"), 128),
             "status": "incomplete",
-            "scope": result.get("scope", {}),
-            "observation_ref": _compact_value(
-                result.get("observation_ref", {}),
-                max_depth=2,
-                max_items=8,
-                max_string=128,
-            ),
+            "scope": _selector_identity_scope(result.get("scope", {})),
             "freshness": _compact_value(
                 result.get("freshness", {}),
                 max_depth=2,
@@ -238,6 +285,10 @@ class CostGovernor:
                 max_string=128,
             ),
             "results": {},
+            "consistency": _selector_identity_consistency(
+                result.get("consistency", {}),
+                include_selectors=False,
+            ),
             "coverage": {
                 "requested": coverage.get("requested", 0),
                 "available": 0,
@@ -252,21 +303,15 @@ class CostGovernor:
         }
         if len(_json_bytes(fallback)) <= OBSERVATION_MAX_BYTES:
             return fallback
-        return {
+        minimal = {
             "schema": OBSERVATION_RECEIPT_SCHEMA,
             "receipt_id": _bounded_text(result.get("receipt_id"), 128),
             "status": "incomplete",
-            "scope": {
-                "fingerprint": _fingerprint(result.get("scope", {})),
-                "content_compacted": True,
-            },
-            "observation_ref": _compact_value(
-                result.get("observation_ref", {}),
-                max_depth=2,
-                max_items=8,
-                max_string=128,
-            ),
+            "scope": _selector_identity_scope(result.get("scope", {})),
             "freshness": {"status": "unknown"},
+            "consistency": _selector_identity_consistency(
+                result.get("consistency", {})
+            ),
             "target": {},
             "results": {},
             "coverage": {
@@ -278,6 +323,33 @@ class CostGovernor:
             },
             "claims": [],
             "evidence": [],
+            "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
+            "content_compacted": True,
+        }
+        if len(_json_bytes(minimal)) <= OBSERVATION_MAX_BYTES:
+            return minimal
+        scope = _selector_identity_scope(result.get("scope", {}))
+        return {
+            "schema": OBSERVATION_RECEIPT_SCHEMA,
+            "receipt_id": _bounded_text(result.get("receipt_id"), 128),
+            "status": "incomplete",
+            "scope": {
+                "selectors": [
+                    {"id": selector["id"]}
+                    for selector in scope["selectors"]
+                ]
+            },
+            "consistency": _selector_identity_consistency(
+                result.get("consistency", {}),
+                include_selectors=False,
+            ),
+            "coverage": {
+                "requested": coverage.get("requested", 0),
+                "available": 0,
+                "unavailable": 0,
+                "not_checked": coverage.get("requested", 0),
+                "complete": False,
+            },
             "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
             "content_compacted": True,
         }
@@ -547,11 +619,13 @@ class ResultProjector:
             or _text(result.get("completed_at"))
             or _text(result.get("started_at"))
         )
+        consistency = observation_consistency(raw)
         target_detail = self._target_identity(result)
+        source_reusable = source is not None and source.get("reusable", True) is True
         observation_ref = (
             ObservationRef.from_public_dict(source).to_public_dict()
-            if source
-            else {}
+            if source and source_reusable
+            else None
         )
         receipt_seed = {
             "scope": scope.to_public_dict(),
@@ -583,31 +657,46 @@ class ResultProjector:
         )
         if counts["not_checked"]:
             gaps.append(f"{counts['not_checked']} requested observations were not checked")
+        consistency_gaps = consistency.get("gaps", [])
+        if isinstance(consistency_gaps, list):
+            gaps.extend(_bounded_text(item, 256) for item in consistency_gaps[:8])
+        temporally_coherent = consistency.get("classification") == "coherent"
+        if not temporally_coherent:
+            for claim in claims:
+                claim["status"] = "partial"
         document = {
             "schema": OBSERVATION_RECEIPT_SCHEMA,
             "receipt_id": receipt_id,
-            "status": "complete" if counts["not_checked"] == 0 else "incomplete",
-            "observation_ref": observation_ref,
+            "status": (
+                "complete"
+                if counts["not_checked"] == 0 and temporally_coherent
+                else "incomplete"
+            ),
             "scope": scope.to_public_dict(),
             "freshness": {
                 "mode": scope.freshness_mode,
                 "max_age_seconds": scope.max_age_seconds,
                 "observed_at": observed_at,
-                "status": "live" if observed_at else "unknown",
+                "status": (
+                    "live" if observed_at and temporally_coherent else "unknown"
+                ),
             },
             "target": {"selector": scope.target, "identity": target_detail},
             "results": observations,
+            "consistency": consistency,
             "coverage": {
                 "requested": requested,
                 "available": counts["available"],
                 "unavailable": counts["unavailable"],
                 "not_checked": counts["not_checked"],
-                "complete": counts["not_checked"] == 0,
+                "complete": counts["not_checked"] == 0 and temporally_coherent,
             },
             "claims": claims,
             "evidence": evidence,
-            "gaps": gaps,
+            "gaps": list(dict.fromkeys(gaps))[:16],
         }
+        if observation_ref is not None:
+            document["observation_ref"] = observation_ref
         return CostGovernor.observation(document)
 
     def turn(self, turn: RunTurn) -> dict[str, object]:
@@ -641,11 +730,14 @@ class AgentGateway:
             task_id=task_id,
             operation_id=operation_id,
         )
+        source = dict(result.source)
+        if not source and result.observation_ref is not None:
+            source = result.observation_ref.to_source_dict()
         return self.projector.observation(
             result.raw,
             result.query,
             assurance=result.assurance,
-            source=result.observation_ref.to_source_dict(),
+            source=source or None,
         )
 
     def execute(

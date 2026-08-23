@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -65,6 +67,205 @@ class FakeLease:
 
 
 class RuntimeMcpBackendTests(unittest.TestCase):
+    def test_agent_observe_bounds_parallel_selectors_and_reuses_one_lease(self) -> None:
+        module = load_script("target_runtime_mcp")
+        runtime = module._load_runtime_module()
+        opened: list[FakeLease] = []
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def open_lease(**kwargs):
+            lease = FakeLease(str(kwargs["task_id"]))
+            opened.append(lease)
+            return lease
+
+        def runner(name, command, _environment, _timeout, **_kwargs):
+            nonlocal active, peak
+            if name == "preflight_start":
+                return {
+                    "name": name,
+                    "ok": True,
+                    "code": "ok",
+                    "returncode": 0,
+                    "started_at": "2026-08-23T00:00:00Z",
+                    "completed_at": "2026-08-23T00:00:00Z",
+                    "payload": {
+                        "observed_at": "2026-08-23T00:00:00Z",
+                        "result": {
+                            "checks": {
+                                "SSH": {"ok": True},
+                                "MDBCTL": {"ok": True},
+                            }
+                        },
+                    },
+                }
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                time.sleep(0.03)
+                return {
+                    "name": name,
+                    "ok": True,
+                    "code": "ok",
+                    "returncode": 0,
+                    "started_at": "2026-08-23T00:00:01Z",
+                    "completed_at": "2026-08-23T00:00:02Z",
+                    "payload": {"result": {"stdout_lines": [command[-1]]}},
+                }
+            finally:
+                with lock:
+                    active -= 1
+
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "secret", "port": 22},
+                    "telnet": {"user": "root", "password": "secret", "port": 23},
+                },
+            ),
+            mock.patch.object(module, "open_debug_runtime_lease", open_lease),
+            mock.patch.object(
+                module.workflow_remote,
+                "build_typed_debug_tool_runner",
+                return_value=runner,
+            ),
+        ):
+            service = runtime.RuntimeMcpService(
+                runtime.OrchestratedMcpBackend(
+                    {
+                        "debug_collect": module.DebugMcpBackend(),
+                        "debug_run": module.DebugMcpBackend(),
+                    }
+                )
+            )
+            try:
+                receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "mdb-a",
+                                "kind": "mdb",
+                                "queries": [
+                                    "lsprop Object0",
+                                    "lsprop Object1",
+                                    "lsprop Object2",
+                                ],
+                            },
+                            {
+                                "id": "mdb-b",
+                                "kind": "mdb",
+                                "queries": [
+                                    "lsprop Object3",
+                                    "lsprop Object4",
+                                    "lsprop Object5",
+                                ],
+                            },
+                        ],
+                    },
+                    task_id="bounded-selector-task",
+                    operation_id="bounded-selector-operation",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(len(opened), 1)
+        self.assertGreaterEqual(peak, 2)
+        self.assertLessEqual(peak, 4)
+        self.assertEqual(list(receipt["results"]), ["mdb-a", "mdb-b"])
+        self.assertEqual(receipt["consistency"]["classification"], "coherent")
+        self.assertEqual(
+            [item["selector_id"] for item in receipt["consistency"]["selectors"]],
+            ["mdb-a", "mdb-b"],
+        )
+
+    def test_failed_mdb_selector_is_partial_and_not_reusable(self) -> None:
+        module = load_script("target_runtime_mcp")
+        runtime = module._load_runtime_module()
+
+        def runner(name, _command, _environment, _timeout, **_kwargs):
+            if name == "preflight_start":
+                return {
+                    "name": name,
+                    "ok": True,
+                    "code": "ok",
+                    "returncode": 0,
+                    "started_at": "2026-08-23T00:00:00Z",
+                    "completed_at": "2026-08-23T00:00:00Z",
+                    "payload": {
+                        "observed_at": "2026-08-23T00:00:00Z",
+                        "result": {
+                            "checks": {
+                                "SSH": {"ok": True},
+                                "MDBCTL": {"ok": True},
+                            }
+                        },
+                    },
+                }
+            return {
+                "name": name,
+                "ok": False,
+                "code": "timeout",
+                "returncode": 124,
+                "started_at": "2026-08-23T00:00:01Z",
+                "completed_at": "2026-08-23T00:00:02Z",
+                "payload": None,
+                "error": "query timed out",
+            }
+
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "secret", "port": 22},
+                    "telnet": {"user": "root", "password": "secret", "port": 23},
+                },
+            ),
+            mock.patch.object(
+                module,
+                "open_debug_runtime_lease",
+                return_value=FakeLease("failed-selector-task"),
+            ),
+            mock.patch.object(
+                module.workflow_remote,
+                "build_typed_debug_tool_runner",
+                return_value=runner,
+            ),
+        ):
+            service = runtime.RuntimeMcpService(module.DebugMcpBackend())
+            try:
+                receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "failed-mdb",
+                                "kind": "mdb",
+                                "queries": ["lsprop Object0"],
+                            }
+                        ],
+                    },
+                    task_id="failed-selector-task",
+                    operation_id="failed-selector-operation",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(receipt["consistency"]["classification"], "partial")
+        self.assertNotIn("observation_ref", receipt)
+        self.assertEqual(
+            receipt["results"]["failed-mdb"]["values"][0]["status"],
+            "unavailable",
+        )
+
     def test_agent_observe_runs_one_preflight_and_only_exact_mdb_queries(self) -> None:
         module = load_script("target_runtime_mcp")
         runtime = module._load_runtime_module()
@@ -1105,6 +1306,73 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 ("accept-new", "/tmp/known-hosts-b", False),
             ],
         )
+
+    def test_debug_lease_is_not_reused_after_credentials_change_or_close(self) -> None:
+        module = load_script("target_runtime_mcp")
+        task = module.DebugMcpTask("credential-bound-lease-task")
+        opened: list[FakeLease] = []
+
+        def open_lease(**kwargs):
+            lease = FakeLease(str(kwargs["task_id"]))
+            opened.append(lease)
+            return lease
+
+        args = module.workflow_remote.parse_args(
+            ["--ip", "target.example", "--json"]
+        )
+        args.ssh_host_key_policy = "disabled"
+        args.ssh_known_hosts_file = ""
+        args.allow_insecure_host_key = False
+        args.ssh_password_env = "OPENUBMC_ROTATING_TEST_PASSWORD"
+        credentials_a = {
+            "ssh_password": "secret-a",
+            "telnet_password": "telnet-a",
+        }
+        credentials_b = {
+            "ssh_password": "secret-b",
+            "telnet_password": "telnet-b",
+        }
+
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "secret", "port": 22},
+                    "telnet": {"user": "root", "password": "secret", "port": 23},
+                },
+            ),
+            mock.patch.object(module, "open_debug_runtime_lease", open_lease),
+        ):
+            first = task.lease_for(args, credential_values=credentials_a)
+            same = task.lease_for(args, credential_values=credentials_a)
+            changed = task.lease_for(args, credential_values=credentials_b)
+            changed.closed = True
+            reopened = task.lease_for(args, credential_values=credentials_b)
+            with mock.patch.dict(
+                os.environ,
+                {"OPENUBMC_ROTATING_TEST_PASSWORD": "environment-secret-a"},
+            ):
+                environment_first = task.lease_for(args)
+            with mock.patch.dict(
+                os.environ,
+                {"OPENUBMC_ROTATING_TEST_PASSWORD": "environment-secret-b"},
+            ):
+                environment_changed = task.lease_for(args)
+            with tempfile.TemporaryDirectory() as raw:
+                identity = Path(raw) / "id_ed25519"
+                identity.write_text("private-key-a", encoding="utf-8")
+                args.ssh_identity_file = str(identity)
+                identity_first = task.lease_for(args)
+                identity.write_text("private-key-b", encoding="utf-8")
+                identity_changed = task.lease_for(args)
+
+        self.assertIs(first, same)
+        self.assertIsNot(first, changed)
+        self.assertIsNot(changed, reopened)
+        self.assertIsNot(environment_first, environment_changed)
+        self.assertIsNot(identity_first, identity_changed)
+        self.assertEqual(len(opened), 7)
 
     def test_debug_lease_cache_is_bounded_without_limiting_target_count(self) -> None:
         module = load_script("target_runtime_mcp")

@@ -266,6 +266,7 @@ from .semantic_runtime import (
     SubmitGate,
     decode_run_command,
 )
+from .observation import capability_selector_complete
 from .task_context import (
     TASK_CONTEXT_SCHEMA,
     TASK_CONTEXT_VERSION,
@@ -377,6 +378,7 @@ from .telnet import (
 
 __all__ = [
     "RUNTIME_API_VERSION",
+    "capability_selector_complete",
     "DELIVERY_RECORD_SCHEMA",
     "ArtifactIdentity",
     "DeliveryOutcome",

@@ -47,6 +47,7 @@ from .run_store import (
     upcast_run_events,
 )
 from .semantic_runtime import GateConflict
+from .observation import observation_consistency, observation_reusable
 from .workflow import (
     DEFAULT_PHASE_REGISTRY,
     DEFAULT_WORKFLOW_DEFINITIONS,
@@ -5725,6 +5726,8 @@ class ContextRuntime:
         ).strip()
         persisted_at = self.clock()
         scope_digest = _fingerprint(_sanitize(scope))
+        consistency = observation_consistency(raw)
+        reusable = observation_reusable(raw)
         document = {
             "schema": OBSERVATION_SOURCE_SCHEMA,
             "scope": _sanitize(scope),
@@ -5732,8 +5735,14 @@ class ContextRuntime:
             "assurance": str(assurance),
             "target": str(scope.get("target", "")),
             "observed_at": observed_at,
+            "observation_timing": _sanitize(consistency),
+            "reusable": reusable,
             "persisted_at": persisted_at,
-            "fresh_until": persisted_at + OBSERVATION_REUSE_MAX_AGE_SECONDS,
+            "fresh_until": (
+                persisted_at + OBSERVATION_REUSE_MAX_AGE_SECONDS
+                if reusable
+                else persisted_at
+            ),
             "target_fingerprint": str(target_detail.get("fingerprint", "")),
             "target_epoch": int(epochs.get("target_epoch", 0) or 0),
             "target_identity": _sanitize(identity),
@@ -5758,6 +5767,7 @@ class ContextRuntime:
             "fresh_until": document["fresh_until"],
             "target_fingerprint": document["target_fingerprint"],
             "target_epoch": document["target_epoch"],
+            "reusable": reusable,
         }
 
     def load_observation(
