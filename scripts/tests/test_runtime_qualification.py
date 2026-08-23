@@ -283,6 +283,34 @@ class RuntimeQualificationTests(unittest.TestCase):
         )
         self.assertIn("threshold", stability_result["verification_error"])
 
+    def test_inconsistent_soak_growth_series_blocks_promotion(self) -> None:
+        def inconsistent_soak(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            soak = report["scenarios"]["restart_soak"]
+            soak["cumulative_events_by_cycle"] = [1, 1, 1, 704]
+            soak["storage_bytes_by_cycle"] = [4000, 1000, 3000, 4000]
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            WORKSPACE,
+            executor=inconsistent_soak,
+            source_commit=SOURCE_COMMIT,
+        )
+
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertFalse(report["promotable"])
+        self.assertIn("soak", stability_result["verification_error"])
+
     def test_stability_report_with_wrong_environment_fingerprint_blocks_promotion(
         self,
     ) -> None:

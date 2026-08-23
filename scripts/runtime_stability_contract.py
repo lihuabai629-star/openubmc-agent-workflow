@@ -269,11 +269,23 @@ def verify_runtime_stability_report(
         _integer(value, "soak cumulative events", minimum=1)
         for value in cumulative_events
     ]
-    monotonic_events = normalized_cumulative == sorted(normalized_cumulative)
-    bounded_storage = all(
+    normalized_cycle_events = [
+        _integer(value, "soak cycle events", minimum=1)
+        for value in events_per_cycle
+    ]
+    expected_soak_cumulative: list[int] = []
+    running_soak_events = 0
+    for value in normalized_cycle_events:
+        running_soak_events += value
+        expected_soak_cumulative.append(running_soak_events)
+    normalized_soak_storage = [
         _integer(value, "soak cycle storage", minimum=1)
-        <= MAX_SOAK_STORAGE_BYTES
         for value in storage_by_cycle
+    ]
+    soak_storage_bytes = _integer(
+        soak.get("storage_bytes"),
+        "soak storage bytes",
+        minimum=1,
     )
     if not all(
         (
@@ -303,13 +315,16 @@ def verify_runtime_stability_report(
             _integer(soak.get("max_events_per_run"), "soak max events per run")
             <= MAX_EVENTS_PER_RUN,
             total_events <= expected_runs * MAX_EVENTS_PER_RUN,
-            sum(events_per_cycle) == total_events,
-            normalized_cumulative[-1] == total_events,
+            sum(normalized_cycle_events) == total_events,
+            normalized_cumulative == expected_soak_cumulative,
             bounded_cycle_events,
-            monotonic_events,
-            bounded_storage,
-            _integer(soak.get("storage_bytes"), "soak storage bytes", minimum=1)
-            <= MAX_SOAK_STORAGE_BYTES,
+            normalized_soak_storage == sorted(normalized_soak_storage),
+            normalized_soak_storage[-1] == soak_storage_bytes,
+            all(
+                value <= MAX_SOAK_STORAGE_BYTES
+                for value in normalized_soak_storage
+            ),
+            soak_storage_bytes <= MAX_SOAK_STORAGE_BYTES,
             _integer(
                 soak.get("peak_rss_bytes"),
                 "soak peak RSS",
