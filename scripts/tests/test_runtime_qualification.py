@@ -342,6 +342,35 @@ class RuntimeQualificationTests(unittest.TestCase):
         self.assertFalse(report["promotable"])
         self.assertIn("environment fingerprint", stability_result["verification_error"])
 
+    def test_stability_report_rejects_non_string_environment_fields(self) -> None:
+        def malformed_environment(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            report["environment"]["platform"] = None
+            report["environment_fingerprint"] = qualification.evidence_fingerprint(
+                report["environment"]
+            )
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            WORKSPACE,
+            executor=malformed_environment,
+            source_commit=SOURCE_COMMIT,
+        )
+
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertFalse(report["promotable"])
+        self.assertIn("environment is incomplete", stability_result["verification_error"])
+
     def test_capacity_rss_over_the_hard_threshold_blocks_promotion(self) -> None:
         def over_rss(command, *, cwd):
             del cwd

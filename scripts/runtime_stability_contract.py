@@ -87,7 +87,8 @@ def verify_runtime_stability_report(
         raise ValueError("Runtime stability source commit does not match")
     environment = report.get("environment")
     if not isinstance(environment, Mapping) or any(
-        not str(environment.get(name, "")).strip()
+        not isinstance(environment.get(name), str)
+        or not environment[name].strip()
         for name in ("python", "python_implementation", "platform")
     ):
         raise ValueError("Runtime stability environment is incomplete")
