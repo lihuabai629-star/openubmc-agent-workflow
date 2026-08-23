@@ -82,9 +82,10 @@ a scope-preserving assurance pass only when coverage contains `not_checked` valu
 cannot be established. The Adapter receives the prior observation and can reuse already collected
 MDB values. Each attempt records its start and completion plus the same facts for every selector.
 The Runtime classifies the selected facts as `coherent`, `partial`, or `inconsistent` using a fixed
-five-second completion-skew window. Assurance replaces the fast result only when this classification
-or its selector coverage improves; otherwise the Runtime retains the fast result with an explicit
-gap. An Adapter that omits selector timing cannot produce a coherent reusable snapshot. Legacy
+five-second completion-skew window. Assurance replaces the fast result only when its classification
+improves, or when selector coverage improves without degrading the classification; otherwise the
+Runtime retains the fast result with an explicit gap. An Adapter that omits selector timing cannot
+produce a coherent reusable snapshot. Legacy
 `assurance` input remains accepted during migration but is normalized to this single policy and is
 not returned in the Agent projection.
 

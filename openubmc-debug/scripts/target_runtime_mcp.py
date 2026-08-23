@@ -236,6 +236,14 @@ def _credential_binding_fingerprint(
         bindings[f"env:{selector}"] = os.environ.get(selector, "")
     for field in ("ssh_password", "telnet_password"):
         bindings[f"inline:{field}"] = str(getattr(args, field, ""))
+    identity_file = str(getattr(args, "ssh_identity_file", "")).strip()
+    if identity_file:
+        try:
+            bindings[f"identity:{identity_file}"] = hashlib.sha256(
+                Path(identity_file).read_bytes()
+            ).hexdigest()
+        except OSError:
+            bindings[f"identity:{identity_file}"] = "unavailable"
     for selector in (
         "OPENUBMC_CREDENTIALS_FILE",
         "OPENUBMC_DEBUG_CREDENTIALS_FILE",

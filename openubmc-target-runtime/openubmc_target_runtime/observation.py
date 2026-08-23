@@ -245,8 +245,13 @@ def observation_improves(
             baseline_selectors if isinstance(baseline_selectors, list) else []
         )
     )
-    return (
-        ranks.get(_text(candidate_timing.get("classification")), 0)
-        > ranks.get(_text(baseline_timing.get("classification")), 0)
-        or candidate_observed > baseline_observed
+    candidate_rank = ranks.get(
+        _text(candidate_timing.get("classification")), 0
+    )
+    baseline_rank = ranks.get(
+        _text(baseline_timing.get("classification")), 0
+    )
+    return candidate_rank > baseline_rank or (
+        candidate_rank == baseline_rank
+        and candidate_observed > baseline_observed
     )

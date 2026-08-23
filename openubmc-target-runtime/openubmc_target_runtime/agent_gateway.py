@@ -92,14 +92,21 @@ def _selector_identity_scope(value: object) -> dict[str, object]:
     }
 
 
-def _selector_identity_consistency(value: object) -> dict[str, object]:
+def _selector_identity_consistency(
+    value: object,
+    *,
+    include_selectors: bool = True,
+) -> dict[str, object]:
     consistency = _mapping(value)
     raw_selectors = consistency.get("selectors", [])
-    return {
+    result: dict[str, object] = {
         "classification": _bounded_text(
             consistency.get("classification"), 32
         ),
-        "selectors": [
+        "reusable": False,
+    }
+    if include_selectors:
+        result["selectors"] = [
             {
                 "selector_id": _bounded_text(
                     _mapping(item).get("selector_id"), 64
@@ -110,9 +117,8 @@ def _selector_identity_consistency(value: object) -> dict[str, object]:
             for item in (
                 raw_selectors if isinstance(raw_selectors, list) else []
             )[:16]
-        ],
-        "reusable": False,
-    }
+        ]
+    return result
 
 
 def _compact_value(
@@ -280,7 +286,8 @@ class CostGovernor:
             ),
             "results": {},
             "consistency": _selector_identity_consistency(
-                result.get("consistency", {})
+                result.get("consistency", {}),
+                include_selectors=False,
             ),
             "coverage": {
                 "requested": coverage.get("requested", 0),
@@ -319,7 +326,33 @@ class CostGovernor:
             "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
             "content_compacted": True,
         }
-        return minimal
+        if len(_json_bytes(minimal)) <= OBSERVATION_MAX_BYTES:
+            return minimal
+        scope = _selector_identity_scope(result.get("scope", {}))
+        return {
+            "schema": OBSERVATION_RECEIPT_SCHEMA,
+            "receipt_id": _bounded_text(result.get("receipt_id"), 128),
+            "status": "incomplete",
+            "scope": {
+                "selectors": [
+                    {"id": selector["id"]}
+                    for selector in scope["selectors"]
+                ]
+            },
+            "consistency": _selector_identity_consistency(
+                result.get("consistency", {}),
+                include_selectors=False,
+            ),
+            "coverage": {
+                "requested": coverage.get("requested", 0),
+                "available": 0,
+                "unavailable": 0,
+                "not_checked": coverage.get("requested", 0),
+                "complete": False,
+            },
+            "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
+            "content_compacted": True,
+        }
 
     @staticmethod
     def turn(document: Mapping[str, object]) -> dict[str, object]:

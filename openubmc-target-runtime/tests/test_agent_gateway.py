@@ -936,13 +936,12 @@ class NonImprovingAssuranceSemanticBackend(AutoAssuranceSemanticBackend):
     def observe_query(self, task, arguments, context) -> dict[str, object]:
         value = super().observe_query(task, arguments, context)
         if arguments.get("assured"):
-            value["result"]["capabilities"].pop("remote_log_file", None)
             value["result"]["lanes"]["ssh"]["mdbctl"]["payload"]["result"] = {
                 "properties": {"AssuredValue": {"Value": "must-not-win"}}
             }
-            value["observation_timing"]["selectors"][0]["status"] = "missing"
+            value["observation_timing"]["completed_at"] = "2026-08-19T00:00:20Z"
             value["observation_timing"]["selectors"][0]["completed_at"] = (
-                "2026-08-19T00:00:01Z"
+                "2026-08-19T00:00:20Z"
             )
         return value
 
@@ -1320,12 +1319,12 @@ class AgentGatewayTests(unittest.TestCase):
 
     def test_compacted_observation_preserves_selector_identity_and_order(self) -> None:
         service = RuntimeMcpService(OversizedObservationBackend())
-        selector_ids = [f"selector-{index:02d}" for index in range(16)]
+        selector_ids = [f"{index:02d}" + "s" * 62 for index in range(16)]
         try:
             receipt = service.call_exposed_tool(
                 "observe",
                 {
-                    "target": "192.0.2.10",
+                    "target": "t" * 64,
                     "selectors": [
                         {"id": selector_id, "kind": "capability", "names": ["ssh"]}
                         for selector_id in selector_ids

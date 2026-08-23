@@ -1359,12 +1359,20 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 {"OPENUBMC_ROTATING_TEST_PASSWORD": "environment-secret-b"},
             ):
                 environment_changed = task.lease_for(args)
+            with tempfile.TemporaryDirectory() as raw:
+                identity = Path(raw) / "id_ed25519"
+                identity.write_text("private-key-a", encoding="utf-8")
+                args.ssh_identity_file = str(identity)
+                identity_first = task.lease_for(args)
+                identity.write_text("private-key-b", encoding="utf-8")
+                identity_changed = task.lease_for(args)
 
         self.assertIs(first, same)
         self.assertIsNot(first, changed)
         self.assertIsNot(changed, reopened)
         self.assertIsNot(environment_first, environment_changed)
-        self.assertEqual(len(opened), 5)
+        self.assertIsNot(identity_first, identity_changed)
+        self.assertEqual(len(opened), 7)
 
     def test_debug_lease_cache_is_bounded_without_limiting_target_count(self) -> None:
         module = load_script("target_runtime_mcp")
