@@ -30,6 +30,8 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
     def test_exact_observation_does_not_require_tool_discovery(self) -> None:
         self.assertIn("directly call `observe`", SKILL)
         self.assertIn("Do not check whether the tool exists", SKILL)
+        self.assertIn("MCP tool `openubmc-target-runtime.observe`", SKILL)
+        self.assertIn("not a local function", SKILL)
 
     def test_transport_and_runtime_mechanics_are_disclosed_on_demand(self) -> None:
         for detail in (
