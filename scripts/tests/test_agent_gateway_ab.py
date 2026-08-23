@@ -994,6 +994,63 @@ class AgentGatewayAbTests(unittest.TestCase):
             ],
         )
 
+    def test_skill_disclosure_rejects_extended_reported_values(self) -> None:
+        finals = (
+            "MDBCTL=available Name=Disk0-wrong ResourceId=0 Presence=1，"
+            "不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0 ResourceId=0.0 Presence=1，"
+            "不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1 wrong，"
+            "不能证明 ResourceId 异常。",
+        )
+
+        for final in finals:
+            with self.subTest(final=final):
+                record = module.RunEvidenceRecord.capture(
+                    arm="B",
+                    pair=1,
+                    order=1,
+                    scenario="skill-disclosure",
+                    events=[
+                        skill_disclosure_observe_event(),
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 100, "output_tokens": 10},
+                        },
+                    ],
+                    final=final,
+                    exit_code=0,
+                    duration_seconds=1,
+                )
+
+                self.assertFalse(record.metric()["valid"])
+
+    def test_skill_disclosure_rejects_a_contradictory_conclusion(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1。"
+                "不能证明 ResourceId 异常，但最终结论是 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        metric = record.metric()
+
+        self.assertFalse(metric["valid"])
+        self.assertFalse(metric["semantic_acceptance"]["conclusion_supported"])
+
     def test_skill_disclosure_rejects_values_swapped_between_fields(self) -> None:
         record = module.RunEvidenceRecord.capture(
             arm="B",

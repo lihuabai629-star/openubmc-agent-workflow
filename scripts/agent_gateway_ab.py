@@ -973,9 +973,37 @@ def _run_attestation_errors(
 
 
 def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
-    return (
+    cautious = (
         "不能" in text or "无法" in text
     ) and "resourceid" in folded and "异常" in text
+    if not cautious:
+        return False
+    negative_terms = ("不能", "无法", "不足以", "不代表", "不等于", "并非", "不是", "不属于")
+    clauses = re.split(
+        r"[，,。；;！？!?\n]+|(?=但(?:是)?|然而|不过|可是)",
+        folded,
+    )
+    return not any(
+        "resourceid" in clause
+        and "异常" in clause
+        and not any(term in clause for term in negative_terms)
+        for clause in clauses
+    )
+
+
+def _reported_value_matches(reported: str, expected: str) -> bool:
+    if not reported.startswith(expected):
+        return False
+    tail = reported[len(expected):]
+    if not tail.strip(" \t\\"):
+        return True
+    remainder = tail.lstrip()
+    first = remainder[0]
+    if first in "，,；;。！？!?、：:）)]}】》」』（([{":
+        return True
+    if first == ".":
+        return len(remainder) == 1 or not remainder[1].isalnum()
+    return False
 
 
 def _reported_skill_value(
@@ -1026,15 +1054,14 @@ def _reported_skill_value(
     expected = str(value).lower().replace('"', "").replace("'", "")
     if field == "mdbctl" and expected == "available":
         return any(
-            re.match(r"available(?![0-9a-z_])", reported)
-            is not None
-            or reported.startswith("可用")
+            _reported_value_matches(reported, "available")
+            or _reported_value_matches(reported, "可用")
             for reported in reported_values
         )
-    pattern = re.compile(
-        rf"{re.escape(expected)}(?![0-9a-z_])"
+    return any(
+        _reported_value_matches(reported, expected)
+        for reported in reported_values
     )
-    return any(pattern.match(reported) is not None for reported in reported_values)
 
 
 def semantic_acceptance(
