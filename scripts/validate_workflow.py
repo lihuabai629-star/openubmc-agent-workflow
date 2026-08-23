@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLES = (
     ROOT / "bootstrap.py",
+    ROOT / "scripts" / "compatibility_retirement.py",
     ROOT / "scripts" / "validate_workflow.py",
     ROOT / "scripts" / "live_smoke.py",
 )

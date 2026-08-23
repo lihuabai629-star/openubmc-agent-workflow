@@ -32,3 +32,43 @@ counters for tests and disposable development sessions.
 
 The removal sequence changes only compatibility Adapters. It must not add Agent operations, expose
 another policy, or move Run transition ownership out of `RunEngine`.
+
+## Retirement evidence
+
+`scripts/compatibility_retirement.py` turns the Operator `runtime_status` projection into three
+digest-bound records:
+
+- `baseline` captures one telemetry identity, count snapshot, source commit and capture time;
+- `increment` compares a later snapshot, rejects counter rollback or tracking-identity changes, and
+  counts distinct commit dates on canonical `github/main` first-parent history;
+- `evaluate` binds that zero-use evidence to a complete promotable Release Gate from the same source
+  commit and reports readiness separately for each writer and for the whole compatibility profile.
+
+An active development day is a distinct committer date (`%cs`) among canonical first-parent commits
+after both the baseline source and the baseline capture instant, through the current source.
+Side-branch activity and main commits that already existed when the baseline was captured do not
+shorten the window. Any count increase requires a new baseline after callers have been migrated.
+
+```bash
+python scripts/compatibility_retirement.py baseline \
+  --runtime-status runtime-status.json \
+  --source-ref github/main \
+  --output compatibility-baseline.json
+
+python scripts/compatibility_retirement.py increment \
+  --baseline compatibility-baseline.json \
+  --runtime-status runtime-status-current.json \
+  --source-ref github/main \
+  --main-ref github/main \
+  --output compatibility-increment.json
+
+python scripts/compatibility_retirement.py evaluate \
+  --increment compatibility-increment.json \
+  --release-gate release-gate.json \
+  --writer execute.control_continue \
+  --output compatibility-decision.json
+```
+
+The evaluate command returns exit status `0` only when the selected writer is ready. Without
+`--writer`, it evaluates retirement of the whole compatibility profile. Old-event upcasters are
+always reported as preserved readers and are outside writer-removal readiness.

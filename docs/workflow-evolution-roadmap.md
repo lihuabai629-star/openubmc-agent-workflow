@@ -1,7 +1,7 @@
 # openUBMC Agent Workflow 后续演进档案
 
 日期：2026-08-23
-当前基线：GitHub `main` 的 `cf2f377`
+当前基线：GitHub `main` 的 `faf0509`
 v2 候选 source：`89511ae`
 v2 候选 lock-only commit：`22ebc53`
 用途：后续讨论入口、决策索引和实施路线；详细论证仍以链接文档为准。
@@ -306,7 +306,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 | 目标 | 验收 |
 | --- | --- |
 | Incident 闭环 | 每种 Incident 都有确定的 retry、reconcile、correction Gate、cancel 或 terminal 路径 |
-| Compatibility 收敛 | feature-level 持久遥测已落地；按 14 个活跃研发日和一次完整资格的零使用窗口删除旧 writer，old-event reader 保留 |
+| Compatibility 收敛 | feature-level 持久遥测和 Operator 退役判定证据已落地；按 14 个 canonical main 活跃研发日和一次同 source 完整资格的零使用窗口删除旧 writer，old-event reader 保留 |
 | Module locality | compatibility、EvidenceStore、Runtime composition 从 MCP transport 中集中 |
 | 测试稳定 | property、duplicate storm、capacity 与 soak 验证公开 semantic seam |
 
