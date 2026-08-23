@@ -961,6 +961,34 @@ class AgentGatewayAbTests(unittest.TestCase):
             ],
         )
 
+    def test_skill_disclosure_rejects_values_swapped_between_fields(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "Name=0 ResourceId=1 Presence=Disk0 MDBCTL=available，"
+                "不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        metric = record.metric()
+
+        self.assertFalse(metric["valid"])
+        self.assertIn("name=disk0", metric["semantic_acceptance"]["missing"])
+        self.assertIn("resourceid=0", metric["semantic_acceptance"]["missing"])
+        self.assertIn("presence=1", metric["semantic_acceptance"]["missing"])
+
     def test_candidate_scope_rejects_unrelated_mcp_discovery(self) -> None:
         tools = [
             {

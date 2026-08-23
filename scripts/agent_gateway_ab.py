@@ -982,19 +982,32 @@ def _reported_skill_value(
     field: str,
     value: object,
 ) -> bool:
-    field_lines = [line for line in lines if field in line]
+    labels = ("mdbctl", "name", "resourceid", "presence")
+    label_patterns = {
+        label: re.compile(rf"(?<![0-9a-z_]){label}(?![0-9a-z_])")
+        for label in labels
+    }
+    segments: list[str] = []
+    for line in lines:
+        for match in label_patterns[field].finditer(line):
+            segment_end = len(line)
+            for pattern in label_patterns.values():
+                next_match = pattern.search(line, match.end())
+                if next_match is not None:
+                    segment_end = min(segment_end, next_match.start())
+            segments.append(line[match.end():segment_end])
     expected = str(value).lower().replace('"', "").replace("'", "")
     if field == "mdbctl" and expected == "available":
         return any(
-            re.search(r"(?<![0-9a-z_])available(?![0-9a-z_])", line)
+            re.search(r"(?<![0-9a-z_])available(?![0-9a-z_])", segment)
             is not None
-            or ("可用" in line and "不可用" not in line)
-            for line in field_lines
+            or ("可用" in segment and "不可用" not in segment)
+            for segment in segments
         )
     pattern = re.compile(
         rf"(?<![0-9a-z_]){re.escape(expected)}(?![0-9a-z_])"
     )
-    return any(pattern.search(line) is not None for line in field_lines)
+    return any(pattern.search(segment) is not None for segment in segments)
 
 
 def semantic_acceptance(
