@@ -306,6 +306,7 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
     )
     run_ids = {str(turn["run_id"]) for turn in turns}
     unique_turns = len({evidence_fingerprint(turn) for turn in turns})
+    turn_states = Counter(str(turn["state"]) for turn in turns)
     gate_submissions = len(projection["gate_submissions"])
     outcome_events = sum(
         event["kind"] == "RunOutcomeRecorded" for event in replay
@@ -315,6 +316,7 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
             not errors,
             run_ids == {str(waiting["run_id"])},
             unique_turns == 1,
+            turn_states == {"completed": GATE_WORKERS},
             gate_submissions == 1,
             outcome_events == 1,
             projection["run_outcome"].get("status") == "completed",
@@ -328,9 +330,7 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
         "errors": errors,
         "unique_runs": len(run_ids),
         "unique_turns": unique_turns,
-        "turn_states": dict(
-            sorted(Counter(str(turn["state"]) for turn in turns).items())
-        ),
+        "turn_states": dict(sorted(turn_states.items())),
         "gate_submissions": gate_submissions,
         "outcome_events": outcome_events,
         "open_incidents": len(projection["incidents"]),
@@ -422,6 +422,17 @@ def _capacity(root: Path) -> dict[str, object]:
         )
 
     storage_bytes = _storage_bytes(repository, blobs)
+    storage_growth_by_batch = [
+        current - previous
+        for previous, current in zip(
+            [0, *storage_bytes_by_batch[:-1]],
+            storage_bytes_by_batch,
+        )
+    ]
+    max_storage_growth_per_batch = (
+        MAX_CAPACITY_STORAGE_BYTES
+        // (CAPACITY_RUNS // CAPACITY_BATCH_SIZE)
+    )
     passed = all(
         (
             execute_calls == CAPACITY_RUNS,
@@ -434,6 +445,9 @@ def _capacity(root: Path) -> dict[str, object]:
             incomplete_operations == 0,
             max_events_per_run <= MAX_EVENTS_PER_RUN,
             total_events <= CAPACITY_RUNS * MAX_EVENTS_PER_RUN,
+            storage_bytes_by_batch == sorted(storage_bytes_by_batch),
+            storage_bytes_by_batch[-1] == storage_bytes,
+            max(storage_growth_by_batch) <= max_storage_growth_per_batch,
             storage_bytes <= MAX_CAPACITY_STORAGE_BYTES,
             peak_python_bytes <= MAX_CAPACITY_PEAK_PYTHON_BYTES,
             peak_rss_bytes <= MAX_CAPACITY_PEAK_RSS_BYTES,
@@ -455,6 +469,7 @@ def _capacity(root: Path) -> dict[str, object]:
         "events_per_batch": events_per_batch,
         "cumulative_events_by_batch": cumulative_events_by_batch,
         "storage_bytes_by_batch": storage_bytes_by_batch,
+        "storage_growth_bytes_by_batch": storage_growth_by_batch,
         "max_events_per_run": max_events_per_run,
         "storage_bytes": storage_bytes,
         "peak_rss_bytes": peak_rss_bytes,

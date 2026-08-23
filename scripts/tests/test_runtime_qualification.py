@@ -70,6 +70,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "failed_calls": 0,
                     "unique_runs": 1,
                     "unique_turns": 1,
+                    "turn_states": {"completed": 8},
                     "gate_submissions": 1,
                     "outcome_events": 1,
                     "open_incidents": 0,
@@ -88,6 +89,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "events_per_batch": [352, 352, 352, 352],
                     "cumulative_events_by_batch": [352, 704, 1056, 1408],
                     "storage_bytes_by_batch": [1000, 2000, 3000, 4000],
+                    "storage_growth_bytes_by_batch": [1000, 1000, 1000, 1000],
                     "max_events_per_run": 11,
                     "storage_bytes": 4000,
                     "peak_rss_bytes": 100000000,
@@ -226,6 +228,32 @@ class RuntimeQualificationTests(unittest.TestCase):
         )
         self.assertIn("schema", stability_result["verification_error"])
 
+    def test_nonterminal_equivalent_gate_turns_block_promotion(self) -> None:
+        def nonterminal(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            report["scenarios"]["gate_concurrency"]["turn_states"] = {"running": 8}
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            WORKSPACE,
+            executor=nonterminal,
+            source_commit=SOURCE_COMMIT,
+        )
+
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertFalse(report["promotable"])
+        self.assertIn("Gate", stability_result["verification_error"])
+
     def test_stability_report_over_a_hard_threshold_blocks_promotion(self) -> None:
         def over_threshold(command, *, cwd):
             del cwd
@@ -298,6 +326,64 @@ class RuntimeQualificationTests(unittest.TestCase):
         report = qualification.qualify_runtime(
             WORKSPACE,
             executor=over_rss,
+            source_commit=SOURCE_COMMIT,
+        )
+
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertFalse(report["promotable"])
+        self.assertIn("capacity", stability_result["verification_error"])
+
+    def test_inconsistent_capacity_storage_growth_blocks_promotion(self) -> None:
+        def inconsistent_growth(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            capacity = report["scenarios"]["capacity"]
+            capacity["storage_bytes_by_batch"] = [4000, 1000, 3000, 4000]
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            WORKSPACE,
+            executor=inconsistent_growth,
+            source_commit=SOURCE_COMMIT,
+        )
+
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertFalse(report["promotable"])
+        self.assertIn("capacity", stability_result["verification_error"])
+
+    def test_inconsistent_capacity_event_prefixes_block_promotion(self) -> None:
+        def inconsistent_prefixes(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            report["scenarios"]["capacity"]["cumulative_events_by_batch"] = [
+                352,
+                1056,
+                1056,
+                1408,
+            ]
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            WORKSPACE,
+            executor=inconsistent_prefixes,
             source_commit=SOURCE_COMMIT,
         )
 

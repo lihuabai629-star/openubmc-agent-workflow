@@ -126,6 +126,7 @@ def verify_runtime_stability_report(
             _integer(gate.get("outcome_events"), "gate outcome events") == 1,
             _integer(gate.get("open_incidents"), "gate open incidents") == 0,
             _integer(gate.get("unique_turns"), "gate unique Turns") == 1,
+            gate.get("turn_states") == {"completed": GATE_WORKERS},
         )
     ):
         raise ValueError("Runtime stability Gate concurrency did not converge")
@@ -135,13 +136,16 @@ def verify_runtime_stability_report(
     events_per_batch = capacity.get("events_per_batch")
     cumulative_capacity_events = capacity.get("cumulative_events_by_batch")
     capacity_storage_by_batch = capacity.get("storage_bytes_by_batch")
+    capacity_storage_growth = capacity.get("storage_growth_bytes_by_batch")
     if (
         not isinstance(events_per_batch, list)
         or not isinstance(cumulative_capacity_events, list)
         or not isinstance(capacity_storage_by_batch, list)
+        or not isinstance(capacity_storage_growth, list)
         or len(events_per_batch) != capacity_batches
         or len(cumulative_capacity_events) != capacity_batches
         or len(capacity_storage_by_batch) != capacity_batches
+        or len(capacity_storage_growth) != capacity_batches
     ):
         raise ValueError("Runtime stability capacity growth evidence is incomplete")
     capacity_total_events = _integer(
@@ -152,6 +156,29 @@ def verify_runtime_stability_report(
         _integer(value, "capacity cumulative events", minimum=1)
         for value in cumulative_capacity_events
     ]
+    normalized_batch_events = [
+        _integer(value, "capacity batch events", minimum=1)
+        for value in events_per_batch
+    ]
+    expected_capacity_cumulative: list[int] = []
+    running_capacity_events = 0
+    for value in normalized_batch_events:
+        running_capacity_events += value
+        expected_capacity_cumulative.append(running_capacity_events)
+    normalized_capacity_storage = [
+        _integer(value, "capacity batch storage", minimum=1)
+        for value in capacity_storage_by_batch
+    ]
+    normalized_storage_growth = [
+        _integer(value, "capacity batch storage growth", minimum=1)
+        for value in capacity_storage_growth
+    ]
+    capacity_storage_bytes = _integer(
+        capacity.get("storage_bytes"),
+        "capacity storage bytes",
+        minimum=1,
+    )
+    max_storage_growth_per_batch = MAX_CAPACITY_STORAGE_BYTES // capacity_batches
     if not all(
         (
             _integer(capacity.get("execute_calls"), "capacity execute calls")
@@ -177,25 +204,28 @@ def verify_runtime_stability_report(
             )
             <= MAX_EVENTS_PER_RUN,
             capacity_total_events <= CAPACITY_RUNS * MAX_EVENTS_PER_RUN,
-            sum(
-                _integer(value, "capacity batch events", minimum=1)
-                for value in events_per_batch
-            )
-            == capacity_total_events,
-            normalized_capacity_cumulative[-1] == capacity_total_events,
-            normalized_capacity_cumulative
-            == sorted(normalized_capacity_cumulative),
+            sum(normalized_batch_events) == capacity_total_events,
             all(
-                _integer(value, "capacity batch storage", minimum=1)
-                <= MAX_CAPACITY_STORAGE_BYTES
-                for value in capacity_storage_by_batch
+                value <= CAPACITY_BATCH_SIZE * MAX_EVENTS_PER_RUN
+                for value in normalized_batch_events
             ),
-            _integer(
-                capacity.get("storage_bytes"),
-                "capacity storage bytes",
-                minimum=1,
-            )
-            <= MAX_CAPACITY_STORAGE_BYTES,
+            normalized_capacity_cumulative == expected_capacity_cumulative,
+            all(
+                value <= MAX_CAPACITY_STORAGE_BYTES
+                for value in normalized_capacity_storage
+            ),
+            normalized_capacity_storage == sorted(normalized_capacity_storage),
+            normalized_capacity_storage[-1] == capacity_storage_bytes,
+            normalized_storage_growth
+            == [
+                current - previous
+                for previous, current in zip(
+                    [0, *normalized_capacity_storage[:-1]],
+                    normalized_capacity_storage,
+                )
+            ],
+            max(normalized_storage_growth) <= max_storage_growth_per_batch,
+            capacity_storage_bytes <= MAX_CAPACITY_STORAGE_BYTES,
             _integer(
                 capacity.get("peak_rss_bytes"),
                 "capacity peak RSS",

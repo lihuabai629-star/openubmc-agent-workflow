@@ -57,6 +57,7 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertEqual(gate["gate_submissions"], 1)
         self.assertEqual(gate["outcome_events"], 1)
         self.assertEqual(gate["unique_turns"], 1)
+        self.assertEqual(gate["turn_states"], {"completed": 8})
         capacity = report["scenarios"]["capacity"]
         self.assertEqual(capacity["status"], "passed")
         self.assertEqual(capacity["completed_runs"], 128)
@@ -65,6 +66,10 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertEqual(
             sum(capacity["events_per_batch"]),
             capacity["total_events"],
+        )
+        self.assertEqual(
+            sum(capacity["storage_growth_bytes_by_batch"]),
+            capacity["storage_bytes"],
         )
         self.assertGreater(capacity["peak_rss_bytes"], 0)
         soak = report["scenarios"]["restart_soak"]
