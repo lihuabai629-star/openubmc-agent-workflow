@@ -6357,6 +6357,12 @@ class ContextRuntime:
     ) -> dict[str, object]:
         raw = projection.get("workflow_inputs", {})
         arguments = dict(raw) if isinstance(raw, Mapping) else {}
+        raw_entry_arguments = arguments.pop("entry_arguments", {})
+        if (
+            operation == str(projection.get("entry_operation", ""))
+            and isinstance(raw_entry_arguments, Mapping)
+        ):
+            arguments.update(raw_entry_arguments)
         projected_intent = (
             str(projection.get("intent", "diagnosis-only"))
             .strip()
@@ -6578,6 +6584,41 @@ class ContextRuntime:
             name=operation,
             step_id=workflow_step_id,
         )
+        definition = self.workflow_definitions.definition_for(projection)
+        operation_is_mutation = self.catalog.require(operation).mutation
+        step_index = next(
+            index
+            for index, step in enumerate(definition.steps)
+            if step.step_id == workflow_step_id
+        )
+        preceding_operation = next(
+            (
+                step
+                for step in reversed(definition.steps[:step_index])
+                if step.kind == "operation"
+            ),
+            None,
+        )
+        preceding_mutation = (
+            preceding_operation
+            if preceding_operation is not None
+            and self.catalog.require(preceding_operation.name).mutation
+            else None
+        )
+        if not operation_is_mutation and preceding_mutation is not None:
+            raw_states = projection.get("workflow_step_states", {})
+            prior_state = (
+                raw_states.get(preceding_mutation.step_id)
+                if isinstance(raw_states, Mapping)
+                else None
+            )
+            if (
+                isinstance(prior_state, Mapping)
+                and str(prior_state.get("status", ""))
+                in {"completed", "verified", "succeeded"}
+                and str(prior_state.get("target_id", "")).strip()
+            ):
+                required_target_id = str(prior_state["target_id"])
         if required_target_id:
             domain_arguments["target_id"] = required_target_id
             for target in projection.get("targets", []):
@@ -6588,23 +6629,24 @@ class ContextRuntime:
                 ):
                     domain_arguments["ip"] = str(target["address"])
                     break
+        verification_after_mutation = (
+            not operation_is_mutation and preceding_mutation is not None
+        )
         target_epoch_floor = self._target_epoch_floor(
             projection,
             target_id=(
                 self._preferred_target_id(projection, domain_arguments)
-                if operation in {"live_patch_run", "upgrade_run", "debug_collect"}
+                if operation_is_mutation or verification_after_mutation
                 else self._selected_target_id(projection, domain_arguments)
             ),
         )
-        if operation in {"live_patch_run", "upgrade_run"}:
+        if operation_is_mutation:
             domain_arguments["_minimum_target_epoch"] = target_epoch_floor
-        if operation == "debug_collect" and target_epoch_floor:
+        if verification_after_mutation and target_epoch_floor:
             domain_arguments["_minimum_target_epoch"] = target_epoch_floor
         cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
         target_version = int(projection.get("target_version", 1))
-        workflow_definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(
-            projection
-        )
+        workflow_definition = self.workflow_definitions.definition_for(projection)
         step_definition = next(
             step
             for step in workflow_definition.steps

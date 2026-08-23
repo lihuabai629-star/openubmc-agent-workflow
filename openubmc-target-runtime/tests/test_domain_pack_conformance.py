@@ -22,6 +22,7 @@ from openubmc_target_runtime import (  # noqa: E402
     DomainPackAuthorContract,
     DomainPackConformanceExample,
     DomainPackConformanceSuite,
+    DomainPackWorkflow,
     DomainReceipt,
     EffectClass,
     EffectRecoveryMode,
@@ -260,6 +261,53 @@ class DomainPackConformanceTests(unittest.TestCase):
                 verifier=lambda _action, _receipt: True,
                 conformance_example=example("idempotent_collect"),
             ).build(CapabilityRegistry((idempotent_descriptor,)))
+
+    def test_mutation_workflow_requires_distinct_read_only_verification(self) -> None:
+        adapter = CallableDomainAdapter(lambda _context, _arguments: {})
+        mutation_descriptor = descriptor("fake_mutation_route")
+        verification_descriptor = descriptor(
+            "fake_verification",
+            mutation=False,
+        )
+
+        def contract(verification_operation: str) -> DomainPackAuthorContract:
+            return DomainPackAuthorContract(
+                descriptor=mutation_descriptor,
+                name="fake-mutation-route",
+                version="1",
+                effect_class=EffectClass.RECONCILABLE_MUTATION,
+                adapter=adapter,
+                reconciler=adapter,
+                verifier=lambda _action, _receipt: True,
+                conformance_example=example("fake_mutation_route"),
+                journal_action=lambda _arguments: "live_patch",
+                closeout_stage="live_patch",
+                workflow=DomainPackWorkflow(
+                    intent="live-patch",
+                    verification_operation=verification_operation,
+                ),
+            )
+
+        with self.assertRaisesRegex(ValueError, "distinct operation"):
+            DomainPackConformanceSuite().bind(
+                CapabilityRegistry((mutation_descriptor,)),
+                (contract("fake_mutation_route"),),
+            )
+
+        mutation_verification = descriptor("fake_verification")
+        with self.assertRaisesRegex(ValueError, "READ_ONLY"):
+            DomainPackConformanceSuite().bind(
+                CapabilityRegistry(
+                    (mutation_descriptor, mutation_verification)
+                ),
+                (contract("fake_verification"),),
+            )
+
+        with self.assertRaisesRegex(ValueError, "intent is invalid"):
+            DomainPackWorkflow(
+                intent="arbitrary-flow",
+                verification_operation=verification_descriptor.operation,
+            )
 
     def test_pack_set_conformance_rejects_duplicate_identity_and_artifact_phase(self) -> None:
         adapter = CallableDomainAdapter(lambda _context, _arguments: {})
@@ -1150,6 +1198,30 @@ class DomainPackConformanceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_entry_arguments_cannot_override_runtime_workflow_control(self) -> None:
+        service = RuntimeMcpService(Backend())
+        try:
+            with self.assertRaisesRegex(ValueError, "Runtime-owned"):
+                service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.92",
+                        "intent": "diagnosis-only",
+                        "entry_operation": "debug_run",
+                        "entry_arguments": {
+                            "workflow": {
+                                "verification": {"profile": "injected"}
+                            }
+                        },
+                        "purpose": "workflow control remains Runtime-owned",
+                    },
+                    task_id="entry-arguments-run",
+                    operation_id="entry-arguments-start",
+                )
+        finally:
+            service.close()
+
     def test_injected_distinct_pack_extends_defaults_and_participates_in_a_real_workflow(self) -> None:
         class FullBackend(Backend):
             live_patch_run = Backend.debug_run
@@ -1352,6 +1424,167 @@ class DomainPackConformanceTests(unittest.TestCase):
         self.assertIn("fake_health", capabilities)
         self.assertIn("fake_health", status["domain_pack_conformance"]["operations"])
         self.assertEqual(completed["state"], "completed", completed)
+
+    def test_extension_contributes_a_mutation_route_with_fresh_verification(self) -> None:
+        seen_arguments: list[dict[str, object]] = []
+        seen_verification_arguments: list[dict[str, object]] = []
+
+        mutation_descriptor = descriptor("fake_mutation_route")
+        verification_descriptor = descriptor(
+            "fake_mutation_verification",
+            mutation=False,
+        )
+
+        def execute_mutation(context, arguments):
+            seen_arguments.append(dict(arguments))
+            return DomainReceipt(
+                operation="fake_mutation_route",
+                status="verified",
+                value={
+                    "summary": "fake mutation verified",
+                    "target_epoch": 1,
+                    "journal": {
+                        "schema": "openubmc.target-runtime.v1/mutation-journal",
+                        "task_id": context.task_id,
+                        "operation_id": context.operation_id,
+                        "operation_fingerprint": "a" * 64,
+                        "target_fingerprint": "b" * 64,
+                        "action": "live_patch",
+                        "stage": "verified",
+                        "effects_started": True,
+                        "epoch_after": 1,
+                        "expected_checksum": "c" * 64,
+                        "observed_checksum": "c" * 64,
+                        "root_mount_restored": True,
+                    },
+                },
+            )
+
+        adapter = CallableDomainAdapter(execute_mutation)
+        verification_adapter = CallableDomainAdapter(
+            lambda _context, arguments: (
+                seen_verification_arguments.append(dict(arguments))
+                or DomainReceipt(
+                    operation="fake_mutation_verification",
+                    status="succeeded",
+                    value={
+                        "ok": True,
+                        "summary": "fresh verification passed",
+                        "business_acceptance": "passed",
+                        "target_epoch": int(
+                            arguments.get("_minimum_target_epoch", 0)
+                        ),
+                    },
+                )
+            )
+        )
+
+        def extension(_registry, _adapters):
+            return (
+                DomainPackAuthorContract(
+                    descriptor=mutation_descriptor,
+                    name="fake-mutation-route",
+                    version="1",
+                    effect_class=EffectClass.RECONCILABLE_MUTATION,
+                    adapter=adapter,
+                    reconciler=adapter,
+                    verifier=lambda action, receipt: mutation_receipt_verifier(
+                        action,
+                        receipt,
+                        journal_action="live_patch",
+                    ),
+                    journal_action=lambda _arguments: "live_patch",
+                    closeout_stage="live_patch",
+                    workflow=DomainPackWorkflow(
+                        intent="live-patch",
+                        verification_operation="fake_mutation_verification",
+                    ),
+                    conformance_example=DomainPackConformanceExample(
+                        arguments={"ip": "conformance-target"},
+                        receipt=DomainReceipt(
+                            operation="fake_mutation_route",
+                            status="verified",
+                            value={
+                                "summary": "fake mutation verified",
+                                "target_epoch": 1,
+                                "journal": {
+                                    "schema": "openubmc.target-runtime.v1/mutation-journal",
+                                    "task_id": "conformance-fake_mutation_route",
+                                    "operation_id": (
+                                        "effect-conformance-fake_mutation_route"
+                                    ),
+                                    "operation_fingerprint": "a" * 64,
+                                    "target_fingerprint": "b" * 64,
+                                    "action": "live_patch",
+                                    "stage": "verified",
+                                    "effects_started": True,
+                                    "epoch_after": 1,
+                                    "expected_checksum": "c" * 64,
+                                    "observed_checksum": "c" * 64,
+                                    "root_mount_restored": True,
+                                },
+                            },
+                        ),
+                    ),
+                ),
+                DomainPackAuthorContract(
+                    descriptor=verification_descriptor,
+                    name="fake-mutation-verification",
+                    version="1",
+                    effect_class=EffectClass.READ_ONLY,
+                    adapter=verification_adapter,
+                    verifier=lambda _action, receipt: (
+                        receipt.value.get("business_acceptance") == "passed"
+                    ),
+                    closeout_stage="verification",
+                    conformance_example=DomainPackConformanceExample(
+                        arguments={"_minimum_target_epoch": 1},
+                        receipt=DomainReceipt(
+                            operation="fake_mutation_verification",
+                            status="succeeded",
+                            value={
+                                "ok": True,
+                                "summary": "fresh verification passed",
+                                "business_acceptance": "passed",
+                                "target_epoch": 1,
+                            },
+                        ),
+                    ),
+                ),
+            )
+
+        service = RuntimeMcpService(
+            Backend(),
+            domain_pack_extensions=extension,
+        )
+        try:
+            completed = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.93",
+                    "intent": "live-patch",
+                    "entry_operation": "fake_mutation_route",
+                    "entry_arguments": {"repair_scope": "fan-zone-1"},
+                    "purpose": "run a contributed mutation route",
+                },
+                task_id="new-mutation-run",
+                operation_id="new-mutation-start",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(completed["state"], "completed", completed)
+        self.assertEqual(
+            [fact["name"] for fact in completed["facts"]],
+            ["fake_mutation_route", "fake_mutation_verification"],
+        )
+        self.assertEqual(seen_arguments[0]["repair_scope"], "fan-zone-1")
+        self.assertEqual(
+            seen_verification_arguments[0]["_minimum_target_epoch"],
+            1,
+        )
+        self.assertNotIn("repair_scope", seen_verification_arguments[0])
 
 
 if __name__ == "__main__":

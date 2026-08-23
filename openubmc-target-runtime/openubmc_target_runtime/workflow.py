@@ -316,7 +316,7 @@ class WorkflowRegistry:
     ) -> None:
         self.phases = phases
         self.operation_owners = dict(operation_owners)
-        registered: dict[tuple[str, str, str], WorkflowRoute] = {}
+        registered: dict[tuple[str, str, str, str], WorkflowRoute] = {}
         for route in routes:
             key = route.selector
             if key in registered:
@@ -386,14 +386,44 @@ class WorkflowRegistry:
             .lower()
             .replace("_", "-")
         )
-        if normalized_intent == "diagnosis-only" and operation:
+        if operation:
             if operation not in self.operation_owners:
                 raise ValueError(f"workflow operation has no owner: {operation}")
-            raw = (("operation", operation),)
+            matching_entry_routes = [
+                route
+                for route in self._routes
+                if route.entry_operation
+                if route.matches(
+                    intent=normalized_intent,
+                    entry_domain=domain,
+                    entry_operation=operation,
+                    delivery_strategy=(
+                        delivery if normalized_intent == "diagnose-and-fix" else ""
+                    ),
+                )
+            ]
+            if matching_entry_routes:
+                raw = max(
+                    matching_entry_routes,
+                    key=lambda route: route.specificity,
+                ).steps
+            elif normalized_intent == "diagnosis-only":
+                raw = (("operation", operation),)
+            else:
+                route = self._resolve_route(
+                    intent=normalized_intent,
+                    entry_domain=domain,
+                    entry_operation="",
+                    delivery_strategy=(
+                        delivery if normalized_intent == "diagnose-and-fix" else ""
+                    ),
+                )
+                raw = route.steps
         else:
             route = self._resolve_route(
                 intent=normalized_intent,
                 entry_domain=domain,
+                entry_operation="",
                 delivery_strategy=(
                     delivery if normalized_intent == "diagnose-and-fix" else ""
                 ),
@@ -430,6 +460,7 @@ class WorkflowRegistry:
         *,
         intent: str,
         entry_domain: str,
+        entry_operation: str,
         delivery_strategy: str,
     ) -> "WorkflowRoute":
         candidates = [
@@ -438,6 +469,7 @@ class WorkflowRegistry:
             if route.matches(
                 intent=intent,
                 entry_domain=entry_domain,
+                entry_operation=entry_operation,
                 delivery_strategy=delivery_strategy,
             )
         ]
@@ -478,6 +510,7 @@ class WorkflowRoute:
     intent: str
     steps: tuple[tuple[str, str], ...]
     entry_domain: str = ""
+    entry_operation: str = ""
     delivery_strategy: str = ""
     legacy_operations: frozenset[str] = frozenset()
     legacy_input_equals: tuple[tuple[str, str, str], ...] = ()
@@ -496,17 +529,32 @@ class WorkflowRoute:
         )
         object.__setattr__(
             self,
+            "entry_operation",
+            self.entry_operation.strip(),
+        )
+        object.__setattr__(
+            self,
             "delivery_strategy",
             self.delivery_strategy.strip().lower().replace("_", "-"),
         )
 
     @property
-    def selector(self) -> tuple[str, str, str]:
-        return (self.intent, self.entry_domain, self.delivery_strategy)
+    def selector(self) -> tuple[str, str, str, str]:
+        return (
+            self.intent,
+            self.entry_domain,
+            self.entry_operation,
+            self.delivery_strategy,
+        )
 
     @property
     def specificity(self) -> int:
-        return 1 + bool(self.entry_domain) + bool(self.delivery_strategy)
+        return (
+            1
+            + bool(self.entry_domain)
+            + bool(self.entry_operation)
+            + bool(self.delivery_strategy)
+        )
 
     @property
     def legacy_specificity(self) -> tuple[int, int]:
@@ -517,11 +565,13 @@ class WorkflowRoute:
         *,
         intent: str,
         entry_domain: str,
+        entry_operation: str,
         delivery_strategy: str,
     ) -> bool:
         return (
             self.intent == intent
             and (not self.entry_domain or self.entry_domain == entry_domain)
+            and self.entry_operation == entry_operation
             and (
                 not self.delivery_strategy
                 or self.delivery_strategy == delivery_strategy

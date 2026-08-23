@@ -664,6 +664,26 @@ def mutation_receipt_verifier(
 
 
 @dataclass(frozen=True)
+class DomainPackWorkflow:
+    """One typed mutation route with mandatory fresh verification."""
+
+    intent: str
+    verification_operation: str
+
+    def __post_init__(self) -> None:
+        intent = self.intent.strip().lower().replace("_", "-")
+        if intent not in {"live-patch", "rollback", "upgrade-and-verify"}:
+            raise ValueError("Domain Pack mutation workflow intent is invalid")
+        verification = self.verification_operation.strip()
+        if not verification:
+            raise ValueError(
+                "Domain Pack mutation workflow requires verification operation"
+            )
+        object.__setattr__(self, "intent", intent)
+        object.__setattr__(self, "verification_operation", verification)
+
+
+@dataclass(frozen=True)
 class DomainPack:
     name: str
     version: str
@@ -678,6 +698,7 @@ class DomainPack:
     capability_requirements: tuple[str, ...] = ()
     journal_action: Callable[[Mapping[str, object]], str] | None = None
     closeout_stage: str = ""
+    workflow: DomainPackWorkflow | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -797,6 +818,16 @@ class DomainPack:
             ),
             "artifact_phase": self.artifact_phase,
             "closeout_stage": self.closeout_stage,
+            "workflow": (
+                {
+                    "intent": self.workflow.intent,
+                    "verification_operation": (
+                        self.workflow.verification_operation
+                    ),
+                }
+                if self.workflow is not None
+                else None
+            ),
         }
 
 
@@ -860,6 +891,7 @@ class DomainPackAuthorContract:
     capability_requirements: tuple[str, ...] = ()
     journal_action: Callable[[Mapping[str, object]], str] | None = None
     closeout_stage: str = ""
+    workflow: DomainPackWorkflow | None = None
 
     @property
     def operation(self) -> str:
@@ -892,7 +924,9 @@ class DomainPackAuthorContract:
                 "Domain Pack authors may declare only read-only or reconcilable mutation Effects"
             )
         if self.effect_class is EffectClass.READ_ONLY and (
-            self.reconciler is not None or self.journal_action is not None
+            self.reconciler is not None
+            or self.journal_action is not None
+            or self.workflow is not None
         ):
             raise ValueError("read-only Domain Pack cannot declare mutation recovery")
         if self.effect_class is EffectClass.RECONCILABLE_MUTATION and (
@@ -901,6 +935,15 @@ class DomainPackAuthorContract:
             raise ValueError(
                 "reconcilable mutation Domain Pack requires reconciler and journal action"
             )
+        if self.workflow is not None:
+            if self.effect_class is not EffectClass.RECONCILABLE_MUTATION:
+                raise ValueError(
+                    "only mutation Domain Packs can declare a workflow"
+                )
+            if not self.closeout_stage:
+                raise ValueError(
+                    "Domain Pack mutation workflow requires a closeout stage"
+                )
         if self.artifact_phase and self.artifact_contract is None:
             raise ValueError("Domain Pack artifact phase requires an Artifact contract")
         if (
@@ -936,6 +979,7 @@ class DomainPackAuthorContract:
             capability_requirements=self.capability_requirements,
             journal_action=self.journal_action,
             closeout_stage=self.closeout_stage,
+            workflow=self.workflow,
         )
 
     def operation_descriptor(self) -> OperationDescriptor:
@@ -1033,6 +1077,18 @@ class DomainPackConformanceSuite:
         packs = tuple(contract.build(registry) for contract in authored)
         self.validate(registry, packs)
         for contract, pack in zip(authored, packs, strict=True):
+            if contract.workflow is not None:
+                verification = registry.require(
+                    contract.workflow.verification_operation
+                )
+                if verification.operation == contract.operation:
+                    raise ValueError(
+                        "Domain Pack workflow verification must be a distinct operation"
+                    )
+                if verification.effect_class is not EffectClass.READ_ONLY:
+                    raise ValueError(
+                        "Domain Pack workflow verification must be READ_ONLY"
+                    )
             example = contract.conformance_example
             context = RuntimeSDKContext(
                 task_id=f"conformance-{contract.operation}",

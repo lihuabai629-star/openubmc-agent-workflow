@@ -747,6 +747,14 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                     "diagnosis-only Run."
                 ),
             },
+            "entry_arguments": {
+                "type": "object",
+                "description": (
+                    "Typed arguments for the selected entry_operation; Runtime-owned "
+                    "identity, target, intent, and authorization fields are forbidden."
+                ),
+                "additionalProperties": True,
+            },
             "purpose": {"type": "string"},
             "delivery_strategy": {
                 "type": "string",

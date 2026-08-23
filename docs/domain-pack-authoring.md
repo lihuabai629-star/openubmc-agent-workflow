@@ -66,6 +66,10 @@ contract = DomainPackAuthorContract(
         receipt=hermetic_verified_upgrade_receipt,
     ),
     journal_action=lambda arguments: "upgrade",
+    workflow=DomainPackWorkflow(
+        intent="upgrade-and-verify",
+        verification_operation="debug_collect",
+    ),
     artifact_contract=ArtifactContract(
         path_fields=("artifact_path",),
         digest_field="artifact_sha256",
@@ -80,6 +84,12 @@ contract = DomainPackAuthorContract(
 
 Mutation Pack 固定单次执行尝试。结果未知时只能由 reconciler 使用同一个 Effect identity
 读取持久 journal 并收敛，不能创建替代 Effect。journal action 必须稳定且非空。
+
+若新 Mutation Pack 需要作为 `execute` 的入口，必须声明 `DomainPackWorkflow`。Runtime 只接受
+`live-patch`、`rollback` 或 `upgrade-and-verify` intent，并固定生成两阶段 route：先执行该
+Mutation Pack，再执行一个不同的 READ_ONLY capability 做 fresh verification。验证 operation
+必须已经注册，不能复用 mutation operation，也不能省略 `closeout_stage`。Pack 作者不需要修改
+静态 `WorkflowDefinitions` 或 MCP transport。
 
 ## 注册与一致性
 
@@ -110,12 +120,35 @@ execute({
     "target": "192.0.2.10",
     "intent": "diagnosis-only",
     "entry_operation": "hardware_health",
+    "entry_arguments": {"scope": "fan-zone-1"},
     "purpose": "read target health",
 })
 ```
 
 这不会增加新的 Agent-facing operation；工具面仍只有 `observe` 和 `execute`。此类入口应在
 作者契约中声明 `closeout_stage`，让 Runtime 用对应阶段回执形成终态 Outcome。
+`entry_arguments` 只传递给选中的 Domain Pack，不会泄漏到后续 fresh verification；它不能
+覆盖 `target`、`intent`、`entry_operation`、`delivery_strategy`、workflow control、Case
+identity、授权信息或任何以下划线开头的 Runtime-owned 字段。
+
+声明了 `DomainPackWorkflow` 的 Mutation Pack 使用同一个入口：
+
+```python
+execute({
+    "kind": "start",
+    "target": "192.0.2.10",
+    "intent": "upgrade-and-verify",
+    "entry_operation": "vendor_upgrade",
+    "entry_arguments": {
+        "artifact_ref": hpm_ref.to_public_dict(),
+        "product_version": "2.4.0",
+    },
+    "purpose": "upgrade and verify the target",
+})
+```
+
+Runtime 根据契约选择 `vendor_upgrade -> debug_collect`，并继续负责稳定 Effect identity、
+unknown reconcile、target epoch 与终态 Outcome；作者不能从入口参数注入这些 Runtime 事实。
 
 ## 版本与兼容规则
 

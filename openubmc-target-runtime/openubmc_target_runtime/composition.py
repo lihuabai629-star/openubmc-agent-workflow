@@ -42,7 +42,11 @@ from .run_engine import ObservationEngine, RunEngine, SemanticRuntime
 from .run_store import EventRunStore
 from .runtime_adapter import RuntimeSemanticAdapter
 from .semantic_runtime import SemanticRuntimePort
-from .workflow import DEFAULT_WORKFLOW_DEFINITIONS, WorkflowDefinitions
+from .workflow import (
+    DEFAULT_WORKFLOW_DEFINITIONS,
+    WorkflowDefinitions,
+    WorkflowRoute,
+)
 
 
 DomainTransportInvoker = Callable[
@@ -612,6 +616,21 @@ def compose_runtime(
                 definition.operation: definition.descriptor.owner_skill
                 for definition in extension_definitions
             },
+            routes=tuple(
+                WorkflowRoute(
+                    definition.workflow.intent,
+                    (
+                        ("operation", definition.operation),
+                        (
+                            "operation",
+                            definition.workflow.verification_operation,
+                        ),
+                    ),
+                    entry_operation=definition.operation,
+                )
+                for definition in extension_definitions
+                if definition.workflow is not None
+            ),
         )
     )
     default_operations = {
