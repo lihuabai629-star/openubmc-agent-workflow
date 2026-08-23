@@ -73,6 +73,12 @@ BENCHMARK_MDB_QUERIES = (
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo SocketId",
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.DriveStatus Health",
 )
+SKILL_DISCLOSURE_CAPABILITIES = ("mdbctl",)
+SKILL_DISCLOSURE_MDB_QUERIES = (
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive ResourceId",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Presence",
+)
 BASELINE_PHASE_CONTRACT_STABLE_FIELDS = (
     "receipt_schema",
     "case_id",
@@ -110,8 +116,20 @@ def _tool_output_bytes(item: Mapping[str, object]) -> int:
     )
 
 
-def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, object]:
+def candidate_scope_acceptance(
+    tools: list[Mapping[str, object]], *, scenario: str = "observation"
+) -> dict[str, object]:
     errors: list[str] = []
+    expected_capabilities = (
+        SKILL_DISCLOSURE_CAPABILITIES
+        if scenario == "skill-disclosure"
+        else BENCHMARK_CAPABILITIES
+    )
+    expected_queries = (
+        SKILL_DISCLOSURE_MDB_QUERIES
+        if scenario == "skill-disclosure"
+        else BENCHMARK_MDB_QUERIES
+    )
     if any(
         item.get("type") == "mcp_tool_call"
         and item.get("server") != "openubmc-target-runtime"
@@ -162,11 +180,11 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
         if isinstance(names, list)
         else ()
     )
-    if normalized_names != BENCHMARK_CAPABILITIES:
-        errors.append("capability selector does not match the four required capabilities")
+    if normalized_names != expected_capabilities:
+        errors.append("capability selector does not match the required capabilities")
     queries = mdb.get("queries", []) if isinstance(mdb, Mapping) else []
-    if not isinstance(queries, list) or tuple(queries) != BENCHMARK_MDB_QUERIES:
-        errors.append("MDB selector does not match the nine exact queries")
+    if not isinstance(queries, list) or tuple(queries) != expected_queries:
+        errors.append("MDB selector does not match the exact benchmark queries")
 
     result = _json_object(call.get("result"))
     receipt = _json_object(
@@ -177,8 +195,8 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
         errors.append("candidate must return a complete ObservationReceipt")
     coverage = _json_object(receipt.get("coverage"))
     expected_coverage = {
-        "requested": 13,
-        "available": 13,
+        "requested": len(expected_capabilities) + len(expected_queries),
+        "available": len(expected_capabilities) + len(expected_queries),
         "unavailable": 0,
         "not_checked": 0,
         "complete": True,
@@ -195,13 +213,13 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
         for item in capability_values
         if isinstance(item, Mapping)
     } if isinstance(capability_values, list) else {}
-    if observed_capabilities != {name: "available" for name in BENCHMARK_CAPABILITIES}:
+    if observed_capabilities != {name: "available" for name in expected_capabilities}:
         errors.append("capability results are not fully available")
     mdb_result = _json_object(results.get(mdb_id))
     mdb_values = mdb_result.get("values", [])
     if (
         not isinstance(mdb_values, list)
-        or len(mdb_values) != len(BENCHMARK_MDB_QUERIES)
+        or len(mdb_values) != len(expected_queries)
         or any(
             not isinstance(item, Mapping)
             or item.get("query_index") != index
@@ -210,7 +228,7 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
             for index, item in enumerate(mdb_values)
         )
     ):
-        errors.append("MDB results do not contain nine available raw values")
+        errors.append("MDB results do not contain all available raw values")
     claims = receipt.get("claims", [])
     grounded_ids = {
         str(item.get("selector_id", ""))
@@ -285,6 +303,30 @@ def _qualification_observe_template() -> str:
                     "id": "drive",
                     "kind": "mdb",
                     "queries": list(BENCHMARK_MDB_QUERIES),
+                },
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _skill_disclosure_observe_template() -> str:
+    return json.dumps(
+        {
+            "target": BENCHMARK_TARGET,
+            "freshness": {"mode": "live", "max_age_seconds": 0},
+            "selectors": [
+                {
+                    "id": "capabilities",
+                    "kind": "capability",
+                    "names": ["MDBCTL"],
+                },
+                {
+                    "id": "drive",
+                    "kind": "mdb",
+                    "queries": list(SKILL_DISCLOSURE_MDB_QUERIES),
                 },
             ],
         },
@@ -631,7 +673,9 @@ class RunEvidenceRecord:
         output_tokens = int(usage.get("output_tokens", 0) or 0)
         acceptance = semantic_acceptance(self.final, scenario=self.scenario)
         if self.scenario == "skill-disclosure":
-            scope_validation = candidate_scope_acceptance(tools)
+            scope_validation = candidate_scope_acceptance(
+                tools, scenario=self.scenario
+            )
         elif self.arm == "B":
             scope_validation = (
                 candidate_scope_acceptance(tools)
@@ -872,6 +916,18 @@ def semantic_acceptance(
             "passed": not missing,
             "missing": missing,
             "conclusion_supported": not missing,
+        }
+    if scenario == "skill-disclosure":
+        folded = text.lower().replace("`", "")
+        required = ("mdbctl", "name", "resourceid", "presence")
+        missing = [token for token in required if token not in folded]
+        conclusion = (
+            "不能" in text or "无法" in text
+        ) and "resourceid" in folded and "异常" in text
+        return {
+            "passed": not missing and conclusion,
+            "missing": missing,
+            "conclusion_supported": conclusion,
         }
     folded = text.lower().replace("`", "")
     required_groups = {
@@ -1224,7 +1280,7 @@ def _prompt(
                 "不要列出 MCP resources/templates，不要做工具发现；直接调用 openubmc-target-runtime.observe。",
                 f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
                 "执行一次只读现场核验。唯一一次 observe 必须严格使用下面的完整 JSON 参数，不得增删字段、拆分调用或重试：",
-                _qualification_observe_template(),
+                _skill_disclosure_observe_template(),
                 "该请求使用 Runtime 默认自动策略和 live freshness；不得枚举其他对象或属性。",
                 "报告原始值，并判断这些证据能否单独证明 ResourceId=0 异常，不得臆测源码语义。",
                 "中文回答，不超过 500 字。",

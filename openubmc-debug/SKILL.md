@@ -26,7 +26,9 @@ from implementation:
 Use the default `openubmc-target-runtime` Agent Interface:
 
 - Call `observe` for an exact read-only question. Declare only the selectors needed for the
-  answer and combine related capability and MDB selectors in one observation.
+  answer and combine related capability and MDB selectors in one observation. When the exact
+  request is already supplied, directly call `observe`. Do not check whether the tool exists or
+  report it unavailable unless the call returns an actual error.
 - Call `execute` when work can cross diagnosis, source change, build, live patch, upgrade,
   recovery, verification, or acceptance phases. Continue the retained Run instead of rebuilding
   its request.

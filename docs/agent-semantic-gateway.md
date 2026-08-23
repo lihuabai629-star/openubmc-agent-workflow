@@ -230,6 +230,11 @@ python scripts/agent_gateway_ab.py verify \
 For a Skill-only progressive-disclosure comparison, run both variants through the same Agent profile
 and the same semantic observation prompt:
 
+The fixed live scope intentionally contains only MDBCTL readiness plus the Drive name, ResourceId,
+and presence values needed for the conclusion. Keeping the benchmark question narrow prevents a
+long multi-surface target snapshot from dominating a test whose independent variable is Skill
+entrypoint disclosure.
+
 ```bash
 python scripts/agent_gateway_ab.py run \
   --work-root /path/to/benchmark-work \

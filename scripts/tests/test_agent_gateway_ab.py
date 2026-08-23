@@ -33,6 +33,11 @@ EXPECTED_QUERIES = [
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo SocketId",
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.DriveStatus Health",
 ]
+SKILL_DISCLOSURE_QUERIES = [
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive ResourceId",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Presence",
+]
 
 
 def signing_keys(root: Path) -> tuple[Path, Path]:
@@ -248,6 +253,28 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
             },
         },
     }
+
+
+def skill_disclosure_observe_event():
+    event = candidate_observe_event(queries=SKILL_DISCLOSURE_QUERIES)
+    item = event["item"]
+    item["arguments"]["selectors"][0]["names"] = ["MDBCTL"]
+    receipt = item["result"]["structured_content"]
+    receipt["coverage"] = {
+        "requested": 4,
+        "available": 4,
+        "unavailable": 0,
+        "not_checked": 0,
+        "complete": True,
+    }
+    receipt["results"]["capabilities"]["values"] = [
+        {"name": "mdbctl", "status": "available"}
+    ]
+    receipt["results"]["drive"]["values"] = [
+        {"query_index": index, "status": "available", "value": index}
+        for index in range(3)
+    ]
+    return event
 
 
 def candidate_execute_event(kind: str, state: str, *, elapsed: float):
@@ -713,22 +740,23 @@ class AgentGatewayAbTests(unittest.TestCase):
         )
         self.assertIn(
             '"selectors":[{"id":"capabilities","kind":"capability",'
-            '"names":["SSH","Telnet","MDBCTL","BUSCTL"]},'
+            '"names":["MDBCTL"]},'
             '{"id":"drive","kind":"mdb","queries":[',
             first,
         )
+        self.assertNotIn("TemperatureCelsius", first)
+        self.assertEqual(first.count("getprop Drive_1_010102"), 3)
 
     def test_skill_disclosure_metrics_apply_candidate_scope_to_both_arms(self) -> None:
         events = [
-            candidate_observe_event(),
+            skill_disclosure_observe_event(),
             {
                 "type": "turn.completed",
                 "usage": {"input_tokens": 100, "output_tokens": 10},
             },
         ]
         final = (
-            "SSH Telnet MDBCTL BUSCTL Name Protocol ResourceId SlotNumber Presence "
-            "TemperatureCelsius Type SocketId Health，不能证明 ResourceId 异常。"
+            "MDBCTL Name ResourceId Presence，不能证明 ResourceId 异常。"
         )
 
         for arm in ("A", "B"):
@@ -1522,7 +1550,7 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertEqual(
             evidence["benchmark"]["prompt_digest"],
-            "sha256:00e1a37bce6a65c5f6782ebde771a05b17f8b684e56ef8751bb9f99a9196a3e5",
+            "sha256:00c3357a5b3b7c9f55165dfb675fe2da8db18b58b154593439c9c897764d9852",
         )
         self.assertNotEqual(
             evidence["benchmark"]["prompt_digest"],

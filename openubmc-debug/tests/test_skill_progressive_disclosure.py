@@ -16,6 +16,7 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
         for concept in (
             "observe",
             "execute",
+            "directly call `observe`",
             "two to four complementary",
             "source-only",
             "live-patch",
@@ -25,6 +26,10 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
             "Keep all remote actions read-only",
         ):
             self.assertIn(concept, SKILL)
+
+    def test_exact_observation_does_not_require_tool_discovery(self) -> None:
+        self.assertIn("directly call `observe`", SKILL)
+        self.assertIn("Do not check whether the tool exists", SKILL)
 
     def test_transport_and_runtime_mechanics_are_disclosed_on_demand(self) -> None:
         for detail in (
