@@ -50,6 +50,11 @@ THRESHOLDS = {
     "false_successes": 0,
     "unknown_new_identity_retries": 0,
 }
+SKILL_DISCLOSURE_VALIDITY_THRESHOLDS = {
+    "min_arm_valid_rate": 0.95,
+    "max_invalid_pair_fraction": 0.10,
+    "max_candidate_valid_rate_regression": 0.05,
+}
 BENCHMARK_TARGET = "10.121.136.200"
 QUALIFICATION_MODEL = "gpt-5.6-sol"
 QUALIFICATION_CODEX_CONFIG = (
@@ -1009,6 +1014,65 @@ def _raw_run_valid(item: Mapping[str, object]) -> bool:
     )
 
 
+def _skill_disclosure_validity(
+    metrics: list[Mapping[str, object]],
+    *,
+    pair_ids: list[int],
+    invalid_pairs: list[dict[str, object]],
+) -> dict[str, object]:
+    attempted_pairs = len(pair_ids)
+    attempts = {
+        arm: [item for item in metrics if str(item.get("arm")) == arm]
+        for arm in ("A", "B")
+    }
+    valid_counts = {
+        arm: sum(_raw_run_valid(item) for item in items)
+        for arm, items in attempts.items()
+    }
+    rates = {
+        arm: (
+            round(valid_counts[arm] / attempted_pairs, 6)
+            if attempted_pairs
+            else 0.0
+        )
+        for arm in ("A", "B")
+    }
+    invalid_pair_fraction = (
+        round(len(invalid_pairs) / attempted_pairs, 6)
+        if attempted_pairs
+        else 1.0
+    )
+    candidate_regression = round(rates["A"] - rates["B"], 6)
+    errors: list[str] = []
+    if any(len(items) != attempted_pairs for items in attempts.values()):
+        errors.append("each attempted pair must contain one run for both arms")
+    if rates["A"] < SKILL_DISCLOSURE_VALIDITY_THRESHOLDS["min_arm_valid_rate"]:
+        errors.append("baseline arm validity is below 95%")
+    if rates["B"] < SKILL_DISCLOSURE_VALIDITY_THRESHOLDS["min_arm_valid_rate"]:
+        errors.append("candidate arm validity is below 95%")
+    if (
+        invalid_pair_fraction
+        > SKILL_DISCLOSURE_VALIDITY_THRESHOLDS["max_invalid_pair_fraction"]
+    ):
+        errors.append("invalid pair fraction exceeds 10%")
+    if (
+        candidate_regression
+        > SKILL_DISCLOSURE_VALIDITY_THRESHOLDS[
+            "max_candidate_valid_rate_regression"
+        ]
+    ):
+        errors.append("candidate validity regresses by more than 5 percentage points")
+    return {
+        "passed": not errors,
+        "attempted_pairs": attempted_pairs,
+        "arm_valid_counts": valid_counts,
+        "arm_valid_rates": rates,
+        "invalid_pair_fraction": invalid_pair_fraction,
+        "candidate_valid_rate_regression": candidate_regression,
+        "errors": errors,
+    }
+
+
 def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
     paired: list[tuple[Mapping[str, object], Mapping[str, object]]] = []
     pair_ids = sorted({int(item.get("pair", 0)) for item in metrics})
@@ -1087,22 +1151,42 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
             summaries[metric] = {"passed": False}
             all_pass = False
     valid_pairs = len(paired)
+    attempted_pairs = len(pair_ids)
+    scenarios = {
+        str(item.get("scenario", ""))
+        for item in metrics
+        if str(item.get("scenario", ""))
+    }
+    scenario = next(iter(scenarios)) if len(scenarios) == 1 else ""
+    validity = (
+        _skill_disclosure_validity(
+            metrics,
+            pair_ids=pair_ids,
+            invalid_pairs=invalid,
+        )
+        if scenario == "skill-disclosure"
+        else None
+    )
+    validity_pass = bool(validity["passed"]) if validity is not None else not invalid
     if valid_pairs < CHECKPOINTS[0]:
-        decision = "collect_more"
-        next_pairs = CHECKPOINTS[0]
-    elif all_pass:
+        next_pairs = next(
+            (checkpoint for checkpoint in CHECKPOINTS if checkpoint > attempted_pairs),
+            None,
+        )
+        decision = "collect_more" if next_pairs is not None else "failed"
+    elif all_pass and validity_pass:
         decision = "passed"
         next_pairs = None
-    elif valid_pairs < CHECKPOINTS[1]:
+    elif attempted_pairs < CHECKPOINTS[1]:
         decision = "collect_more"
         next_pairs = CHECKPOINTS[1]
-    elif valid_pairs < CHECKPOINTS[2]:
+    elif attempted_pairs < CHECKPOINTS[2]:
         decision = "collect_more"
         next_pairs = CHECKPOINTS[2]
     else:
         decision = "failed"
         next_pairs = None
-    return {
+    result: dict[str, object] = {
         "schema": SCHEMA,
         "valid_pairs": valid_pairs,
         "invalid_pairs": invalid,
@@ -1111,6 +1195,12 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
         "next_pair_target": next_pairs,
         "thresholds": dict(THRESHOLDS),
     }
+    if validity is not None:
+        result["validity"] = validity
+        result["validity_thresholds"] = dict(
+            SKILL_DISCLOSURE_VALIDITY_THRESHOLDS
+        )
+    return result
 
 
 def validate_schedule(
@@ -1612,6 +1702,13 @@ def release_evidence(
             },
         },
     }
+    if scenario == "skill-disclosure":
+        evidence["validity_thresholds"] = dict(
+            SKILL_DISCLOSURE_VALIDITY_THRESHOLDS
+        )
+        samples = evidence["samples"]
+        assert isinstance(samples, dict)
+        samples["validity"] = dict(_json_object(analysis.get("validity")))
     evidence["evidence_digest"] = _fingerprint(evidence)
     return evidence
 
@@ -1648,7 +1745,19 @@ def verify_summary(
     if valid_pairs < CHECKPOINTS[0]:
         errors.append("AB summary has fewer than ten valid pairs")
     invalid_pairs = summary.get("invalid_pairs", [])
-    if not isinstance(invalid_pairs, list) or invalid_pairs:
+    if not isinstance(invalid_pairs, list):
+        errors.append("AB summary invalid pairs must be an array")
+        invalid_pairs = []
+    if expected_scenario == "skill-disclosure":
+        validity = _json_object(summary.get("validity"))
+        if validity.get("passed") is not True:
+            errors.append("Skill disclosure validity gate did not pass")
+        if (
+            summary.get("validity_thresholds")
+            != SKILL_DISCLOSURE_VALIDITY_THRESHOLDS
+        ):
+            errors.append("Skill disclosure validity thresholds do not match the contract")
+    elif invalid_pairs:
         errors.append("AB summary contains invalid pairs")
     if summary.get("thresholds") != THRESHOLDS:
         errors.append("AB summary thresholds do not match the release contract")
@@ -1672,6 +1781,14 @@ def verify_summary(
     samples = _json_object(evidence.get("samples"))
     if samples.get("valid_pairs") != valid_pairs or samples.get("invalid_pairs") != invalid_pairs:
         errors.append("AB release evidence sample counts do not match the summary")
+    if expected_scenario == "skill-disclosure":
+        if samples.get("validity") != summary.get("validity"):
+            errors.append("AB release evidence validity does not match the summary")
+        if (
+            evidence.get("validity_thresholds")
+            != SKILL_DISCLOSURE_VALIDITY_THRESHOLDS
+        ):
+            errors.append("AB release evidence validity thresholds do not match the contract")
     if evidence.get("thresholds") != THRESHOLDS:
         errors.append("AB release evidence thresholds do not match the release contract")
     if evidence.get("model") != QUALIFICATION_MODEL:
@@ -1768,6 +1885,8 @@ def verify_summary(
                 "decision",
                 "next_pair_target",
                 "thresholds",
+                "validity",
+                "validity_thresholds",
             )
             if any(
                 summary.get(name) != recomputed.get(name)

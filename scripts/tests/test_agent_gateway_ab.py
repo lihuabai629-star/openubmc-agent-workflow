@@ -142,6 +142,33 @@ def passing_metrics(schedule):
     return module.metrics_from_run_evidence(passing_execute_run_evidence(schedule))
 
 
+def skill_disclosure_metrics(pairs: int, *, invalid_candidate_pairs=()):
+    invalid = set(invalid_candidate_pairs)
+    metrics = []
+    for pair in range(1, pairs + 1):
+        for arm in ("A", "B"):
+            valid = not (arm == "B" and pair in invalid)
+            metrics.append(
+                {
+                    "scenario": "skill-disclosure",
+                    "arm": arm,
+                    "pair": pair,
+                    "valid": valid,
+                    "exit_code": 0,
+                    "semantic_acceptance": {"passed": valid},
+                    "scope_acceptance": valid,
+                    "scope_validation": {"passed": valid},
+                    "total_tokens": 100 if arm == "A" else 82,
+                    "noncached_input_plus_output": 100 if arm == "A" else 82,
+                    "duration_seconds": 100 if arm == "A" else 82,
+                    "tool_output_bytes": 100 if valid else 0,
+                    "model_turns": 2,
+                    "time_to_next_actionable_turn_seconds": 100 if arm == "A" else 82,
+                }
+            )
+    return metrics
+
+
 def verify_passing_summary(
     *,
     candidate_commit: str,
@@ -522,6 +549,76 @@ def passing_execute_run_evidence(
                     "execution_id": execution_id,
                     "events": events,
                     "final": "source-only Runtime Outcome completed",
+                }
+            )
+    return {
+        "schema": module.RUN_EVIDENCE_SCHEMA,
+        "source": {
+            "candidate_commit": candidate_commit,
+            "baseline_commit": baseline_commit,
+        },
+        "runs": runs,
+    }
+
+
+def passing_skill_disclosure_run_evidence(
+    schedule,
+    *,
+    candidate_commit: str = "a" * 40,
+    baseline_commit: str = module.DEFAULT_BASELINE_REF,
+    invalid_candidate_pairs=(),
+):
+    invalid = set(invalid_candidate_pairs)
+    runs = []
+    for pair, first, second in schedule:
+        for order, arm in enumerate((first, second), 1):
+            execution_id = str(uuid.UUID(int=10_000 + pair * 2 + (arm == "B")))
+            is_valid = not (arm == "B" and pair in invalid)
+            events = [
+                {"type": "thread.started", "thread_id": execution_id},
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "observe"},
+                },
+            ]
+            if is_valid:
+                observe = skill_disclosure_observe_event()
+                observe["observed_elapsed_seconds"] = 1.0
+                events.append(observe)
+            events.extend(
+                (
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 100 if arm == "A" else 82,
+                            "cached_input_tokens": 20,
+                            "output_tokens": 10,
+                        },
+                    },
+                    {
+                        "type": "runner.completed",
+                        "exit_code": 0,
+                        "duration_seconds": 2.0 if arm == "A" else 1.7,
+                    },
+                )
+            )
+            final = (
+                "MDBCTL Name ResourceId Presence，不能证明 ResourceId 异常。"
+                if is_valid
+                else "无法证明 ResourceId 异常。"
+            )
+            runs.append(
+                {
+                    "scenario": "skill-disclosure",
+                    "arm": arm,
+                    "pair": pair,
+                    "order": order,
+                    "source_commit": (
+                        candidate_commit if arm == "B" else baseline_commit
+                    ),
+                    "execution_id": execution_id,
+                    "events": events,
+                    "final": final,
                 }
             )
     return {
@@ -1456,6 +1553,78 @@ class AgentGatewayAbTests(unittest.TestCase):
             result["invalid_pairs"][0]["missing_or_nonpositive_metrics"]["A"],
         )
 
+    def test_skill_disclosure_allows_one_signed_invalid_candidate_run_at_twenty_pairs(self) -> None:
+        result = module.analyze(
+            skill_disclosure_metrics(20, invalid_candidate_pairs={1})
+        )
+
+        self.assertEqual(result["decision"], "passed")
+        self.assertEqual(result["valid_pairs"], 19)
+        self.assertTrue(result["validity"]["passed"])
+        self.assertEqual(result["validity"]["arm_valid_rates"]["B"], 0.95)
+        self.assertEqual(len(result["invalid_pairs"]), 1)
+
+    def test_skill_disclosure_fails_when_candidate_validity_drops_below_ninety_five_percent(self) -> None:
+        result = module.analyze(
+            skill_disclosure_metrics(30, invalid_candidate_pairs={1, 2})
+        )
+
+        self.assertEqual(result["decision"], "failed")
+        self.assertFalse(result["validity"]["passed"])
+        self.assertIn(
+            "candidate arm validity is below 95%",
+            result["validity"]["errors"],
+        )
+
+    def test_verify_accepts_signed_skill_disclosure_validity_with_one_invalid_candidate_run(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            schedule = module.balanced_schedule(20, seed=7)
+            run_evidence = passing_skill_disclosure_run_evidence(
+                schedule,
+                invalid_candidate_pairs={1},
+            )
+            private_key, public_key = signing_keys(root)
+            signed_run_evidence(
+                root,
+                run_evidence,
+                private_key=private_key,
+                public_key=public_key,
+            )
+            metrics = module.metrics_from_run_evidence(run_evidence)
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            run_evidence_path = write_run_evidence(root, run_evidence)
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="skill-disclosure",
+                requested_pairs=20,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                run_evidence_path=run_evidence_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path,
+                expected_source_commit="a" * 40,
+                expected_baseline_commit=module.DEFAULT_BASELINE_REF,
+                expected_scenario="skill-disclosure",
+                attestation_public_key=public_key,
+            )
+
+        self.assertTrue(verified["promotable"], verified)
+        self.assertEqual(len(verified["invalid_pairs"]), 1)
+
     def test_release_evidence_records_source_environment_thresholds_and_digests(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -1565,6 +1734,8 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("--scenario skill-disclosure", documentation)
         self.assertIn("same Agent profile", documentation)
         self.assertIn("valid pairs", documentation)
+        self.assertIn("95%", documentation)
+        self.assertIn("5 percentage points", documentation)
 
     def test_verify_cli_uses_the_selected_baseline_ref(self) -> None:
         with patch.object(

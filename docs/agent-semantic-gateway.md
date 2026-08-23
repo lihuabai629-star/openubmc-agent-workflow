@@ -261,8 +261,12 @@ python scripts/agent_gateway_ab.py verify \
   --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub
 ```
 
-The candidate is acceptable only when semantic and exact-scope checks pass for both arms, there
-are at least ten valid pairs with no invalid pairs, and every bounded regression metric passes.
+The candidate is acceptable only when semantic and exact-scope checks pass for the paired metric
+sample, there are at least ten valid pairs, and every bounded regression metric passes. Because
+this Skill-only scenario has no side effects, stochastic model/tool-dispatch misses remain signed
+instead of being selectively rerun: each arm must stay at or above 95% validity, invalid pairs may
+not exceed 10%, and candidate validity may not regress by more than 5 percentage points versus the
+baseline. Runtime release and execute qualification continue to require zero invalid pairs.
 The scenario records its own prompt digest, source commits, schedule, raw metrics, environment,
 and signed run evidence. It evaluates Skill disclosure behavior; the default release qualification
 remains `execute-source-only`.
