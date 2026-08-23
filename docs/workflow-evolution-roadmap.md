@@ -31,7 +31,7 @@ M0 至 M5 已完成并通过完整 execute A/B、Release Gate 与 main CI。当�
 | M2 Live Patch 可靠性 | 完成 | 继续扩充真实 target fault evidence |
 | M3 Build-Upgrade Artifact flow | 完成 | 继续扩充长时间 soak 与容量证据 |
 | M4 权威收敛 | 完成 | 集中并删除 compatibility writer；补全 Incident lifecycle |
-| M5 Domain Pack | 完成 | 首个 READ_ONLY Pack 必须是不改变目标的真实操作；Log Bundle 需先拆分生成 Effect 与 ArtifactRef |
+| M5 Domain Pack | 完成 | Log Bundle 已拆成 collect/index/query/export；后三阶段形成真实本地 READ_ONLY Pack，继续补作者契约与跨 Pack 一致性套件 |
 | M6 证据驱动扩展 | 进行中 | 由兼容遥测、Incident 数据和容量证据决定扩展 |
 
 v2 release qualification 基线包含 416 项 Runtime 测试；当前 Runtime composition
@@ -314,7 +314,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 ### P2：v2.x 按遥测扩展
 
 1. workflow version migration 与 old-run support；
-2. Artifact retention、redaction 和 GC；
+2. Artifact retention、redaction 和 GC：已完成持久 Repository、内容寻址、作用域校验、显式释放与红化派生基线；继续补容量和长期保留遥测；
 3. selector 并行与连接复用；
 4. D-Bus、active alarm、bounded log search 等按真实调用缺口增加；
 5. compatibility profile 使用遥测与退役；

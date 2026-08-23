@@ -72,7 +72,7 @@ from .mutation import (
     TargetLeaseCoordinator,
     mutation_journal_operation_status,
 )
-from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
+from .operation_contracts import DEFAULT_OPERATION_CONTRACTS, LOG_BUNDLE_STAGE_CONTRACTS
 from .task_context import TaskContextStore
 from .orchestration import (
     DeliveryStrategy,
@@ -1496,6 +1496,30 @@ class OrchestratedMcpBackend:
                 + ", ".join(sorted(invalid_phase_adapters))
             )
 
+    @property
+    def artifact_store(self):
+        stores = {
+            id(store): store
+            for store in (
+                getattr(backend, "artifact_store", None)
+                for backend in self.tool_backends.values()
+            )
+            if store is not None
+        }
+        if len(stores) > 1:
+            raise ValueError("domain backends must share one Runtime ArtifactStore")
+        return next(iter(stores.values()), None)
+
+    def bind_artifact_store(self, artifact_store: LocalArtifactStore) -> None:
+        seen: set[int] = set()
+        for backend in self.tool_backends.values():
+            if id(backend) in seen:
+                continue
+            seen.add(id(backend))
+            binder = getattr(backend, "bind_artifact_store", None)
+            if callable(binder):
+                binder(artifact_store)
+
     def open_task(self, task_id: str) -> _OrchestratedMcpTask:
         return _OrchestratedMcpTask(
             task_id,
@@ -2074,6 +2098,7 @@ class RuntimeMcpService:
             Iterable[DomainPack],
         ]
         | None = None,
+        artifact_store: LocalArtifactStore | None = None,
         **registry_options: object,
     ) -> None:
         selected_context_mode = str(context_mode).strip().lower()
@@ -2128,8 +2153,15 @@ class RuntimeMcpService:
                     OrchestratedMcpBackend,
                 ),
                 domain_pack_extensions=domain_pack_extensions,
+                artifact_store=(
+                    artifact_store
+                    or getattr(backend, "artifact_store", None)
+                ),
             ),
         )
+        bind_artifact_store = getattr(backend, "bind_artifact_store", None)
+        if callable(bind_artifact_store):
+            bind_artifact_store(self._runtime.artifact_store)
         self._test = self._runtime._test
         self.replay_service = self._runtime.operator.replay_service()
         self.session_outcome_service = SessionOutcomeService(
@@ -2443,6 +2475,71 @@ class RuntimeMcpService:
                             "problem": {"type": "string"},
                             "extract": {"type": "boolean", "default": True},
                         },
+                        "additionalProperties": True,
+                    },
+                }
+            )
+        artifact_ref_schema = {
+            "type": "object",
+            "required": [
+                "handle",
+                "digest",
+                "kind",
+                "size",
+                "provenance",
+                "retention_hint",
+                "target",
+                "run_id",
+            ],
+            "properties": {
+                "schema": {"type": "string"},
+                "handle": {"type": "string", "minLength": 1},
+                "digest": {"type": "string", "minLength": 64},
+                "kind": {"type": "string", "minLength": 1},
+                "size": {"type": "integer", "minimum": 0},
+                "provenance": {"type": "string", "minLength": 1},
+                "retention_hint": {"type": "string", "minLength": 1},
+                "version": {"type": "string"},
+                "target": {"type": "string", "minLength": 1},
+                "run_id": {"type": "string", "minLength": 1},
+            },
+            "additionalProperties": False,
+        }
+        for stage in LOG_BUNDLE_STAGE_CONTRACTS:
+            if not callable(getattr(self.backend, stage.operation, None)):
+                continue
+            properties = {
+                **orchestration_properties,
+                "ip": common_target,
+                "deadline": deadline,
+                "artifact_ref": artifact_ref_schema,
+            }
+            required = ["artifact_ref"]
+            if stage.problem_required:
+                required.append("problem")
+                properties.update(
+                    {
+                        "problem": {"type": "string", "minLength": 1},
+                        "max_files": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 32,
+                        },
+                        "max_lines": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 256,
+                        },
+                    }
+                )
+            definitions.append(
+                {
+                    "name": stage.operation,
+                    "description": stage.description,
+                    "inputSchema": {
+                        "type": "object",
+                        "required": required,
+                        "properties": properties,
                         "additionalProperties": True,
                     },
                 }

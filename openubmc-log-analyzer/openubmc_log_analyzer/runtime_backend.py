@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Mapping
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import threading
 from typing import Callable
 import uuid
@@ -50,6 +52,15 @@ runtime_content_digest = _runtime_distribution.runtime_content_digest
 TARGET_RUNTIME_API_VERSION = "openubmc.target-runtime.v1"
 PACKAGE_MARKER = ".openubmc-log-analyzer-package.json"
 _RUNTIME_CACHE: dict[str, object] = {}
+LOG_BUNDLE_KIND = "openubmc-log-bundle"
+LOG_INDEX_KIND = "openubmc-log-index"
+LOG_QUERY_RAW_KIND = "openubmc-log-query-raw"
+LOG_QUERY_KIND = "openubmc-log-query"
+LOG_REPORT_RAW_KIND = "openubmc-log-report-raw"
+LOG_REPORT_KIND = "openubmc-log-report"
+MAX_INDEX_ENTRIES = 4096
+MAX_QUERY_BYTES = 64 * 1024
+MAX_REPORT_BYTES = 128 * 1024
 
 
 def _runtime_failure(reason: str) -> SystemExit:
@@ -151,6 +162,338 @@ def _load_runtime_module():
             expected_digest=None,
         )
     raise _runtime_failure("no installed, canonical, or vendored Runtime is available")
+
+
+class LogBundleStages:
+    """Local content pipeline behind four ArtifactRef-based stage interfaces."""
+
+    def __init__(self, artifact_store: object) -> None:
+        required = ("put", "redact", "resolve", "reference", "find")
+        missing = [name for name in required if not callable(getattr(artifact_store, name, None))]
+        if missing:
+            raise TypeError(
+                "Log Bundle stages require an ArtifactStore with: "
+                + ", ".join(missing)
+            )
+        self.artifact_store = artifact_store
+
+    def _reference(self, value: object):
+        if not isinstance(value, Mapping) and not hasattr(value, "to_public_dict"):
+            raise TypeError("artifact_ref must be an object")
+        return self.artifact_store.reference(value)
+
+    @staticmethod
+    def _write(path: Path, body: bytes) -> None:
+        path.write_bytes(body)
+
+    @staticmethod
+    def _json_bytes(value: object) -> bytes:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    @staticmethod
+    def _bounded_analysis(value: Mapping[str, object]) -> dict[str, object]:
+        bounded = json.loads(json.dumps(dict(value)))
+        while len(LogBundleStages._json_bytes(bounded)) > MAX_QUERY_BYTES:
+            selected = bounded.get("selected_logs", [])
+            if not isinstance(selected, list) or not selected:
+                raise ValueError("Log Bundle query result exceeds its byte budget")
+            candidate = next(
+                (
+                    item
+                    for item in reversed(selected)
+                    if isinstance(item, dict)
+                    and isinstance(item.get("evidence_lines"), list)
+                    and item["evidence_lines"]
+                ),
+                None,
+            )
+            if candidate is not None:
+                candidate["evidence_lines"].pop()
+                candidate["evidence_truncated"] = True
+                continue
+            selected.pop()
+            bounded["selected_logs_truncated"] = True
+        return bounded
+
+    def collect(
+        self,
+        bundle_path: Path,
+        *,
+        target: str,
+        run_id: str,
+        operation_id: str,
+        transport: str,
+        remote_bundle_path: str,
+        generation_ran: bool,
+    ) -> dict[str, object]:
+        existing = self.artifact_store.find(
+            kind=LOG_BUNDLE_KIND,
+            target=target,
+            run_id=run_id,
+            created_by_effect=operation_id,
+        )
+        reference = existing or self.artifact_store.put(
+            Path(bundle_path),
+            kind=LOG_BUNDLE_KIND,
+            provenance=f"log-bundle-collect:{transport}",
+            retention_hint="run-lifetime",
+            target=target,
+            run_id=run_id,
+            created_by_effect=operation_id,
+        )
+        return {
+            "stage": "collect",
+            "artifact_ref": reference.to_public_dict(),
+            "remote_bundle_path": remote_bundle_path,
+            "generation_ran": bool(generation_ran),
+            "transport": transport,
+        }
+
+    def index(
+        self,
+        artifact_ref: object,
+        *,
+        target: str,
+        run_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        reference = self._reference(artifact_ref)
+        bundle_path = self.artifact_store.resolve(
+            reference,
+            expected_kinds=(LOG_BUNDLE_KIND,),
+            expected_target=target,
+            expected_run_id=run_id,
+        )
+        existing = self.artifact_store.find(
+            kind=LOG_INDEX_KIND,
+            target=target,
+            run_id=run_id,
+            created_by_effect=operation_id,
+        )
+        if existing is not None:
+            return {"stage": "index", "artifact_ref": existing.to_public_dict()}
+        with tempfile.TemporaryDirectory(prefix="openubmc-log-index-") as raw:
+            extraction = pull_bundle.extract_archive(bundle_path, Path(raw))
+            indexed_paths = sorted(
+                path
+                for path in extraction.bundle_root.rglob("*")
+                if path.is_file()
+            )
+            entries = {
+                path.relative_to(extraction.bundle_root).as_posix(): {
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "size": path.stat().st_size,
+                }
+                for path in indexed_paths[:MAX_INDEX_ENTRIES]
+            }
+        body = self._json_bytes(
+            {
+                "schema": "openubmc-log-analyzer/index-v1",
+                "source_artifact_ref": reference.to_public_dict(),
+                "entries": entries,
+                "entry_count": len(indexed_paths),
+                "entries_truncated": len(indexed_paths) > MAX_INDEX_ENTRIES,
+            }
+        )
+        with tempfile.TemporaryDirectory(prefix="openubmc-log-index-body-") as raw:
+            path = Path(raw) / "index.json"
+            self._write(path, body)
+            indexed = self.artifact_store.put(
+                path,
+                kind=LOG_INDEX_KIND,
+                provenance="log-bundle-index",
+                retention_hint="run-lifetime",
+                target=target,
+                run_id=run_id,
+                created_by_effect=operation_id,
+            )
+        return {
+            "stage": "index",
+            "artifact_ref": indexed.to_public_dict(),
+            "entry_count": len(indexed_paths),
+            "entries_truncated": len(indexed_paths) > MAX_INDEX_ENTRIES,
+        }
+
+    def query(
+        self,
+        artifact_ref: object,
+        *,
+        target: str,
+        run_id: str,
+        operation_id: str,
+        problem: str,
+        max_files: int = pull_bundle.DEFAULT_ANALYSIS_MAX_FILES,
+        max_lines: int = pull_bundle.DEFAULT_ANALYSIS_MAX_LINES,
+        since: object = None,
+        until: object = None,
+    ) -> dict[str, object]:
+        if not str(problem).strip():
+            raise ValueError("Log Bundle query problem is required")
+        if not 1 <= int(max_files) <= 32 or not 1 <= int(max_lines) <= 256:
+            raise ValueError("Log Bundle query limits are out of range")
+        reference = self._reference(artifact_ref)
+        index_path = self.artifact_store.resolve(
+            reference,
+            expected_kinds=(LOG_INDEX_KIND,),
+            expected_target=target,
+            expected_run_id=run_id,
+        )
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Log Bundle index is unreadable") from exc
+        source_raw = index.get("source_artifact_ref") if isinstance(index, Mapping) else None
+        source = self._reference(source_raw)
+        bundle_path = self.artifact_store.resolve(
+            source,
+            expected_kinds=(LOG_BUNDLE_KIND,),
+            expected_target=target,
+            expected_run_id=run_id,
+        )
+        existing = self.artifact_store.find(
+            kind=LOG_QUERY_KIND,
+            target=target,
+            run_id=run_id,
+            created_by_effect=operation_id,
+        )
+        if existing is not None:
+            return {"stage": "query", "artifact_ref": existing.to_public_dict()}
+        with tempfile.TemporaryDirectory(prefix="openubmc-log-query-") as raw:
+            extraction = pull_bundle.extract_archive(bundle_path, Path(raw))
+            entries = index.get("entries") if isinstance(index, Mapping) else None
+            if not isinstance(entries, Mapping):
+                raise ValueError("Log Bundle index omits its content manifest")
+            indexed_paths: set[str] = set()
+            for relative_path, raw_identity in entries.items():
+                if not isinstance(relative_path, str) or not isinstance(
+                    raw_identity, Mapping
+                ):
+                    raise ValueError("Log Bundle index contains invalid entries")
+                normalized = Path(relative_path)
+                if normalized.is_absolute() or any(
+                    part in {"", ".", ".."} for part in normalized.parts
+                ):
+                    raise ValueError("Log Bundle index contains an unsafe path")
+                candidate = extraction.bundle_root / normalized
+                if not candidate.is_file():
+                    raise ValueError("Log Bundle content no longer matches its index")
+                body = candidate.read_bytes()
+                if (
+                    hashlib.sha256(body).hexdigest()
+                    != str(raw_identity.get("sha256", ""))
+                    or len(body) != raw_identity.get("size")
+                ):
+                    raise ValueError("Log Bundle content no longer matches its index")
+                indexed_paths.add(normalized.as_posix())
+            for candidate in extraction.bundle_root.rglob("*"):
+                if not candidate.is_file():
+                    continue
+                relative = candidate.relative_to(extraction.bundle_root).as_posix()
+                if relative not in indexed_paths:
+                    candidate.unlink()
+            analysis = pull_bundle.analyze_bundle(
+                extraction.bundle_root,
+                str(problem).strip(),
+                max_files=int(max_files),
+                max_lines=int(max_lines),
+                since=since,
+                until=until,
+            )
+        bounded = self._bounded_analysis(analysis)
+        with tempfile.TemporaryDirectory(prefix="openubmc-log-query-body-") as raw:
+            raw_path = Path(raw) / "query-raw.json"
+            self._write(raw_path, self._json_bytes(bounded))
+            raw_reference = self.artifact_store.put(
+                raw_path,
+                kind=LOG_QUERY_RAW_KIND,
+                provenance="log-bundle-query",
+                retention_hint="temporary",
+                target=target,
+                run_id=run_id,
+                created_by_effect=f"{operation_id}-raw",
+            )
+            queried = self.artifact_store.redact(
+                raw_reference,
+                kind=LOG_QUERY_KIND,
+                provenance="log-bundle-query-redaction",
+                retention_hint="run-lifetime",
+                created_by_effect=operation_id,
+                max_bytes=MAX_QUERY_BYTES,
+            )
+        return {
+            "stage": "query",
+            "artifact_ref": queried.to_public_dict(),
+            "summary": str(bounded.get("summary", "")),
+        }
+
+    def export(
+        self,
+        artifact_ref: object,
+        *,
+        target: str,
+        run_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        reference = self._reference(artifact_ref)
+        query_path = self.artifact_store.resolve(
+            reference,
+            expected_kinds=(LOG_QUERY_KIND,),
+            expected_target=target,
+            expected_run_id=run_id,
+            require_redacted=True,
+        )
+        if query_path.stat().st_size > MAX_QUERY_BYTES:
+            raise ValueError("Log Bundle query exceeds the export byte budget")
+        existing = self.artifact_store.find(
+            kind=LOG_REPORT_KIND,
+            target=target,
+            run_id=run_id,
+            created_by_effect=operation_id,
+        )
+        if existing is not None:
+            return {"stage": "export", "artifact_ref": existing.to_public_dict()}
+        query = json.loads(query_path.read_text(encoding="utf-8"))
+        summary = str(query.get("summary", "")) if isinstance(query, Mapping) else ""
+        report = (
+            "# openUBMC Log Bundle Report\n\n"
+            + summary
+            + "\n\n```json\n"
+            + json.dumps(query, ensure_ascii=False, sort_keys=True, indent=2)
+            + "\n```\n"
+        )
+        report_body = report.encode("utf-8")
+        if len(report_body) > MAX_REPORT_BYTES:
+            raise ValueError("Log Bundle report exceeds its byte budget")
+        with tempfile.TemporaryDirectory(prefix="openubmc-log-report-") as raw:
+            report_path = Path(raw) / "report.md"
+            self._write(report_path, report_body)
+            raw_reference = self.artifact_store.put(
+                report_path,
+                kind=LOG_REPORT_RAW_KIND,
+                provenance="log-bundle-export",
+                retention_hint="temporary",
+                target=target,
+                run_id=run_id,
+                created_by_effect=f"{operation_id}-raw",
+            )
+            exported = self.artifact_store.redact(
+                raw_reference,
+                kind=LOG_REPORT_KIND,
+                provenance="log-bundle-export-redaction",
+                retention_hint="run-lifetime",
+                created_by_effect=operation_id,
+                max_bytes=MAX_REPORT_BYTES,
+            )
+        return {
+            "stage": "export",
+            "artifact_ref": exported.to_public_dict(),
+            "summary": summary,
+        }
 
 
 class PullBundleRedfishTransport:
@@ -833,7 +1176,7 @@ class LogBundleMcpTask:
 
 
 class LogBundleMcpBackend:
-    """Domain backend for the MCP `log_bundle_collect` tool."""
+    """Compatibility adapter over ArtifactRef-based Log Bundle stages."""
 
     def __init__(
         self,
@@ -841,12 +1184,30 @@ class LogBundleMcpBackend:
         redfish_transport_factory: Callable[[object], object] | None = None,
         ssh_transport_factory: Callable[[object], object] | None = None,
         max_cached_leases: int = 32,
+        artifact_store: object | None = None,
     ) -> None:
         if max_cached_leases < 1:
             raise ValueError("max_cached_leases must be positive")
         self.redfish_transport_factory = redfish_transport_factory
         self.ssh_transport_factory = ssh_transport_factory
         self.max_cached_leases = int(max_cached_leases)
+        self.artifact_store = artifact_store
+        self.stages = (
+            LogBundleStages(self.artifact_store)
+            if self.artifact_store is not None
+            else None
+        )
+
+    def bind_artifact_store(self, artifact_store: object) -> None:
+        if self.artifact_store is not None and self.artifact_store is not artifact_store:
+            raise ValueError("Log Analyzer is already bound to another ArtifactStore")
+        self.artifact_store = artifact_store
+        self.stages = LogBundleStages(artifact_store)
+
+    def _stage_module(self) -> LogBundleStages:
+        if self.stages is None:
+            raise RuntimeError("Log Analyzer ArtifactStore is not bound")
+        return self.stages
 
     def open_task(self, task_id: str) -> LogBundleMcpTask:
         return LogBundleMcpTask(
@@ -868,11 +1229,11 @@ class LogBundleMcpBackend:
     def task_status(task: LogBundleMcpTask) -> dict[str, object]:
         return task.status()
 
-    @staticmethod
-    def log_bundle_collect(task, arguments, context) -> dict[str, object]:
+    def log_bundle_collect(self, task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
         bounded = dict(arguments)
         credential_values = bounded.pop("_credential_values", None)
+        native_collect = bounded.pop("_context_authoritative", None) is True
         if credential_values is not None and not isinstance(
             credential_values,
             Mapping,
@@ -892,7 +1253,6 @@ class LogBundleMcpBackend:
             args.local_dir
             or f"/tmp/openubmc-log-analyzer/{args.ip}/bundles"
         )
-        extract_parent = Path(args.extract_dir or local_dir / "extract")
         search_roots = args.search_roots or list(pull_bundle.DEFAULT_SEARCH_ROOTS)
         name_globs = args.name_globs or list(pull_bundle.DEFAULT_NAME_GLOBS)
         stage = task.lease_for(
@@ -908,17 +1268,31 @@ class LogBundleMcpBackend:
             name_globs=name_globs,
         )
         context.raise_if_stopped()
-        extraction = (
-            pull_bundle.extract_archive(stage.local_bundle_path, extract_parent)
-            if args.extract
-            else None
+        stages = self._stage_module()
+        collected = stages.collect(
+            stage.local_bundle_path,
+            target=args.ip,
+            run_id=task.task_id,
+            operation_id=str(context.operation_id),
+            transport=stage.transport,
+            remote_bundle_path=stage.remote_bundle_path,
+            generation_ran=stage.generation_ran,
         )
-        analysis = None
-        if args.problem.strip():
-            if extraction is None:
+        indexed = None
+        queried = None
+        exported = None
+        if args.extract and not native_collect:
+            indexed = stages.index(
+                collected["artifact_ref"],
+                target=args.ip,
+                run_id=task.task_id,
+                operation_id=f"{context.operation_id}-index",
+            )
+        if args.problem.strip() and not native_collect:
+            if indexed is None:
                 raise pull_bundle.BundlePullError(
                     "invalid_request",
-                    "--problem requires extraction; remove --no-extract.",
+                    "--problem requires indexing; remove --no-extract.",
                 )
             since = pull_bundle.parse_analysis_time_bound(
                 args.analysis_since,
@@ -928,25 +1302,48 @@ class LogBundleMcpBackend:
                 args.analysis_until,
                 label="--analysis-until",
             )
-            analysis = pull_bundle.analyze_bundle(
-                extraction.bundle_root,
-                args.problem.strip(),
+            queried = stages.query(
+                indexed["artifact_ref"],
+                target=args.ip,
+                run_id=task.task_id,
+                operation_id=f"{context.operation_id}-query",
+                problem=args.problem.strip(),
                 max_files=args.analysis_max_files,
                 max_lines=args.analysis_max_lines,
                 since=since,
                 until=until,
             )
+            exported = stages.export(
+                queried["artifact_ref"],
+                target=args.ip,
+                run_id=task.task_id,
+                operation_id=f"{context.operation_id}-export",
+            )
         result: dict[str, object] = {
             "remote_bundle_path": stage.remote_bundle_path,
-            "local_bundle_path": str(stage.local_bundle_path),
-            "extract_dir": str(extraction.extract_dir) if extraction else "",
-            "bundle_root": str(extraction.bundle_root) if extraction else "",
             "generation_ran": stage.generation_ran,
             "transport": stage.transport,
-            "next_step": "使用 openubmc-log-analyzer 工作流分析 bundle_root",
+            "artifact_ref": (
+                exported["artifact_ref"]
+                if exported is not None
+                else queried["artifact_ref"]
+                if queried is not None
+                else indexed["artifact_ref"]
+                if indexed is not None
+                else collected["artifact_ref"]
+            ),
+            "bundle_artifact_ref": collected["artifact_ref"],
+            "index_artifact_ref": indexed["artifact_ref"] if indexed else None,
+            "query_artifact_ref": queried["artifact_ref"] if queried else None,
+            "report_artifact_ref": exported["artifact_ref"] if exported else None,
+            "next_step": (
+                "review the redacted report ArtifactRef"
+                if exported is not None
+                else "query the index ArtifactRef with a bounded problem statement"
+                if indexed is not None
+                else "index the bundle ArtifactRef"
+            ),
         }
-        if analysis is not None:
-            result["analysis"] = analysis
         return pull_bundle.build_payload(
             ok=True,
             code="ok",
@@ -960,4 +1357,47 @@ class LogBundleMcpBackend:
                 "extract": args.extract,
             },
             result=result,
+        )
+
+    def log_bundle_index(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        bounded = dict(arguments)
+        bounded.pop("_artifact_path", None)
+        bounded.pop("_artifact_sha256", None)
+        return self._stage_module().index(
+            bounded.get("artifact_ref"),
+            target=str(bounded.get("ip", "")),
+            run_id=task.task_id,
+            operation_id=str(context.operation_id),
+        )
+
+    def log_bundle_query(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        bounded = dict(arguments)
+        bounded.pop("_artifact_path", None)
+        bounded.pop("_artifact_sha256", None)
+        return self._stage_module().query(
+            bounded.get("artifact_ref"),
+            target=str(bounded.get("ip", "")),
+            run_id=task.task_id,
+            operation_id=str(context.operation_id),
+            problem=str(bounded.get("problem", "")),
+            max_files=int(
+                bounded.get("max_files", pull_bundle.DEFAULT_ANALYSIS_MAX_FILES)
+            ),
+            max_lines=int(
+                bounded.get("max_lines", pull_bundle.DEFAULT_ANALYSIS_MAX_LINES)
+            ),
+        )
+
+    def log_bundle_export(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        bounded = dict(arguments)
+        bounded.pop("_artifact_path", None)
+        bounded.pop("_artifact_sha256", None)
+        return self._stage_module().export(
+            bounded.get("artifact_ref"),
+            target=str(bounded.get("ip", "")),
+            run_id=task.task_id,
+            operation_id=str(context.operation_id),
         )

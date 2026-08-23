@@ -84,6 +84,9 @@ commands and records, but it must delegate the authoritative transition to the o
   produce success without fresh verification.
 - Large Evidence, logs, build products, patches, and observation sources travel by ArtifactRef,
   not by embedding bytes in Run state or Agent context.
+- Runtime-managed ArtifactRefs use content-addressed handles and persistent lifecycle metadata;
+  redaction always derives new bytes and a new digest, while GC removes content only after its
+  final retained reference expires or is explicitly released.
 - Workflow definitions are version-pinned for each Run.
 - MCP, CLI, queues, and future durable engines remain replaceable Adapters; their vocabulary does
   not enter the domain model.

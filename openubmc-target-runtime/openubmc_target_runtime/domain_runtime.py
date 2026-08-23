@@ -160,6 +160,7 @@ class RuntimeDomainExecution:
                     expected_kinds=(expected_kind,) if expected_kind else (),
                     expected_target=expected_target,
                     expected_run_id=task_id,
+                    require_redacted=contract.require_redacted,
                 )
             )
             bounded_arguments["artifact_ref"] = reference.to_public_dict()
@@ -171,22 +172,37 @@ class RuntimeDomainExecution:
             if recovery_mode is EffectRecoveryMode.RECONCILE
             else self.domain_executor.execute
         )
-        result = dict(
-            execute(
-                name,
-                context=RuntimeSDKContext(
-                    task_id=task_id,
-                    operation_id=operation_id,
-                    timeout_seconds=timeout,
-                    target_id=str(bounded_arguments.get("target_id", "")),
-                    minimum_target_epoch=int(
-                        bounded_arguments.get("_minimum_target_epoch", 0)
-                    ),
-                    recovery_mode=recovery_mode,
+        domain_result = execute(
+            name,
+            context=RuntimeSDKContext(
+                task_id=task_id,
+                operation_id=operation_id,
+                timeout_seconds=timeout,
+                target_id=str(bounded_arguments.get("target_id", "")),
+                minimum_target_epoch=int(
+                    bounded_arguments.get("_minimum_target_epoch", 0)
                 ),
-                arguments=bounded_arguments,
-            ).value
+                recovery_mode=recovery_mode,
+            ),
+            arguments=bounded_arguments,
         )
+        result = dict(domain_result.value)
+        pack = self.domain_executor.pack_for(name)
+        result_contract = (
+            pack.result_artifact_contract if pack is not None else None
+        )
+        if result_contract is not None:
+            reference = result_contract.bind(
+                domain_result.action,
+                domain_result.receipt,
+            )
+            self.artifact_store.resolve(
+                reference,
+                expected_kinds=(result_contract.artifact_kind,),
+                expected_target=str(bounded_arguments.get("ip", "")).strip(),
+                expected_run_id=task_id,
+                require_redacted=result_contract.require_redacted,
+            )
         if isinstance(raw_artifact_ref, Mapping) and raw_artifact_ref:
             reference = ArtifactRef.from_public_dict(raw_artifact_ref)
             result.setdefault("artifact_ref", reference.to_public_dict())

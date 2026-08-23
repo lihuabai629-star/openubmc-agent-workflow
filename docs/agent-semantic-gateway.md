@@ -250,10 +250,9 @@ operations instead of adding Agent-facing tools:
 
 1. use persistent compatibility telemetry to retire the remaining legacy writers while retaining
    explicit old-event upcasters;
-2. add the first READ_ONLY Domain Pack only from measured development demand; the shared contract
-   and conformance suite are already extracted from Live Patch and Upgrade. The current combined
-   `log_bundle_collect` operation is not eligible: its Redfish and optional SSH paths can generate
-   a target-side dump, and its result must become an ArtifactRef before Pack extraction;
+2. Log Bundle collection now produces a content-bound ArtifactRef, while local index, bounded
+   query, and redacted export are separate internal READ_ONLY Domain Packs. Collection remains a
+   target-affecting Effect and is not reclassified as read-only;
 3. add selector Adapters for D-Bus properties, verified active alarms, and bounded log search only
    from measured development gaps;
 4. keep evidence inspection, Replay, governance, and lifecycle automation in the operator/CI plane;

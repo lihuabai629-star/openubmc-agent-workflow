@@ -354,6 +354,8 @@ class ArtifactContract:
     version_field: str = ""
     artifact_kind: str = "runtime-artifact"
     required: bool = False
+    reference_required: bool = False
+    require_redacted: bool = False
 
     def __post_init__(self) -> None:
         if not self.path_fields or any(not field.strip() for field in self.path_fields):
@@ -373,6 +375,8 @@ class ArtifactContract:
             if reference.kind != self.artifact_kind:
                 raise ValueError("Domain Action ArtifactRef has the wrong kind")
             return reference
+        if self.reference_required:
+            raise ValueError("Domain Action requires an ArtifactRef")
         path = next(
             (
                 str(arguments.get(field, "")).strip()
@@ -417,6 +421,37 @@ class ArtifactContract:
                 raise ValueError("Domain Action is missing its Artifact version")
             arguments[self.version_field] = reference.version
         return arguments
+
+
+@dataclass(frozen=True)
+class ResultArtifactContract:
+    artifact_kind: str
+    require_redacted: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.artifact_kind.strip():
+            raise ValueError("Domain Result ArtifactRef kind is required")
+
+    def bind(self, action: "DomainAction", receipt: "DomainReceipt") -> ArtifactRef:
+        raw_reference = receipt.value.get("artifact_ref")
+        if not isinstance(raw_reference, Mapping):
+            result = receipt.value.get("result")
+            raw_reference = (
+                result.get("artifact_ref")
+                if isinstance(result, Mapping)
+                else None
+            )
+        if not isinstance(raw_reference, Mapping):
+            raise ValueError("Domain Result omits its ArtifactRef")
+        reference = ArtifactRef.from_public_dict(raw_reference)
+        if reference.kind != self.artifact_kind:
+            raise ValueError("Domain Result ArtifactRef has the wrong kind")
+        if reference.run_id != action.context.task_id:
+            raise ValueError("Domain Result ArtifactRef belongs to another Run")
+        expected_target = str(action.arguments.get("ip", "")).strip()
+        if expected_target and reference.target != expected_target:
+            raise ValueError("Domain Result ArtifactRef targets another BMC")
+        return reference
 
 
 @dataclass(frozen=True)
@@ -603,6 +638,7 @@ class DomainPack:
     verifier: DomainVerifier
     reconciler: DomainAdapter | None = None
     artifact_contract: ArtifactContract | None = None
+    result_artifact_contract: ResultArtifactContract | None = None
     artifact_phase: str = ""
     capability_requirements: tuple[str, ...] = ()
     journal_action: Callable[[Mapping[str, object]], str] | None = None
@@ -709,8 +745,18 @@ class DomainPack:
                     "version_field": self.artifact_contract.version_field,
                     "artifact_kind": self.artifact_contract.artifact_kind,
                     "required": self.artifact_contract.required,
+                    "reference_required": self.artifact_contract.reference_required,
+                    "require_redacted": self.artifact_contract.require_redacted,
                 }
                 if self.artifact_contract is not None
+                else None
+            ),
+            "result_artifact_contract": (
+                {
+                    "artifact_kind": self.result_artifact_contract.artifact_kind,
+                    "require_redacted": self.result_artifact_contract.require_redacted,
+                }
+                if self.result_artifact_contract is not None
                 else None
             ),
             "artifact_phase": self.artifact_phase,

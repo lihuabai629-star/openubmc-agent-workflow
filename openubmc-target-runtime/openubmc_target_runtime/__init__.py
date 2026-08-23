@@ -51,6 +51,7 @@ from .capability import (
     DomainAdapter,
     DomainPack,
     DomainReceipt,
+    ResultArtifactContract,
     DomainResult,
     EffectClass,
     EffectRecoveryMode,
@@ -210,6 +211,14 @@ from .mcp import (
     StdioMcpServer,
 )
 from .run_engine import ObservationEngine, RunEngine, SemanticRuntime
+from .artifact_store import (
+    ARTIFACT_RECORD_SCHEMA,
+    ArtifactRecord,
+    ArtifactRepository,
+    InMemoryArtifactRepository,
+    LocalArtifactStore,
+    SQLiteArtifactRepository,
+)
 from .run_store import (
     RUN_DECISION_SCHEMA,
     RUN_DECISION_VERSION,
@@ -483,6 +492,7 @@ __all__ = [
     "DomainAdapter",
     "DomainPack",
     "DomainReceipt",
+    "ResultArtifactContract",
     "DomainResult",
     "EffectClass",
     "RuntimeSDK",
@@ -558,6 +568,12 @@ __all__ = [
     "JsonRpcMcpEndpoint",
     "AGENT_REQUEST_MAX_BYTES",
     "ARTIFACT_REF_SCHEMA",
+    "ARTIFACT_RECORD_SCHEMA",
+    "ArtifactRecord",
+    "ArtifactRepository",
+    "InMemoryArtifactRepository",
+    "LocalArtifactStore",
+    "SQLiteArtifactRepository",
     "OBSERVATION_REF_SCHEMA",
     "SEMANTIC_RUNTIME_SCHEMA",
     "ArtifactRef",
