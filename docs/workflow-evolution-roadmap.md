@@ -1,7 +1,7 @@
 # openUBMC Agent Workflow 后续演进档案
 
-日期：2026-08-22
-当前基线：GitHub `main` 的 `f9c312d`
+日期：2026-08-23
+当前基线：GitHub `main` 的 `cf2f377`
 v2 候选 source：`89511ae`
 v2 候选 lock-only commit：`22ebc53`
 用途：后续讨论入口、决策索引和实施路线；详细论证仍以链接文档为准。
@@ -31,11 +31,11 @@ M0 至 M5 已完成并通过完整 execute A/B、Release Gate 与 main CI。当�
 | M2 Live Patch 可靠性 | 完成 | 继续扩充真实 target fault evidence |
 | M3 Build-Upgrade Artifact flow | 完成 | 继续扩充长时间 soak 与容量证据 |
 | M4 权威收敛 | 完成 | 集中并删除 compatibility writer；补全 Incident lifecycle |
-| M5 Domain Pack | 完成 | 根据真实调用选择首个 READ_ONLY Pack |
+| M5 Domain Pack | 完成 | 首个 READ_ONLY Pack 必须是不改变目标的真实操作；Log Bundle 需先拆分生成 Effect 与 ArtifactRef |
 | M6 证据驱动扩展 | 进行中 | 由兼容遥测、Incident 数据和容量证据决定扩展 |
 
-v2 release qualification 基线包含 416 项 Runtime 测试；当前 compatibility telemetry
-候选在本地完整验证中为 423 项。完整 execute A/B 为 10 组有效、0 无效，
+v2 release qualification 基线包含 416 项 Runtime 测试；当前 Runtime composition
+主线为 429 项。完整 execute A/B 为 10 组有效、0 无效，
 `decision=passed`；Release Gate 为 `promotable=true`；main CI run `32544813303` 的
 CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2`，是否创建
 `v2.0.0` tag 是独立发布决策。
