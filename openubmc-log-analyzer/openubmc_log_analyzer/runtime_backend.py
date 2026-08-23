@@ -56,6 +56,7 @@ LOG_BUNDLE_KIND = "openubmc-log-bundle"
 LOG_INDEX_KIND = "openubmc-log-index"
 LOG_QUERY_RAW_KIND = "openubmc-log-query-raw"
 LOG_QUERY_KIND = "openubmc-log-query"
+LOG_REPORT_RAW_KIND = "openubmc-log-report-raw"
 LOG_REPORT_KIND = "openubmc-log-report"
 MAX_INDEX_ENTRIES = 4096
 MAX_QUERY_BYTES = 64 * 1024
@@ -166,7 +167,7 @@ class LogBundleStages:
     """Local content pipeline behind four ArtifactRef-based stage interfaces."""
 
     def __init__(self, artifact_store: object) -> None:
-        required = ("put", "put_redacted", "redact", "resolve", "reference", "find")
+        required = ("put", "redact", "resolve", "reference", "find")
         missing = [name for name in required if not callable(getattr(artifact_store, name, None))]
         if missing:
             raise TypeError(
@@ -366,12 +367,18 @@ class LogBundleStages:
             entries = index.get("entries") if isinstance(index, Mapping) else None
             if not isinstance(entries, Mapping):
                 raise ValueError("Log Bundle index omits its content manifest")
+            indexed_paths: set[str] = set()
             for relative_path, raw_identity in entries.items():
                 if not isinstance(relative_path, str) or not isinstance(
                     raw_identity, Mapping
                 ):
                     raise ValueError("Log Bundle index contains invalid entries")
-                candidate = extraction.bundle_root / relative_path
+                normalized = Path(relative_path)
+                if normalized.is_absolute() or any(
+                    part in {"", ".", ".."} for part in normalized.parts
+                ):
+                    raise ValueError("Log Bundle index contains an unsafe path")
+                candidate = extraction.bundle_root / normalized
                 if not candidate.is_file():
                     raise ValueError("Log Bundle content no longer matches its index")
                 body = candidate.read_bytes()
@@ -381,6 +388,13 @@ class LogBundleStages:
                     or len(body) != raw_identity.get("size")
                 ):
                     raise ValueError("Log Bundle content no longer matches its index")
+                indexed_paths.add(normalized.as_posix())
+            for candidate in extraction.bundle_root.rglob("*"):
+                if not candidate.is_file():
+                    continue
+                relative = candidate.relative_to(extraction.bundle_root).as_posix()
+                if relative not in indexed_paths:
+                    candidate.unlink()
             analysis = pull_bundle.analyze_bundle(
                 extraction.bundle_root,
                 str(problem).strip(),
@@ -451,11 +465,19 @@ class LogBundleStages:
         with tempfile.TemporaryDirectory(prefix="openubmc-log-report-") as raw:
             report_path = Path(raw) / "report.md"
             report_path.write_text(report, encoding="utf-8")
-            exported = self.artifact_store.put_redacted(
+            raw_reference = self.artifact_store.put(
                 report_path,
-                source_reference=reference,
-                kind=LOG_REPORT_KIND,
+                kind=LOG_REPORT_RAW_KIND,
                 provenance="log-bundle-export",
+                retention_hint="temporary",
+                target=target,
+                run_id=run_id,
+                created_by_effect=f"{operation_id}-raw",
+            )
+            exported = self.artifact_store.redact(
+                raw_reference,
+                kind=LOG_REPORT_KIND,
+                provenance="log-bundle-export-redaction",
                 retention_hint="run-lifetime",
                 created_by_effect=operation_id,
             )

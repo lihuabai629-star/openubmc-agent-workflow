@@ -9,6 +9,8 @@ Result 只保存 `ArtifactRef`；实际字节、存储路径、红化状态和�
 `ArtifactStore` 的外部 Interface 保持为少量内容操作：
 
 - `put`：复制并内容寻址一份 Runtime 管理的原始内容；
+- `register`：由可信生产者显式校验并登记本地外部产物；同一 Effect 重放保持幂等，
+  同一本地句柄不能改绑到其他 target 或 Run；
 - `resolve`：校验 kind、target、Run、digest、size、保留状态与红化要求后返回本地路径；
 - `redact`：从原始 Artifact 派生新的红化内容和 digest，不修改或重标记原字节；
 - `release_run`：显式释放 `run-lifetime` 引用；
@@ -17,7 +19,8 @@ Result 只保存 `ArtifactRef`；实际字节、存储路径、红化状态和�
 
 Artifact 元数据通过独立 Repository 持久化。SQLite Adapter 可以跨进程重启恢复；
 内存 Adapter 用于行为测试。托管内容使用 `artifact://sha256/<digest>` 句柄，外部构建
-产物仍可使用本地文件句柄，但首次解析时必须完成内容验证并登记元数据。
+产物仍可使用本地文件句柄，但必须先由 Gate/Domain 的可信生产边界显式登记；
+`resolve` 不会根据调用方提供的元数据自动创建访问绑定。
 
 保留类型固定为：
 
@@ -39,8 +42,9 @@ Log Analyzer 的 Runtime Module 使用同一个 ArtifactStore，并将原来的�
 | `export` | 红化 query ArtifactRef | `openubmc-log-report` | 本地只读，生成红化报告 Artifact |
 
 Index 保存归档内相对路径、大小与 SHA-256。Query 重新读取 bundle 时先验证 index
-清单，随后才执行有界日志选择与证据抽取。Export 只接受已登记为红化的 Query
-Artifact，避免把原始日志误标成可分发报告。
+清单，并从分析视图移除未进入有界清单的文件，随后才执行日志选择与证据抽取。
+Export 先把派生报告登记为原始 Artifact，再由 ArtifactStore 的红化操作生成新字节与
+新 digest；调用方不能自行把任意派生字节认证为已红化。
 
 四阶段是 Runtime 内部 operation/Domain Pack contract。默认 Agent Interface 仍只有
 `observe` 与 `execute`；CLI 与 compatibility Adapter 可以组合阶段，但不能改变 Runtime

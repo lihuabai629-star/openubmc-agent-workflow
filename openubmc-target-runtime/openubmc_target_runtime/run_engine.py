@@ -864,13 +864,31 @@ class RunEngine:
                 and isinstance(targets[0], Mapping)
             ):
                 expected_target = _text(targets[0].get("address"))
+            if expected_target and artifact_ref.target != expected_target:
+                raise ReferenceViolation(
+                    "ArtifactRef target does not match the Run target"
+                )
+            expected_run_id = _text(projection.get("case_id"))
+            if expected_run_id and artifact_ref.run_id != expected_run_id:
+                raise ReferenceViolation(
+                    "ArtifactRef run_id does not match the current Run"
+                )
+            if not artifact_ref.handle.startswith("artifact://"):
+                self.artifact_store.register(
+                    artifact_ref,
+                    created_by_effect=(
+                        command.submission_id
+                        or command.command_id
+                        or f"gate-{command.gate_id}-{command.gate_version}"
+                    ),
+                )
             artifact_path = self.artifact_store.resolve(
                 artifact_ref,
                 expected_kinds=(
                     str(kind) for kind in expected_kinds
                 ) if isinstance(expected_kinds, list) else (),
                 expected_target=expected_target,
-                expected_run_id=_text(projection.get("case_id")),
+                expected_run_id=expected_run_id,
             )
             payload["artifact_ref"] = artifact_ref.to_public_dict()
             payload["artifact_sha256"] = artifact_ref.digest

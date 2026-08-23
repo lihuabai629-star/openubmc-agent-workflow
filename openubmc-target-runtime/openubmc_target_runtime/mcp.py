@@ -72,7 +72,7 @@ from .mutation import (
     TargetLeaseCoordinator,
     mutation_journal_operation_status,
 )
-from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
+from .operation_contracts import DEFAULT_OPERATION_CONTRACTS, LOG_BUNDLE_STAGE_CONTRACTS
 from .task_context import TaskContextStore
 from .orchestration import (
     DeliveryStrategy,
@@ -2505,59 +2505,41 @@ class RuntimeMcpService:
             },
             "additionalProperties": False,
         }
-        if callable(getattr(self.backend, "log_bundle_index", None)):
+        for stage in LOG_BUNDLE_STAGE_CONTRACTS:
+            if not callable(getattr(self.backend, stage.operation, None)):
+                continue
+            properties = {
+                **orchestration_properties,
+                "ip": common_target,
+                "deadline": deadline,
+                "artifact_ref": artifact_ref_schema,
+            }
+            required = ["artifact_ref"]
+            if stage.problem_required:
+                required.append("problem")
+                properties.update(
+                    {
+                        "problem": {"type": "string", "minLength": 1},
+                        "max_files": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 32,
+                        },
+                        "max_lines": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 256,
+                        },
+                    }
+                )
             definitions.append(
                 {
-                    "name": "log_bundle_index",
-                    "description": "Build a bounded local index for a verified Log Bundle ArtifactRef.",
+                    "name": stage.operation,
+                    "description": stage.description,
                     "inputSchema": {
                         "type": "object",
-                        "required": ["artifact_ref"],
-                        "properties": {
-                            **orchestration_properties,
-                            "ip": common_target,
-                            "deadline": deadline,
-                            "artifact_ref": artifact_ref_schema,
-                        },
-                        "additionalProperties": True,
-                    },
-                }
-            )
-        if callable(getattr(self.backend, "log_bundle_query", None)):
-            definitions.append(
-                {
-                    "name": "log_bundle_query",
-                    "description": "Run one bounded redacted query over a verified Log Bundle index.",
-                    "inputSchema": {
-                        "type": "object",
-                        "required": ["artifact_ref", "problem"],
-                        "properties": {
-                            **orchestration_properties,
-                            "ip": common_target,
-                            "deadline": deadline,
-                            "artifact_ref": artifact_ref_schema,
-                            "problem": {"type": "string", "minLength": 1},
-                            "max_files": {"type": "integer", "minimum": 1, "maximum": 32},
-                            "max_lines": {"type": "integer", "minimum": 1, "maximum": 256},
-                        },
-                        "additionalProperties": True,
-                    },
-                }
-            )
-        if callable(getattr(self.backend, "log_bundle_export", None)):
-            definitions.append(
-                {
-                    "name": "log_bundle_export",
-                    "description": "Persist one redacted report from a verified Log Bundle query ArtifactRef.",
-                    "inputSchema": {
-                        "type": "object",
-                        "required": ["artifact_ref"],
-                        "properties": {
-                            **orchestration_properties,
-                            "ip": common_target,
-                            "deadline": deadline,
-                            "artifact_ref": artifact_ref_schema,
-                        },
+                        "required": required,
+                        "properties": properties,
                         "additionalProperties": True,
                     },
                 }

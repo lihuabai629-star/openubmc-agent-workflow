@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import sys
 import tempfile
@@ -11,6 +12,7 @@ RUNTIME_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
+    ArtifactRef,
     LocalArtifactStore,
     ReferenceViolation,
     SQLiteArtifactRepository,
@@ -18,6 +20,74 @@ from openubmc_target_runtime import (  # noqa: E402
 
 
 class ArtifactLifecycleTests(unittest.TestCase):
+    def test_external_registration_is_idempotent_but_resolution_never_auto_registers(self) -> None:
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                source = root / "external.bin"
+                source.write_bytes(b"external artifact")
+                now = [100.0]
+                repository = (
+                    SQLiteArtifactRepository(root / "artifacts.sqlite3")
+                    if persistent
+                    else None
+                )
+                store = LocalArtifactStore(
+                    content_root=root / "content",
+                    repository=repository,
+                    clock=lambda: now[0],
+                )
+                reference = ArtifactRef(
+                    handle=str(source),
+                    digest=hashlib.sha256(source.read_bytes()).hexdigest(),
+                    kind="external-result",
+                    size=source.stat().st_size,
+                    provenance="trusted-producer",
+                    retention_hint="temporary",
+                    target="192.0.2.5",
+                    run_id="run-external",
+                )
+
+                with self.assertRaisesRegex(ReferenceViolation, "unavailable"):
+                    store.resolve(reference)
+
+                first = store.register(reference, created_by_effect="effect-external")
+                now[0] = 200.0
+                second = store.register(reference, created_by_effect="effect-external")
+
+                self.assertEqual(first, second)
+                self.assertEqual(store.resolve(reference), source)
+
+    def test_external_registration_cannot_rebind_one_local_handle_to_another_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "external.bin"
+            source.write_bytes(b"scope-bound artifact")
+            store = LocalArtifactStore(content_root=root / "content")
+            reference = ArtifactRef(
+                handle=str(source),
+                digest=hashlib.sha256(source.read_bytes()).hexdigest(),
+                kind="external-result",
+                size=source.stat().st_size,
+                provenance="trusted-producer",
+                retention_hint="run-lifetime",
+                target="192.0.2.6",
+                run_id="run-owner",
+            )
+            store.register(reference, created_by_effect="effect-owner")
+            forged = ArtifactRef.from_public_dict(
+                {
+                    **reference.to_public_dict(),
+                    "target": "192.0.2.7",
+                    "run_id": "run-intruder",
+                }
+            )
+
+            with self.assertRaisesRegex(ReferenceViolation, "scope"):
+                store.register(forged, created_by_effect="effect-intruder")
+            with self.assertRaisesRegex(ReferenceViolation, "unavailable"):
+                store.resolve(forged)
+
     def test_managed_artifact_survives_store_restart_and_is_content_addressed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -175,6 +245,42 @@ class ArtifactLifecycleTests(unittest.TestCase):
             self.assertNotEqual(redacted.digest, reference.digest)
             self.assertIn(b"<redacted>", store.resolve(redacted, require_redacted=True).read_bytes())
             self.assertIn(b"secret", store.resolve(reference).read_bytes())
+
+    def test_redaction_boundary_never_certifies_arbitrary_derivative_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "query.json"
+            source.write_text('{"password":"secret"}', encoding="utf-8")
+            derivative = root / "report.md"
+            derivative.write_text("password=secret", encoding="utf-8")
+            store = LocalArtifactStore(content_root=root / "content")
+            raw_reference = store.put(
+                source,
+                kind="openubmc-log-query-raw",
+                provenance="query",
+                retention_hint="temporary",
+                target="192.0.2.8",
+                run_id="run-redaction-owner",
+                created_by_effect="effect-query-raw",
+            )
+            store.redact(
+                raw_reference,
+                kind="openubmc-log-query",
+                provenance="query-redaction",
+                created_by_effect="effect-query-redacted",
+            )
+            derivative_reference = store.put(
+                derivative,
+                kind="openubmc-log-report-raw",
+                provenance="report",
+                retention_hint="temporary",
+                target="192.0.2.8",
+                run_id="run-redaction-owner",
+                created_by_effect="effect-report-raw",
+            )
+
+            with self.assertRaisesRegex(ReferenceViolation, "redacted"):
+                store.resolve(derivative_reference, require_redacted=True)
 
 
 if __name__ == "__main__":

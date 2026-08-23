@@ -103,6 +103,80 @@ class RuntimeOperationContract:
         )
 
 
+@dataclass(frozen=True)
+class LogBundleStageContract:
+    operation: str
+    input_kind: str
+    output_kind: str
+    capability: str
+    timeout_seconds: float
+    evidence_types: tuple[str, ...]
+    phase: str
+    description: str
+    input_redacted: bool = False
+    output_redacted: bool = False
+    cost_hint: str = "medium"
+    problem_required: bool = False
+
+    def operation_contract(self) -> RuntimeOperationContract:
+        return RuntimeOperationContract(
+            self.operation,
+            domain="log_analyzer",
+            lifecycle="read",
+            handler_name=self.operation,
+            capability=self.capability,
+            owner_skill="openubmc-log-analyzer",
+            timeout_seconds=self.timeout_seconds,
+            evidence_types=self.evidence_types,
+            orchestration_phase=self.phase,
+            closeout_stage=self.phase,
+            exposure="internal",
+            audience="internal",
+            cost_hint=self.cost_hint,
+            scope_contract="artifact-bound",
+            result_projector="artifact-ref",
+        )
+
+
+LOG_BUNDLE_STAGE_CONTRACTS = (
+    LogBundleStageContract(
+        operation="log_bundle_index",
+        input_kind="openubmc-log-bundle",
+        output_kind="openubmc-log-index",
+        capability="openubmc.logs.index",
+        timeout_seconds=120.0,
+        evidence_types=("diagnostic-bundle-index",),
+        phase="bundle_index",
+        description="Build a bounded local index for a verified Log Bundle ArtifactRef.",
+    ),
+    LogBundleStageContract(
+        operation="log_bundle_query",
+        input_kind="openubmc-log-index",
+        output_kind="openubmc-log-query",
+        capability="openubmc.logs.query",
+        timeout_seconds=120.0,
+        evidence_types=("bounded-log-query",),
+        phase="bundle_query",
+        description="Run one bounded redacted query over a verified Log Bundle index.",
+        output_redacted=True,
+        problem_required=True,
+    ),
+    LogBundleStageContract(
+        operation="log_bundle_export",
+        input_kind="openubmc-log-query",
+        output_kind="openubmc-log-report",
+        capability="openubmc.logs.export",
+        timeout_seconds=60.0,
+        evidence_types=("redacted-log-report",),
+        phase="bundle_export",
+        description="Persist one redacted report from a verified Log Bundle query ArtifactRef.",
+        input_redacted=True,
+        output_redacted=True,
+        cost_hint="small",
+    ),
+)
+
+
 class RuntimeOperationContractRegistry:
     """One metadata interface for transport, workflow, and SDK consumers."""
 
@@ -234,57 +308,7 @@ DEFAULT_OPERATION_CONTRACTS = RuntimeOperationContractRegistry(
             orchestration_phase="bundle",
             closeout_stage="bundle",
         ),
-        RuntimeOperationContract(
-            "log_bundle_index",
-            domain="log_analyzer",
-            lifecycle="read",
-            handler_name="log_bundle_index",
-            capability="openubmc.logs.index",
-            owner_skill="openubmc-log-analyzer",
-            timeout_seconds=120.0,
-            evidence_types=("diagnostic-bundle-index",),
-            orchestration_phase="bundle_index",
-            closeout_stage="bundle_index",
-            exposure="internal",
-            audience="internal",
-            cost_hint="medium",
-            scope_contract="artifact-bound",
-            result_projector="artifact-ref",
-        ),
-        RuntimeOperationContract(
-            "log_bundle_query",
-            domain="log_analyzer",
-            lifecycle="read",
-            handler_name="log_bundle_query",
-            capability="openubmc.logs.query",
-            owner_skill="openubmc-log-analyzer",
-            timeout_seconds=120.0,
-            evidence_types=("bounded-log-query",),
-            orchestration_phase="bundle_query",
-            closeout_stage="bundle_query",
-            exposure="internal",
-            audience="internal",
-            cost_hint="medium",
-            scope_contract="artifact-bound",
-            result_projector="artifact-ref",
-        ),
-        RuntimeOperationContract(
-            "log_bundle_export",
-            domain="log_analyzer",
-            lifecycle="read",
-            handler_name="log_bundle_export",
-            capability="openubmc.logs.export",
-            owner_skill="openubmc-log-analyzer",
-            timeout_seconds=60.0,
-            evidence_types=("redacted-log-report",),
-            orchestration_phase="bundle_export",
-            closeout_stage="bundle_export",
-            exposure="internal",
-            audience="internal",
-            cost_hint="small",
-            scope_contract="artifact-bound",
-            result_projector="artifact-ref",
-        ),
+        *(stage.operation_contract() for stage in LOG_BUNDLE_STAGE_CONTRACTS),
         RuntimeOperationContract(
             "live_patch_run",
             domain="live_patch",

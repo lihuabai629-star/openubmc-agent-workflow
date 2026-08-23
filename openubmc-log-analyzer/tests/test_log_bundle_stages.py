@@ -7,6 +7,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,7 @@ sys.path.insert(0, str(SKILL_ROOT))
 sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_log_analyzer import LogBundleMcpBackend, LogBundleStages  # noqa: E402
+from openubmc_log_analyzer import runtime_backend  # noqa: E402
 from openubmc_target_runtime import (  # noqa: E402
     LocalArtifactStore,
     ReferenceViolation,
@@ -35,7 +37,64 @@ def write_bundle(path: Path) -> None:
         archive.addfile(info, io.BytesIO(security))
 
 
+def write_truncated_bundle(path: Path) -> None:
+    first = b"bounded index sentinel\n"
+    omitted = b"2026-08-23 login failed omitted-marker password=secret\n"
+    with tarfile.open(path, "w:gz") as archive:
+        info = tarfile.TarInfo("dump/dump_info/000-indexed.txt")
+        info.size = len(first)
+        archive.addfile(info, io.BytesIO(first))
+        info = tarfile.TarInfo("dump/dump_info/LogDump/security.log")
+        info.size = len(omitted)
+        archive.addfile(info, io.BytesIO(omitted))
+
+
 class LogBundleStageTests(unittest.TestCase):
+    def test_query_uses_only_files_that_were_verified_by_the_bounded_index(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle = root / "dump.tar.gz"
+            write_truncated_bundle(bundle)
+            store = LocalArtifactStore(content_root=root / "artifacts")
+            stages = LogBundleStages(store)
+            bundle_ref = stages.collect(
+                bundle,
+                target="192.0.2.47",
+                run_id="run-truncated-index",
+                operation_id="effect-collect",
+                transport="redfish",
+                remote_bundle_path="/tmp/dump.tar.gz",
+                generation_ran=True,
+            )["artifact_ref"]
+            with patch.object(runtime_backend, "MAX_INDEX_ENTRIES", 1):
+                indexed = stages.index(
+                    bundle_ref,
+                    target="192.0.2.47",
+                    run_id="run-truncated-index",
+                    operation_id="effect-index",
+                )
+            queried = stages.query(
+                indexed["artifact_ref"],
+                target="192.0.2.47",
+                run_id="run-truncated-index",
+                operation_id="effect-query",
+                problem="login failed omitted-marker",
+                max_files=4,
+                max_lines=8,
+            )
+            body = json.loads(store.resolve(
+                store.reference(queried["artifact_ref"]),
+                require_redacted=True,
+            ).read_text(encoding="utf-8"))
+
+            evidence = [
+                line
+                for selected in body["selected_logs"]
+                for line in selected["evidence_lines"]
+            ]
+            self.assertEqual(evidence, [])
+            self.assertIn("found 0 existing paths", body["summary"])
+
     def test_sqlite_runtime_rebinds_the_same_persistent_artifact_store_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

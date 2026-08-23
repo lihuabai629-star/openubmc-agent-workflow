@@ -35,6 +35,46 @@ def _json_bytes(value: object) -> bytes:
 
 
 @dataclass(frozen=True)
+class ArtifactIdentity:
+    digest: str
+    kind: str
+    target: str
+    run_id: str
+
+    def __post_init__(self) -> None:
+        if len(self.digest) != 64 or any(
+            not str(value).strip() for value in (self.kind, self.target, self.run_id)
+        ):
+            raise ReferenceViolation("Artifact identity is incomplete")
+
+    def values(self) -> tuple[str, str, str, str]:
+        return (self.digest, self.kind, self.target, self.run_id)
+
+
+@dataclass(frozen=True)
+class ArtifactEffectIdentity:
+    created_by_effect: str
+    kind: str
+    target: str
+    run_id: str
+
+    def __post_init__(self) -> None:
+        if any(
+            not str(value).strip()
+            for value in (
+                self.created_by_effect,
+                self.kind,
+                self.target,
+                self.run_id,
+            )
+        ):
+            raise ReferenceViolation("Artifact Effect identity is incomplete")
+
+    def values(self) -> tuple[str, str, str, str]:
+        return (self.created_by_effect, self.kind, self.target, self.run_id)
+
+
+@dataclass(frozen=True)
 class ArtifactRecord:
     reference: ArtifactRef
     storage_path: str
@@ -55,21 +95,29 @@ class ArtifactRecord:
             raise ReferenceViolation("Artifact record timestamps must be non-negative")
 
     @property
-    def identity(self) -> tuple[str, str, str, str]:
-        return (
-            self.reference.digest,
-            self.reference.kind,
-            self.reference.target,
-            self.reference.run_id,
+    def identity(self) -> ArtifactIdentity:
+        return ArtifactIdentity(
+            digest=self.reference.digest,
+            kind=self.reference.kind,
+            target=self.reference.target,
+            run_id=self.reference.run_id,
         )
 
     @property
-    def effect_identity(self) -> tuple[str, str, str, str]:
+    def effect_identity(self) -> ArtifactEffectIdentity:
+        return ArtifactEffectIdentity(
+            created_by_effect=self.created_by_effect,
+            kind=self.reference.kind,
+            target=self.reference.target,
+            run_id=self.reference.run_id,
+        )
+
+    def has_same_binding(self, other: "ArtifactRecord") -> bool:
         return (
-            self.created_by_effect,
-            self.reference.kind,
-            self.reference.target,
-            self.reference.run_id,
+            self.reference == other.reference
+            and self.storage_path == other.storage_path
+            and self.redacted == other.redacted
+            and self.managed == other.managed
         )
 
     def to_public_dict(self) -> dict[str, object]:
@@ -93,11 +141,7 @@ class ArtifactRepository(Protocol):
 
     def find(
         self,
-        *,
-        kind: str,
-        target: str,
-        run_id: str,
-        created_by_effect: str,
+        identity: ArtifactEffectIdentity,
     ) -> ArtifactRecord | None: ...
 
     def touch(self, reference: ArtifactRef, *, at: float) -> None: ...
@@ -113,8 +157,8 @@ class ArtifactRepository(Protocol):
 
 class InMemoryArtifactRepository:
     def __init__(self) -> None:
-        self._records: dict[tuple[str, str, str, str], ArtifactRecord] = {}
-        self._effects: dict[tuple[str, str, str, str], tuple[str, str, str, str]] = {}
+        self._records: dict[ArtifactIdentity, ArtifactRecord] = {}
+        self._effects: dict[ArtifactEffectIdentity, ArtifactIdentity] = {}
         self._lock = threading.RLock()
 
     def put(self, record: ArtifactRecord) -> ArtifactRecord:
@@ -122,7 +166,7 @@ class InMemoryArtifactRepository:
             existing_identity = self._effects.get(record.effect_identity)
             if existing_identity is not None:
                 existing = self._records[existing_identity]
-                if existing != record:
+                if not existing.has_same_binding(record):
                     raise ReferenceViolation(
                         "Artifact Effect identity is already bound to different content"
                     )
@@ -147,28 +191,29 @@ class InMemoryArtifactRepository:
     def load(self, reference: ArtifactRef) -> ArtifactRecord | None:
         with self._lock:
             return self._records.get(
-                (reference.digest, reference.kind, reference.target, reference.run_id)
+                ArtifactIdentity(
+                    digest=reference.digest,
+                    kind=reference.kind,
+                    target=reference.target,
+                    run_id=reference.run_id,
+                )
             )
 
     def find(
         self,
-        *,
-        kind: str,
-        target: str,
-        run_id: str,
-        created_by_effect: str,
+        identity: ArtifactEffectIdentity,
     ) -> ArtifactRecord | None:
         with self._lock:
-            identity = self._effects.get((created_by_effect, kind, target, run_id))
-            return self._records.get(identity) if identity is not None else None
+            bound = self._effects.get(identity)
+            return self._records.get(bound) if bound is not None else None
 
     def touch(self, reference: ArtifactRef, *, at: float) -> None:
         with self._lock:
-            identity = (
-                reference.digest,
-                reference.kind,
-                reference.target,
-                reference.run_id,
+            identity = ArtifactIdentity(
+                digest=reference.digest,
+                kind=reference.kind,
+                target=reference.target,
+                run_id=reference.run_id,
             )
             record = self._records.get(identity)
             if record is not None:
@@ -196,7 +241,12 @@ class InMemoryArtifactRepository:
             return tuple(self._records.values())
 
     def delete(self, reference: ArtifactRef) -> bool:
-        identity = (reference.digest, reference.kind, reference.target, reference.run_id)
+        identity = ArtifactIdentity(
+            digest=reference.digest,
+            kind=reference.kind,
+            target=reference.target,
+            run_id=reference.run_id,
+        )
         with self._lock:
             record = self._records.pop(identity, None)
             if record is None:
@@ -295,11 +345,11 @@ class SQLiteArtifactRepository:
                 "AND records.target = bindings.target AND records.run_id = bindings.run_id "
                 "WHERE bindings.created_by_effect = ? AND bindings.kind = ? "
                 "AND bindings.target = ? AND bindings.run_id = ?",
-                record.effect_identity,
+                record.effect_identity.values(),
             ).fetchone()
             if effect_row is not None:
                 existing = self._record(effect_row)
-                if existing != record:
+                if not existing.has_same_binding(record):
                     raise ReferenceViolation(
                         "Artifact Effect identity is already bound to different content"
                     )
@@ -307,7 +357,7 @@ class SQLiteArtifactRepository:
             identity_row = connection.execute(
                 "SELECT * FROM artifact_records WHERE digest = ? AND kind = ? "
                 "AND target = ? AND run_id = ?",
-                record.identity,
+                record.identity.values(),
             ).fetchone()
             if identity_row is not None:
                 existing = self._record(identity_row)
@@ -324,7 +374,7 @@ class SQLiteArtifactRepository:
                     "INSERT INTO artifact_effect_bindings "
                     "(created_by_effect, kind, target, run_id, digest) "
                     "VALUES (?, ?, ?, ?, ?)",
-                    (*record.effect_identity, record.reference.digest),
+                    (*record.effect_identity.values(), record.reference.digest),
                 )
                 return existing
             connection.execute(
@@ -333,7 +383,7 @@ class SQLiteArtifactRepository:
                 "created_by_effect, redacted, managed, created_at, last_access, "
                 "expires_at, released) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    *record.identity,
+                    *record.identity.values(),
                     _json_bytes(record.reference.to_public_dict()).decode("utf-8"),
                     record.storage_path,
                     record.created_by_effect,
@@ -349,7 +399,7 @@ class SQLiteArtifactRepository:
                 "INSERT INTO artifact_effect_bindings "
                 "(created_by_effect, kind, target, run_id, digest) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (*record.effect_identity, record.reference.digest),
+                (*record.effect_identity.values(), record.reference.digest),
             )
             return record
 
@@ -364,11 +414,7 @@ class SQLiteArtifactRepository:
 
     def find(
         self,
-        *,
-        kind: str,
-        target: str,
-        run_id: str,
-        created_by_effect: str,
+        identity: ArtifactEffectIdentity,
     ) -> ArtifactRecord | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
@@ -378,7 +424,7 @@ class SQLiteArtifactRepository:
                 "AND records.target = bindings.target AND records.run_id = bindings.run_id "
                 "WHERE bindings.created_by_effect = ? AND bindings.kind = ? "
                 "AND bindings.target = ? AND bindings.run_id = ?",
-                (created_by_effect, kind, target, run_id),
+                identity.values(),
             ).fetchone()
             return self._record(row) if row is not None else None
 
@@ -625,10 +671,12 @@ class LocalArtifactStore:
             run_id=run_id,
         )
         existing = self.repository.find(
-            kind=kind,
-            target=target,
-            run_id=run_id,
-            created_by_effect=created_by_effect,
+            ArtifactEffectIdentity(
+                created_by_effect=created_by_effect,
+                kind=kind,
+                target=target,
+                run_id=run_id,
+            )
         )
         if existing is not None:
             if existing.reference != reference:
@@ -679,7 +727,7 @@ class LocalArtifactStore:
     ) -> ArtifactRef:
         """Persist metadata for a verified external local ArtifactRef."""
 
-        path = self._path(reference.handle)
+        path = self._path(reference.handle).resolve()
         actual_digest, actual_size = self._digest(path)
         if actual_digest != reference.digest:
             raise ReferenceViolation("ArtifactRef digest does not match stored content")
@@ -691,6 +739,44 @@ class LocalArtifactStore:
             actual_digest=actual_digest,
             actual_size=actual_size,
         )
+        effect_identity = ArtifactEffectIdentity(
+            created_by_effect=created_by_effect,
+            kind=reference.kind,
+            target=reference.target,
+            run_id=reference.run_id,
+        )
+        existing = self.repository.find(effect_identity)
+        if existing is not None:
+            candidate = ArtifactRecord(
+                reference=reference,
+                storage_path=str(path),
+                created_by_effect=created_by_effect,
+                redacted=False,
+                managed=False,
+                created_at=existing.created_at,
+                last_access=existing.last_access,
+                expires_at=existing.expires_at,
+                released=existing.released,
+            )
+            if not existing.has_same_binding(candidate):
+                raise ReferenceViolation(
+                    "Artifact Effect identity is already bound to different content"
+                )
+            return existing.reference
+        for record in self.repository.records():
+            if record.managed:
+                continue
+            try:
+                same_path = Path(record.storage_path).resolve() == path
+            except OSError:
+                same_path = record.storage_path == str(path)
+            if same_path and (
+                record.reference.target != reference.target
+                or record.reference.run_id != reference.run_id
+            ):
+                raise ReferenceViolation(
+                    "External ArtifactRef local handle is already bound to another scope"
+                )
         return self._record(
             reference,
             storage_path=path,
@@ -765,30 +851,6 @@ class LocalArtifactStore:
             except FileNotFoundError:
                 pass
 
-    def put_redacted(
-        self,
-        path: Path,
-        *,
-        source_reference: ArtifactRef,
-        kind: str,
-        provenance: str,
-        retention_hint: str,
-        created_by_effect: str,
-    ) -> ArtifactRef:
-        """Persist a derivative only when its source is already proven redacted."""
-
-        self.resolve(source_reference, require_redacted=True)
-        return self._put(
-            path,
-            kind=kind,
-            provenance=provenance,
-            retention_hint=retention_hint,
-            target=source_reference.target,
-            run_id=source_reference.run_id,
-            created_by_effect=created_by_effect,
-            redacted=True,
-        )
-
     def find(
         self,
         *,
@@ -798,10 +860,12 @@ class LocalArtifactStore:
         created_by_effect: str,
     ) -> ArtifactRef | None:
         record = self.repository.find(
-            kind=kind,
-            target=target,
-            run_id=run_id,
-            created_by_effect=created_by_effect,
+            ArtifactEffectIdentity(
+                created_by_effect=created_by_effect,
+                kind=kind,
+                target=target,
+                run_id=run_id,
+            )
         )
         return record.reference if record is not None else None
 
@@ -823,13 +887,7 @@ class LocalArtifactStore:
             raise ReferenceViolation("ArtifactRef run_id does not match the current Run")
         record = self.repository.load(reference)
         if record is None:
-            if urlparse(reference.handle).scheme == "artifact":
-                raise ReferenceViolation("ArtifactRef content is unavailable")
-            self.register(
-                reference,
-                created_by_effect=f"external-{reference.digest[:32]}",
-            )
-            record = self.repository.load(reference)
+            raise ReferenceViolation("ArtifactRef content is unavailable")
         if record is None or record.reference != reference:
             raise ReferenceViolation("ArtifactRef metadata does not match persisted content")
         now = float(self.clock())

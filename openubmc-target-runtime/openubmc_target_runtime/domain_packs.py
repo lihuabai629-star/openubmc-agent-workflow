@@ -13,6 +13,7 @@ from .capability import (
     ResultArtifactContract,
     mutation_receipt_verifier,
 )
+from .operation_contracts import LOG_BUNDLE_STAGE_CONTRACTS
 
 
 def _live_patch_journal_action(arguments: Mapping[str, object]) -> str:
@@ -82,44 +83,19 @@ def builtin_domain_packs(
                 journal_action=journal_action,
             )
         )
-    stage_definitions = {
-        "log_bundle_index": (
-            "openubmc-log-bundle",
-            "openubmc-log-index",
-            False,
-            False,
-        ),
-        "log_bundle_query": (
-            "openubmc-log-index",
-            "openubmc-log-query",
-            False,
-            True,
-        ),
-        "log_bundle_export": (
-            "openubmc-log-query",
-            "openubmc-log-report",
-            True,
-            True,
-        ),
-    }
-    for operation, (
-        input_kind,
-        output_kind,
-        input_redacted,
-        output_redacted,
-    ) in stage_definitions.items():
-        adapter = adapters.get(operation)
+    for stage in LOG_BUNDLE_STAGE_CONTRACTS:
+        adapter = adapters.get(stage.operation)
         if adapter is None:
             continue
         result_contract = ResultArtifactContract(
-            output_kind,
-            require_redacted=output_redacted,
+            stage.output_kind,
+            require_redacted=stage.output_redacted,
         )
         packs.append(
             DomainPack(
-                name=operation.replace("_", "-"),
+                name=stage.operation.replace("_", "-"),
                 version="1",
-                descriptor=registry.require(operation),
+                descriptor=registry.require(stage.operation),
                 effect_class=EffectClass.READ_ONLY,
                 adapter=adapter,
                 verifier=(
@@ -130,10 +106,10 @@ def builtin_domain_packs(
                 artifact_contract=ArtifactContract(
                     path_fields=("_artifact_path",),
                     digest_field="_artifact_sha256",
-                    artifact_kind=input_kind,
+                    artifact_kind=stage.input_kind,
                     required=True,
                     reference_required=True,
-                    require_redacted=input_redacted,
+                    require_redacted=stage.input_redacted,
                 ),
                 result_artifact_contract=result_contract,
             )
