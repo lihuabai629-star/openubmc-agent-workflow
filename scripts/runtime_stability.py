@@ -9,11 +9,13 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import platform
 from pathlib import Path
+import resource
 import sys
 import tempfile
 import threading
 import time
 import tracemalloc
+from typing import NamedTuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,15 +28,23 @@ from scripts.evidence_report import (  # noqa: E402
     source_commit as selected_source_commit,
 )
 from scripts.runtime_stability_contract import (  # noqa: E402
+    CAPACITY_BATCH_SIZE,
+    CAPACITY_RUNS,
     GATE_WORKERS,
+    MAX_CAPACITY_PEAK_PYTHON_BYTES,
+    MAX_CAPACITY_PEAK_RSS_BYTES,
+    MAX_CAPACITY_SECONDS,
+    MAX_CAPACITY_STORAGE_BYTES,
     MAX_EVENTS_PER_RUN,
     MAX_SOAK_PEAK_BYTES,
+    MAX_SOAK_PEAK_RSS_BYTES,
     MAX_SOAK_SECONDS,
     MAX_SOAK_STORAGE_BYTES,
     SCHEMA,
     SOAK_RESTART_CYCLES,
     SOAK_RUNS_PER_CYCLE,
     STORM_WORKERS,
+    ci_parameters,
 )
 
 from openubmc_target_runtime.context_runtime import (  # noqa: E402
@@ -86,28 +96,45 @@ class _HermeticBackend:
         }
 
 
-def _agent(database: Path, blobs: Path) -> tuple[_HermeticBackend, RuntimeMcpService]:
+class _RuntimeStorage(NamedTuple):
+    database: Path
+    blobs: Path
+
+
+def _agent(storage: _RuntimeStorage) -> tuple[_HermeticBackend, RuntimeMcpService]:
     backend = _HermeticBackend()
     return backend, RuntimeMcpService(
         backend,
-        context_repository=SQLiteRuntimeRepository(database),
-        blob_repository=FilesystemBlobRepository(blobs),
+        context_repository=SQLiteRuntimeRepository(storage.database),
+        blob_repository=FilesystemBlobRepository(storage.blobs),
     )
 
 
-def _operator(database: Path, blobs: Path) -> RuntimeMcpService:
-    return RuntimeMcpService(
-        _HermeticBackend(),
-        context_repository=SQLiteRuntimeRepository(database),
-        blob_repository=FilesystemBlobRepository(blobs),
-        interface_profile="operator",
-    )
+def _case_record(
+    repository: SQLiteRuntimeRepository,
+    run_id: str,
+) -> tuple[dict[str, object], tuple[dict[str, object], ...]]:
+    projection = repository.load(run_id)
+    if projection is None:
+        raise RuntimeError(f"Runtime repository lacks Run {run_id}")
+    return projection, repository.events(run_id)
+
+
+def _storage_bytes(
+    repository: SQLiteRuntimeRepository,
+    blobs: FilesystemBlobRepository,
+) -> int:
+    return repository.size_bytes() + blobs.size_bytes()
+
+
+def _peak_rss_bytes() -> int:
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return int(peak if sys.platform == "darwin" else peak * 1024)
 
 
 def _duplicate_storm(root: Path) -> dict[str, object]:
-    database = root / "storm.sqlite3"
-    blobs = root / "storm-blobs"
-    adapters = [_agent(database, blobs) for _ in range(STORM_WORKERS)]
+    storage = _RuntimeStorage(root / "storm.sqlite3", root / "storm-blobs")
+    adapters = [_agent(storage) for _ in range(STORM_WORKERS)]
     barrier = threading.Barrier(STORM_WORKERS)
     action = {
         "kind": "start",
@@ -139,7 +166,7 @@ def _duplicate_storm(root: Path) -> dict[str, object]:
         for _backend, service in adapters:
             service.close()
 
-    final_backend, final_agent = _agent(database, blobs)
+    final_backend, final_agent = _agent(storage)
     try:
         final_turn = final_agent.call_exposed_tool(
             "execute",
@@ -162,30 +189,15 @@ def _duplicate_storm(root: Path) -> dict[str, object]:
     finally:
         final_agent.close()
 
-    operator = _operator(database, blobs)
-    try:
-        turns = [turn for turn, _error in results if turn is not None]
-        errors = [error for _turn, error in results if error]
-        run_ids = {str(turn["run_id"]) for turn in turns}
-        run_id = str(final_turn["run_id"])
-        projection = operator.call_exposed_tool(
-            "case_read",
-            {"case_id": run_id},
-            task_id="duplicate-storm-operator",
-            operation_id="duplicate-storm-read",
-        )
-        replay = operator.call_exposed_tool(
-            "case_replay_export",
-            {"case_id": run_id},
-            task_id="duplicate-storm-operator",
-            operation_id="duplicate-storm-replay",
-        )
-    finally:
-        operator.close()
+    turns = [turn for turn, _error in results if turn is not None]
+    errors = [error for _turn, error in results if error]
+    run_ids = {str(turn["run_id"]) for turn in turns}
+    run_id = str(final_turn["run_id"])
+    projection, replay = _case_record(SQLiteRuntimeRepository(storage.database), run_id)
 
     states = Counter(str(turn["state"]) for turn in turns)
     outcome_events = sum(
-        event["kind"] == "RunOutcomeRecorded" for event in replay["events"]
+        event["kind"] == "RunOutcomeRecorded" for event in replay
     )
     command_decisions = sum(
         decision.get("command_id") == "duplicate-storm-start"
@@ -225,9 +237,8 @@ def _duplicate_storm(root: Path) -> dict[str, object]:
 
 
 def _gate_concurrency(root: Path) -> dict[str, object]:
-    database = root / "gate.sqlite3"
-    blobs = root / "gate-blobs"
-    _start_backend, starter = _agent(database, blobs)
+    storage = _RuntimeStorage(root / "gate.sqlite3", root / "gate-blobs")
+    _start_backend, starter = _agent(storage)
     try:
         waiting = starter.call_exposed_tool(
             "execute",
@@ -244,7 +255,7 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
     finally:
         starter.close()
 
-    adapters = [_agent(database, blobs) for _ in range(GATE_WORKERS)]
+    adapters = [_agent(storage) for _ in range(GATE_WORKERS)]
     barrier = threading.Barrier(GATE_WORKERS)
     response = {
         "kind": "respond",
@@ -289,26 +300,14 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
 
     turns = [turn for turn, _error in results if turn is not None]
     errors = [error for _turn, error in results if error]
-    operator = _operator(database, blobs)
-    try:
-        projection = operator.call_exposed_tool(
-            "case_read",
-            {"case_id": waiting["run_id"]},
-            task_id="gate-concurrency-operator",
-            operation_id="gate-concurrency-read",
-        )
-        replay = operator.call_exposed_tool(
-            "case_replay_export",
-            {"case_id": waiting["run_id"]},
-            task_id="gate-concurrency-operator",
-            operation_id="gate-concurrency-replay",
-        )
-    finally:
-        operator.close()
+    projection, replay = _case_record(
+        SQLiteRuntimeRepository(storage.database),
+        str(waiting["run_id"]),
+    )
     run_ids = {str(turn["run_id"]) for turn in turns}
     gate_submissions = len(projection["gate_submissions"])
     outcome_events = sum(
-        event["kind"] == "RunOutcomeRecorded" for event in replay["events"]
+        event["kind"] == "RunOutcomeRecorded" for event in replay
     )
     passed = all(
         (
@@ -336,9 +335,135 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
     }
 
 
+def _capacity(root: Path) -> dict[str, object]:
+    storage = _RuntimeStorage(root / "capacity.sqlite3", root / "capacity-blobs")
+    repository = SQLiteRuntimeRepository(storage.database)
+    blobs = FilesystemBlobRepository(storage.blobs)
+    run_ids: list[str] = []
+    execute_calls = 0
+    failed_calls = 0
+    completed_turns = 0
+    events_per_batch: list[int] = []
+    cumulative_events_by_batch: list[int] = []
+    storage_bytes_by_batch: list[int] = []
+    total_events = 0
+    tracemalloc.start()
+    started = time.monotonic()
+    try:
+        backend, agent = _agent(storage)
+        try:
+            for batch_start in range(0, CAPACITY_RUNS, CAPACITY_BATCH_SIZE):
+                batch_run_ids: list[str] = []
+                for index in range(batch_start, batch_start + CAPACITY_BATCH_SIZE):
+                    operation_id = f"capacity-{index:04d}"
+                    execute_calls += 1
+                    try:
+                        turn = agent.call_exposed_tool(
+                            "execute",
+                            {
+                                "kind": "start",
+                                "target": f"198.51.100.{index % 250 + 1}",
+                                "intent": "diagnosis-only",
+                                "purpose": "qualify bounded Runtime capacity",
+                            },
+                            task_id=operation_id,
+                            operation_id=operation_id,
+                        )
+                    except Exception:  # pragma: no cover - counted as evidence
+                        failed_calls += 1
+                        continue
+                    completed_turns += int(turn["state"] == "completed")
+                    run_id = str(turn["run_id"])
+                    run_ids.append(run_id)
+                    batch_run_ids.append(run_id)
+                batch_events = sum(
+                    len(repository.events(run_id)) for run_id in batch_run_ids
+                )
+                total_events += batch_events
+                events_per_batch.append(batch_events)
+                cumulative_events_by_batch.append(total_events)
+                storage_bytes_by_batch.append(_storage_bytes(repository, blobs))
+        finally:
+            agent.close()
+        backend_calls = backend.calls
+    finally:
+        elapsed_seconds = time.monotonic() - started
+        _current_bytes, peak_python_bytes = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+    peak_rss_bytes = _peak_rss_bytes()
+
+    invalid_runs = 0
+    outcome_events = 0
+    open_incidents = 0
+    incomplete_operations = 0
+    max_events_per_run = 0
+    for run_id in run_ids:
+        projection, events = _case_record(repository, run_id)
+        event_count = len(events)
+        max_events_per_run = max(max_events_per_run, event_count)
+        outcome_count = sum(
+            event["kind"] == "RunOutcomeRecorded" for event in events
+        )
+        outcome_events += outcome_count
+        open_incidents += len(projection["incidents"])
+        incomplete = sum(
+            operation["status"] != "completed"
+            for operation in projection["operations"]
+        )
+        incomplete_operations += incomplete
+        invalid_runs += int(
+            projection["run_outcome"].get("status") != "completed"
+            or outcome_count != 1
+            or projection["incidents"] != []
+            or incomplete != 0
+        )
+
+    storage_bytes = _storage_bytes(repository, blobs)
+    passed = all(
+        (
+            execute_calls == CAPACITY_RUNS,
+            failed_calls == 0,
+            completed_turns == CAPACITY_RUNS,
+            len(set(run_ids)) == CAPACITY_RUNS,
+            invalid_runs == 0,
+            outcome_events == CAPACITY_RUNS,
+            open_incidents == 0,
+            incomplete_operations == 0,
+            max_events_per_run <= MAX_EVENTS_PER_RUN,
+            total_events <= CAPACITY_RUNS * MAX_EVENTS_PER_RUN,
+            storage_bytes <= MAX_CAPACITY_STORAGE_BYTES,
+            peak_python_bytes <= MAX_CAPACITY_PEAK_PYTHON_BYTES,
+            peak_rss_bytes <= MAX_CAPACITY_PEAK_RSS_BYTES,
+            elapsed_seconds <= MAX_CAPACITY_SECONDS,
+        )
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "execute_calls": execute_calls,
+        "failed_calls": failed_calls,
+        "completed_turns": completed_turns,
+        "completed_runs": len(set(run_ids)),
+        "invalid_runs": invalid_runs,
+        "backend_read_calls": backend_calls,
+        "outcome_events": outcome_events,
+        "open_incidents": open_incidents,
+        "incomplete_operations": incomplete_operations,
+        "total_events": total_events,
+        "events_per_batch": events_per_batch,
+        "cumulative_events_by_batch": cumulative_events_by_batch,
+        "storage_bytes_by_batch": storage_bytes_by_batch,
+        "max_events_per_run": max_events_per_run,
+        "storage_bytes": storage_bytes,
+        "peak_rss_bytes": peak_rss_bytes,
+        "peak_python_allocation_bytes": peak_python_bytes,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+    }
+
+
 def _restart_soak(root: Path) -> dict[str, object]:
-    database = root / "soak.sqlite3"
-    blobs = root / "soak-blobs"
+    storage = _RuntimeStorage(root / "soak.sqlite3", root / "soak-blobs")
+    repository = SQLiteRuntimeRepository(storage.database)
+    blobs = FilesystemBlobRepository(storage.blobs)
     run_ids: list[str] = []
     backend_calls = 0
     execute_calls = 0
@@ -347,6 +472,8 @@ def _restart_soak(root: Path) -> dict[str, object]:
     replay_mismatches = 0
     invalid_runs = 0
     outcome_events = 0
+    open_incidents = 0
+    incomplete_operations = 0
     total_events = 0
     max_events_per_run = 0
     max_run_decisions = 0
@@ -358,7 +485,7 @@ def _restart_soak(root: Path) -> dict[str, object]:
     try:
         for cycle in range(SOAK_RESTART_CYCLES):
             cycle_start = len(run_ids)
-            backend, agent = _agent(database, blobs)
+            backend, agent = _agent(storage)
             try:
                 for index in range(SOAK_RUNS_PER_CYCLE):
                     operation_id = f"soak-{cycle:02d}-{index:02d}"
@@ -398,85 +525,54 @@ def _restart_soak(root: Path) -> dict[str, object]:
                 backend_calls += backend.calls
                 agent.close()
             cycle_run_ids = run_ids[cycle_start:]
-            operator = _operator(database, blobs)
             cycle_events = 0
-            try:
-                for index, run_id in enumerate(cycle_run_ids):
-                    projection = operator.call_exposed_tool(
-                        "case_read",
-                        {"case_id": run_id},
-                        task_id=f"soak-cycle-{cycle}",
-                        operation_id=f"soak-cycle-{cycle}-read-{index}",
-                    )
-                    replay = operator.call_exposed_tool(
-                        "case_replay_export",
-                        {"case_id": run_id},
-                        task_id=f"soak-cycle-{cycle}",
-                        operation_id=f"soak-cycle-{cycle}-replay-{index}",
-                    )
-                    event_count = len(replay["events"])
-                    cycle_events += event_count
-                    max_events_per_run = max(max_events_per_run, event_count)
-                    max_run_decisions = max(
-                        max_run_decisions,
-                        len(projection["run_decisions"]),
-                    )
-                    outcome_count = sum(
-                        event["kind"] == "RunOutcomeRecorded"
-                        for event in replay["events"]
-                    )
-                    outcome_events += outcome_count
-                    valid = all(
-                        (
-                            projection["run_outcome"].get("status")
-                            == "completed",
-                            projection["incidents"] == [],
-                            outcome_count == 1,
-                            all(
-                                operation["status"] == "completed"
-                                for operation in projection["operations"]
-                            ),
-                        )
-                    )
-                    invalid_runs += 0 if valid else 1
-                cycle_status = operator.call_exposed_tool(
-                    "runtime_status",
-                    {},
-                    task_id=f"soak-cycle-{cycle}",
-                    operation_id=f"soak-cycle-{cycle}-status",
+            for run_id in cycle_run_ids:
+                projection, events = _case_record(repository, run_id)
+                event_count = len(events)
+                cycle_events += event_count
+                max_events_per_run = max(max_events_per_run, event_count)
+                max_run_decisions = max(
+                    max_run_decisions,
+                    len(projection["run_decisions"]),
                 )
-            finally:
-                operator.close()
+                outcome_count = sum(
+                    event["kind"] == "RunOutcomeRecorded" for event in events
+                )
+                outcome_events += outcome_count
+                open_incidents += len(projection["incidents"])
+                incomplete = sum(
+                    operation["status"] != "completed"
+                    for operation in projection["operations"]
+                )
+                incomplete_operations += incomplete
+                valid = all(
+                    (
+                        projection["run_outcome"].get("status") == "completed",
+                        projection["incidents"] == [],
+                        outcome_count == 1,
+                        incomplete == 0,
+                    )
+                )
+                invalid_runs += 0 if valid else 1
             total_events += cycle_events
             events_per_cycle.append(cycle_events)
             cumulative_events_by_cycle.append(total_events)
-            storage_bytes_by_cycle.append(
-                int(cycle_status["context_runtime"]["storage_bytes"])
-            )
+            storage_bytes_by_cycle.append(_storage_bytes(repository, blobs))
     finally:
         elapsed_seconds = time.monotonic() - started
         _current_bytes, peak_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-
-    operator = _operator(database, blobs)
-    try:
-        status = operator.call_exposed_tool(
-            "runtime_status",
-            {},
-            task_id="soak-operator",
-            operation_id="soak-status",
-        )
-    finally:
-        operator.close()
+    peak_rss_bytes = _peak_rss_bytes()
 
     expected_runs = SOAK_RESTART_CYCLES * SOAK_RUNS_PER_CYCLE
-    context = status["context_runtime"]
-    storage_bytes = int(context["storage_bytes"])
+    repository_status = repository.status()
+    storage_bytes = _storage_bytes(repository, blobs)
     passed = all(
         (
             len(set(run_ids)) == expected_runs,
-            int(context["repository"]["case_count"]) == expected_runs,
-            status["incident_metrics"]["open"] == 0,
+            int(repository_status["case_count"]) == expected_runs,
+            open_incidents == 0,
+            incomplete_operations == 0,
             execute_calls == expected_runs * 2,
             failed_calls == 0,
             completed_turns == expected_runs * 2,
@@ -487,6 +583,7 @@ def _restart_soak(root: Path) -> dict[str, object]:
             total_events <= expected_runs * MAX_EVENTS_PER_RUN,
             storage_bytes <= MAX_SOAK_STORAGE_BYTES,
             peak_bytes <= MAX_SOAK_PEAK_BYTES,
+            peak_rss_bytes <= MAX_SOAK_PEAK_RSS_BYTES,
             elapsed_seconds <= MAX_SOAK_SECONDS,
         )
     )
@@ -502,7 +599,8 @@ def _restart_soak(root: Path) -> dict[str, object]:
         "invalid_runs": invalid_runs,
         "backend_read_calls": backend_calls,
         "outcome_events": outcome_events,
-        "open_incidents": status["incident_metrics"]["open"],
+        "open_incidents": open_incidents,
+        "incomplete_operations": incomplete_operations,
         "total_events": total_events,
         "events_per_cycle": events_per_cycle,
         "cumulative_events_by_cycle": cumulative_events_by_cycle,
@@ -510,6 +608,7 @@ def _restart_soak(root: Path) -> dict[str, object]:
         "max_events_per_run": max_events_per_run,
         "max_run_decisions": max_run_decisions,
         "storage_bytes": storage_bytes,
+        "peak_rss_bytes": peak_rss_bytes,
         "peak_traced_memory_bytes": peak_bytes,
         "elapsed_seconds": round(elapsed_seconds, 3),
     }
@@ -524,6 +623,7 @@ def qualify_runtime_stability(
         evidence_root = Path(raw)
         scenarios: dict[str, dict[str, object]] = {}
         for name, scenario in (
+            ("capacity", _capacity),
             ("duplicate_storm", _duplicate_storm),
             ("gate_concurrency", _gate_concurrency),
             ("restart_soak", _restart_soak),
@@ -539,24 +639,17 @@ def qualify_runtime_stability(
         source_commit,
         workspace=workspace,
     )
+    environment = {
+        "python": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "platform": platform.platform(),
+    }
     report: dict[str, object] = {
         "schema": SCHEMA,
         "source_commit": resolved_source_commit,
-        "environment": {
-            "python": platform.python_version(),
-            "python_implementation": platform.python_implementation(),
-            "platform": platform.platform(),
-        },
-        "parameters": {
-            "storm_workers": STORM_WORKERS,
-            "gate_workers": GATE_WORKERS,
-            "soak_restart_cycles": SOAK_RESTART_CYCLES,
-            "soak_runs_per_cycle": SOAK_RUNS_PER_CYCLE,
-            "max_soak_seconds": MAX_SOAK_SECONDS,
-            "max_soak_peak_bytes": MAX_SOAK_PEAK_BYTES,
-            "max_soak_storage_bytes": MAX_SOAK_STORAGE_BYTES,
-            "max_events_per_run": MAX_EVENTS_PER_RUN,
-        },
+        "environment": environment,
+        "environment_fingerprint": evidence_fingerprint(environment),
+        "parameters": ci_parameters(),
         "scenarios": scenarios,
         "promotable": all(
             scenario["status"] == "passed"

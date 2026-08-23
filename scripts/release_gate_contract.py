@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
+
+from scripts.evidence_report import evidence_fingerprint
 
 
 RELEASE_GATE_SCHEMA = "openubmc-agent-workflow.release-gate.v2"
@@ -28,17 +28,6 @@ RETIREMENT_RELEASE_ARTIFACTS = (
     "github_ci",
     "agent_gateway_ab",
 )
-
-
-def evidence_fingerprint(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
-
 
 def _verify_artifact(name: str, value: object) -> None:
     if not isinstance(value, Mapping):

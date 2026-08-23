@@ -30,6 +30,7 @@ class RuntimeStabilityTests(unittest.TestCase):
             "openubmc-agent-workflow.runtime-stability.v1",
         )
         self.assertTrue(report["evidence_digest"].startswith("sha256:"))
+        self.assertTrue(report["environment_fingerprint"].startswith("sha256:"))
         self.assertEqual(report["source_commit"], "b" * 40)
         storm = report["scenarios"]["duplicate_storm"]
         self.assertEqual(storm["status"], "passed")
@@ -41,10 +42,21 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertEqual(gate["status"], "passed")
         self.assertEqual(gate["gate_submissions"], 1)
         self.assertEqual(gate["outcome_events"], 1)
+        capacity = report["scenarios"]["capacity"]
+        self.assertEqual(capacity["status"], "passed")
+        self.assertEqual(capacity["completed_runs"], 128)
+        self.assertEqual(capacity["failed_calls"], 0)
+        self.assertEqual(capacity["incomplete_operations"], 0)
+        self.assertEqual(
+            sum(capacity["events_per_batch"]),
+            capacity["total_events"],
+        )
+        self.assertGreater(capacity["peak_rss_bytes"], 0)
         soak = report["scenarios"]["restart_soak"]
         self.assertEqual(soak["status"], "passed")
         self.assertEqual(soak["invalid_runs"], 0)
         self.assertEqual(soak["open_incidents"], 0)
+        self.assertEqual(soak["incomplete_operations"], 0)
         self.assertEqual(soak["failed_calls"], 0)
         self.assertEqual(soak["replay_mismatches"], 0)
         self.assertEqual(

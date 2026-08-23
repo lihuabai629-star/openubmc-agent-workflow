@@ -26,12 +26,20 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "python_implementation": "CPython",
                 "platform": "test",
             },
+            "environment_fingerprint": "",
             "parameters": {
                 "storm_workers": 16,
                 "gate_workers": 8,
+                "capacity_runs": 128,
+                "capacity_batch_size": 32,
                 "soak_restart_cycles": 4,
                 "soak_runs_per_cycle": 16,
+                "max_capacity_seconds": 30.0,
+                "max_capacity_peak_rss_bytes": 536870912,
+                "max_capacity_peak_python_bytes": 134217728,
+                "max_capacity_storage_bytes": 67108864,
                 "max_soak_seconds": 30.0,
+                "max_soak_peak_rss_bytes": 536870912,
                 "max_soak_peak_bytes": 134217728,
                 "max_soak_storage_bytes": 33554432,
                 "max_events_per_run": 16,
@@ -57,6 +65,26 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "outcome_events": 1,
                     "open_incidents": 0,
                 },
+                "capacity": {
+                    "status": "passed",
+                    "execute_calls": 128,
+                    "failed_calls": 0,
+                    "completed_turns": 128,
+                    "completed_runs": 128,
+                    "invalid_runs": 0,
+                    "outcome_events": 128,
+                    "open_incidents": 0,
+                    "incomplete_operations": 0,
+                    "total_events": 1408,
+                    "events_per_batch": [352, 352, 352, 352],
+                    "cumulative_events_by_batch": [352, 704, 1056, 1408],
+                    "storage_bytes_by_batch": [1000, 2000, 3000, 4000],
+                    "max_events_per_run": 11,
+                    "storage_bytes": 4000,
+                    "peak_rss_bytes": 100000000,
+                    "peak_python_allocation_bytes": 1000000,
+                    "elapsed_seconds": 5.0,
+                },
                 "restart_soak": {
                     "status": "passed",
                     "execute_calls": 128,
@@ -67,18 +95,23 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "invalid_runs": 0,
                     "outcome_events": 64,
                     "open_incidents": 0,
+                    "incomplete_operations": 0,
                     "total_events": 704,
                     "events_per_cycle": [176, 176, 176, 176],
                     "cumulative_events_by_cycle": [176, 352, 528, 704],
                     "storage_bytes_by_cycle": [1000, 2000, 3000, 4000],
                     "max_events_per_run": 11,
                     "storage_bytes": 4000,
+                    "peak_rss_bytes": 100000000,
                     "peak_traced_memory_bytes": 1000000,
                     "elapsed_seconds": 5.0,
                 },
             },
             "promotable": True,
         }
+        report["environment_fingerprint"] = qualification.evidence_fingerprint(
+            report["environment"]
+        )
         report["evidence_digest"] = qualification.evidence_fingerprint(report)
         return json.dumps(report)
 
@@ -119,6 +152,10 @@ class RuntimeQualificationTests(unittest.TestCase):
         self.assertEqual(
             report["environment"],
             {"platform": "test", "python": "3.11.0"},
+        )
+        self.assertEqual(
+            report["environment_fingerprint"],
+            qualification.evidence_fingerprint(report["environment"]),
         )
         self.assertEqual(report["parameters"]["stability_profile"], "ci")
         stability_call = next(
@@ -207,6 +244,60 @@ class RuntimeQualificationTests(unittest.TestCase):
             if item["name"] == "runtime_stability"
         )
         self.assertIn("threshold", stability_result["verification_error"])
+
+    def test_stability_report_with_wrong_environment_fingerprint_blocks_promotion(
+        self,
+    ) -> None:
+        def wrong_fingerprint(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            report["environment_fingerprint"] = "sha256:" + "0" * 64
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            Path.cwd(),
+            executor=wrong_fingerprint,
+            source_commit="a" * 40,
+        )
+
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertFalse(report["promotable"])
+        self.assertIn("environment fingerprint", stability_result["verification_error"])
+
+    def test_capacity_rss_over_the_hard_threshold_blocks_promotion(self) -> None:
+        def over_rss(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            report["scenarios"]["capacity"]["peak_rss_bytes"] = 536870913
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            Path.cwd(),
+            executor=over_rss,
+            source_commit="a" * 40,
+        )
+
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertFalse(report["promotable"])
+        self.assertIn("capacity", stability_result["verification_error"])
 
 
 if __name__ == "__main__":

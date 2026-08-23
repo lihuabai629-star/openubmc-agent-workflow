@@ -643,9 +643,10 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 
 ### 14.4 Runtime stability qualification
 
-当前 CI qualification 通过公开 Agent/Operator Interface 运行 hermetic duplicate storm、
-SQLite Gate 并发单赢家、64 Run restart soak 和既有 crash-cut matrix。报告绑定 source commit、
-环境、参数、Agent 调用/失败/完成数、逐 cycle 事件与存储增长、内存、耗时和 digest；聚合资格会
+当前 CI qualification 通过公开 Agent execute seam 与持久 repository 运行 hermetic duplicate
+storm、SQLite Gate 并发单赢家、独立 128 Run capacity、64 Run restart soak 和既有 crash-cut
+matrix。报告绑定 source commit、环境指纹、参数、Agent 调用/失败/完成数、逐 batch/cycle 事件与
+存储增长、进程峰值 RSS、Python allocation、耗时和 digest；聚合资格会
 重新验证 schema、source、参数、digest 和全部硬阈值。重复 Outcome、未收敛
 Incident/operation、同 identity 接受不同输入或增长超限都会阻断 promotion。并发 storm
 允许返回 `running` reattach Turn，但必须用同一 command identity 收敛到唯一 terminal

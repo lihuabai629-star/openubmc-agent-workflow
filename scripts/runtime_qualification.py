@@ -217,10 +217,12 @@ def qualify_runtime(
             "stderr_tail": _tail(partial.stderr or ""),
         }
     )
+    environment_record = dict(sorted((environment or _environment()).items()))
     report: dict[str, object] = {
         "schema": SCHEMA,
         "source_commit": resolved_source_commit,
-        "environment": dict(sorted((environment or _environment()).items())),
+        "environment": environment_record,
+        "environment_fingerprint": evidence_fingerprint(environment_record),
         "parameters": {
             "stability_profile": "ci",
             "qualification_groups": [name for name, _tests in QUALIFICATIONS],

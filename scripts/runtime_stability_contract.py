@@ -10,12 +10,39 @@ from scripts.evidence_report import evidence_fingerprint
 SCHEMA = "openubmc-agent-workflow.runtime-stability.v1"
 STORM_WORKERS = 16
 GATE_WORKERS = 8
+CAPACITY_RUNS = 128
+CAPACITY_BATCH_SIZE = 32
 SOAK_RESTART_CYCLES = 4
 SOAK_RUNS_PER_CYCLE = 16
+MAX_CAPACITY_SECONDS = 30.0
+MAX_CAPACITY_PEAK_RSS_BYTES = 512 * 1024 * 1024
+MAX_CAPACITY_PEAK_PYTHON_BYTES = 128 * 1024 * 1024
+MAX_CAPACITY_STORAGE_BYTES = 64 * 1024 * 1024
 MAX_SOAK_SECONDS = 30.0
+MAX_SOAK_PEAK_RSS_BYTES = 512 * 1024 * 1024
 MAX_SOAK_PEAK_BYTES = 128 * 1024 * 1024
 MAX_SOAK_STORAGE_BYTES = 32 * 1024 * 1024
 MAX_EVENTS_PER_RUN = 16
+
+
+def ci_parameters() -> dict[str, int | float]:
+    return {
+        "storm_workers": STORM_WORKERS,
+        "gate_workers": GATE_WORKERS,
+        "capacity_runs": CAPACITY_RUNS,
+        "capacity_batch_size": CAPACITY_BATCH_SIZE,
+        "soak_restart_cycles": SOAK_RESTART_CYCLES,
+        "soak_runs_per_cycle": SOAK_RUNS_PER_CYCLE,
+        "max_capacity_seconds": MAX_CAPACITY_SECONDS,
+        "max_capacity_peak_rss_bytes": MAX_CAPACITY_PEAK_RSS_BYTES,
+        "max_capacity_peak_python_bytes": MAX_CAPACITY_PEAK_PYTHON_BYTES,
+        "max_capacity_storage_bytes": MAX_CAPACITY_STORAGE_BYTES,
+        "max_soak_seconds": MAX_SOAK_SECONDS,
+        "max_soak_peak_rss_bytes": MAX_SOAK_PEAK_RSS_BYTES,
+        "max_soak_peak_bytes": MAX_SOAK_PEAK_BYTES,
+        "max_soak_storage_bytes": MAX_SOAK_STORAGE_BYTES,
+        "max_events_per_run": MAX_EVENTS_PER_RUN,
+    }
 
 
 def _integer(value: object, name: str, *, minimum: int = 0) -> int:
@@ -64,17 +91,10 @@ def verify_runtime_stability_report(
         for name in ("python", "python_implementation", "platform")
     ):
         raise ValueError("Runtime stability environment is incomplete")
+    if report.get("environment_fingerprint") != evidence_fingerprint(environment):
+        raise ValueError("Runtime stability environment fingerprint is invalid")
     parameters = report.get("parameters")
-    expected_parameters = {
-        "storm_workers": STORM_WORKERS,
-        "gate_workers": GATE_WORKERS,
-        "soak_restart_cycles": SOAK_RESTART_CYCLES,
-        "soak_runs_per_cycle": SOAK_RUNS_PER_CYCLE,
-        "max_soak_seconds": MAX_SOAK_SECONDS,
-        "max_soak_peak_bytes": MAX_SOAK_PEAK_BYTES,
-        "max_soak_storage_bytes": MAX_SOAK_STORAGE_BYTES,
-        "max_events_per_run": MAX_EVENTS_PER_RUN,
-    }
+    expected_parameters = ci_parameters()
     if parameters != expected_parameters:
         raise ValueError("Runtime stability parameters do not match the CI profile")
 
@@ -108,6 +128,90 @@ def verify_runtime_stability_report(
         )
     ):
         raise ValueError("Runtime stability Gate concurrency did not converge")
+
+    capacity = _scenario(report, "capacity")
+    capacity_batches = CAPACITY_RUNS // CAPACITY_BATCH_SIZE
+    events_per_batch = capacity.get("events_per_batch")
+    cumulative_capacity_events = capacity.get("cumulative_events_by_batch")
+    capacity_storage_by_batch = capacity.get("storage_bytes_by_batch")
+    if (
+        not isinstance(events_per_batch, list)
+        or not isinstance(cumulative_capacity_events, list)
+        or not isinstance(capacity_storage_by_batch, list)
+        or len(events_per_batch) != capacity_batches
+        or len(cumulative_capacity_events) != capacity_batches
+        or len(capacity_storage_by_batch) != capacity_batches
+    ):
+        raise ValueError("Runtime stability capacity growth evidence is incomplete")
+    capacity_total_events = _integer(
+        capacity.get("total_events"),
+        "capacity total events",
+    )
+    normalized_capacity_cumulative = [
+        _integer(value, "capacity cumulative events", minimum=1)
+        for value in cumulative_capacity_events
+    ]
+    if not all(
+        (
+            _integer(capacity.get("execute_calls"), "capacity execute calls")
+            == CAPACITY_RUNS,
+            _integer(capacity.get("failed_calls"), "capacity failed calls") == 0,
+            _integer(capacity.get("completed_turns"), "capacity completed turns")
+            == CAPACITY_RUNS,
+            _integer(capacity.get("completed_runs"), "capacity completed runs")
+            == CAPACITY_RUNS,
+            _integer(capacity.get("invalid_runs"), "capacity invalid runs") == 0,
+            _integer(capacity.get("outcome_events"), "capacity outcome events")
+            == CAPACITY_RUNS,
+            _integer(capacity.get("open_incidents"), "capacity open incidents")
+            == 0,
+            _integer(
+                capacity.get("incomplete_operations"),
+                "capacity incomplete operations",
+            )
+            == 0,
+            _integer(
+                capacity.get("max_events_per_run"),
+                "capacity max events per run",
+            )
+            <= MAX_EVENTS_PER_RUN,
+            capacity_total_events <= CAPACITY_RUNS * MAX_EVENTS_PER_RUN,
+            sum(
+                _integer(value, "capacity batch events", minimum=1)
+                for value in events_per_batch
+            )
+            == capacity_total_events,
+            normalized_capacity_cumulative[-1] == capacity_total_events,
+            normalized_capacity_cumulative
+            == sorted(normalized_capacity_cumulative),
+            all(
+                _integer(value, "capacity batch storage", minimum=1)
+                <= MAX_CAPACITY_STORAGE_BYTES
+                for value in capacity_storage_by_batch
+            ),
+            _integer(
+                capacity.get("storage_bytes"),
+                "capacity storage bytes",
+                minimum=1,
+            )
+            <= MAX_CAPACITY_STORAGE_BYTES,
+            _integer(
+                capacity.get("peak_rss_bytes"),
+                "capacity peak RSS",
+                minimum=1,
+            )
+            <= MAX_CAPACITY_PEAK_RSS_BYTES,
+            _integer(
+                capacity.get("peak_python_allocation_bytes"),
+                "capacity peak Python allocation",
+                minimum=1,
+            )
+            <= MAX_CAPACITY_PEAK_PYTHON_BYTES,
+            _number(capacity.get("elapsed_seconds"), "capacity elapsed seconds")
+            <= MAX_CAPACITY_SECONDS,
+        )
+    ):
+        raise ValueError("Runtime stability capacity exceeded a hard threshold")
 
     soak = _scenario(report, "restart_soak")
     expected_runs = SOAK_RESTART_CYCLES * SOAK_RUNS_PER_CYCLE
@@ -155,6 +259,11 @@ def verify_runtime_stability_report(
             _integer(soak.get("outcome_events"), "soak outcome events")
             == expected_runs,
             _integer(soak.get("open_incidents"), "soak open incidents") == 0,
+            _integer(
+                soak.get("incomplete_operations"),
+                "soak incomplete operations",
+            )
+            == 0,
             _integer(soak.get("max_events_per_run"), "soak max events per run")
             <= MAX_EVENTS_PER_RUN,
             total_events <= expected_runs * MAX_EVENTS_PER_RUN,
@@ -165,6 +274,12 @@ def verify_runtime_stability_report(
             bounded_storage,
             _integer(soak.get("storage_bytes"), "soak storage bytes", minimum=1)
             <= MAX_SOAK_STORAGE_BYTES,
+            _integer(
+                soak.get("peak_rss_bytes"),
+                "soak peak RSS",
+                minimum=1,
+            )
+            <= MAX_SOAK_PEAK_RSS_BYTES,
             _integer(
                 soak.get("peak_traced_memory_bytes"),
                 "soak peak memory",
@@ -179,7 +294,12 @@ def verify_runtime_stability_report(
 
     scenario_statuses = {
         str(_scenario(report, name).get("status", ""))
-        for name in ("duplicate_storm", "gate_concurrency", "restart_soak")
+        for name in (
+            "duplicate_storm",
+            "gate_concurrency",
+            "capacity",
+            "restart_soak",
+        )
     }
     calculated_promotable = scenario_statuses == {"passed"}
     if report.get("promotable") is not calculated_promotable:

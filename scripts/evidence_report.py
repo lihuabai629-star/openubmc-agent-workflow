@@ -28,17 +28,17 @@ def resolve_source_commit(workspace: Path) -> str:
         stderr=subprocess.PIPE,
     )
     value = completed.stdout.strip().lower()
-    return value if _is_sha256_hex(value, length=40) else "unknown"
+    return value if _is_lower_hex(value, length=40) else "unknown"
 
 
 def source_commit(value: str, *, workspace: Path) -> str:
     selected = value.strip().lower() or resolve_source_commit(workspace)
-    if not _is_sha256_hex(selected, length=40):
+    if not _is_lower_hex(selected, length=40):
         raise ValueError("source commit must be a 40-character Git commit")
     return selected
 
 
-def _is_sha256_hex(value: str, *, length: int) -> bool:
+def _is_lower_hex(value: str, *, length: int) -> bool:
     return len(value) == length and all(
         character in "0123456789abcdef" for character in value
     )
