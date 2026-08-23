@@ -42,6 +42,8 @@ qualification validates the child schema, source binding, canonical parameters, 
 and every hard threshold before accepting it.
 An explicit source commit must equal the tested workspace HEAD. The only exception is an immutable
 release-lock child, where it must equal that commit's sole parent and the lock's recorded source.
+The index and worktree must be clean, including untracked files, before evidence can bind to either
+identity.
 Scenario assertions read projections and events through the public persistent repository contract;
 they do not depend on Operator-only case tools or private test hooks.
 Intermediate `running` Turns during a duplicate storm are valid reattach points; the decisive

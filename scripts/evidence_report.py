@@ -24,6 +24,18 @@ def resolve_source_commit(workspace: Path) -> str:
     return value if _is_lower_hex(value, length=40) else "unknown"
 
 
+def _workspace_is_clean(workspace: Path) -> bool:
+    completed = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=workspace,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return completed.returncode == 0 and not completed.stdout.strip()
+
+
 def _resolve_git_ref(workspace: Path, ref: str) -> str:
     completed = subprocess.run(
         ["git", "rev-parse", ref],
@@ -59,6 +71,8 @@ def source_commit(value: str, *, workspace: Path) -> str:
     head = resolve_source_commit(workspace)
     if head == "unknown":
         raise ValueError("workspace HEAD must resolve to a Git commit")
+    if not _workspace_is_clean(workspace):
+        raise ValueError("workspace must be clean before binding evidence to HEAD")
     selected = value.strip().lower() or head
     if not _is_lower_hex(selected, length=40):
         raise ValueError("source commit must be a 40-character Git commit")

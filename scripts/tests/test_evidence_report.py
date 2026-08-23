@@ -42,6 +42,31 @@ class EvidenceReportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "workspace HEAD"):
                 evidence.source_commit("a" * 40, workspace=repository)
 
+    def test_source_commit_rejects_staged_unstaged_and_untracked_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            _git(repository, "init", "-q")
+            _git(repository, "config", "user.name", "Test")
+            _git(repository, "config", "user.email", "test@example.com")
+            tracked = repository / "tracked.txt"
+            tracked.write_text("one\n", encoding="utf-8")
+            _git(repository, "add", "tracked.txt")
+            _git(repository, "commit", "-qm", "initial")
+            head = _git(repository, "rev-parse", "HEAD")
+
+            tracked.write_text("two\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "workspace must be clean"):
+                evidence.source_commit(head, workspace=repository)
+
+            _git(repository, "add", "tracked.txt")
+            with self.assertRaisesRegex(ValueError, "workspace must be clean"):
+                evidence.source_commit(head, workspace=repository)
+
+            _git(repository, "reset", "-q", "--hard", "HEAD")
+            (repository / "untracked.txt").write_text("extra\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "workspace must be clean"):
+                evidence.source_commit(head, workspace=repository)
+
     def test_release_lock_parent_requires_canonical_lock_verification(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository = Path(raw)
