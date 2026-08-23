@@ -1059,6 +1059,18 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         return False
     negative_terms = ("不能", "无法", "不足以", "不代表", "不等于", "并非", "不是", "不属于")
     action_terms = ("处理", "维修", "修复", "更换", "升级", "操作", "处置", "整改", "恢复", "重启")
+    finality_terms = (
+        "最终",
+        "结论",
+        "结果",
+        "明确判定",
+        "已经判定",
+        "已判定",
+        "确认异常",
+        "异常成立",
+        "异常属实",
+        "异常确定",
+    )
     uncertainty_verb = r"(?:仍需|还需|需要|尚需|有待|取决于)"
     uncertainty_evidence = (
         r"(?:(?:其他|更多|额外|补充)?证据|接口(?:规范|定义|契约|语义)|"
@@ -1093,6 +1105,10 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         and not any(term in clause for term in negative_terms)
         and not (
             not any(term in clause for term in action_terms)
+            and (
+                any(term in clause for term in ("是否", "与否"))
+                or not any(term in clause for term in finality_terms)
+            )
             and any(re.search(pattern, clause) for pattern in uncertainty_patterns)
         )
         for clause in clauses
