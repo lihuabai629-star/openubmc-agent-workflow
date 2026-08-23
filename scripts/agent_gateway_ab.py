@@ -1081,16 +1081,21 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常"
         rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
         rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}\s*$",
-        rf"异常(?:是否|与否)[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
+        rf"(?:是否异常|异常(?:是否|与否))"
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
         rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}\s*$",
         rf"{uncertainty_verb}[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}"
         rf"[^，,。；;！？!?\n]{{0,24}}"
         rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常\s*$",
     )
-    clauses = re.split(
-        r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)",
-        folded,
-    )
+    clauses = [
+        clause.strip()
+        for clause in re.split(
+            r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)",
+            folded,
+        )
+        if clause.strip()
+    ]
     positive_patterns = (
         r"resourceid[^，,。；;！？!?\n]{0,32}异常",
         r"(?:最终)?(?:结论|结果)[^，,。；;！？!?\n]{0,32}异常",
@@ -1099,20 +1104,31 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         r"(?:为|是|属于|构成|确属)异常",
         r"异常(?:成立|属实|确定)",
     )
-    return not any(
-        "异常" in clause
-        and any(re.search(pattern, clause) for pattern in positive_patterns)
-        and not any(term in clause for term in negative_terms)
-        and not (
+    carry_finality = False
+    for clause in clauses:
+        explicit_uncertainty = any(term in clause for term in ("是否", "与否"))
+        has_finality = carry_finality or any(
+            term in clause for term in finality_terms
+        )
+        uncertainty = (
             not any(term in clause for term in action_terms)
-            and (
-                any(term in clause for term in ("是否", "与否"))
-                or not any(term in clause for term in finality_terms)
-            )
+            and (explicit_uncertainty or not has_finality)
             and any(re.search(pattern, clause) for pattern in uncertainty_patterns)
         )
-        for clause in clauses
-    )
+        if (
+            "异常" in clause
+            and any(re.search(pattern, clause) for pattern in positive_patterns)
+            and not any(term in clause for term in negative_terms)
+            and not uncertainty
+        ):
+            return False
+        carry_finality = bool(
+            re.fullmatch(
+                r"(?:最终|结论|结果|最终结论|最终结果)(?:是|为|[:：])?",
+                clause,
+            )
+        )
+    return True
 
 
 def _parenthetical_annotation_matches(annotation: str, expected: str) -> bool:
