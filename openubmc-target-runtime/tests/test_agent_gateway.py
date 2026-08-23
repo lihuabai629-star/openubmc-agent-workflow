@@ -5929,6 +5929,7 @@ class AgentGatewayTests(unittest.TestCase):
             self.assertIn("debug_run", compatibility.interface_catalog.names())
             self.assertNotIn("evidence_read", compatibility.interface_catalog.names())
             self.assertNotIn("runtime_status", compatibility.interface_catalog.names())
+            self.assertIn("evidence_query", operator.interface_catalog.names())
             self.assertIn("evidence_read", operator.interface_catalog.names())
             self.assertNotIn("debug_run", operator.interface_catalog.names())
         finally:

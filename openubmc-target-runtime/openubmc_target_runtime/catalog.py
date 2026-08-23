@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import math
 import re
 
 
@@ -90,6 +91,14 @@ def _validate_schema(schema: Mapping[str, object], *, path: str = "$") -> None:
             re.compile(pattern)
         except re.error as exc:
             raise OperationCatalogError(f"schema {path}.pattern is invalid: {exc}") from exc
+    for keyword in ("minLength", "maxLength"):
+        length = schema.get(keyword)
+        if length is not None and (
+            not isinstance(length, int) or isinstance(length, bool) or length < 0
+        ):
+            raise OperationCatalogError(
+                f"schema {path}.{keyword} must be a non-negative integer"
+            )
 
 
 def validate_json_schema(schema: Mapping[str, object], *, path: str = "$") -> None:
@@ -140,11 +149,16 @@ def _instance_errors(
         minimum = schema.get("minLength")
         if isinstance(minimum, int) and len(value) < minimum:
             errors.append(f"{path} must contain at least {minimum} characters")
+        maximum = schema.get("maxLength")
+        if isinstance(maximum, int) and len(value) > maximum:
+            errors.append(f"{path} must contain at most {maximum} characters")
         pattern = schema.get("pattern")
         if isinstance(pattern, str) and re.search(pattern, value) is None:
             errors.append(f"{path} does not match the required pattern")
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            return [f"{path} must be finite"]
         minimum = schema.get("minimum")
         if isinstance(minimum, (int, float)) and value < minimum:
             errors.append(f"{path} must be at least {minimum}")

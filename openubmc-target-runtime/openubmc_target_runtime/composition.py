@@ -36,6 +36,7 @@ from .context_runtime import (
 from .domain_packs import builtin_domain_pack_contracts
 from .domain_runtime import RuntimeDomainExecution
 from .effect_runner import LocalEffectRunner
+from .evidence_store import EvidenceQueryService
 from .incident import IncidentMetrics
 from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 from .run_engine import ObservationEngine, RunEngine, SemanticRuntime
@@ -129,6 +130,7 @@ class _RuntimeOperatorPort:
     ) -> None:
         self._context_runtime = context_runtime
         self._artifact_store = artifact_store
+        self._evidence_query = EvidenceQueryService(context_runtime.repository)
 
     def replay_service(self):
         from .replay import CaseReplayService
@@ -226,6 +228,13 @@ class _RuntimeOperatorPort:
                 operation=name,
                 operation_id=operation_id,
                 case_id=case_id,
+            )
+        if name == "evidence_query":
+            return self.wrap_read(
+                self._evidence_query.query(arguments),
+                operation=name,
+                operation_id=operation_id,
+                case_id="",
             )
         if name == "case_close":
             case_id = str(arguments.get("case_id", "")).strip()

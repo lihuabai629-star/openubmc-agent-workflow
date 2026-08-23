@@ -33,6 +33,7 @@ from .closeout import (
 )
 from .contracts import RUNTIME_API_VERSION
 from .effect_runner import EffectIntent, EffectSettlementMode, PreparedEffect
+from .evidence_store import EvidenceQuery
 from .mutation import (
     MutationAuthorizationDenied,
     MutationOperationConflict,
@@ -1493,6 +1494,13 @@ class RuntimeRepository(Protocol):
         self, case_id: str
     ) -> tuple[dict[str, object], ...]: ...
 
+    def evidence_query_candidates(
+        self,
+        query: EvidenceQuery,
+        *,
+        limit: int,
+    ) -> tuple[dict[str, object], ...]: ...
+
     def delete_case(self, case_id: str) -> tuple[dict[str, object], ...]: ...
 
     def metadata(self) -> tuple[dict[str, object], ...]: ...
@@ -1893,6 +1901,11 @@ class BufferedRuntimeRepository:
             if isinstance(item, Mapping)
         )
 
+    def evidence_query_candidates(
+        self, query: EvidenceQuery, *, limit: int
+    ) -> tuple[dict[str, object], ...]:
+        return self.base_repository.evidence_query_candidates(query, limit=limit)
+
     def blob_reference_count(self, blob_id: str) -> int:
         count = self.base_repository.blob_reference_count(blob_id)
         state = self._state.get()
@@ -2112,6 +2125,54 @@ class InMemoryRuntimeRepository:
                 )
             )
             return tuple(json.loads(json.dumps(references)))
+
+    def evidence_query_candidates(
+        self,
+        query: EvidenceQuery,
+        *,
+        limit: int,
+    ) -> tuple[dict[str, object], ...]:
+        with self._lock:
+            references = [
+                reference
+                for reference in self._evidence_index.values()
+                if (
+                    not query.case_id
+                    or str(reference.get("case_id", "")) == query.case_id
+                )
+                and (
+                    not query.target_id
+                    or str(reference.get("target_id", "")) == query.target_id
+                )
+                and (
+                    not query.producer
+                    or str(reference.get("producer", "")) == query.producer
+                )
+                and (
+                    not query.workflow_definition_id
+                    or str(reference.get("workflow_definition_id", ""))
+                    == query.workflow_definition_id
+                )
+                and (
+                    query.observed_after is None
+                    or float(reference.get("observed_at", 0.0))
+                    >= query.observed_after
+                )
+                and (
+                    query.observed_before is None
+                    or float(reference.get("observed_at", 0.0))
+                    <= query.observed_before
+                )
+            ]
+            references.sort(
+                key=lambda item: (
+                    float(item.get("observed_at", 0.0)),
+                    str(item.get("case_id", "")),
+                    str(item.get("evidence_id", "")),
+                ),
+                reverse=True,
+            )
+            return tuple(json.loads(json.dumps(references[:limit])))
 
     def delete_case(self, case_id: str) -> tuple[dict[str, object], ...]:
         with self._lock:
@@ -2654,6 +2715,43 @@ class SQLiteRuntimeRepository:
                 "SELECT reference_json FROM evidence_index WHERE case_id = ? "
                 "ORDER BY observed_at, evidence_id",
                 (case_id,),
+            ).fetchall()
+            return tuple(json.loads(row["reference_json"]) for row in rows)
+
+    def evidence_query_candidates(
+        self,
+        query: EvidenceQuery,
+        *,
+        limit: int,
+    ) -> tuple[dict[str, object], ...]:
+        clauses: list[str] = []
+        parameters: list[object] = []
+        for column, value in (("case_id", query.case_id),):
+            if value:
+                clauses.append(f"{column} = ?")
+                parameters.append(value)
+        for path, value in (
+            ("$.target_id", query.target_id),
+            ("$.producer", query.producer),
+            ("$.workflow_definition_id", query.workflow_definition_id),
+        ):
+            if value:
+                clauses.append("json_extract(reference_json, ?) = ?")
+                parameters.extend((path, value))
+        if query.observed_after is not None:
+            clauses.append("observed_at >= ?")
+            parameters.append(query.observed_after)
+        if query.observed_before is not None:
+            clauses.append("observed_at <= ?")
+            parameters.append(query.observed_before)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(limit)
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT reference_json FROM evidence_index"
+                + where
+                + " ORDER BY observed_at DESC, case_id DESC, evidence_id DESC LIMIT ?",
+                parameters,
             ).fetchall()
             return tuple(json.loads(row["reference_json"]) for row in rows)
 
