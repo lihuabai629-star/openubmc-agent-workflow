@@ -700,6 +700,10 @@ class DebugMcpBackend:
                 preflight = dict(preflight)
                 mdb_results = dict(ssh_lane)
                 capabilities = workflow_remote.preflight_capabilities(preflight)
+                if not runner.prepare_assurance_refresh(args):
+                    raise _load_runtime_module().AssuranceUnavailable(
+                        "prior capability scope is no longer epoch-valid"
+                    )
             else:
                 preflight = runner(
                     "preflight_start",

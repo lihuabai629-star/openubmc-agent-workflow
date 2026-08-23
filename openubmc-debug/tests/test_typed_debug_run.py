@@ -1321,6 +1321,86 @@ class TypedDebugRunTests(unittest.TestCase):
                 self.assertEqual(len(stored), 1)
                 self.assertEqual(len(invalidated), 1)
 
+    def test_fresh_runner_uses_epoch_valid_cached_preflight_for_refresh(self) -> None:
+        command = [
+            sys.executable,
+            str(SCRIPT_DIR / "preflight_remote.py"),
+            "--ip",
+            TEST_IP,
+            "--check",
+            "SSH",
+            "--check",
+            "MDBCTL",
+            "--json",
+            "--compact-json",
+        ]
+        base_checks = {
+            "SSH": {"ok": True, "lines": ["ssh clock"]},
+            "MDBCTL": {"ok": True, "lines": ["ThresholdSensor"]},
+        }
+        observed_refreshes: list[object] = []
+
+        def preflight_main(**kwargs) -> int:
+            observed_refreshes.append(kwargs.get("_refresh_checks"))
+            print(
+                json.dumps(
+                    child_payload(
+                        "preflight_remote",
+                        result={
+                            "capabilities": {
+                                "ssh_transport": True,
+                                "mdbctl": True,
+                            },
+                            "checks": base_checks,
+                        },
+                    )
+                )
+            )
+            return 0
+
+        lease = SimpleNamespace(
+            ssh_credentials_mapping=lambda: {
+                "user": "ssh-user",
+                "password": "ssh-password",
+                "port": 22,
+                "identity_file": "",
+            },
+            telnet_credentials_mapping=lambda: {
+                "user": "",
+                "password": "",
+                "port": 23,
+            },
+            object_alarm_lease=SimpleNamespace(),
+            telnet_session=SimpleNamespace(),
+            cached_preflight_checks=lambda _args: base_checks,
+            invalidate_preflight_checks=lambda _args: None,
+            record_preflight_phase=lambda _mode: None,
+            record_phase=lambda _name: None,
+            record_tool_result=lambda _name, _result: None,
+        )
+        runner = workflow_remote.TypedDebugToolRunner(lease)
+        args = workflow_remote.preflight_remote.parse_args(
+            workflow_remote._command_argv(command)
+        )
+        self.assertTrue(runner.prepare_assurance_refresh(args))
+
+        with mock.patch.object(
+            workflow_remote.preflight_remote,
+            "main",
+            side_effect=preflight_main,
+        ):
+            result = runner("preflight_end", command, {}, 30)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(observed_refreshes, [base_checks])
+
+    def test_fresh_runner_rejects_a_missing_epoch_valid_preflight_cache(self) -> None:
+        lease = SimpleNamespace(cached_preflight_checks=lambda _args: None)
+        runner = workflow_remote.TypedDebugToolRunner(lease)
+        args = argparse.Namespace()
+
+        self.assertFalse(runner.prepare_assurance_refresh(args))
+
     def test_debug_runtime_reuses_both_lanes_and_keeps_fresh_reads(self) -> None:
         args = argparse.Namespace(
             ip=TEST_IP,

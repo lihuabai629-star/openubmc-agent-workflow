@@ -218,6 +218,8 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 "error": "query timed out",
             }
 
+        runner.prepare_assurance_refresh = lambda _args: False
+
         with (
             mock.patch.object(
                 module,
@@ -316,6 +318,8 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     }
                 },
             }
+
+        runner.prepare_assurance_refresh = lambda _args: True
 
         lease = FakeLease("agent-observe-task")
         with (
@@ -583,6 +587,242 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         )
         self.assertNotIn("assurance", automatic_receipt)
         self.assertTrue(automatic_receipt["coverage"]["complete"])
+
+    def test_automatic_assurance_preserves_prior_capabilities_in_a_fresh_runner(
+        self,
+    ) -> None:
+        module = load_script("target_runtime_mcp")
+        runtime = module._load_runtime_module()
+        runners = []
+        full_checks = {
+            "SSH": {"ok": True},
+            "TELNET": {"ok": True},
+            "MDBCTL": {"ok": True},
+            "DBUS_ENV": {"ok": True},
+            "BUSCTL": {"ok": True},
+        }
+
+        def preflight_result(
+            name: str,
+            checks: dict[str, dict[str, object]],
+            observed_at: str,
+        ) -> dict[str, object]:
+            return {
+                "name": name,
+                "ok": True,
+                "code": "ok",
+                "returncode": 0,
+                "started_at": observed_at,
+                "completed_at": observed_at,
+                "payload": {
+                    "observed_at": observed_at,
+                    "result": {"checks": checks},
+                },
+            }
+
+        class FreshRunner:
+            def __init__(self) -> None:
+                self.refresh_args = None
+
+            def prepare_assurance_refresh(self, args) -> bool:
+                self.refresh_args = args
+                return True
+
+            def __call__(
+                self,
+                name,
+                _command,
+                _environment,
+                _timeout,
+                **_kwargs,
+            ):
+                if name == "preflight_start":
+                    return preflight_result(
+                        name,
+                        full_checks,
+                        "2026-08-23T00:00:00Z",
+                    )
+                if name == "preflight_end":
+                    checks = full_checks if self.refresh_args is not None else {
+                        "SSH": {"ok": True}
+                    }
+                    return preflight_result(
+                        name,
+                        checks,
+                        "2026-08-23T00:00:08Z",
+                    )
+                return {
+                    "name": name,
+                    "ok": True,
+                    "code": "ok",
+                    "returncode": 0,
+                    "started_at": "2026-08-23T00:00:08Z",
+                    "completed_at": "2026-08-23T00:00:08Z",
+                    "payload": {
+                        "result": {"properties": {name: {"Value": name}}}
+                    },
+                }
+
+        def build_runner(_lease):
+            runner = FreshRunner()
+            runners.append(runner)
+            return runner
+
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "secret", "port": 22},
+                    "telnet": {"user": "root", "password": "secret", "port": 23},
+                },
+            ),
+            mock.patch.object(
+                module,
+                "open_debug_runtime_lease",
+                return_value=FakeLease("automatic-assurance-scope"),
+            ),
+            mock.patch.object(
+                module.workflow_remote,
+                "build_typed_debug_tool_runner",
+                side_effect=build_runner,
+            ),
+        ):
+            service = runtime.RuntimeMcpService(module.DebugMcpBackend())
+            try:
+                receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["ssh", "telnet", "mdbctl", "busctl"],
+                            },
+                            {
+                                "id": "mdb",
+                                "kind": "mdb",
+                                "queries": [
+                                    f"lsprop Object{index}" for index in range(9)
+                                ],
+                            },
+                        ],
+                    },
+                    task_id="automatic-assurance-scope",
+                    operation_id="automatic-assurance-scope-operation",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(len(runners), 2)
+        self.assertIsNotNone(runners[1].refresh_args)
+        self.assertEqual(
+            {
+                item["name"]: item["status"]
+                for item in receipt["results"]["caps"]["values"]
+            },
+            {
+                "ssh": "available",
+                "telnet": "available",
+                "mdbctl": "available",
+                "busctl": "available",
+            },
+        )
+        self.assertTrue(receipt["coverage"]["complete"])
+
+    def test_automatic_assurance_falls_back_when_capability_cache_is_stale(
+        self,
+    ) -> None:
+        module = load_script("target_runtime_mcp")
+        runtime = module._load_runtime_module()
+        runners = []
+
+        class RefreshUnavailableRunner:
+            def __init__(self) -> None:
+                self.refresh_attempted = False
+
+            def prepare_assurance_refresh(self, _args) -> bool:
+                self.refresh_attempted = True
+                return False
+
+            def __call__(
+                self,
+                name,
+                _command,
+                _environment,
+                _timeout,
+                **_kwargs,
+            ):
+                if name == "preflight_start":
+                    return {
+                        "name": name,
+                        "ok": True,
+                        "code": "ok",
+                        "returncode": 0,
+                        "payload": {
+                            "result": {
+                                "capabilities": {"remote_log_file": True},
+                            }
+                        },
+                    }
+                raise AssertionError("stale capability cache must prevent refresh")
+
+        def build_runner(_lease):
+            runner = RefreshUnavailableRunner()
+            runners.append(runner)
+            return runner
+
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "secret", "port": 22},
+                    "telnet": {"user": "root", "password": "secret", "port": 23},
+                },
+            ),
+            mock.patch.object(
+                module,
+                "open_debug_runtime_lease",
+                return_value=FakeLease("stale-assurance-cache"),
+            ),
+            mock.patch.object(
+                module.workflow_remote,
+                "build_typed_debug_tool_runner",
+                side_effect=build_runner,
+            ),
+        ):
+            service = runtime.RuntimeMcpService(module.DebugMcpBackend())
+            try:
+                receipt = service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.30",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["telnet"],
+                            }
+                        ],
+                    },
+                    task_id="stale-assurance-cache",
+                    operation_id="stale-assurance-cache-operation",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(len(runners), 2)
+        self.assertTrue(runners[1].refresh_attempted)
+        self.assertEqual(
+            receipt["results"]["caps"]["values"],
+            [{"name": "telnet", "status": "available"}],
+        )
+        self.assertTrue(
+            any("assurance unavailable" in gap for gap in receipt["gaps"]),
+            receipt["gaps"],
+        )
 
     def test_workflow_argv_accepts_runtime_direct_passwords_without_legacy_projection(
         self,
