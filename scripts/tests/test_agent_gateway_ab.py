@@ -1061,6 +1061,7 @@ class AgentGatewayAbTests(unittest.TestCase):
     def test_skill_disclosure_rejects_a_contradictory_conclusion(self) -> None:
         conclusions = (
             "不能证明 ResourceId 异常，但最终结论是 ResourceId 异常。",
+            "不能证明 ResourceId 异常，但最终结论是异常。",
             "不能证明 ResourceId 异常却判定 ResourceId 异常。",
             "无法排除 ResourceId 异常。",
         )

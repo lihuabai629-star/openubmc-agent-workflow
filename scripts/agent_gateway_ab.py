@@ -1062,9 +1062,22 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)",
         folded,
     )
+    positive_terms = (
+        "判定",
+        "认定",
+        "确认",
+        "结论是",
+        "属于异常",
+        "是异常",
+        "异常成立",
+        "确属异常",
+    )
     return not any(
-        "resourceid" in clause
-        and "异常" in clause
+        "异常" in clause
+        and (
+            "resourceid" in clause
+            or any(term in clause for term in positive_terms)
+        )
         and not any(term in clause for term in negative_terms)
         for clause in clauses
     )
