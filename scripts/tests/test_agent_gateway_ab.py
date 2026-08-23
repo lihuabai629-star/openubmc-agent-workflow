@@ -1120,6 +1120,8 @@ class AgentGatewayAbTests(unittest.TestCase):
             "不能证明 ResourceId 异常，但最终结论为异常。",
             "不能证明 ResourceId 异常。最终结论是异常仍需处理。",
             "不能证明 ResourceId 异常。最终结论是异常需要立即维修。",
+            "不能证明 ResourceId 异常。最终判定异常仍需接口维修。",
+            "不能证明 ResourceId 异常。最终判定异常仍需参考维修手册。",
             "不能证明 ResourceId 异常却判定 ResourceId 异常。",
             "无法排除 ResourceId 异常。",
         )

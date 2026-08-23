@@ -1058,19 +1058,22 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
     if not cautious:
         return False
     negative_terms = ("不能", "无法", "不足以", "不代表", "不等于", "并非", "不是", "不属于")
+    action_terms = ("处理", "维修", "修复", "更换", "升级", "操作", "处置", "整改", "恢复", "重启")
     uncertainty_verb = r"(?:仍需|还需|需要|尚需|有待|取决于)"
     uncertainty_evidence = (
-        r"(?:证据|接口|规范|契约|预期|基线|参考|对照|定义|语义|上下文)"
+        r"(?:(?:其他|更多|额外|补充)?证据|接口(?:规范|定义|契约|语义)|"
+        r"预期(?:值|行为|结果)|基线(?:值|行为|结果)|参考(?:值|标准|规范)|"
+        r"对照(?:值|标准)|契约(?:证据)?|语义(?:定义|契约)|上下文(?:证据)?)"
     )
     uncertainty_patterns = (
         rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常"
         rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
-        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}",
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}\s*$",
         rf"异常(?:是否|与否)[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
-        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}",
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}\s*$",
         rf"{uncertainty_verb}[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}"
         rf"[^，,。；;！？!?\n]{{0,24}}"
-        rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常",
+        rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常\s*$",
     )
     clauses = re.split(
         r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)",
@@ -1088,7 +1091,10 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         "异常" in clause
         and any(re.search(pattern, clause) for pattern in positive_patterns)
         and not any(term in clause for term in negative_terms)
-        and not any(re.search(pattern, clause) for pattern in uncertainty_patterns)
+        and not (
+            not any(term in clause for term in action_terms)
+            and any(re.search(pattern, clause) for pattern in uncertainty_patterns)
+        )
         for clause in clauses
     )
 
