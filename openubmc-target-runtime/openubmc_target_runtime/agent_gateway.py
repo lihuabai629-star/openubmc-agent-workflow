@@ -178,6 +178,20 @@ class CostGovernor:
             "message": _bounded_text(incident.get("message"), 512),
             "effect_id": _bounded_text(incident.get("effect_id"), 128),
             "recoverable": bool(incident.get("recoverable", True)),
+            "recovery_path": _bounded_text(
+                incident.get("recovery_path"), 64
+            ),
+            "allowed_commands": [
+                _bounded_text(item, 32)
+                for item in (
+                    incident.get("allowed_commands", [])
+                    if isinstance(incident.get("allowed_commands"), list)
+                    else []
+                )[:4]
+            ],
+            "operator_action": _bounded_text(
+                incident.get("operator_action"), 512
+            ),
         }
 
     @staticmethod

@@ -123,13 +123,19 @@ references, wrong kind, size or provenance mismatch, and tampering fail before D
 When a mutation result is unknown, `RunEngine` automatically performs one reconcile attempt using
 the same durable operation ID and mutation journal. If the read-first recovery converges, execution
 continues without another Agent Turn. If it cannot converge, the Runtime returns an Incident with
-the affected Effect identity. Explicit `control=reconcile` remains as a compatibility and operator
-fallback rather than the normal Agent path.
+the affected Effect identity, recovery path, bounded allowed commands, and operator action. Repeated
+reconcile calls reuse the same open Incident instead of appending duplicate lifecycle facts.
+Explicit `control=reconcile` remains as a compatibility and operator fallback rather than the
+normal Agent path.
 
 Recoverable Artifact and domain-preparation Incidents can be retried with `resume`. Any current
 Incident can instead be cancelled through `execute kind=control, command=cancel` bound to its
 `incident_id`; the Runtime derives a stable cancellation identity from the Run and Incident, so a
 transport retry returns the same cancelled Turn without appending another Outcome.
+
+The Operator `runtime_status` projection derives Incident counts, open age, resolution time,
+recovery paths, duplicate raises, and unknown policy codes from the persisted Run ledger. It does
+not maintain a second Incident state store, and the same metrics survive SQLite restart.
 
 Compatibility retirement is driven by persistent anonymous operation and feature counters exposed
 through Runtime status. SQLite-backed Runtime instances share the counters across processes; no
@@ -167,7 +173,9 @@ Replay:
 - capability and claim coverage remain explicit;
 - Agent results do not expose Runtime sequencing mechanics;
 - duplicate Gate delivery is idempotent and stale or conflicting delivery is rejected;
-- unknown Mutation is automatically reconciled or returned as an Incident;
+- unknown Mutation is automatically reconciled or returned as an Incident with a bounded recovery
+  contract;
+- Operator Incident metrics are reconstructed from persisted Run events;
 - legacy and governance operations require explicit profiles.
 
 Live performance qualification remains a separate paired AB/BA gate because token and wall-time

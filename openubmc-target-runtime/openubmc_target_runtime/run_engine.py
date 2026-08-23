@@ -953,13 +953,7 @@ class RunEngine:
         raw = projection.get("current_incident")
         if not isinstance(raw, Mapping) or not raw:
             return None
-        return Incident(
-            incident_id=_text(raw.get("incident_id")),
-            code=_text(raw.get("code")),
-            message=_text(raw.get("message")),
-            effect_id=_text(raw.get("effect_id")),
-            recoverable=bool(raw.get("recoverable", True)),
-        )
+        return Incident.from_public_dict(raw)
 
     @staticmethod
     def _outcome(projection: Mapping[str, object]) -> Outcome | None:
@@ -1187,6 +1181,13 @@ class RunEngine:
                 state="running",
                 next_action="reconcile the same durable Effect identity",
             )
+        current_incident = self._current_incident(projection)
+        if (
+            current_incident is not None
+            and current_incident.code == "mutation_outcome_unknown"
+            and current_incident.effect_id == effect_id
+        ):
+            return self._turn(snapshot, state="incident")
         snapshot = self._record_incident(
             snapshot,
             code="mutation_outcome_unknown",

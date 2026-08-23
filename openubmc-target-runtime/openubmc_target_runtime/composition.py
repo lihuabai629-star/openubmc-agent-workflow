@@ -34,6 +34,7 @@ from .context_runtime import (
 from .domain_packs import builtin_domain_packs
 from .domain_runtime import RuntimeDomainExecution
 from .effect_runner import LocalEffectRunner
+from .incident import IncidentMetrics
 from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 from .run_engine import ObservationEngine, RunEngine, SemanticRuntime
 from .run_store import EventRunStore
@@ -285,6 +286,7 @@ class _RuntimeTransportPort:
         domain_executor: DomainExecutor,
         compatibility_telemetry: CompatibilityTelemetry,
         compatibility_runtime: CompatibilityRuntimeAdapter,
+        incident_metrics: IncidentMetrics,
         domain_runtime: RuntimeDomainExecution,
         context_runtime: ContextRuntime,
         orchestrated_backend: bool,
@@ -294,6 +296,7 @@ class _RuntimeTransportPort:
         self._domain_executor = domain_executor
         self._compatibility_telemetry = compatibility_telemetry
         self._compatibility_runtime = compatibility_runtime
+        self._incident_metrics = incident_metrics
         self._domain_runtime = domain_runtime
         self._context_runtime = context_runtime
         self._orchestrated_backend = orchestrated_backend
@@ -326,6 +329,7 @@ class _RuntimeTransportPort:
             "capability_registry": self._capability_registry.to_public_dict(),
             "domain_packs": list(self._domain_executor.pack_descriptors()),
             "compatibility_telemetry": self._compatibility_telemetry.status(),
+            "incident_metrics": self._incident_metrics.status(),
         }
 
     def translate_compatibility(
@@ -646,6 +650,7 @@ def compose_runtime(
         semantic_runtime,
         interface_profile=options.interface_profile,
     )
+    incident_metrics = IncidentMetrics(context_runtime.repository)
     agent_gateway = AgentGateway(
         semantic_runtime,
         projector=agent_projector,
@@ -662,6 +667,7 @@ def compose_runtime(
             domain_executor=domain_executor,
             compatibility_telemetry=compatibility_telemetry,
             compatibility_runtime=compatibility_runtime,
+            incident_metrics=incident_metrics,
             domain_runtime=domain_runtime,
             context_runtime=context_runtime,
             orchestrated_backend=options.orchestrated_backend,

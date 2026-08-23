@@ -743,6 +743,7 @@ def project_case(
         projection["revision"] = revision
         kind = str(event["kind"])
         operation_id = str(event.get("operation_id", ""))
+        created_at = float(event.get("created_at", 0.0) or 0.0)
         payload = event.get("payload", {})
         payload = dict(payload) if isinstance(payload, Mapping) else {}
         if kind == "CaseOpened":
@@ -1268,6 +1269,8 @@ def project_case(
             if isinstance(raw_incident, Mapping):
                 incident = dict(raw_incident)
                 incident["status"] = "open"
+                incident["raised_at"] = created_at
+                incident["resolved_at"] = 0.0
                 incidents.append(incident)
                 projection["current_incident"] = incident
                 projection["status"] = "incident"
@@ -1280,6 +1283,7 @@ def project_case(
                         "cancelled" if resolution == "cancelled" else "resolved"
                     )
                     incident["resolution"] = resolution
+                    incident["resolved_at"] = created_at
                     break
             current_incident = projection.get("current_incident")
             if (
