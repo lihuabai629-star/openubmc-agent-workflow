@@ -982,31 +982,29 @@ class Incident:
     message: str
     effect_id: str = ""
     recoverable: bool = True
-    recovery_path: str = ""
-    allowed_commands: tuple[str, ...] = ()
-    operator_action: str = ""
+
+    @property
+    def recovery_path(self) -> str:
+        return incident_recovery_policy(self.code).recovery_path
+
+    @property
+    def allowed_commands(self) -> tuple[str, ...]:
+        return incident_recovery_policy(self.code).allowed_commands
+
+    @property
+    def operator_action(self) -> str:
+        return incident_recovery_policy(self.code).operator_action
 
     @classmethod
     def from_public_dict(cls, value: Mapping[str, object]) -> "Incident":
         code = _text(value.get("code"))
         policy = incident_recovery_policy(code)
-        raw_commands = value.get("allowed_commands", policy.allowed_commands)
-        allowed_commands = (
-            tuple(_text(item) for item in raw_commands if _text(item))
-            if isinstance(raw_commands, (list, tuple))
-            else policy.allowed_commands
-        )
         return cls(
             incident_id=_text(value.get("incident_id")),
             code=code,
             message=_text(value.get("message")),
             effect_id=_text(value.get("effect_id")),
-            recoverable=bool(value.get("recoverable", policy.recoverable)),
-            recovery_path=_text(value.get("recovery_path"))
-            or policy.recovery_path,
-            allowed_commands=allowed_commands or policy.allowed_commands,
-            operator_action=_text(value.get("operator_action"))
-            or policy.operator_action,
+            recoverable=policy.recoverable,
         )
 
     def to_public_dict(self) -> dict[str, object]:
@@ -1016,12 +1014,7 @@ class Incident:
             "code": self.code,
             "message": self.message,
             "effect_id": self.effect_id,
-            "recoverable": self.recoverable,
-            "recovery_path": self.recovery_path or policy.recovery_path,
-            "allowed_commands": list(
-                self.allowed_commands or policy.allowed_commands
-            ),
-            "operator_action": self.operator_action or policy.operator_action,
+            **policy.to_public_dict(),
         }
 
 

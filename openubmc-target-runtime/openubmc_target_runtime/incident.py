@@ -138,6 +138,15 @@ class IncidentMetrics:
                 }
                 if identity in incidents:
                     duplicate_raises += 1
+                    first_raised_at = float(
+                        incidents[identity].get("raised_at", 0.0) or 0.0
+                    )
+                    duplicate_raised_at = float(lifecycle["raised_at"])
+                    lifecycle["raised_at"] = (
+                        min(first_raised_at, duplicate_raised_at)
+                        if first_raised_at > 0 and duplicate_raised_at > 0
+                        else first_raised_at or duplicate_raised_at
+                    )
                     incidents[identity] = lifecycle
                     continue
                 incidents[identity] = lifecycle

@@ -10,7 +10,6 @@ import time
 from typing import Protocol
 
 from .artifact_store import LocalArtifactStore
-from .incident import incident_recovery_policy
 from .semantic_runtime import (
     ArtifactRef,
     AssuranceUnavailable,
@@ -1139,7 +1138,6 @@ class RunEngine:
         operation_id: str,
     ) -> Mapping[str, object]:
         run_id = self._run_id(snapshot)
-        policy = incident_recovery_policy(code)
         incident = Incident(
             incident_id="incident-" + fingerprint(
                 {
@@ -1152,10 +1150,6 @@ class RunEngine:
             code=code,
             message=message,
             effect_id=effect_id,
-            recoverable=policy.recoverable,
-            recovery_path=policy.recovery_path,
-            allowed_commands=policy.allowed_commands,
-            operator_action=policy.operator_action,
         )
         return self._apply_transition(
             run_id,

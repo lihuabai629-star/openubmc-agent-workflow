@@ -25,6 +25,7 @@ from openubmc_target_runtime.run_store import EventRunStore  # noqa: E402
 from openubmc_target_runtime.semantic_runtime import (  # noqa: E402
     ReconcileRun,
     ResumeRun,
+    RunTurn,
 )
 from openubmc_target_runtime.mcp import RuntimeMcpService  # noqa: E402
 from test_agent_gateway import (  # noqa: E402
@@ -34,6 +35,18 @@ from test_agent_gateway import (  # noqa: E402
 
 
 class IncidentLifecycleTests(unittest.TestCase):
+    @staticmethod
+    def unknown_mutation_engine() -> tuple[InMemoryRuntimeRepository, RunEngine]:
+        repository = InMemoryRuntimeRepository()
+        transactions = BufferedRuntimeRepository(repository)
+        return repository, RunEngine(
+            PersistentUnknownRunDriver(transactions),
+            run_store=EventRunStore(
+                repository,
+                draft_buffer=transactions,
+            ),
+        )
+
     @staticmethod
     def operator_status(repository) -> dict[str, object]:
         operator = RuntimeMcpService(
@@ -52,15 +65,7 @@ class IncidentLifecycleTests(unittest.TestCase):
             operator.close()
 
     def test_agent_incident_turn_exposes_the_bounded_recovery_path(self) -> None:
-        repository = InMemoryRuntimeRepository()
-        transactions = BufferedRuntimeRepository(repository)
-        engine = RunEngine(
-            PersistentUnknownRunDriver(transactions),
-            run_store=EventRunStore(
-                repository,
-                draft_buffer=transactions,
-            ),
-        )
+        _repository, engine = self.unknown_mutation_engine()
 
         turn = engine.execute(
             ResumeRun("run-persistent-unknown"),
@@ -75,15 +80,7 @@ class IncidentLifecycleTests(unittest.TestCase):
         self.assertEqual(turn["next"], incident["operator_action"])
 
     def test_repeated_reconcile_reuses_the_open_unknown_mutation_incident(self) -> None:
-        repository = InMemoryRuntimeRepository()
-        transactions = BufferedRuntimeRepository(repository)
-        engine = RunEngine(
-            PersistentUnknownRunDriver(transactions),
-            run_store=EventRunStore(
-                repository,
-                draft_buffer=transactions,
-            ),
-        )
+        repository, engine = self.unknown_mutation_engine()
 
         engine.execute(
             ResumeRun("run-persistent-unknown"),
@@ -101,6 +98,24 @@ class IncidentLifecycleTests(unittest.TestCase):
         projection = repository.load("run-persistent-unknown")
         self.assertIsNotNone(projection)
         self.assertEqual(len(projection["incidents"]), 1)
+
+    def test_old_terminal_incident_uses_the_current_recovery_policy(self) -> None:
+        turn = RunTurn.from_public_dict(
+            {
+                "run_id": "run-old-terminal-incident",
+                "state": "incident",
+                "incident": {
+                    "incident_id": "incident-old-terminal",
+                    "code": "internal_step_limit",
+                    "message": "legacy writer defaulted recoverable",
+                    "recoverable": True,
+                },
+            }
+        ).to_public_dict()
+
+        self.assertFalse(turn["incident"]["recoverable"])
+        self.assertEqual(turn["incident"]["recovery_path"], "cancel_terminal")
+        self.assertEqual(turn["incident"]["allowed_commands"], ["cancel"])
 
     def test_operator_status_derives_incident_metrics_from_persisted_run_events(self) -> None:
         now = [100.0]
@@ -248,6 +263,77 @@ class IncidentLifecycleTests(unittest.TestCase):
         unknown = metrics["by_code"]["extension_specific_failure"]
         self.assertEqual(unknown["recovery_path"], "operator_required")
         self.assertEqual(unknown["allowed_commands"], ["cancel"])
+
+    def test_duplicate_raise_preserves_the_first_raise_for_resolution_time(
+        self,
+    ) -> None:
+        now = [100.0]
+        repository = InMemoryRuntimeRepository(clock=lambda: now[0])
+        repository.commit(
+            "run-duplicate-duration",
+            expected_revision=0,
+            events=(
+                PendingCaseEvent(
+                    kind="CaseOpened",
+                    operation_id="duplicate-duration-case",
+                    payload={"intent": "diagnose"},
+                ),
+                PendingCaseEvent(
+                    kind="RunIncidentRaised",
+                    operation_id="duplicate-duration-first",
+                    payload={
+                        "incident": {
+                            "incident_id": "incident-duplicate-duration",
+                            "code": "domain_execution_failed",
+                            "message": "domain failed",
+                        }
+                    },
+                ),
+            ),
+        )
+        now[0] = 120.0
+        repository.commit(
+            "run-duplicate-duration",
+            expected_revision=2,
+            events=(
+                PendingCaseEvent(
+                    kind="RunIncidentRaised",
+                    operation_id="duplicate-duration-second",
+                    payload={
+                        "incident": {
+                            "incident_id": "incident-duplicate-duration",
+                            "code": "domain_execution_failed",
+                            "message": "domain failed",
+                        }
+                    },
+                ),
+            ),
+        )
+        now[0] = 160.0
+        repository.commit(
+            "run-duplicate-duration",
+            expected_revision=3,
+            events=(
+                PendingCaseEvent(
+                    kind="RunIncidentResolved",
+                    operation_id="duplicate-duration-resolved",
+                    payload={
+                        "incident_id": "incident-duplicate-duration",
+                        "resolution": "retrying domain preparation",
+                    },
+                ),
+            ),
+        )
+
+        metrics = self.operator_status(repository)["incident_metrics"]
+
+        self.assertEqual(metrics["duplicate_raises"], 1)
+        self.assertEqual(
+            metrics["by_code"]["domain_execution_failed"][
+                "average_resolution_seconds"
+            ],
+            60.0,
+        )
 
     def test_sqlite_restart_preserves_incident_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
