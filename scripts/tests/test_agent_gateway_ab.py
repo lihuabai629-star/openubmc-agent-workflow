@@ -991,6 +991,36 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertTrue(record.metric()["valid"])
 
+    def test_skill_disclosure_accepts_explicit_uncertainty_wording(self) -> None:
+        conclusions = (
+            "无法判定 ResourceId 是否异常。",
+            "不能确定 ResourceId 是否异常。",
+        )
+
+        for conclusion in conclusions:
+            with self.subTest(conclusion=conclusion):
+                record = module.RunEvidenceRecord.capture(
+                    arm="B",
+                    pair=1,
+                    order=1,
+                    scenario="skill-disclosure",
+                    events=[
+                        skill_disclosure_observe_event(),
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 100, "output_tokens": 10},
+                        },
+                    ],
+                    final=(
+                        "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1。"
+                        + conclusion
+                    ),
+                    exit_code=0,
+                    duration_seconds=1,
+                )
+
+                self.assertTrue(record.metric()["valid"])
+
     def test_skill_disclosure_rejects_superstring_value_mismatches(self) -> None:
         record = module.RunEvidenceRecord.capture(
             arm="B",

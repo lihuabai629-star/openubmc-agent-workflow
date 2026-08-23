@@ -1047,7 +1047,7 @@ def _run_attestation_errors(
 
 def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
     cautious_patterns = (
-        r"(?:不能|无法|不足以)[^，,。；;！？!?\n]{0,32}(?:证明|说明|表明|判断|认定|确认)",
+        r"(?:不能|无法|不足以)[^，,。；;！？!?\n]{0,32}(?:证明|说明|表明|判断|判定|确定|认定|确认)",
         r"(?:不代表|不等于|并非|不是|不属于)[^，,。；;！？!?\n]{0,32}异常",
     )
     cautious = (
