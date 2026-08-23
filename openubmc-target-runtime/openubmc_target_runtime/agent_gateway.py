@@ -743,8 +743,9 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                 "minLength": 1,
                 "maxLength": 128,
                 "description": (
-                    "Optional registered Domain Pack operation for a one-step "
-                    "diagnosis-only Run."
+                    "Optional registered Domain Pack entry. READ_ONLY entries run as "
+                    "one-step diagnosis-only Runs; mutation entries require a typed "
+                    "Runtime-owned route for the selected intent."
                 ),
             },
             "entry_arguments": {

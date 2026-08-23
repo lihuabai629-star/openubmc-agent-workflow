@@ -313,9 +313,19 @@ class WorkflowRegistry:
         phases: PhaseRegistry,
         operation_owners: Mapping[str, str],
         routes: Sequence["WorkflowRoute"] = (),
+        strict_entry_operations: frozenset[str] = frozenset(),
     ) -> None:
         self.phases = phases
         self.operation_owners = dict(operation_owners)
+        self.strict_entry_operations = frozenset(strict_entry_operations)
+        unknown_strict_operations = (
+            self.strict_entry_operations - self.operation_owners.keys()
+        )
+        if unknown_strict_operations:
+            raise ValueError(
+                "strict workflow entry operation has no owner: "
+                + ", ".join(sorted(unknown_strict_operations))
+            )
         registered: dict[tuple[str, str, str, str], WorkflowRoute] = {}
         for route in routes:
             key = route.selector
@@ -339,6 +349,7 @@ class WorkflowRegistry:
         *,
         operation_owners: Mapping[str, str],
         routes: Sequence["WorkflowRoute"] = (),
+        strict_entry_operations: frozenset[str] = frozenset(),
     ) -> "WorkflowRegistry":
         combined_owners = dict(self.operation_owners)
         for operation, owner in operation_owners.items():
@@ -350,6 +361,9 @@ class WorkflowRegistry:
             phases=self.phases,
             operation_owners=combined_owners,
             routes=(*self._routes, *routes),
+            strict_entry_operations=(
+                self.strict_entry_operations | strict_entry_operations
+            ),
         )
 
     def _step(self, index: int, kind: str, name: str) -> WorkflowStepDefinition:
@@ -409,6 +423,10 @@ class WorkflowRegistry:
                 ).steps
             elif normalized_intent == "diagnosis-only":
                 raw = (("operation", operation),)
+            elif operation in self.strict_entry_operations:
+                raise ValueError(
+                    "workflow entry operation has no typed route: " + operation
+                )
             else:
                 route = self._resolve_route(
                     intent=normalized_intent,

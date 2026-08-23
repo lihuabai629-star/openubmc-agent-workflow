@@ -1558,6 +1558,19 @@ class DomainPackConformanceTests(unittest.TestCase):
             domain_pack_extensions=extension,
         )
         try:
+            with self.assertRaisesRegex(ValueError, "typed route"):
+                service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.93",
+                        "intent": "upgrade-and-verify",
+                        "entry_operation": "fake_mutation_route",
+                        "purpose": "reject a mismatched contributed route",
+                    },
+                    task_id="wrong-mutation-route",
+                    operation_id="wrong-mutation-start",
+                )
             completed = service.call_exposed_tool(
                 "execute",
                 {

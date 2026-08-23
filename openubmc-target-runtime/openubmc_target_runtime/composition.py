@@ -631,6 +631,10 @@ def compose_runtime(
                 for definition in extension_definitions
                 if definition.workflow is not None
             ),
+            strict_entry_operations=frozenset(
+                definition.operation
+                for definition in extension_definitions
+            ),
         )
     )
     default_operations = {
