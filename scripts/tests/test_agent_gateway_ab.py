@@ -1024,6 +1024,32 @@ class AgentGatewayAbTests(unittest.TestCase):
             ],
         )
 
+    def test_skill_disclosure_accepts_json_escaped_raw_value_rendering(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "- MDBCTL：available\n"
+                "- Name 原始值：`\"\\\"Disk0\\\"\"`\n"
+                "- ResourceId 原始值：`\"0\"`\n"
+                "- Presence 原始值：`\"1\"`\n"
+                "这些证据不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        self.assertTrue(record.metric()["valid"])
+
     def test_candidate_scope_rejects_unrelated_mcp_discovery(self) -> None:
         tools = [
             {

@@ -1000,6 +1000,7 @@ def _reported_skill_value(
         "的实际值为",
         "实际值为",
         "原始值为",
+        "原始值",
         "当前上报",
         "上报",
         "值为",
@@ -1012,11 +1013,11 @@ def _reported_skill_value(
     )
     reported_values: list[str] = []
     for segment in segments:
-        reported = segment.lstrip(" \t:：=,，;；-–—")
+        reported = segment.lstrip(" \t:：=,，;；-–—\\")
         for prefix in value_prefixes:
             if reported.startswith(prefix):
                 reported = reported[len(prefix):].lstrip(
-                    " \t:：=,，;；-–—"
+                    " \t:：=,，;；-–—\\"
                 )
                 break
         reported_values.append(reported)
