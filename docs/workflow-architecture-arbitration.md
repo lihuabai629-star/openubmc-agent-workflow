@@ -418,8 +418,10 @@ open -> reconciling -> resolved
 ```
 
 当前基线会先自动 reconcile unknown Mutation；仍无法收敛时返回显式 Incident Turn，且绝不
-生成错误成功 Outcome。后续仍需把 Incident lifecycle 和 operator resolution 固化为完整
-持久对象，在 Operator Interface 中提供事件、Journal 与 Evidence。
+生成错误成功 Outcome。Incident Turn 已投影恢复路径、允许命令和 operator action；同一
+unknown Effect 的重复 reconcile 复用既有 open Incident。Operator `runtime_status` 从持久
+Run ledger 派生分类、open age、resolution、duplicate 和未知策略指标，SQLite 重启后保持
+一致，不建立第二份状态权威。
 
 ## 9. 模型推理与确定性 Runtime 的分工
 
@@ -583,8 +585,8 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 5. observation persistence、Gate 决策、Run Outcome 和 Session Outcome 投影移入 Runtime：
    已完成；Agent Gate persistence 使用原生 `RunGateSubmitted`。
 6. Domain Adapters 构造时注册，`DomainExecutor` 统一执行策略：已完成基线。
-7. Gate、Submission、Incident 和 Outcome 已有版本化持久事实；原生 Gate event writer 与
-   old-event upcaster 已完成，Incident lifecycle 继续深化。
+7. Gate、Submission、Incident 和 Outcome 已有版本化持久事实；原生 Gate event writer、
+   old-event upcaster、Incident 恢复策略和 Operator 生命周期指标已完成基线。
 8. 行为 contract tests 和 fake Adapters：已补主路径，旧源码 contraction tests 逐步退役。
 9. 继续按变化原因收缩 `context_runtime.py` 与 `mcp.py`，不以文件行数为单独目标。
 
@@ -594,7 +596,7 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 
 1. 仅根据真实缺口增加 D-Bus、active alarm、bounded log search selectors。
 2. 建立 Artifact ACL、retention、GC、redaction 与 schema migration。
-3. 建立 Incident operator workflow、SLO 与分类统计。
+3. 基于 Incident 分类、open age 和 resolution 指标建立运行 SLO 与处置手册。
 4. 建立 workflow definition pinning、old-run support、migration 与 deprecation policy。
 5. 对只读 selector 做并行与连接复用，验证时间一致性。
 6. 对较大 Skill 使用渐进披露，主文件只保留触发、所有权、主流程和安全规则。
@@ -710,7 +712,7 @@ Upgrade 在 Redfish POST 前调用 `mark_effects_started`，见 [`_upload`](../o
 - M4 主路径权威收敛已完成；后续用 compatibility telemetry 驱动旧 writer 退役；
 - 保留 Turn-to-next-Gate，隐藏 Ack、polling、scheduler 与未来 Worker；
 - v2 做本地 typed event-backed Process Manager，不做分布式平台；
-- 继续固化 Incident lifecycle、compatibility telemetry、writer 退役和长期 execute
+- 继续用 Incident 运行数据驱动 SLO，并推进 compatibility writer 退役和长期 execute
   fault/capacity/soak 验证；
 - 只有规模与部署证据出现后，才把 Outbox/Inbox、Worker、共享 fencing 与 durable backend 作为一个完整 v3 演进包引入。
 

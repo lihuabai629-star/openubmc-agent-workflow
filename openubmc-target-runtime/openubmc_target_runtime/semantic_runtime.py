@@ -10,6 +10,7 @@ import re
 from typing import Protocol, TypeAlias
 
 from .contracts import RUNTIME_API_VERSION
+from .incident import incident_recovery_policy
 
 
 SEMANTIC_RUNTIME_SCHEMA = f"{RUNTIME_API_VERSION}/semantic-runtime-v1"
@@ -981,14 +982,46 @@ class Incident:
     message: str
     effect_id: str = ""
     recoverable: bool = True
+    recovery_path: str = ""
+    allowed_commands: tuple[str, ...] = ()
+    operator_action: str = ""
+
+    @classmethod
+    def from_public_dict(cls, value: Mapping[str, object]) -> "Incident":
+        code = _text(value.get("code"))
+        policy = incident_recovery_policy(code)
+        raw_commands = value.get("allowed_commands", policy.allowed_commands)
+        allowed_commands = (
+            tuple(_text(item) for item in raw_commands if _text(item))
+            if isinstance(raw_commands, (list, tuple))
+            else policy.allowed_commands
+        )
+        return cls(
+            incident_id=_text(value.get("incident_id")),
+            code=code,
+            message=_text(value.get("message")),
+            effect_id=_text(value.get("effect_id")),
+            recoverable=bool(value.get("recoverable", policy.recoverable)),
+            recovery_path=_text(value.get("recovery_path"))
+            or policy.recovery_path,
+            allowed_commands=allowed_commands or policy.allowed_commands,
+            operator_action=_text(value.get("operator_action"))
+            or policy.operator_action,
+        )
 
     def to_public_dict(self) -> dict[str, object]:
+        policy = incident_recovery_policy(self.code)
         return {
             "incident_id": self.incident_id,
             "code": self.code,
             "message": self.message,
             "effect_id": self.effect_id,
             "recoverable": self.recoverable,
+            "recovery_path": self.recovery_path or policy.recovery_path,
+            "allowed_commands": list(
+                self.allowed_commands or policy.allowed_commands
+            ),
+            "operator_action": self.operator_action or policy.operator_action,
         }
 
 
@@ -1029,13 +1062,7 @@ class RunTurn:
         )
         raw_incident = value.get("incident")
         incident = (
-            Incident(
-                incident_id=_text(raw_incident.get("incident_id")),
-                code=_text(raw_incident.get("code")),
-                message=_text(raw_incident.get("message")),
-                effect_id=_text(raw_incident.get("effect_id")),
-                recoverable=bool(raw_incident.get("recoverable", True)),
-            )
+            Incident.from_public_dict(raw_incident)
             if isinstance(raw_incident, Mapping) and raw_incident
             else None
         )
@@ -1130,13 +1157,7 @@ def project_run_turn(
         )
     raw_incident = projection.get("current_incident")
     incident = (
-        Incident(
-            incident_id=_text(raw_incident.get("incident_id")),
-            code=_text(raw_incident.get("code")),
-            message=_text(raw_incident.get("message")),
-            effect_id=_text(raw_incident.get("effect_id")),
-            recoverable=bool(raw_incident.get("recoverable", True)),
-        )
+        Incident.from_public_dict(raw_incident)
         if isinstance(raw_incident, Mapping) and raw_incident
         else None
     )
@@ -1170,6 +1191,8 @@ def project_run_turn(
             selected_next_action = _text(raw_next_actions[0])
         elif base_turn is not None and selected_state == base_turn.state:
             selected_next_action = base_turn.next_action
+    if incident is not None and not selected_next_action:
+        selected_next_action = incident.operator_action
     if outcome is not None or selected_state in {
         "cancelled",
         "completed",

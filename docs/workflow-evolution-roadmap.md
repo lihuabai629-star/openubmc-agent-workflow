@@ -177,7 +177,7 @@ CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2
 | execute 结果 | 返回下一 Gate、Incident、running reattach point 或 Outcome 的 `Turn` | 已确认 |
 | CommandAck/polling | 不对普通 Agent 暴露；将来仅存在于 transport/worker Adapter 后 | 已确认 |
 | Gate | 使用 ID、版本、schema digest、submission identity 和输入 digest；内部研发不使用 secret token | 已实现 |
-| Incident | 自动 reconcile 仍无法收敛时形成明确 Turn；补充 retry/cancel/resolve 闭环 | 持续深化 |
+| Incident | 自动 reconcile 仍无法收敛时形成明确 Turn；已固化恢复路径、允许命令、去重和持久指标 | 已实现基线 |
 | Artifact | 使用 handle + digest + metadata，Run state 不内联大对象 | 已实现基线 |
 | Event model | 局部 event-backed ledger，不全面 Event Sourcing/CQRS | 已确认 |
 | Model invocation | 当前留在 Runtime 外；未来作为非确定性 Effect | 已确认 |
@@ -305,7 +305,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 
 | 目标 | 验收 |
 | --- | --- |
-| Incident 闭环 | 每种 Incident 都有确定的 retry、reconcile、correction Gate、cancel 或 terminal 路径 |
+| Incident 闭环 | 内建 Incident 已有确定的 retry、reconcile、correction-then-resume、cancel 或 terminal 路径；Operator 指标从持久 Run ledger 派生并支持重启恢复 |
 | Compatibility 收敛 | feature-level 持久遥测和 Operator 退役判定证据已落地；按 14 个 canonical main 活跃研发日和一次同 source 完整资格的零使用窗口删除旧 writer，old-event reader 保留 |
 | Module locality | compatibility、EvidenceStore、Runtime composition 从 MCP transport 中集中 |
 | 测试稳定 | property、duplicate storm、capacity 与 soak 验证公开 semantic seam |
