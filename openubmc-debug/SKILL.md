@@ -27,9 +27,10 @@ Use the default `openubmc-target-runtime` Agent Interface:
 
 - Call `observe` for an exact read-only question. Declare only the selectors needed for the
   answer and combine related capability and MDB selectors in one observation. When the exact
-  request is already supplied, directly call `observe` through the MCP tool `openubmc-target-runtime.observe`;
-  it is not a local function. Do not check whether the tool exists or report it unavailable unless
-  the MCP call returns an actual error.
+  request is already supplied, directly call `observe` as a native MCP tool call with
+  server=`openubmc-target-runtime`, tool=`observe`; it is not a local or JavaScript function.
+  Never invoke `tools.openubmc_target_runtime_observe` or another wrapper. Do not check whether
+  the tool exists or report it unavailable unless the native MCP call returns an actual error.
 - Call `execute` when work can cross diagnosis, source change, build, live patch, upgrade,
   recovery, verification, or acceptance phases. Continue the retained Run instead of rebuilding
   its request.
