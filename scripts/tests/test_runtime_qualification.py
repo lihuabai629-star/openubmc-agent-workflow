@@ -395,6 +395,28 @@ class RuntimeQualificationTests(unittest.TestCase):
         self.assertFalse(report["promotable"])
         self.assertIn("capacity", stability_result["verification_error"])
 
+    def test_zero_capacity_storage_growth_is_valid(self) -> None:
+        def zero_growth(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            capacity = report["scenarios"]["capacity"]
+            capacity["storage_bytes_by_batch"] = [1000, 2000, 4000, 4000]
+            capacity["storage_growth_bytes_by_batch"] = [1000, 1000, 2000, 0]
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            WORKSPACE,
+            executor=zero_growth,
+            source_commit=SOURCE_COMMIT,
+        )
+
+        self.assertTrue(report["promotable"])
+
     def test_unrelated_source_commit_is_rejected_before_qualification(self) -> None:
         with self.assertRaisesRegex(ValueError, "workspace HEAD"):
             qualification.qualify_runtime(

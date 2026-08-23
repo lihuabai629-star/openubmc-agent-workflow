@@ -170,7 +170,7 @@ def verify_runtime_stability_report(
         for value in capacity_storage_by_batch
     ]
     normalized_storage_growth = [
-        _integer(value, "capacity batch storage growth", minimum=1)
+        _integer(value, "capacity batch storage growth")
         for value in capacity_storage_growth
     ]
     capacity_storage_bytes = _integer(
