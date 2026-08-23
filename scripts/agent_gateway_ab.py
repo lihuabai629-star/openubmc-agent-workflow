@@ -996,18 +996,42 @@ def _reported_skill_value(
                 if next_match is not None:
                     segment_end = min(segment_end, next_match.start())
             segments.append(line[match.end():segment_end])
+    value_prefixes = (
+        "的实际值为",
+        "实际值为",
+        "原始值为",
+        "当前上报",
+        "上报",
+        "值为",
+        "status",
+        "状态",
+        "value",
+        "is",
+        "为",
+        "是",
+    )
+    reported_values: list[str] = []
+    for segment in segments:
+        reported = segment.lstrip(" \t:：=,，;；-–—")
+        for prefix in value_prefixes:
+            if reported.startswith(prefix):
+                reported = reported[len(prefix):].lstrip(
+                    " \t:：=,，;；-–—"
+                )
+                break
+        reported_values.append(reported)
     expected = str(value).lower().replace('"', "").replace("'", "")
     if field == "mdbctl" and expected == "available":
         return any(
-            re.search(r"(?<![0-9a-z_])available(?![0-9a-z_])", segment)
+            re.match(r"available(?![0-9a-z_])", reported)
             is not None
-            or ("可用" in segment and "不可用" not in segment)
-            for segment in segments
+            or reported.startswith("可用")
+            for reported in reported_values
         )
     pattern = re.compile(
-        rf"(?<![0-9a-z_]){re.escape(expected)}(?![0-9a-z_])"
+        rf"{re.escape(expected)}(?![0-9a-z_])"
     )
-    return any(pattern.search(segment) is not None for segment in segments)
+    return any(pattern.match(reported) is not None for reported in reported_values)
 
 
 def semantic_acceptance(

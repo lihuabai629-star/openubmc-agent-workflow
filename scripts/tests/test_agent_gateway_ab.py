@@ -989,6 +989,41 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("resourceid=0", metric["semantic_acceptance"]["missing"])
         self.assertIn("presence=1", metric["semantic_acceptance"]["missing"])
 
+    def test_skill_disclosure_rejects_expected_values_only_in_annotations(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "MDBCTL=unavailable（期望 available） Name=Disk01（期望 Disk0） "
+                "ResourceId=10（期望 0） Presence=11（期望 1），"
+                "不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        metric = record.metric()
+
+        self.assertFalse(metric["valid"])
+        self.assertEqual(
+            metric["semantic_acceptance"]["missing"],
+            [
+                "mdbctl=available",
+                "name=disk0",
+                "resourceid=0",
+                "presence=1",
+            ],
+        )
+
     def test_candidate_scope_rejects_unrelated_mcp_discovery(self) -> None:
         tools = [
             {
