@@ -77,39 +77,6 @@ _TERMINAL_INVOCATION_STATUSES = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class _PlanNodeSpec:
-    allowed_fields: frozenset[str]
-
-
-_PLAN_NODE_SPECS = {
-    PlanNodeKind.ACTION: _PlanNodeSpec(
-        frozenset({"action", "compensation", "compensation_only"}),
-    ),
-    PlanNodeKind.SEQUENCE: _PlanNodeSpec(
-        frozenset({"children"}),
-    ),
-    PlanNodeKind.CHOICE: _PlanNodeSpec(
-        frozenset({"branches"}),
-    ),
-    PlanNodeKind.PARALLEL: _PlanNodeSpec(
-        frozenset({"branches"}),
-    ),
-    PlanNodeKind.REPEAT: _PlanNodeSpec(
-        frozenset({"body", "repeat_max"}),
-    ),
-    PlanNodeKind.TIMER: _PlanNodeSpec(
-        frozenset({"timer_seconds"}),
-    ),
-    PlanNodeKind.GATE: _PlanNodeSpec(
-        frozenset({"gate_schema"}),
-    ),
-    PlanNodeKind.SUBFLOW: _PlanNodeSpec(
-        frozenset({"subflow", "subflow_version"}),
-    ),
-}
-
-
 class ModelPlanningError(ValueError):
     """Base error for the model-planning Module."""
 
@@ -2056,6 +2023,43 @@ class PlanResolver:
             raise PlanProposalRejected("PlanProposal exceeds the serialized byte budget")
         if len(proposal.nodes) > self.policy.max_nodes:
             raise PlanProposalRejected("PlanProposal exceeds the node budget")
+        node_specs: Mapping[
+            PlanNodeKind,
+            tuple[frozenset[str], Callable[..., int]],
+        ] = {
+            PlanNodeKind.ACTION: (
+                frozenset({"action", "compensation", "compensation_only"}),
+                self._expand_action,
+            ),
+            PlanNodeKind.SEQUENCE: (
+                frozenset({"children"}),
+                self._expand_sequence,
+            ),
+            PlanNodeKind.CHOICE: (
+                frozenset({"branches"}),
+                self._expand_choice,
+            ),
+            PlanNodeKind.PARALLEL: (
+                frozenset({"branches"}),
+                self._expand_parallel,
+            ),
+            PlanNodeKind.REPEAT: (
+                frozenset({"body", "repeat_max"}),
+                self._expand_repeat,
+            ),
+            PlanNodeKind.TIMER: (
+                frozenset({"timer_seconds"}),
+                self._expand_timer,
+            ),
+            PlanNodeKind.GATE: (
+                frozenset({"gate_schema"}),
+                self._expand_gate,
+            ),
+            PlanNodeKind.SUBFLOW: (
+                frozenset({"subflow", "subflow_version"}),
+                self._expand_subflow,
+            ),
+        }
         nodes: dict[str, PlanNode] = {}
         for node in proposal.nodes:
             if node.node_id in nodes:
@@ -2073,11 +2077,11 @@ class PlanResolver:
                 "compensation": bool(node.compensation),
                 "compensation_only": node.compensation_only,
             }
-            spec = _PLAN_NODE_SPECS[node.kind]
+            allowed_fields, _ = node_specs[node.kind]
             invalid_fields = sorted(
                 name
                 for name, present in selected_fields.items()
-                if present and name not in spec.allowed_fields
+                if present and name not in allowed_fields
             )
             if invalid_fields:
                 raise PlanProposalRejected(
@@ -2090,17 +2094,6 @@ class PlanResolver:
 
         visiting: set[str] = set()
         visited: set[str] = set()
-        expanders: Mapping[PlanNodeKind, Callable[..., int]] = {
-            PlanNodeKind.ACTION: self._expand_action,
-            PlanNodeKind.SEQUENCE: self._expand_sequence,
-            PlanNodeKind.CHOICE: self._expand_choice,
-            PlanNodeKind.PARALLEL: self._expand_parallel,
-            PlanNodeKind.REPEAT: self._expand_repeat,
-            PlanNodeKind.TIMER: self._expand_timer,
-            PlanNodeKind.GATE: self._expand_gate,
-            PlanNodeKind.SUBFLOW: self._expand_subflow,
-        }
-
         def require(reference: str, owner: str) -> PlanNode:
             selected = nodes.get(reference)
             if selected is None:
@@ -2120,7 +2113,7 @@ class PlanResolver:
                     "compensation-only action is reachable from normal execution"
                 )
             visiting.add(node_id)
-            expander = expanders[node.kind]
+            _, expander = node_specs[node.kind]
             expanded = 1 + expander(
                 node,
                 depth,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministically compare isolated model planning with the static workflow path."""
+"""Compare isolated model planning with the static WorkflowDefinitions path."""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ from openubmc_target_runtime.model_planning import (  # noqa: E402
     PlanningRequest,
 )
 from openubmc_target_runtime.workflow import (  # noqa: E402
-    DEFAULT_PHASE_REGISTRY,
     DEFAULT_WORKFLOW_DEFINITIONS,
     WorkflowDefinition,
 )
@@ -72,12 +71,32 @@ class ContainmentCase:
     candidate_proposal: Mapping[str, object]
 
 
-DEVELOPER_CHANGE_GATE = DEFAULT_PHASE_REGISTRY.require(
-    "developer.change"
-).receipt_schema
-BUILD_ARTIFACT_GATE = DEFAULT_PHASE_REGISTRY.require(
-    "build.artifact"
-).receipt_schema
+def phase_gate_schema(
+    phase_name: str,
+    *,
+    delivery_strategy: str,
+) -> str:
+    definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(
+        {
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": delivery_strategy,
+        }
+    )
+    return next(
+        step.receipt_schema
+        for step in definition.steps
+        if step.kind == "phase" and step.name == phase_name
+    )
+
+
+DEVELOPER_CHANGE_GATE = phase_gate_schema(
+    "developer.change",
+    delivery_strategy="source-only",
+)
+BUILD_ARTIFACT_GATE = phase_gate_schema(
+    "build.artifact",
+    delivery_strategy="build-upgrade",
+)
 GATE_PHASES = {
     DEVELOPER_CHANGE_GATE: "developer.change",
     BUILD_ARTIFACT_GATE: "build.artifact",

@@ -199,28 +199,18 @@ class DeterministicModelAdapter(DeterministicFakeModelAdapter):
         )
 
 
-class TimeoutThenRecoverAdapter(DeterministicModelAdapter):
-    def __init__(self) -> None:
+class ExceptionThenRecoverAdapter(DeterministicModelAdapter):
+    def __init__(self, error: Exception) -> None:
         super().__init__(
             ModelAdapterResult.failed("unused", "unused"),
             reconcile_result=ModelAdapterResult.succeeded(valid_proposal()),
         )
+        self.error = error
 
     def invoke(self, request):
+        del request
         self.invoke_calls += 1
-        raise TimeoutError("provider timed out after request dispatch")
-
-
-class ConnectionFailureThenRecoverAdapter(DeterministicModelAdapter):
-    def __init__(self) -> None:
-        super().__init__(
-            ModelAdapterResult.failed("unused", "unused"),
-            reconcile_result=ModelAdapterResult.succeeded(valid_proposal()),
-        )
-
-    def invoke(self, request):
-        self.invoke_calls += 1
-        raise ConnectionError("provider connection ended after dispatch")
+        raise self.error
 
 
 class OversizedFailureAdapter(DeterministicModelAdapter):
@@ -554,7 +544,9 @@ class PlanResolverTests(unittest.TestCase):
             )
 
     def test_timeout_exception_is_persisted_as_unknown_then_reconciled(self) -> None:
-        adapter = TimeoutThenRecoverAdapter()
+        adapter = ExceptionThenRecoverAdapter(
+            TimeoutError("provider timed out after request dispatch")
+        )
         resolver = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
@@ -576,7 +568,9 @@ class PlanResolverTests(unittest.TestCase):
         self.assertEqual(adapter.reconcile_calls, 1)
 
     def test_post_dispatch_connection_failure_is_unknown_not_running(self) -> None:
-        adapter = ConnectionFailureThenRecoverAdapter()
+        adapter = ExceptionThenRecoverAdapter(
+            ConnectionError("provider connection ended after dispatch")
+        )
         resolver = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
