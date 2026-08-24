@@ -280,7 +280,9 @@ Treat each checkpoint as a complete preregistered experiment. If a 10-pair resul
 `collect_more`, start a new independent run at the full 20-pair target. If that result is still
 uncertain, start another new independent run at the full 30-pair target. Never append, merge, or
 selectively reuse pairs from an earlier checkpoint; verify and promote only the single complete
-result directory for the final checkpoint.
+result directory for the final checkpoint. Reaching the 30-pair checkpoint activates the p95 bound
+for every metric even when the validity policy excludes one or more signed pairs: calculate p95 from
+the retained valid paired sample, and fail verification when any terminal p95 value is missing.
 
 Every run record carries its tested source commit and a unique execution identity. The runner
 signs that record with the qualification key; verification uses a public key held outside the

@@ -1435,6 +1435,7 @@ def _skill_disclosure_validity(
 def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
     paired: list[tuple[Mapping[str, object], Mapping[str, object]]] = []
     pair_ids = sorted({int(item.get("pair", 0)) for item in metrics})
+    attempted_pairs = len(pair_ids)
     invalid: list[dict[str, object]] = []
     for pair_id in pair_ids:
         members = [item for item in metrics if int(item.get("pair", 0)) == pair_id]
@@ -1490,7 +1491,7 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
                     (float(baseline[metric]) for baseline, _candidate in paired),
                     0.95,
                 )
-                if len(paired) >= 30
+                if attempted_pairs >= CHECKPOINTS[-1]
                 else None
             )
             if p95_ratio is not None:
@@ -1510,7 +1511,6 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
             summaries[metric] = {"passed": False}
             all_pass = False
     valid_pairs = len(paired)
-    attempted_pairs = len(pair_ids)
     scenarios = {
         str(item.get("scenario", ""))
         for item in metrics
@@ -2199,6 +2199,21 @@ def verify_summary(
     samples = _json_object(evidence.get("samples"))
     if samples.get("valid_pairs") != valid_pairs or samples.get("invalid_pairs") != invalid_pairs:
         errors.append("AB release evidence sample counts do not match the summary")
+    requested_pairs = samples.get("requested_pairs")
+    if (
+        isinstance(requested_pairs, int)
+        and not isinstance(requested_pairs, bool)
+        and requested_pairs >= CHECKPOINTS[-1]
+    ):
+        for metric in METRICS:
+            p95_ratio = _json_object(metric_summary.get(metric)).get("p95_ratio")
+            if (
+                not isinstance(p95_ratio, (int, float))
+                or isinstance(p95_ratio, bool)
+                or not math.isfinite(float(p95_ratio))
+                or float(p95_ratio) <= 0
+            ):
+                errors.append(f"AB terminal p95 ratio is missing or invalid: {metric}")
     if expected_scenario == "skill-disclosure":
         if samples.get("validity") != summary.get("validity"):
             errors.append("AB release evidence validity does not match the summary")

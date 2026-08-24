@@ -2048,6 +2048,27 @@ class AgentGatewayAbTests(unittest.TestCase):
             result["validity"]["errors"],
         )
 
+    def test_skill_disclosure_terminal_checkpoint_applies_p95_to_valid_pairs(self) -> None:
+        metrics = skill_disclosure_metrics(30, invalid_candidate_pairs={1})
+        for item in metrics:
+            if (
+                item["arm"] == "B"
+                and item["pair"] in {2, 3}
+            ):
+                item["noncached_input_plus_output"] = 150
+
+        result = module.analyze(metrics)
+
+        self.assertEqual(result["valid_pairs"], 29)
+        self.assertEqual(
+            result["metrics"]["noncached_input_plus_output"]["p95_ratio"],
+            1.5,
+        )
+        self.assertFalse(
+            result["metrics"]["noncached_input_plus_output"]["passed"]
+        )
+        self.assertEqual(result["decision"], "failed")
+
     def test_verify_accepts_signed_skill_disclosure_validity_with_one_invalid_candidate_run(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -2096,6 +2117,60 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertTrue(verified["promotable"], verified)
         self.assertEqual(len(verified["invalid_pairs"]), 1)
+
+    def test_verify_rejects_missing_terminal_p95_with_one_invalid_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            schedule = module.balanced_schedule(30, seed=7)
+            run_evidence = passing_skill_disclosure_run_evidence(
+                schedule,
+                invalid_candidate_pairs={1},
+            )
+            private_key, public_key = signing_keys(root)
+            signed_run_evidence(
+                root,
+                run_evidence,
+                private_key=private_key,
+                public_key=public_key,
+            )
+            metrics = module.metrics_from_run_evidence(run_evidence)
+            metrics_path = root / "all_metrics.json"
+            schedule_path = root / "schedule.json"
+            run_evidence_path = write_run_evidence(root, run_evidence)
+            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            analysis = module.analyze(metrics)
+            for metric in module.METRICS:
+                analysis["metrics"][metric]["p95_ratio"] = None
+            analysis["release_evidence"] = module.release_evidence(
+                scenario="skill-disclosure",
+                requested_pairs=30,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
+                metrics_path=metrics_path,
+                schedule_path=schedule_path,
+                run_evidence_path=run_evidence_path,
+                analysis=analysis,
+                environment={"python": "3.12", "node": "v22"},
+            )
+            summary_path = root / "summary.json"
+            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+            verified = module.verify_summary(
+                summary_path,
+                expected_source_commit="a" * 40,
+                expected_baseline_commit=module.DEFAULT_BASELINE_REF,
+                expected_scenario="skill-disclosure",
+                attestation_public_key=public_key,
+            )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("terminal p95" in error for error in verified["errors"]),
+            verified,
+        )
 
     def test_release_evidence_records_source_environment_thresholds_and_digests(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
