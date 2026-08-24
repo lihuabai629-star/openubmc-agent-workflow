@@ -350,6 +350,33 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         self.assertIsNone(decision.revision)
         self.assertEqual(repository.list_revisions(), ())
 
+    def test_rejection_message_is_bounded_before_terminal_persistence(self) -> None:
+        raw = valid_proposal().to_public_dict()
+        raw["nodes"][1]["action"] = "x" * 6_000
+        repository = InMemoryModelPlanningRepository()
+
+        decision = PlanResolver(
+            repository,
+            DeterministicModelAdapter(ModelAdapterResult.succeeded(raw)),
+            policy=default_policy(),
+        ).resolve(
+            PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="bounded-rejection",
+                planning_input=PlanningInput(objective="bound controlled rejection text"),
+            )
+        )
+
+        self.assertEqual(decision.status, "rejected")
+        self.assertLessEqual(
+            len(decision.record.error_message.encode("utf-8")),
+            4096,
+        )
+        self.assertEqual(
+            repository.load_invocation(decision.record.invocation_id).status,
+            "rejected",
+        )
+
     def test_non_json_proposal_is_rejected_after_the_invocation_is_claimed(self) -> None:
         repository = InMemoryModelPlanningRepository()
         raw = valid_proposal().to_public_dict()
@@ -682,6 +709,89 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             self.assertEqual(replay.revision, first.revision)
             self.assertEqual(restart_adapter.invoke_calls, 0)
             self.assertEqual(restart_adapter.reconcile_calls, 0)
+
+    def test_sqlite_replay_revalidates_the_persisted_revision_against_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            database = Path(raw) / "policy-replay.sqlite3"
+            request = PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="policy-replay",
+                planning_input=PlanningInput(objective="revalidate the pinned plan"),
+            )
+            first = PlanResolver(
+                SQLiteModelPlanningRepository(database),
+                DeterministicModelAdapter(
+                    ModelAdapterResult.succeeded(valid_proposal())
+                ),
+                policy=default_policy(),
+            ).resolve(request)
+            tampered_revision = first.revision.to_public_dict()
+            tampered_proposal = dict(tampered_revision["proposal"])
+            tampered_nodes = [dict(node) for node in tampered_proposal["nodes"]]
+            tampered_nodes[1]["action"] = "unknown.persisted-action"
+            tampered_proposal["nodes"] = tampered_nodes
+            tampered_proposal_digest = PlanProposal.from_mapping(
+                tampered_proposal
+            ).digest
+            tampered_revision_id = (
+                "plan-revision:"
+                + tampered_proposal_digest.removeprefix("sha256:")[:48]
+            )
+            tampered_revision["proposal"] = tampered_proposal
+            tampered_revision["proposal_digest"] = tampered_proposal_digest
+            tampered_revision["revision_id"] = tampered_revision_id
+            tampered_record = first.record.to_public_dict()
+            tampered_record["result_digest"] = tampered_proposal_digest
+            tampered_record["plan_revision_id"] = tampered_revision_id
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "DELETE FROM model_planning_revisions WHERE revision_id = ?",
+                    (first.revision.revision_id,),
+                )
+                connection.execute(
+                    "INSERT INTO model_planning_revisions "
+                    "(revision_id, document_json, created_at) VALUES (?, ?, ?)",
+                    (
+                        tampered_revision_id,
+                        json.dumps(
+                            tampered_revision,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        first.revision.created_at,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE model_planning_invocations SET document_json = ? "
+                    "WHERE invocation_id = ?",
+                    (
+                        json.dumps(
+                            tampered_record,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        first.record.invocation_id,
+                    ),
+                )
+            replay_adapter = DeterministicModelAdapter(
+                ModelAdapterResult.failed(
+                    "unexpected_call",
+                    "replay must not call the model",
+                )
+            )
+
+            with self.assertRaisesRegex(
+                PlanProposalRejected,
+                "unknown Plan action",
+            ):
+                PlanResolver(
+                    SQLiteModelPlanningRepository(database),
+                    replay_adapter,
+                    policy=default_policy(),
+                ).resolve(request)
+
+            self.assertEqual(replay_adapter.invoke_calls, 0)
+            self.assertEqual(replay_adapter.reconcile_calls, 0)
 
     def test_sqlite_replay_rejects_a_revision_from_another_settlement(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1039,6 +1149,72 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         for name, raw in cases.items():
             with self.subTest(name=name), self.assertRaises(ModelPlanningError):
                 ModelInvocationRecord.from_public_dict(raw)
+
+    def test_persisted_records_reject_coerced_or_non_finite_scalar_types(self) -> None:
+        decision = PlanResolver(
+            InMemoryModelPlanningRepository(),
+            DeterministicModelAdapter(
+                ModelAdapterResult.succeeded(valid_proposal())
+            ),
+            policy=default_policy(),
+        ).resolve(
+            PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="strict-record-types",
+                planning_input=PlanningInput(objective="reject coerced record values"),
+            )
+        )
+        invocation = decision.record.to_public_dict()
+        revision = decision.revision.to_public_dict()
+        invocation_cases = {
+            "fractional_version": {**invocation, "version": 1.9},
+            "boolean_run_id": {**invocation, "run_id": True},
+            "nan_started_at": {**invocation, "started_at": float("nan")},
+            "infinite_updated_at": {**invocation, "updated_at": float("inf")},
+            "non_finite_provider_parameter": {
+                **invocation,
+                "provider_config": {
+                    **invocation["provider_config"],
+                    "parameters": {"temperature": float("nan")},
+                },
+            },
+        }
+        revision_cases = {
+            "fractional_version": {**revision, "version": 1.9},
+            "nan_created_at": {**revision, "created_at": float("nan")},
+        }
+
+        for name, raw in invocation_cases.items():
+            with self.subTest(record=name), self.assertRaises(ModelPlanningError):
+                ModelInvocationRecord.from_public_dict(raw)
+        for name, raw in revision_cases.items():
+            with self.subTest(revision=name), self.assertRaises(ModelPlanningError):
+                PlanRevision.from_public_dict(raw)
+
+    def test_model_configuration_rejects_non_finite_json_and_timeout_values(self) -> None:
+        cases = (
+            {"parameters": {"temperature": float("nan")}},
+            {"parameters": {"temperature": float("inf")}},
+            {"timeout_seconds": "nan"},
+            {"timeout_seconds": float("inf")},
+        )
+
+        for values in cases:
+            with self.subTest(values=values), self.assertRaises(ModelPlanningError):
+                ModelConfiguration.freeze(
+                    provider="deterministic-fake",
+                    model="planner-v1",
+                    parameters=values.get("parameters", {"temperature": 0}),
+                    timeout_seconds=values.get("timeout_seconds", 3.0),
+                )
+
+        with self.assertRaises(ModelPlanningError):
+            ModelConfiguration(
+                provider="deterministic-fake",
+                model="planner-v1",
+                parameters_json='{"temperature": NaN}',
+                timeout_seconds=3.0,
+            )
 
     def test_plan_revision_identity_is_derived_from_its_proposal_digest(self) -> None:
         decision = PlanResolver(

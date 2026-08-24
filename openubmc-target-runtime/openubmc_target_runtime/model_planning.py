@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -131,12 +132,16 @@ class PlanProposalRejected(ModelPlanningError):
 
 
 def _json_bytes(value: object) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    try:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ModelPlanningError("value must be strict JSON") from exc
 
 
 def _fingerprint(value: object) -> str:
@@ -144,14 +149,18 @@ def _fingerprint(value: object) -> str:
 
 
 def _required_id(value: object, name: str) -> str:
-    selected = str(value).strip()
+    if not isinstance(value, str):
+        raise ModelPlanningError(f"{name} must be a string")
+    selected = value.strip()
     if _SAFE_ID.fullmatch(selected) is None:
         raise ModelPlanningError(f"{name} must be a safe identifier")
     return selected
 
 
 def _required_text(value: object, name: str, *, max_bytes: int = 4096) -> str:
-    selected = str(value).strip()
+    if not isinstance(value, str):
+        raise ModelPlanningError(f"{name} must be a string")
+    selected = value.strip()
     if not selected:
         raise ModelPlanningError(f"{name} is required")
     if len(selected.encode("utf-8")) > max_bytes:
@@ -168,6 +177,27 @@ def _bounded_error_message(value: object, default: str) -> str:
         "utf-8",
         errors="ignore",
     )
+
+
+def _record_string(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise ModelPlanningError(f"{name} must be a string")
+    return value
+
+
+def _record_integer(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ModelPlanningError(f"{name} must be an integer")
+    return value
+
+
+def _record_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ModelPlanningError(f"{name} must be a number")
+    selected = float(value)
+    if not math.isfinite(selected):
+        raise ModelPlanningError(f"{name} must be finite")
+    return selected
 
 
 def _json_string(value: object, name: str, *, default: str = "") -> str:
@@ -224,17 +254,38 @@ class ModelConfiguration:
         _required_id(self.adapter_version, "model Adapter version")
         _required_id(self.model_revision, "model revision")
         _required_id(self.template_id, "model template id")
+        if isinstance(self.version, bool) or not isinstance(self.version, int):
+            raise ModelPlanningError("model configuration version must be an integer")
         if self.version != 1:
             raise ModelPlanningError("unsupported model configuration version")
-        if self.template_version < 1:
+        if (
+            isinstance(self.template_version, bool)
+            or not isinstance(self.template_version, int)
+            or self.template_version < 1
+        ):
             raise ModelPlanningError("model template version must be positive")
-        if self.max_output_bytes < 1 or self.max_output_bytes > 1024 * 1024:
+        if (
+            isinstance(self.max_output_bytes, bool)
+            or not isinstance(self.max_output_bytes, int)
+            or self.max_output_bytes < 1
+            or self.max_output_bytes > 1024 * 1024
+        ):
             raise ModelPlanningError("model output byte budget is invalid")
-        if self.timeout_seconds <= 0 or self.timeout_seconds > 300:
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or not math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds <= 0
+            or self.timeout_seconds > 300
+        ):
             raise ModelPlanningError("model timeout must be in (0, 300] seconds")
-        decoded = json.loads(self.parameters_json)
+        try:
+            decoded = json.loads(self.parameters_json)
+        except (TypeError, ValueError) as exc:
+            raise ModelPlanningError("model parameters must be strict JSON") from exc
         if not isinstance(decoded, Mapping):
             raise ModelPlanningError("model parameters must be an object")
+        _json_bytes(dict(decoded))
 
     @classmethod
     def freeze(
@@ -254,12 +305,12 @@ class ModelConfiguration:
             provider=_required_id(provider, "model provider"),
             model=_required_id(model, "model name"),
             parameters_json=_json_bytes(dict(parameters or {})).decode("ascii"),
-            timeout_seconds=float(timeout_seconds),
+            timeout_seconds=timeout_seconds,
             adapter_version=adapter_version,
             model_revision=model_revision,
             template_id=template_id,
-            template_version=int(template_version),
-            max_output_bytes=int(max_output_bytes),
+            template_version=template_version,
+            max_output_bytes=max_output_bytes,
         )
 
     @property
@@ -366,7 +417,11 @@ class PlanningBinding:
     def __post_init__(self) -> None:
         _required_id(self.run_id, "PlanningBinding run_id")
         _required_id(self.slot_id, "PlanningBinding slot_id")
-        if self.generation < 1:
+        if (
+            isinstance(self.generation, bool)
+            or not isinstance(self.generation, int)
+            or self.generation < 1
+        ):
             raise ModelPlanningError("PlanningBinding generation must be positive")
         expected = _planning_invocation_id(
             self.run_id,
@@ -423,13 +478,25 @@ class PlanningBinding:
         if isinstance(generation, bool) or not isinstance(generation, int):
             raise ModelPlanningError("PlanningBinding generation must be an integer")
         return cls(
-            run_id=str(value.get("run_id", "")),
-            slot_id=str(value.get("slot_id", "")),
+            run_id=_record_string(value.get("run_id"), "PlanningBinding run_id"),
+            slot_id=_record_string(value.get("slot_id"), "PlanningBinding slot_id"),
             generation=generation,
-            invocation_id=str(value.get("invocation_id", "")),
-            input_digest=str(value.get("input_digest", "")),
-            provider_config_digest=str(value.get("provider_config_digest", "")),
-            policy_digest=str(value.get("policy_digest", "")),
+            invocation_id=_record_string(
+                value.get("invocation_id"),
+                "PlanningBinding invocation_id",
+            ),
+            input_digest=_record_string(
+                value.get("input_digest"),
+                "PlanningBinding input_digest",
+            ),
+            provider_config_digest=_record_string(
+                value.get("provider_config_digest"),
+                "PlanningBinding provider_config_digest",
+            ),
+            policy_digest=_record_string(
+                value.get("policy_digest"),
+                "PlanningBinding policy_digest",
+            ),
         )
 
 
@@ -565,6 +632,8 @@ class PlanProposal:
     def __post_init__(self) -> None:
         _required_id(self.run_id, "PlanProposal run_id")
         _required_id(self.root_node_id, "PlanProposal root_node_id")
+        if isinstance(self.version, bool) or not isinstance(self.version, int):
+            raise PlanProposalRejected("PlanProposal version must be an integer")
         if self.version != 1:
             raise PlanProposalRejected("unsupported PlanProposal version")
         if not self.nodes:
@@ -885,6 +954,9 @@ class ModelInvocationRecord:
             raise ModelPlanningError(
                 "ModelInvocationRecord updated_at precedes started_at"
             )
+        _record_number(self.started_at, "ModelInvocationRecord started_at")
+        _record_number(self.updated_at, "ModelInvocationRecord updated_at")
+        _record_integer(self.version, "ModelInvocationRecord version")
         if self.version != 1:
             raise ModelPlanningError("unsupported ModelInvocationRecord version")
 
@@ -958,18 +1030,51 @@ class ModelInvocationRecord:
             )
         return cls(
             binding=PlanningBinding.from_public_dict(value),
-            provider=str(value.get("provider", "")),
-            model=str(value.get("model", "")),
+            provider=_record_string(
+                value.get("provider"),
+                "ModelInvocationRecord provider",
+            ),
+            model=_record_string(
+                value.get("model"),
+                "ModelInvocationRecord model",
+            ),
             provider_config_json=_json_bytes(dict(provider_config)).decode("ascii"),
-            status=str(value.get("status", "")),
-            effect_kind=str(value.get("effect_kind", "")),
-            result_digest=str(value.get("result_digest", "")),
-            plan_revision_id=str(value.get("plan_revision_id", "")),
-            error_code=str(value.get("error_code", "")),
-            error_message=str(value.get("error_message", "")),
-            started_at=float(value.get("started_at", 0.0)),
-            updated_at=float(value.get("updated_at", 0.0)),
-            version=int(value.get("version", 0)),
+            status=_record_string(
+                value.get("status"),
+                "ModelInvocationRecord status",
+            ),
+            effect_kind=_record_string(
+                value.get("effect_kind"),
+                "ModelInvocationRecord effect_kind",
+            ),
+            result_digest=_record_string(
+                value.get("result_digest"),
+                "ModelInvocationRecord result_digest",
+            ),
+            plan_revision_id=_record_string(
+                value.get("plan_revision_id"),
+                "ModelInvocationRecord plan_revision_id",
+            ),
+            error_code=_record_string(
+                value.get("error_code"),
+                "ModelInvocationRecord error_code",
+            ),
+            error_message=_record_string(
+                value.get("error_message"),
+                "ModelInvocationRecord error_message",
+            ),
+            started_at=_record_number(
+                value.get("started_at"),
+                "ModelInvocationRecord started_at",
+            ),
+            updated_at=_record_number(
+                value.get("updated_at"),
+                "ModelInvocationRecord updated_at",
+            ),
+            version=_record_integer(
+                value.get("version"),
+                "ModelInvocationRecord version",
+            ),
         )
 
 
@@ -1033,6 +1138,8 @@ class PlanRevision:
             )
         if self.proposal.digest != self.proposal_digest:
             raise ModelPlanningError("PlanRevision proposal digest mismatch")
+        _record_number(self.created_at, "PlanRevision created_at")
+        _record_integer(self.version, "PlanRevision version")
         if self.version != 1:
             raise ModelPlanningError("unsupported PlanRevision version")
 
@@ -1087,16 +1194,37 @@ class PlanRevision:
         if not isinstance(raw_proposal, Mapping):
             raise ModelPlanningError("PlanRevision proposal must be an object")
         return cls(
-            revision_id=str(value.get("revision_id", "")),
+            revision_id=_record_string(
+                value.get("revision_id"),
+                "PlanRevision revision_id",
+            ),
             binding=PlanningBinding.from_public_dict(value),
-            proposal_digest=str(value.get("proposal_digest", "")),
+            proposal_digest=_record_string(
+                value.get("proposal_digest"),
+                "PlanRevision proposal_digest",
+            ),
             proposal=PlanProposal.from_mapping(raw_proposal),
-            status=str(value.get("status", "")),
-            ir_version=str(value.get("ir_version", "")),
-            error_code=str(value.get("error_code", "")),
-            error_message=str(value.get("error_message", "")),
-            created_at=float(value.get("created_at", 0.0)),
-            version=int(value.get("version", 0)),
+            status=_record_string(value.get("status"), "PlanRevision status"),
+            ir_version=_record_string(
+                value.get("ir_version"),
+                "PlanRevision ir_version",
+            ),
+            error_code=_record_string(
+                value.get("error_code"),
+                "PlanRevision error_code",
+            ),
+            error_message=_record_string(
+                value.get("error_message"),
+                "PlanRevision error_message",
+            ),
+            created_at=_record_number(
+                value.get("created_at"),
+                "PlanRevision created_at",
+            ),
+            version=_record_integer(
+                value.get("version"),
+                "PlanRevision version",
+            ),
         )
 
 
@@ -1291,6 +1419,22 @@ def _terminal_settlement(
     return ModelPlanningSettlement(record, revision, applied=False)
 
 
+def _select_settlement(
+    current: ModelInvocationRecord,
+    incoming: ModelInvocationRecord,
+    revision: PlanRevision | None,
+    load_revision: Callable[[str], PlanRevision | None],
+) -> ModelPlanningSettlement:
+    if current.binding_digest != incoming.binding_digest:
+        raise ModelInvocationConflict(
+            "model invocation settlement has a different binding"
+        )
+    terminal = _terminal_settlement(current, load_revision)
+    if terminal is not None:
+        return terminal
+    return ModelPlanningSettlement(incoming, revision, applied=True)
+
+
 class ModelPlanningRepository(Protocol):
     def claim(self, record: ModelInvocationRecord) -> ModelPlanningClaim: ...
 
@@ -1300,7 +1444,7 @@ class ModelPlanningRepository(Protocol):
 
     def list_revisions(self) -> tuple[PlanRevision, ...]: ...
 
-    def resolve(
+    def settle(
         self,
         record: ModelInvocationRecord,
         revision: PlanRevision | None,
@@ -1335,7 +1479,7 @@ class InMemoryModelPlanningRepository:
                 self._revisions[key] for key in sorted(self._revisions)
             )
 
-    def resolve(
+    def settle(
         self,
         record: ModelInvocationRecord,
         revision: PlanRevision | None,
@@ -1344,22 +1488,22 @@ class InMemoryModelPlanningRepository:
             current = self._invocations.get(record.invocation_id)
             if current is None:
                 raise ModelPlanningError(
-                    "model invocation must be claimed before resolve"
+                    "model invocation must be claimed before settlement"
                 )
-            if current.binding_digest != record.binding_digest:
-                raise ModelInvocationConflict(
-                    "model invocation settlement has a different binding"
-                )
-            terminal = _terminal_settlement(current, self._revisions.get)
-            if terminal is not None:
-                return terminal
+            settlement = _select_settlement(
+                current,
+                record,
+                revision,
+                self._revisions.get,
+            )
+            if not settlement.applied:
+                return settlement
             if revision is not None:
                 existing = self._revisions.get(revision.revision_id)
                 if existing is not None and existing != revision:
                     raise ModelInvocationConflict(
                         "PlanRevision identity is already bound to different content"
                     )
-            settlement = ModelPlanningSettlement(record, revision, applied=True)
             if revision is not None:
                 self._revisions.setdefault(revision.revision_id, revision)
             self._invocations[record.invocation_id] = record
@@ -1474,7 +1618,7 @@ class SQLiteModelPlanningRepository:
             if revision is not None
         )
 
-    def resolve(
+    def settle(
         self,
         record: ModelInvocationRecord,
         revision: PlanRevision | None,
@@ -1493,16 +1637,16 @@ class SQLiteModelPlanningRepository:
                 (record.invocation_id,),
             ).fetchone()
             if current is None:
-                raise ModelPlanningError("model invocation must be claimed before resolve")
+                raise ModelPlanningError(
+                    "model invocation must be claimed before settlement"
+                )
             selected = self._record(current)
             if selected is None:
                 raise ModelPlanningError("persisted ModelInvocationRecord is invalid")
-            if selected.binding_digest != record.binding_digest:
-                raise ModelInvocationConflict(
-                    "model invocation settlement has a different binding"
-                )
-            terminal = _terminal_settlement(
+            settlement = _select_settlement(
                 selected,
+                record,
+                revision,
                 lambda revision_id: self._revision(
                     connection.execute(
                         "SELECT document_json FROM model_planning_revisions "
@@ -1511,9 +1655,8 @@ class SQLiteModelPlanningRepository:
                     ).fetchone()
                 ),
             )
-            if terminal is not None:
-                return terminal
-            settlement = ModelPlanningSettlement(record, revision, applied=True)
+            if not settlement.applied:
+                return settlement
             if revision is not None:
                 existing = connection.execute(
                     "SELECT document_json FROM model_planning_revisions "
@@ -1642,13 +1785,19 @@ class PlanResolver:
                 result = ModelAdapterResult.unknown(str(exc))
             return self._settle(record, result, reconciled=True)
 
-    @staticmethod
     def _decision(
+        self,
         settlement: ModelPlanningSettlement,
         *,
         reconciled: bool,
     ) -> PlanningDecision:
         if settlement.record.status is ModelInvocationStatus.SUCCEEDED:
+            if settlement.revision is None:
+                raise ModelPlanningError("pinned PlanRevision is unavailable")
+            self._validate_proposal(
+                settlement.revision.proposal,
+                run_id=settlement.record.run_id,
+            )
             return PlanningDecision(
                 PlanningDecisionStatus.ACCEPTED,
                 settlement.record,
@@ -1675,10 +1824,13 @@ class PlanResolver:
             record,
             status=ModelInvocationStatus.REJECTED,
             error_code="plan_proposal_rejected",
-            error_message=message,
+            error_message=_bounded_error_message(
+                message,
+                "PlanProposal was rejected",
+            ),
             updated_at=float(self._clock()),
         )
-        settlement = self.repository.resolve(selected, None)
+        settlement = self.repository.settle(selected, None)
         return self._decision(
             settlement,
             reconciled=reconciled,
@@ -1703,7 +1855,7 @@ class PlanResolver:
                 error_message=result.error_message,
                 updated_at=now,
             )
-            settlement = self.repository.resolve(selected, None)
+            settlement = self.repository.settle(selected, None)
             return self._decision(
                 settlement,
                 reconciled=reconciled,
@@ -1747,7 +1899,7 @@ class PlanResolver:
             error_message="",
             updated_at=now,
         )
-        settlement = self.repository.resolve(selected, revision)
+        settlement = self.repository.settle(selected, revision)
         return self._decision(
             settlement,
             reconciled=reconciled,

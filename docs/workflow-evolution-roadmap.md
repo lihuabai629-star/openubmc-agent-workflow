@@ -320,8 +320,10 @@ Worker result 跨进程    -> Inbox + result dedupe
 5. compatibility profile 使用遥测与退役；
 6. 扩展长时 soak、property-based 和 network fault injection；
 7. `ModelInvocationRecord` 与受限 `PlanProposal -> PlanRevision` 原型已完成；确定性评估证明
-   边界安全但未证明相对静态 Workflow 的 Agent-turn 或 plan-validity 杠杆，因此保持 isolated，
-   不接入生产 `RunEngine`。详见[模型规划原型](model-planning-prototype.md)。
+   持久重放、严格 JSON、Gate/compensation 语义和边界安全；六组配对任务中两条路径均为
+   6/6 有效且各含 4 个语义 Gate turn，候选额外产生 6 次模型调用，未证明 Agent-turn 或
+   plan-validity 杠杆，因此保持 isolated，不接入生产 `RunEngine`。详见
+   [模型规划原型](model-planning-prototype.md)。
 
 ### P3：v3 分布式执行
 

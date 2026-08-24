@@ -13,9 +13,12 @@ operations, or claim production adoption.
 
 The deterministic paired evaluation preserves all architecture invariants and runs both paths on
 six equivalent tasks. The static resolver and isolated candidate each produce six valid pinned
-plans, but only the candidate requires a model call for every task. A separate containment corpus
-rejects four invalid proposals with zero false accepts. The experiment therefore shows containment
-but no plan-validity advantage, so its verdict is `isolate` rather than `advance`.
+plans with four equivalent semantic Agent Gate turns, but only the candidate requires a model call
+for every task. The candidate now represents phase handoffs as actual Gate nodes and validates a
+live-patch compensation link. A separate containment corpus rejects five invalid proposals with
+zero false accepts, while unrelated and explicitly negated upgrade objectives are rejected. The
+experiment therefore shows containment but no plan-validity or turn advantage, so its verdict is
+`isolate` rather than `advance`.
 
 Run the evaluation with:
 
@@ -79,7 +82,8 @@ The record pins:
 Each status admits only its own evidence shape: `running` has neither result nor error, terminal
 non-success states have an error and no result, and `succeeded` has a result/revision pair with no
 error. The revision identity is derived from the proposal digest, and replay validates the complete
-record/revision settlement tuple.
+record/revision settlement tuple. Persisted scalar fields retain exact JSON types, non-finite
+numbers are rejected, and provider parameters are required to be strict JSON.
 
 The record is persisted before provider dispatch. A timeout after dispatch becomes `unknown`.
 Another call to `resolve()` reconciles the same identity; it never silently creates a replacement
@@ -114,7 +118,9 @@ script, shell, credential, authorization, or mutation instruction.
 An accepted proposal is frozen as a `bounded-plan-ir/v1` revision. The revision pins its schema
 version, Run, slot, generation, source invocation, input/provider/policy/proposal digests, complete
 proposal result, status, and empty error fields. SQLite restart and Replay resolve the same revision
-without another model call.
+without another model call. Replay also re-runs the pinned policy validation before returning an
+accepted decision, so a structurally self-consistent but policy-invalid stored proposal fails
+closed.
 
 ## Deterministic evidence
 
@@ -126,18 +132,24 @@ failure, timeout, unknown, and reconcile results. Behavior coverage includes:
 - same-identity replay and different-input conflict;
 - timeout-to-unknown and same-identity reconcile;
 - first-terminal-writer settlement so a late unknown cannot erase an accepted revision;
+- shared in-memory and SQLite settlement selection with one `settle()` Repository operation;
 - SQLite restart for both accepted and unknown invocations;
 - persisted revision rejection when nested proposal bindings contradict the revision;
+- policy revalidation of a persisted revision before accepted replay;
+- strict JSON, scalar-type, finite-number, and bounded rejection-message handling;
 - complete bounded IR acceptance;
 - unchanged `observe`/`execute` exposure;
 - proof that an accepted revision cannot bypass a Gate or fresh terminal verification.
 
-The paired evaluation compares six equivalent planning tasks using exact expected semantic step
-sequences. Its deterministic fake planner derives proposals from the actual objective and rejects
-an unrelated objective in an input-sensitivity control. Static workflows and isolated model
-planning each produce a valid pinned plan for all six tasks, while the candidate adds six model
-calls and shows no validity improvement. Four deliberately invalid outputs are evaluated
-separately and all are rejected. This is useful containment evidence, not adoption evidence.
+The paired evaluation compares six equivalent planning tasks using exact action/Gate semantics,
+Gate schemas, semantic Agent Gate-turn counts, and expected compensation links. Its deterministic
+fake planner derives proposals from objective features rather than an exact objective lookup, and
+rejects both an unrelated objective and a negated build/upgrade objective. Static workflows and
+isolated model planning each produce a valid pinned plan for all six tasks with four Gate turns,
+while the candidate adds six model calls and shows no validity or turn improvement. Four
+deliberately invalid outputs, including a phase handoff disguised as an action, are evaluated
+separately and all are rejected. This remains a
+deterministic contract and containment evaluation, not a real-task A/B or adoption proof.
 
 ## Adoption gate
 
