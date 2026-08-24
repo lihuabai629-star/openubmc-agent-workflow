@@ -23,15 +23,14 @@ from implementation:
 
 ## Choose `observe` or `execute`
 
-Use the default `openubmc-target-runtime` Agent Interface:
+Use the default `openubmc-target-runtime` MCP through its semantic Agent Interface:
 
 - Call `observe` for an exact read-only question. Declare only the selectors needed for the
-  answer and combine related capability and MDB selectors in one observation. When the exact
-  request is already supplied, directly call `observe` as tool `observe` on the MCP server
-  `openubmc-target-runtime` through the native MCP tool-call channel. Do not translate the MCP
-  call into JavaScript or a local helper. Do not check whether the tool exists. If no native tool
-  result was recorded, issue the call rather than claiming the server or tool is unavailable.
-  Report unavailability only from an actual MCP tool result.
+  answer. A narrow MDB or capability query should complete in one call and return an inline
+  `ObservationReceipt`.
+- Treat one answer as one observation: combine related capability and MDB selectors needed for
+  the answer in the same `observe` call. Do not run a separate capability preflight; the internal
+  Observation Adapter performs it.
 - Call `execute` when work can cross diagnosis, source change, build, live patch, upgrade,
   recovery, verification, or acceptance phases. Continue the retained Run instead of rebuilding
   its request.

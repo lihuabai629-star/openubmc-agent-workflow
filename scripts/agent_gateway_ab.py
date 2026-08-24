@@ -1725,8 +1725,8 @@ def _prompt(
             (
                 "这是一次真实 BMC 环境下的 openubmc-debug Skill 渐进披露配对基准。",
                 "使用已安装的 $openubmc-debug，并按需读取直接链接的 references。",
-                "只使用 openubmc-debug 与 MCP server openubmc-target-runtime 的 observe 工具；不得使用其他 Skill、知识库、网络搜索、源码、日志或 shell。",
-                "不要列出 MCP resources/templates，不要做工具发现；通过原生 MCP 工具调用通道直接调用该 observe 工具。",
+                "只使用 openubmc-debug 与 openubmc-target-runtime.observe；不得使用其他 Skill、知识库、网络搜索、源码、日志或 shell。",
+                "不要列出 MCP resources/templates，不要做工具发现；直接调用 openubmc-target-runtime.observe。",
                 f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
                 "执行一次只读现场核验。唯一一次 observe 必须严格使用下面的完整 JSON 参数，不得增删字段、拆分调用或重试：",
                 _skill_disclosure_observe_template(),

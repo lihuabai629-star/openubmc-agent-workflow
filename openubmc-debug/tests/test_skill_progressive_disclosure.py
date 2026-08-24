@@ -16,7 +16,7 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
         for concept in (
             "observe",
             "execute",
-            "directly call `observe`",
+            "same `observe` call",
             "two to four complementary",
             "source-only",
             "live-patch",
@@ -27,25 +27,20 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
         ):
             self.assertIn(concept, SKILL)
 
-    def test_exact_observation_uses_the_mcp_server_tool_pair(self) -> None:
+    def test_exact_observation_uses_the_stable_mcp_semantics(self) -> None:
         normalized = " ".join(SKILL.split())
-        self.assertIn("directly call `observe`", normalized)
-        self.assertIn("Do not check whether the tool exists", normalized)
         self.assertIn(
-            "MCP server `openubmc-target-runtime`",
+            "Use the default `openubmc-target-runtime` MCP through its semantic Agent Interface",
             normalized,
         )
-        self.assertIn("tool `observe`", normalized)
         self.assertIn(
-            "Do not translate the MCP call into JavaScript or a local helper",
+            "A narrow MDB or capability query should complete in one call",
             normalized,
         )
-        self.assertIn("native MCP tool-call channel", normalized)
-        self.assertIn(
-            "If no native tool result was recorded, issue the call",
-            normalized,
-        )
-        self.assertNotIn("`openubmc-target-runtime.observe`", normalized)
+        self.assertIn("same `observe` call", normalized)
+        self.assertIn("Do not run a separate capability preflight", normalized)
+        self.assertNotIn("native MCP tool-call channel", normalized)
+        self.assertNotIn("JavaScript or a local helper", normalized)
         self.assertNotIn("tools.openubmc_target_runtime_observe", normalized)
 
     def test_transport_and_runtime_mechanics_are_disclosed_on_demand(self) -> None:

@@ -899,9 +899,7 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertNotIn(str(baseline), first)
         self.assertNotIn(str(candidate), second)
         self.assertIn("按需读取直接链接的 references", first)
-        self.assertIn("MCP server openubmc-target-runtime 的 observe 工具", first)
-        self.assertIn("原生 MCP 工具调用通道", first)
-        self.assertNotIn("openubmc-target-runtime.observe", first)
+        self.assertIn("openubmc-target-runtime.observe", first)
         self.assertNotIn("tools.openubmc_target_runtime_observe", first)
         self.assertNotIn("JavaScript wrapper", first)
         self.assertIn("不要列出 MCP resources/templates", first)
@@ -2190,7 +2188,7 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertEqual(
             evidence["benchmark"]["prompt_digest"],
-            "sha256:b89611646ebf122cecbcebb0b79fd791eb0471dfb2515195f847107be45ce1ac",
+            "sha256:00c3357a5b3b7c9f55165dfb675fe2da8db18b58b154593439c9c897764d9852",
         )
         self.assertNotEqual(
             evidence["benchmark"]["prompt_digest"],
