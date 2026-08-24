@@ -141,7 +141,8 @@ CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2
 - `DomainExecutor` 在 Runtime 构造时注册 Adapter，只读传输失败有限重试，Mutation 不盲目
   重放；
 - `ContextRuntime` 继续承载 repository 与 Evidence 实现；原生 Agent Gate response 由
-  RunEngine 提交持久 Gate，兼容 writer 与 profile 已退役，历史事件由显式 upcaster 转换；
+  RunEngine 提交持久 Gate；兼容 writer/profile 的候选移除已完成但仍等待 14 日与同源
+  Release Gate，历史事件继续由显式 upcaster 转换；
 - Session Outcome 只从持久 `RunOutcomeRecorded` 投影，terminal replay 不重复写 Run Outcome、
   Closeout 或治理记录。
 

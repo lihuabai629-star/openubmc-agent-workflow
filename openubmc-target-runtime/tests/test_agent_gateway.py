@@ -26,6 +26,7 @@ from openubmc_target_runtime import (  # noqa: E402
     GateConflict,
     InMemoryRuntimeRepository,
     Incident,
+    ObservationQuery,
     OBSERVATION_MAX_BYTES,
     RevisionConflict,
     ReferenceViolation,
@@ -48,11 +49,13 @@ from openubmc_target_runtime import (  # noqa: E402
     StartRun,
     StdioMcpServer,
     SubmitGate,
+    decode_run_command,
 )
 from openubmc_target_runtime.context_runtime import (  # noqa: E402
     BufferedRuntimeRepository,
 )
 from openubmc_target_runtime.run_store import RunCommitRequest  # noqa: E402
+from tests.compatibility_history import seed_compatibility_history  # noqa: E402
 def encoded_size(value: object) -> int:
     return len(
         json.dumps(
@@ -1456,6 +1459,17 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="retired-assurance-1",
             )
 
+        with self.assertRaisesRegex(ScopeViolation, "undeclared fields.*assurance"):
+            ObservationQuery.from_query(
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"kind": "mdb", "queries": ["lsprop Object0"]}
+                    ],
+                    "assurance": "assured",
+                }
+            )
+
     def test_execute_rejects_the_retired_control_continue_input(self) -> None:
         with self.assertRaisesRegex(ValueError, "command.*must be one of"):
             self.service.call_exposed_tool(
@@ -1485,6 +1499,21 @@ class AgentGatewayTests(unittest.TestCase):
                 },
                 task_id="retired-observation-receipt",
                 operation_id="retired-observation-receipt-1",
+            )
+
+        with self.assertRaisesRegex(
+            AgentGatewayError,
+            "observation_receipt.*retired",
+        ):
+            decode_run_command(
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "observation_receipt": {
+                        "receipt_id": "receipt-retired",
+                    },
+                },
+                operation_id="retired-observation-receipt-direct",
             )
 
     def test_runtime_rejects_the_retired_compatibility_profile(self) -> None:
@@ -5999,23 +6028,29 @@ class AgentGatewayTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             database = Path(raw) / "compatibility-telemetry.sqlite3"
-            telemetry = SQLiteCompatibilityTelemetryRepository(database)
-            telemetry.increment("operation", "debug_run")
-            telemetry.increment("feature", "observe.assurance")
-            first = RuntimeMcpService(
+            telemetry_repository = SQLiteCompatibilityTelemetryRepository(database)
+            seed_compatibility_history(
+                database,
+                (
+                    ("operation", "debug_run", 1, 1234.5),
+                    ("feature", "observe.assurance", 1, 1234.5),
+                ),
+            )
+            self.assertFalse(hasattr(telemetry_repository, "increment"))
+            service = RuntimeMcpService(
                 SemanticBackend(),
                 context_repository=SQLiteRuntimeRepository(database),
                 interface_profile="operator",
             )
             try:
-                shared_status = first.call_exposed_tool(
+                initial_status = service.call_exposed_tool(
                     "runtime_status",
                     {},
                     task_id="compatibility-persistent-shared-status",
                     operation_id="compatibility-persistent-shared-status",
                 )
             finally:
-                first.close()
+                service.close()
 
             reopened = RuntimeMcpService(
                 SemanticBackend(),
@@ -6034,21 +6069,21 @@ class AgentGatewayTests(unittest.TestCase):
 
         expected = {"debug_run": 1}
         self.assertEqual(
-            shared_status["compatibility_telemetry"]["operation_counts"],
+            initial_status["compatibility_telemetry"]["operation_counts"],
             expected,
         )
         self.assertEqual(
             restarted_status["compatibility_telemetry"]["operation_counts"],
             expected,
         )
-        for status in (shared_status, restarted_status):
+        for status in (initial_status, restarted_status):
             self.assertEqual(
                 status["compatibility_telemetry"]["feature_counts"],
                 {"observe.assurance": 1},
             )
         self.assertEqual(
             restarted_status["compatibility_telemetry"]["last_seen_at"],
-            shared_status["compatibility_telemetry"]["last_seen_at"],
+            initial_status["compatibility_telemetry"]["last_seen_at"],
         )
 
     def test_legacy_phase_writer_does_not_persist_a_native_gate_submission(self) -> None:

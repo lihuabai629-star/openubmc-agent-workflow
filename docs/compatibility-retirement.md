@@ -1,8 +1,10 @@
 # Compatibility retirement
 
-The compatibility writers and MCP profile are retired. The Runtime now accepts Agent writes only
-through `observe` and `execute`; the Operator / CI Plane remains separate. Historical old-event
-upcasters and anonymous telemetry are retained as read-only migration evidence.
+This document describes the compatibility-retirement candidate. It removes the writers and MCP
+profile so Agent writes enter only through `observe` and `execute`; the Operator / CI Plane remains
+separate, and historical old-event upcasters plus anonymous telemetry remain read-only. The
+candidate must remain unmerged until the real 14-active-day window and a same-source promotable
+Release Gate satisfy the readiness policy below.
 
 ## Telemetry
 

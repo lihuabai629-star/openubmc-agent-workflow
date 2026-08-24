@@ -32,7 +32,6 @@ CAPABILITY_MAX_ITEMS = 16
 MDB_QUERY_MAX_BYTES = 1024
 MDB_QUERY_MAX_ITEMS = 32
 
-_ASSURANCE_LEVELS = frozenset({"auto", "fast", "assured"})
 _CAPABILITY_ALIASES = frozenset(
     {"ssh", "telnet", "mdbctl", "busctl", "dbus", "alarms"}
 )
@@ -245,7 +244,6 @@ class ObservationQuery:
     freshness_mode: str = "live"
     max_age_seconds: int = 0
     deadline: float = 180.0
-    assurance: str = "auto"
 
     @classmethod
     def from_query(cls, query: Mapping[str, object]) -> "ObservationQuery":
@@ -254,7 +252,6 @@ class ObservationQuery:
             "target",
             "selectors",
             "freshness",
-            "assurance",
             "deadline",
         }
         if unexpected:
@@ -287,9 +284,6 @@ class ObservationQuery:
             raise ScopeViolation("only live evidence is supported by the Agent interface")
         if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age != 0:
             raise ScopeViolation("live evidence requires max_age_seconds=0")
-        legacy_assurance = _text(query.get("assurance") or "auto").lower()
-        if legacy_assurance not in _ASSURANCE_LEVELS:
-            raise ScopeViolation("assurance must be auto, fast, or assured")
         deadline = query.get("deadline", 180)
         if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
             raise ScopeViolation("deadline must be a positive number")
@@ -301,7 +295,6 @@ class ObservationQuery:
             freshness_mode=freshness_mode,
             max_age_seconds=max_age,
             deadline=float(deadline),
-            assurance="auto",
         )
         if len(json_bytes(contract.to_public_dict())) > OBSERVATION_SCOPE_MAX_BYTES:
             raise ScopeViolation("observation scope exceeds the 2KB budget")
@@ -765,6 +758,10 @@ def decode_run_command(
     action: Mapping[str, object], *, operation_id: str
 ) -> RunCommand:
     bounded_request(action)
+    if "observation_receipt" in action:
+        raise AgentGatewayError(
+            "observation_receipt is retired; use observation_ref"
+        )
     kind = _text(action.get("kind")).lower()
     caller_deadline = _caller_deadline(action)
     if kind == "start":

@@ -17,10 +17,10 @@ task contexts, and mutation journals share `~/.local/state/openubmc-target-runti
 Repair and update preserve that state. Uninstall removes the managed launcher and client
 registration but leaves Run history and mutation recovery state available for a later reinstall.
 
-The installed Debug CLI uses the same Runtime Core and persistent state through the semantic Agent
-interface. Installer health reports `engines.cli` for this adapter and retains `engines.one_shot`
-only as an installer-state alias; the CLI process is short-lived, but it does not create an
-independent workflow state.
+The installed Debug CLI uses the same Runtime Core and persistent state through an internal Domain
+adapter; it does not reopen the retired Agent-facing profile. Installer health reports `engines.cli`
+for this adapter and retains `engines.one_shot` only as an installer-state alias; the CLI process is
+short-lived, but it does not create an independent workflow state.
 
 On Debian and Ubuntu, install missing workflow executables automatically with
 APT, pip, and npm. Keep the installation non-interactive. Do not download an

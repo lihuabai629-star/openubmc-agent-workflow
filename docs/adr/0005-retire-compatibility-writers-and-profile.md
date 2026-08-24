@@ -1,6 +1,7 @@
 # ADR-0005: Retire compatibility writers and profile
 
-- Status: Accepted
+- Status: Proposed; becomes Accepted only after the evidence-gated candidate is promoted to
+  canonical `main`
 - Date: 2026-08-24
 - Decision owners: openUBMC Agent Workflow maintainers
 - Supersedes in part: the temporary compatibility profile in [ADR-0001](0001-runtime-core-and-semantic-agent-interface.md)

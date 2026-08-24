@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -231,15 +232,126 @@ class BuildSkillContractTests(unittest.TestCase):
             "gate_id",
             "gate_version",
             "schema_digest",
-            "artifact_path",
-            "artifact_sha256",
-            "product_version",
-            "evidence_ids",
+            "artifact_ref",
+            "digest: sha256:",
+            "kind: openubmc-hpm",
+            "retention_hint: run-lifetime",
+            "provenance: openubmc-build",
             "execute(kind=resume)",
         ):
             self.assertIn(field, skill)
         for retired in ("phase_record", "workflow.next", "workflow.advance"):
             self.assertNotIn(retired, skill)
+
+    def test_documented_build_gate_payload_matches_runtime_execute_schema(self) -> None:
+        backend = BuildWorkflowBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            developer_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.120",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                },
+                task_id="build-skill-contract",
+                operation_id="build-skill-start",
+            )
+            build_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    "gate_id": developer_gate["gate"]["gate_id"],
+                    "gate_version": developer_gate["gate"]["gate_version"],
+                    "schema_digest": developer_gate["gate"]["schema_digest"],
+                    "response": {
+                        "status": "completed",
+                        "summary": "source change completed",
+                        "payload": {
+                            "source_revision": "source-revision-1",
+                            "authored_files": ["src/example.lua"],
+                            "verification_plan": ["build and verify"],
+                        },
+                    },
+                },
+                task_id="build-skill-contract",
+                operation_id="build-skill-source",
+            )
+            with tempfile.TemporaryDirectory() as raw:
+                artifact = Path(raw) / "openubmc-contract.hpm"
+                artifact.write_bytes(b"openubmc build artifact")
+                digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                Path(str(artifact) + ".metadata.json").write_text(
+                    json.dumps(
+                        {
+                            "schema": "openubmc-agent-workflow/artifact-metadata-v1",
+                            "artifact": {
+                                "sha256": digest,
+                                "size": artifact.stat().st_size,
+                                "kind": "openubmc-hpm",
+                            },
+                            "product_version": "2.0.0",
+                            "provenance": "openubmc-build",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                final = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": build_gate["run_id"],
+                        "gate_id": build_gate["gate"]["gate_id"],
+                        "gate_version": build_gate["gate"]["gate_version"],
+                        "schema_digest": build_gate["gate"]["schema_digest"],
+                        "response": {
+                            "status": "completed",
+                            "summary": "build completed",
+                            "payload": {
+                                "source_revision": "source-revision-1",
+                                "artifact_ref": {
+                                    "handle": str(artifact),
+                                    "digest": "sha256:" + digest,
+                                    "kind": "openubmc-hpm",
+                                    "size": artifact.stat().st_size,
+                                    "provenance": "openubmc-build",
+                                    "retention_hint": "run-lifetime",
+                                    "version": "2.0.0",
+                                    "target": "192.0.2.120",
+                                    "run_id": build_gate["run_id"],
+                                },
+                                "component_versions": ["component/2.0.0"],
+                                "build_commands": ["bmcgo build"],
+                                "build_logs": ["build-log"],
+                                "known_gaps": [],
+                            },
+                        },
+                    },
+                    task_id="build-skill-contract",
+                    operation_id="build-skill-artifact",
+                )
+
+            self.assertIn(final["state"], {"completed", "failed"}, final)
+            self.assertTrue(
+                any(
+                    fact.get("kind") == "phase"
+                    and fact.get("name") == "build.artifact"
+                    and fact.get("status") == "completed"
+                    for fact in final["facts"]
+                ),
+                final,
+            )
+            upgrade = next(
+                arguments
+                for operation, arguments in backend.calls
+                if operation == "upgrade_run"
+            )
+            self.assertEqual(upgrade["artifact_sha256"], digest)
+            self.assertEqual(upgrade["product_version"], "2.0.0")
+        finally:
+            service.close()
 
     def test_checked_runner_rejects_failure_text_even_with_zero_exit(self) -> None:
         runner = BUILD_ROOT / "scripts" / "run_bmcgo_checked.py"

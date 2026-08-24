@@ -18,9 +18,7 @@ class CompatibilityMetric:
 
 
 class CompatibilityTelemetryRepository(Protocol):
-    """Persist anonymous metric counters shared by Runtime instances."""
-
-    def increment(self, metric_kind: str, metric_name: str) -> None: ...
+    """Read retained anonymous metric counters shared by Runtime instances."""
 
     def metrics(self, metric_kind: str) -> Mapping[str, CompatibilityMetric]: ...
 
@@ -32,15 +30,6 @@ class InMemoryCompatibilityTelemetryRepository:
         self._metrics: dict[tuple[str, str], CompatibilityMetric] = {}
         self._tracking_started_at = time.time()
         self._lock = threading.RLock()
-
-    def increment(self, metric_kind: str, metric_name: str) -> None:
-        identity = (metric_kind, metric_name)
-        with self._lock:
-            prior = self._metrics.get(identity)
-            self._metrics[identity] = CompatibilityMetric(
-                count=(prior.count if prior is not None else 0) + 1,
-                last_seen_at=time.time(),
-            )
 
     def metrics(self, metric_kind: str) -> Mapping[str, CompatibilityMetric]:
         with self._lock:
@@ -55,7 +44,7 @@ class InMemoryCompatibilityTelemetryRepository:
 
 
 class SQLiteCompatibilityTelemetryRepository:
-    """Atomic counters stored beside the SQLite Runtime repository."""
+    """Read retained history stored beside the SQLite Runtime repository."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -107,20 +96,6 @@ class SQLiteCompatibilityTelemetryRepository:
                 "INSERT OR IGNORE INTO compatibility_telemetry_meta "
                 "(key, value) VALUES ('tracking_started_at', ?)",
                 (time.time(),),
-            )
-
-    def increment(self, metric_kind: str, metric_name: str) -> None:
-        with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO compatibility_telemetry
-                    (metric_kind, metric_name, count, updated_at)
-                VALUES (?, ?, 1, ?)
-                ON CONFLICT(metric_kind, metric_name) DO UPDATE SET
-                    count = compatibility_telemetry.count + 1,
-                    updated_at = excluded.updated_at
-                """,
-                (metric_kind, metric_name, time.time()),
             )
 
     def metrics(self, metric_kind: str) -> Mapping[str, CompatibilityMetric]:

@@ -23,8 +23,11 @@ When `execute` returns a `waiting_response` Turn for the `build.artifact` Gate, 
 
 Preserve the Run and Gate identity. Reconstruct changed files and components from the active task
 and repository, not unrelated dirty-worktree state. After the checked build, submit the artifact
-identity, evidence, commands, logs, and known gaps with `execute(kind=respond)` using the exact Gate
-binding. The returned Turn is the next workflow state; do not call a legacy continuation tool.
+as an `openubmc-hpm` `ArtifactRef` containing its absolute handle, `sha256:` digest, size,
+`openubmc-build` provenance, `run-lifetime` retention hint, product version, Run target, and Run ID.
+Submit that reference, source revision, component versions, commands, logs/evidence IDs, and known
+gaps with `execute(kind=respond)` using the exact Gate binding. The returned Turn is the next
+workflow state; do not call a legacy continuation tool.
 
 ## Minimal Handoff
 

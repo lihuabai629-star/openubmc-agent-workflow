@@ -109,7 +109,10 @@ RUN_DIR=/tmp/openubmc-build PREFIX=product \
    - After the final HPM hash and product version are known, run `scripts/write_artifact_metadata.py --path <hpm> --product-version <version> --provenance openubmc-build` so Runtime can bind the declared version and producer provenance to those exact bytes before Upgrade.
    - Keep the generated metadata adjacent to the HPM as `<hpm>.metadata.json`; it is Runtime-owned validation material and does not enter the Agent-facing typed Build payload.
    - Return the absolute HPM path, SHA-256, product version, and build evidence IDs as the typed Build result.
-   - When the task carries a Runtime Turn, submit the same result through `execute(kind=respond)` using its `run_id`, `gate_id`, `gate_version`, and `schema_digest`. Put the build result in `response.payload` with this contract:
+   - When the task carries a Runtime Turn, convert the verified HPM identity into the Gate's
+     `ArtifactRef` and submit it through `execute(kind=respond)` using the exact `run_id`, `gate_id`,
+     `gate_version`, and `schema_digest`. Use the Run-bound target identity; do not copy credentials
+     into the reference. Put only fields declared by the returned Gate schema in `response.payload`:
 
 ```yaml
 kind: respond
@@ -122,13 +125,19 @@ response:
   summary: <concise build result>
   payload:
     source_revision: <source revision built>
-    artifact_path: <absolute HPM path; required when completed>
-    artifact_sha256: <64 lowercase hex characters; required when completed>
-    product_version: <built product version; required when completed>
-    evidence_ids: [<build log or artifact evidence IDs>]
+    artifact_ref:
+      handle: <absolute HPM path; required when completed>
+      digest: sha256:<64 lowercase hex characters>
+      kind: openubmc-hpm
+      size: <HPM byte size>
+      provenance: openubmc-build
+      retention_hint: run-lifetime
+      version: <built product version>
+      target: <target bound to the current Run>
+      run_id: <current Run ID>
     component_versions: [<component and Conan package identities>]
     build_commands: [<exact commands executed>]
-    build_logs: [<absolute log paths or evidence IDs>]
+    build_logs: [<absolute log paths or build evidence IDs>]
     known_gaps: [<remaining validation gaps>]
 ```
 
