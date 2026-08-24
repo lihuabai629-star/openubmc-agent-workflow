@@ -181,6 +181,7 @@ def skill_disclosure_metrics(pairs: int, *, invalid_candidate_pairs=()):
                         else {
                             "passed": False,
                             "errors": ["arm must call observe exactly once"],
+                            "reason_codes": ["observe_call_count"],
                         }
                     ),
                     "command_events": 0,
@@ -205,60 +206,27 @@ def verify_passing_summary(
     run_prompt_override: str | None = None,
     release_environment: dict[str, str] | None = None,
 ):
-    with tempfile.TemporaryDirectory() as raw:
-        root = Path(raw)
-        schedule = module.balanced_schedule(10, seed=7)
-        run_evidence = passing_execute_run_evidence(
-            schedule,
-            candidate_commit=run_candidate_commit or candidate_commit,
-            baseline_commit=baseline_commit,
+    schedule = module.balanced_schedule(10, seed=7)
+    run_evidence = passing_execute_run_evidence(
+        schedule,
+        candidate_commit=run_candidate_commit or candidate_commit,
+        baseline_commit=baseline_commit,
+    )
+    if run_prompt_override is not None:
+        first_run = run_evidence["runs"][0]
+        first_run["prompt"] = run_prompt_override
+        first_run["prompt_sha256"] = (
+            "sha256:"
+            + hashlib.sha256(run_prompt_override.encode("utf-8")).hexdigest()
         )
-        if run_prompt_override is not None:
-            first_run = run_evidence["runs"][0]
-            first_run["prompt"] = run_prompt_override
-            first_run["prompt_sha256"] = (
-                "sha256:"
-                + hashlib.sha256(run_prompt_override.encode("utf-8")).hexdigest()
-            )
-        private_key, public_key = signing_keys(root)
-        signed_run_evidence(
-            root,
-            run_evidence,
-            private_key=private_key,
-            public_key=public_key,
-        )
-        metrics = module.metrics_from_run_evidence(run_evidence)
-        metrics_path = root / "all_metrics.json"
-        schedule_path = root / "schedule.json"
-        run_evidence_path = write_run_evidence(root, run_evidence)
-        metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
-        schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
-        analysis = module.analyze(metrics)
-        analysis["release_evidence"] = module.release_evidence(
-            scenario="execute-source-only",
-            requested_pairs=10,
-            candidate_source_commit=candidate_commit,
-            baseline_source_commit=baseline_commit,
-            model=module.QUALIFICATION_MODEL,
-            codex_config=module.QUALIFICATION_CODEX_CONFIG,
-            metrics_path=metrics_path,
-            schedule_path=schedule_path,
-            run_evidence_path=run_evidence_path,
-            analysis=analysis,
-            environment=(
-                release_environment
-                if release_environment is not None
-                else {"python": "3.12", "node": "v22"}
-            ),
-        )
-        summary_path = root / "summary.json"
-        summary_path.write_text(json.dumps(analysis), encoding="utf-8")
-        return module.verify_summary(
-            summary_path,
-            expected_source_commit=candidate_commit,
-            expected_baseline_commit=module.DEFAULT_BASELINE_REF,
-            attestation_public_key=public_key,
-        )
+    return verify_run_evidence_summary(
+        scenario="execute-source-only",
+        schedule=schedule,
+        run_evidence=run_evidence,
+        candidate_commit=candidate_commit,
+        baseline_commit=baseline_commit,
+        release_environment=release_environment,
+    )
 
 
 def candidate_observe_event(
@@ -697,23 +665,22 @@ def write_run_evidence(root: Path, value=None) -> Path:
     return path
 
 
-def verify_skill_disclosure_summary(
+def verify_run_evidence_summary(
     *,
-    pairs: int,
-    seed: int = 7,
-    invalid_candidate_pairs=(),
+    scenario: str,
+    schedule,
+    run_evidence,
+    candidate_commit: str,
+    baseline_commit: str,
+    expected_baseline_commit: str = module.DEFAULT_BASELINE_REF,
+    release_environment: dict[str, str] | None = None,
     analysis_mutator=None,
     evidence_mutator=None,
 ):
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
-        schedule = module.balanced_schedule(pairs, seed=seed)
         schedule_path = root / "schedule.json"
         schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
-        run_evidence = passing_skill_disclosure_run_evidence(
-            schedule,
-            invalid_candidate_pairs=invalid_candidate_pairs,
-        )
         private_key, public_key = signing_keys(root)
         signed_run_evidence(
             root,
@@ -732,27 +699,55 @@ def verify_skill_disclosure_summary(
         if analysis_mutator is not None:
             analysis_mutator(analysis)
         analysis["release_evidence"] = module.release_evidence(
-            scenario="skill-disclosure",
+            scenario=scenario,
             requested_pairs=len(schedule),
-            candidate_source_commit="a" * 40,
-            baseline_source_commit=module.DEFAULT_BASELINE_REF,
+            candidate_source_commit=candidate_commit,
+            baseline_source_commit=baseline_commit,
             model=module.QUALIFICATION_MODEL,
             codex_config=module.QUALIFICATION_CODEX_CONFIG,
             metrics_path=metrics_path,
             schedule_path=schedule_path,
             run_evidence_path=run_evidence_path,
             analysis=analysis,
-            environment={"python": "3.12", "node": "v22"},
+            environment=(
+                release_environment
+                if release_environment is not None
+                else {"python": "3.12", "node": "v22"}
+            ),
         )
         summary_path = root / "summary.json"
         summary_path.write_text(json.dumps(analysis), encoding="utf-8")
         return module.verify_summary(
             summary_path,
-            expected_source_commit="a" * 40,
-            expected_baseline_commit=module.DEFAULT_BASELINE_REF,
-            expected_scenario="skill-disclosure",
+            expected_source_commit=candidate_commit,
+            expected_baseline_commit=expected_baseline_commit,
+            expected_scenario=scenario,
             attestation_public_key=public_key,
         )
+
+
+def verify_skill_disclosure_summary(
+    *,
+    pairs: int,
+    seed: int = 7,
+    invalid_candidate_pairs=(),
+    analysis_mutator=None,
+    evidence_mutator=None,
+):
+    schedule = module.balanced_schedule(pairs, seed=seed)
+    run_evidence = passing_skill_disclosure_run_evidence(
+        schedule,
+        invalid_candidate_pairs=invalid_candidate_pairs,
+    )
+    return verify_run_evidence_summary(
+        scenario="skill-disclosure",
+        schedule=schedule,
+        run_evidence=run_evidence,
+        candidate_commit="a" * 40,
+        baseline_commit=module.DEFAULT_BASELINE_REF,
+        analysis_mutator=analysis_mutator,
+        evidence_mutator=evidence_mutator,
+    )
 
 
 class AgentGatewayAbTests(unittest.TestCase):
@@ -2151,6 +2146,7 @@ class AgentGatewayAbTests(unittest.TestCase):
         candidate["scope_validation"] = {
             "passed": False,
             "errors": ["unrelated MCP tools"],
+            "reason_codes": ["unrelated_mcp_tools"],
         }
 
         result = module.analyze(metrics)

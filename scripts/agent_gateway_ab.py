@@ -163,7 +163,11 @@ def observe_scope_acceptance(
         and item.get("server") == "openubmc-target-runtime"
     ]
     if len(calls) != 1 or calls[0].get("tool") != "observe":
-        return {"passed": False, "errors": ["arm must call observe exactly once"]}
+        return {
+            "passed": False,
+            "errors": ["arm must call observe exactly once"],
+            "reason_codes": ["observe_call_count"],
+        }
     if any(item.get("type") == "command_execution" for item in tools):
         errors.append("arm must not execute shell commands")
     call = calls[0]
@@ -1414,7 +1418,7 @@ def _skill_disclosure_dispatch_noise(item: Mapping[str, object]) -> bool:
         and item.get("command_events") == 0
         and item.get("mcp_events") == 0
         and item.get("tool_events") == 0
-        and scope.get("errors") == ["arm must call observe exactly once"]
+        and scope.get("reason_codes") == ["observe_call_count"]
     )
 
 
