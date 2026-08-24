@@ -39,10 +39,12 @@ window. They are readers only and cannot create new Run transitions.
 into three digest-bound records:
 
 - `baseline` captures one telemetry identity, count snapshot, source commit and capture time;
-- `increment` compares a later snapshot and rejects counter rollback, inconsistent timestamps, or
-  tracking-identity changes;
+- `increment.v2` compares a strictly later snapshot and rejects counter rollback, non-finite or
+  inconsistent timestamps, and tracking-identity changes;
 - `evaluate` binds that zero-use evidence to a complete promotable Release Gate from the same source
   commit and reports readiness separately for each writer and for the whole compatibility profile.
+
+Calendar-gated `increment.v1` evidence is not accepted by the retirement evaluator.
 
 Any count increase blocks the affected writer and the compatibility profile. Migrate the caller,
 capture a fresh baseline, then generate a new same-source qualification before retrying retirement.

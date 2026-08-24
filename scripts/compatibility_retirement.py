@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from pathlib import Path
 import subprocess
@@ -69,6 +70,20 @@ def _full_commit(value: str, *, name: str = "source_commit") -> str:
     return commit
 
 
+def _finite_timestamp(value: object, *, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be numeric")
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+    if not math.isfinite(timestamp):
+        raise ValueError(f"{name} must be finite")
+    if timestamp <= 0:
+        raise ValueError(f"{name} must be positive")
+    return timestamp
+
+
 def _counts(value: object, *, name: str) -> dict[str, int]:
     if not isinstance(value, Mapping):
         raise ValueError(f"compatibility telemetry {name} must be an object")
@@ -100,9 +115,10 @@ def _timestamps(
             raw_timestamp, (int, float)
         ):
             raise ValueError(f"compatibility telemetry {name}.{metric} must be numeric")
-        timestamp = float(raw_timestamp)
-        if timestamp <= 0:
-            raise ValueError(f"compatibility telemetry {name}.{metric} must be positive")
+        timestamp = _finite_timestamp(
+            raw_timestamp,
+            name=f"compatibility telemetry {name}.{metric}",
+        )
         normalized[metric] = timestamp
     if set(normalized) != set(counts):
         raise ValueError(f"compatibility telemetry {name} must match its counts")
@@ -111,13 +127,15 @@ def _timestamps(
 
 def _normalize_telemetry(value: Mapping[str, object]) -> dict[str, object]:
     try:
-        tracking_started_at = float(value["tracking_started_at"])
+        raw_tracking_started_at = value["tracking_started_at"]
         total_calls = int(value["total_calls"])
         total_features = int(value["total_features"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("compatibility telemetry summary is incomplete") from exc
-    if tracking_started_at <= 0:
-        raise ValueError("compatibility telemetry tracking_started_at must be positive")
+    tracking_started_at = _finite_timestamp(
+        raw_tracking_started_at,
+        name="compatibility telemetry tracking_started_at",
+    )
     operations = _counts(value.get("operation_counts"), name="operation_counts")
     features = _counts(value.get("feature_counts"), name="feature_counts")
     if total_calls != sum(operations.values()):
@@ -186,7 +204,7 @@ def create_baseline(
     captured_at: float,
 ) -> dict[str, object]:
     commit = _full_commit(source_commit)
-    captured = float(captured_at)
+    captured = _finite_timestamp(captured_at, name="baseline captured_at")
     telemetry = _telemetry_from_status(runtime_status)
     latest_seen = max(
         [telemetry["tracking_started_at"]]
@@ -264,10 +282,16 @@ def create_increment(
         str(baseline.get("source_commit", "")),
         name="baseline source_commit",
     )
-    baseline_captured = float(baseline.get("captured_at", 0.0))
-    current_captured = float(captured_at)
-    if current_captured < baseline_captured:
-        raise ValueError("increment captured_at predates the baseline")
+    baseline_captured = _finite_timestamp(
+        baseline.get("captured_at"),
+        name="baseline captured_at",
+    )
+    current_captured = _finite_timestamp(
+        captured_at,
+        name="increment captured_at",
+    )
+    if current_captured <= baseline_captured:
+        raise ValueError("increment captured_at must be later than the baseline")
     baseline_telemetry = _normalize_telemetry(baseline["telemetry"])
     current_telemetry = _telemetry_from_status(runtime_status)
     latest_current_seen = max(
@@ -338,6 +362,7 @@ def create_increment(
         "schema": INCREMENT_SCHEMA,
         "baseline_digest": baseline["evidence_digest"],
         "baseline_source_commit": baseline_commit,
+        "baseline_captured_at": baseline_captured,
         "source_commit": current_commit,
         "captured_at": current_captured,
         "operation_deltas": operation_deltas,
@@ -389,6 +414,20 @@ def evaluate_retirement(
         schema=INCREMENT_SCHEMA,
         label="compatibility increment",
     )
+    baseline_captured = _finite_timestamp(
+        increment.get("baseline_captured_at"),
+        name="increment baseline_captured_at",
+    )
+    current_captured = _finite_timestamp(
+        increment.get("captured_at"),
+        name="increment captured_at",
+    )
+    if current_captured <= baseline_captured:
+        raise ValueError("increment captured_at must be later than the baseline")
+    telemetry = increment.get("telemetry")
+    if not isinstance(telemetry, Mapping):
+        raise ValueError("compatibility increment telemetry must be an object")
+    _normalize_telemetry(telemetry)
     source_commit = _full_commit(str(increment.get("source_commit", "")))
     _verify_release_gate(release_gate, source_commit=source_commit)
     writers = {

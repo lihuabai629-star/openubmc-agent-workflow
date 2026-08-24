@@ -161,6 +161,7 @@ class CompatibilityRetirementTests(unittest.TestCase):
                 "schema",
                 "baseline_digest",
                 "baseline_source_commit",
+                "baseline_captured_at",
                 "source_commit",
                 "captured_at",
                 "operation_deltas",
@@ -205,6 +206,8 @@ class CompatibilityRetirementTests(unittest.TestCase):
             decision["schema"],
             "openubmc-agent-workflow.compatibility-retirement-decision.v2",
         )
+        self.assertEqual(set(decision["writers"]), set(retirement.WRITER_METRICS))
+        self.assertTrue(decision["writers"]["observe.assurance"]["ready"])
         self.assertTrue(decision["writers"]["execute.control_continue"]["ready"])
         self.assertTrue(decision["writers"]["execute.observation_receipt"]["ready"])
         self.assertTrue(decision["writers"]["phase_record"]["ready"])
@@ -283,6 +286,105 @@ class CompatibilityRetirementTests(unittest.TestCase):
             decision["writers"]["execute.observation_receipt"]["ready"]
         )
         self.assertFalse(decision["compatibility_profile"]["ready"])
+
+    def test_observe_assurance_growth_blocks_its_writer_and_the_profile(self) -> None:
+        baseline = retirement.create_baseline(
+            runtime_status(),
+            source_commit="a" * 40,
+            captured_at=1_700_001_000.0,
+        )
+        current = runtime_status()
+        telemetry = current["compatibility_telemetry"]
+        telemetry["feature_counts"]["observe.assurance"] = 1
+        telemetry["total_features"] = 10
+        telemetry["last_seen_at"]["features"]["observe.assurance"] = (
+            1_700_100_000.0
+        )
+        increment = retirement.create_increment(
+            baseline,
+            current,
+            source_commit="b" * 40,
+            captured_at=1_700_101_000.0,
+        )
+
+        decision = retirement.evaluate_retirement(
+            increment,
+            release_gate("b" * 40),
+        )
+
+        assurance = decision["writers"]["observe.assurance"]
+        self.assertFalse(assurance["ready"])
+        self.assertIn("feature count increased by 1", assurance["blockers"])
+        self.assertTrue(decision["writers"]["execute.control_continue"]["ready"])
+        self.assertFalse(decision["compatibility_profile"]["ready"])
+
+    def test_increment_capture_must_be_strictly_later_than_baseline(self) -> None:
+        baseline = retirement.create_baseline(
+            runtime_status(),
+            source_commit="a" * 40,
+            captured_at=1_700_001_000.0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "must be later than the baseline"):
+            retirement.create_increment(
+                baseline,
+                runtime_status(),
+                source_commit="b" * 40,
+                captured_at=1_700_001_000.0,
+            )
+
+    def test_non_finite_timestamps_are_rejected(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(location="tracking_started_at", value=value):
+                status = runtime_status()
+                status["compatibility_telemetry"]["tracking_started_at"] = value
+                with self.assertRaisesRegex(ValueError, "must be finite"):
+                    retirement.create_baseline(
+                        status,
+                        source_commit="a" * 40,
+                        captured_at=1_700_001_000.0,
+                    )
+            with self.subTest(location="last_seen_at", value=value):
+                status = runtime_status()
+                status["compatibility_telemetry"]["last_seen_at"]["features"][
+                    "phase_record"
+                ] = value
+                with self.assertRaisesRegex(ValueError, "must be finite"):
+                    retirement.create_baseline(
+                        status,
+                        source_commit="a" * 40,
+                        captured_at=1_700_001_000.0,
+                    )
+            with self.subTest(location="captured_at", value=value):
+                with self.assertRaisesRegex(ValueError, "must be finite"):
+                    retirement.create_baseline(
+                        runtime_status(),
+                        source_commit="a" * 40,
+                        captured_at=value,
+                    )
+
+    def test_digest_valid_increment_with_non_finite_time_is_rejected(self) -> None:
+        baseline = retirement.create_baseline(
+            runtime_status(),
+            source_commit="a" * 40,
+            captured_at=1_700_001_000.0,
+        )
+        increment = retirement.create_increment(
+            baseline,
+            runtime_status(),
+            source_commit="b" * 40,
+            captured_at=1_700_101_000.0,
+        )
+        increment["captured_at"] = float("inf")
+        increment["evidence_digest"] = digest(
+            {key: value for key, value in increment.items() if key != "evidence_digest"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "must be finite"):
+            retirement.evaluate_retirement(
+                increment,
+                release_gate("b" * 40),
+            )
 
     def test_tampered_or_mismatched_qualification_is_rejected(self) -> None:
         baseline = retirement.create_baseline(
