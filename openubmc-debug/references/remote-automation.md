@@ -247,7 +247,7 @@ workflow summaries, and at most 32 mutation journal identities. That TaskContext
 resolved or directly supplied credential values, domain resources, SSH/Telnet/Redfish sessions,
 capability snapshots, MDB objects, alarms, logs, files, or comparison results. The persistent Case
 is separate: in internal development mode its unredacted workflow inputs may include direct
-credentials so `workflow.advance` can continue after a process restart. Case evidence and workflow
+credentials so `execute(kind=resume)` can reattach after a process restart. Case evidence and workflow
 inputs remain until explicit forget or retention cleanup. The first follow-up still opens new
 domain resources and performs fresh reads; it never restores a connection or an old evidence
 result. TaskContext files use atomic replacement, a schema version, a per-file byte ceiling, a
@@ -260,8 +260,9 @@ Case target-set or port replacement increments `target_version`, so operation st
 the previous binding cannot satisfy the current workflow. Selecting an already bound target by
 `target_id` does not increment that version. A completed Developer phase submitted again starts a
 new delivery cycle. A repeated downstream phase invalidates only its successors. A failed ordinary
-operation remains incomplete, and the next `workflow.advance` derives a new attempt identity and
-executes it again; an unknown mutation outcome remains blocked for explicit journal reconciliation.
+operation remains incomplete, and the next `execute(kind=resume)` reattaches the same Run so
+`RunEngine` can derive a new safe attempt; an unknown mutation outcome remains blocked for explicit
+journal reconciliation.
 
 `diagnose-and-fix` uses one of three delivery strategies:
 
@@ -297,8 +298,8 @@ in-flight submission counts. Context maintenance attempts, failures, and the las
 visible in Runtime status.
 
 During active work, default MCP `structuredContent` is an `ObservationReceipt` or `Turn`. Start a
-stateful Run with `execute(kind=start)`, continue it with `resume`, and satisfy a returned phase Gate
-with `respond`. `RunEngine` commits every Gate transition directly. Terminal Runs persist Closeout
+stateful Run with `execute(kind=start)`, continue it with `execute(kind=resume)`, and satisfy a
+returned phase Gate with `execute(kind=respond)`. `RunEngine` commits every Gate transition directly. Terminal Runs persist Closeout
 and one authoritative Run Outcome. Session Outcome is an
 explicit operator projection of that persisted fact; raw Evidence, Replay, Case inspection,
 review, approval, and promotion stay in the operator profile.

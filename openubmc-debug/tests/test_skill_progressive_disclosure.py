@@ -81,6 +81,14 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
             )
             self.assertEqual(second_hops, [], path.name)
 
+    def test_remote_automation_uses_only_the_semantic_resume_path(self) -> None:
+        content = (ROOT / "references" / "remote-automation.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("execute(kind=resume)", content)
+        for retired in ("phase_record", "workflow.advance", "workflow.next"):
+            self.assertNotIn(retired, content)
+
 
 if __name__ == "__main__":
     unittest.main()
