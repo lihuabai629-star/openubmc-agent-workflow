@@ -172,8 +172,8 @@ SSH anchor refresh; D-Bus/alarm reads still wait for the refreshed anchor. A fai
 fails the result and invalidates the cache. Use `debug_run` for the full freshness and correlation
 workflow.
 
-For a current MDB-only answer, default MCP callers use an `observe` MDB selector. Compatibility
-`debug_collect` accepts `profile: mdb`. Supplying `mdb_only: true`
+For a current MDB-only answer, default MCP callers use an `observe` MDB selector. The internal
+`debug_collect` adapter accepts `profile: mdb`. Supplying `mdb_only: true`
 with the default profile selects the same fast path. It forces the MDB-only capability profile,
 skips Telnet/source correlation/end freshness, and enables the cached capability gate to release
 fresh MDB reads during the SSH anchor refresh. This is not result caching: every requested MDB

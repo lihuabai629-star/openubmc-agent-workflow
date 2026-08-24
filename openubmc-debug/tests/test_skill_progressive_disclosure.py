@@ -86,6 +86,7 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("execute(kind=resume)", content)
+        self.assertNotIn("Compatibility `debug_collect`", content)
         for retired in ("phase_record", "workflow.advance", "workflow.next"):
             self.assertNotIn(retired, content)
 

@@ -3104,19 +3104,8 @@ class RuntimeMcpService:
         if descriptor.handler_name is None:
             operator_result = self._runtime.operator.dispatch(
                 name,
-                descriptor,
                 arguments,
-                task_id=task_id,
                 operation_id=operation_id,
-                domain_invoker=lambda operation, domain_arguments, derived_id: (
-                    self.call_tool(
-                        operation,
-                        domain_arguments,
-                        task_id=task_id,
-                        operation_id=derived_id,
-                        _context_workflow_step=True,
-                    )
-                ),
             )
             if operator_result is not None:
                 return operator_result

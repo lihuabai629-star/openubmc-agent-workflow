@@ -193,15 +193,9 @@ class _RuntimeOperatorPort:
     def dispatch(
         self,
         name: str,
-        descriptor: OperationDescriptor,
         arguments: Mapping[str, object],
         *,
-        task_id: str,
         operation_id: str,
-        domain_invoker: Callable[
-            [str, Mapping[str, object], str],
-            Mapping[str, object],
-        ],
     ) -> dict[str, object] | None:
         if name == "case_read":
             case_id = str(arguments.get("case_id", "")).strip()
