@@ -17,10 +17,10 @@ BASELINE_SCHEMA = (
     "openubmc-agent-workflow.compatibility-retirement-baseline.v1"
 )
 INCREMENT_SCHEMA = (
-    "openubmc-agent-workflow.compatibility-retirement-increment.v1"
+    "openubmc-agent-workflow.compatibility-retirement-increment.v2"
 )
 DECISION_SCHEMA = (
-    "openubmc-agent-workflow.compatibility-retirement-decision.v1"
+    "openubmc-agent-workflow.compatibility-retirement-decision.v2"
 )
 WRITER_METRICS = {
     "observe.assurance": (("feature", "observe.assurance"),),
