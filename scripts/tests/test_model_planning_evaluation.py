@@ -22,9 +22,13 @@ class ModelPlanningEvaluationTests(unittest.TestCase):
         self.assertEqual(result["agent_interface"], ["observe", "execute"])
         self.assertEqual(result["isolated_candidate"]["false_accepts"], 0)
         self.assertEqual(result["isolated_candidate"]["false_rejects"], 0)
-        self.assertEqual(
-            result["isolated_candidate"]["agent_turns"],
-            result["static_workflow"]["agent_turns"],
+        self.assertEqual(result["static_workflow"]["evaluated"], 6)
+        self.assertEqual(result["static_workflow"]["valid"], 6)
+        self.assertEqual(result["static_workflow"]["invalid"], 0)
+        self.assertEqual(result["isolated_candidate"]["valid_revisions"], 2)
+        self.assertLess(
+            result["isolated_candidate"]["valid_plan_rate"],
+            result["static_workflow"]["valid_plan_rate"],
         )
 
 

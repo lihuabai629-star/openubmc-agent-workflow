@@ -197,6 +197,18 @@ class TimeoutThenRecoverAdapter(DeterministicModelAdapter):
         raise TimeoutError("provider timed out after request dispatch")
 
 
+class ConnectionFailureThenRecoverAdapter(DeterministicModelAdapter):
+    def __init__(self) -> None:
+        super().__init__(
+            ModelAdapterResult.failed("unused", "unused"),
+            reconcile_result=ModelAdapterResult.succeeded(valid_proposal()),
+        )
+
+    def invoke(self, request):
+        self.invoke_calls += 1
+        raise ConnectionError("provider connection ended after dispatch")
+
+
 class ClaimObservingAdapter(DeterministicModelAdapter):
     def __init__(self, repository: InMemoryModelPlanningRepository) -> None:
         super().__init__(ModelAdapterResult.succeeded(valid_proposal()))
@@ -365,6 +377,32 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
 
         self.assertEqual(unknown.status, "unknown")
         self.assertEqual(unknown.record.error_code, "model_outcome_unknown")
+        self.assertEqual(recovered.status, "accepted")
+        self.assertEqual(adapter.invoke_calls, 1)
+        self.assertEqual(adapter.reconcile_calls, 1)
+
+    def test_post_dispatch_connection_failure_is_unknown_not_running(self) -> None:
+        adapter = ConnectionFailureThenRecoverAdapter()
+        runtime = PlanResolver(
+            InMemoryModelPlanningRepository(),
+            adapter,
+            policy=PlanPolicy.freeze(
+                allowed_actions={"inspect.target", "upgrade.component"},
+                allowed_gate_schemas={"upgrade-approval/v1"},
+                allowed_subflows={"diagnose": {"v1"}},
+            ),
+        )
+        request = PlanningRequest(
+            run_id="run-plan-1",
+            slot_id="connection-exception",
+            planning_input=PlanningInput(objective="recover connection loss"),
+        )
+
+        unknown = runtime.resolve(request)
+        recovered = runtime.resolve(request)
+
+        self.assertEqual(unknown.status, "unknown")
+        self.assertEqual(unknown.record.status, "unknown")
         self.assertEqual(recovered.status, "accepted")
         self.assertEqual(adapter.invoke_calls, 1)
         self.assertEqual(adapter.reconcile_calls, 1)
@@ -612,6 +650,41 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
                     ],
                 ]
             ),
+            "expanded_step_budget": proposal_mapping(
+                [
+                    {
+                        "node_id": "root",
+                        "kind": "sequence",
+                        "children": [f"repeat-{item}" for item in range(30)],
+                    },
+                    *[
+                        {
+                            "node_id": f"repeat-{item}",
+                            "kind": "repeat",
+                            "repeat_max": 3,
+                            "body": "shared-body",
+                        }
+                        for item in range(30)
+                    ],
+                    {
+                        "node_id": "shared-body",
+                        "kind": "action",
+                        "action": "inspect.target",
+                    },
+                ]
+            ),
+            "invalid_json_types": {
+                **base,
+                "version": True,
+                "nodes": [
+                    {**node, "repeat_max": "2"}
+                    if node["node_id"] == "repeat"
+                    else {**node, "timer_seconds": True}
+                    if node["node_id"] == "timer"
+                    else node
+                    for node in base["nodes"]
+                ],
+            },
         }
         for index, (name, raw_proposal) in enumerate(cases.items()):
             with self.subTest(name=name):
@@ -635,6 +708,35 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
                 )
                 self.assertEqual(decision.status, "rejected")
                 self.assertEqual(decision.record.error_code, "plan_proposal_rejected")
+
+    def test_pinned_revision_cannot_be_mutated_through_provider_config(self) -> None:
+        decision = PlanResolver(
+            InMemoryModelPlanningRepository(),
+            DeterministicModelAdapter(
+                ModelAdapterResult.succeeded(valid_proposal())
+            ),
+            policy=PlanPolicy.freeze(
+                allowed_actions={"inspect.target", "upgrade.component"},
+                allowed_gate_schemas={"upgrade-approval/v1"},
+                allowed_subflows={"diagnose": {"v1"}},
+            ),
+        ).resolve(
+            PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="immutable-revision",
+                planning_input=PlanningInput(objective="freeze provider configuration"),
+            )
+        )
+        before = decision.revision.proposal.digest
+        exposed = decision.revision.proposal.provider_config
+        exposed["parameters"]["temperature"] = 99
+
+        self.assertEqual(decision.revision.proposal.digest, before)
+        self.assertEqual(
+            decision.revision.proposal.provider_config["parameters"]["temperature"],
+            0,
+        )
+        self.assertEqual(decision.revision.proposal_digest, before)
 
     def test_plan_revision_cannot_advance_a_gate_or_declare_terminal_success(self) -> None:
         service = RuntimeMcpService(SemanticBackend())

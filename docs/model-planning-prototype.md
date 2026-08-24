@@ -13,8 +13,10 @@ operations, or claim production adoption.
 
 The deterministic paired evaluation preserves all architecture invariants and correctly accepts
 two valid proposals while rejecting four invalid proposals. It reports zero false accepts and zero
-false rejects. It also reports the same estimated Agent turns as the static workflow path while
-adding one model call per pair, so its verdict is `isolate` rather than `advance`.
+false rejects. The executed static resolver produces six valid pinned definitions without model
+calls, while the candidate produces two valid revisions and rejects four invalid model outputs.
+It therefore shows containment but no plan-validity advantage, so its verdict is `isolate` rather
+than `advance`.
 
 Run the evaluation with:
 
@@ -125,8 +127,8 @@ failure, timeout, unknown, and reconcile results. Behavior coverage includes:
 
 The paired evaluation compares six labeled planning cases. Static workflows remain valid with no
 model calls. The isolated candidate accepts both valid cases, rejects all four invalid cases, and
-keeps accepted-plan validity at 100%, but does not reduce the estimated Agent turns. This is useful
-containment evidence, not adoption evidence.
+keeps accepted-plan validity at 100%, but produces fewer valid revisions across the paired corpus
+than the executed static resolver. This is useful containment evidence, not adoption evidence.
 
 ## Adoption gate
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
+from enum import Enum
 import hashlib
 import json
 from pathlib import Path
@@ -25,12 +26,34 @@ BOUNDED_PLAN_IR_VERSION = "bounded-plan-ir/v1"
 
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
-_SUPPORTED_NODE_KINDS = frozenset(
-    {"action", "sequence", "choice", "parallel", "repeat", "timer", "gate", "subflow"}
-)
 _INVOCATION_STATUSES = frozenset(
     {"running", "unknown", "succeeded", "rejected", "failed"}
 )
+
+
+class PlanNodeKind(str, Enum):
+    ACTION = "action"
+    SEQUENCE = "sequence"
+    CHOICE = "choice"
+    PARALLEL = "parallel"
+    REPEAT = "repeat"
+    TIMER = "timer"
+    GATE = "gate"
+    SUBFLOW = "subflow"
+
+
+_NODE_FIELDS_BY_KIND = {
+    PlanNodeKind.ACTION: frozenset(
+        {"action", "compensation", "compensation_only"}
+    ),
+    PlanNodeKind.SEQUENCE: frozenset({"children"}),
+    PlanNodeKind.CHOICE: frozenset({"branches"}),
+    PlanNodeKind.PARALLEL: frozenset({"branches"}),
+    PlanNodeKind.REPEAT: frozenset({"body", "repeat_max"}),
+    PlanNodeKind.TIMER: frozenset({"timer_seconds"}),
+    PlanNodeKind.GATE: frozenset({"gate_schema"}),
+    PlanNodeKind.SUBFLOW: frozenset({"subflow", "subflow_version"}),
+}
 
 
 class ModelPlanningError(ValueError):
@@ -72,6 +95,41 @@ def _required_text(value: object, name: str, *, max_bytes: int = 4096) -> str:
     if len(selected.encode("utf-8")) > max_bytes:
         raise ModelPlanningError(f"{name} exceeds its byte budget")
     return selected
+
+
+def _json_string(value: object, name: str, *, default: str = "") -> str:
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise PlanProposalRejected(f"{name} must be a string")
+    return value
+
+
+def _json_integer(value: object, name: str, *, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PlanProposalRejected(f"{name} must be an integer")
+    return value
+
+
+def _json_boolean(value: object, name: str, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise PlanProposalRejected(f"{name} must be a boolean")
+    return value
+
+
+def _planning_invocation_id(run_id: str, slot_id: str, generation: int) -> str:
+    identity = _fingerprint(
+        {
+            "run_id": run_id,
+            "slot_id": slot_id,
+            "generation": generation,
+        }
+    )
+    return "model-plan:" + identity.removeprefix("sha256:")[:48]
 
 
 @dataclass(frozen=True)
@@ -213,20 +271,99 @@ class PlanningRequest:
 
     @property
     def invocation_id(self) -> str:
-        identity = _fingerprint(
-            {
-                "run_id": self.run_id,
-                "slot_id": self.slot_id,
-                "generation": self.generation,
-            }
+        return _planning_invocation_id(
+            self.run_id,
+            self.slot_id,
+            self.generation,
         )
-        return "model-plan:" + identity.removeprefix("sha256:")[:48]
+
+
+@dataclass(frozen=True)
+class PlanningBinding:
+    """The stable Run, invocation, input, Provider, and policy identity clump."""
+
+    run_id: str
+    slot_id: str
+    generation: int
+    invocation_id: str
+    input_digest: str
+    provider_config_digest: str
+    policy_digest: str
+
+    def __post_init__(self) -> None:
+        _required_id(self.run_id, "PlanningBinding run_id")
+        _required_id(self.slot_id, "PlanningBinding slot_id")
+        if self.generation < 1:
+            raise ModelPlanningError("PlanningBinding generation must be positive")
+        expected = _planning_invocation_id(
+            self.run_id,
+            self.slot_id,
+            self.generation,
+        )
+        if self.invocation_id != expected:
+            raise ModelPlanningError("PlanningBinding invocation_id is inconsistent")
+        for name, value in (
+            ("input_digest", self.input_digest),
+            ("provider_config_digest", self.provider_config_digest),
+            ("policy_digest", self.policy_digest),
+        ):
+            if _SHA256_REF.fullmatch(value) is None:
+                raise ModelPlanningError(f"PlanningBinding {name} must be SHA-256")
+
+    @classmethod
+    def freeze(
+        cls,
+        request: PlanningRequest,
+        *,
+        input_digest: str,
+        provider_config_digest: str,
+        policy_digest: str,
+    ) -> "PlanningBinding":
+        return cls(
+            run_id=request.run_id,
+            slot_id=request.slot_id,
+            generation=request.generation,
+            invocation_id=request.invocation_id,
+            input_digest=input_digest,
+            provider_config_digest=provider_config_digest,
+            policy_digest=policy_digest,
+        )
+
+    @property
+    def digest(self) -> str:
+        return _fingerprint(self.to_public_dict())
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "slot_id": self.slot_id,
+            "generation": self.generation,
+            "invocation_id": self.invocation_id,
+            "input_digest": self.input_digest,
+            "provider_config_digest": self.provider_config_digest,
+            "policy_digest": self.policy_digest,
+        }
+
+    @classmethod
+    def from_public_dict(cls, value: Mapping[str, object]) -> "PlanningBinding":
+        generation = value.get("generation")
+        if isinstance(generation, bool) or not isinstance(generation, int):
+            raise ModelPlanningError("PlanningBinding generation must be an integer")
+        return cls(
+            run_id=str(value.get("run_id", "")),
+            slot_id=str(value.get("slot_id", "")),
+            generation=generation,
+            invocation_id=str(value.get("invocation_id", "")),
+            input_digest=str(value.get("input_digest", "")),
+            provider_config_digest=str(value.get("provider_config_digest", "")),
+            policy_digest=str(value.get("policy_digest", "")),
+        )
 
 
 @dataclass(frozen=True)
 class PlanNode:
     node_id: str
-    kind: str
+    kind: PlanNodeKind
     children: tuple[str, ...] = ()
     branches: tuple[str, ...] = ()
     body: str = ""
@@ -271,26 +408,54 @@ class PlanNode:
             isinstance(item, str) for item in raw_branches
         ):
             raise PlanProposalRejected("Plan node branches must be a string array")
+        raw_kind = _json_string(value.get("kind"), "Plan node kind")
+        try:
+            kind = PlanNodeKind(raw_kind)
+        except ValueError as exc:
+            raise PlanProposalRejected(
+                f"unsupported Plan node kind: {raw_kind}"
+            ) from exc
         return cls(
-            node_id=_required_id(value.get("node_id", ""), "Plan node_id"),
-            kind=_required_id(value.get("kind", ""), "Plan node kind"),
+            node_id=_required_id(
+                _json_string(value.get("node_id"), "Plan node_id"),
+                "Plan node_id",
+            ),
+            kind=kind,
             children=tuple(raw_children),
             branches=tuple(raw_branches),
-            body=str(value.get("body", "")),
-            action=str(value.get("action", "")),
-            repeat_max=int(value.get("repeat_max", 0)),
-            timer_seconds=int(value.get("timer_seconds", 0)),
-            gate_schema=str(value.get("gate_schema", "")),
-            subflow=str(value.get("subflow", "")),
-            subflow_version=str(value.get("subflow_version", "")),
-            compensation=str(value.get("compensation", "")),
-            compensation_only=bool(value.get("compensation_only", False)),
+            body=_json_string(value.get("body"), "Plan node body"),
+            action=_json_string(value.get("action"), "Plan node action"),
+            repeat_max=_json_integer(
+                value.get("repeat_max"),
+                "Plan node repeat_max",
+            ),
+            timer_seconds=_json_integer(
+                value.get("timer_seconds"),
+                "Plan node timer_seconds",
+            ),
+            gate_schema=_json_string(
+                value.get("gate_schema"),
+                "Plan node gate_schema",
+            ),
+            subflow=_json_string(value.get("subflow"), "Plan node subflow"),
+            subflow_version=_json_string(
+                value.get("subflow_version"),
+                "Plan node subflow_version",
+            ),
+            compensation=_json_string(
+                value.get("compensation"),
+                "Plan node compensation",
+            ),
+            compensation_only=_json_boolean(
+                value.get("compensation_only"),
+                "Plan node compensation_only",
+            ),
         )
 
     def to_public_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
             "node_id": self.node_id,
-            "kind": self.kind,
+            "kind": self.kind.value,
         }
         for name, selected in (
             ("children", list(self.children)),
@@ -317,7 +482,7 @@ class PlanProposal:
     nodes: tuple[PlanNode, ...]
     invocation_id: str = ""
     input_digest: str = ""
-    provider_config: Mapping[str, object] = field(default_factory=dict)
+    provider_config_json: str = "{}"
     provider_config_digest: str = ""
     status: str = "proposed"
     error_code: str = ""
@@ -357,6 +522,9 @@ class PlanProposal:
             )
         if value.get("schema") != PLAN_PROPOSAL_SCHEMA:
             raise PlanProposalRejected("unsupported PlanProposal schema")
+        version = value.get("version")
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise PlanProposalRejected("PlanProposal version must be an integer")
         raw_nodes = value.get("nodes")
         if not isinstance(raw_nodes, list) or not all(
             isinstance(item, Mapping) for item in raw_nodes
@@ -366,18 +534,46 @@ class PlanProposal:
         if not isinstance(raw_provider_config, Mapping):
             raise PlanProposalRejected("PlanProposal provider_config must be an object")
         return cls(
-            run_id=str(value.get("run_id", "")),
-            root_node_id=str(value.get("root_node_id", "")),
+            run_id=_json_string(value.get("run_id"), "PlanProposal run_id"),
+            root_node_id=_json_string(
+                value.get("root_node_id"),
+                "PlanProposal root_node_id",
+            ),
             nodes=tuple(PlanNode.from_mapping(item) for item in raw_nodes),
-            invocation_id=str(value.get("invocation_id", "")),
-            input_digest=str(value.get("input_digest", "")),
-            provider_config=dict(raw_provider_config),
-            provider_config_digest=str(value.get("provider_config_digest", "")),
-            status=str(value.get("status", "proposed")),
-            error_code=str(value.get("error_code", "")),
-            error_message=str(value.get("error_message", "")),
-            version=int(value.get("version", 0)),
+            invocation_id=_json_string(
+                value.get("invocation_id"),
+                "PlanProposal invocation_id",
+            ),
+            input_digest=_json_string(
+                value.get("input_digest"),
+                "PlanProposal input_digest",
+            ),
+            provider_config_json=_json_bytes(dict(raw_provider_config)).decode("ascii"),
+            provider_config_digest=_json_string(
+                value.get("provider_config_digest"),
+                "PlanProposal provider_config_digest",
+            ),
+            status=_json_string(
+                value.get("status"),
+                "PlanProposal status",
+                default="proposed",
+            ),
+            error_code=_json_string(
+                value.get("error_code"),
+                "PlanProposal error_code",
+            ),
+            error_message=_json_string(
+                value.get("error_message"),
+                "PlanProposal error_message",
+            ),
+            version=version,
         )
+
+    @property
+    def provider_config(self) -> Mapping[str, object]:
+        decoded = json.loads(self.provider_config_json)
+        assert isinstance(decoded, Mapping)
+        return dict(decoded)
 
     def bind(self, record: "ModelInvocationRecord") -> "PlanProposal":
         for name, current, expected in (
@@ -399,7 +595,7 @@ class PlanProposal:
             run_id=record.run_id,
             invocation_id=record.invocation_id,
             input_digest=record.input_digest,
-            provider_config=dict(record.provider_config),
+            provider_config_json=record.provider_config_json,
             provider_config_digest=record.provider_config_digest,
             status="proposed",
             error_code="",
@@ -516,16 +712,10 @@ class PlanPolicy:
 
 @dataclass(frozen=True)
 class ModelInvocationRecord:
-    invocation_id: str
-    run_id: str
-    slot_id: str
-    generation: int
-    input_digest: str
+    binding: PlanningBinding
     provider: str
     model: str
-    provider_config: Mapping[str, object]
-    provider_config_digest: str
-    policy_digest: str
+    provider_config_json: str
     status: str
     effect_kind: str
     result_digest: str
@@ -537,22 +727,13 @@ class ModelInvocationRecord:
     version: int = 1
 
     def __post_init__(self) -> None:
-        _required_id(self.invocation_id, "ModelInvocationRecord invocation_id")
-        _required_id(self.run_id, "ModelInvocationRecord run_id")
-        _required_id(self.slot_id, "ModelInvocationRecord slot_id")
-        if self.generation < 1:
-            raise ModelPlanningError("ModelInvocationRecord generation must be positive")
-        for name, value in (
-            ("input_digest", self.input_digest),
-            ("provider_config_digest", self.provider_config_digest),
-            ("policy_digest", self.policy_digest),
-        ):
-            if _SHA256_REF.fullmatch(value) is None:
-                raise ModelPlanningError(
-                    f"ModelInvocationRecord {name} must be SHA-256"
-                )
         _required_id(self.provider, "ModelInvocationRecord provider")
         _required_id(self.model, "ModelInvocationRecord model")
+        provider_config = json.loads(self.provider_config_json)
+        if not isinstance(provider_config, Mapping):
+            raise ModelPlanningError(
+                "ModelInvocationRecord provider_config must be an object"
+            )
         if self.status not in _INVOCATION_STATUSES:
             raise ModelPlanningError("unsupported ModelInvocationRecord status")
         if self.effect_kind != "non_deterministic":
@@ -576,29 +757,50 @@ class ModelInvocationRecord:
 
     @property
     def binding_digest(self) -> str:
-        return _fingerprint(
-            {
-                "run_id": self.run_id,
-                "input_digest": self.input_digest,
-                "provider_config_digest": self.provider_config_digest,
-                "policy_digest": self.policy_digest,
-            }
-        )
+        return self.binding.digest
+
+    @property
+    def invocation_id(self) -> str:
+        return self.binding.invocation_id
+
+    @property
+    def run_id(self) -> str:
+        return self.binding.run_id
+
+    @property
+    def slot_id(self) -> str:
+        return self.binding.slot_id
+
+    @property
+    def generation(self) -> int:
+        return self.binding.generation
+
+    @property
+    def input_digest(self) -> str:
+        return self.binding.input_digest
+
+    @property
+    def provider_config_digest(self) -> str:
+        return self.binding.provider_config_digest
+
+    @property
+    def policy_digest(self) -> str:
+        return self.binding.policy_digest
+
+    @property
+    def provider_config(self) -> Mapping[str, object]:
+        decoded = json.loads(self.provider_config_json)
+        assert isinstance(decoded, Mapping)
+        return dict(decoded)
 
     def to_public_dict(self) -> dict[str, object]:
         return {
             "schema": MODEL_INVOCATION_SCHEMA,
             "version": self.version,
-            "invocation_id": self.invocation_id,
-            "run_id": self.run_id,
-            "slot_id": self.slot_id,
-            "generation": self.generation,
-            "input_digest": self.input_digest,
+            **self.binding.to_public_dict(),
             "provider": self.provider,
             "model": self.model,
             "provider_config": dict(self.provider_config),
-            "provider_config_digest": self.provider_config_digest,
-            "policy_digest": self.policy_digest,
             "status": self.status,
             "effect_kind": self.effect_kind,
             "result_digest": self.result_digest,
@@ -622,16 +824,10 @@ class ModelInvocationRecord:
                 "ModelInvocationRecord provider_config must be an object"
             )
         return cls(
-            invocation_id=str(value.get("invocation_id", "")),
-            run_id=str(value.get("run_id", "")),
-            slot_id=str(value.get("slot_id", "")),
-            generation=int(value.get("generation", 0)),
-            input_digest=str(value.get("input_digest", "")),
+            binding=PlanningBinding.from_public_dict(value),
             provider=str(value.get("provider", "")),
             model=str(value.get("model", "")),
-            provider_config=dict(provider_config),
-            provider_config_digest=str(value.get("provider_config_digest", "")),
-            policy_digest=str(value.get("policy_digest", "")),
+            provider_config_json=_json_bytes(dict(provider_config)).decode("ascii"),
             status=str(value.get("status", "")),
             effect_kind=str(value.get("effect_kind", "")),
             result_digest=str(value.get("result_digest", "")),
@@ -647,13 +843,7 @@ class ModelInvocationRecord:
 @dataclass(frozen=True)
 class PlanRevision:
     revision_id: str
-    run_id: str
-    slot_id: str
-    generation: int
-    invocation_id: str
-    input_digest: str
-    provider_config_digest: str
-    policy_digest: str
+    binding: PlanningBinding
     proposal_digest: str
     proposal: PlanProposal
     status: str
@@ -665,19 +855,8 @@ class PlanRevision:
 
     def __post_init__(self) -> None:
         _required_id(self.revision_id, "PlanRevision revision_id")
-        _required_id(self.run_id, "PlanRevision run_id")
-        _required_id(self.slot_id, "PlanRevision slot_id")
-        _required_id(self.invocation_id, "PlanRevision invocation_id")
-        if self.generation < 1:
-            raise ModelPlanningError("PlanRevision generation must be positive")
-        for name, value in (
-            ("input_digest", self.input_digest),
-            ("provider_config_digest", self.provider_config_digest),
-            ("policy_digest", self.policy_digest),
-            ("proposal_digest", self.proposal_digest),
-        ):
-            if _SHA256_REF.fullmatch(value) is None:
-                raise ModelPlanningError(f"PlanRevision {name} must be SHA-256")
+        if _SHA256_REF.fullmatch(self.proposal_digest) is None:
+            raise ModelPlanningError("PlanRevision proposal_digest must be SHA-256")
         if self.status != "pinned":
             raise ModelPlanningError("PlanRevision status must be pinned")
         if self.ir_version != BOUNDED_PLAN_IR_VERSION:
@@ -691,18 +870,40 @@ class PlanRevision:
         if self.version != 1:
             raise ModelPlanningError("unsupported PlanRevision version")
 
+    @property
+    def run_id(self) -> str:
+        return self.binding.run_id
+
+    @property
+    def slot_id(self) -> str:
+        return self.binding.slot_id
+
+    @property
+    def generation(self) -> int:
+        return self.binding.generation
+
+    @property
+    def invocation_id(self) -> str:
+        return self.binding.invocation_id
+
+    @property
+    def input_digest(self) -> str:
+        return self.binding.input_digest
+
+    @property
+    def provider_config_digest(self) -> str:
+        return self.binding.provider_config_digest
+
+    @property
+    def policy_digest(self) -> str:
+        return self.binding.policy_digest
+
     def to_public_dict(self) -> dict[str, object]:
         return {
             "schema": PLAN_REVISION_SCHEMA,
             "version": self.version,
             "revision_id": self.revision_id,
-            "run_id": self.run_id,
-            "slot_id": self.slot_id,
-            "generation": self.generation,
-            "invocation_id": self.invocation_id,
-            "input_digest": self.input_digest,
-            "provider_config_digest": self.provider_config_digest,
-            "policy_digest": self.policy_digest,
+            **self.binding.to_public_dict(),
             "proposal_digest": self.proposal_digest,
             "proposal": self.proposal.to_public_dict(),
             "status": self.status,
@@ -721,13 +922,7 @@ class PlanRevision:
             raise ModelPlanningError("PlanRevision proposal must be an object")
         return cls(
             revision_id=str(value.get("revision_id", "")),
-            run_id=str(value.get("run_id", "")),
-            slot_id=str(value.get("slot_id", "")),
-            generation=int(value.get("generation", 0)),
-            invocation_id=str(value.get("invocation_id", "")),
-            input_digest=str(value.get("input_digest", "")),
-            provider_config_digest=str(value.get("provider_config_digest", "")),
-            policy_digest=str(value.get("policy_digest", "")),
+            binding=PlanningBinding.from_public_dict(value),
             proposal_digest=str(value.get("proposal_digest", "")),
             proposal=PlanProposal.from_mapping(raw_proposal),
             status=str(value.get("status", "")),
@@ -1096,17 +1291,19 @@ class PlanResolver:
                     "ir_version": BOUNDED_PLAN_IR_VERSION,
                 }
             )
-            candidate = ModelInvocationRecord(
-                invocation_id=request.invocation_id,
-                run_id=request.run_id,
-                slot_id=request.slot_id,
-                generation=request.generation,
+            binding = PlanningBinding.freeze(
+                request,
                 input_digest=input_digest,
-                provider=configuration.provider,
-                model=configuration.model,
-                provider_config=configuration.to_public_dict(),
                 provider_config_digest=configuration.digest,
                 policy_digest=self.policy.digest,
+            )
+            candidate = ModelInvocationRecord(
+                binding=binding,
+                provider=configuration.provider,
+                model=configuration.model,
+                provider_config_json=_json_bytes(
+                    configuration.to_public_dict()
+                ).decode("ascii"),
                 status="running",
                 effect_kind="non_deterministic",
                 result_digest="",
@@ -1137,14 +1334,36 @@ class PlanResolver:
             if claim.created:
                 try:
                     result = self.adapter.invoke(request)
-                except TimeoutError as exc:
+                except Exception as exc:
                     result = ModelAdapterResult.unknown(str(exc))
                 return self._settle(record, result, reconciled=False)
             try:
                 result = self.adapter.reconcile(record)
-            except TimeoutError as exc:
+            except Exception as exc:
                 result = ModelAdapterResult.unknown(str(exc))
             return self._settle(record, result, reconciled=True)
+
+    def _reject(
+        self,
+        record: ModelInvocationRecord,
+        message: str,
+        *,
+        reconciled: bool,
+    ) -> PlanningDecision:
+        selected = replace(
+            record,
+            status="rejected",
+            error_code="plan_proposal_rejected",
+            error_message=message,
+            updated_at=float(self._clock()),
+        )
+        self.repository.resolve(selected, None)
+        return PlanningDecision(
+            "rejected",
+            selected,
+            None,
+            reconciled=reconciled,
+        )
 
     def _settle(
         self,
@@ -1169,49 +1388,25 @@ class PlanResolver:
             self.policy.max_serialized_bytes,
             self.adapter.configuration.max_output_bytes,
         ):
-            selected = replace(
+            return self._reject(
                 record,
-                status="rejected",
-                error_code="plan_proposal_rejected",
-                error_message="PlanProposal exceeds the serialized byte budget",
-                updated_at=now,
-            )
-            self.repository.resolve(selected, None)
-            return PlanningDecision(
-                "rejected",
-                selected,
-                None,
+                "PlanProposal exceeds the serialized byte budget",
                 reconciled=reconciled,
             )
         try:
             proposal = PlanProposal.from_mapping(result.proposal).bind(record)
             self._validate_proposal(proposal, run_id=record.run_id)
         except (ModelPlanningError, TypeError, ValueError) as exc:
-            selected = replace(
+            return self._reject(
                 record,
-                status="rejected",
-                error_code="plan_proposal_rejected",
-                error_message=str(exc),
-                updated_at=now,
-            )
-            self.repository.resolve(selected, None)
-            return PlanningDecision(
-                "rejected",
-                selected,
-                None,
+                str(exc),
                 reconciled=reconciled,
             )
         proposal_digest = proposal.digest
         revision_id = "plan-revision:" + proposal_digest.removeprefix("sha256:")[:48]
         revision = PlanRevision(
             revision_id=revision_id,
-            run_id=record.run_id,
-            slot_id=record.slot_id,
-            generation=record.generation,
-            invocation_id=record.invocation_id,
-            input_digest=record.input_digest,
-            provider_config_digest=record.provider_config_digest,
-            policy_digest=record.policy_digest,
+            binding=record.binding,
             proposal_digest=proposal_digest,
             proposal=proposal,
             status="pinned",
@@ -1248,8 +1443,6 @@ class PlanResolver:
         for node in proposal.nodes:
             if node.node_id in nodes:
                 raise PlanProposalRejected(f"duplicate Plan node: {node.node_id}")
-            if node.kind not in _SUPPORTED_NODE_KINDS:
-                raise PlanProposalRejected(f"unsupported Plan node kind: {node.kind}")
             selected_fields = {
                 "children": bool(node.children),
                 "branches": bool(node.branches),
@@ -1263,16 +1456,7 @@ class PlanResolver:
                 "compensation": bool(node.compensation),
                 "compensation_only": node.compensation_only,
             }
-            allowed_fields = {
-                "action": {"action", "compensation", "compensation_only"},
-                "sequence": {"children"},
-                "choice": {"branches"},
-                "parallel": {"branches"},
-                "repeat": {"body", "repeat_max"},
-                "timer": {"timer_seconds"},
-                "gate": {"gate_schema"},
-                "subflow": {"subflow", "subflow_version"},
-            }[node.kind]
+            allowed_fields = _NODE_FIELDS_BY_KIND[node.kind]
             invalid_fields = sorted(
                 name
                 for name, present in selected_fields.items()
@@ -1280,7 +1464,7 @@ class PlanResolver:
             )
             if invalid_fields:
                 raise PlanProposalRejected(
-                    f"Plan node {node.node_id} has fields invalid for {node.kind}: "
+                    f"Plan node {node.node_id} has fields invalid for {node.kind.value}: "
                     + ", ".join(invalid_fields)
                 )
             nodes[node.node_id] = node
@@ -1308,16 +1492,17 @@ class PlanResolver:
                 raise PlanProposalRejected(
                     "compensation-only action is reachable from normal execution"
                 )
-            if node_id in visited:
-                return 0
             visiting.add(node_id)
             expanded = 1
-            if node.kind == "action":
+            if node.kind is PlanNodeKind.ACTION:
                 if node.action not in self.policy.allowed_actions:
                     raise PlanProposalRejected(f"unknown Plan action: {node.action}")
                 if node.compensation:
                     compensation = require(node.compensation, node.node_id)
-                    if compensation.kind != "action" or not compensation.compensation_only:
+                    if (
+                        compensation.kind is not PlanNodeKind.ACTION
+                        or not compensation.compensation_only
+                    ):
                         raise PlanProposalRejected(
                             "compensation must reference a compensation-only action"
                         )
@@ -1326,32 +1511,32 @@ class PlanResolver:
                         depth + 1,
                         compensation_path=True,
                     )
-            elif node.kind == "sequence":
+            elif node.kind is PlanNodeKind.SEQUENCE:
                 if not node.children:
                     raise PlanProposalRejected("sequence requires child references")
                 expanded += sum(walk(child, depth + 1) for child in node.children)
-            elif node.kind == "choice":
+            elif node.kind is PlanNodeKind.CHOICE:
                 if len(node.branches) < 2:
                     raise PlanProposalRejected("choice requires at least two branches")
                 expanded += max(walk(branch, depth + 1) for branch in node.branches)
-            elif node.kind == "parallel":
+            elif node.kind is PlanNodeKind.PARALLEL:
                 if not node.branches or len(node.branches) > self.policy.max_parallel_width:
                     raise PlanProposalRejected("parallel width exceeds its bound")
                 expanded += sum(walk(branch, depth + 1) for branch in node.branches)
-            elif node.kind == "repeat":
+            elif node.kind is PlanNodeKind.REPEAT:
                 if not 1 <= node.repeat_max <= self.policy.max_repeat:
                     raise PlanProposalRejected("repeat must have a bounded maximum")
                 body = require(node.body, node.node_id)
                 expanded += node.repeat_max * walk(body.node_id, depth + 1)
-            elif node.kind == "timer":
+            elif node.kind is PlanNodeKind.TIMER:
                 if not 1 <= node.timer_seconds <= self.policy.max_timer_seconds:
                     raise PlanProposalRejected("timer exceeds its bound")
-            elif node.kind == "gate":
+            elif node.kind is PlanNodeKind.GATE:
                 if node.gate_schema not in self.policy.allowed_gate_schemas:
                     raise PlanProposalRejected(
                         f"unknown Gate schema: {node.gate_schema}"
                     )
-            elif node.kind == "subflow":
+            elif node.kind is PlanNodeKind.SUBFLOW:
                 versions = self.policy.subflows.get(node.subflow, frozenset())
                 if node.subflow_version not in versions:
                     raise PlanProposalRejected(
