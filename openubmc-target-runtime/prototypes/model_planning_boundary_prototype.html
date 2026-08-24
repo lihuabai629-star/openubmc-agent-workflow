@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Model planning boundary prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #667085;
+      --line: #d8dee8;
+      --panel: #f7f9fc;
+      --accent: #1769aa;
+      --danger: #b42318;
+      --ok: #067647;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #fff;
+      color: var(--ink);
+      font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1120px; margin: 0 auto; padding: 40px 24px 64px; }
+    h1 { margin: 0 0 10px; font-size: clamp(28px, 4vw, 44px); line-height: 1.1; }
+    h2 { margin: 32px 0 14px; font-size: 20px; }
+    p { max-width: 850px; }
+    .question {
+      border-left: 4px solid var(--accent);
+      background: #eef6ff;
+      padding: 16px 18px;
+      margin: 24px 0;
+    }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .panel { border: 1px solid var(--line); border-radius: 12px; padding: 18px; background: var(--panel); }
+    .panel h3 { margin: 0 0 12px; font-size: 16px; }
+    dl { display: grid; grid-template-columns: 150px 1fr; gap: 8px 14px; margin: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .status-ok { color: var(--ok); font-weight: 700; }
+    .status-bad { color: var(--danger); font-weight: 700; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; }
+    button {
+      appearance: none;
+      border: 1px solid #b9c3d2;
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+      padding: 10px 13px;
+      font: inherit;
+    }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .tab[aria-selected="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+    .walkthrough { border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+    .steps { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .steps button.done { border-color: var(--ok); color: var(--ok); }
+    .event-log { margin: 0; padding-left: 20px; max-height: 260px; overflow: auto; }
+    .event-log li { margin: 5px 0; }
+    code { background: #eef1f5; border-radius: 5px; padding: 1px 5px; }
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } dl { grid-template-columns: 120px 1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Model planning boundary</h1>
+  <p>This throwaway demo lets a reviewer drive one model-planning invocation through success, conflict, timeout, restart, and invalid proposal cases.</p>
+
+  <div class="question">
+    <strong>Question:</strong> Can the Runtime record a non-deterministic model planning Effect and freeze a bounded proposal as a replayable PlanRevision without giving the proposal authority over a Run, Gate, mutation, or Outcome?
+  </div>
+
+  <h2>Current state</h2>
+  <div class="grid">
+    <section class="panel">
+      <h3>Invocation</h3>
+      <dl id="invocation"></dl>
+    </section>
+    <section class="panel">
+      <h3>Run authority</h3>
+      <dl id="run"></dl>
+    </section>
+    <section class="panel">
+      <h3>Pinned revision</h3>
+      <dl id="revision"></dl>
+    </section>
+    <section class="panel">
+      <h3>Last decision</h3>
+      <dl id="decision"></dl>
+    </section>
+  </div>
+
+  <h2>Free play</h2>
+  <div class="controls" id="free-play"></div>
+
+  <h2>Guided walkthroughs</h2>
+  <div class="tabs" id="tabs"></div>
+  <section class="walkthrough">
+    <strong id="scenario-title"></strong>
+    <p id="scenario-description"></p>
+    <div class="steps" id="scenario-steps"></div>
+  </section>
+
+  <h2>Event log</h2>
+  <ol class="event-log" id="event-log"></ol>
+</main>
+
+<script>
+const PlanningBoundary = (() => {
+  const limits = Object.freeze({ maxNodes: 16, maxParallel: 4, maxRepeat: 3, maxTimerSeconds: 300 });
+  const knownActions = new Set(["inspect.target", "build.component", "upgrade.component"]);
+  const canonical = value => JSON.stringify(value, Object.keys(value).sort());
+  const digest = value => {
+    let hash = 2166136261;
+    for (const char of canonical(value)) {
+      hash ^= char.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `demo:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  };
+
+  const initialState = () => ({
+    invocation: null,
+    revision: null,
+    providerCalls: 0,
+    run: {
+      runId: "run-demo-1",
+      gate: "approval-required",
+      gateStatus: "waiting",
+      mutationAuthorized: false,
+      outcome: null
+    },
+    lastDecision: { kind: "idle", detail: "No planning invocation has started." },
+    events: []
+  });
+
+  const proposal = Object.freeze({
+    version: "plan-proposal/v1",
+    root: {
+      type: "sequence",
+      steps: [
+        { id: "inspect", type: "action", action: "inspect.target" },
+        { id: "approval", type: "gate", schema: "upgrade-approval/v1" },
+        { id: "upgrade", type: "action", action: "upgrade.component", compensation: "rollback" },
+        { id: "verify", type: "repeat", max: 2, body: { type: "action", action: "inspect.target" } },
+        { id: "rollback", type: "action", action: "upgrade.component", compensationOnly: true }
+      ]
+    }
+  });
+
+  const invalidBypassProposal = Object.freeze({
+    version: "plan-proposal/v1",
+    root: {
+      type: "sequence",
+      steps: [
+        { id: "force-success", type: "outcome", status: "success" },
+        { id: "upgrade", type: "action", action: "unknown.root-shell" }
+      ]
+    }
+  });
+
+  function validateProposal(value) {
+    const ids = new Set();
+    let nodes = 0;
+    const visit = node => {
+      if (!node || typeof node !== "object") throw new Error("Each plan node must be an object.");
+      nodes += 1;
+      if (nodes > limits.maxNodes) throw new Error("Plan exceeds the node budget.");
+      if (node.id) {
+        if (ids.has(node.id)) throw new Error(`Duplicate node id: ${node.id}`);
+        ids.add(node.id);
+      }
+      switch (node.type) {
+        case "sequence":
+          if (!Array.isArray(node.steps) || node.steps.length === 0) throw new Error("Sequence requires steps.");
+          node.steps.forEach(visit);
+          break;
+        case "choice":
+          if (!Array.isArray(node.branches) || node.branches.length < 2) throw new Error("Choice requires branches.");
+          node.branches.forEach(visit);
+          break;
+        case "parallel":
+          if (!Array.isArray(node.branches) || node.branches.length > limits.maxParallel) throw new Error("Parallel width is unbounded.");
+          node.branches.forEach(visit);
+          break;
+        case "repeat":
+          if (!Number.isInteger(node.max) || node.max < 1 || node.max > limits.maxRepeat) throw new Error("Repeat must have a small finite maximum.");
+          visit(node.body);
+          break;
+        case "timer":
+          if (!Number.isInteger(node.seconds) || node.seconds < 1 || node.seconds > limits.maxTimerSeconds) throw new Error("Timer exceeds its bound.");
+          break;
+        case "gate":
+          if (!node.schema) throw new Error("Gate requires a versioned schema reference.");
+          break;
+        case "subflow":
+          if (!node.definition || !node.version) throw new Error("Subflow requires a pinned definition version.");
+          break;
+        case "action":
+          if (!knownActions.has(node.action)) throw new Error(`Unknown action: ${node.action}`);
+          break;
+        default:
+          throw new Error(`Unsupported node type: ${node.type}`);
+      }
+    };
+    if (!value || value.version !== "plan-proposal/v1") throw new Error("Unsupported proposal version.");
+    visit(value.root);
+    return { nodeCount: nodes, proposalDigest: digest(value) };
+  }
+
+  function append(state, detail) {
+    return { ...state, events: [...state.events, detail] };
+  }
+
+  function reduce(state, action) {
+    const identity = "model-plan:run-demo-1:1";
+    const inputDigest = action.inputDigest || "sha256:input-v1";
+    if (action.type === "reset") return initialState();
+    if (action.type === "start") {
+      if (state.invocation) {
+        if (state.invocation.identity !== identity || state.invocation.inputDigest !== inputDigest) {
+          return append({ ...state, lastDecision: { kind: "conflict", detail: "The stable identity is already bound to another input digest." } }, "Rejected identity reuse with different input.");
+        }
+        return append({ ...state, lastDecision: { kind: "reused", detail: "Existing invocation record reused; provider was not called again." } }, "Reattached to the existing invocation record.");
+      }
+      return append({
+        ...state,
+        providerCalls: state.providerCalls + 1,
+        invocation: {
+          version: "model-invocation/v1",
+          identity,
+          runId: state.run.runId,
+          inputDigest,
+          provider: "deterministic-fake",
+          model: "planner-v1",
+          status: "running",
+          resultDigest: null,
+          error: null
+        },
+        lastDecision: { kind: "started", detail: "Invocation record persisted before the provider call." }
+      }, "Started one Runtime-managed model Effect.");
+    }
+    if (!state.invocation) return append({ ...state, lastDecision: { kind: "rejected", detail: "Start an invocation first." } }, "Rejected action without an invocation record.");
+    if (action.type === "timeout") {
+      return append({
+        ...state,
+        invocation: { ...state.invocation, status: "unknown", error: "provider timeout after dispatch" },
+        lastDecision: { kind: "unknown", detail: "Outcome is unknown; a replacement identity is forbidden." }
+      }, "Marked the same invocation identity unknown.");
+    }
+    if (action.type === "accept" || action.type === "reconcile") {
+      if (action.type === "accept" && state.invocation.status === "unknown") {
+        return append({ ...state, lastDecision: { kind: "rejected", detail: "Unknown invocation must reconcile under the same identity before completion." } }, "Blocked direct completion of an unknown invocation.");
+      }
+      try {
+        const checked = validateProposal(action.proposal || proposal);
+        const revision = {
+          version: "plan-revision/v1",
+          revisionId: `revision:${checked.proposalDigest}`,
+          runId: state.run.runId,
+          proposalDigest: checked.proposalDigest,
+          definitionVersion: "bounded-plan-ir/v1",
+          nodeCount: checked.nodeCount,
+          status: "pinned"
+        };
+        return append({
+          ...state,
+          invocation: { ...state.invocation, status: "succeeded", resultDigest: checked.proposalDigest, error: null },
+          revision,
+          lastDecision: { kind: "accepted", detail: "Proposal validated and frozen. Run authority is unchanged." }
+        }, `${action.type === "reconcile" ? "Reconciled" : "Completed"} the invocation and pinned one revision.`);
+      } catch (error) {
+        return append({
+          ...state,
+          invocation: { ...state.invocation, status: "rejected", error: error.message },
+          lastDecision: { kind: "rejected", detail: error.message }
+        }, `Rejected proposal: ${error.message}`);
+      }
+    }
+    if (action.type === "restart") {
+      return append({ ...JSON.parse(JSON.stringify(state)), lastDecision: { kind: "restored", detail: "Repository state restored; no model call occurred." } }, "Restarted the process and restored the pinned revision.");
+    }
+    return append({ ...state, lastDecision: { kind: "rejected", detail: `Unknown demo action: ${action.type}` } }, "Rejected an unsupported demo action.");
+  }
+
+  return { initialState, reduce, proposal, invalidBypassProposal };
+})();
+
+const actions = [
+  { id: "start", label: "Start planning", action: { type: "start" } },
+  { id: "retry", label: "Retry same identity", action: { type: "start" } },
+  { id: "conflict", label: "Reuse identity with new input", action: { type: "start", inputDigest: "sha256:input-v2" } },
+  { id: "accept", label: "Return valid proposal", action: { type: "accept" } },
+  { id: "invalid", label: "Return bypass proposal", action: { type: "accept", proposal: PlanningBoundary.invalidBypassProposal } },
+  { id: "timeout", label: "Provider times out", action: { type: "timeout" } },
+  { id: "reconcile", label: "Reconcile same identity", action: { type: "reconcile" } },
+  { id: "restart", label: "Restart Runtime", action: { type: "restart" } },
+  { id: "reset", label: "Reset", action: { type: "reset" } }
+];
+
+const scenarios = [
+  {
+    title: "Happy path stays subordinate to RunEngine",
+    description: "The model returns a bounded proposal. It becomes a pinned revision, but the existing approval Gate stays open and no Outcome appears.",
+    steps: ["start", "accept", "restart"]
+  },
+  {
+    title: "Stable identity is idempotent and conflict-detecting",
+    description: "A repeated call with the same identity and input reattaches. Reusing the identity with another input is rejected without another provider call.",
+    steps: ["start", "retry", "conflict"]
+  },
+  {
+    title: "Timeout fails closed",
+    description: "A timeout after dispatch becomes unknown. Direct completion is blocked; reconcile uses the same identity and can freeze the recovered result.",
+    steps: ["start", "timeout", "accept", "reconcile"]
+  },
+  {
+    title: "Proposal cannot declare success or invent actions",
+    description: "The bounded IR rejects a terminal Outcome node and an unknown action. The Run Gate and Outcome remain untouched.",
+    steps: ["start", "invalid"]
+  }
+];
+
+let state = PlanningBoundary.initialState();
+let activeScenario = 0;
+let completedSteps = 0;
+
+function field(label, value, className = "") {
+  return `<dt>${label}</dt><dd class="${className}">${value ?? "—"}</dd>`;
+}
+
+function render() {
+  const invocation = state.invocation;
+  document.querySelector("#invocation").innerHTML = [
+    field("Identity", invocation?.identity),
+    field("Input digest", invocation?.inputDigest),
+    field("Provider / model", invocation ? `${invocation.provider} / ${invocation.model}` : null),
+    field("Status", invocation?.status, invocation?.status === "succeeded" ? "status-ok" : invocation?.status === "rejected" || invocation?.status === "unknown" ? "status-bad" : ""),
+    field("Provider calls", state.providerCalls),
+    field("Error", invocation?.error)
+  ].join("");
+  document.querySelector("#run").innerHTML = [
+    field("Run", state.run.runId),
+    field("Gate", state.run.gate),
+    field("Gate status", state.run.gateStatus),
+    field("Mutation authorized", state.run.mutationAuthorized),
+    field("Outcome", state.run.outcome)
+  ].join("");
+  document.querySelector("#revision").innerHTML = [
+    field("Revision", state.revision?.revisionId),
+    field("IR version", state.revision?.definitionVersion),
+    field("Proposal digest", state.revision?.proposalDigest),
+    field("Node count", state.revision?.nodeCount),
+    field("Status", state.revision?.status, state.revision ? "status-ok" : "")
+  ].join("");
+  document.querySelector("#decision").innerHTML = [
+    field("Kind", state.lastDecision.kind),
+    field("Detail", state.lastDecision.detail)
+  ].join("");
+  document.querySelector("#event-log").innerHTML = state.events.map(event => `<li>${event}</li>`).join("");
+  renderScenario();
+}
+
+function dispatch(action) {
+  state = PlanningBoundary.reduce(state, action);
+  render();
+}
+
+function renderScenario() {
+  const scenario = scenarios[activeScenario];
+  document.querySelector("#scenario-title").textContent = scenario.title;
+  document.querySelector("#scenario-description").textContent = scenario.description;
+  const container = document.querySelector("#scenario-steps");
+  container.innerHTML = "";
+  scenario.steps.forEach((id, index) => {
+    const definition = actions.find(item => item.id === id);
+    const button = document.createElement("button");
+    button.textContent = `${index + 1}. ${definition.label}`;
+    if (index < completedSteps) button.classList.add("done");
+    button.disabled = index !== completedSteps;
+    button.onclick = () => {
+      dispatch(definition.action);
+      completedSteps += 1;
+      renderScenario();
+    };
+    container.appendChild(button);
+  });
+}
+
+document.querySelector("#free-play").append(...actions.map(definition => {
+  const button = document.createElement("button");
+  button.textContent = definition.label;
+  if (definition.id === "start") button.classList.add("primary");
+  button.onclick = () => dispatch(definition.action);
+  return button;
+}));
+
+document.querySelector("#tabs").append(...scenarios.map((scenario, index) => {
+  const button = document.createElement("button");
+  button.className = "tab";
+  button.textContent = `Scenario ${index + 1}`;
+  button.setAttribute("aria-selected", index === activeScenario ? "true" : "false");
+  button.onclick = () => {
+    activeScenario = index;
+    completedSteps = 0;
+    state = PlanningBoundary.initialState();
+    document.querySelectorAll(".tab").forEach((tab, tabIndex) => tab.setAttribute("aria-selected", tabIndex === index ? "true" : "false"));
+    render();
+  };
+  return button;
+}));
+
+render();
+</script>
+</body>
+</html>
