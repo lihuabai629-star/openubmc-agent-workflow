@@ -10,17 +10,17 @@ Skill links, the standalone Target Runtime, the bundled `openubmc-kb` stdio
 MCP, their launchers, a small shell hook, private credential-file selection,
 client MCP configuration, and installer state.
 
-The installed `openubmc-target-runtime` MCP exposes the domain tools plus `case_read`,
-`evidence_read`, `case_close`, `case_forget`, `phase_record`, `workflow.advance`, and
-`workflow.next` from one OperationCatalog. Its persistent Case database, evidence CAS, task
-contexts, and mutation journals
-share `~/.local/state/openubmc-target-runtime` by default. Repair and update preserve that state.
-Uninstall removes the managed launcher and client registration but leaves Case history and
-mutation recovery state available for a later reinstall.
+The installed `openubmc-target-runtime` MCP exposes exactly `observe` and `execute` to agents.
+Selecting the `operator` profile exposes the disjoint Evidence, Replay, lifecycle, Runtime status,
+and Session Outcome operations for CI or operator use. Its persistent Run database, evidence CAS,
+task contexts, and mutation journals share `~/.local/state/openubmc-target-runtime` by default.
+Repair and update preserve that state. Uninstall removes the managed launcher and client
+registration but leaves Run history and mutation recovery state available for a later reinstall.
 
-The installed Debug compatibility CLIs use the same Catalog and persistent state. Installer health
-reports `engines.cli` for this adapter and retains `engines.one_shot` only as a compatibility alias;
-the CLI process is short-lived, but it does not create an independent workflow state.
+The installed Debug CLI uses the same Runtime Core and persistent state through the semantic Agent
+interface. Installer health reports `engines.cli` for this adapter and retains `engines.one_shot`
+only as an installer-state alias; the CLI process is short-lived, but it does not create an
+independent workflow state.
 
 On Debian and Ubuntu, install missing workflow executables automatically with
 APT, pip, and npm. Keep the installation non-interactive. Do not download an
@@ -156,7 +156,7 @@ not stored. Existing supported Telnet fields are preserved.
 Credential values are never sourced into the login shell. The shell hook
 exports only `OPENUBMC_CREDENTIALS_FILE` after verifying the file owner, type,
 and mode. The managed Target Runtime entrypoint also selects this private file
-when started directly by an MCP client or compatibility CLI, and passes only
+when started directly by an MCP client or Debug CLI, and passes only
 the required values to Debug, Log Analyzer, Live Patch, or Upgrade domain
 backends.
 

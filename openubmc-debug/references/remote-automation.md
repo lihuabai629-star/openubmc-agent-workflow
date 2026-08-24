@@ -156,8 +156,7 @@ Compatibility fields `ssh_object`, `telnet_files`, and `telnet_logs` may remain 
 ## Orchestration Entrypoints
 
 The default MCP Interface exposes only `observe` and `execute`. The domain operation names in this
-section describe internal Runtime adapters and the explicit compatibility profile; ordinary Agents
-must not orchestrate them directly.
+section describe internal Runtime adapters; ordinary Agents must not orchestrate them directly.
 
 `workflow_remote.py` is the canonical combined-snapshot CLI. It preserves the established input
 flags, then enters `debug_run` through the same OperationCatalog, Case repository, evidence store,
@@ -166,7 +165,7 @@ fine-grained capability, collects the bounded snapshot, and computes freshness u
 deadline. The package intentionally contains no terminal-multiplexer or detached-pane launcher.
 Starting a shell session is neither collection completion nor evidence.
 
-The compatibility `debug_collect` entrypoint accepts `profile: object-alarm` for a single current SSH-backed
+The internal `debug_collect` adapter accepts `profile: object-alarm` for a single current SSH-backed
 object/alarm snapshot. That profile skips Telnet, source correlation, and the end freshness pass.
 On an epoch-valid follow-up, its cached MDB gate can release that read concurrently with the start
 SSH anchor refresh; D-Bus/alarm reads still wait for the refreshed anchor. A failed refresh still
@@ -299,8 +298,8 @@ visible in Runtime status.
 
 During active work, default MCP `structuredContent` is an `ObservationReceipt` or `Turn`. Start a
 stateful Run with `execute(kind=start)`, continue it with `resume`, and satisfy a returned phase Gate
-with `respond`. The Gateway wraps `workflow.advance`, `workflow.next`, and phase recording
-internally. Terminal Runs persist Closeout and one authoritative Run Outcome. Session Outcome is an
+with `respond`. `RunEngine` commits every Gate transition directly. Terminal Runs persist Closeout
+and one authoritative Run Outcome. Session Outcome is an
 explicit operator projection of that persisted fact; raw Evidence, Replay, Case inspection,
 review, approval, and promotion stay in the operator profile.
 

@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-08-19
 - Decision owners: openUBMC Agent Workflow maintainers
+- Superseded in part by: [ADR-0005](0005-retire-compatibility-writers-and-profile.md), which
+  removes the temporary compatibility profile after migration.
 
 ## Context
 

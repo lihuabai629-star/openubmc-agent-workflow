@@ -2078,7 +2078,7 @@ def _mapping_or_empty(value: object) -> Mapping[str, object]:
 
 
 class RuntimeMcpService:
-    """Bind Runtime Core operations to Agent, compatibility, or operator interfaces."""
+    """Bind Runtime Core operations to Agent or operator interfaces."""
 
     def __init__(
         self,
@@ -2126,14 +2126,8 @@ class RuntimeMcpService:
         )
         definitions = self._build_tool_definitions()
         selected_interface_profile = str(interface_profile).strip().lower()
-        if selected_interface_profile not in {
-            "agent",
-            "compatibility",
-            "operator",
-        }:
-            raise ValueError(
-                "interface_profile must be agent, compatibility, or operator"
-            )
+        if selected_interface_profile not in {"agent", "operator"}:
+            raise ValueError("interface_profile must be agent or operator")
         self.interface_profile = selected_interface_profile
         self._runtime = compose_runtime(
             definitions,
@@ -2153,7 +2147,6 @@ class RuntimeMcpService:
                 ),
                 retention_seconds=context_retention_seconds,
                 storage_soft_limit_bytes=context_storage_soft_limit_bytes,
-                interface_profile=self.interface_profile,
                 orchestrated_backend=isinstance(
                     backend,
                     OrchestratedMcpBackend,
@@ -2180,12 +2173,6 @@ class RuntimeMcpService:
                 descriptor
                 for descriptor in self._runtime.transport.descriptors()
                 if descriptor.exposure == "operator"
-            )
-        else:
-            interface_descriptors = tuple(
-                descriptor
-                for descriptor in self._runtime.transport.descriptors()
-                if descriptor.exposure == "compatibility"
             )
         self.interface_catalog = OperationCatalog(interface_descriptors)
         if context_maintenance_interval_seconds < 0:
@@ -3128,10 +3115,6 @@ class RuntimeMcpService:
             bounded_request(arguments)
         self.interface_catalog.validate_arguments(name, arguments)
         if self.interface_profile == "agent":
-            self._runtime.transport.record_agent_input(name, arguments)
-        if self.interface_profile == "compatibility":
-            self._runtime.transport.record_compatibility_operation(name)
-        if self.interface_profile == "agent":
             if name == "observe":
                 return self._runtime.agent.observe(
                     arguments,
@@ -3150,7 +3133,6 @@ class RuntimeMcpService:
             arguments,
             task_id=task_id,
             operation_id=operation_id,
-            _compatibility_adapter=(self.interface_profile == "compatibility"),
         )
 
     def _invoke_registered_domain_adapter(
@@ -3236,19 +3218,12 @@ class RuntimeMcpService:
         task_id: str,
         operation_id: str,
         _context_workflow_step: bool = False,
-        _compatibility_adapter: bool = False,
     ) -> dict[str, object]:
         self._maintain_context_if_due()
         if not isinstance(arguments, Mapping):
             raise TypeError("tool arguments must be an object")
         arguments = dict(arguments)
         descriptor = self._runtime.transport.require_operation(name)
-        if (
-            descriptor.exposure == "compatibility"
-            and not _context_workflow_step
-            and not _compatibility_adapter
-        ):
-            self._runtime.transport.record_compatibility_operation(name)
         external_context_marker = (
             arguments.get(CONTEXT_WORKFLOW_STEP_ARGUMENT) is True
             and not _context_workflow_step
@@ -3292,18 +3267,6 @@ class RuntimeMcpService:
                 operation_id=operation_id,
             )
         if descriptor.handler_name is None:
-            translated = (
-                self._runtime.transport.translate_compatibility(
-                    name,
-                    arguments,
-                    task_id=task_id,
-                    operation_id=operation_id,
-                )
-                if _compatibility_adapter
-                else None
-            )
-            if translated is not None:
-                return translated
             operator_result = self._runtime.operator.dispatch(
                 name,
                 descriptor,

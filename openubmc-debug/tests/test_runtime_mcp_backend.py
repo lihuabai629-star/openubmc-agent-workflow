@@ -407,29 +407,30 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 capability_only_scopes = list(preflight_scopes)
                 calls.clear()
                 preflight_scopes.clear()
-                legacy_assurance_receipt = service.call_exposed_tool(
-                    "observe",
-                    {
-                        "target": "192.0.2.30",
-                        "selectors": [
-                            {
-                                "id": "caps",
-                                "kind": "capability",
-                                "names": ["ssh", "busctl"],
-                            },
-                            {
-                                "id": "mdb",
-                                "kind": "mdb",
-                                "queries": ["lsprop Object3"],
-                            },
-                        ],
-                        "assurance": "assured",
-                    },
-                    task_id="agent-observe-assured",
-                    operation_id="agent-observe-assured-operation",
-                )
-                legacy_assurance_calls = list(calls)
-                legacy_assurance_scopes = list(preflight_scopes)
+                with self.assertRaisesRegex(ValueError, "assurance.*unexpected"):
+                    service.call_exposed_tool(
+                        "observe",
+                        {
+                            "target": "192.0.2.30",
+                            "selectors": [
+                                {
+                                    "id": "caps",
+                                    "kind": "capability",
+                                    "names": ["ssh", "busctl"],
+                                },
+                                {
+                                    "id": "mdb",
+                                    "kind": "mdb",
+                                    "queries": ["lsprop Object3"],
+                                },
+                            ],
+                            "assurance": "assured",
+                        },
+                        task_id="agent-observe-assured",
+                        operation_id="agent-observe-assured-operation",
+                    )
+                retired_assurance_calls = list(calls)
+                retired_assurance_scopes = list(preflight_scopes)
                 calls.clear()
                 preflight_scopes.clear()
                 ssh_only_receipt = service.call_exposed_tool(
@@ -532,7 +533,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertEqual(len(combined_calls), 3)
         self.assertEqual(mdb_only_calls, ["preflight_start", "mdbctl"])
         self.assertEqual(capability_only_calls, ["preflight_start"])
-        self.assertEqual(legacy_assurance_calls, ["preflight_start", "mdbctl"])
+        self.assertEqual(retired_assurance_calls, [])
         self.assertEqual(ssh_only_calls, ["preflight_start"])
         self.assertEqual(telnet_only_calls, ["preflight_start"])
         self.assertEqual(dbus_only_calls, ["preflight_start"])
@@ -546,10 +547,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
             capability_only_scopes,
             [("BUSCTL", "DBUS_ENV", "MDBCTL", "SSH", "TELNET")],
         )
-        self.assertEqual(
-            legacy_assurance_scopes,
-            [("BUSCTL", "DBUS_ENV", "MDBCTL", "SSH")],
-        )
+        self.assertEqual(retired_assurance_scopes, [])
         self.assertEqual(ssh_only_scopes, [("SSH",)])
         self.assertEqual(telnet_only_scopes, [("TELNET",)])
         self.assertEqual(dbus_only_scopes, [("DBUS_ENV", "SSH")])
@@ -576,8 +574,6 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertTrue(receipt["coverage"]["complete"])
         self.assertTrue(mdb_only_receipt["coverage"]["complete"])
         self.assertTrue(capability_only_receipt["coverage"]["complete"])
-        self.assertNotIn("assurance", legacy_assurance_receipt)
-        self.assertTrue(legacy_assurance_receipt["coverage"]["complete"])
         self.assertTrue(ssh_only_receipt["coverage"]["complete"])
         self.assertTrue(telnet_only_receipt["coverage"]["complete"])
         self.assertTrue(dbus_only_receipt["coverage"]["complete"])
@@ -1775,10 +1771,12 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 "id": 2,
                 "method": "tools/call",
                 "params": {
-                    "name": "debug_run",
+                    "name": "observe",
                     "arguments": {
-                        "ip": "target.example",
-                        "mdb_queries": ["setprop Bad Value"],
+                        "target": "target.example",
+                        "selectors": [
+                            {"kind": "mdb", "queries": ["setprop Bad Value"]}
+                        ],
                     },
                 },
             },
@@ -1800,7 +1798,6 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     **os.environ,
                     "CODEX_TASK_ID": "validation-failure-task",
                     "OPENUBMC_TARGET_RUNTIME_STATE_DIR": raw_state,
-                    "OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE": "compatibility",
                 },
             )
 
@@ -1817,13 +1814,13 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertTrue(failed["isError"])
         self.assertEqual(failed["structuredContent"]["status"], "failed")
         self.assertEqual(
-            failed["structuredContent"]["canonical_error"]["code"],
+            failed["structuredContent"]["error"]["code"],
             "ValueError",
         )
         exposed_tools = [
             tool["name"] for tool in responses[3]["result"]["tools"]
         ]
-        self.assertIn("debug_run", exposed_tools)
+        self.assertEqual(exposed_tools, ["observe", "execute"])
         self.assertNotIn("runtime_status", exposed_tools)
 
 

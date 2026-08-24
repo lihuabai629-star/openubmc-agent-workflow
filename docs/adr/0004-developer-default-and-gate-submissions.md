@@ -4,6 +4,8 @@
 - Date: 2026-08-19
 - Decision owners: openUBMC Agent Workflow maintainers
 - Supersedes: the one-time secret Gate token requirement in ADR-0003
+- Superseded in part by: [ADR-0005](0005-retire-compatibility-writers-and-profile.md), which
+  rejects the legacy assurance input after migration.
 
 ## Context
 

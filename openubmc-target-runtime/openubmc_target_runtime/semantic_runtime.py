@@ -525,7 +525,6 @@ class StartRun:
     entry_operation: str = ""
     entry_arguments: Mapping[str, object] | None = None
     observation_ref: ObservationRef | None = None
-    legacy_observation_receipt: Mapping[str, object] | None = None
     caller_deadline: float = 120.0
 
 
@@ -814,19 +813,8 @@ def decode_run_command(
             raise AgentGatewayError("unsupported delivery_strategy")
         observation_ref = None
         raw_ref = action.get("observation_ref")
-        legacy_receipt = action.get("observation_receipt")
         if isinstance(raw_ref, Mapping):
             observation_ref = ObservationRef.from_public_dict(raw_ref)
-        if isinstance(legacy_receipt, Mapping):
-            if observation_ref is not None:
-                raise AgentGatewayError(
-                    "start accepts observation_ref or observation_receipt, not both"
-                )
-            source = _mapping(
-                legacy_receipt.get("observation_ref")
-                or legacy_receipt.get("source")
-            )
-            observation_ref = ObservationRef.from_public_dict(source)
         purpose = _text(action.get("purpose") or "complete the requested workflow")
         command = StartRun(
             target=target,
@@ -838,9 +826,6 @@ def decode_run_command(
             entry_operation=entry_operation,
             entry_arguments=entry_arguments,
             observation_ref=observation_ref,
-            legacy_observation_receipt=(
-                dict(legacy_receipt) if isinstance(legacy_receipt, Mapping) else None
-            ),
             caller_deadline=caller_deadline,
         )
         _identity, digest = run_command_identity(
@@ -972,22 +957,7 @@ def decode_run_command(
                 input_digest=digest,
                 caller_deadline=caller_deadline,
             )
-        if command == "continue":
-            identity, digest = run_command_identity(
-                ResumeRun(
-                    run_id,
-                    command_id=_text(operation_id),
-                    caller_deadline=caller_deadline,
-                ),
-                operation_id=operation_id,
-            )
-            return ResumeRun(
-                run_id,
-                command_id=identity,
-                input_digest=digest,
-                caller_deadline=caller_deadline,
-            )
-        raise AgentGatewayError("control command must be continue, reconcile, or cancel")
+        raise AgentGatewayError("control command must be reconcile or cancel")
     raise AgentGatewayError("execute kind must be start, respond, resume, or control")
 
 

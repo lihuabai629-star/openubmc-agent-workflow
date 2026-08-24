@@ -11,9 +11,6 @@ import time
 from typing import Protocol
 
 
-_LEGACY_OPERATION_FEATURES = frozenset({"phase_record", "workflow.next"})
-
-
 @dataclass(frozen=True)
 class CompatibilityMetric:
     count: int
@@ -154,35 +151,10 @@ class SQLiteCompatibilityTelemetryRepository:
 
 
 class CompatibilityTelemetry:
-    """Recognize compatibility usage and expose one anonymous status shape."""
+    """Expose retained compatibility history through Runtime status."""
 
     def __init__(self, repository: CompatibilityTelemetryRepository) -> None:
         self.repository = repository
-
-    def record_operation(self, name: str) -> None:
-        self.repository.increment("operation", name)
-        if name in _LEGACY_OPERATION_FEATURES:
-            self.repository.increment("feature", name)
-
-    def record_agent_input(
-        self,
-        operation: str,
-        arguments: Mapping[str, object],
-    ) -> None:
-        if operation == "observe" and "assurance" in arguments:
-            self.repository.increment("feature", "observe.assurance")
-            return
-        if operation != "execute":
-            return
-        if isinstance(arguments.get("observation_receipt"), Mapping):
-            self.repository.increment(
-                "feature", "execute.observation_receipt"
-            )
-        if (
-            str(arguments.get("kind", "")).strip().lower() == "control"
-            and str(arguments.get("command", "")).strip().lower() == "continue"
-        ):
-            self.repository.increment("feature", "execute.control_continue")
 
     def status(self) -> dict[str, object]:
         operations = dict(sorted(self.repository.metrics("operation").items()))

@@ -34,9 +34,8 @@ service unknown 或 name has no owner，reader 只清除该端点元数据，在
 重发现并重试一次；SSH ControlMaster、D-Bus 环境和其他 capability 缓存继续复用。显式
 `--service`/`--path` 不写入共享端点缓存，也不被自动改写。
 
-默认 MCP 暂未开放 object/alarm selector；此类窄查询先使用本只读 CLI，或在受控迁移场景下
-启用 compatibility profile。需要验证变化边界、形成跨证据根因或继续修复流程时使用
-`execute`，不要新增顶层 Agent 工具。
+默认 MCP 暂未开放 object/alarm selector；此类窄查询先使用本只读 CLI。需要验证变化边界、
+形成跨证据根因或继续修复流程时使用 `execute`，不要新增顶层 Agent 工具。
 
 只读信任谓词必须同时成立：候选 service 名称属于 alarm/event/alert 范围、XML introspection 在有界搜索内唯一暴露精确的 `GetAlarmList` 方法、方法签名属于允许集合，并且调用参数由专用 reader 的固定只读请求生成。方法名命中本身不构成授权，也不能把通用 `busctl_remote.py --action call` 当作替代入口。
 

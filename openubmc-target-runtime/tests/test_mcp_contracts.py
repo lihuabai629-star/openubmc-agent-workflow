@@ -162,9 +162,7 @@ class CapturingOrchestratedMcpBackend(OrchestratedMcpBackend):
 class RuntimeMcpServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.backend = FakeDebugBackend()
-        self.service = RuntimeMcpService(
-            self.backend, interface_profile="compatibility"
-        )
+        self.service = RuntimeMcpService(self.backend)
 
     def tearDown(self) -> None:
         self.service.close()
@@ -194,49 +192,26 @@ class RuntimeMcpServiceTests(unittest.TestCase):
             },
         )
 
-    def test_only_domain_specific_tools_are_exposed(self) -> None:
+    def test_only_semantic_agent_tools_are_exposed(self) -> None:
         definitions = self.service.tool_definitions()
         names = [definition["name"] for definition in definitions]
 
-        self.assertEqual(
-            names,
-            [
-                "debug_run",
-                "debug_collect",
-                "phase_record",
-                "workflow.advance",
-                "workflow.next",
-            ],
-        )
-        debug_run = next(
-            definition for definition in definitions if definition["name"] == "debug_run"
-        )
-        self.assertIn(
-            "mdb_queries",
-            debug_run["inputSchema"]["properties"],
-        )
-        self.assertIn(
-            "mdb_only",
-            debug_run["inputSchema"]["properties"],
-        )
-        self.assertIn(
-            "mdb_expand_classes",
-            debug_run["inputSchema"]["properties"],
-        )
-        self.assertIn(
-            "mdb_concurrency",
-            debug_run["inputSchema"]["properties"],
-        )
-        debug_collect = next(
-            definition for definition in definitions if definition["name"] == "debug_collect"
-        )
-        self.assertIn(
-            "mdb",
-            debug_collect["inputSchema"]["properties"]["profile"]["enum"],
-        )
+        self.assertEqual(names, ["observe", "execute"])
         rendered = json.dumps(definitions, sort_keys=True)
-        for forbidden in ("remote_command", "shell", "exec", "ssh_command"):
+        for forbidden in (
+            "debug_run",
+            "debug_collect",
+            "phase_record",
+            "workflow.advance",
+            "workflow.next",
+            "remote_command",
+            "shell",
+            "ssh_command",
+        ):
             self.assertNotIn(forbidden, rendered)
+
+    def test_agent_catalog_excludes_retired_compatibility_writers(self) -> None:
+        self.assertEqual(self.service.interface_catalog.names(), ("observe", "execute"))
 
     def test_catalog_is_the_source_for_listing_and_dispatch(self) -> None:
         self.assertEqual(
@@ -263,13 +238,7 @@ class RuntimeMcpServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             self.service.interface_catalog.names(),
-            (
-                "debug_run",
-                "debug_collect",
-                "phase_record",
-                "workflow.advance",
-                "workflow.next",
-            ),
+            ("observe", "execute"),
         )
         self.assertEqual(
             self.service.tool_definitions(),
@@ -875,9 +844,7 @@ class PersistentTaskContextTests(unittest.TestCase):
 class JsonRpcEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.backend = FakeDebugBackend()
-        self.service = RuntimeMcpService(
-            self.backend, interface_profile="compatibility"
-        )
+        self.service = RuntimeMcpService(self.backend)
         self.endpoint = JsonRpcMcpEndpoint(
             self.service,
             session_task_id="stdio-session-task",
@@ -903,13 +870,7 @@ class JsonRpcEndpointTests(unittest.TestCase):
         )
         self.assertEqual(
             [tool["name"] for tool in listed["result"]["tools"]],
-            [
-                "debug_run",
-                "debug_collect",
-                "phase_record",
-                "workflow.advance",
-                "workflow.next",
-            ],
+            ["observe", "execute"],
         )
 
         called = self.endpoint.handle(
@@ -918,24 +879,29 @@ class JsonRpcEndpointTests(unittest.TestCase):
                 "id": 3,
                 "method": "tools/call",
                 "params": {
-                    "name": "debug_run",
-                    "arguments": {"ip": "target.example", "deadline": 2},
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "target.example",
+                        "intent": "diagnosis-only",
+                        "entry_operation": "debug_run",
+                    },
                     "_meta": {"codex/taskId": "codex-task-a"},
                 },
             }
         )
         self.assertFalse(called["result"]["isError"])
-        envelope = called["result"]["structuredContent"]
-        self.assertTrue(envelope["case_id"])
-        facts = {item["key"]: item["value"] for item in envelope["facts"]}
-        self.assertEqual(facts["task"], "codex-task-a")
-        summary = called["result"]["content"][0]["text"]
-        self.assertIn("# 问题闭环报告", summary)
-        self.assertIn("## 验收矩阵", summary)
+        turn = called["result"]["structuredContent"]
+        self.assertTrue(turn["run_id"])
+        self.assertEqual(turn["state"], "completed")
         self.assertEqual(
-            envelope["closeout_summary"]["closure_status"],
-            "completed_in_scope",
+            self.service._test.context_runtime.repository.case_for_task(
+                "codex-task-a"
+            ),
+            turn["run_id"],
         )
+        summary = called["result"]["content"][0]["text"]
+        self.assertIn("completed", summary)
         with self.assertRaises(json.JSONDecodeError):
             json.loads(summary)
 
@@ -1021,8 +987,13 @@ class JsonRpcEndpointTests(unittest.TestCase):
                 "id": 1,
                 "method": "tools/call",
                 "params": {
-                    "name": "debug_run",
-                    "arguments": {"ip": "target.example", "deadline": 2},
+                    "name": "observe",
+                    "arguments": {
+                        "target": "target.example",
+                        "selectors": [
+                            {"kind": "capability", "names": ["ssh"]}
+                        ],
+                    },
                 },
             }
         )

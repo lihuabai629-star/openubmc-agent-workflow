@@ -1453,21 +1453,14 @@ class OrchestrationContractTests(unittest.TestCase):
             OrchestratedMcpBackend(
                 {"live_patch_run": domain, "upgrade_run": domain}
             ),
-            interface_profile="compatibility",
         )
         try:
             definitions = service.tool_definitions()
             self.assertEqual(
                 [tool["name"] for tool in definitions],
-                [
-                    "live_patch_run",
-                    "upgrade_run",
-                    "phase_record",
-                    "workflow.advance",
-                    "workflow.next",
-                ],
+                ["observe", "execute"],
             )
-            live_patch = definitions[0]["inputSchema"]
+            live_patch = service._test.catalog.require("live_patch_run").input_schema
             self.assertEqual(
                 live_patch["properties"]["action"]["enum"],
                 ["apply", "rollback"],
@@ -1523,7 +1516,7 @@ class OrchestrationContractTests(unittest.TestCase):
                     }
                 ],
             )
-            upgrade = definitions[1]["inputSchema"]
+            upgrade = service._test.catalog.require("upgrade_run").input_schema
             self.assertEqual(
                 upgrade["properties"]["upload_timeout"]["default"],
                 600,

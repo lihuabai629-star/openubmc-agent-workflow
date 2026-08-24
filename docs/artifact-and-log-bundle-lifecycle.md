@@ -48,5 +48,5 @@ Export 先把派生报告登记为原始 Artifact，再由 ArtifactStore 的红�
 输入预算或 Report 输出预算的 Artifact，避免兼容或内部入口绕过有界阶段。
 
 四阶段是 Runtime 内部 operation/Domain Pack contract。默认 Agent Interface 仍只有
-`observe` 与 `execute`；CLI 与 compatibility Adapter 可以组合阶段，但不能改变 Runtime
+`observe` 与 `execute`；内部 CLI Adapter 可以组合阶段，但不能改变 Runtime
 对 Artifact 身份和访问范围的判断。

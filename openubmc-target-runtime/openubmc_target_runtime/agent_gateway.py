@@ -809,15 +809,6 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                 },
                 "additionalProperties": False,
             },
-            "assurance": {
-                "type": "string",
-                "enum": ["auto", "fast", "assured"],
-                "default": "auto",
-                "deprecated": True,
-                "description": (
-                    "Compatibility input only; Runtime always selects assurance automatically."
-                ),
-            },
             "deadline": {"type": "number", "exclusiveMinimum": 0, "default": 180},
         },
         "additionalProperties": False,
@@ -882,12 +873,6 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                 },
                 "additionalProperties": False,
             },
-            "observation_receipt": {
-                "type": "object",
-                "required": ["receipt_id", "status", "observation_ref", "scope"],
-                "deprecated": True,
-                "additionalProperties": True,
-            },
             "gate_id": {"type": "string", "minLength": 1},
             "gate_version": {"type": "integer", "minimum": 1},
             "schema_digest": {"type": "string", "minLength": 64},
@@ -908,7 +893,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
             },
             "command": {
                 "type": "string",
-                "enum": ["continue", "reconcile", "cancel"],
+                "enum": ["reconcile", "cancel"],
             },
             "deadline": {
                 "type": "number",

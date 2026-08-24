@@ -46,8 +46,8 @@ Closeout 均位于 `ContextRuntime.workflow_advance`，`workflow.next` 只是其
 入口。当前 Agent 主路径已由 `RunEngine.execute` 选择 Gate 或单个 Domain step，不再调用
 `workflow.next`；`ContextRuntime` 保留 definition cursor、event repository 和 Domain
 invocation Adapter。当前 Agent Gate response 由 `RunEngine` 写入原生
-`RunGateSubmitted`，旧事件只通过显式 upcaster 进入统一投影；`phase_record` writer 仅留在
-compatibility profile。
+`RunGateSubmitted`，旧事件只通过显式 upcaster 进入统一投影；兼容 writer 与 profile 已
+退役。
 
 因此实现没有增加第二个状态机，而是把 Agent-visible transition authority 从巨型
 `ContextRuntime` 纵向迁到 `RunEngine`。`WorkflowKernel` 已校正为

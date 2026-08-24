@@ -521,7 +521,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(events[0].payload["evidence_retry_generation"], 1)
         self.assertIn("retry", events[0].payload["next_actions"][0])
 
-    def test_json_rpc_error_uses_mutation_journal_outcome_classification(self) -> None:
+    def test_internal_domain_error_uses_mutation_journal_outcome_classification(self) -> None:
         class RollbackFailedBackend(FullFakeBackend):
             def live_patch_run(self, task, arguments, context):
                 error = ValueError("rollback transport failed")
@@ -531,41 +531,36 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 raise error
 
         service = RuntimeMcpService(
-            RollbackFailedBackend(), interface_profile="compatibility"
-        )
-        endpoint = JsonRpcMcpEndpoint(
-            service,
-            session_task_id="rollback-failed-task",
+            RollbackFailedBackend()
         )
         try:
-            response = endpoint.handle(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "live_patch_run",
-                        "arguments": {
-                            "ip": "192.0.2.20",
-                            "intent": "live-patch",
-                            "local_path": "/tmp/unit.lua",
-                            "remote_path": "/opt/bmc/apps/demo/unit.lua",
-                            "deadline": 10,
-                        },
-                    },
-                }
+            arguments = {
+                "ip": "192.0.2.20",
+                "intent": "live-patch",
+                "local_path": "/tmp/unit.lua",
+                "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                "deadline": 10,
+            }
+            with self.assertRaises(ValueError) as raised:
+                service.call_tool(
+                    "live_patch_run",
+                    arguments,
+                    task_id="rollback-failed-task",
+                    operation_id="rollback-failed-operation",
+                )
+            structured = service.error_result(
+                raised.exception,
+                name="live_patch_run",
+                arguments=arguments,
+                task_id="rollback-failed-task",
+                operation_id="rollback-failed-operation",
             )
         finally:
             service.close()
 
-        self.assertIsNotNone(response)
-        result = response["result"]
-        self.assertTrue(result["isError"])
-        structured = result["structuredContent"]
-        self.assertEqual(structured["status"], "mutation_outcome_unknown")
+        self.assertFalse(structured["ok"])
         self.assertEqual(structured["code"], "mutation_outcome_unknown")
         self.assertIn("reconcile", structured["next_action"])
-        self.assertNotIn("修正工具参数", result["content"][0]["text"])
 
     def test_authorization_rejection_is_not_recorded_as_unknown_mutation(self) -> None:
         class AuthorizationRejectedBackend(FullFakeBackend):
@@ -960,7 +955,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
     def test_password_env_selector_is_preserved_and_affects_idempotency(self) -> None:
         backend = FullFakeBackend()
         service = RuntimeMcpService(
-            backend, interface_profile="compatibility"
+            backend
         )
         arguments = {
             "ip": "192.0.2.28",
@@ -994,22 +989,16 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
     def test_large_result_is_blob_backed_and_mcp_envelope_is_bounded(self) -> None:
         backend = FullFakeBackend(large_bytes=1024 * 1024 + 123)
         service = RuntimeMcpService(
-            backend, interface_profile="compatibility"
+            backend
         )
-        endpoint = JsonRpcMcpEndpoint(service, session_task_id="large-task")
         try:
-            response = endpoint.handle(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "debug_run",
-                        "arguments": {"ip": "192.0.2.1", "deadline": 10},
-                    },
-                }
+            result = service.call_tool(
+                "debug_run",
+                {"ip": "192.0.2.1", "deadline": 10},
+                task_id="large-task",
+                operation_id="large-task-debug",
             )
-            envelope = response["result"]["structuredContent"]
+            envelope = result.envelope
             self.assertLessEqual(
                 len(
                     json.dumps(

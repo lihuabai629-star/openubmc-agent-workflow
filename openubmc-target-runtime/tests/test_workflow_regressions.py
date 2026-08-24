@@ -664,7 +664,6 @@ class WorkflowRegressionTests(unittest.TestCase):
             _DomainBackend(),
             context_repository=repository,
             blob_repository=blobs,
-            interface_profile="compatibility",
         )
         operator_service = RuntimeMcpService(
             _DomainBackend(),

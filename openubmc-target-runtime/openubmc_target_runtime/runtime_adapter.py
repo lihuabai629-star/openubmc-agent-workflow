@@ -237,17 +237,6 @@ class RuntimeSemanticAdapter:
             )
             if expected.get("status") != "complete":
                 raise ValueError("only a complete ObservationRef can seed a Run")
-            legacy_receipt = command.legacy_observation_receipt
-            if isinstance(legacy_receipt, Mapping):
-                comparable_expected = dict(expected)
-                comparable_legacy = dict(legacy_receipt)
-                for compatibility_field in ("assurance", "observation_ref"):
-                    if compatibility_field not in comparable_legacy:
-                        comparable_expected.pop(compatibility_field, None)
-                    if compatibility_field not in comparable_expected:
-                        comparable_legacy.pop(compatibility_field, None)
-                if comparable_expected != comparable_legacy:
-                    raise ValueError("ObservationReceipt failed source reconstruction")
             seeded_raw = raw
 
         try:

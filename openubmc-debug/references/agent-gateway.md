@@ -35,7 +35,7 @@ Mutation authority is frozen in the Run and cannot be broadened by continuation.
 
 Unknown mutation outcomes are reconciled read-first with the same durable operation identity. If
 automatic recovery cannot converge, the Turn returns an Incident with bounded allowed commands.
-Use explicit reconcile only as the compatibility/operator fallback. Repeated reconcile or cancel
+Use explicit reconcile only as the bounded recovery fallback. Repeated reconcile or cancel
 requests reuse the existing Incident outcome instead of duplicating lifecycle facts.
 
 The restartable TaskContext is secret-free. After a local MCP restart, reuse the task identity and
@@ -56,17 +56,17 @@ Cold capability checks release each evidence lane when its own prerequisites com
 start after SSH/MDB checks, D-Bus/alarm after D-Bus and busctl checks, and log/file after Telnet;
 the full preflight still remains one audit surface.
 
-## Compatibility and operator profiles
+## Operator profile
 
 Do not call `case_read`, `evidence_read`, `evidence_query`, `workflow.advance`, `workflow.next`,
 `phase_record`, Replay, Session Outcome governance, or Runtime status from the Agent profile.
-Compatibility operations exist only for migration and controlled comparison. Operator operations
-exist for evidence discovery, CI, incident metrics, and governance.
+The legacy operations are retired. Operator operations exist for evidence discovery, CI, incident
+metrics, and governance.
 
 `workflow_remote.py` and `compare_remote.py` remain input-compatible CLI baselines but enter the
-same Runtime Core. The generic CLI uses `observe` and `execute`; select compatibility explicitly
-only for migration or benchmark baselines. New evidence kinds should become internal selector
-Adapters behind `observe`, not additional Agent-facing tools.
+same Runtime Core. The generic CLI uses `observe` and `execute`. Historical benchmark tooling may
+check out a pinned pre-retirement source for its baseline arm. New evidence kinds should become
+internal selector Adapters behind `observe`, not additional Agent-facing tools.
 
 Agent `structuredContent` remains bounded to `ObservationReceipt` or `Turn`. Raw Evidence, Case
 ledgers, Runtime sequencing, incident metrics, and governance projections remain operator-facing.

@@ -223,20 +223,23 @@ class BuildSkillContractTests(unittest.TestCase):
         self.assertNotIn("password", json.dumps(result).lower())
         self.assertNotIn("target_bmc", result)
 
-    def test_skill_requires_the_complete_case_phase_contract(self) -> None:
+    def test_skill_requires_the_complete_run_gate_contract(self) -> None:
         skill = (BUILD_ROOT / "SKILL.md").read_text(encoding="utf-8")
         for field in (
-            "phase_record",
-            "phase_type: build.artifact",
-            "producer_identity: openubmc-build",
+            "execute(kind=respond)",
+            "run_id",
+            "gate_id",
+            "gate_version",
+            "schema_digest",
             "artifact_path",
             "artifact_sha256",
             "product_version",
             "evidence_ids",
-            "workflow.next",
-            "workflow.advance",
+            "execute(kind=resume)",
         ):
             self.assertIn(field, skill)
+        for retired in ("phase_record", "workflow.next", "workflow.advance"):
+            self.assertNotIn(retired, skill)
 
     def test_checked_runner_rejects_failure_text_even_with_zero_exit(self) -> None:
         runner = BUILD_ROOT / "scripts" / "run_bmcgo_checked.py"

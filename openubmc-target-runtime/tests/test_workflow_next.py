@@ -113,7 +113,6 @@ class WorkflowNextTests(unittest.TestCase):
             self.backend,
             context_repository=self.repository,
             blob_repository=self.blobs,
-            interface_profile="compatibility",
         )
 
     def tearDown(self) -> None:
@@ -224,20 +223,16 @@ class WorkflowNextTests(unittest.TestCase):
         self.assertEqual(self.repository.load("case-strict"), strict_before)
         self.assertIsNone(self.repository.case_for_task("strict-task"))
 
-    def test_catalog_and_json_rpc_expose_the_strict_resume_contract(self) -> None:
+    def test_catalog_exposes_execute_resume_and_rejects_workflow_next(self) -> None:
         definition = next(
             item
             for item in self.service.tool_definitions()
-            if item["name"] == "workflow.next"
+            if item["name"] == "execute"
         )
         schema = definition["inputSchema"]
         self.assertFalse(schema["additionalProperties"])
-        self.assertEqual(
-            set(schema["properties"]),
-            {"case_id", "max_steps", "include_closeout_bundle"},
-        )
+        self.assertIn("resume", schema["properties"]["kind"]["enum"])
 
-        self.open_case("case-json-rpc")
         endpoint = JsonRpcMcpEndpoint(
             self.service,
             session_task_id="json-rpc-next-task",
@@ -255,18 +250,8 @@ class WorkflowNextTests(unittest.TestCase):
         )
 
         assert response is not None
-        structured = response["result"]["structuredContent"]
-        self.assertEqual(structured["status"], "waiting_response")
-        self.assertEqual(structured["state"], "waiting_response")
-        self.assertEqual(
-            structured["gate"]["name"],
-            "developer.change",
-        )
-        self.assertEqual(structured["gate"]["owner"], "openubmc-developer")
-        self.assertEqual(
-            structured["agent_envelope"]["operation"]["name"],
-            "workflow.next",
-        )
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("unknown openUBMC domain tool", response["result"]["content"][0]["text"])
 
     def test_build_gate_returns_a_ready_skill_handoff_without_user_reprompt(self) -> None:
         self.open_case("case-build-handoff", delivery_strategy="build-upgrade")

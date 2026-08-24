@@ -654,7 +654,6 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         service = RuntimeMcpService(
             PlanObservingBackend(repository),
             context_repository=repository,
-            interface_profile="compatibility",
         )
         try:
             first = service.call_tool(
@@ -1149,7 +1148,6 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             PlanObservingBackend(repository),
             context_repository=repository,
             blob_repository=blobs,
-            interface_profile="compatibility",
         )
         operator_service = RuntimeMcpService(
             PlanObservingBackend(repository),
@@ -1169,61 +1167,49 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             first = self._rpc_call(
                 endpoint,
                 1,
-                "workflow.advance",
+                "execute",
                 {
-                    "ip": "192.0.2.43",
+                    "kind": "start",
+                    "target": "192.0.2.43",
                     "intent": "diagnose-and-fix",
                     "delivery_strategy": "source-only",
-                    "final_purpose": "repair the reported behavior",
+                    "purpose": "repair the reported behavior",
                     "deadline": 10,
                 },
             )["structuredContent"]
-            case_id = first["agent_envelope"]["case_id"]
-            before = self._rpc_call(
-                operator_endpoint,
-                2,
-                "case_read",
-                {"case_id": case_id},
-            )["structuredContent"]
-            self._rpc_call(
-                endpoint,
-                3,
-                "phase_record",
-                {
-                    "case_id": case_id,
-                    "expected_revision": before["revision"],
-                    "idempotency_key": "jsonrpc-development",
-                    "phase_type": "developer.change",
-                    "producer_identity": "openubmc-developer",
-                    "status": "completed",
-                    "source_revision": "abc123",
-                    "summary": "implemented the bounded source fix",
-                    "authored_files": ["src/unit.lua"],
-                    "verification_plan": ["targeted unit regression"],
-                },
-            )
+            case_id = first["run_id"]
             terminal_result = self._rpc_call(
                 endpoint,
-                4,
-                "workflow.advance",
+                2,
+                "execute",
                 {
-                    "case_id": case_id,
-                    "idempotency_key": "jsonrpc-finish",
-                    "include_closeout_bundle": True,
-                    "deadline": 10,
+                    "kind": "respond",
+                    "run_id": case_id,
+                    "gate_id": first["gate"]["gate_id"],
+                    "gate_version": first["gate"]["gate_version"],
+                    "schema_digest": first["gate"]["schema_digest"],
+                    "response": {
+                        "status": "completed",
+                        "summary": "implemented the bounded source fix",
+                        "payload": {
+                            "source_revision": "abc123",
+                            "authored_files": ["src/unit.lua"],
+                            "verification_plan": ["targeted unit regression"],
+                        },
+                    },
                 },
             )
             terminal = terminal_result["structuredContent"]
             projected = self._rpc_call(
                 operator_endpoint,
-                5,
+                3,
                 "case_read",
                 {"case_id": case_id},
             )["structuredContent"]
             reference = projected["evidence_refs"][0]
             evidence = self._rpc_call(
                 operator_endpoint,
-                6,
+                4,
                 "evidence_read",
                 {
                     "case_id": case_id,
@@ -1236,22 +1222,9 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             service.close()
             operator_service.close()
 
-        self.assertTrue(terminal["completed"])
-        self.assertIn("closeout", terminal)
-        self.assertIn("closeout_markdown", terminal)
-        self.assertIn("closeout_bundle", terminal)
-        self.assertEqual(
-            terminal["agent_envelope"]["closeout_summary"]["closure_status"],
-            "completed_in_scope",
-        )
-        self.assertEqual(
-            terminal["agent_envelope"]["document_refs"],
-            terminal["closeout_bundle"]["documents"],
-        )
-        self.assertEqual(
-            terminal_result["content"][0]["text"],
-            terminal["closeout_markdown"].strip(),
-        )
+        self.assertEqual(terminal["state"], "completed")
+        self.assertEqual(terminal["outcome"]["status"], "completed")
+        self.assertNotIn("closeout", terminal)
         assert persisted is not None
         for key, value in persisted.items():
             self.assertIn(key, projected)
@@ -1259,13 +1232,9 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
                 self.assertEqual(projected[key], value)
         self.assertIn("capsule", projected)
         self.assertIn("agent_envelope", projected)
-        self.assertEqual(projected["closeout"], terminal["closeout"])
-        self.assertEqual(projected["closeout_markdown"], terminal["closeout_markdown"])
+        self.assertEqual(projected["closeout"]["closure_status"], "completed_in_scope")
+        self.assertTrue(projected["closeout_markdown"])
         self.assertIsNone(projected["closeout_bundle"])
-        self.assertEqual(
-            terminal["closeout_bundle"]["schema"],
-            "openubmc.target-runtime.v1/case-closeout-bundle",
-        )
         self.assertGreater(evidence["returned_bytes"], 0)
         self.assertIsInstance(evidence["body"], str)
         self.assertIsInstance(json.loads(evidence["body"]), dict)

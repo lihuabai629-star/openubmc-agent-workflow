@@ -79,7 +79,7 @@ class CompatibilityTelemetryTests(unittest.TestCase):
                 "_connect",
                 side_effect=tracked_connect,
             ):
-                telemetry.record_operation("debug_run")
+                repository.increment("operation", "debug_run")
                 telemetry.status()
 
         self.assertEqual(len(closed), 4)
@@ -87,20 +87,20 @@ class CompatibilityTelemetryTests(unittest.TestCase):
     def test_sqlite_counters_are_atomic_across_instances(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             database = Path(raw) / "runtime.sqlite3"
-            telemetry = tuple(
-                CompatibilityTelemetry(
-                    SQLiteCompatibilityTelemetryRepository(database)
-                )
+            repositories = tuple(
+                SQLiteCompatibilityTelemetryRepository(database)
                 for _index in range(4)
             )
 
             def record(index: int) -> None:
-                telemetry[index % len(telemetry)].record_operation("debug_run")
+                repositories[index % len(repositories)].increment(
+                    "operation", "debug_run"
+                )
 
             with ThreadPoolExecutor(max_workers=4) as executor:
                 tuple(executor.map(record, range(40)))
 
-            status = telemetry[0].status()
+            status = CompatibilityTelemetry(repositories[0]).status()
 
         self.assertEqual(status["total_calls"], 40)
         self.assertEqual(status["operation_counts"], {"debug_run": 40})

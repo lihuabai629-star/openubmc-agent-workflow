@@ -25,7 +25,6 @@ from .compatibility import (
     InMemoryCompatibilityTelemetryRepository,
     SQLiteCompatibilityTelemetryRepository,
 )
-from .compatibility_runtime import CompatibilityRuntimeAdapter
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     BlobRepository,
@@ -73,7 +72,6 @@ class RuntimeCompositionOptions:
     max_cached_projection_bytes: int = 8 * 1024 * 1024
     retention_seconds: float = 7 * 24 * 60 * 60
     storage_soft_limit_bytes: int = 1024 * 1024 * 1024
-    interface_profile: str = "agent"
     orchestrated_backend: bool = False
     domain_pack_extensions: DomainPackExtensions | None = None
     artifact_store: LocalArtifactStore | None = None
@@ -313,7 +311,6 @@ class _RuntimeTransportPort:
         capability_registry: CapabilityRegistry,
         domain_executor: DomainExecutor,
         compatibility_telemetry: CompatibilityTelemetry,
-        compatibility_runtime: CompatibilityRuntimeAdapter,
         incident_metrics: IncidentMetrics,
         domain_runtime: RuntimeDomainExecution,
         context_runtime: ContextRuntime,
@@ -324,7 +321,6 @@ class _RuntimeTransportPort:
         self._capability_registry = capability_registry
         self._domain_executor = domain_executor
         self._compatibility_telemetry = compatibility_telemetry
-        self._compatibility_runtime = compatibility_runtime
         self._incident_metrics = incident_metrics
         self._domain_runtime = domain_runtime
         self._context_runtime = context_runtime
@@ -344,16 +340,6 @@ class _RuntimeTransportPort:
     ) -> None:
         self._catalog.validate_arguments(name, arguments)
 
-    def record_agent_input(
-        self,
-        operation: str,
-        arguments: Mapping[str, object],
-    ) -> None:
-        self._compatibility_telemetry.record_agent_input(operation, arguments)
-
-    def record_compatibility_operation(self, operation: str) -> None:
-        self._compatibility_telemetry.record_operation(operation)
-
     def status(self) -> dict[str, object]:
         return {
             "capability_registry": self._capability_registry.to_public_dict(),
@@ -363,21 +349,6 @@ class _RuntimeTransportPort:
             "incident_metrics": self._incident_metrics.status(),
             "artifact_store": self._artifact_store.status(),
         }
-
-    def translate_compatibility(
-        self,
-        operation: str,
-        arguments: Mapping[str, object],
-        *,
-        task_id: str,
-        operation_id: str,
-    ) -> dict[str, object] | None:
-        return self._compatibility_runtime.translate(
-            operation,
-            arguments,
-            task_id=task_id,
-            operation_id=operation_id,
-        )
 
     def invoke_domain(
         self,
@@ -465,7 +436,6 @@ class _RuntimeTestSupport:
         semantic_runtime: SemanticRuntime,
         observation_engine: ObservationEngine,
         run_engine: RunEngine,
-        compatibility_runtime: CompatibilityRuntimeAdapter,
         gateway: AgentGateway,
         lifecycle: _RuntimeLifecyclePort,
     ) -> None:
@@ -477,7 +447,6 @@ class _RuntimeTestSupport:
         self.semantic_runtime = semantic_runtime
         self.observation_engine = observation_engine
         self.run_engine = run_engine
-        self.compatibility_runtime = compatibility_runtime
         self.gateway = gateway
         self._lifecycle = lifecycle
 
@@ -754,11 +723,6 @@ def compose_runtime(
         observation_engine,
         run_engine,
     )
-    compatibility_runtime = CompatibilityRuntimeAdapter(
-        context_runtime,
-        semantic_runtime,
-        interface_profile=options.interface_profile,
-    )
     incident_metrics = IncidentMetrics(context_runtime.repository)
     agent_gateway = AgentGateway(
         semantic_runtime,
@@ -775,7 +739,6 @@ def compose_runtime(
             capability_registry=capability_registry,
             domain_executor=domain_executor,
             compatibility_telemetry=compatibility_telemetry,
-            compatibility_runtime=compatibility_runtime,
             incident_metrics=incident_metrics,
             domain_runtime=domain_runtime,
             context_runtime=context_runtime,
@@ -794,7 +757,6 @@ def compose_runtime(
             semantic_runtime=semantic_runtime,
             observation_engine=observation_engine,
             run_engine=run_engine,
-            compatibility_runtime=compatibility_runtime,
             gateway=agent_gateway,
             lifecycle=lifecycle,
         ),

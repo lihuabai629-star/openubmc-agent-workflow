@@ -104,14 +104,20 @@ class CapabilityRegistryTests(unittest.TestCase):
         self.assertEqual(receipt.value["observed"], 42)
         self.assertEqual(receipt.evidence_ids, ("evidence-test",))
 
-    def test_debug_public_call_is_declared_and_routed_by_capability_registry(self) -> None:
+    def test_debug_entry_is_declared_and_routed_behind_execute(self) -> None:
         backend = _Backend()
-        service = RuntimeMcpService(backend, interface_profile="compatibility")
+        service = RuntimeMcpService(backend)
         operator = RuntimeMcpService(backend, interface_profile="operator")
         try:
             result = service.call_exposed_tool(
-                "debug_run",
-                {"ip": "192.0.2.75", "profile": "mdb"},
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.75",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"profile": "mdb"},
+                },
                 task_id="registry-debug",
                 operation_id="registry-debug",
             )
@@ -132,7 +138,7 @@ class CapabilityRegistryTests(unittest.TestCase):
         )
         self.assertEqual(descriptor["owner_skill"], "openubmc-debug")
         self.assertEqual(descriptor["runtime_api_version"], RUNTIME_API_VERSION)
-        self.assertEqual(result["profile"], "mdb")
+        self.assertEqual(result["state"], "completed")
         self.assertEqual(backend.calls, 1)
         self.assertEqual(descriptor["capability"], "openubmc.debug.diagnose")
 

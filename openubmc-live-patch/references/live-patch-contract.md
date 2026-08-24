@@ -17,8 +17,8 @@ An apply operation receives all of:
 --apply --intent live_patch --authorize-live-patch --restart-scope <none|skynet>
 ```
 
-`--intent live_patch` and `--authorize-live-patch` are the compatibility CLI projection of the
-typed mutation authorization for the bound target and plan. Context Runtime keeps Apply and
+`--intent live_patch` and `--authorize-live-patch` project the Runtime's typed mutation
+authorization onto the local helper CLI for the bound target and plan. Runtime Core keeps Apply and
 rollback as distinct canonical actions even though both scripts use these legacy CLI gates. A
 direct user request to apply/live-patch authorizes Apply; a direct rollback request authorizes only
 rollback. Do not ask again when the Case carries the matching authorization, and never infer

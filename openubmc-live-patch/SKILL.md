@@ -58,30 +58,29 @@ If the local MCP process reconnects with the same task ID, Target Runtime restor
 typed delivery context but opens new SSH/Telnet resources; the durable journal remains the only
 source for deciding whether mutation work may be reused.
 
-When a Context Runtime `case_id` is present, bare “继续” or “continue” means call `workflow.next`.
-Keep the Live Patch operation in that Case; never replay Apply, create a new operation, or create a
+When a Runtime `run_id` is present, bare “继续” or “continue” means call `execute(kind=resume)`.
+Keep the Live Patch operation in that Run; never replay Apply, create a new operation, or create a
 new journal merely because the transport disconnected. A terminal MutationJournal receipt, target
-epoch advance, and fresh verification are recorded by the Runtime; do not duplicate them with
-`phase_record`.
+epoch advance, and fresh verification are recorded by the Runtime; do not duplicate them.
 
-If the mutation outcome is unknown, stop automatic `workflow.next` and reconcile the same durable
+If the mutation outcome is unknown, stop automatic resume and call
+`execute(kind=control, command=reconcile)` for the same durable
 journal explicitly. This is not a request for another Apply confirmation. Automatic recovery may
 execute rollback only when the Case carries the distinct rollback authorization. Otherwise preserve
 the original operation as `recovery_blocked`. A later explicit rollback intent is necessary but is
-not by itself proof that recovery ran; keep `workflow.next` blocked until a recovery-capable path
+not by itself proof that recovery ran; keep the Run blocked until a recovery-capable path
 reconciles that same journal. Never reinterpret Apply authorization as permission to restore or
-remove a file. When the Case becomes terminal, Target Runtime derives the Closeout automatically.
-Return `closeout_markdown` as the primary result and use
-`closeout_bundle` for the immutable document, evidence, artifact, backup, and checksum index.
+remove a file. When the Run becomes terminal, return its terminal Outcome. Closeout documents,
+evidence, artifacts, backups, and checksums remain available through the Operator / CI Plane.
 The task keeps direct SSH/Telnet credentials for warm continuation, and the persistent Case keeps
-the internal-development workflow inputs used by `workflow.advance`. Target-specific bindings use
+the internal-development workflow inputs used by `execute`. Target-specific bindings use
 a 32-entry LRU by default; target count is not limited, and returning to an evicted target simply
 opens a new binding.
 
-When a Context Runtime `case_id` is present, keep the Live Patch operation in that Case. A terminal
+When a Runtime `run_id` is present, keep the Live Patch operation in that Run. A terminal
 MutationJournal receipt, target epoch advance, and fresh verification are recorded by the Runtime;
-do not duplicate them with `phase_record`. If the mutation outcome is unknown, stop automatic
-`workflow.advance` and reconcile the durable journal explicitly with the same Case and operation
+do not duplicate them. If the mutation outcome is unknown, stop automatic progression and
+reconcile the durable journal explicitly with the same Run and Effect
 identity. A terminal ordinary failure remains retryable as the next workflow attempt. Do not create
 a new mutation identity merely because the transport disconnected. Post-patch Debug acceptance
 must report an epoch at or after the mutation epoch.

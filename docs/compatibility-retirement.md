@@ -1,12 +1,12 @@
 # Compatibility retirement
 
-The compatibility profile exists to migrate callers, not as a second Runtime policy. Runtime
-status publishes anonymous counters that make removal decisions observable without storing task,
-target, payload, credential, or caller identity.
+The compatibility writers and MCP profile are retired. The Runtime now accepts Agent writes only
+through `observe` and `execute`; the Operator / CI Plane remains separate. Historical old-event
+upcasters and anonymous telemetry are retained as read-only migration evidence.
 
 ## Telemetry
 
-`compatibility_telemetry` contains:
+Operator `runtime_status.compatibility_telemetry` retains:
 
 - `operation_counts`: compatibility operation calls, including `phase_record` and `workflow.next`;
 - `feature_counts`: legacy semantic inputs such as `observe.assurance`,
@@ -15,28 +15,26 @@ target, payload, credential, or caller identity.
 - `tracking_started_at` and per-operation/per-feature `last_seen_at`: the persisted timestamps used
   with count snapshots to evaluate a no-new-use window.
 
-When Context Runtime uses SQLite, counters are stored in the same database and are visible across
-Runtime instances and process restarts. In-memory Runtime instances intentionally keep process-local
-counters for tests and disposable development sessions.
+When Runtime uses SQLite, counters remain stored in the same database and are visible across
+Runtime instances and process restarts. Current Agent and internal Domain calls do not increment
+them.
 
-## Burn-down order
+## Retired inputs
 
-1. Migrate `control=continue` to `resume` and full `observation_receipt` to `ObservationRef`.
-2. Stop sending the legacy `assurance` field; Runtime already selects assurance automatically.
-3. Migrate compatibility `phase_record` and `workflow.next` callers to `execute respond/resume`.
-4. Persist a baseline Runtime-status snapshot. Remove legacy writers only when the relevant counts
-   have not increased, their `last_seen_at` is older than 14 active development days (or no use has
-   occurred since `tracking_started_at`), and one full release-qualification run has completed.
-5. Retain old-event upcasters until all supported persisted Runs have passed their retention or
-   migration window.
+- `observe.assurance`: rejected; Runtime selects assurance automatically.
+- `execute.control_continue`: rejected; use `execute(kind=resume)`.
+- `execute.observation_receipt`: rejected; use `ObservationRef`.
+- `phase_record`: not exposed; answer a Gate with `execute(kind=respond)`.
+- `workflow.next` and `workflow.advance`: not exposed; use `execute` start/respond/resume.
+- `compatibility` interface profile: rejected; use `agent` or `operator`.
 
-The removal sequence changes only compatibility Adapters. It must not add Agent operations, expose
-another policy, or move Run transition ownership out of `RunEngine`.
+Old-event upcasters remain until all supported persisted Runs pass their retention or migration
+window. They are readers only and cannot create new Run transitions.
 
 ## Retirement evidence
 
-`scripts/compatibility_retirement.py` turns the Operator `runtime_status` projection into three
-digest-bound records:
+`scripts/compatibility_retirement.py` turns a pre-retirement Operator `runtime_status` projection
+into three digest-bound records:
 
 - `baseline` captures one telemetry identity, count snapshot, source commit and capture time;
 - `increment` compares a later snapshot, rejects counter rollback or tracking-identity changes, and
@@ -69,6 +67,7 @@ python scripts/compatibility_retirement.py evaluate \
   --output compatibility-decision.json
 ```
 
-The evaluate command returns exit status `0` only when the selected writer is ready. Without
-`--writer`, it evaluates retirement of the whole compatibility profile. Old-event upcasters are
-always reported as preserved readers and are outside writer-removal readiness.
+The evaluate command returns exit status `0` only when the selected historical writer decision is
+ready. Without `--writer`, it evaluates the whole retired profile. Old-event upcasters are always
+reported as preserved readers and are outside writer-removal readiness. The tool remains for audit
+and release evidence; it does not re-enable retired inputs.
