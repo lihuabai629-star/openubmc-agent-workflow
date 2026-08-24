@@ -25,6 +25,44 @@ EXECUTABLES = (
 SKILL_PACKAGE_IGNORED_PARTS = frozenset(
     {"tests", "__pycache__", ".pytest_cache"}
 )
+ROADMAP_CLOSEOUT_REFERENCES = {
+    "README.md": "docs/roadmap-completion.json",
+    "docs/adr/README.md": "[ADR-0005](0005-retire-compatibility-writers-and-profile.md) | Accepted",
+    "docs/adr/0005-retire-compatibility-writers-and-profile.md": "../roadmap-completion.json",
+    "docs/compatibility-retirement.md": "roadmap-completion.json",
+    "docs/workflow-evolution-roadmap.md": "roadmap-completion.json",
+    "docs/roadmap-completion-audit.md": "roadmap-completion.json",
+}
+ROADMAP_CLOSEOUT_FORBIDDEN = {
+    "README.md": ("must not be promoted to canonical `main`",),
+    "docs/adr/README.md": ("ADR-0005](0005-retire-compatibility-writers-and-profile.md) | Proposed",),
+    "docs/adr/0005-retire-compatibility-writers-and-profile.md": ("- Status: Proposed",),
+    "docs/compatibility-retirement.md": (
+        "compatibility-retirement candidate",
+        "candidate must remain unmerged",
+    ),
+    "docs/workflow-architecture-arbitration.md": ("不得进入 canonical `main`",),
+    "docs/external-workflow-research-reconciliation.md": ("不得进入 canonical `main`",),
+}
+ROADMAP_BATCH_IDS = frozenset(
+    {
+        "runtime-core-v2-qualification",
+        "compatibility-retirement",
+        "incident-recovery-stability",
+        "artifact-log-bundle",
+        "domain-pack-read-only",
+        "evidence-skill-disclosure",
+    }
+)
+ROADMAP_WRITERS = frozenset(
+    {
+        "execute.control_continue",
+        "execute.observation_receipt",
+        "observe.assurance",
+        "phase_record",
+        "workflow.next",
+    }
+)
 
 
 def run(command: list[str], *, cwd: Path = ROOT, stage: str) -> None:
@@ -257,6 +295,265 @@ def validate_release_metadata(document: dict[str, object]) -> None:
         relative = path.relative_to(ROOT)
         if legacy_knowledge_name in content and relative not in legacy_knowledge_files:
             raise SystemExit(f"legacy knowledge MCP name found outside migration files: {relative}")
+
+    validate_roadmap_closeout()
+
+
+def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
+    evidence_path = ROOT / "docs" / "roadmap-completion.json"
+    if not evidence_path.is_file():
+        raise SystemExit("missing roadmap completion evidence: docs/roadmap-completion.json")
+    try:
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise SystemExit(f"invalid roadmap completion evidence: {error}") from error
+    if not isinstance(evidence, dict):
+        raise SystemExit("invalid roadmap completion evidence: expected an object")
+    if evidence.get("schema") != "openubmc-agent-workflow.roadmap-completion.v1":
+        raise SystemExit("invalid roadmap completion evidence schema")
+    if evidence.get("status") != "completed" or evidence.get("closeout_issue") != 70:
+        raise SystemExit("invalid roadmap completion evidence status")
+    release = evidence.get("release")
+    if (
+        not isinstance(release, dict)
+        or release.get("identity_model") != "source-plus-lock-only-commit"
+        or release.get("mutable_main_policy") != "historical-lock-snapshot"
+        or release.get("tag_created") is not False
+        or release.get("github_release_created") is not False
+    ):
+        raise SystemExit("invalid roadmap completion evidence release policy")
+
+    canonical = evidence.get("canonical_main")
+    qualification = evidence.get("qualification")
+    if not isinstance(canonical, dict) or not isinstance(qualification, dict):
+        raise SystemExit("invalid roadmap completion evidence identity")
+    commit_pattern = re.compile(r"[0-9a-f]{40}")
+    merge_commit = canonical.get("merge_commit")
+    source_commit = qualification.get("source_commit")
+    lock_commit = qualification.get("lock_only_commit")
+    if any(
+        not isinstance(commit, str) or commit_pattern.fullmatch(commit) is None
+        for commit in (merge_commit, source_commit, lock_commit)
+    ) or len({merge_commit, source_commit, lock_commit}) != 3:
+        raise SystemExit("invalid roadmap completion evidence commits")
+    main_ci = canonical.get("ci_run")
+    if (
+        not isinstance(main_ci, dict)
+        or not isinstance(main_ci.get("id"), int)
+        or main_ci.get("id", 0) <= 0
+        or main_ci.get("conclusion") != "success"
+    ):
+        raise SystemExit("invalid roadmap completion evidence main CI")
+
+    release_gate = qualification.get("release_gate")
+    execute_ab = qualification.get("execute_ab")
+    retirement = qualification.get("compatibility_retirement")
+    lock_topology = qualification.get("lock_topology")
+    digest_pattern = re.compile(r"sha256:[0-9a-f]{64}")
+    if (
+        qualification.get("release_version") != "2.0.0"
+        or any(
+            not isinstance(digest, str) or digest_pattern.fullmatch(digest) is None
+            for digest in (
+                qualification.get("release_lock_digest"),
+                qualification.get("source_tree_digest"),
+            )
+        )
+    ):
+        raise SystemExit("invalid roadmap completion evidence release identity")
+    if (
+        not isinstance(lock_topology, dict)
+        or lock_topology.get("parent_source_commit") != source_commit
+        or lock_topology.get("changed_files") != ["release-lock.json"]
+    ):
+        raise SystemExit("invalid roadmap completion evidence lock topology")
+    if (
+        not isinstance(release_gate, dict)
+        or release_gate.get("promotable") is not True
+        or release_gate.get("passed_gates") != release_gate.get("total_gates")
+        or not isinstance(release_gate.get("total_gates"), int)
+        or release_gate.get("total_gates", 0) <= 0
+        or not isinstance(release_gate.get("evidence_digest"), str)
+        or digest_pattern.fullmatch(release_gate["evidence_digest"]) is None
+    ):
+        raise SystemExit("invalid roadmap completion evidence release gate")
+    if (
+        not isinstance(execute_ab, dict)
+        or execute_ab.get("decision") != "passed"
+        or not isinstance(execute_ab.get("valid_pairs"), int)
+        or execute_ab.get("valid_pairs", 0) < 10
+        or execute_ab.get("invalid_pairs") != 0
+        or not isinstance(execute_ab.get("evidence_digest"), str)
+        or digest_pattern.fullmatch(execute_ab["evidence_digest"]) is None
+    ):
+        raise SystemExit("invalid roadmap completion evidence execute A/B")
+    if not isinstance(retirement, dict):
+        raise SystemExit("invalid roadmap completion evidence retirement")
+    writers = retirement.get("writers_ready")
+    if (
+        not isinstance(writers, dict)
+        or frozenset(writers) != ROADMAP_WRITERS
+        or not all(value is True for value in writers.values())
+        or retirement.get("profile_ready") is not True
+        or retirement.get("historical_telemetry") != "preserved-read-only"
+        or retirement.get("old_event_upcasters") != "preserved-read-only"
+    ):
+        raise SystemExit("invalid roadmap completion evidence retirement")
+
+    batches = evidence.get("batches")
+    if not isinstance(batches, list) or {
+        item.get("id") for item in batches if isinstance(item, dict)
+    } != ROADMAP_BATCH_IDS:
+        raise SystemExit("invalid roadmap completion evidence batches")
+    all_merge_commits: list[str] = []
+    for batch in batches:
+        if not isinstance(batch, dict):
+            raise SystemExit("invalid roadmap completion evidence batch")
+        commits = batch.get("merge_commits")
+        ci_runs = batch.get("ci_runs")
+        if (
+            not isinstance(batch.get("issues"), list)
+            or not batch["issues"]
+            or not all(isinstance(value, int) and value > 0 for value in batch["issues"])
+            or not isinstance(batch.get("pull_requests"), list)
+            or not batch["pull_requests"]
+            or not all(isinstance(value, int) and value > 0 for value in batch["pull_requests"])
+            or not isinstance(commits, list)
+            or not commits
+            or not all(isinstance(value, str) and commit_pattern.fullmatch(value) for value in commits)
+            or len(batch["pull_requests"]) != len(commits)
+            or not isinstance(batch.get("test_seams"), list)
+            or not batch["test_seams"]
+            or not all(
+                isinstance(value, str) and (ROOT / value).is_file()
+                for value in batch["test_seams"]
+            )
+            or not isinstance(ci_runs, list)
+            or not ci_runs
+            or not all(
+                isinstance(run, dict)
+                and isinstance(run.get("id"), int)
+                and run.get("id", 0) > 0
+                and run.get("conclusion") == "success"
+                for run in ci_runs
+            )
+            or batch.get("delivery_process")
+            != [
+                "isolated-worktree",
+                "tdd",
+                "standards-review",
+                "spec-review",
+                "github-ci",
+                "merged",
+            ]
+        ):
+            raise SystemExit(f"invalid roadmap completion evidence batch: {batch.get('id')}")
+        all_merge_commits.extend(commits)
+    if len(all_merge_commits) != len(set(all_merge_commits)):
+        raise SystemExit("invalid roadmap completion evidence duplicate merge commit")
+    compatibility_batch = next(item for item in batches if item["id"] == "compatibility-retirement")
+    if (
+        merge_commit not in compatibility_batch["merge_commits"]
+        or compatibility_batch.get("qualified_source_commit") != source_commit
+    ):
+        raise SystemExit("invalid roadmap completion evidence main merge relationship")
+
+    if verify_git:
+        repository = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if repository.returncode or repository.stdout.strip() != "true":
+            raise SystemExit("roadmap completion validation requires a git repository")
+        commits = {merge_commit, source_commit, lock_commit, *all_merge_commits}
+        for commit in commits:
+            result = subprocess.run(
+                ["git", "-C", str(ROOT), "cat-file", "-e", f"{commit}^{{commit}}"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode:
+                raise SystemExit(f"unresolvable roadmap completion commit: {commit}")
+        for ancestor, descendant in (
+            (source_commit, merge_commit),
+            (merge_commit, "HEAD"),
+            *((commit, merge_commit) for commit in all_merge_commits),
+        ):
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(ROOT),
+                    "merge-base",
+                    "--is-ancestor",
+                    ancestor,
+                    descendant,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode:
+                raise SystemExit(
+                    f"invalid roadmap completion commit ancestry: {ancestor} -> {descendant}"
+                )
+        parents = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-list", "--parents", "-n", "1", lock_commit],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        if parents != [lock_commit, source_commit]:
+            raise SystemExit("invalid roadmap completion lock-only parent")
+        changed_files = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(ROOT),
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                lock_commit,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        if changed_files != lock_topology["changed_files"]:
+            raise SystemExit("invalid roadmap completion lock-only diff")
+        locked_release = json.loads(
+            subprocess.run(
+                ["git", "-C", str(ROOT), "show", f"{lock_commit}:release-lock.json"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+        expected_lock = {
+            "release_version": qualification["release_version"],
+            "source_commit": source_commit,
+            "lock_digest": qualification["release_lock_digest"],
+            "source_tree_digest": qualification["source_tree_digest"],
+        }
+        if any(locked_release.get(key) != value for key, value in expected_lock.items()):
+            raise SystemExit("invalid roadmap completion historical release lock")
+
+    for relative, required in ROADMAP_CLOSEOUT_REFERENCES.items():
+        path = ROOT / relative
+        if not path.is_file():
+            raise SystemExit(f"missing roadmap closeout document: {relative}")
+        content = path.read_text(encoding="utf-8")
+        if required not in content:
+            raise SystemExit(f"roadmap closeout marker missing ({required}): {relative}")
+    for relative, forbidden in ROADMAP_CLOSEOUT_FORBIDDEN.items():
+        content = (ROOT / relative).read_text(encoding="utf-8").lower()
+        for marker in forbidden:
+            if marker.lower() in content:
+                raise SystemExit(f"obsolete roadmap closeout state ({marker}): {relative}")
 
 
 def main(argv: list[str] | None = None) -> int:

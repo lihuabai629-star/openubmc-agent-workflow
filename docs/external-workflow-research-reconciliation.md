@@ -72,10 +72,10 @@ MutationJournal      -> durable Mutation truth and reconcile
 当前 Agent 主路径已按这一裁决迁移：生产代码使用 `WorkflowDefinitions`，Gateway 只依赖
 typed `SemanticRuntimePort.observe/execute`，`RunEngine` 处理 Gate、推进、reconcile、
 Incident 和 Outcome。Agent Gate submission 已使用原生 `RunGateSubmitted`，历史事件经
-显式 upcaster 进入统一投影；当前候选实现移除 `phase_record/workflow.next` writer 与
-compatibility profile，并只读保留历史 telemetry，但在零使用 telemetry 和同源 Release
-Gate 满足前不得进入 canonical `main`。后续工作是证据门禁和旧事件 reader 保留窗口，
-不是建立第二份状态权威。
+显式 upcaster 进入统一投影；`phase_record/workflow.next` writer 与 compatibility profile
+已在零增长 telemetry 和同源 Release Gate 通过后从 canonical `main` 退役，历史 telemetry
+与 old-event reader 继续只读保留。后续工作是持续验证 reader/upcaster，而不是建立第二份
+状态权威。
 
 ### 2. 普通 Agent 不使用 `CommandAck + poll`
 

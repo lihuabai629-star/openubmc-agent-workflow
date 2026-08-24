@@ -43,10 +43,10 @@ written.
 The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
 queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,
 Case lifecycle, and Runtime status are available only through the explicit `operator` profile.
-Compatibility retirement is evidence-gated. This candidate removes legacy Agent inputs and the
-compatibility profile while preserving explicit old-event upcasters, but it must not be promoted to
-canonical `main` until zero-use telemetry and a same-source promotable Release Gate pass. See
-[Agent Semantic Gateway](docs/agent-semantic-gateway.md).
+The evidence-gated compatibility retirement is complete on canonical `main`: legacy Agent inputs
+and the compatibility profile are rejected, while explicit old-event upcasters and historical
+telemetry readers remain. See [Agent Semantic Gateway](docs/agent-semantic-gateway.md) and the
+[machine-readable roadmap closeout](docs/roadmap-completion.json).
 
 ## Architecture and evolution
 
@@ -59,6 +59,7 @@ are maintained in the following records:
 - [Market workflow design research](docs/workflow-design-market-research.md)
 - [External research reconciliation](docs/external-workflow-research-reconciliation.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)
+- [Roadmap completion evidence](docs/roadmap-completion.json)
 - [Domain Pack authoring contract](docs/domain-pack-authoring.md)
 - [Runtime-internal model planning prototype](docs/model-planning-prototype.md)
 
@@ -141,6 +142,11 @@ Managed releases use a two-commit topology. The source commit contains the final
 following lock-only commit adds `release-lock.json`; the release tag points to the lock-only commit.
 The lock records the source commit, workflow and schema identities, every Skill package digest, the
 Target Runtime digest, and the supported client/profile compatibility matrix.
+
+Verify that identity from the lock-only commit (or its release tag). Mutable `main` may advance
+afterward while retaining the historical lock snapshot, so running lock verification against a
+later main tree is expected to fail. A new release selects and qualifies a new source commit, then
+creates a new lock-only child; it never rewrites the earlier snapshot.
 
 Generate and verify the lock after the source tree is committed and clean:
 

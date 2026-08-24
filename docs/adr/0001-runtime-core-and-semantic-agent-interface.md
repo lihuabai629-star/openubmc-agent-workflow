@@ -3,8 +3,8 @@
 - Status: Accepted
 - Date: 2026-08-19
 - Decision owners: openUBMC Agent Workflow maintainers
-- Proposed supersession: [ADR-0005](0005-retire-compatibility-writers-and-profile.md) removes the
-  temporary compatibility profile only after its evidence gate passes.
+- Superseded in part by: [ADR-0005](0005-retire-compatibility-writers-and-profile.md), which removed
+  the temporary compatibility profile after its evidence gate passed.
 
 ## Context
 
@@ -23,9 +23,9 @@ Keep one durable Runtime Core and expose only two operations in the default Agen
 - `observe(Query)` for bounded, exact, read-only target observations;
 - `execute(Action)` for starting or continuing a durable Run to its next semantic yield.
 
-MCP and CLI remain transport Adapters at the same seam. Legacy operations remain temporarily in an
-explicit compatibility profile, while raw Evidence, Replay, lifecycle, Runtime status, and Session
-Outcome governance remain in a disjoint Operator / CI Plane.
+MCP and CLI remain transport Adapters at the same seam. The temporary compatibility profile has
+been retired under ADR-0005; raw Evidence, Replay, lifecycle, Runtime status, and Session Outcome
+governance remain in a disjoint Operator / CI Plane.
 
 The product is an openUBMC safety and execution substrate. It is not a general-purpose agent graph,
 BPMN engine, or universal DAG platform.
@@ -38,8 +38,8 @@ BPMN engine, or universal DAG platform.
   and queue token stay outside the Agent Interface.
 - Skills remain the human- and model-facing reasoning layer. They may choose intent and provide Gate
   input, but do not own durable execution truth.
-- The compatibility profile can be retired only after usage telemetry, rollback coverage, and
-  paired qualification show that migration is safe.
+- Historical compatibility telemetry and old-event upcasters remain readable after the retired
+  writers and profile are removed.
 
 ## Rejected alternatives
 

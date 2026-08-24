@@ -46,8 +46,8 @@ Closeout 均位于 `ContextRuntime.workflow_advance`，`workflow.next` 只是其
 入口。当前 Agent 主路径已由 `RunEngine.execute` 选择 Gate 或单个 Domain step，不再调用
 `workflow.next`；`ContextRuntime` 保留 definition cursor、event repository 和 Domain
 invocation Adapter。当前 Agent Gate response 由 `RunEngine` 写入原生
-`RunGateSubmitted`，旧事件只通过显式 upcaster 进入统一投影；兼容 writer/profile 的
-候选移除已完成，但在证据门禁通过前不得进入 canonical `main`。
+`RunGateSubmitted`，旧事件只通过显式 upcaster 进入统一投影；兼容 writer/profile 已在
+同源 Release Gate 通过后从 canonical `main` 退役，历史 reader/upcaster 保留。
 
 因此实现没有增加第二个状态机，而是把 Agent-visible transition authority 从巨型
 `ContextRuntime` 纵向迁到 `RunEngine`。`WorkflowKernel` 已校正为
@@ -724,11 +724,10 @@ child 记录的唯一父提交。
 - `WorkflowDefinitions` 已校正为纯定义 Module；
 - typed `SemanticRuntimePort` 与 `RunEngine` 已接管 Gateway 的 8 方法协调、自动 reconcile
   和 Session Outcome 投影；
-- M4 主路径权威收敛已完成；后续用 compatibility telemetry 驱动旧 writer 退役；
+- M4 主路径权威收敛与 compatibility writer/profile 退役均已完成；历史 telemetry 仅用于审计；
 - 保留 Turn-to-next-Gate，隐藏 Ack、polling、scheduler 与未来 Worker；
 - v2 做本地 typed event-backed Process Manager，不做分布式平台；
-- 继续用 Incident 运行数据驱动 SLO，并推进 compatibility writer 退役、长时 soak、property
-  和 network fault injection；
+- 继续用 Incident 运行数据驱动 SLO，并推进长时 soak、property 和 network fault injection；
 - 只有规模与部署证据出现后，才把 Outbox/Inbox、Worker、共享 fencing 与 durable backend 作为一个完整 v3 演进包引入。
 
 这条路线具有最高 Interface depth：Agent 学习的概念最少，Runtime 提供的行为最多；同时把状态、安全与恢复规则集中到一个可测试 seam，获得更高 leverage 和 locality。

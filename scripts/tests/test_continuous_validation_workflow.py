@@ -99,6 +99,15 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
             "openubmc-kb-mcp/package-lock.json",
         )
 
+    def test_validation_fetches_historical_release_identity(self) -> None:
+        for job_name in ("ci-contract", "validate"):
+            checkout = next(
+                step
+                for step in self.workflow["jobs"][job_name]["steps"]
+                if step.get("name") == "Check out repository"
+            )
+            self.assertEqual(checkout["with"]["fetch-depth"], "0")
+
     def test_validation_does_not_request_credentials_or_private_targets(self) -> None:
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
         for step in self.steps():

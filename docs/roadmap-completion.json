@@ -1,0 +1,209 @@
+{
+  "schema": "openubmc-agent-workflow.roadmap-completion.v1",
+  "status": "completed",
+  "closeout_issue": 70,
+  "release": {
+    "identity_model": "source-plus-lock-only-commit",
+    "mutable_main_policy": "historical-lock-snapshot",
+    "tag_created": false,
+    "github_release_created": false
+  },
+  "canonical_main": {
+    "merge_commit": "a28350d19fde5808626f3c73b4e070db440cfa83",
+    "ci_run": {
+      "id": 32764011480,
+      "conclusion": "success",
+      "url": "https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32764011480"
+    }
+  },
+  "qualification": {
+    "release_version": "2.0.0",
+    "source_commit": "e7dc74c052f3874d3d9214ce0cfae8949a397765",
+    "lock_only_commit": "7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4",
+    "release_lock_digest": "sha256:0ab06970a96ec8724746ca7a4bff0b6807b8342ade68477bb0cf81275f4a87e1",
+    "source_tree_digest": "sha256:5c483d468e69c1da1f37524ef58397e3414a316f348f898bd2d4628c5812e74f",
+    "lock_topology": {
+      "parent_source_commit": "e7dc74c052f3874d3d9214ce0cfae8949a397765",
+      "changed_files": ["release-lock.json"]
+    },
+    "execute_ab": {
+      "baseline_commit": "35b36efb6503d05a811b51bf09fb5f8dead0e208",
+      "valid_pairs": 10,
+      "invalid_pairs": 0,
+      "decision": "passed",
+      "evidence_digest": "sha256:0277677ce70ca961b93754992a4d56f23f9f6e38db203a2c6b75ee69d31cf229"
+    },
+    "release_gate": {
+      "promotable": true,
+      "passed_gates": 13,
+      "total_gates": 13,
+      "evidence_digest": "sha256:e18fdbfcbc04e84a5ba79f2160728cedc11d4a873a40e7091f2beaa35c9b2a67"
+    },
+    "compatibility_retirement": {
+      "writers_ready": {
+        "execute.control_continue": true,
+        "execute.observation_receipt": true,
+        "observe.assurance": true,
+        "phase_record": true,
+        "workflow.next": true
+      },
+      "profile_ready": true,
+      "historical_telemetry": "preserved-read-only",
+      "old_event_upcasters": "preserved-read-only"
+    }
+  },
+  "batches": [
+    {
+      "id": "runtime-core-v2-qualification",
+      "issues": [38, 36],
+      "pull_requests": [37, 39],
+      "merge_commits": [
+        "a96e84e8b479198c6839fca27f84cec9f24cc4f4",
+        "f9c312d13f10b90eb3cdba66bb04a905d2f5043b"
+      ],
+      "test_seams": [
+        "scripts/tests/test_release_gate.py",
+        "scripts/tests/test_runtime_qualification.py",
+        "scripts/tests/test_agent_gateway_ab.py",
+        "scripts/validate_workflow.py"
+      ],
+      "ci_runs": [
+        {"id": 32336698350, "conclusion": "success"},
+        {"id": 32544813303, "conclusion": "success"}
+      ],
+      "delivery_process": [
+        "isolated-worktree",
+        "tdd",
+        "standards-review",
+        "spec-review",
+        "github-ci",
+        "merged"
+      ]
+    },
+    {
+      "id": "compatibility-retirement",
+      "issues": [48, 66],
+      "pull_requests": [49, 67],
+      "merge_commits": [
+        "3a3ea67abe4c997b10adffc49d0e667fbc23000c",
+        "a28350d19fde5808626f3c73b4e070db440cfa83"
+      ],
+      "test_seams": [
+        "scripts/tests/test_compatibility_retirement.py",
+        "scripts/tests/test_release_gate.py",
+        "openubmc-target-runtime/tests/test_compatibility.py"
+      ],
+      "ci_runs": [
+        {"id": 32619670368, "conclusion": "success"},
+        {"id": 32761811656, "conclusion": "success"},
+        {"id": 32764011480, "conclusion": "success"}
+      ],
+      "delivery_process": [
+        "isolated-worktree",
+        "tdd",
+        "standards-review",
+        "spec-review",
+        "github-ci",
+        "merged"
+      ],
+      "qualified_source_commit": "e7dc74c052f3874d3d9214ce0cfae8949a397765"
+    },
+    {
+      "id": "incident-recovery-stability",
+      "issues": [50, 52],
+      "pull_requests": [51, 53],
+      "merge_commits": [
+        "fbee4fe1a9932a9b6ade733bed644aa96e5a1de0",
+        "dd34d37c5037b1164b206480a848372b6c6e3cb0"
+      ],
+      "test_seams": [
+        "openubmc-target-runtime/tests/test_incident_lifecycle.py",
+        "scripts/tests/test_runtime_qualification.py",
+        "openubmc-target-runtime/tests/test_runtime_stability.py"
+      ],
+      "ci_runs": [
+        {"id": 32621449677, "conclusion": "success"},
+        {"id": 32629450828, "conclusion": "success"}
+      ],
+      "delivery_process": [
+        "isolated-worktree",
+        "tdd",
+        "standards-review",
+        "spec-review",
+        "github-ci",
+        "merged"
+      ]
+    },
+    {
+      "id": "artifact-log-bundle",
+      "issues": [54],
+      "pull_requests": [55],
+      "merge_commits": ["d7ea89110d3d473b1405439e087c1d24df971ba6"],
+      "test_seams": [
+        "openubmc-target-runtime/tests/test_artifact_lifecycle.py",
+        "openubmc-log-analyzer/tests/test_log_bundle_stages.py"
+      ],
+      "ci_runs": [{"id": 32634018685, "conclusion": "success"}],
+      "delivery_process": [
+        "isolated-worktree",
+        "tdd",
+        "standards-review",
+        "spec-review",
+        "github-ci",
+        "merged"
+      ]
+    },
+    {
+      "id": "domain-pack-read-only",
+      "issues": [56, 58],
+      "pull_requests": [57, 59],
+      "merge_commits": [
+        "88c7e571073c772e266008927f590967e8e46dcf",
+        "521a3dda07573df266ff3bde38c6860508697b01"
+      ],
+      "test_seams": [
+        "openubmc-target-runtime/tests/test_domain_pack_conformance.py",
+        "openubmc-target-runtime/tests/test_agent_gateway.py",
+        "openubmc-debug/tests/test_runtime_mcp_backend.py"
+      ],
+      "ci_runs": [
+        {"id": 32642484271, "conclusion": "success"},
+        {"id": 32649732340, "conclusion": "success"}
+      ],
+      "delivery_process": [
+        "isolated-worktree",
+        "tdd",
+        "standards-review",
+        "spec-review",
+        "github-ci",
+        "merged"
+      ]
+    },
+    {
+      "id": "evidence-skill-disclosure",
+      "issues": [60, 62],
+      "pull_requests": [61, 64],
+      "merge_commits": [
+        "4bda60f18c255bc7948401530251fe48bc367313",
+        "657d6ee8867d583bb984b4b62b40d5ed8d912d3a"
+      ],
+      "test_seams": [
+        "openubmc-target-runtime/tests/test_evidence_index.py",
+        "openubmc-debug/tests/test_skill_progressive_disclosure.py",
+        "scripts/tests/test_agent_gateway_ab.py"
+      ],
+      "ci_runs": [
+        {"id": 32653027351, "conclusion": "success"},
+        {"id": 32697848377, "conclusion": "success"}
+      ],
+      "delivery_process": [
+        "isolated-worktree",
+        "tdd",
+        "standards-review",
+        "spec-review",
+        "github-ci",
+        "merged"
+      ]
+    }
+  ]
+}
