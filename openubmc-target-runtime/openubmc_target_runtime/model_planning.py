@@ -75,17 +75,45 @@ _TERMINAL_INVOCATION_STATUSES = frozenset(
 )
 
 
-_NODE_FIELDS_BY_KIND = {
-    PlanNodeKind.ACTION: frozenset(
-        {"action", "compensation", "compensation_only"}
+@dataclass(frozen=True)
+class _PlanNodeSpec:
+    allowed_fields: frozenset[str]
+    expander: str
+
+
+_PLAN_NODE_SPECS = {
+    PlanNodeKind.ACTION: _PlanNodeSpec(
+        frozenset({"action", "compensation", "compensation_only"}),
+        "_expand_action",
     ),
-    PlanNodeKind.SEQUENCE: frozenset({"children"}),
-    PlanNodeKind.CHOICE: frozenset({"branches"}),
-    PlanNodeKind.PARALLEL: frozenset({"branches"}),
-    PlanNodeKind.REPEAT: frozenset({"body", "repeat_max"}),
-    PlanNodeKind.TIMER: frozenset({"timer_seconds"}),
-    PlanNodeKind.GATE: frozenset({"gate_schema"}),
-    PlanNodeKind.SUBFLOW: frozenset({"subflow", "subflow_version"}),
+    PlanNodeKind.SEQUENCE: _PlanNodeSpec(
+        frozenset({"children"}),
+        "_expand_sequence",
+    ),
+    PlanNodeKind.CHOICE: _PlanNodeSpec(
+        frozenset({"branches"}),
+        "_expand_choice",
+    ),
+    PlanNodeKind.PARALLEL: _PlanNodeSpec(
+        frozenset({"branches"}),
+        "_expand_parallel",
+    ),
+    PlanNodeKind.REPEAT: _PlanNodeSpec(
+        frozenset({"body", "repeat_max"}),
+        "_expand_repeat",
+    ),
+    PlanNodeKind.TIMER: _PlanNodeSpec(
+        frozenset({"timer_seconds"}),
+        "_expand_timer",
+    ),
+    PlanNodeKind.GATE: _PlanNodeSpec(
+        frozenset({"gate_schema"}),
+        "_expand_gate",
+    ),
+    PlanNodeKind.SUBFLOW: _PlanNodeSpec(
+        frozenset({"subflow", "subflow_version"}),
+        "_expand_subflow",
+    ),
 }
 
 
@@ -1139,6 +1167,36 @@ class ModelPlanningSettlement:
     revision: PlanRevision | None
     applied: bool
 
+    def __post_init__(self) -> None:
+        if self.record.status is ModelInvocationStatus.SUCCEEDED:
+            if self.revision is None:
+                raise ModelPlanningError("pinned PlanRevision is unavailable")
+            for name, selected, expected in (
+                (
+                    "revision_id",
+                    self.revision.revision_id,
+                    self.record.plan_revision_id,
+                ),
+                (
+                    "binding",
+                    self.revision.binding.digest,
+                    self.record.binding_digest,
+                ),
+                (
+                    "result_digest",
+                    self.revision.proposal_digest,
+                    self.record.result_digest,
+                ),
+            ):
+                if selected != expected:
+                    raise ModelInvocationConflict(
+                        f"model planning settlement {name} mismatch"
+                    )
+        elif self.revision is not None:
+            raise ModelInvocationConflict(
+                "non-success model planning settlement cannot contain a revision"
+            )
+
 
 class ModelPlanningRepository(Protocol):
     def claim(self, record: ModelInvocationRecord) -> ModelPlanningClaim: ...
@@ -1216,9 +1274,11 @@ class InMemoryModelPlanningRepository:
                     raise ModelInvocationConflict(
                         "PlanRevision identity is already bound to different content"
                     )
+            settlement = ModelPlanningSettlement(record, revision, applied=True)
+            if revision is not None:
                 self._revisions.setdefault(revision.revision_id, revision)
             self._invocations[record.invocation_id] = record
-            return ModelPlanningSettlement(record, revision, applied=True)
+            return settlement
 
 
 class SQLiteModelPlanningRepository:
@@ -1374,6 +1434,7 @@ class SQLiteModelPlanningRepository:
                     selected_revision,
                     applied=False,
                 )
+            settlement = ModelPlanningSettlement(record, revision, applied=True)
             if revision is not None:
                 existing = connection.execute(
                     "SELECT document_json FROM model_planning_revisions "
@@ -1397,7 +1458,7 @@ class SQLiteModelPlanningRepository:
                 "WHERE invocation_id = ?",
                 (record_document, record.updated_at, record.invocation_id),
             )
-        return ModelPlanningSettlement(record, revision, applied=True)
+        return settlement
 
 
 @dataclass(frozen=True)
@@ -1476,13 +1537,9 @@ class PlanResolver:
                 )
             if record.status is ModelInvocationStatus.SUCCEEDED:
                 revision = self.repository.load_revision(record.plan_revision_id)
-                if revision is None:
-                    raise ModelPlanningError("pinned PlanRevision is unavailable")
-                return PlanningDecision(
-                    PlanningDecisionStatus.ACCEPTED,
-                    record,
-                    revision,
-                    reused=True,
+                return self._decision(
+                    ModelPlanningSettlement(record, revision, applied=False),
+                    reconciled=False,
                 )
             if record.status in {
                 ModelInvocationStatus.FAILED,
@@ -1506,6 +1563,28 @@ class PlanResolver:
                 result = ModelAdapterResult.unknown(str(exc))
             return self._settle(record, result, reconciled=True)
 
+    @staticmethod
+    def _decision(
+        settlement: ModelPlanningSettlement,
+        *,
+        reconciled: bool,
+    ) -> PlanningDecision:
+        if settlement.record.status is ModelInvocationStatus.SUCCEEDED:
+            return PlanningDecision(
+                PlanningDecisionStatus.ACCEPTED,
+                settlement.record,
+                settlement.revision,
+                reused=not settlement.applied,
+                reconciled=reconciled,
+            )
+        return PlanningDecision(
+            settlement.record.status,
+            settlement.record,
+            None,
+            reused=not settlement.applied,
+            reconciled=reconciled,
+        )
+
     def _reject(
         self,
         record: ModelInvocationRecord,
@@ -1521,21 +1600,8 @@ class PlanResolver:
             updated_at=float(self._clock()),
         )
         settlement = self.repository.resolve(selected, None)
-        if settlement.record.status is ModelInvocationStatus.SUCCEEDED:
-            if settlement.revision is None:
-                raise ModelPlanningError("pinned PlanRevision is unavailable")
-            return PlanningDecision(
-                PlanningDecisionStatus.ACCEPTED,
-                settlement.record,
-                settlement.revision,
-                reused=not settlement.applied,
-                reconciled=reconciled,
-            )
-        return PlanningDecision(
-            settlement.record.status,
-            settlement.record,
-            settlement.revision,
-            reused=not settlement.applied,
+        return self._decision(
+            settlement,
             reconciled=reconciled,
         )
 
@@ -1559,21 +1625,8 @@ class PlanResolver:
                 updated_at=now,
             )
             settlement = self.repository.resolve(selected, None)
-            if settlement.record.status is ModelInvocationStatus.SUCCEEDED:
-                if settlement.revision is None:
-                    raise ModelPlanningError("pinned PlanRevision is unavailable")
-                return PlanningDecision(
-                    PlanningDecisionStatus.ACCEPTED,
-                    settlement.record,
-                    settlement.revision,
-                    reused=not settlement.applied,
-                    reconciled=reconciled,
-                )
-            return PlanningDecision(
-                settlement.record.status,
-                settlement.record,
-                settlement.revision,
-                reused=not settlement.applied,
+            return self._decision(
+                settlement,
                 reconciled=reconciled,
             )
         raw_proposal_bytes = len(_json_bytes(result.proposal))
@@ -1618,23 +1671,133 @@ class PlanResolver:
             updated_at=now,
         )
         settlement = self.repository.resolve(selected, revision)
-        if settlement.record.status is not ModelInvocationStatus.SUCCEEDED:
-            return PlanningDecision(
-                settlement.record.status,
-                settlement.record,
-                settlement.revision,
-                reused=not settlement.applied,
-                reconciled=reconciled,
-            )
-        if settlement.revision is None:
-            raise ModelPlanningError("pinned PlanRevision is unavailable")
-        return PlanningDecision(
-            status=PlanningDecisionStatus.ACCEPTED,
-            record=settlement.record,
-            revision=settlement.revision,
-            reused=not settlement.applied,
+        return self._decision(
+            settlement,
             reconciled=reconciled,
         )
+
+    def _expand_action(
+        self,
+        node: PlanNode,
+        depth: int,
+        *,
+        walk: Callable[..., int],
+        require: Callable[[str, str], PlanNode],
+    ) -> int:
+        if node.action not in self.policy.allowed_actions:
+            raise PlanProposalRejected(f"unknown Plan action: {node.action}")
+        if not node.compensation:
+            return 0
+        compensation = require(node.compensation, node.node_id)
+        if (
+            compensation.kind is not PlanNodeKind.ACTION
+            or not compensation.compensation_only
+        ):
+            raise PlanProposalRejected(
+                "compensation must reference a compensation-only action"
+            )
+        return walk(
+            compensation.node_id,
+            depth + 1,
+            compensation_path=True,
+        )
+
+    def _expand_sequence(
+        self,
+        node: PlanNode,
+        depth: int,
+        *,
+        walk: Callable[..., int],
+        require: Callable[[str, str], PlanNode],
+    ) -> int:
+        del require
+        if not node.children:
+            raise PlanProposalRejected("sequence requires child references")
+        return sum(walk(child, depth + 1) for child in node.children)
+
+    def _expand_choice(
+        self,
+        node: PlanNode,
+        depth: int,
+        *,
+        walk: Callable[..., int],
+        require: Callable[[str, str], PlanNode],
+    ) -> int:
+        del require
+        if len(node.branches) < 2:
+            raise PlanProposalRejected("choice requires at least two branches")
+        return max(walk(branch, depth + 1) for branch in node.branches)
+
+    def _expand_parallel(
+        self,
+        node: PlanNode,
+        depth: int,
+        *,
+        walk: Callable[..., int],
+        require: Callable[[str, str], PlanNode],
+    ) -> int:
+        del require
+        if (
+            not node.branches
+            or len(node.branches) > self.policy.max_parallel_width
+        ):
+            raise PlanProposalRejected("parallel width exceeds its bound")
+        return sum(walk(branch, depth + 1) for branch in node.branches)
+
+    def _expand_repeat(
+        self,
+        node: PlanNode,
+        depth: int,
+        *,
+        walk: Callable[..., int],
+        require: Callable[[str, str], PlanNode],
+    ) -> int:
+        if not 1 <= node.repeat_max <= self.policy.max_repeat:
+            raise PlanProposalRejected("repeat must have a bounded maximum")
+        body = require(node.body, node.node_id)
+        return node.repeat_max * walk(body.node_id, depth + 1)
+
+    def _expand_timer(
+        self,
+        node: PlanNode,
+        depth: int,
+        *,
+        walk: Callable[..., int],
+        require: Callable[[str, str], PlanNode],
+    ) -> int:
+        del depth, walk, require
+        if not 1 <= node.timer_seconds <= self.policy.max_timer_seconds:
+            raise PlanProposalRejected("timer exceeds its bound")
+        return 0
+
+    def _expand_gate(
+        self,
+        node: PlanNode,
+        depth: int,
+        *,
+        walk: Callable[..., int],
+        require: Callable[[str, str], PlanNode],
+    ) -> int:
+        del depth, walk, require
+        if node.gate_schema not in self.policy.allowed_gate_schemas:
+            raise PlanProposalRejected(f"unknown Gate schema: {node.gate_schema}")
+        return 0
+
+    def _expand_subflow(
+        self,
+        node: PlanNode,
+        depth: int,
+        *,
+        walk: Callable[..., int],
+        require: Callable[[str, str], PlanNode],
+    ) -> int:
+        del depth, walk, require
+        versions = self.policy.subflows.get(node.subflow, frozenset())
+        if node.subflow_version not in versions:
+            raise PlanProposalRejected(
+                "subflow reference is unknown or not version-pinned"
+            )
+        return 0
 
     def _validate_proposal(self, proposal: PlanProposal, *, run_id: str) -> None:
         if proposal.run_id != run_id:
@@ -1660,11 +1823,11 @@ class PlanResolver:
                 "compensation": bool(node.compensation),
                 "compensation_only": node.compensation_only,
             }
-            allowed_fields = _NODE_FIELDS_BY_KIND[node.kind]
+            spec = _PLAN_NODE_SPECS[node.kind]
             invalid_fields = sorted(
                 name
                 for name, present in selected_fields.items()
-                if present and name not in allowed_fields
+                if present and name not in spec.allowed_fields
             )
             if invalid_fields:
                 raise PlanProposalRejected(
@@ -1697,55 +1860,14 @@ class PlanResolver:
                     "compensation-only action is reachable from normal execution"
                 )
             visiting.add(node_id)
-            expanded = 1
-            if node.kind is PlanNodeKind.ACTION:
-                if node.action not in self.policy.allowed_actions:
-                    raise PlanProposalRejected(f"unknown Plan action: {node.action}")
-                if node.compensation:
-                    compensation = require(node.compensation, node.node_id)
-                    if (
-                        compensation.kind is not PlanNodeKind.ACTION
-                        or not compensation.compensation_only
-                    ):
-                        raise PlanProposalRejected(
-                            "compensation must reference a compensation-only action"
-                        )
-                    expanded += walk(
-                        compensation.node_id,
-                        depth + 1,
-                        compensation_path=True,
-                    )
-            elif node.kind is PlanNodeKind.SEQUENCE:
-                if not node.children:
-                    raise PlanProposalRejected("sequence requires child references")
-                expanded += sum(walk(child, depth + 1) for child in node.children)
-            elif node.kind is PlanNodeKind.CHOICE:
-                if len(node.branches) < 2:
-                    raise PlanProposalRejected("choice requires at least two branches")
-                expanded += max(walk(branch, depth + 1) for branch in node.branches)
-            elif node.kind is PlanNodeKind.PARALLEL:
-                if not node.branches or len(node.branches) > self.policy.max_parallel_width:
-                    raise PlanProposalRejected("parallel width exceeds its bound")
-                expanded += sum(walk(branch, depth + 1) for branch in node.branches)
-            elif node.kind is PlanNodeKind.REPEAT:
-                if not 1 <= node.repeat_max <= self.policy.max_repeat:
-                    raise PlanProposalRejected("repeat must have a bounded maximum")
-                body = require(node.body, node.node_id)
-                expanded += node.repeat_max * walk(body.node_id, depth + 1)
-            elif node.kind is PlanNodeKind.TIMER:
-                if not 1 <= node.timer_seconds <= self.policy.max_timer_seconds:
-                    raise PlanProposalRejected("timer exceeds its bound")
-            elif node.kind is PlanNodeKind.GATE:
-                if node.gate_schema not in self.policy.allowed_gate_schemas:
-                    raise PlanProposalRejected(
-                        f"unknown Gate schema: {node.gate_schema}"
-                    )
-            elif node.kind is PlanNodeKind.SUBFLOW:
-                versions = self.policy.subflows.get(node.subflow, frozenset())
-                if node.subflow_version not in versions:
-                    raise PlanProposalRejected(
-                        "subflow reference is unknown or not version-pinned"
-                    )
+            spec = _PLAN_NODE_SPECS[node.kind]
+            expander = getattr(self, spec.expander)
+            expanded = 1 + expander(
+                node,
+                depth,
+                walk=walk,
+                require=require,
+            )
             visiting.remove(node_id)
             visited.add(node_id)
             if expanded > self.policy.max_expanded_steps:

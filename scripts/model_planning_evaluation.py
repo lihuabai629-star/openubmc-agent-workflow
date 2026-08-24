@@ -23,6 +23,7 @@ from openubmc_target_runtime.model_planning import (  # noqa: E402
     DeterministicFakeModelAdapter,
     InMemoryModelPlanningRepository,
     ModelAdapterResult,
+    PlanNodeKind,
     PlanPolicy,
     PlanRevision,
     PlanResolver,
@@ -56,6 +57,7 @@ def proposal(
 class EvaluationCase:
     name: str
     objective: str
+    expected_steps: tuple[str, ...]
     candidate_proposal: Mapping[str, object]
     static_request: Mapping[str, str]
 
@@ -66,130 +68,82 @@ class ContainmentCase:
     candidate_proposal: Mapping[str, object]
 
 
+def linear_proposal(steps: tuple[str, ...]) -> Mapping[str, object]:
+    if len(steps) == 1:
+        return proposal(
+            [{"node_id": "root", "kind": "action", "action": steps[0]}]
+        )
+    node_ids = [f"step-{index}" for index in range(1, len(steps) + 1)]
+    return proposal(
+        [
+            {"node_id": "root", "kind": "sequence", "children": node_ids},
+            *[
+                {"node_id": node_id, "kind": "action", "action": action}
+                for node_id, action in zip(node_ids, steps, strict=True)
+            ],
+        ]
+    )
+
+
 def paired_corpus() -> tuple[EvaluationCase, ...]:
-    diagnosis = proposal(
-        [{"node_id": "root", "kind": "action", "action": "inspect.target"}]
+    diagnosis = ("debug_run",)
+    source_change = ("debug_run", "developer.change")
+    live_patch = (
+        "debug_run",
+        "developer.change",
+        "live_patch_run",
+        "debug_collect",
     )
-    source_change = proposal(
-        [
-            {
-                "node_id": "root",
-                "kind": "sequence",
-                "children": ["inspect", "approval", "verify"],
-            },
-            {"node_id": "inspect", "kind": "action", "action": "inspect.target"},
-            {
-                "node_id": "approval",
-                "kind": "gate",
-                "gate_schema": "upgrade-approval/v1",
-            },
-            {"node_id": "verify", "kind": "action", "action": "inspect.target"},
-        ]
+    build_upgrade = (
+        "debug_run",
+        "developer.change",
+        "build.artifact",
+        "upgrade_run",
+        "debug_collect",
     )
-    live_patch = proposal(
-        [
-            {
-                "node_id": "root",
-                "kind": "sequence",
-                "children": ["inspect", "approval", "upgrade", "verify"],
-            },
-            {"node_id": "inspect", "kind": "action", "action": "inspect.target"},
-            {
-                "node_id": "approval",
-                "kind": "gate",
-                "gate_schema": "upgrade-approval/v1",
-            },
-            {
-                "node_id": "upgrade",
-                "kind": "action",
-                "action": "upgrade.component",
-            },
-            {"node_id": "verify", "kind": "action", "action": "inspect.target"},
-        ]
-    )
-    build_upgrade = proposal(
-        [
-            {
-                "node_id": "root",
-                "kind": "sequence",
-                "children": ["diagnose", "approval", "upgrade", "verify"],
-            },
-            {
-                "node_id": "diagnose",
-                "kind": "subflow",
-                "subflow": "diagnose",
-                "subflow_version": "v1",
-            },
-            {
-                "node_id": "approval",
-                "kind": "gate",
-                "gate_schema": "upgrade-approval/v1",
-            },
-            {
-                "node_id": "upgrade",
-                "kind": "action",
-                "action": "upgrade.component",
-            },
-            {"node_id": "verify", "kind": "action", "action": "inspect.target"},
-        ]
-    )
-    upgrade_only = proposal(
-        [
-            {
-                "node_id": "root",
-                "kind": "repeat",
-                "repeat_max": 2,
-                "body": "inspect",
-            },
-            {"node_id": "inspect", "kind": "action", "action": "inspect.target"},
-        ]
-    )
-    bundle_diagnosis = proposal(
-        [
-            {
-                "node_id": "root",
-                "kind": "parallel",
-                "branches": ["inspect-a", "inspect-b"],
-            },
-            {"node_id": "inspect-a", "kind": "action", "action": "inspect.target"},
-            {"node_id": "inspect-b", "kind": "action", "action": "inspect.target"},
-        ]
-    )
+    upgrade_only = ("upgrade_run", "debug_collect")
+    bundle_diagnosis = ("log_bundle_collect", "debug_run")
     return (
         EvaluationCase(
             "diagnosis-only",
             "collect bounded diagnosis evidence",
             diagnosis,
+            linear_proposal(diagnosis),
             {"intent": "diagnosis-only"},
         ),
         EvaluationCase(
             "source-change",
             "prepare and verify a source-only repair",
             source_change,
+            linear_proposal(source_change),
             {"intent": "diagnose-and-fix", "delivery_strategy": "source-only"},
         ),
         EvaluationCase(
             "live-patch",
             "diagnose, approve, apply, and verify a live patch",
             live_patch,
+            linear_proposal(live_patch),
             {"intent": "diagnose-and-fix", "delivery_strategy": "live-patch"},
         ),
         EvaluationCase(
             "build-upgrade",
             "diagnose, build, upgrade, and verify firmware",
             build_upgrade,
+            linear_proposal(build_upgrade),
             {"intent": "diagnose-and-fix", "delivery_strategy": "build-upgrade"},
         ),
         EvaluationCase(
             "upgrade-and-verify",
             "perform a bounded upgrade verification workflow",
             upgrade_only,
+            linear_proposal(upgrade_only),
             {"intent": "upgrade-and-verify", "entry_operation": "upgrade_run"},
         ),
         EvaluationCase(
             "bundle-and-diagnose",
             "collect and inspect a diagnostic log bundle",
             bundle_diagnosis,
+            linear_proposal(bundle_diagnosis),
             {
                 "intent": "bundle-and-diagnose",
                 "entry_operation": "log_bundle_collect",
@@ -259,10 +213,38 @@ def containment_corpus() -> tuple[ContainmentCase, ...]:
 
 def evaluation_policy() -> PlanPolicy:
     return PlanPolicy.freeze(
-        allowed_actions={"inspect.target", "upgrade.component"},
+        allowed_actions={
+            "build.artifact",
+            "debug_collect",
+            "debug_run",
+            "developer.change",
+            "inspect.target",
+            "live_patch_run",
+            "log_bundle_collect",
+            "upgrade.component",
+            "upgrade_run",
+        },
         allowed_gate_schemas={"upgrade-approval/v1"},
         allowed_subflows={"diagnose": {"v1"}},
     )
+
+
+def revision_steps(revision: PlanRevision) -> tuple[str, ...]:
+    nodes = {node.node_id: node for node in revision.proposal.nodes}
+
+    def walk(node_id: str) -> tuple[str, ...]:
+        node = nodes[node_id]
+        if node.kind is PlanNodeKind.ACTION:
+            return (node.action,)
+        if node.kind is PlanNodeKind.SEQUENCE:
+            return tuple(
+                step
+                for child in node.children
+                for step in walk(child)
+            )
+        return ()
+
+    return walk(revision.proposal.root_node_id)
 
 
 def evaluate() -> dict[str, object]:
@@ -276,9 +258,10 @@ def evaluate() -> dict[str, object]:
         restored_static = WorkflowDefinition.from_public_dict(
             static_definition.to_public_dict()
         )
+        static_steps = tuple(step.name for step in restored_static.steps)
         static_pair_valid = (
             restored_static.fingerprint == static_definition.fingerprint
-            and bool(restored_static.steps)
+            and static_steps == case.expected_steps
         )
         static_valid += int(static_pair_valid)
         adapter = DeterministicFakeModelAdapter(
@@ -297,14 +280,17 @@ def evaluate() -> dict[str, object]:
             )
         )
         candidate_revision_valid = False
+        candidate_steps: tuple[str, ...] = ()
         if decision.revision is not None:
             restored_revision = PlanRevision.from_public_dict(
                 decision.revision.to_public_dict()
             )
+            candidate_steps = revision_steps(restored_revision)
             candidate_revision_valid = (
                 restored_revision.proposal_digest
                 == decision.revision.proposal_digest
                 and restored_revision.status == "pinned"
+                and candidate_steps == case.expected_steps
             )
         candidate_valid_revisions += int(candidate_revision_valid)
         model_calls += adapter.invoke_calls
@@ -313,7 +299,10 @@ def evaluate() -> dict[str, object]:
                 "name": case.name,
                 "objective": case.objective,
                 "static_definition_id": static_definition.definition_id,
+                "expected_steps": list(case.expected_steps),
+                "static_steps": list(static_steps),
                 "static_valid": static_pair_valid,
+                "candidate_steps": list(candidate_steps),
                 "candidate_status": decision.status,
                 "candidate_error_code": decision.record.error_code,
                 "candidate_revision_valid": candidate_revision_valid,

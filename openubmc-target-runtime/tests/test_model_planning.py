@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -583,6 +585,63 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             self.assertEqual(replay.revision, first.revision)
             self.assertEqual(restart_adapter.invoke_calls, 0)
             self.assertEqual(restart_adapter.reconcile_calls, 0)
+
+    def test_sqlite_replay_rejects_a_revision_from_another_settlement(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            database = Path(raw) / "mismatched-settlement.sqlite3"
+            repository = SQLiteModelPlanningRepository(database)
+            first_request = PlanningRequest(
+                run_id="run-plan-a",
+                slot_id="mismatched-replay",
+                planning_input=PlanningInput(objective="pin plan a"),
+            )
+            first = PlanResolver(
+                repository,
+                DeterministicModelAdapter(
+                    ModelAdapterResult.succeeded(valid_proposal("run-plan-a"))
+                ),
+                policy=default_policy(),
+            ).resolve(first_request)
+            second = PlanResolver(
+                repository,
+                DeterministicModelAdapter(
+                    ModelAdapterResult.succeeded(valid_proposal("run-plan-b"))
+                ),
+                policy=default_policy(),
+            ).resolve(
+                PlanningRequest(
+                    run_id="run-plan-b",
+                    slot_id="mismatched-replay",
+                    planning_input=PlanningInput(objective="pin plan b"),
+                )
+            )
+            mismatched = first.record.to_public_dict()
+            mismatched["plan_revision_id"] = second.revision.revision_id
+            mismatched["result_digest"] = second.revision.proposal_digest
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "UPDATE model_planning_invocations SET document_json = ? "
+                    "WHERE invocation_id = ?",
+                    (
+                        json.dumps(mismatched, sort_keys=True, separators=(",", ":")),
+                        first.record.invocation_id,
+                    ),
+                )
+
+            with self.assertRaisesRegex(
+                ModelInvocationConflict,
+                "settlement",
+            ):
+                PlanResolver(
+                    SQLiteModelPlanningRepository(database),
+                    DeterministicModelAdapter(
+                        ModelAdapterResult.failed(
+                            "unexpected_call",
+                            "replay must not call the model",
+                        )
+                    ),
+                    policy=default_policy(),
+                ).resolve(first_request)
 
     def test_sqlite_restart_reconciles_an_unknown_invocation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
