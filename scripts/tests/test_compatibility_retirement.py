@@ -162,6 +162,7 @@ class CompatibilityRetirementTests(unittest.TestCase):
                 "baseline_digest",
                 "baseline_source_commit",
                 "baseline_captured_at",
+                "baseline_telemetry",
                 "source_commit",
                 "captured_at",
                 "operation_deltas",
@@ -467,6 +468,37 @@ class CompatibilityRetirementTests(unittest.TestCase):
                         tampered,
                         release_gate("b" * 40),
                     )
+
+    def test_digest_valid_increment_rejects_rewritten_delta_values(self) -> None:
+        baseline = retirement.create_baseline(
+            runtime_status(),
+            source_commit="a" * 40,
+            captured_at=1_700_001_000.0,
+        )
+        current = runtime_status()
+        telemetry = current["compatibility_telemetry"]
+        telemetry["feature_counts"]["phase_record"] = 5
+        telemetry["total_features"] = 10
+        telemetry["last_seen_at"]["features"]["phase_record"] = (
+            1_700_100_000.0
+        )
+        increment = retirement.create_increment(
+            baseline,
+            current,
+            source_commit="b" * 40,
+            captured_at=1_700_101_000.0,
+        )
+        self.assertEqual(increment["feature_deltas"]["phase_record"], 1)
+        increment["feature_deltas"]["phase_record"] = 0
+        increment["evidence_digest"] = digest(
+            {key: value for key, value in increment.items() if key != "evidence_digest"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "do not match baseline telemetry"):
+            retirement.evaluate_retirement(
+                increment,
+                release_gate("b" * 40),
+            )
 
     def test_tampered_or_mismatched_qualification_is_rejected(self) -> None:
         baseline = retirement.create_baseline(

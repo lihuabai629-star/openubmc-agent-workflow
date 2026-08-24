@@ -285,35 +285,22 @@ def _counts_without_newer_timestamp(
     ]
 
 
-def create_increment(
-    baseline: Mapping[str, object],
-    runtime_status: Mapping[str, object],
+def _increment_deltas(
+    baseline_telemetry: Mapping[str, object],
+    current_telemetry: Mapping[str, object],
     *,
-    source_commit: str,
-    captured_at: float,
-) -> dict[str, object]:
-    _verify_evidence(
-        baseline,
-        schema=BASELINE_SCHEMA,
-        label="compatibility baseline",
+    baseline_captured: float,
+    current_captured: float,
+) -> tuple[dict[str, int], dict[str, int]]:
+    latest_baseline_seen = max(
+        [baseline_telemetry["tracking_started_at"]]
+        + list(baseline_telemetry["last_seen_at"]["operations"].values())
+        + list(baseline_telemetry["last_seen_at"]["features"].values())
     )
-    current_commit = _full_commit(source_commit)
-    baseline_commit = _full_commit(
-        str(baseline.get("source_commit", "")),
-        name="baseline source_commit",
-    )
-    baseline_captured = _finite_timestamp(
-        baseline.get("captured_at"),
-        name="baseline captured_at",
-    )
-    current_captured = _finite_timestamp(
-        captured_at,
-        name="increment captured_at",
-    )
+    if baseline_captured < latest_baseline_seen:
+        raise ValueError("baseline captured_at predates compatibility telemetry")
     if current_captured <= baseline_captured:
         raise ValueError("increment captured_at must be later than the baseline")
-    baseline_telemetry = _normalize_telemetry(baseline["telemetry"])
-    current_telemetry = _telemetry_from_status(runtime_status)
     latest_current_seen = max(
         [current_telemetry["tracking_started_at"]]
         + list(current_telemetry["last_seen_at"]["operations"].values())
@@ -378,11 +365,48 @@ def create_increment(
             "compatibility telemetry count increased without newer last_seen_at: "
             + ", ".join(stale_metrics)
         )
+    return operation_deltas, feature_deltas
+
+
+def create_increment(
+    baseline: Mapping[str, object],
+    runtime_status: Mapping[str, object],
+    *,
+    source_commit: str,
+    captured_at: float,
+) -> dict[str, object]:
+    _verify_evidence(
+        baseline,
+        schema=BASELINE_SCHEMA,
+        label="compatibility baseline",
+    )
+    current_commit = _full_commit(source_commit)
+    baseline_commit = _full_commit(
+        str(baseline.get("source_commit", "")),
+        name="baseline source_commit",
+    )
+    baseline_captured = _finite_timestamp(
+        baseline.get("captured_at"),
+        name="baseline captured_at",
+    )
+    current_captured = _finite_timestamp(
+        captured_at,
+        name="increment captured_at",
+    )
+    baseline_telemetry = _normalize_telemetry(baseline["telemetry"])
+    current_telemetry = _telemetry_from_status(runtime_status)
+    operation_deltas, feature_deltas = _increment_deltas(
+        baseline_telemetry,
+        current_telemetry,
+        baseline_captured=baseline_captured,
+        current_captured=current_captured,
+    )
     report: dict[str, object] = {
         "schema": INCREMENT_SCHEMA,
         "baseline_digest": baseline["evidence_digest"],
         "baseline_source_commit": baseline_commit,
         "baseline_captured_at": baseline_captured,
+        "baseline_telemetry": baseline_telemetry,
         "source_commit": current_commit,
         "captured_at": current_captured,
         "operation_deltas": operation_deltas,
@@ -438,12 +462,26 @@ def evaluate_retirement(
         increment.get("baseline_captured_at"),
         name="increment baseline_captured_at",
     )
+    baseline_source_commit = _full_commit(
+        str(increment.get("baseline_source_commit", "")),
+        name="increment baseline_source_commit",
+    )
+    baseline_telemetry_value = increment.get("baseline_telemetry")
+    if not isinstance(baseline_telemetry_value, Mapping):
+        raise ValueError("compatibility increment baseline_telemetry must be an object")
+    baseline_telemetry = _normalize_telemetry(baseline_telemetry_value)
+    reconstructed_baseline = {
+        "schema": BASELINE_SCHEMA,
+        "source_commit": baseline_source_commit,
+        "captured_at": baseline_captured,
+        "telemetry": baseline_telemetry,
+    }
+    if increment.get("baseline_digest") != _fingerprint(reconstructed_baseline):
+        raise ValueError("compatibility increment baseline evidence is invalid")
     current_captured = _finite_timestamp(
         increment.get("captured_at"),
         name="increment captured_at",
     )
-    if current_captured <= baseline_captured:
-        raise ValueError("increment captured_at must be later than the baseline")
     telemetry = increment.get("telemetry")
     if not isinstance(telemetry, Mapping):
         raise ValueError("compatibility increment telemetry must be an object")
@@ -463,6 +501,20 @@ def evaluate_retirement(
     if set(feature_deltas) != set(normalized_telemetry["feature_counts"]):
         raise ValueError(
             "compatibility increment feature_deltas must match telemetry counts"
+        )
+    expected_operation_deltas, expected_feature_deltas = _increment_deltas(
+        baseline_telemetry,
+        normalized_telemetry,
+        baseline_captured=baseline_captured,
+        current_captured=current_captured,
+    )
+    if operation_deltas != expected_operation_deltas:
+        raise ValueError(
+            "compatibility increment operation_deltas do not match baseline telemetry"
+        )
+    if feature_deltas != expected_feature_deltas:
+        raise ValueError(
+            "compatibility increment feature_deltas do not match baseline telemetry"
         )
     validated_increment = dict(increment)
     validated_increment["operation_deltas"] = operation_deltas

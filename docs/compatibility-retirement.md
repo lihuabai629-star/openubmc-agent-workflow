@@ -39,8 +39,9 @@ window. They are readers only and cannot create new Run transitions.
 into three digest-bound records:
 
 - `baseline` captures one telemetry identity, count snapshot, source commit and capture time;
-- `increment.v2` compares a strictly later snapshot and rejects counter rollback, non-finite or
-  inconsistent timestamps, and tracking-identity changes;
+- `increment.v2` binds the baseline telemetry, compares a strictly later snapshot, and rejects
+  rewritten deltas, counter rollback, non-finite or inconsistent timestamps, and tracking-identity
+  changes;
 - `evaluate` binds that zero-use evidence to a complete promotable Release Gate from the same source
   commit and reports readiness separately for each writer and for the whole compatibility profile.
 
