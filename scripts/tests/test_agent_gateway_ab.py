@@ -900,6 +900,9 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertNotIn(str(candidate), second)
         self.assertIn("按需读取直接链接的 references", first)
         self.assertIn("openubmc-target-runtime.observe", first)
+        self.assertIn("已在当前基准会话注册", first)
+        self.assertIn("尚未发出 MCP 调用", first)
+        self.assertIn("不算一次失败或重试", first)
         self.assertNotIn("tools.openubmc_target_runtime_observe", first)
         self.assertNotIn("JavaScript wrapper", first)
         self.assertIn("不要列出 MCP resources/templates", first)
@@ -2188,7 +2191,7 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertEqual(
             evidence["benchmark"]["prompt_digest"],
-            "sha256:00c3357a5b3b7c9f55165dfb675fe2da8db18b58b154593439c9c897764d9852",
+            "sha256:d662debf10ba737762e0bee10730e279aad3b5bc24c14a9851131f65db1ad386",
         )
         self.assertNotEqual(
             evidence["benchmark"]["prompt_digest"],
@@ -2201,6 +2204,7 @@ class AgentGatewayAbTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("--scenario skill-disclosure", documentation)
+        self.assertIn("尚未发出的 MCP 调用不算失败或重试", documentation)
         self.assertIn("same Agent profile", documentation)
         self.assertIn("valid pairs", documentation)
         self.assertIn("95%", documentation)
