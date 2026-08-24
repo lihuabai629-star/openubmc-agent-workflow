@@ -271,9 +271,11 @@ sample, there are at least ten valid pairs, and every bounded regression metric 
 this Skill-only scenario has no side effects, zero-tool dispatch misses remain signed instead of
 being selectively rerun: each arm must stay at or above 95% validity, invalid pairs may not exceed
 10%, and candidate validity may not regress by more than 5 percentage points versus the baseline.
-An arm that dispatched any tool and then failed semantics or exact scope is not dispatch noise and
-blocks the checkpoint. Runtime release and execute qualification continue to require zero invalid
-pairs.
+Both arms use identical per-run acceptance checks. A baseline non-noise invalid run counts against
+the shared rate and invalid-pair thresholds, allowing measured baseline behavior noise within those
+bounds. Only a candidate non-noise invalid run blocks the checkpoint immediately, so a candidate
+cannot be promoted by averaging an active semantic, tool, or scope violation into the sample.
+Runtime release and execute qualification continue to require zero invalid pairs.
 The scenario records its own prompt digest, source commits, schedule, raw metrics, environment,
 and signed run evidence. It evaluates Skill disclosure behavior; the default release qualification
 remains `execute-source-only`.

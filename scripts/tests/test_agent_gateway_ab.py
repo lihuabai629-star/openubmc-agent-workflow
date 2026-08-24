@@ -2355,6 +2355,8 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("valid pairs", documentation)
         self.assertIn("95%", documentation)
         self.assertIn("5 percentage points", documentation)
+        self.assertIn("Both arms use identical per-run acceptance checks", documentation)
+        self.assertIn("Only a candidate non-noise invalid run", documentation)
 
     def test_verify_cli_uses_the_selected_baseline_ref(self) -> None:
         with patch.object(
