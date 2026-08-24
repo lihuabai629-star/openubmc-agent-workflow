@@ -1105,7 +1105,7 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
         "异常属实",
         "异常确定",
     )
-    uncertainty_verb = r"(?:仍需|还需|需要|尚需|有待|取决于)"
+    uncertainty_verb = r"(?:仍需|还需要|还需|需要|尚需|有待|取决于)"
     uncertainty_evidence = (
         r"(?:(?:其他|更多|额外|补充)?证据|接口(?:规范|定义|契约|语义)|"
         r"预期(?:值|行为|结果)|基线(?:值|行为|结果)|参考(?:值|标准|规范)|"
@@ -1125,7 +1125,7 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
     clauses = [
         clause.strip()
         for clause in re.split(
-            r"[，,。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)|"
+            r"[，,、。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)|"
             r"(?=(?:而|同时|并且)(?:最终|明确|正式|已|已经|结论|结果|"
             r"判定|认定|确认))",
             folded,
@@ -1459,7 +1459,8 @@ def _skill_disclosure_validity(
         {"pair": int(pair["pair"]), "arm": arm}
         for pair in invalid_pairs
         for arm, valid in _json_object(pair.get("valid")).items()
-        if valid is not True
+        if arm == "B"
+        and valid is not True
         and not _skill_disclosure_dispatch_noise(
             attempts_by_key.get((int(pair["pair"]), str(arm)), {})
         )
@@ -1484,7 +1485,7 @@ def _skill_disclosure_validity(
     ):
         errors.append("candidate validity regresses by more than 5 percentage points")
     if non_noise_invalid_runs:
-        errors.append("non-noise invalid behavior is not allowed")
+        errors.append("candidate non-noise invalid behavior is not allowed")
     return {
         "passed": not errors,
         "attempted_pairs": attempted_pairs,

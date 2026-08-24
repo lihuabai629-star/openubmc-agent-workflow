@@ -1072,6 +1072,8 @@ class AgentGatewayAbTests(unittest.TestCase):
             "无法判定 ResourceId 是否异常。",
             "不能确定 ResourceId 是否异常。",
             "无法单独证明 ResourceId=0 属于异常。判定异常仍需接口规范。",
+            "不能单独证明该值异常。"
+            "判定异常还需要接口规范、预期值或其他权威语义依据。",
             "无法单独证明 ResourceId=0 属于异常。"
             "最终结论是：是否异常仍需接口规范。",
             "无法单独证明 ResourceId=0 属于异常。"
@@ -2154,10 +2156,26 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(result["validity"]["arm_valid_rates"]["B"], 0.966667)
         self.assertFalse(result["validity"]["passed"])
         self.assertIn(
-            "non-noise invalid behavior is not allowed",
+            "candidate non-noise invalid behavior is not allowed",
             result["validity"]["errors"],
         )
         self.assertEqual(result["decision"], "failed")
+
+    def test_skill_disclosure_allows_baseline_behavior_noise_within_rate(self) -> None:
+        metrics = skill_disclosure_metrics(20)
+        baseline = next(
+            item
+            for item in metrics
+            if item["arm"] == "A" and item["pair"] == 1
+        )
+        baseline["semantic_acceptance"] = {"passed": False}
+
+        result = module.analyze(metrics)
+
+        self.assertEqual(result["validity"]["arm_valid_rates"]["A"], 0.95)
+        self.assertEqual(result["validity"]["arm_valid_rates"]["B"], 1.0)
+        self.assertTrue(result["validity"]["passed"])
+        self.assertEqual(result["decision"], "passed")
 
     def test_skill_disclosure_terminal_checkpoint_applies_p95_to_valid_pairs(self) -> None:
         metrics = skill_disclosure_metrics(30, invalid_candidate_pairs={1})
