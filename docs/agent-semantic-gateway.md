@@ -41,19 +41,16 @@ The default profile is `agent` and exposes only:
 - `observe`: exact, read-only, live observations;
 - `execute`: start or continue a stateful workflow to the next real decision Gate.
 
-Two explicit profiles preserve non-default access:
+One explicit non-Agent profile preserves governance access:
 
-- `compatibility`: legacy domain and workflow operations marked `exposure=compatibility`, retained
-  for migration and performance comparison;
 - `operator`: only operations marked `exposure=operator`, including Case inspection, raw Evidence,
   Replay, Session Outcome governance, lifecycle, and Runtime status.
 
-The projections are disjoint. `compatibility` cannot read Evidence, Replay, Session Outcomes,
-Cases, or Runtime status, while `operator` does not expose legacy domain execution operations.
+The projections are disjoint. `operator` does not expose Agent or internal Domain execution
+operations. The retired `compatibility` value is rejected during Runtime construction.
 
-Set `OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE` to `compatibility` or `operator` only for those
-purposes. Domain operations remain available inside the Runtime Core regardless of the selected
-transport projection.
+Set `OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE=operator` only for Operator / CI purposes. Domain
+operations remain internal to Runtime Core regardless of the selected transport projection.
 
 ## Observation contract
 
@@ -85,9 +82,8 @@ The Runtime classifies the selected facts as `coherent`, `partial`, or `inconsis
 five-second completion-skew window. Assurance replaces the fast result only when its classification
 improves, or when selector coverage improves without degrading the classification; otherwise the
 Runtime retains the fast result with an explicit gap. An Adapter that omits selector timing cannot
-produce a coherent reusable snapshot. Legacy
-`assurance` input remains accepted during migration but is normalized to this single policy and is
-not returned in the Agent projection.
+produce a coherent reusable snapshot. The retired `assurance` input is rejected. Assurance remains
+automatic Runtime policy and is not returned in the Agent projection.
 
 An `ObservationReceipt` contains semantic values, tri-state capability results
 (`available | unavailable | not_checked`), coverage, observation time, target identity when
@@ -102,8 +98,8 @@ but only a complete, temporally coherent Receipt carries an `ObservationRef` and
 reconstructs the observation, verifies its digest and target scope, and then uses it as the first
 diagnostic evidence, so it does not recollect the same evidence and remains reusable after a
 process restart. Validation also binds the persisted scope digest, observation time, target
-metadata, and 15-minute reuse window before a Run is opened. Complete legacy Receipts remain a
-compatibility input; modified, expired, or incomplete content cannot seed a Run.
+metadata, and 15-minute reuse window before a Run is opened. Full ObservationReceipts are not
+accepted as `execute` input; callers pass the Receipt's verified `ObservationRef`.
 
 ## Execution contract
 
@@ -112,7 +108,7 @@ compatibility input; modified, expired, or incomplete content cannot seed a Run.
 - `start`: create and advance a Run;
 - `respond`: satisfy the current phase Gate and continue;
 - `resume`: continue an existing Run;
-- `control`: compatibility commands for continue, reconcile, or cancel at a phase Gate.
+- `control`: reconcile an unresolved mutation or cancel a current Gate or Incident.
 
 The Runtime Core advances deterministic steps internally and returns a `Turn` only at a real Gate,
 an unresolved Incident, a running reattach point, or terminal Outcome. A Turn contains the Run ID,
@@ -138,8 +134,7 @@ the same durable operation ID and mutation journal. If the read-first recovery c
 continues without another Agent Turn. If it cannot converge, the Runtime returns an Incident with
 the affected Effect identity, recovery path, bounded allowed commands, and operator action. Repeated
 reconcile calls reuse the same open Incident instead of appending duplicate lifecycle facts.
-Explicit `control=reconcile` remains as a compatibility and operator fallback rather than the
-normal Agent path.
+Explicit `control=reconcile` remains a bounded recovery fallback rather than the normal Agent path.
 
 Recoverable Artifact and domain-preparation Incidents can be retried with `resume`. Any current
 Incident can instead be cancelled through `execute kind=control, command=cancel` bound to its
@@ -150,10 +145,10 @@ The Operator `runtime_status` projection derives Incident counts, open age, reso
 recovery paths, duplicate raises, and unknown policy codes from the persisted Run ledger. It does
 not maintain a second Incident state store, and the same metrics survive SQLite restart.
 
-Compatibility retirement is driven by persistent anonymous operation and feature counters exposed
-through Runtime status. SQLite-backed Runtime instances share the counters across processes; no
-task, target, payload, credential, or caller identity is recorded. The deletion order and zero-use
-window are defined in [Compatibility retirement](compatibility-retirement.md).
+Operator Runtime status retains the anonymous compatibility counters captured before retirement.
+The current Runtime exposes them as historical evidence but no longer increments them. No task,
+target, payload, credential, or caller identity is recorded. The evidence model is documented in
+[Compatibility retirement](compatibility-retirement.md).
 
 Terminal Runs persist one authoritative Run Outcome. The Agent path does not write a Session
 Outcome. An operator may explicitly project the redacted governance record from the persisted Run
@@ -189,11 +184,12 @@ Replay:
 - unknown Mutation is automatically reconciled or returned as an Incident with a bounded recovery
   contract;
 - Operator Incident metrics are reconstructed from persisted Run events;
-- legacy and governance operations require explicit profiles.
+- legacy operations are absent and governance operations require the operator profile.
 
 Live performance qualification remains a separate paired AB/BA gate because token and wall-time
-limits require a fixed model, target snapshot, and sufficient valid pairs. The compatibility
-profile is retained as the baseline until the semantic interface meets that gate consistently.
+limits require a fixed model, target snapshot, and sufficient valid pairs. Historical execute
+qualification may check out a pinned pre-retirement source for the baseline arm; the candidate and
+all current installations use the Agent profile.
 
 Use `scripts/agent_gateway_ab.py` to run or re-evaluate the qualification. The runner creates a
 balanced AB/BA schedule, isolates every Codex home, applies semantic and scope acceptance, and
@@ -324,16 +320,16 @@ The three supported delivery paths are verified through the same `execute` Inter
 The Runtime Core remains the stable kernel. Future capability should deepen the two semantic
 operations instead of adding Agent-facing tools:
 
-1. use persistent compatibility telemetry to retire the remaining legacy writers while retaining
-   explicit old-event upcasters;
+1. retain explicit old-event upcasters until supported persisted Runs pass their retention or
+   migration window;
 2. Log Bundle collection now produces a content-bound ArtifactRef, while local index, bounded
    query, and redacted export are separate internal READ_ONLY Domain Packs. Collection remains a
    target-affecting Effect and is not reclassified as read-only;
 3. add selector Adapters for D-Bus properties, verified active alarms, and bounded log search only
    from measured development gaps;
 4. keep evidence inspection, Replay, governance, and lifecycle automation in the operator/CI plane;
-5. retire the compatibility profile only after migration telemetry and paired AB/BA qualification
-   show that the semantic Interface is both cheaper and at least as reliable.
+5. keep historical qualification evidence and compatibility telemetry auditable without restoring
+   retired writers.
 
 Every new selector must reuse the same ScopeContract, claim grounding, content-addressed source,
 freshness semantics, and result budgets. Every new workflow must cover normal completion, process

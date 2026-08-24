@@ -890,7 +890,7 @@ def _text_sha256(value: str) -> str:
 def _normalize_prompt_skill_path(prompt: str, *, scenario: str) -> str:
     if scenario == "execute-source-only":
         return re.sub(
-            r"(?m)^(使用已安装的 ).+( 所定义的(?:原生 Case Continuation 路径|Agent Gateway 路径)。)$",
+            r"(?m)^(使用已安装的 ).+( 所定义的(?:原生 Case Continuation 路径| Agent Gateway 路径)。)$",
             r"\1<skill-path>\2",
             prompt,
             count=1,

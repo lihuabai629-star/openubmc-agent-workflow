@@ -156,8 +156,7 @@ Compatibility fields `ssh_object`, `telnet_files`, and `telnet_logs` may remain 
 ## Orchestration Entrypoints
 
 The default MCP Interface exposes only `observe` and `execute`. The domain operation names in this
-section describe internal Runtime adapters and the explicit compatibility profile; ordinary Agents
-must not orchestrate them directly.
+section describe internal Runtime adapters; ordinary Agents must not orchestrate them directly.
 
 `workflow_remote.py` is the canonical combined-snapshot CLI. It preserves the established input
 flags, then enters `debug_run` through the same OperationCatalog, Case repository, evidence store,
@@ -166,15 +165,15 @@ fine-grained capability, collects the bounded snapshot, and computes freshness u
 deadline. The package intentionally contains no terminal-multiplexer or detached-pane launcher.
 Starting a shell session is neither collection completion nor evidence.
 
-The compatibility `debug_collect` entrypoint accepts `profile: object-alarm` for a single current SSH-backed
+The internal `debug_collect` adapter accepts `profile: object-alarm` for a single current SSH-backed
 object/alarm snapshot. That profile skips Telnet, source correlation, and the end freshness pass.
 On an epoch-valid follow-up, its cached MDB gate can release that read concurrently with the start
 SSH anchor refresh; D-Bus/alarm reads still wait for the refreshed anchor. A failed refresh still
 fails the result and invalidates the cache. Use `debug_run` for the full freshness and correlation
 workflow.
 
-For a current MDB-only answer, default MCP callers use an `observe` MDB selector. Compatibility
-`debug_collect` accepts `profile: mdb`. Supplying `mdb_only: true`
+For a current MDB-only answer, default MCP callers use an `observe` MDB selector. The internal
+`debug_collect` adapter accepts `profile: mdb`. Supplying `mdb_only: true`
 with the default profile selects the same fast path. It forces the MDB-only capability profile,
 skips Telnet/source correlation/end freshness, and enables the cached capability gate to release
 fresh MDB reads during the SSH anchor refresh. This is not result caching: every requested MDB
@@ -248,7 +247,7 @@ workflow summaries, and at most 32 mutation journal identities. That TaskContext
 resolved or directly supplied credential values, domain resources, SSH/Telnet/Redfish sessions,
 capability snapshots, MDB objects, alarms, logs, files, or comparison results. The persistent Case
 is separate: in internal development mode its unredacted workflow inputs may include direct
-credentials so `workflow.advance` can continue after a process restart. Case evidence and workflow
+credentials so `execute(kind=resume)` can reattach after a process restart. Case evidence and workflow
 inputs remain until explicit forget or retention cleanup. The first follow-up still opens new
 domain resources and performs fresh reads; it never restores a connection or an old evidence
 result. TaskContext files use atomic replacement, a schema version, a per-file byte ceiling, a
@@ -261,8 +260,9 @@ Case target-set or port replacement increments `target_version`, so operation st
 the previous binding cannot satisfy the current workflow. Selecting an already bound target by
 `target_id` does not increment that version. A completed Developer phase submitted again starts a
 new delivery cycle. A repeated downstream phase invalidates only its successors. A failed ordinary
-operation remains incomplete, and the next `workflow.advance` derives a new attempt identity and
-executes it again; an unknown mutation outcome remains blocked for explicit journal reconciliation.
+operation remains incomplete, and the next `execute(kind=resume)` reattaches the same Run so
+`RunEngine` can derive a new safe attempt; an unknown mutation outcome remains blocked for explicit
+journal reconciliation.
 
 `diagnose-and-fix` uses one of three delivery strategies:
 
@@ -298,9 +298,9 @@ in-flight submission counts. Context maintenance attempts, failures, and the las
 visible in Runtime status.
 
 During active work, default MCP `structuredContent` is an `ObservationReceipt` or `Turn`. Start a
-stateful Run with `execute(kind=start)`, continue it with `resume`, and satisfy a returned phase Gate
-with `respond`. The Gateway wraps `workflow.advance`, `workflow.next`, and phase recording
-internally. Terminal Runs persist Closeout and one authoritative Run Outcome. Session Outcome is an
+stateful Run with `execute(kind=start)`, continue it with `execute(kind=resume)`, and satisfy a
+returned phase Gate with `execute(kind=respond)`. `RunEngine` commits every Gate transition directly. Terminal Runs persist Closeout
+and one authoritative Run Outcome. Session Outcome is an
 explicit operator projection of that persisted fact; raw Evidence, Replay, Case inspection,
 review, approval, and promotion stay in the operator profile.
 

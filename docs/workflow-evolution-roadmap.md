@@ -140,9 +140,9 @@ CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2
   Outcome 投影；
 - `DomainExecutor` 在 Runtime 构造时注册 Adapter，只读传输失败有限重试，Mutation 不盲目
   重放；
-- `ContextRuntime` 继续承载兼容 Case、repository 与 Evidence 实现；原生 Agent Gate
-  response 由 RunEngine 提交持久 Gate，旧 `phase_record/workflow.next` 仅在 compatibility
-  profile 中保留，历史事件由显式 upcaster 转换；
+- `ContextRuntime` 继续承载 repository 与 Evidence 实现；原生 Agent Gate response 由
+  RunEngine 提交持久 Gate；兼容 writer/profile 的候选移除已完成并由零使用 telemetry 与
+  同源 Release Gate 决定晋级，历史事件继续由显式 upcaster 转换；
 - Session Outcome 只从持久 `RunOutcomeRecorded` 投影，terminal replay 不重复写 Run Outcome、
   Closeout 或治理记录。
 
@@ -307,7 +307,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 | 目标 | 验收 |
 | --- | --- |
 | Incident 闭环 | 内建 Incident 已有确定的 retry、reconcile、correction-then-resume、cancel 或 terminal 路径；Operator 指标从持久 Run ledger 派生并支持重启恢复 |
-| Compatibility 收敛 | feature-level 持久遥测和 Operator 退役判定证据已落地；按 14 个 canonical main 活跃研发日和一次同 source 完整资格的零使用窗口删除旧 writer，old-event reader 保留 |
+| Compatibility 收敛 | feature-level 持久遥测和 Operator 退役判定证据已落地；零增长 telemetry 与一次同 source 完整资格通过后删除旧 writer，old-event reader 保留 |
 | Module locality | compatibility、EvidenceStore、Runtime composition 从 MCP transport 中集中 |
 | 测试稳定 | duplicate storm、SQLite 并发、crash-cut、capacity 与 restart soak 已纳入 release qualification；property 与 network fault injection 继续深化 |
 
@@ -317,7 +317,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 2. Artifact retention、redaction 和 GC：已完成持久 Repository、内容寻址、作用域校验、显式释放与红化派生基线；继续补容量和长期保留遥测；
 3. selector 并行与连接复用；
 4. D-Bus、active alarm、bounded log search 等按真实调用缺口增加；
-5. compatibility profile 使用遥测与退役；
+5. compatibility 历史遥测审计与 old-event upcaster 保留窗口；
 6. 扩展长时 soak、property-based 和 network fault injection；
 7. `ModelInvocationRecord` 与受限 `PlanProposal -> PlanRevision` 原型已完成；确定性评估证明
    持久重放、严格 JSON、Gate/compensation 语义和边界安全；六组配对任务中两条路径均为
@@ -379,7 +379,7 @@ lock-only commit 为 `22ebc53`；完整 execute A/B、Release Gate 与 GitHub ma
 5. Case 暂不独立建模不会阻碍多阶段 Run；
 6. Incident 正式化能改善 unknown recovery，而不会形成新的 Operator 工具膨胀；
 7. Skill 渐进披露与阶段上下文隔离能显著降低完整 Build-Upgrade Token；
-8. compatibility profile 可以在有遥测和回滚窗口后安全退役。
+8. compatibility profile 退役后，历史 Run 仍可通过显式 upcaster 稳定读取。
 9. Runtime 内模型规划只有在真实任务 A/B 证明降低 Agent turns 或减少 plan defect 后才值得
    接入；当前确定性评估结论为 `isolate`。
 

@@ -11,9 +11,6 @@ import time
 from typing import Protocol
 
 
-_LEGACY_OPERATION_FEATURES = frozenset({"phase_record", "workflow.next"})
-
-
 @dataclass(frozen=True)
 class CompatibilityMetric:
     count: int
@@ -21,9 +18,7 @@ class CompatibilityMetric:
 
 
 class CompatibilityTelemetryRepository(Protocol):
-    """Persist anonymous metric counters shared by Runtime instances."""
-
-    def increment(self, metric_kind: str, metric_name: str) -> None: ...
+    """Read retained anonymous metric counters shared by Runtime instances."""
 
     def metrics(self, metric_kind: str) -> Mapping[str, CompatibilityMetric]: ...
 
@@ -35,15 +30,6 @@ class InMemoryCompatibilityTelemetryRepository:
         self._metrics: dict[tuple[str, str], CompatibilityMetric] = {}
         self._tracking_started_at = time.time()
         self._lock = threading.RLock()
-
-    def increment(self, metric_kind: str, metric_name: str) -> None:
-        identity = (metric_kind, metric_name)
-        with self._lock:
-            prior = self._metrics.get(identity)
-            self._metrics[identity] = CompatibilityMetric(
-                count=(prior.count if prior is not None else 0) + 1,
-                last_seen_at=time.time(),
-            )
 
     def metrics(self, metric_kind: str) -> Mapping[str, CompatibilityMetric]:
         with self._lock:
@@ -58,7 +44,7 @@ class InMemoryCompatibilityTelemetryRepository:
 
 
 class SQLiteCompatibilityTelemetryRepository:
-    """Atomic counters stored beside the SQLite Runtime repository."""
+    """Read retained history stored beside the SQLite Runtime repository."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -112,20 +98,6 @@ class SQLiteCompatibilityTelemetryRepository:
                 (time.time(),),
             )
 
-    def increment(self, metric_kind: str, metric_name: str) -> None:
-        with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO compatibility_telemetry
-                    (metric_kind, metric_name, count, updated_at)
-                VALUES (?, ?, 1, ?)
-                ON CONFLICT(metric_kind, metric_name) DO UPDATE SET
-                    count = compatibility_telemetry.count + 1,
-                    updated_at = excluded.updated_at
-                """,
-                (metric_kind, metric_name, time.time()),
-            )
-
     def metrics(self, metric_kind: str) -> Mapping[str, CompatibilityMetric]:
         with self._connection() as connection:
             rows = connection.execute(
@@ -154,35 +126,10 @@ class SQLiteCompatibilityTelemetryRepository:
 
 
 class CompatibilityTelemetry:
-    """Recognize compatibility usage and expose one anonymous status shape."""
+    """Expose retained compatibility history through Runtime status."""
 
     def __init__(self, repository: CompatibilityTelemetryRepository) -> None:
         self.repository = repository
-
-    def record_operation(self, name: str) -> None:
-        self.repository.increment("operation", name)
-        if name in _LEGACY_OPERATION_FEATURES:
-            self.repository.increment("feature", name)
-
-    def record_agent_input(
-        self,
-        operation: str,
-        arguments: Mapping[str, object],
-    ) -> None:
-        if operation == "observe" and "assurance" in arguments:
-            self.repository.increment("feature", "observe.assurance")
-            return
-        if operation != "execute":
-            return
-        if isinstance(arguments.get("observation_receipt"), Mapping):
-            self.repository.increment(
-                "feature", "execute.observation_receipt"
-            )
-        if (
-            str(arguments.get("kind", "")).strip().lower() == "control"
-            and str(arguments.get("command", "")).strip().lower() == "continue"
-        ):
-            self.repository.increment("feature", "execute.control_continue")
 
     def status(self) -> dict[str, object]:
         operations = dict(sorted(self.repository.metrics("operation").items()))

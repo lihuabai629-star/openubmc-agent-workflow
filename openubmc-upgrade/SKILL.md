@@ -21,14 +21,14 @@ Internal phases do not ask the user to repeat the target, credentials,
 artifact identity, final purpose, or authorization. Build supplies the HPM
 path, SHA-256, product version, and build evidence; it never opens the target.
 
-When a Context Runtime `case_id` is present, consume `build.artifact`, target, credential selector,
-final purpose, and authorization from that Case. Bare “继续” or “continue” means call
-`workflow.next`; do not re-upload an HPM or reconstruct the operation from conversation history.
+When a Runtime `run_id` is present, consume `build.artifact`, target, credential selector,
+final purpose, and authorization from that Run. Bare “继续” or “continue” means call
+`execute(kind=resume)`; do not re-upload an HPM or reconstruct the operation from conversation history.
 Upload, activation, reconnect, and fresh Debug verification stay in the same workflow. A mutation
 outcome unknown blocks automatic continuation until the same durable MutationJournal is reconciled
-with the same Case and operation identity. Upgrade results are domain operations, not
-`phase_record` claims.
-Build evidence IDs remain attached to the Case's `build.artifact` provenance; consume the artifact
+with the same Run and Effect identity. Upgrade results are Runtime-owned domain Effects, not
+separate workflow claims.
+Build evidence IDs remain attached to the Run's `build.artifact` provenance; consume the artifact
 identity from that record without asking the user to restate or confirm it.
 
 Before upload, synchronize the Upgrade domain's local TargetRun to the Case-provided target epoch
@@ -159,8 +159,9 @@ journal and collect fresh installed-version evidence.
 
 Upgrade keeps a 32-entry target-binding LRU per task by default. This limits retained Redfish
 resources, not the number of environments in the Case; selecting an evicted target reconnects it.
-Failed workflow steps receive a new attempt on `workflow.advance`, while a durable terminal journal
-receipt prevents an already completed or terminally failed upload from being executed again.
+Failed workflow steps receive a new attempt through the same RunEngine route, while a durable
+terminal journal receipt prevents an already completed or terminally failed upload from being
+executed again.
 
 Read [Redfish upgrade flow](references/redfish-upgrade.md) before performing
 the write.
@@ -182,11 +183,9 @@ version result. Include the separate openubmc-debug verification status only
 when runtime acceptance was requested. Report a partial external mutation
 honestly when the task state is unknown.
 
-When the Case becomes terminal, Target Runtime automatically derives and
-persists `closeout`, `closeout_markdown`, and the default `closeout_bundle`.
-Use the Markdown as the user-facing first screen and the bundle as the immutable
-index for Closeout documents, build evidence, HPM identity, mutation journal,
-installed-version proof, and fresh Debug acceptance evidence.
+When the Run becomes terminal, return its terminal Outcome. Closeout documents,
+build evidence, HPM identity, mutation journal, installed-version proof, and
+fresh Debug acceptance evidence remain available through the Operator / CI Plane.
 
 ## Resources
 

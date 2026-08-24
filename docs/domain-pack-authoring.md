@@ -155,7 +155,7 @@ unknown reconcile、target epoch 与终态 Outcome；作者不能从入口参数
 - `version` 使用数字语义版本，行为不兼容时升级 major；
 - operation identity 和 capability identity 不能靠版本升级静默改义；
 - 已持久 Run 继续由固定 definition/event reader 或显式 upcaster 读取；
-- compatibility Adapter 可以翻译旧 receipt，但必须委托给同一 Domain Pack verifier；
+- 历史事件 upcaster 可以读取旧 receipt，但不能调用 Domain Pack 或写入新 Run 事实；
 - Pack 不得读取 MCP transport、Agent profile 或模型上下文来决定领域语义。
 
 Operator `runtime_status` 返回 `domain_pack_conformance`，用于确认当前组合的 Pack 数量、

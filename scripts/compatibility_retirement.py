@@ -6,7 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from collections.abc import Iterable, Mapping
+import math
+from collections.abc import Mapping
 from pathlib import Path
 import subprocess
 import sys
@@ -17,12 +18,11 @@ BASELINE_SCHEMA = (
     "openubmc-agent-workflow.compatibility-retirement-baseline.v1"
 )
 INCREMENT_SCHEMA = (
-    "openubmc-agent-workflow.compatibility-retirement-increment.v1"
+    "openubmc-agent-workflow.compatibility-retirement-increment.v3"
 )
 DECISION_SCHEMA = (
-    "openubmc-agent-workflow.compatibility-retirement-decision.v1"
+    "openubmc-agent-workflow.compatibility-retirement-decision.v3"
 )
-REQUIRED_ACTIVE_DEVELOPMENT_DAYS = 14
 WRITER_METRICS = {
     "observe.assurance": (("feature", "observe.assurance"),),
     "execute.control_continue": (
@@ -70,6 +70,20 @@ def _full_commit(value: str, *, name: str = "source_commit") -> str:
     return commit
 
 
+def _finite_timestamp(value: object, *, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be numeric")
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+    if not math.isfinite(timestamp):
+        raise ValueError(f"{name} must be finite")
+    if timestamp <= 0:
+        raise ValueError(f"{name} must be positive")
+    return timestamp
+
+
 def _counts(value: object, *, name: str) -> dict[str, int]:
     if not isinstance(value, Mapping):
         raise ValueError(f"compatibility telemetry {name} must be an object")
@@ -83,6 +97,26 @@ def _counts(value: object, *, name: str) -> dict[str, int]:
         if raw_count < 0:
             raise ValueError(f"compatibility telemetry {name}.{metric} cannot be negative")
         normalized[metric] = raw_count
+    return dict(sorted(normalized.items()))
+
+
+def _nonnegative_deltas(value: object, *, name: str) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"compatibility increment {name} must be an object")
+    normalized: dict[str, int] = {}
+    for raw_metric, raw_delta in value.items():
+        metric = str(raw_metric).strip()
+        if not metric:
+            raise ValueError(f"compatibility increment {name} has an empty metric")
+        if isinstance(raw_delta, bool) or not isinstance(raw_delta, int):
+            raise ValueError(
+                f"compatibility increment {name}.{metric} must be an integer"
+            )
+        if raw_delta < 0:
+            raise ValueError(
+                f"compatibility increment {name}.{metric} cannot be negative"
+            )
+        normalized[metric] = raw_delta
     return dict(sorted(normalized.items()))
 
 
@@ -101,9 +135,10 @@ def _timestamps(
             raw_timestamp, (int, float)
         ):
             raise ValueError(f"compatibility telemetry {name}.{metric} must be numeric")
-        timestamp = float(raw_timestamp)
-        if timestamp <= 0:
-            raise ValueError(f"compatibility telemetry {name}.{metric} must be positive")
+        timestamp = _finite_timestamp(
+            raw_timestamp,
+            name=f"compatibility telemetry {name}.{metric}",
+        )
         normalized[metric] = timestamp
     if set(normalized) != set(counts):
         raise ValueError(f"compatibility telemetry {name} must match its counts")
@@ -112,13 +147,15 @@ def _timestamps(
 
 def _normalize_telemetry(value: Mapping[str, object]) -> dict[str, object]:
     try:
-        tracking_started_at = float(value["tracking_started_at"])
+        raw_tracking_started_at = value["tracking_started_at"]
         total_calls = int(value["total_calls"])
         total_features = int(value["total_features"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("compatibility telemetry summary is incomplete") from exc
-    if tracking_started_at <= 0:
-        raise ValueError("compatibility telemetry tracking_started_at must be positive")
+    tracking_started_at = _finite_timestamp(
+        raw_tracking_started_at,
+        name="compatibility telemetry tracking_started_at",
+    )
     operations = _counts(value.get("operation_counts"), name="operation_counts")
     features = _counts(value.get("feature_counts"), name="feature_counts")
     if total_calls != sum(operations.values()):
@@ -187,7 +224,7 @@ def create_baseline(
     captured_at: float,
 ) -> dict[str, object]:
     commit = _full_commit(source_commit)
-    captured = float(captured_at)
+    captured = _finite_timestamp(captured_at, name="baseline captured_at")
     telemetry = _telemetry_from_status(runtime_status)
     latest_seen = max(
         [telemetry["tracking_started_at"]]
@@ -248,30 +285,22 @@ def _counts_without_newer_timestamp(
     ]
 
 
-def create_increment(
-    baseline: Mapping[str, object],
-    runtime_status: Mapping[str, object],
+def _increment_deltas(
+    baseline_telemetry: Mapping[str, object],
+    current_telemetry: Mapping[str, object],
     *,
-    source_commit: str,
-    captured_at: float,
-    active_development_dates: Iterable[str],
-) -> dict[str, object]:
-    _verify_evidence(
-        baseline,
-        schema=BASELINE_SCHEMA,
-        label="compatibility baseline",
+    baseline_captured: float,
+    current_captured: float,
+) -> tuple[dict[str, int], dict[str, int]]:
+    latest_baseline_seen = max(
+        [baseline_telemetry["tracking_started_at"]]
+        + list(baseline_telemetry["last_seen_at"]["operations"].values())
+        + list(baseline_telemetry["last_seen_at"]["features"].values())
     )
-    current_commit = _full_commit(source_commit)
-    baseline_commit = _full_commit(
-        str(baseline.get("source_commit", "")),
-        name="baseline source_commit",
-    )
-    baseline_captured = float(baseline.get("captured_at", 0.0))
-    current_captured = float(captured_at)
-    if current_captured < baseline_captured:
-        raise ValueError("increment captured_at predates the baseline")
-    baseline_telemetry = _normalize_telemetry(baseline["telemetry"])
-    current_telemetry = _telemetry_from_status(runtime_status)
+    if baseline_captured < latest_baseline_seen:
+        raise ValueError("baseline captured_at predates compatibility telemetry")
+    if current_captured <= baseline_captured:
+        raise ValueError("increment captured_at must be later than the baseline")
     latest_current_seen = max(
         [current_telemetry["tracking_started_at"]]
         + list(current_telemetry["last_seen_at"]["operations"].values())
@@ -336,15 +365,50 @@ def create_increment(
             "compatibility telemetry count increased without newer last_seen_at: "
             + ", ".join(stale_metrics)
         )
-    dates = sorted({str(value) for value in active_development_dates})
+    return operation_deltas, feature_deltas
+
+
+def create_increment(
+    baseline: Mapping[str, object],
+    runtime_status: Mapping[str, object],
+    *,
+    source_commit: str,
+    captured_at: float,
+) -> dict[str, object]:
+    _verify_evidence(
+        baseline,
+        schema=BASELINE_SCHEMA,
+        label="compatibility baseline",
+    )
+    current_commit = _full_commit(source_commit)
+    baseline_commit = _full_commit(
+        str(baseline.get("source_commit", "")),
+        name="baseline source_commit",
+    )
+    baseline_captured = _finite_timestamp(
+        baseline.get("captured_at"),
+        name="baseline captured_at",
+    )
+    current_captured = _finite_timestamp(
+        captured_at,
+        name="increment captured_at",
+    )
+    baseline_telemetry = _normalize_telemetry(baseline["telemetry"])
+    current_telemetry = _telemetry_from_status(runtime_status)
+    operation_deltas, feature_deltas = _increment_deltas(
+        baseline_telemetry,
+        current_telemetry,
+        baseline_captured=baseline_captured,
+        current_captured=current_captured,
+    )
     report: dict[str, object] = {
         "schema": INCREMENT_SCHEMA,
         "baseline_digest": baseline["evidence_digest"],
         "baseline_source_commit": baseline_commit,
+        "baseline_captured_at": baseline_captured,
+        "baseline_telemetry": baseline_telemetry,
         "source_commit": current_commit,
         "captured_at": current_captured,
-        "active_development_dates": dates,
-        "active_development_day_count": len(dates),
         "operation_deltas": operation_deltas,
         "feature_deltas": feature_deltas,
         "telemetry": current_telemetry,
@@ -364,15 +428,6 @@ def _verify_release_gate(
     )
 
 
-def _active_day_blocker(active_days: int) -> str | None:
-    if active_days >= REQUIRED_ACTIVE_DEVELOPMENT_DAYS:
-        return None
-    return (
-        f"only {active_days} active development days elapsed; "
-        f"{REQUIRED_ACTIVE_DEVELOPMENT_DAYS} required"
-    )
-
-
 def _writer_decision(
     metrics: tuple[tuple[str, str], ...],
     *,
@@ -386,10 +441,6 @@ def _writer_decision(
         metric_values.append({"kind": kind, "name": metric, "delta": delta})
         if delta > 0:
             blockers.append(f"{kind} count increased by {delta}")
-    active_days = int(increment["active_development_day_count"])
-    window_blocker = _active_day_blocker(active_days)
-    if window_blocker is not None:
-        blockers.append(window_blocker)
     return {
         "ready": not blockers,
         "stage": "remove_compatibility_writer",
@@ -407,18 +458,79 @@ def evaluate_retirement(
         schema=INCREMENT_SCHEMA,
         label="compatibility increment",
     )
+    baseline_captured = _finite_timestamp(
+        increment.get("baseline_captured_at"),
+        name="increment baseline_captured_at",
+    )
+    baseline_source_commit = _full_commit(
+        str(increment.get("baseline_source_commit", "")),
+        name="increment baseline_source_commit",
+    )
+    baseline_telemetry_value = increment.get("baseline_telemetry")
+    if not isinstance(baseline_telemetry_value, Mapping):
+        raise ValueError("compatibility increment baseline_telemetry must be an object")
+    baseline_telemetry = _normalize_telemetry(baseline_telemetry_value)
+    reconstructed_baseline = {
+        "schema": BASELINE_SCHEMA,
+        "source_commit": baseline_source_commit,
+        "captured_at": baseline_captured,
+        "telemetry": baseline_telemetry,
+    }
+    if increment.get("baseline_digest") != _fingerprint(reconstructed_baseline):
+        raise ValueError("compatibility increment baseline evidence is invalid")
+    current_captured = _finite_timestamp(
+        increment.get("captured_at"),
+        name="increment captured_at",
+    )
+    telemetry = increment.get("telemetry")
+    if not isinstance(telemetry, Mapping):
+        raise ValueError("compatibility increment telemetry must be an object")
+    normalized_telemetry = _normalize_telemetry(telemetry)
+    operation_deltas = _nonnegative_deltas(
+        increment.get("operation_deltas"),
+        name="operation_deltas",
+    )
+    feature_deltas = _nonnegative_deltas(
+        increment.get("feature_deltas"),
+        name="feature_deltas",
+    )
+    if set(operation_deltas) != set(normalized_telemetry["operation_counts"]):
+        raise ValueError(
+            "compatibility increment operation_deltas must match telemetry counts"
+        )
+    if set(feature_deltas) != set(normalized_telemetry["feature_counts"]):
+        raise ValueError(
+            "compatibility increment feature_deltas must match telemetry counts"
+        )
+    expected_operation_deltas, expected_feature_deltas = _increment_deltas(
+        baseline_telemetry,
+        normalized_telemetry,
+        baseline_captured=baseline_captured,
+        current_captured=current_captured,
+    )
+    if operation_deltas != expected_operation_deltas:
+        raise ValueError(
+            "compatibility increment operation_deltas do not match baseline telemetry"
+        )
+    if feature_deltas != expected_feature_deltas:
+        raise ValueError(
+            "compatibility increment feature_deltas do not match baseline telemetry"
+        )
+    validated_increment = dict(increment)
+    validated_increment["operation_deltas"] = operation_deltas
+    validated_increment["feature_deltas"] = feature_deltas
     source_commit = _full_commit(str(increment.get("source_commit", "")))
     _verify_release_gate(release_gate, source_commit=source_commit)
     writers = {
-        name: _writer_decision(metrics, increment=increment)
+        name: _writer_decision(metrics, increment=validated_increment)
         for name, metrics in WRITER_METRICS.items()
     }
     profile_blockers: list[str] = []
     operation_increase = sum(
-        int(value) for value in increment["operation_deltas"].values()
+        int(value) for value in operation_deltas.values()
     )
     feature_increase = sum(
-        int(value) for value in increment["feature_deltas"].values()
+        int(value) for value in feature_deltas.values()
     )
     if operation_increase:
         profile_blockers.append(
@@ -428,17 +540,11 @@ def evaluate_retirement(
         profile_blockers.append(
             f"compatibility feature count increased by {feature_increase}"
         )
-    active_days = int(increment["active_development_day_count"])
-    window_blocker = _active_day_blocker(active_days)
-    if window_blocker is not None:
-        profile_blockers.append(window_blocker)
     report: dict[str, object] = {
         "schema": DECISION_SCHEMA,
         "source_commit": source_commit,
         "increment_digest": increment["evidence_digest"],
         "release_gate_digest": release_gate["evidence_digest"],
-        "required_active_development_days": REQUIRED_ACTIVE_DEVELOPMENT_DAYS,
-        "active_development_day_count": active_days,
         "writers": writers,
         "compatibility_profile": {
             "ready": not profile_blockers,
@@ -449,75 +555,6 @@ def evaluate_retirement(
     }
     report["evidence_digest"] = _fingerprint(report)
     return report
-
-
-def git_active_development_dates(
-    repository: Path,
-    *,
-    baseline_commit: str,
-    current_commit: str,
-    canonical_main_commit: str | None = None,
-    after_timestamp: float | None = None,
-) -> list[str]:
-    baseline = _full_commit(baseline_commit, name="baseline_commit")
-    current = _full_commit(current_commit, name="current_commit")
-    if canonical_main_commit is not None:
-        canonical_main = _full_commit(
-            canonical_main_commit,
-            name="canonical_main_commit",
-        )
-        history = subprocess.run(
-            ["git", "rev-list", "--first-parent", canonical_main],
-            cwd=repository,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if history.returncode:
-            raise ValueError(
-                history.stderr.strip() or "cannot read canonical main history"
-            )
-        first_parent_commits = set(history.stdout.splitlines())
-        if baseline not in first_parent_commits or current not in first_parent_commits:
-            raise ValueError(
-                "baseline and current source must be on canonical main first-parent history"
-            )
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", baseline, current],
-        cwd=repository,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if ancestor.returncode != 0:
-        raise ValueError("baseline commit is not an ancestor of current commit")
-    completed = subprocess.run(
-        [
-            "git",
-            "log",
-            "--first-parent",
-            "--format=%ct%x09%cs",
-            f"{baseline}..{current}",
-        ],
-        cwd=repository,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if completed.returncode:
-        raise ValueError(completed.stderr.strip() or "cannot read Git activity")
-    threshold = float(after_timestamp) if after_timestamp is not None else 0.0
-    dates: set[str] = set()
-    for line in completed.stdout.splitlines():
-        raw_timestamp, separator, raw_date = line.partition("\t")
-        if not separator:
-            raise ValueError("Git activity output is malformed")
-        if float(raw_timestamp) > threshold:
-            dates.add(raw_date.strip())
-    return sorted(dates)
 
 
 def _read_json(path: Path, *, label: str) -> dict[str, object]:
@@ -584,7 +621,6 @@ def main(argv: list[str] | None = None) -> int:
     increment_parser.add_argument("--baseline", type=Path, required=True)
     increment_parser.add_argument("--runtime-status", type=Path, required=True)
     increment_parser.add_argument("--captured-at", type=float)
-    increment_parser.add_argument("--main-ref", default="github/main")
     increment_parser.add_argument("--output", type=Path)
     _add_source_options(increment_parser)
 
@@ -622,24 +658,11 @@ def main(argv: list[str] | None = None) -> int:
                 source_commit=args.source_commit,
                 source_ref=args.source_ref,
             )
-            canonical_main = _resolve_source_commit(
-                repository,
-                source_commit=None,
-                source_ref=args.main_ref,
-            )
-            dates = git_active_development_dates(
-                repository,
-                baseline_commit=str(baseline.get("source_commit", "")),
-                current_commit=commit,
-                canonical_main_commit=canonical_main,
-                after_timestamp=float(baseline.get("captured_at", 0.0)),
-            )
             report = create_increment(
                 baseline,
                 _read_json(args.runtime_status, label="Runtime status"),
                 source_commit=commit,
                 captured_at=args.captured_at or time.time(),
-                active_development_dates=dates,
             )
         else:
             report = evaluate_retirement(

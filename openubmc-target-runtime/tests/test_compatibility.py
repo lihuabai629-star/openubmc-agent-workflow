@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 import tempfile
@@ -16,6 +15,7 @@ from openubmc_target_runtime.compatibility import (  # noqa: E402
     CompatibilityTelemetry,
     SQLiteCompatibilityTelemetryRepository,
 )
+from tests.compatibility_history import seed_compatibility_history  # noqa: E402
 
 
 class CompatibilityTelemetryTests(unittest.TestCase):
@@ -79,35 +79,27 @@ class CompatibilityTelemetryTests(unittest.TestCase):
                 "_connect",
                 side_effect=tracked_connect,
             ):
-                telemetry.record_operation("debug_run")
                 telemetry.status()
 
-        self.assertEqual(len(closed), 4)
+        self.assertEqual(len(closed), 3)
 
-    def test_sqlite_counters_are_atomic_across_instances(self) -> None:
+    def test_sqlite_repository_reads_retained_history_without_a_writer_api(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             database = Path(raw) / "runtime.sqlite3"
-            telemetry = tuple(
-                CompatibilityTelemetry(
-                    SQLiteCompatibilityTelemetryRepository(database)
-                )
-                for _index in range(4)
+            seed_compatibility_history(
+                database,
+                (("operation", "debug_run", 40, 1234.5),),
             )
+            repository = SQLiteCompatibilityTelemetryRepository(database)
+            status = CompatibilityTelemetry(repository).status()
 
-            def record(index: int) -> None:
-                telemetry[index % len(telemetry)].record_operation("debug_run")
-
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                tuple(executor.map(record, range(40)))
-
-            status = telemetry[0].status()
-
+        self.assertFalse(hasattr(repository, "increment"))
         self.assertEqual(status["total_calls"], 40)
         self.assertEqual(status["operation_counts"], {"debug_run": 40})
         self.assertGreater(status["tracking_started_at"], 0)
-        self.assertGreater(
+        self.assertEqual(
             status["last_seen_at"]["operations"]["debug_run"],
-            0,
+            1234.5,
         )
 
 

@@ -54,9 +54,8 @@ operation identities, retry safety, target fencing, or terminal success.
 
 ## Ownership rules
 
-This table is the target authority model. Until compatibility retirement is complete, legacy
-profiles may still translate old commands or persist legacy Case facts; each such path must
-delegate native Run transitions to, then be deleted in favour of, the listed owner.
+This table is the target authority model. Agent writes enter only through `observe` and `execute`;
+historical event upcasters are read paths and cannot commit new Run transitions.
 
 | Fact or transition | Sole owner |
 | --- | --- |
@@ -70,14 +69,14 @@ delegate native Run transitions to, then be deleted in favour of, the listed own
 | Review, approval, promotion, and lifecycle governance | Operator / CI Plane |
 | Experimental model invocation, proposal validation, and inert revision persistence | `PlanResolver` |
 
-No second Module may independently write the same fact. Compatibility code may translate old
-commands and records, but it must delegate the authoritative transition to the owning Module.
+No second Module may independently write the same fact. Historical readers may translate old
+records into current projections, but they cannot accept old commands or create new facts.
 
 ## Domain invariants
 
 - The default Agent Interface remains `observe` and `execute`.
-- The Runtime exposes one developer-friendly default behavior. Legacy assurance hints are accepted
-  only for compatibility and are normalized to automatic Runtime policy.
+- The Runtime exposes one developer-friendly default behavior. Assurance selection is automatic
+  and is not an Agent input.
 - `observe` is read-only and never doubles as Run-status polling.
 - `execute` advances to the next semantic yield; transport acknowledgements are not Agent domain
   concepts.

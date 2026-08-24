@@ -237,7 +237,7 @@ class OperationDescriptor:
     handler_name: str | None = None
     lifecycle: str = "invoke"
     mutation: bool = False
-    exposure: str = "compatibility"
+    exposure: str = "internal"
     audience: str = "internal"
     cost_hint: str = "unbounded"
     scope_contract: str = ""
@@ -258,7 +258,7 @@ class OperationDescriptor:
             raise OperationCatalogError(
                 f"operation {name} has unsupported lifecycle {self.lifecycle}"
             )
-        if self.exposure not in {"agent", "compatibility", "operator", "internal"}:
+        if self.exposure not in {"agent", "operator", "internal"}:
             raise OperationCatalogError(
                 f"operation {name} has unsupported exposure {self.exposure}"
             )
@@ -289,7 +289,7 @@ class OperationDescriptor:
         lifecycle: str = "invoke",
         handler_name: str | None = None,
         mutation: bool = False,
-        exposure: str = "compatibility",
+        exposure: str = "internal",
         audience: str = "internal",
         cost_hint: str = "unbounded",
         scope_contract: str = "",

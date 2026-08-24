@@ -43,8 +43,9 @@ written.
 The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
 queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,
 Case lifecycle, and Runtime status are available only through the explicit `operator` profile.
-Legacy domain and workflow operations remain available through the explicit `compatibility`
-profile for migration and measurement; that profile does not expose operator operations. See
+Compatibility retirement is evidence-gated. This candidate removes legacy Agent inputs and the
+compatibility profile while preserving explicit old-event upcasters, but it must not be promoted to
+canonical `main` until zero-use telemetry and a same-source promotable Release Gate pass. See
 [Agent Semantic Gateway](docs/agent-semantic-gateway.md).
 
 ## Architecture and evolution

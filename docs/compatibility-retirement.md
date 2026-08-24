@@ -1,12 +1,14 @@
 # Compatibility retirement
 
-The compatibility profile exists to migrate callers, not as a second Runtime policy. Runtime
-status publishes anonymous counters that make removal decisions observable without storing task,
-target, payload, credential, or caller identity.
+This document describes the compatibility-retirement candidate. It removes the writers and MCP
+profile so Agent writes enter only through `observe` and `execute`; the Operator / CI Plane remains
+separate, and historical old-event upcasters plus anonymous telemetry remain read-only. The
+candidate must remain unmerged until zero-use telemetry and a same-source promotable Release Gate
+satisfy the readiness policy below.
 
 ## Telemetry
 
-`compatibility_telemetry` contains:
+Operator `runtime_status.compatibility_telemetry` retains:
 
 - `operation_counts`: compatibility operation calls, including `phase_record` and `workflow.next`;
 - `feature_counts`: legacy semantic inputs such as `observe.assurance`,
@@ -15,39 +17,40 @@ target, payload, credential, or caller identity.
 - `tracking_started_at` and per-operation/per-feature `last_seen_at`: the persisted timestamps used
   with count snapshots to evaluate a no-new-use window.
 
-When Context Runtime uses SQLite, counters are stored in the same database and are visible across
-Runtime instances and process restarts. In-memory Runtime instances intentionally keep process-local
-counters for tests and disposable development sessions.
+When Runtime uses SQLite, counters remain stored in the same database and are visible across
+Runtime instances and process restarts. Current Agent and internal Domain calls do not increment
+them.
 
-## Burn-down order
+## Retired inputs
 
-1. Migrate `control=continue` to `resume` and full `observation_receipt` to `ObservationRef`.
-2. Stop sending the legacy `assurance` field; Runtime already selects assurance automatically.
-3. Migrate compatibility `phase_record` and `workflow.next` callers to `execute respond/resume`.
-4. Persist a baseline Runtime-status snapshot. Remove legacy writers only when the relevant counts
-   have not increased, their `last_seen_at` is older than 14 active development days (or no use has
-   occurred since `tracking_started_at`), and one full release-qualification run has completed.
-5. Retain old-event upcasters until all supported persisted Runs have passed their retention or
-   migration window.
+- `observe.assurance`: rejected; Runtime selects assurance automatically.
+- `execute.control_continue`: rejected; use `execute(kind=resume)`.
+- `execute.observation_receipt`: rejected; use `ObservationRef`.
+- `phase_record`: not exposed; answer a Gate with `execute(kind=respond)`.
+- `workflow.next` and `workflow.advance`: not exposed; use `execute` start/respond/resume.
+- `compatibility` interface profile: rejected; use `agent` or `operator`.
 
-The removal sequence changes only compatibility Adapters. It must not add Agent operations, expose
-another policy, or move Run transition ownership out of `RunEngine`.
+Old-event upcasters remain until all supported persisted Runs pass their retention or migration
+window. They are readers only and cannot create new Run transitions.
 
 ## Retirement evidence
 
-`scripts/compatibility_retirement.py` turns the Operator `runtime_status` projection into three
-digest-bound records:
+`scripts/compatibility_retirement.py` turns a pre-retirement Operator `runtime_status` projection
+into three digest-bound records:
 
 - `baseline` captures one telemetry identity, count snapshot, source commit and capture time;
-- `increment` compares a later snapshot, rejects counter rollback or tracking-identity changes, and
-  counts distinct commit dates on canonical `github/main` first-parent history;
+- `increment.v3` binds the baseline telemetry, compares a strictly later snapshot, and rejects
+  rewritten deltas, counter rollback, non-finite or inconsistent timestamps, and tracking-identity
+  changes;
 - `evaluate` binds that zero-use evidence to a complete promotable Release Gate from the same source
   commit and reports readiness separately for each writer and for the whole compatibility profile.
 
-An active development day is a distinct committer date (`%cs`) among canonical first-parent commits
-after both the baseline source and the baseline capture instant, through the current source.
-Side-branch activity and main commits that already existed when the baseline was captured do not
-shorten the window. Any count increase requires a new baseline after callers have been migrated.
+Earlier `increment.v1` and `increment.v2` evidence is not accepted by the retirement evaluator.
+Evidence digests detect accidental drift inside the trusted internal qualification workspace; they
+are not an authentication or hostile-tampering boundary.
+
+Any count increase blocks the affected writer and the compatibility profile. Migrate the caller,
+capture a fresh baseline, then generate a new same-source qualification before retrying retirement.
 
 ```bash
 python scripts/compatibility_retirement.py baseline \
@@ -59,7 +62,6 @@ python scripts/compatibility_retirement.py increment \
   --baseline compatibility-baseline.json \
   --runtime-status runtime-status-current.json \
   --source-ref github/main \
-  --main-ref github/main \
   --output compatibility-increment.json
 
 python scripts/compatibility_retirement.py evaluate \
@@ -69,6 +71,7 @@ python scripts/compatibility_retirement.py evaluate \
   --output compatibility-decision.json
 ```
 
-The evaluate command returns exit status `0` only when the selected writer is ready. Without
-`--writer`, it evaluates retirement of the whole compatibility profile. Old-event upcasters are
-always reported as preserved readers and are outside writer-removal readiness.
+The evaluate command returns exit status `0` only when the selected historical writer decision is
+ready. Without `--writer`, it evaluates the whole retired profile. Old-event upcasters are always
+reported as preserved readers and are outside writer-removal readiness. The tool remains for audit
+and release evidence; it does not re-enable retired inputs.

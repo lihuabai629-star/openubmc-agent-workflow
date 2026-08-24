@@ -19,7 +19,7 @@ Important validation rule: `bmcgo` can return exit code 0 even when the log cont
 
 1. **Identify changed components**
    - Primary source is the current conversation: components/files just changed by the agent, user-named components, or a structured handoff from any upstream workflow.
-   - When `workflow.next` returns `status: waiting_phase_record` for `build.artifact`, load this Skill immediately. Treat its `handoff_arguments` as the normalized build input and its `phase_record_contract` as the exact result shape to submit; do not ask the user to restate the build request.
+   - When `execute` returns a `waiting_response` Turn whose Gate is `build.artifact` and owned by `openubmc-build`, load this Skill immediately. Preserve the Turn's Run and Gate binding and use the Gate input schema as the exact result contract; do not ask the user to restate the build request.
    - Prefer the structured handoff in `references/handoff-contract.md`; do not assume the caller is only `openubmc-developer` or `openubmc-debug`.
    - Use git status only as a fallback candidate scan because dirty worktrees may contain unrelated old files; filter it against the active task before building.
    - When file paths are known, map them directly:
@@ -109,32 +109,43 @@ RUN_DIR=/tmp/openubmc-build PREFIX=product \
    - After the final HPM hash and product version are known, run `scripts/write_artifact_metadata.py --path <hpm> --product-version <version> --provenance openubmc-build` so Runtime can bind the declared version and producer provenance to those exact bytes before Upgrade.
    - Keep the generated metadata adjacent to the HPM as `<hpm>.metadata.json`; it is Runtime-owned validation material and does not enter the Agent-facing typed Build payload.
    - Return the absolute HPM path, SHA-256, product version, and build evidence IDs as the typed Build result.
-   - When the task carries a Context Runtime `case_id`, submit the same result through `phase_record` with this contract:
+   - When the task carries a Runtime Turn, convert the verified HPM identity into the Gate's
+     `ArtifactRef` and submit it through `execute(kind=respond)` using the exact `run_id`, `gate_id`,
+     `gate_version`, and `schema_digest`. Use the Run-bound target identity; do not copy credentials
+     into the reference. Put only fields declared by the returned Gate schema in `response.payload`:
 
 ```yaml
-case_id: <current Case ID>
-expected_revision: <current Case revision>
-idempotency_key: <stable key for this build attempt>
-phase_type: build.artifact
-producer_identity: openubmc-build
-status: <running|completed|failed|cancelled>
-source_revision: <source revision built>
-summary: <concise build result>
-artifact_path: <absolute HPM path; required when completed>
-artifact_sha256: <64 lowercase hex characters; required when completed>
-product_version: <built product version; required when completed>
-evidence_ids: [<build log or artifact evidence IDs>]
-component_versions: [<component and Conan package identities>]
-build_commands: [<exact commands executed>]
-build_logs: [<absolute log paths or evidence IDs>]
-known_gaps: [<remaining validation gaps>]
+kind: respond
+run_id: <current Run ID>
+gate_id: <current Gate ID>
+gate_version: <current Gate version>
+schema_digest: <current Gate schema digest>
+response:
+  status: <completed|failed|cancelled>
+  summary: <concise build result>
+  payload:
+    source_revision: <source revision built>
+    artifact_ref:
+      handle: <absolute HPM path; required when completed>
+      digest: sha256:<64 lowercase hex characters>
+      kind: openubmc-hpm
+      size: <HPM byte size>
+      provenance: openubmc-build
+      retention_hint: run-lifetime
+      version: <built product version>
+      target: <target bound to the current Run>
+      run_id: <current Run ID>
+    component_versions: [<component and Conan package identities>]
+    build_commands: [<exact commands executed>]
+    build_logs: [<absolute log paths or build evidence IDs>]
+    known_gaps: [<remaining validation gaps>]
 ```
 
-   - Record running, failed, and cancelled states through the same typed phase and preserve their logs and known gaps instead of creating a second workflow state or publishing a stale artifact. Failed and cancelled attempts do not require artifact identity and may be retried as a new phase attempt in the same Case.
+   - Return only terminal Gate responses. Preserve logs and known gaps for failed or cancelled attempts instead of publishing a stale artifact. A running build remains local work until it can return a terminal response or the caller deadline yields control.
    - `openubmc-upgrade` owns any selected `build-upgrade` next step; do not upload from Build or acquire a target lease.
    - After Upgrade, route acceptance checks to `openubmc-debug` for fresh evidence from the new target epoch.
-   - With a bound Case, bare “继续” or “continue” means call `workflow.next` before rebuilding anything. After recording a terminal `build.artifact` phase, call `workflow.next` again. Target Runtime owns downstream routing and authorization; Build must not re-evaluate or reconfirm them. Use `workflow.advance` only for first execution, an explicit route choice, or a normal failed attempt that deliberately starts a new attempt.
-   - When the Case reaches a terminal state, Target Runtime automatically persists `closeout`, `closeout_markdown`, and the default `closeout_bundle`. Use the Markdown as the user-facing first screen and the bundle as the immutable index for the Closeout documents, phase evidence, build logs, and HPM identity.
+   - With a bound Run, bare “继续” or “continue” means call `execute(kind=resume)` before rebuilding anything. After returning a terminal `build.artifact` Gate response, use the returned Turn directly; do not issue an extra polling call. Target Runtime owns downstream routing and authorization, so Build must not re-evaluate or reconfirm them.
+   - When the Run reaches a terminal state, report the terminal Outcome. Closeout documents, phase evidence, build logs, and HPM identity remain available through the Operator / CI Plane.
 
 ## Quick Commands
 

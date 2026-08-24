@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-08-19
 - Decision owners: openUBMC Agent Workflow maintainers
+- Proposed supersession: [ADR-0005](0005-retire-compatibility-writers-and-profile.md) removes the
+  temporary compatibility profile only after its evidence gate passes.
 
 ## Context
 

@@ -32,7 +32,6 @@ CAPABILITY_MAX_ITEMS = 16
 MDB_QUERY_MAX_BYTES = 1024
 MDB_QUERY_MAX_ITEMS = 32
 
-_ASSURANCE_LEVELS = frozenset({"auto", "fast", "assured"})
 _CAPABILITY_ALIASES = frozenset(
     {"ssh", "telnet", "mdbctl", "busctl", "dbus", "alarms"}
 )
@@ -245,7 +244,6 @@ class ObservationQuery:
     freshness_mode: str = "live"
     max_age_seconds: int = 0
     deadline: float = 180.0
-    assurance: str = "auto"
 
     @classmethod
     def from_query(cls, query: Mapping[str, object]) -> "ObservationQuery":
@@ -254,7 +252,6 @@ class ObservationQuery:
             "target",
             "selectors",
             "freshness",
-            "assurance",
             "deadline",
         }
         if unexpected:
@@ -287,9 +284,6 @@ class ObservationQuery:
             raise ScopeViolation("only live evidence is supported by the Agent interface")
         if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age != 0:
             raise ScopeViolation("live evidence requires max_age_seconds=0")
-        legacy_assurance = _text(query.get("assurance") or "auto").lower()
-        if legacy_assurance not in _ASSURANCE_LEVELS:
-            raise ScopeViolation("assurance must be auto, fast, or assured")
         deadline = query.get("deadline", 180)
         if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
             raise ScopeViolation("deadline must be a positive number")
@@ -301,7 +295,6 @@ class ObservationQuery:
             freshness_mode=freshness_mode,
             max_age_seconds=max_age,
             deadline=float(deadline),
-            assurance="auto",
         )
         if len(json_bytes(contract.to_public_dict())) > OBSERVATION_SCOPE_MAX_BYTES:
             raise ScopeViolation("observation scope exceeds the 2KB budget")
@@ -525,7 +518,6 @@ class StartRun:
     entry_operation: str = ""
     entry_arguments: Mapping[str, object] | None = None
     observation_ref: ObservationRef | None = None
-    legacy_observation_receipt: Mapping[str, object] | None = None
     caller_deadline: float = 120.0
 
 
@@ -766,6 +758,10 @@ def decode_run_command(
     action: Mapping[str, object], *, operation_id: str
 ) -> RunCommand:
     bounded_request(action)
+    if "observation_receipt" in action:
+        raise AgentGatewayError(
+            "observation_receipt is retired; use observation_ref"
+        )
     kind = _text(action.get("kind")).lower()
     caller_deadline = _caller_deadline(action)
     if kind == "start":
@@ -814,19 +810,8 @@ def decode_run_command(
             raise AgentGatewayError("unsupported delivery_strategy")
         observation_ref = None
         raw_ref = action.get("observation_ref")
-        legacy_receipt = action.get("observation_receipt")
         if isinstance(raw_ref, Mapping):
             observation_ref = ObservationRef.from_public_dict(raw_ref)
-        if isinstance(legacy_receipt, Mapping):
-            if observation_ref is not None:
-                raise AgentGatewayError(
-                    "start accepts observation_ref or observation_receipt, not both"
-                )
-            source = _mapping(
-                legacy_receipt.get("observation_ref")
-                or legacy_receipt.get("source")
-            )
-            observation_ref = ObservationRef.from_public_dict(source)
         purpose = _text(action.get("purpose") or "complete the requested workflow")
         command = StartRun(
             target=target,
@@ -838,9 +823,6 @@ def decode_run_command(
             entry_operation=entry_operation,
             entry_arguments=entry_arguments,
             observation_ref=observation_ref,
-            legacy_observation_receipt=(
-                dict(legacy_receipt) if isinstance(legacy_receipt, Mapping) else None
-            ),
             caller_deadline=caller_deadline,
         )
         _identity, digest = run_command_identity(
@@ -972,22 +954,7 @@ def decode_run_command(
                 input_digest=digest,
                 caller_deadline=caller_deadline,
             )
-        if command == "continue":
-            identity, digest = run_command_identity(
-                ResumeRun(
-                    run_id,
-                    command_id=_text(operation_id),
-                    caller_deadline=caller_deadline,
-                ),
-                operation_id=operation_id,
-            )
-            return ResumeRun(
-                run_id,
-                command_id=identity,
-                input_digest=digest,
-                caller_deadline=caller_deadline,
-            )
-        raise AgentGatewayError("control command must be continue, reconcile, or cancel")
+        raise AgentGatewayError("control command must be reconcile or cancel")
     raise AgentGatewayError("execute kind must be start, respond, resume, or control")
 
 

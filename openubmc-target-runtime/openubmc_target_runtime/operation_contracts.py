@@ -29,7 +29,7 @@ class RuntimeOperationContract:
     evidence_types: tuple[str, ...] = ()
     orchestration_phase: str = ""
     closeout_stage: str = ""
-    exposure: str = "compatibility"
+    exposure: str = "internal"
     audience: str = "internal"
     cost_hint: str = "unbounded"
     scope_contract: str = "legacy-operation"
@@ -362,9 +362,6 @@ DEFAULT_OPERATION_CONTRACTS = RuntimeOperationContractRegistry(
         _operator_contract("session_outcome_promote"),
         _operator_contract("case_close", lifecycle="close"),
         _operator_contract("case_forget", lifecycle="close"),
-        RuntimeOperationContract("phase_record"),
-        RuntimeOperationContract("workflow.advance"),
-        RuntimeOperationContract("workflow.next"),
         _operator_contract("runtime_status", lifecycle="status"),
     )
 )

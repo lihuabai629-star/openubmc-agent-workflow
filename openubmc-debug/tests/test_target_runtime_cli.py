@@ -169,8 +169,8 @@ class TargetRuntimeCliTests(unittest.TestCase):
         finally:
             inspector.close()
         self.assertEqual(
-            status["compatibility_telemetry"]["operation_counts"]["debug_run"],
-            3,
+            status["compatibility_telemetry"]["operation_counts"],
+            {},
         )
         self.assertEqual(len(case["operations"]), 2)
         self.assertEqual(

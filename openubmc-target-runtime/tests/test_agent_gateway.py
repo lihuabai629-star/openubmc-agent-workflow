@@ -26,6 +26,7 @@ from openubmc_target_runtime import (  # noqa: E402
     GateConflict,
     InMemoryRuntimeRepository,
     Incident,
+    ObservationQuery,
     OBSERVATION_MAX_BYTES,
     RevisionConflict,
     ReferenceViolation,
@@ -41,17 +42,20 @@ from openubmc_target_runtime import (  # noqa: E402
     RunTurn,
     RuntimeMcpService,
     RuntimeSDKContext,
+    SQLiteCompatibilityTelemetryRepository,
     SQLiteRuntimeRepository,
     ScopeContract,
     ScopeViolation,
     StartRun,
     StdioMcpServer,
     SubmitGate,
+    decode_run_command,
 )
 from openubmc_target_runtime.context_runtime import (  # noqa: E402
     BufferedRuntimeRepository,
 )
 from openubmc_target_runtime.run_store import RunCommitRequest  # noqa: E402
+from tests.compatibility_history import seed_compatibility_history  # noqa: E402
 def encoded_size(value: object) -> int:
     return len(
         json.dumps(
@@ -1277,10 +1281,9 @@ class AgentGatewayTests(unittest.TestCase):
                 "observe",
                 {
                     "target": "192.0.2.10",
-                    "selectors": [
-                        {"id": "caps", "kind": "capability", "names": ["ssh"]}
-                    ],
-                    "assurance": "fast",
+                "selectors": [
+                    {"id": "caps", "kind": "capability", "names": ["ssh"]}
+                ],
                 },
                 task_id="observe-oversized-target",
                 operation_id="observe-oversized-target-1",
@@ -1441,23 +1444,84 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="shape-budget-string",
             )
 
-    def test_legacy_assurance_hint_uses_the_runtime_default_policy(self) -> None:
-        receipt = self.service.call_exposed_tool(
-            "observe",
-            {
-                "target": "192.0.2.10",
-                "selectors": [
-                    {"kind": "mdb", "queries": ["lsprop Object0"]}
-                ],
-                "assurance": "assured",
-            },
-            task_id="assured-without-adapter",
-            operation_id="assured-without-adapter-1",
-        )
+    def test_observe_rejects_the_retired_assurance_input(self) -> None:
+        with self.assertRaisesRegex(ValueError, "assurance.*unexpected"):
+            self.service.call_exposed_tool(
+                "observe",
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"kind": "mdb", "queries": ["lsprop Object0"]}
+                    ],
+                    "assurance": "assured",
+                },
+                task_id="retired-assurance",
+                operation_id="retired-assurance-1",
+            )
 
-        self.assertEqual(receipt["status"], "complete")
-        self.assertNotIn("assurance", receipt)
-        self.assertIn("observation_ref", receipt)
+        with self.assertRaisesRegex(ScopeViolation, "undeclared fields.*assurance"):
+            ObservationQuery.from_query(
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"kind": "mdb", "queries": ["lsprop Object0"]}
+                    ],
+                    "assurance": "assured",
+                }
+            )
+
+    def test_execute_rejects_the_retired_control_continue_input(self) -> None:
+        with self.assertRaisesRegex(ValueError, "command.*must be one of"):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "control",
+                    "run_id": "run-retired-control-continue",
+                    "command": "continue",
+                },
+                task_id="retired-control-continue",
+                operation_id="retired-control-continue-1",
+            )
+
+    def test_execute_rejects_the_retired_full_observation_receipt(self) -> None:
+        with self.assertRaisesRegex(ValueError, "observation_receipt.*unexpected"):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "observation_receipt": {
+                        "receipt_id": "receipt-retired",
+                        "status": "complete",
+                        "observation_ref": {},
+                        "scope": {},
+                    },
+                },
+                task_id="retired-observation-receipt",
+                operation_id="retired-observation-receipt-1",
+            )
+
+        with self.assertRaisesRegex(
+            AgentGatewayError,
+            "observation_receipt.*retired",
+        ):
+            decode_run_command(
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "observation_receipt": {
+                        "receipt_id": "receipt-retired",
+                    },
+                },
+                operation_id="retired-observation-receipt-direct",
+            )
+
+    def test_runtime_rejects_the_retired_compatibility_profile(self) -> None:
+        with self.assertRaisesRegex(ValueError, "agent or operator"):
+            RuntimeMcpService(
+                SemanticBackend(),
+                interface_profile="compatibility",
+            )
 
     def test_auto_assurance_upgrades_and_reuses_the_fast_observation(self) -> None:
         backend = AutoAssuranceSemanticBackend()
@@ -1471,7 +1535,6 @@ class AgentGatewayTests(unittest.TestCase):
                         {"id": "caps", "kind": "capability", "names": ["telnet"]},
                         {"id": "mdb", "kind": "mdb", "queries": ["lsprop Object0"]},
                     ],
-                    "assurance": "auto",
                 },
                 task_id="auto-assurance",
                 operation_id="auto-assurance-1",
@@ -2780,7 +2843,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(turn["gate"]["name"], "gate_schema_exceeds_budget")
         self.assertTrue(turn["content_compacted"])
 
-    def test_execute_start_reuses_a_complete_observation_receipt(self) -> None:
+    def test_execute_start_reuses_a_complete_observation_ref(self) -> None:
         receipt = self.service.call_exposed_tool(
             "observe",
             {
@@ -2801,7 +2864,7 @@ class AgentGatewayTests(unittest.TestCase):
                 "intent": "diagnose-and-fix",
                 "delivery_strategy": "source-only",
                 "purpose": "repair using the grounded observation",
-                "observation_receipt": receipt,
+                "observation_ref": receipt["observation_ref"],
             },
             task_id="receipt-reuse",
             operation_id="receipt-execute",
@@ -4171,7 +4234,7 @@ class AgentGatewayTests(unittest.TestCase):
             "retrying domain preparation",
         )
 
-    def test_observation_receipt_reconstructs_after_process_restart(self) -> None:
+    def test_observation_ref_reconstructs_after_process_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             database = root / "receipt.sqlite3"
@@ -4210,7 +4273,7 @@ class AgentGatewayTests(unittest.TestCase):
                         "target": "192.0.2.42",
                         "intent": "diagnose-and-fix",
                         "delivery_strategy": "source-only",
-                        "observation_receipt": receipt,
+                        "observation_ref": receipt["observation_ref"],
                     },
                     task_id="receipt-restart-execute",
                     operation_id="receipt-restart-execute-1",
@@ -5920,203 +5983,82 @@ class AgentGatewayTests(unittest.TestCase):
                 second.close()
         self.assertEqual(final["state"], "completed")
 
-    def test_legacy_and_governance_operations_require_explicit_profiles(self) -> None:
-        compatibility = RuntimeMcpService(
-            SemanticBackend(), interface_profile="compatibility"
-        )
+    def test_agent_and_operator_profiles_are_disjoint(self) -> None:
+        agent = RuntimeMcpService(SemanticBackend())
         operator = RuntimeMcpService(SemanticBackend(), interface_profile="operator")
         try:
-            self.assertIn("debug_run", compatibility.interface_catalog.names())
-            self.assertNotIn("evidence_read", compatibility.interface_catalog.names())
-            self.assertNotIn("runtime_status", compatibility.interface_catalog.names())
+            self.assertEqual(agent.interface_catalog.names(), ("observe", "execute"))
             self.assertIn("evidence_query", operator.interface_catalog.names())
             self.assertIn("evidence_read", operator.interface_catalog.names())
             self.assertNotIn("debug_run", operator.interface_catalog.names())
         finally:
-            compatibility.close()
+            agent.close()
             operator.close()
 
-    def test_compatibility_calls_publish_anonymous_operation_counts(self) -> None:
-        compatibility = RuntimeMcpService(
-            SemanticBackend(), interface_profile="compatibility"
-        )
-        try:
-            compatibility.call_exposed_tool(
-                "debug_run",
-                {
-                    "ip": "192.0.2.78",
-                    "intent": "diagnosis-only",
-                    "final_purpose": "compatibility telemetry",
-                },
-                task_id="compatibility-telemetry-task",
-                operation_id="compatibility-telemetry-call",
-            )
-            status = compatibility.call_tool(
-                "runtime_status",
-                {},
-                task_id="compatibility-telemetry-status",
-                operation_id="compatibility-telemetry-status",
-            )
-        finally:
-            compatibility.close()
-
-        telemetry = status["compatibility_telemetry"]
-        self.assertEqual(telemetry["total_calls"], 1)
-        self.assertEqual(telemetry["operation_counts"], {"debug_run": 1})
-        self.assertGreater(
-            telemetry["last_seen_at"]["operations"]["debug_run"],
-            0,
-        )
-        self.assertNotIn("task", json.dumps(telemetry))
-        self.assertNotIn("192.0.2.78", json.dumps(telemetry))
-
-    def test_direct_legacy_dispatch_records_compatibility_operation(self) -> None:
+    def test_retired_writers_do_not_record_new_compatibility_telemetry(self) -> None:
         service = RuntimeMcpService(SemanticBackend())
         try:
             service.call_tool(
                 "debug_run",
                 {
-                    "ip": "192.0.2.84",
+                    "ip": "192.0.2.78",
                     "intent": "diagnosis-only",
-                    "final_purpose": "legacy CLI compatibility telemetry",
+                    "final_purpose": "internal domain dispatch",
                 },
-                task_id="direct-compatibility-telemetry",
-                operation_id="direct-compatibility-telemetry",
+                task_id="internal-domain-task",
+                operation_id="internal-domain-call",
             )
             status = service.call_tool(
                 "runtime_status",
                 {},
-                task_id="direct-compatibility-status",
-                operation_id="direct-compatibility-status",
+                task_id="internal-domain-status",
+                operation_id="internal-domain-status",
             )
         finally:
             service.close()
 
-        self.assertEqual(
-            status["compatibility_telemetry"]["operation_counts"],
-            {"debug_run": 1},
-        )
+        telemetry = status["compatibility_telemetry"]
+        self.assertEqual(telemetry["total_calls"], 0)
+        self.assertEqual(telemetry["operation_counts"], {})
+        self.assertEqual(telemetry["total_features"], 0)
+        self.assertEqual(telemetry["feature_counts"], {})
 
-    def test_compatibility_telemetry_counts_legacy_agent_input_features(self) -> None:
-        service = RuntimeMcpService(SemanticBackend())
-        try:
-            receipt = service.call_exposed_tool(
-                "observe",
-                {
-                    "target": "192.0.2.80",
-                    "selectors": [
-                        {"id": "caps", "kind": "capability", "names": ["ssh"]}
-                    ],
-                    "assurance": "assured",
-                },
-                task_id="compatibility-feature-observe",
-                operation_id="compatibility-feature-observe",
-            )
-            waiting = service.call_exposed_tool(
-                "execute",
-                {
-                    "kind": "start",
-                    "target": "192.0.2.80",
-                    "intent": "diagnose-and-fix",
-                    "delivery_strategy": "source-only",
-                    "observation_receipt": receipt,
-                },
-                task_id="compatibility-feature-execute",
-                operation_id="compatibility-feature-execute",
-            )
-            service.call_exposed_tool(
-                "execute",
-                {
-                    "kind": "control",
-                    "run_id": waiting["run_id"],
-                    "command": "continue",
-                },
-                task_id="compatibility-feature-continue",
-                operation_id="compatibility-feature-continue",
-            )
-            status = service.call_tool(
-                "runtime_status",
-                {},
-                task_id="compatibility-feature-status",
-                operation_id="compatibility-feature-status",
-            )
-        finally:
-            service.close()
-
-        self.assertEqual(
-            status["compatibility_telemetry"]["feature_counts"],
-            {
-                "execute.control_continue": 1,
-                "execute.observation_receipt": 1,
-                "observe.assurance": 1,
-            },
-        )
-
-    def test_compatibility_telemetry_persists_across_restart_and_instances(
+    def test_operator_status_preserves_persisted_compatibility_history(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             database = Path(raw) / "compatibility-telemetry.sqlite3"
-            first = RuntimeMcpService(
-                SemanticBackend(),
-                context_repository=SQLiteRuntimeRepository(database),
-                interface_profile="compatibility",
+            telemetry_repository = SQLiteCompatibilityTelemetryRepository(database)
+            seed_compatibility_history(
+                database,
+                (
+                    ("operation", "debug_run", 1, 1234.5),
+                    ("feature", "observe.assurance", 1, 1234.5),
+                ),
             )
-            second = RuntimeMcpService(
+            self.assertFalse(hasattr(telemetry_repository, "increment"))
+            service = RuntimeMcpService(
                 SemanticBackend(),
                 context_repository=SQLiteRuntimeRepository(database),
-                interface_profile="compatibility",
-            )
-            agent = RuntimeMcpService(
-                SemanticBackend(),
-                context_repository=SQLiteRuntimeRepository(database),
+                interface_profile="operator",
             )
             try:
-                for index, service in enumerate((first, second), start=1):
-                    service.call_exposed_tool(
-                        "debug_run",
-                        {
-                            "ip": f"192.0.2.{80 + index}",
-                            "intent": "diagnosis-only",
-                            "final_purpose": "persistent compatibility telemetry",
-                        },
-                        task_id=f"compatibility-persistent-{index}",
-                        operation_id=f"compatibility-persistent-{index}",
-                    )
-                agent.call_exposed_tool(
-                    "observe",
-                    {
-                        "target": "192.0.2.83",
-                        "selectors": [
-                            {
-                                "id": "caps",
-                                "kind": "capability",
-                                "names": ["ssh"],
-                            }
-                        ],
-                        "assurance": "fast",
-                    },
-                    task_id="compatibility-persistent-feature",
-                    operation_id="compatibility-persistent-feature",
-                )
-                shared_status = first.call_tool(
+                initial_status = service.call_exposed_tool(
                     "runtime_status",
                     {},
                     task_id="compatibility-persistent-shared-status",
                     operation_id="compatibility-persistent-shared-status",
                 )
             finally:
-                first.close()
-                second.close()
-                agent.close()
+                service.close()
 
             reopened = RuntimeMcpService(
                 SemanticBackend(),
                 context_repository=SQLiteRuntimeRepository(database),
-                interface_profile="compatibility",
+                interface_profile="operator",
             )
             try:
-                restarted_status = reopened.call_tool(
+                restarted_status = reopened.call_exposed_tool(
                     "runtime_status",
                     {},
                     task_id="compatibility-persistent-restarted-status",
@@ -6125,269 +6067,26 @@ class AgentGatewayTests(unittest.TestCase):
             finally:
                 reopened.close()
 
-        expected = {"debug_run": 2}
+        expected = {"debug_run": 1}
         self.assertEqual(
-            shared_status["compatibility_telemetry"]["operation_counts"],
+            initial_status["compatibility_telemetry"]["operation_counts"],
             expected,
         )
         self.assertEqual(
             restarted_status["compatibility_telemetry"]["operation_counts"],
             expected,
         )
-        for status in (shared_status, restarted_status):
+        for status in (initial_status, restarted_status):
             self.assertEqual(
                 status["compatibility_telemetry"]["feature_counts"],
                 {"observe.assurance": 1},
             )
         self.assertEqual(
             restarted_status["compatibility_telemetry"]["last_seen_at"],
-            shared_status["compatibility_telemetry"]["last_seen_at"],
+            initial_status["compatibility_telemetry"]["last_seen_at"],
         )
 
-    def test_compatibility_controls_delegate_native_runs_to_typed_runtime(self) -> None:
-        compatibility = RuntimeMcpService(
-            SemanticBackend(), interface_profile="compatibility"
-        )
-        try:
-            waiting = compatibility.semantic_runtime.execute(
-                StartRun(
-                    target="192.0.2.79",
-                    intent="diagnose-and-fix",
-                    purpose="verify compatibility delegation",
-                    delivery_strategy="source-only",
-                    command_id="compatibility-native-start",
-                    input_digest="",
-                ),
-                task_id="compatibility-native",
-                operation_id="compatibility-native-start",
-            )
-            compatibility.call_exposed_tool(
-                "phase_record",
-                {
-                    "case_id": waiting.run_id,
-                    "expected_revision": compatibility._test.context_runtime.read_case(
-                        waiting.run_id
-                    )["revision"],
-                    "idempotency_key": "compatibility-native-phase",
-                    "phase_type": "developer.change",
-                    "producer_identity": "openubmc-developer",
-                    "status": "completed",
-                    "summary": "source completed",
-                    "source_revision": "compatibility-native-source",
-                    "authored_files": ["src/fix.lua"],
-                    "verification_plan": ["run tests"],
-                },
-                task_id="compatibility-native",
-                operation_id="compatibility-native-phase",
-            )
-            final = compatibility.call_exposed_tool(
-                "workflow.next",
-                {"case_id": waiting.run_id},
-                task_id="compatibility-native",
-                operation_id="compatibility-native-next",
-            )
-            status = compatibility.call_tool(
-                "runtime_status",
-                {},
-                task_id="compatibility-native-status",
-                operation_id="compatibility-native-status",
-            )
-            events = compatibility._test.context_runtime.repository.events(waiting.run_id)
-        finally:
-            compatibility.close()
 
-        self.assertEqual(final["state"], "completed")
-        self.assertEqual(
-            sum(event["kind"] == "RunGateSubmitted" for event in events),
-            1,
-        )
-        self.assertEqual(
-            status["compatibility_telemetry"]["feature_counts"],
-            {"phase_record": 1, "workflow.next": 1},
-        )
-        self.assertFalse(
-            any(
-                event["kind"] == "OperationAccepted"
-                and event["payload"].get("operation")
-                in {"phase_record", "workflow.next"}
-                for event in events
-            )
-        )
-
-    def test_legacy_phase_writer_does_not_persist_a_native_gate_submission(self) -> None:
-        opened = self.service.call_tool(
-            "debug_run",
-            {
-                "ip": "192.0.2.82",
-                "intent": "diagnose-and-fix",
-                "delivery_strategy": "source-only",
-                "final_purpose": "verify legacy phase isolation",
-            },
-            task_id="legacy-phase-isolation",
-            operation_id="legacy-phase-isolation-start",
-        )
-        run_id = opened.envelope["case_id"]
-
-        self.service.call_tool(
-            "phase_record",
-            {
-                "case_id": run_id,
-                "expected_revision": self.service._test.context_runtime.read_case(
-                    run_id
-                )["revision"],
-                "idempotency_key": "legacy-phase-isolation-submission",
-                "phase_type": "developer.change",
-                "producer_identity": "openubmc-developer",
-                "status": "completed",
-                "summary": "legacy source completed",
-                "source_revision": "legacy-phase-isolation-source",
-                "authored_files": ["src/legacy.lua"],
-                "verification_plan": ["run tests"],
-            },
-            task_id="legacy-phase-isolation",
-            operation_id="legacy-phase-isolation-submission",
-        )
-
-        events = self.service._test.context_runtime.repository.events(run_id)
-        projection = self.service._test.context_runtime.read_case(run_id)
-        self.assertFalse(any(event["kind"] == "RunGateSubmitted" for event in events))
-        self.assertTrue(
-            any(
-                event["kind"] == "OperationProgressed"
-                and isinstance(event["payload"].get("legacy_phase_record"), dict)
-                for event in events
-            )
-        )
-        self.assertEqual(
-            projection["phase_records"][-1]["source_revision"],
-            "legacy-phase-isolation-source",
-        )
-
-    def test_legacy_phase_writer_rejects_native_runs(self) -> None:
-        waiting = self.service.semantic_runtime.execute(
-            StartRun(
-                target="192.0.2.83",
-                intent="diagnose-and-fix",
-                purpose="verify native Gate authority",
-                delivery_strategy="source-only",
-                command_id="native-phase-authority-start",
-                input_digest="",
-            ),
-            task_id="native-phase-authority",
-            operation_id="native-phase-authority-start",
-        )
-
-        with self.assertRaisesRegex(
-            GateConflict,
-            "native Run phase transitions require RunEngine",
-        ):
-            self.service.call_tool(
-                "phase_record",
-                {
-                    "case_id": waiting.run_id,
-                    "expected_revision": self.service._test.context_runtime.read_case(
-                        waiting.run_id
-                    )["revision"],
-                    "idempotency_key": "native-phase-authority-submission",
-                    "phase_type": "developer.change",
-                    "producer_identity": "openubmc-developer",
-                    "status": "completed",
-                    "summary": "must use SubmitGate",
-                    "source_revision": "native-phase-authority-source",
-                    "authored_files": ["src/native.lua"],
-                    "verification_plan": ["run tests"],
-                },
-                task_id="native-phase-authority",
-                operation_id="native-phase-authority-submission",
-            )
-
-    def test_compatibility_controls_upcast_legacy_runs_before_transitioning(self) -> None:
-        compatibility = RuntimeMcpService(
-            SemanticBackend(), interface_profile="compatibility"
-        )
-        try:
-            opened = compatibility.call_exposed_tool(
-                "debug_run",
-                {
-                    "ip": "192.0.2.80",
-                    "intent": "diagnose-and-fix",
-                    "delivery_strategy": "source-only",
-                    "final_purpose": "verify legacy compatibility delegation",
-                },
-                task_id="compatibility-legacy",
-                operation_id="compatibility-legacy-debug",
-            )
-            run_id = opened.envelope["case_id"]
-            compatibility.call_exposed_tool(
-                "phase_record",
-                {
-                    "case_id": run_id,
-                    "expected_revision": compatibility._test.context_runtime.read_case(
-                        run_id
-                    )["revision"],
-                    "idempotency_key": "compatibility-legacy-phase",
-                    "phase_type": "developer.change",
-                    "producer_identity": "openubmc-developer",
-                    "status": "completed",
-                    "summary": "legacy source completed",
-                    "source_revision": "compatibility-legacy-source",
-                    "authored_files": ["src/legacy-fix.lua"],
-                    "verification_plan": ["run tests"],
-                },
-                task_id="compatibility-legacy",
-                operation_id="compatibility-legacy-phase",
-            )
-            final = compatibility.call_exposed_tool(
-                "workflow.next",
-                {"case_id": run_id},
-                task_id="compatibility-legacy",
-                operation_id="compatibility-legacy-next",
-            )
-            events = compatibility._test.context_runtime.repository.events(run_id)
-        finally:
-            compatibility.close()
-
-        self.assertEqual(final["state"], "completed")
-        self.assertFalse(
-            any(
-                event["kind"] == "OperationAccepted"
-                and event["payload"].get("operation")
-                in {"phase_record", "workflow.next"}
-                for event in events
-            )
-        )
-        self.assertTrue(any(event["kind"] == "RunDecisionCommitted" for event in events))
-
-    def test_compatibility_workflow_advance_starts_a_typed_run(self) -> None:
-        compatibility = RuntimeMcpService(
-            SemanticBackend(), interface_profile="compatibility"
-        )
-        try:
-            waiting = compatibility.call_exposed_tool(
-                "workflow.advance",
-                {
-                    "ip": "192.0.2.81",
-                    "intent": "diagnose-and-fix",
-                    "delivery_strategy": "source-only",
-                    "final_purpose": "verify typed compatibility start",
-                },
-                task_id="compatibility-advance",
-                operation_id="compatibility-advance-start",
-            )
-            run_id = waiting["run_id"]
-            events = compatibility._test.context_runtime.repository.events(run_id)
-        finally:
-            compatibility.close()
-
-        self.assertEqual(waiting["state"], "waiting_response")
-        self.assertTrue(any(event["kind"] == "RunDecisionCommitted" for event in events))
-        self.assertFalse(
-            any(
-                event["kind"] == "OperationAccepted"
-                and event["payload"].get("operation") == "workflow.advance"
-                for event in events
-            )
-        )
 
     def test_gateway_preserves_mutation_journal_owned_identity(self) -> None:
         class JournalIdentityBackend(SemanticBackend):
