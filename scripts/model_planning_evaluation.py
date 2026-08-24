@@ -58,7 +58,6 @@ class EvaluationCase:
     name: str
     objective: str
     expected_steps: tuple[str, ...]
-    candidate_proposal: Mapping[str, object]
     static_request: Mapping[str, str]
 
 
@@ -108,42 +107,36 @@ def paired_corpus() -> tuple[EvaluationCase, ...]:
             "diagnosis-only",
             "collect bounded diagnosis evidence",
             diagnosis,
-            linear_proposal(diagnosis),
             {"intent": "diagnosis-only"},
         ),
         EvaluationCase(
             "source-change",
             "prepare and verify a source-only repair",
             source_change,
-            linear_proposal(source_change),
             {"intent": "diagnose-and-fix", "delivery_strategy": "source-only"},
         ),
         EvaluationCase(
             "live-patch",
             "diagnose, approve, apply, and verify a live patch",
             live_patch,
-            linear_proposal(live_patch),
             {"intent": "diagnose-and-fix", "delivery_strategy": "live-patch"},
         ),
         EvaluationCase(
             "build-upgrade",
             "diagnose, build, upgrade, and verify firmware",
             build_upgrade,
-            linear_proposal(build_upgrade),
             {"intent": "diagnose-and-fix", "delivery_strategy": "build-upgrade"},
         ),
         EvaluationCase(
             "upgrade-and-verify",
             "perform a bounded upgrade verification workflow",
             upgrade_only,
-            linear_proposal(upgrade_only),
             {"intent": "upgrade-and-verify", "entry_operation": "upgrade_run"},
         ),
         EvaluationCase(
             "bundle-and-diagnose",
             "collect and inspect a diagnostic log bundle",
             bundle_diagnosis,
-            linear_proposal(bundle_diagnosis),
             {
                 "intent": "bundle-and-diagnose",
                 "entry_operation": "log_bundle_collect",
@@ -229,6 +222,53 @@ def evaluation_policy() -> PlanPolicy:
     )
 
 
+def plan_for_objective(objective: str) -> Mapping[str, object]:
+    selected = objective.lower()
+    if "log bundle" in selected:
+        steps = ("log_bundle_collect", "debug_run")
+    elif "firmware" in selected:
+        steps = (
+            "debug_run",
+            "developer.change",
+            "build.artifact",
+            "upgrade_run",
+            "debug_collect",
+        )
+    elif "live patch" in selected:
+        steps = (
+            "debug_run",
+            "developer.change",
+            "live_patch_run",
+            "debug_collect",
+        )
+    elif "source-only" in selected:
+        steps = ("debug_run", "developer.change")
+    elif "upgrade verification" in selected:
+        steps = ("upgrade_run", "debug_collect")
+    elif "diagnosis evidence" in selected:
+        steps = ("debug_run",)
+    else:
+        steps = ("unsupported.objective",)
+    return linear_proposal(steps)
+
+
+class DeterministicEvaluationModelAdapter(DeterministicFakeModelAdapter):
+    """Generate a repeatable proposal from the actual PlanningInput objective."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            invoke_results=(ModelAdapterResult.unknown("unused scripted result"),)
+        )
+        self.objectives: list[str] = []
+
+    def invoke(self, request: PlanningRequest) -> ModelAdapterResult:
+        self.invoke_calls += 1
+        self.objectives.append(request.planning_input.objective)
+        return ModelAdapterResult.succeeded(
+            plan_for_objective(request.planning_input.objective)
+        )
+
+
 def revision_steps(revision: PlanRevision) -> tuple[str, ...]:
     nodes = {node.node_id: node for node in revision.proposal.nodes}
 
@@ -264,9 +304,7 @@ def evaluate() -> dict[str, object]:
             and static_steps == case.expected_steps
         )
         static_valid += int(static_pair_valid)
-        adapter = DeterministicFakeModelAdapter(
-            invoke_results=(ModelAdapterResult.succeeded(case.candidate_proposal),)
-        )
+        adapter = DeterministicEvaluationModelAdapter()
         decision = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
@@ -306,6 +344,7 @@ def evaluate() -> dict[str, object]:
                 "candidate_status": decision.status,
                 "candidate_error_code": decision.record.error_code,
                 "candidate_revision_valid": candidate_revision_valid,
+                "candidate_used_objective": adapter.objectives == [case.objective],
             }
         )
 
@@ -341,12 +380,34 @@ def evaluate() -> dict[str, object]:
             }
         )
 
+    sensitivity_adapter = DeterministicEvaluationModelAdapter()
+    sensitivity = PlanResolver(
+        InMemoryModelPlanningRepository(),
+        sensitivity_adapter,
+        policy=policy,
+        clock=lambda: 100.0,
+    ).resolve(
+        PlanningRequest(
+            run_id="run-evaluation",
+            slot_id="input-sensitivity",
+            planning_input=PlanningInput(
+                objective="write an unrelated status greeting"
+            ),
+        )
+    )
+    input_sensitivity_passed = (
+        sensitivity.status == "rejected"
+        and sensitivity_adapter.objectives
+        == ["write an unrelated status greeting"]
+    )
+
     pair_count = len(pairs)
     agent_tools = [descriptor.name for descriptor in agent_operation_descriptors()]
     invariant_passed = (
         static_valid == pair_count
         and candidate_valid_revisions == pair_count
         and containment_false_accepts == 0
+        and input_sensitivity_passed
         and agent_tools == ["observe", "execute"]
     )
     static_valid_plan_rate = static_valid / pair_count
@@ -381,6 +442,11 @@ def evaluate() -> dict[str, object]:
             "false_accepts": containment_false_accepts,
             "model_calls": containment_model_calls,
             "cases": containment_results,
+        },
+        "input_sensitivity": {
+            "passed": input_sensitivity_passed,
+            "unrelated_status": sensitivity.status,
+            "unrelated_error_code": sensitivity.record.error_code,
         },
         "agent_interface": agent_tools,
         "invariants_passed": invariant_passed,

@@ -22,6 +22,7 @@ from openubmc_target_runtime.model_planning import (  # noqa: E402
     ModelAdapterResult,
     ModelConfiguration,
     ModelInvocationConflict,
+    ModelInvocationRecord,
     ModelPlanningError,
     PlanResolver,
     PlanPolicy,
@@ -338,6 +339,41 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         self.assertIn("unknown Plan action", decision.record.error_message)
         self.assertIsNone(decision.revision)
         self.assertEqual(repository.list_revisions(), ())
+
+    def test_explicit_provider_configuration_must_match_the_invocation(self) -> None:
+        configuration = ModelConfiguration.freeze(
+            provider="deterministic-fake",
+            model="planner-v1",
+            parameters={"temperature": 0, "seed": 7},
+            timeout_seconds=3.0,
+        )
+        raw = valid_proposal().to_public_dict()
+        raw["provider_config"] = {
+            **configuration.to_public_dict(),
+            "model": "contradictory-model",
+        }
+        raw["provider_config_digest"] = configuration.digest
+        adapter = DeterministicFakeModelAdapter(
+            invoke_results=(ModelAdapterResult.succeeded(raw),),
+            configuration=configuration,
+        )
+
+        decision = PlanResolver(
+            InMemoryModelPlanningRepository(),
+            adapter,
+            policy=default_policy(),
+        ).resolve(
+            PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="provider-config-conflict",
+                planning_input=PlanningInput(
+                    objective="reject contradictory provider configuration"
+                ),
+            )
+        )
+
+        self.assertEqual(decision.status, "rejected")
+        self.assertIn("provider_config", decision.record.error_message)
 
     def test_unknown_retry_reconciles_the_same_identity_without_reinvocation(self) -> None:
         adapter = DeterministicModelAdapter(
@@ -886,11 +922,74 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
                 tampered["proposal_digest"] = PlanProposal.from_mapping(
                     raw_proposal
                 ).digest
+                tampered["revision_id"] = (
+                    "plan-revision:"
+                    + tampered["proposal_digest"].removeprefix("sha256:")[:48]
+                )
                 with self.assertRaisesRegex(
                     ModelPlanningError,
                     f"proposal {name}",
                 ):
                     PlanRevision.from_public_dict(tampered)
+
+    def test_persisted_invocation_rejects_contradictory_status_evidence(self) -> None:
+        decision = PlanResolver(
+            InMemoryModelPlanningRepository(),
+            DeterministicModelAdapter(
+                ModelAdapterResult.succeeded(valid_proposal())
+            ),
+            policy=default_policy(),
+        ).resolve(
+            PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="status-evidence",
+                planning_input=PlanningInput(objective="pin status evidence"),
+            )
+        )
+        succeeded = decision.record.to_public_dict()
+        cases = {
+            "running_with_result": {**succeeded, "status": "running"},
+            "unknown_with_result": {
+                **succeeded,
+                "status": "unknown",
+                "error_code": "model_outcome_unknown",
+            },
+            "failed_without_error": {
+                **succeeded,
+                "status": "failed",
+                "result_digest": "",
+                "plan_revision_id": "",
+                "error_code": "",
+            },
+            "succeeded_with_error": {
+                **succeeded,
+                "error_code": "contradictory_error",
+            },
+        }
+
+        for name, raw in cases.items():
+            with self.subTest(name=name), self.assertRaises(ModelPlanningError):
+                ModelInvocationRecord.from_public_dict(raw)
+
+    def test_plan_revision_identity_is_derived_from_its_proposal_digest(self) -> None:
+        decision = PlanResolver(
+            InMemoryModelPlanningRepository(),
+            DeterministicModelAdapter(
+                ModelAdapterResult.succeeded(valid_proposal())
+            ),
+            policy=default_policy(),
+        ).resolve(
+            PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="revision-identity",
+                planning_input=PlanningInput(objective="pin revision identity"),
+            )
+        )
+        raw = decision.revision.to_public_dict()
+        raw["revision_id"] = "plan-revision:arbitrary-safe-id"
+
+        with self.assertRaisesRegex(ModelPlanningError, "revision_id"):
+            PlanRevision.from_public_dict(raw)
 
     def test_plan_revision_cannot_advance_a_gate_or_declare_terminal_success(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

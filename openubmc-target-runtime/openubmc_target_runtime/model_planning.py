@@ -657,6 +657,13 @@ class PlanProposal:
                 raise PlanProposalRejected(
                     f"PlanProposal {name} does not match its invocation"
                 )
+        if (
+            self.provider_config_digest
+            or self.provider_config != {}
+        ) and self.provider_config != record.provider_config:
+            raise PlanProposalRejected(
+                "PlanProposal provider_config does not match its invocation"
+            )
         return replace(
             self,
             run_id=record.run_id,
@@ -817,12 +824,29 @@ class ModelInvocationRecord:
             )
         if self.result_digest and _SHA256_REF.fullmatch(self.result_digest) is None:
             raise ModelPlanningError("ModelInvocationRecord result_digest must be SHA-256")
-        if self.status is ModelInvocationStatus.SUCCEEDED and (
-            not self.result_digest or not self.plan_revision_id
-        ):
-            raise ModelPlanningError(
-                "succeeded ModelInvocationRecord requires result and revision identity"
-            )
+        if self.status is ModelInvocationStatus.SUCCEEDED:
+            if not self.result_digest or not self.plan_revision_id:
+                raise ModelPlanningError(
+                    "succeeded ModelInvocationRecord requires result and revision identity"
+                )
+            if self.error_code or self.error_message:
+                raise ModelPlanningError(
+                    "succeeded ModelInvocationRecord cannot contain an error"
+                )
+        else:
+            if self.result_digest or self.plan_revision_id:
+                raise ModelPlanningError(
+                    "non-success ModelInvocationRecord cannot contain result evidence"
+                )
+            if self.status is ModelInvocationStatus.RUNNING:
+                if self.error_code or self.error_message:
+                    raise ModelPlanningError(
+                        "running ModelInvocationRecord cannot contain an error"
+                    )
+            elif not self.error_code:
+                raise ModelPlanningError(
+                    "settled non-success ModelInvocationRecord requires an error code"
+                )
         if self.updated_at < self.started_at:
             raise ModelPlanningError(
                 "ModelInvocationRecord updated_at precedes started_at"
@@ -932,6 +956,14 @@ class PlanRevision:
         _required_id(self.revision_id, "PlanRevision revision_id")
         if _SHA256_REF.fullmatch(self.proposal_digest) is None:
             raise ModelPlanningError("PlanRevision proposal_digest must be SHA-256")
+        expected_revision_id = (
+            "plan-revision:"
+            + self.proposal_digest.removeprefix("sha256:")[:48]
+        )
+        if self.revision_id != expected_revision_id:
+            raise ModelPlanningError(
+                "PlanRevision revision_id is inconsistent with proposal_digest"
+            )
         try:
             object.__setattr__(self, "status", PlanRevisionStatus(self.status))
         except ValueError as exc:
@@ -1198,6 +1230,20 @@ class ModelPlanningSettlement:
             )
 
 
+def _terminal_settlement(
+    record: ModelInvocationRecord,
+    load_revision: Callable[[str], PlanRevision | None],
+) -> ModelPlanningSettlement | None:
+    if record.status not in _TERMINAL_INVOCATION_STATUSES:
+        return None
+    revision = (
+        load_revision(record.plan_revision_id)
+        if record.status is ModelInvocationStatus.SUCCEEDED
+        else None
+    )
+    return ModelPlanningSettlement(record, revision, applied=False)
+
+
 class ModelPlanningRepository(Protocol):
     def claim(self, record: ModelInvocationRecord) -> ModelPlanningClaim: ...
 
@@ -1257,17 +1303,9 @@ class InMemoryModelPlanningRepository:
                 raise ModelInvocationConflict(
                     "model invocation settlement has a different binding"
                 )
-            if current.status in _TERMINAL_INVOCATION_STATUSES:
-                current_revision = (
-                    self._revisions.get(current.plan_revision_id)
-                    if current.status is ModelInvocationStatus.SUCCEEDED
-                    else None
-                )
-                return ModelPlanningSettlement(
-                    current,
-                    current_revision,
-                    applied=False,
-                )
+            terminal = _terminal_settlement(current, self._revisions.get)
+            if terminal is not None:
+                return terminal
             if revision is not None:
                 existing = self._revisions.get(revision.revision_id)
                 if existing is not None and existing != revision:
@@ -1416,24 +1454,18 @@ class SQLiteModelPlanningRepository:
                 raise ModelInvocationConflict(
                     "model invocation settlement has a different binding"
                 )
-            if selected.status in _TERMINAL_INVOCATION_STATUSES:
-                selected_revision = None
-                if selected.status is ModelInvocationStatus.SUCCEEDED:
-                    revision_row = connection.execute(
+            terminal = _terminal_settlement(
+                selected,
+                lambda revision_id: self._revision(
+                    connection.execute(
                         "SELECT document_json FROM model_planning_revisions "
                         "WHERE revision_id = ?",
-                        (selected.plan_revision_id,),
+                        (revision_id,),
                     ).fetchone()
-                    selected_revision = self._revision(revision_row)
-                    if selected_revision is None:
-                        raise ModelPlanningError(
-                            "pinned PlanRevision is unavailable"
-                        )
-                return ModelPlanningSettlement(
-                    selected,
-                    selected_revision,
-                    applied=False,
-                )
+                ),
+            )
+            if terminal is not None:
+                return terminal
             settlement = ModelPlanningSettlement(record, revision, applied=True)
             if revision is not None:
                 existing = connection.execute(

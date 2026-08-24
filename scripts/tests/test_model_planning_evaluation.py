@@ -30,8 +30,14 @@ class ModelPlanningEvaluationTests(unittest.TestCase):
         self.assertEqual(result["containment"]["evaluated"], 4)
         self.assertEqual(result["containment"]["rejected"], 4)
         self.assertEqual(result["containment"]["false_accepts"], 0)
+        self.assertTrue(result["input_sensitivity"]["passed"])
+        self.assertEqual(
+            result["input_sensitivity"]["unrelated_status"],
+            "rejected",
+        )
         for pair in result["pairs"]:
             with self.subTest(name=pair["name"]):
+                self.assertTrue(pair["candidate_used_objective"])
                 self.assertEqual(pair["static_steps"], pair["expected_steps"])
                 self.assertEqual(pair["candidate_steps"], pair["expected_steps"])
 

@@ -51,13 +51,14 @@ The Module owns only:
 
 It receives no `RunDriver`, `DomainExecutor`, Gate writer, Incident writer, Mutation authority, or
 Outcome writer. A proposal therefore cannot change Run facts, call a Domain Adapter, authorize a
-mutation, answer a Gate, or declare success. Existing tests hold a real Run at its current Gate
-before and after an accepted revision to verify this property.
+mutation, answer a Gate, or declare success. Existing tests hold a real Run at its current Gate,
+then pass the Gate and execute a mutation while withholding the required fresh target epoch. The
+accepted revision cannot cause either transition or form an Outcome.
 
 The Agent Interface remains exactly `observe` and `execute`. The model Provider is a true-external
-Seam with production-callable and deterministic fake Adapters. The repository is a
-local-substitutable Seam with in-memory and SQLite Adapters. Execution remains local and
-single-process.
+Seam represented by a narrow Adapter protocol and a deterministic fake used by the experiment.
+The repository is a local-substitutable Seam with in-memory and SQLite Adapters. Execution remains
+local and single-process.
 
 ## Contracts
 
@@ -74,6 +75,11 @@ The record pins:
 - `running`, `unknown`, `succeeded`, `rejected`, or `failed` status;
 - result digest and PlanRevision identity on success;
 - bounded error code/message on unknown, rejection, or failure.
+
+Each status admits only its own evidence shape: `running` has neither result nor error, terminal
+non-success states have an error and no result, and `succeeded` has a result/revision pair with no
+error. The revision identity is derived from the proposal digest, and replay validates the complete
+record/revision settlement tuple.
 
 The record is persisted before provider dispatch. A timeout after dispatch becomes `unknown`.
 Another call to `resolve()` reconciles the same identity; it never silently creates a replacement
@@ -126,7 +132,9 @@ failure, timeout, unknown, and reconcile results. Behavior coverage includes:
 - unchanged `observe`/`execute` exposure;
 - proof that an accepted revision cannot bypass a Gate or fresh terminal verification.
 
-The paired evaluation compares six equivalent planning tasks. Static workflows and isolated model
+The paired evaluation compares six equivalent planning tasks using exact expected semantic step
+sequences. Its deterministic fake planner derives proposals from the actual objective and rejects
+an unrelated objective in an input-sensitivity control. Static workflows and isolated model
 planning each produce a valid pinned plan for all six tasks, while the candidate adds six model
 calls and shows no validity improvement. Four deliberately invalid outputs are evaluated
 separately and all are rejected. This is useful containment evidence, not adoption evidence.
