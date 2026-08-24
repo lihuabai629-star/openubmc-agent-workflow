@@ -137,7 +137,7 @@ class CompatibilityRetirementTests(unittest.TestCase):
         )
         self.assertRegex(baseline["evidence_digest"], r"^sha256:[0-9a-f]{64}$")
 
-    def test_increment_reports_zero_use_and_distinct_active_development_days(self) -> None:
+    def test_increment_reports_zero_use_without_a_calendar_window(self) -> None:
         baseline = retirement.create_baseline(
             runtime_status(),
             source_commit="a" * 40,
@@ -149,14 +149,22 @@ class CompatibilityRetirementTests(unittest.TestCase):
             runtime_status(),
             source_commit="b" * 40,
             captured_at=1_700_101_000.0,
-            active_development_dates=[
-                "2026-08-01",
-                "2026-08-01",
-                *[f"2026-08-{day:02d}" for day in range(2, 15)],
-            ],
         )
 
-        self.assertEqual(increment["active_development_day_count"], 14)
+        self.assertEqual(
+            set(increment),
+            {
+                "schema",
+                "baseline_digest",
+                "baseline_source_commit",
+                "source_commit",
+                "captured_at",
+                "operation_deltas",
+                "feature_deltas",
+                "telemetry",
+                "evidence_digest",
+            },
+        )
         self.assertEqual(
             increment["feature_deltas"],
             {
@@ -171,7 +179,7 @@ class CompatibilityRetirementTests(unittest.TestCase):
             {"phase_record": 0, "workflow.next": 0},
         )
 
-    def test_writer_is_ready_only_with_zero_use_window_and_full_qualification(self) -> None:
+    def test_writer_is_ready_with_zero_use_and_full_qualification(self) -> None:
         baseline = retirement.create_baseline(
             runtime_status(),
             source_commit="a" * 40,
@@ -182,9 +190,6 @@ class CompatibilityRetirementTests(unittest.TestCase):
             runtime_status(),
             source_commit="b" * 40,
             captured_at=1_700_101_000.0,
-            active_development_dates=[
-                f"2026-08-{day:02d}" for day in range(1, 15)
-            ],
         )
 
         decision = retirement.evaluate_retirement(
@@ -197,6 +202,19 @@ class CompatibilityRetirementTests(unittest.TestCase):
         self.assertTrue(decision["writers"]["phase_record"]["ready"])
         self.assertTrue(decision["writers"]["workflow.next"]["ready"])
         self.assertTrue(decision["compatibility_profile"]["ready"])
+        self.assertEqual(
+            set(decision),
+            {
+                "schema",
+                "source_commit",
+                "increment_digest",
+                "release_gate_digest",
+                "writers",
+                "compatibility_profile",
+                "preserved_readers",
+                "evidence_digest",
+            },
+        )
 
     def test_new_use_blocks_only_its_writer_and_the_profile(self) -> None:
         baseline = retirement.create_baseline(
@@ -216,9 +234,6 @@ class CompatibilityRetirementTests(unittest.TestCase):
             current,
             source_commit="b" * 40,
             captured_at=1_700_101_000.0,
-            active_development_dates=[
-                f"2026-08-{day:02d}" for day in range(1, 15)
-            ],
         )
 
         decision = retirement.evaluate_retirement(
@@ -245,9 +260,6 @@ class CompatibilityRetirementTests(unittest.TestCase):
             runtime_status(),
             source_commit="b" * 40,
             captured_at=1_700_101_000.0,
-            active_development_dates=[
-                f"2026-08-{day:02d}" for day in range(1, 15)
-            ],
         )
         gate = release_gate("c" * 40)
 
@@ -276,7 +288,6 @@ class CompatibilityRetirementTests(unittest.TestCase):
                 current,
                 source_commit="b" * 40,
                 captured_at=1_700_101_000.0,
-                active_development_dates=[],
             )
 
     def test_last_seen_rollback_is_rejected_instead_of_looking_like_zero_use(self) -> None:
@@ -296,7 +307,6 @@ class CompatibilityRetirementTests(unittest.TestCase):
                 current,
                 source_commit="b" * 40,
                 captured_at=1_700_101_000.0,
-                active_development_dates=[],
             )
 
     def test_count_increase_requires_a_newer_last_seen_timestamp(self) -> None:
@@ -316,7 +326,6 @@ class CompatibilityRetirementTests(unittest.TestCase):
                 current,
                 source_commit="b" * 40,
                 captured_at=1_700_101_000.0,
-                active_development_dates=[],
             )
 
     def test_increment_capture_cannot_predate_current_telemetry(self) -> None:
@@ -337,180 +346,7 @@ class CompatibilityRetirementTests(unittest.TestCase):
                 current,
                 source_commit="b" * 40,
                 captured_at=1_700_001_050.0,
-                active_development_dates=[],
             )
-
-    def test_insufficient_activity_window_blocks_every_writer(self) -> None:
-        baseline = retirement.create_baseline(
-            runtime_status(),
-            source_commit="a" * 40,
-            captured_at=1_700_001_000.0,
-        )
-        increment = retirement.create_increment(
-            baseline,
-            runtime_status(),
-            source_commit="b" * 40,
-            captured_at=1_700_101_000.0,
-            active_development_dates=["2026-08-01", "2026-08-02"],
-        )
-
-        decision = retirement.evaluate_retirement(
-            increment,
-            release_gate("b" * 40),
-        )
-
-        self.assertTrue(
-            all(not writer["ready"] for writer in decision["writers"].values())
-        )
-        self.assertIn(
-            "only 2 active development days elapsed; 14 required",
-            decision["compatibility_profile"]["blockers"],
-        )
-
-    def test_git_activity_counts_distinct_first_parent_committer_dates(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-            subprocess.run(
-                ["git", "config", "user.email", "test@example.invalid"],
-                cwd=root,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.name", "Compatibility Test"],
-                cwd=root,
-                check=True,
-            )
-            (root / "state.json").write_text("{}\n", encoding="utf-8")
-            subprocess.run(["git", "add", "state.json"], cwd=root, check=True)
-            subprocess.run(
-                ["git", "commit", "-q", "-m", "baseline"],
-                cwd=root,
-                check=True,
-                env={**dict(__import__("os").environ), "GIT_COMMITTER_DATE": "2026-08-01T12:00:00+00:00", "GIT_AUTHOR_DATE": "2026-08-01T12:00:00+00:00"},
-            )
-            baseline = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=root,
-                check=True,
-                text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
-            for index, day in enumerate((2, 2, 3), start=1):
-                (root / "state.json").write_text(
-                    json.dumps({"index": index}) + "\n", encoding="utf-8"
-                )
-                subprocess.run(["git", "add", "state.json"], cwd=root, check=True)
-                date = f"2026-08-{day:02d}T12:00:00+00:00"
-                subprocess.run(
-                    ["git", "commit", "-q", "-m", f"change {index}"],
-                    cwd=root,
-                    check=True,
-                    env={**dict(__import__("os").environ), "GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date},
-                )
-            current = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=root,
-                check=True,
-                text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
-
-            dates = retirement.git_active_development_dates(
-                root,
-                baseline_commit=baseline,
-                current_commit=current,
-            )
-
-        self.assertEqual(dates, ["2026-08-02", "2026-08-03"])
-
-    def test_git_activity_excludes_commits_that_predate_baseline_capture(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-            subprocess.run(
-                ["git", "config", "user.email", "test@example.invalid"],
-                cwd=root,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.name", "Compatibility Test"],
-                cwd=root,
-                check=True,
-            )
-            (root / "state").write_text("baseline\n", encoding="utf-8")
-            subprocess.run(["git", "add", "state"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=root, check=True)
-            baseline = subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
-            (root / "state").write_text("already existed\n", encoding="utf-8")
-            subprocess.run(["git", "add", "state"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-q", "-m", "existing"], cwd=root, check=True)
-            current = subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
-
-            dates = retirement.git_active_development_dates(
-                root,
-                baseline_commit=baseline,
-                current_commit=current,
-                after_timestamp=4_000_000_000.0,
-            )
-
-        self.assertEqual(dates, [])
-
-    def test_git_activity_rejects_a_source_outside_canonical_main(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-            subprocess.run(
-                ["git", "config", "user.email", "test@example.invalid"],
-                cwd=root,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.name", "Compatibility Test"],
-                cwd=root,
-                check=True,
-            )
-            (root / "state").write_text("baseline\n", encoding="utf-8")
-            subprocess.run(["git", "add", "state"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=root, check=True)
-            baseline = subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
-            main_branch = subprocess.run(
-                ["git", "branch", "--show-current"], cwd=root, check=True, text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
-            subprocess.run(["git", "switch", "-q", "-c", "candidate"], cwd=root, check=True)
-            (root / "state").write_text("candidate\n", encoding="utf-8")
-            subprocess.run(["git", "add", "state"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-q", "-m", "candidate"], cwd=root, check=True)
-            candidate = subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
-            subprocess.run(["git", "switch", "-q", main_branch], cwd=root, check=True)
-            (root / "state").write_text("main\n", encoding="utf-8")
-            subprocess.run(["git", "add", "state"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-q", "-m", "main"], cwd=root, check=True)
-            canonical_main = subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
-
-            with self.assertRaisesRegex(ValueError, "canonical main first-parent"):
-                retirement.git_active_development_dates(
-                    root,
-                    baseline_commit=baseline,
-                    current_commit=candidate,
-                    canonical_main_commit=canonical_main,
-                )
 
     def test_baseline_cli_writes_the_same_digest_bound_report_it_prints(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -549,18 +385,71 @@ class CompatibilityRetirementTests(unittest.TestCase):
         self.assertEqual(printed, written)
         self.assertEqual(printed["source_commit"], "a" * 40)
 
+    def test_increment_cli_needs_no_git_activity_history(self) -> None:
+        baseline = retirement.create_baseline(
+            runtime_status(),
+            source_commit="a" * 40,
+            captured_at=1_700_001_000.0,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            baseline_path = root / "baseline.json"
+            status_path = root / "runtime-status.json"
+            baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+            status_path.write_text(json.dumps(runtime_status()), encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    __import__("sys").executable,
+                    str(SCRIPT),
+                    "increment",
+                    "--baseline",
+                    str(baseline_path),
+                    "--runtime-status",
+                    str(status_path),
+                    "--source-commit",
+                    "b" * 40,
+                    "--captured-at",
+                    "1700101000",
+                ],
+                cwd=root,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        increment = json.loads(completed.stdout)
+        self.assertEqual(increment["operation_deltas"], {"phase_record": 0, "workflow.next": 0})
+        self.assertEqual(
+            increment["feature_deltas"],
+            {
+                "execute.control_continue": 0,
+                "execute.observation_receipt": 0,
+                "phase_record": 0,
+                "workflow.next": 0,
+            },
+        )
+
     def test_evaluate_cli_returns_nonzero_when_selected_writer_is_not_ready(self) -> None:
         baseline = retirement.create_baseline(
             runtime_status(),
             source_commit="a" * 40,
             captured_at=1_700_001_000.0,
         )
+        current = runtime_status()
+        telemetry = current["compatibility_telemetry"]
+        telemetry["feature_counts"]["execute.control_continue"] = 2
+        telemetry["total_features"] = 10
+        telemetry["last_seen_at"]["features"]["execute.control_continue"] = (
+            1_700_100_000.0
+        )
         increment = retirement.create_increment(
             baseline,
-            runtime_status(),
+            current,
             source_commit="b" * 40,
             captured_at=1_700_101_000.0,
-            active_development_dates=["2026-08-01"],
         )
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -607,9 +496,6 @@ class CompatibilityRetirementTests(unittest.TestCase):
             runtime_status(),
             source_commit="b" * 40,
             captured_at=1_700_101_000.0,
-            active_development_dates=[
-                f"2026-08-{day:02d}" for day in range(1, 15)
-            ],
         )
         skeletal: dict[str, object] = {
             "schema": "openubmc-agent-workflow.release-gate.v2",

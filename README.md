@@ -45,7 +45,7 @@ queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outc
 Case lifecycle, and Runtime status are available only through the explicit `operator` profile.
 Compatibility retirement is evidence-gated. This candidate removes legacy Agent inputs and the
 compatibility profile while preserving explicit old-event upcasters, but it must not be promoted to
-canonical `main` until the 14-active-day and same-source Release Gate requirements pass. See
+canonical `main` until zero-use telemetry and a same-source promotable Release Gate pass. See
 [Agent Semantic Gateway](docs/agent-semantic-gateway.md).
 
 ## Architecture and evolution

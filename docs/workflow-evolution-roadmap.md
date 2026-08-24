@@ -141,8 +141,8 @@ CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2
 - `DomainExecutor` 在 Runtime 构造时注册 Adapter，只读传输失败有限重试，Mutation 不盲目
   重放；
 - `ContextRuntime` 继续承载 repository 与 Evidence 实现；原生 Agent Gate response 由
-  RunEngine 提交持久 Gate；兼容 writer/profile 的候选移除已完成但仍等待 14 日与同源
-  Release Gate，历史事件继续由显式 upcaster 转换；
+  RunEngine 提交持久 Gate；兼容 writer/profile 的候选移除已完成并由零使用 telemetry 与
+  同源 Release Gate 决定晋级，历史事件继续由显式 upcaster 转换；
 - Session Outcome 只从持久 `RunOutcomeRecorded` 投影，terminal replay 不重复写 Run Outcome、
   Closeout 或治理记录。
 
@@ -307,7 +307,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 | 目标 | 验收 |
 | --- | --- |
 | Incident 闭环 | 内建 Incident 已有确定的 retry、reconcile、correction-then-resume、cancel 或 terminal 路径；Operator 指标从持久 Run ledger 派生并支持重启恢复 |
-| Compatibility 收敛 | feature-level 持久遥测和 Operator 退役判定证据已落地；按 14 个 canonical main 活跃研发日和一次同 source 完整资格的零使用窗口删除旧 writer，old-event reader 保留 |
+| Compatibility 收敛 | feature-level 持久遥测和 Operator 退役判定证据已落地；零增长 telemetry 与一次同 source 完整资格通过后删除旧 writer，old-event reader 保留 |
 | Module locality | compatibility、EvidenceStore、Runtime composition 从 MCP transport 中集中 |
 | 测试稳定 | duplicate storm、SQLite 并发、crash-cut、capacity 与 restart soak 已纳入 release qualification；property 与 network fault injection 继续深化 |
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 import subprocess
 import sys
@@ -22,7 +22,6 @@ INCREMENT_SCHEMA = (
 DECISION_SCHEMA = (
     "openubmc-agent-workflow.compatibility-retirement-decision.v1"
 )
-REQUIRED_ACTIVE_DEVELOPMENT_DAYS = 14
 WRITER_METRICS = {
     "observe.assurance": (("feature", "observe.assurance"),),
     "execute.control_continue": (
@@ -254,7 +253,6 @@ def create_increment(
     *,
     source_commit: str,
     captured_at: float,
-    active_development_dates: Iterable[str],
 ) -> dict[str, object]:
     _verify_evidence(
         baseline,
@@ -336,15 +334,12 @@ def create_increment(
             "compatibility telemetry count increased without newer last_seen_at: "
             + ", ".join(stale_metrics)
         )
-    dates = sorted({str(value) for value in active_development_dates})
     report: dict[str, object] = {
         "schema": INCREMENT_SCHEMA,
         "baseline_digest": baseline["evidence_digest"],
         "baseline_source_commit": baseline_commit,
         "source_commit": current_commit,
         "captured_at": current_captured,
-        "active_development_dates": dates,
-        "active_development_day_count": len(dates),
         "operation_deltas": operation_deltas,
         "feature_deltas": feature_deltas,
         "telemetry": current_telemetry,
@@ -364,15 +359,6 @@ def _verify_release_gate(
     )
 
 
-def _active_day_blocker(active_days: int) -> str | None:
-    if active_days >= REQUIRED_ACTIVE_DEVELOPMENT_DAYS:
-        return None
-    return (
-        f"only {active_days} active development days elapsed; "
-        f"{REQUIRED_ACTIVE_DEVELOPMENT_DAYS} required"
-    )
-
-
 def _writer_decision(
     metrics: tuple[tuple[str, str], ...],
     *,
@@ -386,10 +372,6 @@ def _writer_decision(
         metric_values.append({"kind": kind, "name": metric, "delta": delta})
         if delta > 0:
             blockers.append(f"{kind} count increased by {delta}")
-    active_days = int(increment["active_development_day_count"])
-    window_blocker = _active_day_blocker(active_days)
-    if window_blocker is not None:
-        blockers.append(window_blocker)
     return {
         "ready": not blockers,
         "stage": "remove_compatibility_writer",
@@ -428,17 +410,11 @@ def evaluate_retirement(
         profile_blockers.append(
             f"compatibility feature count increased by {feature_increase}"
         )
-    active_days = int(increment["active_development_day_count"])
-    window_blocker = _active_day_blocker(active_days)
-    if window_blocker is not None:
-        profile_blockers.append(window_blocker)
     report: dict[str, object] = {
         "schema": DECISION_SCHEMA,
         "source_commit": source_commit,
         "increment_digest": increment["evidence_digest"],
         "release_gate_digest": release_gate["evidence_digest"],
-        "required_active_development_days": REQUIRED_ACTIVE_DEVELOPMENT_DAYS,
-        "active_development_day_count": active_days,
         "writers": writers,
         "compatibility_profile": {
             "ready": not profile_blockers,
@@ -449,75 +425,6 @@ def evaluate_retirement(
     }
     report["evidence_digest"] = _fingerprint(report)
     return report
-
-
-def git_active_development_dates(
-    repository: Path,
-    *,
-    baseline_commit: str,
-    current_commit: str,
-    canonical_main_commit: str | None = None,
-    after_timestamp: float | None = None,
-) -> list[str]:
-    baseline = _full_commit(baseline_commit, name="baseline_commit")
-    current = _full_commit(current_commit, name="current_commit")
-    if canonical_main_commit is not None:
-        canonical_main = _full_commit(
-            canonical_main_commit,
-            name="canonical_main_commit",
-        )
-        history = subprocess.run(
-            ["git", "rev-list", "--first-parent", canonical_main],
-            cwd=repository,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if history.returncode:
-            raise ValueError(
-                history.stderr.strip() or "cannot read canonical main history"
-            )
-        first_parent_commits = set(history.stdout.splitlines())
-        if baseline not in first_parent_commits or current not in first_parent_commits:
-            raise ValueError(
-                "baseline and current source must be on canonical main first-parent history"
-            )
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", baseline, current],
-        cwd=repository,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if ancestor.returncode != 0:
-        raise ValueError("baseline commit is not an ancestor of current commit")
-    completed = subprocess.run(
-        [
-            "git",
-            "log",
-            "--first-parent",
-            "--format=%ct%x09%cs",
-            f"{baseline}..{current}",
-        ],
-        cwd=repository,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if completed.returncode:
-        raise ValueError(completed.stderr.strip() or "cannot read Git activity")
-    threshold = float(after_timestamp) if after_timestamp is not None else 0.0
-    dates: set[str] = set()
-    for line in completed.stdout.splitlines():
-        raw_timestamp, separator, raw_date = line.partition("\t")
-        if not separator:
-            raise ValueError("Git activity output is malformed")
-        if float(raw_timestamp) > threshold:
-            dates.add(raw_date.strip())
-    return sorted(dates)
 
 
 def _read_json(path: Path, *, label: str) -> dict[str, object]:
@@ -584,7 +491,6 @@ def main(argv: list[str] | None = None) -> int:
     increment_parser.add_argument("--baseline", type=Path, required=True)
     increment_parser.add_argument("--runtime-status", type=Path, required=True)
     increment_parser.add_argument("--captured-at", type=float)
-    increment_parser.add_argument("--main-ref", default="github/main")
     increment_parser.add_argument("--output", type=Path)
     _add_source_options(increment_parser)
 
@@ -622,24 +528,11 @@ def main(argv: list[str] | None = None) -> int:
                 source_commit=args.source_commit,
                 source_ref=args.source_ref,
             )
-            canonical_main = _resolve_source_commit(
-                repository,
-                source_commit=None,
-                source_ref=args.main_ref,
-            )
-            dates = git_active_development_dates(
-                repository,
-                baseline_commit=str(baseline.get("source_commit", "")),
-                current_commit=commit,
-                canonical_main_commit=canonical_main,
-                after_timestamp=float(baseline.get("captured_at", 0.0)),
-            )
             report = create_increment(
                 baseline,
                 _read_json(args.runtime_status, label="Runtime status"),
                 source_commit=commit,
                 captured_at=args.captured_at or time.time(),
-                active_development_dates=dates,
             )
         else:
             report = evaluate_retirement(

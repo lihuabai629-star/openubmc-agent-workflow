@@ -73,7 +73,7 @@ MutationJournal      -> durable Mutation truth and reconcile
 typed `SemanticRuntimePort.observe/execute`，`RunEngine` 处理 Gate、推进、reconcile、
 Incident 和 Outcome。Agent Gate submission 已使用原生 `RunGateSubmitted`，历史事件经
 显式 upcaster 进入统一投影；当前候选实现移除 `phase_record/workflow.next` writer 与
-compatibility profile，并只读保留历史 telemetry，但在 14 个活跃研发日和同源 Release
+compatibility profile，并只读保留历史 telemetry，但在零使用 telemetry 和同源 Release
 Gate 满足前不得进入 canonical `main`。后续工作是证据门禁和旧事件 reader 保留窗口，
 不是建立第二份状态权威。
 

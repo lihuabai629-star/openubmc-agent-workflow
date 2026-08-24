@@ -3,8 +3,8 @@
 This document describes the compatibility-retirement candidate. It removes the writers and MCP
 profile so Agent writes enter only through `observe` and `execute`; the Operator / CI Plane remains
 separate, and historical old-event upcasters plus anonymous telemetry remain read-only. The
-candidate must remain unmerged until the real 14-active-day window and a same-source promotable
-Release Gate satisfy the readiness policy below.
+candidate must remain unmerged until zero-use telemetry and a same-source promotable Release Gate
+satisfy the readiness policy below.
 
 ## Telemetry
 
@@ -39,15 +39,13 @@ window. They are readers only and cannot create new Run transitions.
 into three digest-bound records:
 
 - `baseline` captures one telemetry identity, count snapshot, source commit and capture time;
-- `increment` compares a later snapshot, rejects counter rollback or tracking-identity changes, and
-  counts distinct commit dates on canonical `github/main` first-parent history;
+- `increment` compares a later snapshot and rejects counter rollback, inconsistent timestamps, or
+  tracking-identity changes;
 - `evaluate` binds that zero-use evidence to a complete promotable Release Gate from the same source
   commit and reports readiness separately for each writer and for the whole compatibility profile.
 
-An active development day is a distinct committer date (`%cs`) among canonical first-parent commits
-after both the baseline source and the baseline capture instant, through the current source.
-Side-branch activity and main commits that already existed when the baseline was captured do not
-shorten the window. Any count increase requires a new baseline after callers have been migrated.
+Any count increase blocks the affected writer and the compatibility profile. Migrate the caller,
+capture a fresh baseline, then generate a new same-source qualification before retrying retirement.
 
 ```bash
 python scripts/compatibility_retirement.py baseline \
@@ -59,7 +57,6 @@ python scripts/compatibility_retirement.py increment \
   --baseline compatibility-baseline.json \
   --runtime-status runtime-status-current.json \
   --source-ref github/main \
-  --main-ref github/main \
   --output compatibility-increment.json
 
 python scripts/compatibility_retirement.py evaluate \
