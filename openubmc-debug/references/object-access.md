@@ -10,6 +10,8 @@ The bundled object helpers currently use SSH to reach the user bus. Treat that a
 
 Prefer `mdbctl` for broad openUBMC model exploration and `busctl` for exact D-Bus semantics. A failed `mdbctl` command does not prove the object is absent; cross-check exact service/path/interface using the available object capability.
 
-Capture service, object path, interface, member/property, method signature, returned state, target time, exit/status, and business-error text. Read `busctl-access.md`, `mdbctl-access.md`, or `alarm-access.md` only for the selected branch.
+Capture service, object path, interface, member/property, method signature, returned state, target
+time, exit/status, and business-error text. Return to the Skill entrypoint and load only the access
+card selected there; this overview does not route another reference.
 
 The bundled helpers have no write override. A blocked command or method is an authorization/ownership boundary, not a prompt to bypass the helper.

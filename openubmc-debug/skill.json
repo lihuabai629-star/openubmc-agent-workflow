@@ -34,6 +34,7 @@
     "SKILL.md",
     "skill.json",
     "agents/openai.yaml",
+    "references/agent-gateway.md",
     "references/alarm-access.md",
     "references/busctl-access.md",
     "references/components.md",

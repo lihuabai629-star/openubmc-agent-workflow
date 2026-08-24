@@ -2,8 +2,8 @@
 
 Personal memory, note vaults, NotebookLM, and similar user-specific services are disabled by default.
 
-The standalone openUBMC KB is governed separately by
-`references/knowledge-routing.md`: when it is already configured and available, it may provide a
+The standalone openUBMC KB is governed separately by the Knowledge Routing reference. When it is
+already configured and available, it may provide a
 non-blocking candidate route without becoming diagnostic evidence.
 
 Enter this branch only when the user explicitly requests or configures the integration. A

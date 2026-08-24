@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import platform
 import random
+import re
 import statistics
 import subprocess
 import sys
@@ -27,7 +28,7 @@ import uuid
 
 SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v2"
 RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v2"
-RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v1"
+RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v2"
 RUN_ATTESTATION_IDENTITY = "openubmc-agent-workflow-qualification"
 RUN_ATTESTATION_NAMESPACE = "openubmc-agent-gateway-ab"
 DEFAULT_BASELINE_REF = "35b36efb6503d05a811b51bf09fb5f8dead0e208"
@@ -50,6 +51,11 @@ THRESHOLDS = {
     "false_successes": 0,
     "unknown_new_identity_retries": 0,
 }
+SKILL_DISCLOSURE_VALIDITY_THRESHOLDS = {
+    "min_arm_valid_rate": 0.95,
+    "max_invalid_pair_fraction": 0.10,
+    "max_candidate_valid_rate_regression": 0.05,
+}
 BENCHMARK_TARGET = "10.121.136.200"
 QUALIFICATION_MODEL = "gpt-5.6-sol"
 QUALIFICATION_CODEX_CONFIG = (
@@ -61,6 +67,8 @@ QUALIFICATION_CODEX_CONFIG = (
     'model_providers.cliproxy.wire_api="responses"',
     "model_providers.cliproxy.supports_websockets=false",
 )
+MCP_STARTUP_TIMEOUT_SECONDS = 120
+MCP_TOOL_TIMEOUT_SECONDS = 900
 BENCHMARK_CAPABILITIES = ("ssh", "telnet", "mdbctl", "busctl")
 BENCHMARK_MDB_QUERIES = (
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
@@ -72,6 +80,24 @@ BENCHMARK_MDB_QUERIES = (
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo Type",
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo SocketId",
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.DriveStatus Health",
+)
+SKILL_DISCLOSURE_CAPABILITIES = ("mdbctl",)
+SKILL_DISCLOSURE_MDB_FIELDS = (
+    (
+        "name",
+        "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
+    ),
+    (
+        "resourceid",
+        "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive ResourceId",
+    ),
+    (
+        "presence",
+        "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Presence",
+    ),
+)
+SKILL_DISCLOSURE_MDB_QUERIES = tuple(
+    query for _, query in SKILL_DISCLOSURE_MDB_FIELDS
 )
 BASELINE_PHASE_CONTRACT_STABLE_FIELDS = (
     "receipt_schema",
@@ -110,8 +136,26 @@ def _tool_output_bytes(item: Mapping[str, object]) -> int:
     )
 
 
-def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, object]:
+def observe_scope_acceptance(
+    tools: list[Mapping[str, object]], *, scenario: str = "observation"
+) -> dict[str, object]:
     errors: list[str] = []
+    expected_capabilities = (
+        SKILL_DISCLOSURE_CAPABILITIES
+        if scenario == "skill-disclosure"
+        else BENCHMARK_CAPABILITIES
+    )
+    expected_queries = (
+        SKILL_DISCLOSURE_MDB_QUERIES
+        if scenario == "skill-disclosure"
+        else BENCHMARK_MDB_QUERIES
+    )
+    if any(
+        item.get("type") == "mcp_tool_call"
+        and item.get("server") != "openubmc-target-runtime"
+        for item in tools
+    ):
+        errors.append("unrelated MCP tools")
     calls = [
         item
         for item in tools
@@ -119,9 +163,13 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
         and item.get("server") == "openubmc-target-runtime"
     ]
     if len(calls) != 1 or calls[0].get("tool") != "observe":
-        return {"passed": False, "errors": ["candidate must call observe exactly once"]}
+        return {
+            "passed": False,
+            "errors": ["arm must call observe exactly once"],
+            "reason_codes": ["observe_call_count"],
+        }
     if any(item.get("type") == "command_execution" for item in tools):
-        errors.append("candidate must not execute shell commands")
+        errors.append("arm must not execute shell commands")
     call = calls[0]
     arguments = _json_object(call.get("arguments"))
     if arguments.get("target") != BENCHMARK_TARGET:
@@ -129,8 +177,8 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
     freshness = _json_object(arguments.get("freshness"))
     if freshness != {"mode": "live", "max_age_seconds": 0}:
         errors.append("freshness must request one live observation")
-    if str(arguments.get("assurance", "auto")).lower() != "auto":
-        errors.append("assurance must be auto")
+    if "assurance" in arguments:
+        errors.append("legacy assurance input")
     selectors = arguments.get("selectors")
     selector_values = selectors if isinstance(selectors, list) else []
     capability_selectors = [
@@ -156,11 +204,11 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
         if isinstance(names, list)
         else ()
     )
-    if normalized_names != BENCHMARK_CAPABILITIES:
-        errors.append("capability selector does not match the four required capabilities")
+    if normalized_names != expected_capabilities:
+        errors.append("capability selector does not match the required capabilities")
     queries = mdb.get("queries", []) if isinstance(mdb, Mapping) else []
-    if not isinstance(queries, list) or tuple(queries) != BENCHMARK_MDB_QUERIES:
-        errors.append("MDB selector does not match the nine exact queries")
+    if not isinstance(queries, list) or tuple(queries) != expected_queries:
+        errors.append("MDB selector does not match the exact benchmark queries")
 
     result = _json_object(call.get("result"))
     receipt = _json_object(
@@ -168,11 +216,11 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
     )
     receipt_id = str(receipt.get("receipt_id", ""))
     if not receipt_id or receipt.get("status") != "complete":
-        errors.append("candidate must return a complete ObservationReceipt")
+        errors.append("arm must return a complete ObservationReceipt")
     coverage = _json_object(receipt.get("coverage"))
     expected_coverage = {
-        "requested": 13,
-        "available": 13,
+        "requested": len(expected_capabilities) + len(expected_queries),
+        "available": len(expected_capabilities) + len(expected_queries),
         "unavailable": 0,
         "not_checked": 0,
         "complete": True,
@@ -189,13 +237,13 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
         for item in capability_values
         if isinstance(item, Mapping)
     } if isinstance(capability_values, list) else {}
-    if observed_capabilities != {name: "available" for name in BENCHMARK_CAPABILITIES}:
+    if observed_capabilities != {name: "available" for name in expected_capabilities}:
         errors.append("capability results are not fully available")
     mdb_result = _json_object(results.get(mdb_id))
     mdb_values = mdb_result.get("values", [])
     if (
         not isinstance(mdb_values, list)
-        or len(mdb_values) != len(BENCHMARK_MDB_QUERIES)
+        or len(mdb_values) != len(expected_queries)
         or any(
             not isinstance(item, Mapping)
             or item.get("query_index") != index
@@ -204,7 +252,7 @@ def candidate_scope_acceptance(tools: list[Mapping[str, object]]) -> dict[str, o
             for index, item in enumerate(mdb_values)
         )
     ):
-        errors.append("MDB results do not contain nine available raw values")
+        errors.append("MDB results do not contain all available raw values")
     claims = receipt.get("claims", [])
     grounded_ids = {
         str(item.get("selector_id", ""))
@@ -223,6 +271,55 @@ def _structured_tool_result(call: Mapping[str, object]) -> Mapping[str, object]:
     return _json_object(
         result.get("structured_content") or result.get("structuredContent")
     )
+
+
+def _skill_disclosure_observed_values(
+    tools: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    for call in tools:
+        if (
+            call.get("type") != "mcp_tool_call"
+            or call.get("server") != "openubmc-target-runtime"
+            or call.get("tool") != "observe"
+        ):
+            continue
+        arguments = _json_object(call.get("arguments"))
+        selectors = arguments.get("selectors")
+        selector_values = selectors if isinstance(selectors, list) else []
+        capability_id = ""
+        mdb_id = ""
+        for selector in selector_values:
+            if not isinstance(selector, Mapping):
+                continue
+            kind = str(selector.get("kind", "")).lower()
+            if kind == "capability":
+                capability_id = str(selector.get("id", ""))
+            elif kind == "mdb":
+                mdb_id = str(selector.get("id", ""))
+        results = _json_object(_structured_tool_result(call).get("results"))
+        observed: dict[str, object] = {}
+        capabilities = _json_object(results.get(capability_id)).get("values", [])
+        if isinstance(capabilities, list):
+            for item in capabilities:
+                if (
+                    isinstance(item, Mapping)
+                    and str(item.get("name", "")).lower() == "mdbctl"
+                ):
+                    observed["mdbctl"] = item.get("status")
+        values = _json_object(results.get(mdb_id)).get("values", [])
+        if isinstance(values, list):
+            by_index = {
+                item.get("query_index"): item.get("value")
+                for item in values
+                if isinstance(item, Mapping)
+                and item.get("status") == "available"
+                and "value" in item
+            }
+            for index, (field, _) in enumerate(SKILL_DISCLOSURE_MDB_FIELDS):
+                if index in by_index:
+                    observed[field] = by_index[index]
+        return observed
+    return {}
 
 
 def _result_case_identity(result: Mapping[str, object]) -> tuple[str, bool]:
@@ -261,6 +358,44 @@ def _qualification_respond_template() -> str:
     return encoded.replace(
         '"gate_version":"<structured_content.gate.gate_version>"',
         '"gate_version":<structured_content.gate.gate_version>',
+    )
+
+
+def _observe_template(
+    capabilities: Iterable[str],
+    queries: Iterable[str],
+) -> str:
+    return json.dumps(
+        {
+            "target": BENCHMARK_TARGET,
+            "freshness": {"mode": "live", "max_age_seconds": 0},
+            "selectors": [
+                {
+                    "id": "capabilities",
+                    "kind": "capability",
+                    "names": [name.upper() for name in capabilities],
+                },
+                {
+                    "id": "drive",
+                    "kind": "mdb",
+                    "queries": list(queries),
+                },
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _qualification_observe_template() -> str:
+    return _observe_template(BENCHMARK_CAPABILITIES, BENCHMARK_MDB_QUERIES)
+
+
+def _skill_disclosure_observe_template() -> str:
+    return _observe_template(
+        SKILL_DISCLOSURE_CAPABILITIES,
+        SKILL_DISCLOSURE_MDB_QUERIES,
     )
 
 
@@ -443,7 +578,10 @@ def _actionable_elapsed(
         item = _json_object(event.get("item"))
         if item.get("type") != "mcp_tool_call":
             continue
-        if scenario == "observation" and item.get("tool") != "observe":
+        if (
+            scenario in {"observation", "skill-disclosure"}
+            and item.get("tool") != "observe"
+        ):
             continue
         if scenario == "execute-source-only":
             structured = _structured_tool_result(item)
@@ -526,7 +664,11 @@ class RunEvidenceRecord:
             raise ValueError(f"AB run evidence item {index} has an invalid pair")
         if not isinstance(order, int) or isinstance(order, bool) or order not in {1, 2}:
             raise ValueError(f"AB run evidence item {index} has an invalid order")
-        if scenario not in {"observation", "execute-source-only"}:
+        if scenario not in {
+            "observation",
+            "skill-disclosure",
+            "execute-source-only",
+        }:
             raise ValueError(f"AB run evidence item {index} has an invalid scenario")
         if not isinstance(events, list) or not all(
             isinstance(event, Mapping) for event in events
@@ -592,20 +734,31 @@ class RunEvidenceRecord:
         input_tokens = int(usage.get("input_tokens", 0) or 0)
         cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
-        acceptance = semantic_acceptance(self.final, scenario=self.scenario)
-        scope_validation = (
-            (
-                candidate_scope_acceptance(tools)
+        acceptance = semantic_acceptance(
+            self.final,
+            scenario=self.scenario,
+            observed_values=(
+                _skill_disclosure_observed_values(tools)
+                if self.scenario == "skill-disclosure"
+                else None
+            ),
+        )
+        if self.scenario == "skill-disclosure":
+            scope_validation = observe_scope_acceptance(
+                tools, scenario=self.scenario
+            )
+        elif self.arm == "B":
+            scope_validation = (
+                observe_scope_acceptance(tools)
                 if self.scenario == "observation"
                 else candidate_execute_acceptance(tools)
             )
-            if self.arm == "B"
-            else (
+        else:
+            scope_validation = (
                 baseline_execute_acceptance(tools)
                 if self.scenario == "execute-source-only"
                 else {"passed": True, "errors": []}
             )
-        )
         scope_ok = bool(scope_validation["passed"])
         model_turns = max(
             1,
@@ -730,6 +883,109 @@ def _run_source_binding_errors(
     return errors
 
 
+def _text_sha256(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _normalize_prompt_skill_path(prompt: str, *, scenario: str) -> str:
+    if scenario == "execute-source-only":
+        return re.sub(
+            r"(?m)^(使用已安装的 ).+( 所定义的(?:原生 Case Continuation 路径|Agent Gateway 路径)。)$",
+            r"\1<skill-path>\2",
+            prompt,
+            count=1,
+        )
+    if scenario == "observation":
+        return re.sub(
+            r"(?m)^(完整读取并严格遵循 ).+(。)$",
+            r"\1<skill-path>\2",
+            prompt,
+            count=1,
+        )
+    return prompt
+
+
+def _run_prompt_binding_errors(
+    value: object,
+    *,
+    expected_scenario: str,
+) -> list[str]:
+    document = _json_object(value)
+    runs = document.get("runs")
+    if not isinstance(runs, list):
+        return []
+    errors: list[str] = []
+    for index, value in enumerate(runs, 1):
+        run = _json_object(value)
+        prompt = run.get("prompt")
+        prompt_sha256 = run.get("prompt_sha256")
+        if not isinstance(prompt, str) or not prompt:
+            errors.append(f"AB run prompt is unavailable at item {index}")
+            continue
+        if prompt_sha256 != _text_sha256(prompt):
+            errors.append(f"AB run prompt digest is invalid at item {index}")
+        arm = run.get("arm")
+        if arm in {"A", "B"} and _normalize_prompt_skill_path(
+            prompt,
+            scenario=expected_scenario,
+        ) != _prompt(
+                Path("<skill-path>"),
+                scenario=expected_scenario,
+                arm=str(arm),
+        ):
+            errors.append(
+                f"AB run prompt does not match the qualification prompt contract at item {index}"
+            )
+    return errors
+
+
+def _run_environment_binding_errors(
+    value: object,
+    *,
+    expected_fingerprint: object,
+) -> list[str]:
+    document = _json_object(value)
+    runs = document.get("runs")
+    if not isinstance(runs, list):
+        return []
+    return [
+        f"AB run environment does not match the release evidence at item {index}"
+        for index, value in enumerate(runs, 1)
+        if _json_object(value).get("environment_fingerprint")
+        != expected_fingerprint
+    ]
+
+
+def _run_qualification_contract_errors(
+    value: object,
+    *,
+    expected_requested_pairs: object,
+    expected_schedule_digest: str,
+) -> list[str]:
+    document = _json_object(value)
+    runs = document.get("runs")
+    if not isinstance(runs, list):
+        return []
+    expected = {
+        "requested_pairs": expected_requested_pairs,
+        "schedule_digest": expected_schedule_digest,
+    }
+    mismatches = [
+        index
+        for index, value in enumerate(runs, 1)
+        if _json_object(value).get("qualification_contract") != expected
+    ]
+    if not mismatches:
+        return []
+    suffix = ", ".join(str(index) for index in mismatches[:5])
+    if len(mismatches) > 5:
+        suffix += ", ..."
+    return [
+        "AB run qualification contract does not match the requested checkpoint "
+        f"and schedule at items {suffix}"
+    ]
+
+
 def _run_attestation_errors(
     value: object, *, public_key: Path
 ) -> list[str]:
@@ -823,8 +1079,220 @@ def _run_attestation_errors(
     return errors
 
 
+def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
+    cautious_patterns = (
+        r"(?:不能|无法|不足以)[^，,。；;！？!?\n]{0,32}(?:证明|说明|表明|判断|判定|确定|认定|确认)",
+        r"(?:不代表|不等于|并非|不是|不属于)[^，,。；;！？!?\n]{0,32}异常",
+    )
+    cautious = (
+        "resourceid" in folded
+        and "异常" in text
+        and any(re.search(pattern, folded) for pattern in cautious_patterns)
+    )
+    if not cautious:
+        return False
+    negative_terms = ("不能", "无法", "不足以", "不代表", "不等于", "并非", "不是", "不属于")
+    action_terms = ("处理", "维修", "修复", "更换", "升级", "操作", "处置", "整改", "恢复", "重启")
+    finality_terms = (
+        "最终",
+        "结论",
+        "结果",
+        "明确判定",
+        "已经判定",
+        "已判定",
+        "确认异常",
+        "异常成立",
+        "异常属实",
+        "异常确定",
+    )
+    uncertainty_verb = r"(?:仍需|还需要|还需|需要|尚需|有待|取决于)"
+    uncertainty_evidence = (
+        r"(?:(?:其他|更多|额外|补充)?证据|接口(?:规范|定义|契约|语义)|"
+        r"预期(?:值|行为|结果)|基线(?:值|行为|结果)|参考(?:值|标准|规范)|"
+        r"对照(?:值|标准)|契约(?:证据)?|语义(?:定义|契约)|上下文(?:证据)?)"
+    )
+    uncertainty_patterns = (
+        rf"^(?:判定|判断|确定|确认|认定)(?:是否)?异常"
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}\s*$",
+        rf"(?:是否异常|异常(?:是否|与否))"
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_verb}"
+        rf"[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}\s*$",
+        rf"^{uncertainty_verb}[^，,。；;！？!?\n]{{0,24}}{uncertainty_evidence}"
+        rf"[^，,。；;！？!?\n]{{0,24}}"
+        rf"(?:判定|判断|确定|确认|认定)(?:是否)?异常\s*$",
+    )
+    clauses = [
+        clause.strip()
+        for clause in re.split(
+            r"[，,、。；;！？!?\n]+|(?=但(?:是)?|却|然而|不过|可是)|"
+            r"(?=(?:而|同时|并且)(?:最终|明确|正式|已|已经|结论|结果|"
+            r"判定|认定|确认))",
+            folded,
+        )
+        if clause.strip()
+    ]
+    positive_patterns = (
+        r"resourceid[^，,。；;！？!?\n]{0,32}异常",
+        r"(?:最终)?(?:结论|结果)[^，,。；;！？!?\n]{0,32}异常",
+        r"(?:判定|认定)(?!是否)[^，,。；;！？!?\n]{0,32}异常",
+        r"确认(?:为|是|属于|构成)[^，,。；;！？!?\n]{0,16}异常",
+        r"(?:为|是|属于|构成|确属)异常",
+        r"异常(?:成立|属实|确定)",
+    )
+    carry_finality = False
+    for clause in clauses:
+        explicit_uncertainty = any(term in clause for term in ("是否", "与否"))
+        has_finality = carry_finality or any(
+            term in clause for term in finality_terms
+        )
+        positive = (
+            "异常" in clause
+            and any(re.search(pattern, clause) for pattern in positive_patterns)
+        )
+        uncertainty = (
+            not any(term in clause for term in action_terms)
+            and (explicit_uncertainty or not has_finality)
+            and any(re.search(pattern, clause) for pattern in uncertainty_patterns)
+        )
+        if (
+            positive
+            and not any(term in clause for term in negative_terms)
+            and not uncertainty
+        ):
+            return False
+        if positive or uncertainty:
+            carry_finality = False
+        elif (
+            re.fullmatch(
+                r"(?:最终|结论|结果|判断|最终结论|最终结果|最终判断)"
+                r"(?:是|为|[:：]|如下(?:所示)?[:：]?)?",
+                clause,
+            )
+            or re.match(
+                r"^(?:最终结论|最终结果|最终判断|结论|结果|判断)"
+                r"(?:是|为|[:：]|如下(?:所示)?[:：]?)",
+                clause,
+            )
+        ):
+            carry_finality = True
+    return True
+
+
+def _parenthetical_annotation_matches(annotation: str, expected: str) -> bool:
+    marker = re.match(
+        r"^(?:原始(?:返回|值)?|实际(?:返回|值)?|返回(?:值)?|raw(?:\s+value)?|value)"
+        r"\s*(?:[:：=]|为|是)?\s*(?P<value>.+?)\s*$",
+        annotation,
+    )
+    if marker is None:
+        return False
+    annotated_value = marker.group("value").strip(" \t\r\n\\\"'`")
+    return annotated_value == expected
+
+
+def _parenthetical_annotation_describes_quotes(annotation: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?:原始(?:值|返回)?|实际值?)?(?:含|包含)(?:双)?引号",
+            annotation.strip(),
+        )
+    )
+
+
+def _reported_value_matches(reported: str, expected: str) -> bool:
+    if not reported.startswith(expected):
+        return False
+    tail = reported[len(expected):]
+    terminal = set(" \t\r\n\\，,；;.。！？!?、：:）)]}】》」』")
+    if all(character in terminal for character in tail):
+        return True
+    remainder = tail.lstrip(" \t\\")
+    if remainder.startswith(("（", "(")):
+        closing = "）" if remainder[0] == "（" else ")"
+        close_index = remainder.find(closing, 1)
+        if close_index > 0:
+            annotation = remainder[1:close_index]
+            suffix = remainder[close_index + 1:]
+            if (
+                (
+                    _parenthetical_annotation_matches(annotation, expected)
+                    or _parenthetical_annotation_describes_quotes(annotation)
+                )
+                and all(character in terminal for character in suffix)
+            ):
+                return True
+    if not remainder or remainder[0] not in "，,；;。！？!?":
+        return False
+    conclusion = remainder[1:].lstrip()
+    return conclusion.startswith(
+        ("不能", "无法", "不足以", "这些", "证据", "结论", "本次", "现有")
+    )
+
+
+def _reported_skill_value(
+    lines: Iterable[str],
+    *,
+    field: str,
+    value: object,
+) -> bool:
+    labels = ("mdbctl", "name", "resourceid", "presence")
+    label_patterns = {
+        label: re.compile(rf"(?<![0-9a-z_]){label}(?![0-9a-z_])")
+        for label in labels
+    }
+    segments: list[str] = []
+    for line in lines:
+        for match in label_patterns[field].finditer(line):
+            segment_end = len(line)
+            for pattern in label_patterns.values():
+                next_match = pattern.search(line, match.end())
+                if next_match is not None:
+                    segment_end = min(segment_end, next_match.start())
+            segments.append(line[match.end():segment_end])
+    value_prefixes = (
+        "的实际值为",
+        "实际值为",
+        "原始值为",
+        "原始值",
+        "当前上报",
+        "上报",
+        "值为",
+        "status",
+        "状态",
+        "value",
+        "is",
+        "为",
+        "是",
+    )
+    reported_values: list[str] = []
+    for segment in segments:
+        reported = segment.lstrip(" \t:：=,，;；-–—\\")
+        for prefix in value_prefixes:
+            if reported.startswith(prefix):
+                reported = reported[len(prefix):].lstrip(
+                    " \t:：=,，;；-–—\\"
+                )
+                break
+        reported_values.append(reported)
+    expected = str(value).lower().replace('"', "").replace("'", "")
+    if field == "mdbctl" and expected == "available":
+        return any(
+            _reported_value_matches(reported, "available")
+            or _reported_value_matches(reported, "可用")
+            for reported in reported_values
+        )
+    return any(
+        _reported_value_matches(reported, expected)
+        for reported in reported_values
+    )
+
+
 def semantic_acceptance(
-    text: str, *, scenario: str = "observation"
+    text: str,
+    *,
+    scenario: str = "observation",
+    observed_values: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if scenario == "execute-source-only":
         folded = text.lower().replace("`", "")
@@ -834,6 +1302,32 @@ def semantic_acceptance(
             "passed": not missing,
             "missing": missing,
             "conclusion_supported": not missing,
+        }
+    if scenario == "skill-disclosure":
+        folded = text.lower().replace("`", "")
+        required = ("mdbctl", "name", "resourceid", "presence")
+        missing = [token for token in required if token not in folded]
+        if observed_values:
+            normalized_lines = [
+                line.lower()
+                .replace("`", "")
+                .replace('"', "")
+                .replace("'", "")
+                for line in text.splitlines()
+            ]
+            for field, value in observed_values.items():
+                expected = str(value).lower().replace('"', "").replace("'", "")
+                if not _reported_skill_value(
+                    normalized_lines,
+                    field=field,
+                    value=value,
+                ):
+                    missing.append(f"{field}={expected}")
+        conclusion = _resource_id_conclusion_supported(text, folded)
+        return {
+            "passed": not missing and conclusion,
+            "missing": missing,
+            "conclusion_supported": conclusion,
         }
     folded = text.lower().replace("`", "")
     required_groups = {
@@ -857,8 +1351,10 @@ def semantic_acceptance(
         if token not in folded
     ]
     conclusion = (
-        "不能" in text or "无法" in text
-    ) and "resourceid" in folded and "异常" in text
+        ("不能" in text or "无法" in text)
+        and "resourceid" in folded
+        and "异常" in text
+    )
     return {
         "passed": not missing and conclusion,
         "missing": missing,
@@ -915,9 +1411,97 @@ def _raw_run_valid(item: Mapping[str, object]) -> bool:
     )
 
 
+def _skill_disclosure_dispatch_noise(item: Mapping[str, object]) -> bool:
+    scope = _json_object(item.get("scope_validation"))
+    return (
+        item.get("exit_code") == 0
+        and item.get("command_events") == 0
+        and item.get("mcp_events") == 0
+        and item.get("tool_events") == 0
+        and scope.get("reason_codes") == ["observe_call_count"]
+    )
+
+
+def _skill_disclosure_validity(
+    metrics: list[Mapping[str, object]],
+    *,
+    pair_ids: list[int],
+    invalid_pairs: list[dict[str, object]],
+) -> dict[str, object]:
+    attempted_pairs = len(pair_ids)
+    attempts = {
+        arm: [item for item in metrics if str(item.get("arm")) == arm]
+        for arm in ("A", "B")
+    }
+    valid_counts = {
+        arm: sum(_raw_run_valid(item) for item in items)
+        for arm, items in attempts.items()
+    }
+    rates = {
+        arm: (
+            round(valid_counts[arm] / attempted_pairs, 6)
+            if attempted_pairs
+            else 0.0
+        )
+        for arm in ("A", "B")
+    }
+    invalid_pair_fraction = (
+        round(len(invalid_pairs) / attempted_pairs, 6)
+        if attempted_pairs
+        else 1.0
+    )
+    candidate_regression = round(rates["A"] - rates["B"], 6)
+    attempts_by_key = {
+        (int(item.get("pair", 0)), str(item.get("arm", ""))): item
+        for item in metrics
+    }
+    non_noise_invalid_runs = [
+        {"pair": int(pair["pair"]), "arm": arm}
+        for pair in invalid_pairs
+        for arm, valid in _json_object(pair.get("valid")).items()
+        if arm == "B"
+        and valid is not True
+        and not _skill_disclosure_dispatch_noise(
+            attempts_by_key.get((int(pair["pair"]), str(arm)), {})
+        )
+    ]
+    errors: list[str] = []
+    if any(len(items) != attempted_pairs for items in attempts.values()):
+        errors.append("each attempted pair must contain one run for both arms")
+    if rates["A"] < SKILL_DISCLOSURE_VALIDITY_THRESHOLDS["min_arm_valid_rate"]:
+        errors.append("baseline arm validity is below 95%")
+    if rates["B"] < SKILL_DISCLOSURE_VALIDITY_THRESHOLDS["min_arm_valid_rate"]:
+        errors.append("candidate arm validity is below 95%")
+    if (
+        invalid_pair_fraction
+        > SKILL_DISCLOSURE_VALIDITY_THRESHOLDS["max_invalid_pair_fraction"]
+    ):
+        errors.append("invalid pair fraction exceeds 10%")
+    if (
+        candidate_regression
+        > SKILL_DISCLOSURE_VALIDITY_THRESHOLDS[
+            "max_candidate_valid_rate_regression"
+        ]
+    ):
+        errors.append("candidate validity regresses by more than 5 percentage points")
+    if non_noise_invalid_runs:
+        errors.append("candidate non-noise invalid behavior is not allowed")
+    return {
+        "passed": not errors,
+        "attempted_pairs": attempted_pairs,
+        "arm_valid_counts": valid_counts,
+        "arm_valid_rates": rates,
+        "invalid_pair_fraction": invalid_pair_fraction,
+        "candidate_valid_rate_regression": candidate_regression,
+        "non_noise_invalid_runs": non_noise_invalid_runs,
+        "errors": errors,
+    }
+
+
 def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
     paired: list[tuple[Mapping[str, object], Mapping[str, object]]] = []
     pair_ids = sorted({int(item.get("pair", 0)) for item in metrics})
+    attempted_pairs = len(pair_ids)
     invalid: list[dict[str, object]] = []
     for pair_id in pair_ids:
         members = [item for item in metrics if int(item.get("pair", 0)) == pair_id]
@@ -973,7 +1557,7 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
                     (float(baseline[metric]) for baseline, _candidate in paired),
                     0.95,
                 )
-                if len(paired) >= 30
+                if attempted_pairs >= CHECKPOINTS[-1]
                 else None
             )
             if p95_ratio is not None:
@@ -993,22 +1577,47 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
             summaries[metric] = {"passed": False}
             all_pass = False
     valid_pairs = len(paired)
-    if valid_pairs < CHECKPOINTS[0]:
-        decision = "collect_more"
-        next_pairs = CHECKPOINTS[0]
-    elif all_pass:
+    scenarios = {
+        str(item.get("scenario", ""))
+        for item in metrics
+        if str(item.get("scenario", ""))
+    }
+    scenario = next(iter(scenarios)) if len(scenarios) == 1 else ""
+    validity = (
+        _skill_disclosure_validity(
+            metrics,
+            pair_ids=pair_ids,
+            invalid_pairs=invalid,
+        )
+        if scenario == "skill-disclosure"
+        else None
+    )
+    validity_pass = bool(validity["passed"]) if validity is not None else not invalid
+    if attempted_pairs not in CHECKPOINTS:
+        next_pairs = next(
+            (checkpoint for checkpoint in CHECKPOINTS if checkpoint > attempted_pairs),
+            None,
+        )
+        decision = "collect_more" if next_pairs is not None else "failed"
+    elif valid_pairs < CHECKPOINTS[0]:
+        next_pairs = next(
+            (checkpoint for checkpoint in CHECKPOINTS if checkpoint > attempted_pairs),
+            None,
+        )
+        decision = "collect_more" if next_pairs is not None else "failed"
+    elif all_pass and validity_pass:
         decision = "passed"
         next_pairs = None
-    elif valid_pairs < CHECKPOINTS[1]:
+    elif attempted_pairs < CHECKPOINTS[1]:
         decision = "collect_more"
         next_pairs = CHECKPOINTS[1]
-    elif valid_pairs < CHECKPOINTS[2]:
+    elif attempted_pairs < CHECKPOINTS[2]:
         decision = "collect_more"
         next_pairs = CHECKPOINTS[2]
     else:
         decision = "failed"
         next_pairs = None
-    return {
+    result: dict[str, object] = {
         "schema": SCHEMA,
         "valid_pairs": valid_pairs,
         "invalid_pairs": invalid,
@@ -1017,6 +1626,12 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
         "next_pair_target": next_pairs,
         "thresholds": dict(THRESHOLDS),
     }
+    if validity is not None:
+        result["validity"] = validity
+        result["validity_thresholds"] = dict(
+            SKILL_DISCLOSURE_VALIDITY_THRESHOLDS
+        )
+    return result
 
 
 def validate_schedule(
@@ -1033,6 +1648,8 @@ def validate_schedule(
         or requested_pairs < 1
     ):
         return ["AB schedule requested pair count is invalid"]
+    if requested_pairs not in CHECKPOINTS:
+        errors.append("AB schedule requested pair count is not a qualification checkpoint")
     if not isinstance(schedule, list):
         return ["AB schedule must contain an array"]
     if len(schedule) != requested_pairs:
@@ -1177,6 +1794,22 @@ def _prepare_worktree(repo: Path, destination: Path, ref: str) -> None:
 def _prompt(
     skill_path: Path, *, scenario: str = "observation", arm: str = "B"
 ) -> str:
+    if scenario == "skill-disclosure":
+        return "\n".join(
+            (
+                "这是一次真实 BMC 环境下的 openubmc-debug Skill 渐进披露配对基准。",
+                "使用已安装的 $openubmc-debug，并按需读取直接链接的 references。",
+                "只使用 openubmc-debug 与 openubmc-target-runtime.observe；不得使用其他 Skill、知识库、网络搜索、源码、日志或 shell。",
+                "不要列出 MCP resources/templates，不要做工具发现；直接调用 openubmc-target-runtime.observe。",
+                "openubmc-target-runtime.observe 已在当前基准会话注册。只有实际发出的 MCP tool call 才计入唯一一次调用；如果尚未发出 MCP 调用，就等待入口完成解析后发出它，这不算一次失败或重试。",
+                f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
+                "执行一次只读现场核验。唯一一次 observe 必须严格使用下面的完整 JSON 参数，不得增删字段、拆分调用或重试：",
+                _skill_disclosure_observe_template(),
+                "该请求使用 Runtime 默认自动策略和 live freshness；不得枚举其他对象或属性。",
+                "报告原始值，并判断这些证据能否单独证明 ResourceId=0 异常，不得臆测源码语义。",
+                "中文回答，不超过 500 字。",
+            )
+        ) + "\n"
     if scenario == "execute-source-only":
         if arm == "A":
             return "\n".join(
@@ -1226,21 +1859,27 @@ def _prompt(
     ) + "\n"
 
 
-QUALIFICATION_PROMPT_DIGEST = "sha256:" + hashlib.sha256(
-    json.dumps(
-        {
-            arm: _prompt(
-                Path("<skill-path>"),
-                scenario="execute-source-only",
-                arm=arm,
-            )
-            for arm in ("A", "B")
-        },
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-).hexdigest()
+SCENARIOS = ("observation", "skill-disclosure", "execute-source-only")
+
+
+def prompt_digest(scenario: str) -> str:
+    if scenario not in SCENARIOS:
+        raise ValueError(f"unsupported AB scenario: {scenario}")
+    payload = {
+        arm: _prompt(Path("<skill-path>"), scenario=scenario, arm=arm)
+        for arm in ("A", "B")
+    }
+    return "sha256:" + hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+QUALIFICATION_PROMPT_DIGEST = prompt_digest("execute-source-only")
 
 
 @dataclass(frozen=True)
@@ -1248,6 +1887,21 @@ class RunConfig:
     arm: str
     source_root: Path
     interface_profile: str
+
+
+def run_configs(
+    scenario: str,
+    baseline_root: Path,
+    candidate_root: Path,
+) -> dict[str, RunConfig]:
+    return {
+        "A": RunConfig(
+            "A",
+            baseline_root,
+            "agent" if scenario == "skill-disclosure" else "",
+        ),
+        "B": RunConfig("B", candidate_root, "agent"),
+    }
 
 
 def prepare_arm_home(home: Path, source_root: Path) -> None:
@@ -1260,6 +1914,64 @@ def prepare_arm_home(home: Path, source_root: Path) -> None:
             link = home / client_root / "skills" / skill_name
             link.parent.mkdir(parents=True, exist_ok=True)
             link.symlink_to(skill_source, target_is_directory=True)
+
+
+def codex_exec_command(
+    args: argparse.Namespace,
+    config: RunConfig,
+    final_path: Path,
+) -> list[str]:
+    """Build the fixed Codex command used by either qualification arm."""
+    command = [
+        args.codex,
+        "exec",
+        "--ignore-user-config",
+        "--ephemeral",
+        "--json",
+        "--sandbox",
+        "danger-full-access",
+        "--skip-git-repo-check",
+        "-C",
+        str(args.codex_cwd),
+        "-m",
+        args.model,
+        "-o",
+        str(final_path),
+    ]
+    for value in args.codex_config:
+        command.extend(("-c", value))
+    command.extend(
+        (
+            "-c",
+            'mcp_servers.openubmc-target-runtime.command="/usr/bin/python3"',
+            "-c",
+            (
+                "mcp_servers.openubmc-target-runtime.args=["
+                + json.dumps(
+                    str(
+                        config.source_root
+                        / "openubmc-debug"
+                        / "scripts"
+                        / "target_runtime_mcp.py"
+                    )
+                )
+                + "]"
+            ),
+            "-c",
+            'mcp_servers.openubmc-target-runtime.env_vars=["OPENUBMC_CREDENTIALS_FILE","OPENUBMC_DEBUG_CREDENTIALS_FILE","OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE"]',
+            "-c",
+            (
+                "mcp_servers.openubmc-target-runtime.startup_timeout_sec="
+                f"{MCP_STARTUP_TIMEOUT_SECONDS}"
+            ),
+            "-c",
+            (
+                "mcp_servers.openubmc-target-runtime.tool_timeout_sec="
+                f"{MCP_TOOL_TIMEOUT_SECONDS}"
+            ),
+        )
+    )
+    return command
 
 
 def _git_commit(repo: Path, ref: str) -> str:
@@ -1453,7 +2165,7 @@ def release_evidence(
         "model": model,
         "benchmark": {
             "target": BENCHMARK_TARGET,
-            "prompt_digest": QUALIFICATION_PROMPT_DIGEST,
+            "prompt_digest": prompt_digest(scenario),
             "codex_config": list(codex_config),
         },
         "environment": environment_record,
@@ -1482,6 +2194,13 @@ def release_evidence(
             },
         },
     }
+    if scenario == "skill-disclosure":
+        evidence["validity_thresholds"] = dict(
+            SKILL_DISCLOSURE_VALIDITY_THRESHOLDS
+        )
+        samples = evidence["samples"]
+        assert isinstance(samples, dict)
+        samples["validity"] = dict(_json_object(analysis.get("validity")))
     evidence["evidence_digest"] = _fingerprint(evidence)
     return evidence
 
@@ -1491,6 +2210,7 @@ def verify_summary(
     *,
     expected_source_commit: str,
     expected_baseline_commit: str = DEFAULT_BASELINE_REF,
+    expected_scenario: str = "execute-source-only",
     attestation_public_key: Path | None = None,
 ) -> dict[str, object]:
     errors: list[str] = []
@@ -1517,7 +2237,19 @@ def verify_summary(
     if valid_pairs < CHECKPOINTS[0]:
         errors.append("AB summary has fewer than ten valid pairs")
     invalid_pairs = summary.get("invalid_pairs", [])
-    if not isinstance(invalid_pairs, list) or invalid_pairs:
+    if not isinstance(invalid_pairs, list):
+        errors.append("AB summary invalid pairs must be an array")
+        invalid_pairs = []
+    if expected_scenario == "skill-disclosure":
+        validity = _json_object(summary.get("validity"))
+        if validity.get("passed") is not True:
+            errors.append("Skill disclosure validity gate did not pass")
+        if (
+            summary.get("validity_thresholds")
+            != SKILL_DISCLOSURE_VALIDITY_THRESHOLDS
+        ):
+            errors.append("Skill disclosure validity thresholds do not match the contract")
+    elif invalid_pairs:
         errors.append("AB summary contains invalid pairs")
     if summary.get("thresholds") != THRESHOLDS:
         errors.append("AB summary thresholds do not match the release contract")
@@ -1527,8 +2259,8 @@ def verify_summary(
             errors.append(f"AB metric did not pass: {metric}")
 
     evidence = _json_object(summary.get("release_evidence"))
-    if evidence.get("scenario") != "execute-source-only":
-        errors.append("AB release evidence is not execute-source-only")
+    if evidence.get("scenario") != expected_scenario:
+        errors.append("AB release evidence scenario does not match verification")
     source = _json_object(evidence.get("source"))
     if source.get("candidate_commit") != expected_source_commit:
         errors.append("AB candidate source commit does not match the release candidate")
@@ -1541,6 +2273,29 @@ def verify_summary(
     samples = _json_object(evidence.get("samples"))
     if samples.get("valid_pairs") != valid_pairs or samples.get("invalid_pairs") != invalid_pairs:
         errors.append("AB release evidence sample counts do not match the summary")
+    requested_pairs = samples.get("requested_pairs")
+    if (
+        isinstance(requested_pairs, int)
+        and not isinstance(requested_pairs, bool)
+        and requested_pairs >= CHECKPOINTS[-1]
+    ):
+        for metric in METRICS:
+            p95_ratio = _json_object(metric_summary.get(metric)).get("p95_ratio")
+            if (
+                not isinstance(p95_ratio, (int, float))
+                or isinstance(p95_ratio, bool)
+                or not math.isfinite(float(p95_ratio))
+                or float(p95_ratio) <= 0
+            ):
+                errors.append(f"AB terminal p95 ratio is missing or invalid: {metric}")
+    if expected_scenario == "skill-disclosure":
+        if samples.get("validity") != summary.get("validity"):
+            errors.append("AB release evidence validity does not match the summary")
+        if (
+            evidence.get("validity_thresholds")
+            != SKILL_DISCLOSURE_VALIDITY_THRESHOLDS
+        ):
+            errors.append("AB release evidence validity thresholds do not match the contract")
     if evidence.get("thresholds") != THRESHOLDS:
         errors.append("AB release evidence thresholds do not match the release contract")
     if evidence.get("model") != QUALIFICATION_MODEL:
@@ -1550,7 +2305,7 @@ def verify_summary(
     benchmark = _json_object(evidence.get("benchmark"))
     if benchmark.get("target") != BENCHMARK_TARGET:
         errors.append("AB benchmark target does not match the qualification contract")
-    if benchmark.get("prompt_digest") != QUALIFICATION_PROMPT_DIGEST:
+    if benchmark.get("prompt_digest") != prompt_digest(expected_scenario):
         errors.append("AB benchmark prompt does not match the qualification contract")
     if benchmark.get("codex_config") != list(QUALIFICATION_CODEX_CONFIG):
         errors.append("AB Codex config does not match the qualification contract")
@@ -1589,6 +2344,7 @@ def verify_summary(
             else:
                 raw_metrics = loaded_metrics
     recomputed_metrics: list[dict[str, object]] | None = None
+    run_evidence_value: object | None = None
     run_evidence_path = artifact_paths.get("run_evidence")
     if run_evidence_path is not None:
         try:
@@ -1600,6 +2356,20 @@ def verify_summary(
                     run_evidence_value,
                     expected_candidate_commit=expected_source_commit,
                     expected_baseline_commit=expected_baseline_commit,
+                )
+            )
+            errors.extend(
+                _run_prompt_binding_errors(
+                    run_evidence_value,
+                    expected_scenario=expected_scenario,
+                )
+            )
+            errors.extend(
+                _run_environment_binding_errors(
+                    run_evidence_value,
+                    expected_fingerprint=evidence.get(
+                        "environment_fingerprint"
+                    ),
                 )
             )
             if attestation_public_key is None:
@@ -1637,6 +2407,8 @@ def verify_summary(
                 "decision",
                 "next_pair_target",
                 "thresholds",
+                "validity",
+                "validity_thresholds",
             )
             if any(
                 summary.get(name) != recomputed.get(name)
@@ -1650,6 +2422,14 @@ def verify_summary(
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             errors.append(f"cannot read AB schedule: {type(exc).__name__}")
         else:
+            if run_evidence_value is not None:
+                errors.extend(
+                    _run_qualification_contract_errors(
+                        run_evidence_value,
+                        expected_requested_pairs=samples.get("requested_pairs"),
+                        expected_schedule_digest=_fingerprint(raw_schedule),
+                    )
+                )
             errors.extend(
                 validate_schedule(
                     raw_schedule,
@@ -1713,13 +2493,21 @@ def run_benchmark(args: argparse.Namespace) -> int:
         json.dumps(schedule, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    configs = {
-        "A": RunConfig("A", baseline_root, ""),
-        "B": RunConfig("B", candidate_root, "agent"),
+    qualification_contract = {
+        "requested_pairs": args.pairs,
+        "schedule_digest": _fingerprint(schedule),
     }
+    configs = run_configs(args.scenario, baseline_root, candidate_root)
     environment = os.environ.copy()
     environment["OPENUBMC_CREDENTIALS_FILE"] = str(args.credentials)
     environment["OPENUBMC_DEBUG_CREDENTIALS_FILE"] = str(args.credentials)
+    environment_record = {
+        "python": platform.python_version(),
+        "node": _version(["node", "--version"]),
+        "codex": _version([args.codex, "--version"]),
+        "platform": platform.platform(),
+    }
+    environment_fingerprint = _fingerprint(environment_record)
     metrics: list[dict[str, object]] = []
     run_evidence: dict[str, object] = {
         "schema": RUN_EVIDENCE_SCHEMA,
@@ -1750,40 +2538,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
             final_path = run_dir / "final.md"
             events_path = run_dir / "events.jsonl"
             stderr_path = run_dir / "stderr.log"
-            command = [
-                args.codex,
-                "exec",
-                "--ignore-user-config",
-                "--ephemeral",
-                "--json",
-                "--sandbox",
-                "danger-full-access",
-                "--skip-git-repo-check",
-                "-C",
-                str(args.codex_cwd),
-                "-m",
-                args.model,
-                "-o",
-                str(final_path),
-            ]
-            for value in args.codex_config:
-                command.extend(("-c", value))
-            command.extend(
-                (
-                    "-c",
-                    'mcp_servers.openubmc-target-runtime.command="/usr/bin/python3"',
-                    "-c",
-                    (
-                        "mcp_servers.openubmc-target-runtime.args=["
-                        + json.dumps(str(config.source_root / "openubmc-debug" / "scripts" / "target_runtime_mcp.py"))
-                        + "]"
-                    ),
-                    "-c",
-                    'mcp_servers.openubmc-target-runtime.env_vars=["OPENUBMC_CREDENTIALS_FILE","OPENUBMC_DEBUG_CREDENTIALS_FILE","OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE"]',
-                    "-c",
-                    "mcp_servers.openubmc-target-runtime.tool_timeout_sec=900",
-                )
-            )
+            command = codex_exec_command(args, config, final_path)
             run_env = dict(environment)
             run_env["HOME"] = str(home)
             run_env["CODEX_HOME"] = os.environ.get("CODEX_HOME", "/root/.codex")
@@ -1829,6 +2584,10 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 candidate_source_commit if arm == "B" else baseline_source_commit
             )
             run_mapping["execution_id"] = _execution_identity(events)
+            run_mapping["prompt"] = prompt
+            run_mapping["prompt_sha256"] = _text_sha256(prompt)
+            run_mapping["environment_fingerprint"] = environment_fingerprint
+            run_mapping["qualification_contract"] = qualification_contract
             raw_runs.append(
                 attest_run_record(
                     run_mapping,
@@ -1864,12 +2623,6 @@ def run_benchmark(args: argparse.Namespace) -> int:
     )
     metrics_path = output / "all_metrics.json"
     schedule_path = output / "schedule.json"
-    environment_record = {
-        "python": platform.python_version(),
-        "node": _version(["node", "--version"]),
-        "codex": _version([args.codex, "--version"]),
-        "platform": platform.platform(),
-    }
     summary["release_evidence"] = release_evidence(
         scenario=args.scenario,
         requested_pairs=args.pairs,
@@ -1901,6 +2654,12 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("summary", type=Path)
     verify_parser.add_argument("--source-ref", required=True)
+    verify_parser.add_argument("--baseline-ref", default=DEFAULT_BASELINE_REF)
+    verify_parser.add_argument(
+        "--scenario",
+        choices=SCENARIOS,
+        default="execute-source-only",
+    )
     verify_parser.add_argument("--repo", type=Path, default=Path.cwd())
     verify_parser.add_argument(
         "--attestation-public-key",
@@ -1912,7 +2671,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--work-root", type=Path, required=True)
     run_parser.add_argument("--output", type=Path)
     run_parser.add_argument("--baseline-ref", default=DEFAULT_BASELINE_REF)
-    run_parser.add_argument("--pairs", type=int, default=10)
+    run_parser.add_argument("--pairs", type=int, choices=CHECKPOINTS, default=10)
     run_parser.add_argument("--seed", type=int, default=20260819)
     run_parser.add_argument("--credentials", type=Path, required=True)
     run_parser.add_argument(
@@ -1933,7 +2692,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--only-arm", choices=("A", "B"))
     run_parser.add_argument(
         "--scenario",
-        choices=("observation", "execute-source-only"),
+        choices=SCENARIOS,
         default="observation",
     )
     args = parser.parse_args(argv)
@@ -1946,11 +2705,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "verify":
         repo = args.repo.resolve()
         expected = _git_commit(repo, args.source_ref)
-        expected_baseline = _git_commit(repo, DEFAULT_BASELINE_REF)
+        expected_baseline = _git_commit(repo, args.baseline_ref)
         verification = verify_summary(
             args.summary.expanduser().absolute(),
             expected_source_commit=expected,
             expected_baseline_commit=expected_baseline,
+            expected_scenario=args.scenario,
             attestation_public_key=args.attestation_public_key.expanduser().absolute(),
         )
         print(json.dumps(verification, ensure_ascii=False, indent=2))

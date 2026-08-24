@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -32,6 +33,11 @@ EXPECTED_QUERIES = [
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo Type",
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.AddrInfo SocketId",
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive.DriveStatus Health",
+]
+SKILL_DISCLOSURE_QUERIES = [
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Name",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive ResourceId",
+    "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Presence",
 ]
 
 
@@ -88,6 +94,23 @@ def signed_run_evidence(
     assert isinstance(runs, list)
     for index, run in enumerate(runs, 1):
         assert isinstance(run, dict)
+        prompt = run.setdefault(
+            "prompt",
+            module._prompt(
+                Path("<skill-path>"),
+                scenario=str(run["scenario"]),
+                arm=str(run["arm"]),
+            ),
+        )
+        assert isinstance(prompt, str)
+        run.setdefault(
+            "prompt_sha256",
+            "sha256:" + hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        )
+        run.setdefault(
+            "environment_fingerprint",
+            module._fingerprint({"python": "3.12", "node": "v22"}),
+        )
         payload = root / f"run-{index}.json"
         payload.write_text(
             json.dumps(
@@ -137,59 +160,94 @@ def passing_metrics(schedule):
     return module.metrics_from_run_evidence(passing_execute_run_evidence(schedule))
 
 
+def skill_disclosure_metrics(pairs: int, *, invalid_candidate_pairs=()):
+    invalid = set(invalid_candidate_pairs)
+    metrics = []
+    for pair in range(1, pairs + 1):
+        for arm in ("A", "B"):
+            valid = not (arm == "B" and pair in invalid)
+            metrics.append(
+                {
+                    "scenario": "skill-disclosure",
+                    "arm": arm,
+                    "pair": pair,
+                    "valid": valid,
+                    "exit_code": 0,
+                    "semantic_acceptance": {"passed": valid},
+                    "scope_acceptance": valid,
+                    "scope_validation": (
+                        {"passed": True, "errors": []}
+                        if valid
+                        else {
+                            "passed": False,
+                            "errors": ["arm must call observe exactly once"],
+                            "reason_codes": ["observe_call_count"],
+                        }
+                    ),
+                    "command_events": 0,
+                    "mcp_events": 1 if valid else 0,
+                    "tool_events": 1 if valid else 0,
+                    "total_tokens": 100 if arm == "A" else 82,
+                    "noncached_input_plus_output": 100 if arm == "A" else 82,
+                    "duration_seconds": 100 if arm == "A" else 82,
+                    "tool_output_bytes": 100 if valid else 0,
+                    "model_turns": 2,
+                    "time_to_next_actionable_turn_seconds": 100 if arm == "A" else 82,
+                }
+            )
+    return metrics
+
+
 def verify_passing_summary(
     *,
     candidate_commit: str,
     baseline_commit: str,
     run_candidate_commit: str | None = None,
+    run_prompt_override: str | None = None,
+    release_environment: dict[str, str] | None = None,
 ):
-    with tempfile.TemporaryDirectory() as raw:
-        root = Path(raw)
-        schedule = module.balanced_schedule(10, seed=7)
-        run_evidence = passing_execute_run_evidence(
-            schedule,
-            candidate_commit=run_candidate_commit or candidate_commit,
-            baseline_commit=baseline_commit,
+    schedule = module.balanced_schedule(10, seed=7)
+    run_evidence = passing_execute_run_evidence(
+        schedule,
+        candidate_commit=run_candidate_commit or candidate_commit,
+        baseline_commit=baseline_commit,
+    )
+    if run_prompt_override is not None:
+        first_run = run_evidence["runs"][0]
+        first_run["prompt"] = run_prompt_override
+        first_run["prompt_sha256"] = (
+            "sha256:"
+            + hashlib.sha256(run_prompt_override.encode("utf-8")).hexdigest()
         )
-        private_key, public_key = signing_keys(root)
-        signed_run_evidence(
-            root,
-            run_evidence,
-            private_key=private_key,
-            public_key=public_key,
-        )
-        metrics = module.metrics_from_run_evidence(run_evidence)
-        metrics_path = root / "all_metrics.json"
-        schedule_path = root / "schedule.json"
-        run_evidence_path = write_run_evidence(root, run_evidence)
-        metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
-        schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
-        analysis = module.analyze(metrics)
-        analysis["release_evidence"] = module.release_evidence(
-            scenario="execute-source-only",
-            requested_pairs=10,
-            candidate_source_commit=candidate_commit,
-            baseline_source_commit=baseline_commit,
-            model=module.QUALIFICATION_MODEL,
-            codex_config=module.QUALIFICATION_CODEX_CONFIG,
-            metrics_path=metrics_path,
-            schedule_path=schedule_path,
-            run_evidence_path=run_evidence_path,
-            analysis=analysis,
-            environment={"python": "3.12", "node": "v22"},
-        )
-        summary_path = root / "summary.json"
-        summary_path.write_text(json.dumps(analysis), encoding="utf-8")
-        return module.verify_summary(
-            summary_path,
-            expected_source_commit=candidate_commit,
-            expected_baseline_commit=module.DEFAULT_BASELINE_REF,
-            attestation_public_key=public_key,
-        )
+    return verify_run_evidence_summary(
+        scenario="execute-source-only",
+        schedule=schedule,
+        run_evidence=run_evidence,
+        candidate_commit=candidate_commit,
+        baseline_commit=baseline_commit,
+        release_environment=release_environment,
+    )
 
 
-def candidate_observe_event(*, queries=None, complete: bool = True):
+def candidate_observe_event(
+    *,
+    queries=None,
+    capabilities=None,
+    mdb_values=None,
+    complete: bool = True,
+):
     selected_queries = EXPECTED_QUERIES if queries is None else queries
+    selected_capabilities = (
+        ("ssh", "telnet", "mdbctl", "busctl")
+        if capabilities is None
+        else tuple(name.lower() for name in capabilities)
+    )
+    selected_mdb_values = (
+        tuple(range(len(selected_queries)))
+        if mdb_values is None
+        else tuple(mdb_values)
+    )
+    requested = len(selected_capabilities) + len(selected_queries)
     receipt_id = "observation-test"
     return {
         "type": "item.completed",
@@ -199,13 +257,12 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
             "tool": "observe",
             "arguments": {
                 "target": "10.121.136.200",
-                "assurance": "auto",
                 "freshness": {"mode": "live", "max_age_seconds": 0},
                 "selectors": [
                     {
                         "id": "capabilities",
                         "kind": "capability",
-                        "names": ["SSH", "Telnet", "MDBCTL", "BUSCTL"],
+                        "names": [name.upper() for name in selected_capabilities],
                     },
                     {"id": "drive", "kind": "mdb", "queries": selected_queries},
                 ],
@@ -215,8 +272,8 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
                     "receipt_id": receipt_id,
                     "status": "complete" if complete else "incomplete",
                     "coverage": {
-                        "requested": 13,
-                        "available": 13 if complete else 12,
+                        "requested": requested,
+                        "available": requested if complete else requested - 1,
                         "unavailable": 0,
                         "not_checked": 0 if complete else 1,
                         "complete": complete,
@@ -226,14 +283,18 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
                             "kind": "capability",
                             "values": [
                                 {"name": name, "status": "available"}
-                                for name in ("ssh", "telnet", "mdbctl", "busctl")
+                                for name in selected_capabilities
                             ],
                         },
                         "drive": {
                             "kind": "mdb",
                             "values": [
-                                {"query_index": index, "status": "available", "value": index}
-                                for index in range(9)
+                                {
+                                    "query_index": index,
+                                    "status": "available",
+                                    "value": value,
+                                }
+                                for index, value in enumerate(selected_mdb_values)
                             ],
                         },
                     },
@@ -249,6 +310,14 @@ def candidate_observe_event(*, queries=None, complete: bool = True):
             },
         },
     }
+
+
+def skill_disclosure_observe_event():
+    return candidate_observe_event(
+        queries=SKILL_DISCLOSURE_QUERIES,
+        capabilities=("MDBCTL",),
+        mdb_values=("Disk0", 0, 1),
+    )
 
 
 def candidate_execute_event(kind: str, state: str, *, elapsed: float):
@@ -371,6 +440,10 @@ def passing_execute_run_evidence(
     candidate_commit: str = "a" * 40,
     baseline_commit: str = module.DEFAULT_BASELINE_REF,
 ):
+    qualification_contract = {
+        "requested_pairs": len(schedule),
+        "schedule_digest": module._fingerprint(schedule),
+    }
     runs = []
     for pair, first, second in schedule:
         for order, arm in enumerate((first, second), 1):
@@ -494,8 +567,85 @@ def passing_execute_run_evidence(
                         candidate_commit if arm == "B" else baseline_commit
                     ),
                     "execution_id": execution_id,
+                    "qualification_contract": qualification_contract,
                     "events": events,
                     "final": "source-only Runtime Outcome completed",
+                }
+            )
+    return {
+        "schema": module.RUN_EVIDENCE_SCHEMA,
+        "source": {
+            "candidate_commit": candidate_commit,
+            "baseline_commit": baseline_commit,
+        },
+        "runs": runs,
+    }
+
+
+def passing_skill_disclosure_run_evidence(
+    schedule,
+    *,
+    candidate_commit: str = "a" * 40,
+    baseline_commit: str = module.DEFAULT_BASELINE_REF,
+    invalid_candidate_pairs=(),
+):
+    qualification_contract = {
+        "requested_pairs": len(schedule),
+        "schedule_digest": module._fingerprint(schedule),
+    }
+    invalid = set(invalid_candidate_pairs)
+    runs = []
+    for pair, first, second in schedule:
+        for order, arm in enumerate((first, second), 1):
+            execution_id = str(uuid.UUID(int=10_000 + pair * 2 + (arm == "B")))
+            is_valid = not (arm == "B" and pair in invalid)
+            events = [
+                {"type": "thread.started", "thread_id": execution_id},
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "observe"},
+                },
+            ]
+            if is_valid:
+                observe = skill_disclosure_observe_event()
+                observe["observed_elapsed_seconds"] = 1.0
+                events.append(observe)
+            events.extend(
+                (
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 100 if arm == "A" else 82,
+                            "cached_input_tokens": 20,
+                            "output_tokens": 10,
+                        },
+                    },
+                    {
+                        "type": "runner.completed",
+                        "exit_code": 0,
+                        "duration_seconds": 2.0 if arm == "A" else 1.7,
+                    },
+                )
+            )
+            final = (
+                "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1，"
+                "不能证明 ResourceId 异常。"
+                if is_valid
+                else "无法证明 ResourceId 异常。"
+            )
+            runs.append(
+                {
+                    "scenario": "skill-disclosure",
+                    "arm": arm,
+                    "pair": pair,
+                    "order": order,
+                    "source_commit": (
+                        candidate_commit if arm == "B" else baseline_commit
+                    ),
+                    "execution_id": execution_id,
+                    "qualification_contract": qualification_contract,
+                    "events": events,
+                    "final": final,
                 }
             )
     return {
@@ -513,6 +663,91 @@ def write_run_evidence(root: Path, value=None) -> Path:
     document = value or {"schema": module.RUN_EVIDENCE_SCHEMA, "runs": []}
     path.write_text(json.dumps(document), encoding="utf-8")
     return path
+
+
+def verify_run_evidence_summary(
+    *,
+    scenario: str,
+    schedule,
+    run_evidence,
+    candidate_commit: str,
+    baseline_commit: str,
+    expected_baseline_commit: str = module.DEFAULT_BASELINE_REF,
+    release_environment: dict[str, str] | None = None,
+    analysis_mutator=None,
+    evidence_mutator=None,
+):
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        schedule_path = root / "schedule.json"
+        schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+        private_key, public_key = signing_keys(root)
+        signed_run_evidence(
+            root,
+            run_evidence,
+            private_key=private_key,
+            public_key=public_key,
+        )
+        if evidence_mutator is not None:
+            schedule = evidence_mutator(run_evidence, schedule)
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+        metrics = module.metrics_from_run_evidence(run_evidence)
+        metrics_path = root / "all_metrics.json"
+        run_evidence_path = write_run_evidence(root, run_evidence)
+        metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+        analysis = module.analyze(metrics)
+        if analysis_mutator is not None:
+            analysis_mutator(analysis)
+        analysis["release_evidence"] = module.release_evidence(
+            scenario=scenario,
+            requested_pairs=len(schedule),
+            candidate_source_commit=candidate_commit,
+            baseline_source_commit=baseline_commit,
+            model=module.QUALIFICATION_MODEL,
+            codex_config=module.QUALIFICATION_CODEX_CONFIG,
+            metrics_path=metrics_path,
+            schedule_path=schedule_path,
+            run_evidence_path=run_evidence_path,
+            analysis=analysis,
+            environment=(
+                release_environment
+                if release_environment is not None
+                else {"python": "3.12", "node": "v22"}
+            ),
+        )
+        summary_path = root / "summary.json"
+        summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+        return module.verify_summary(
+            summary_path,
+            expected_source_commit=candidate_commit,
+            expected_baseline_commit=expected_baseline_commit,
+            expected_scenario=scenario,
+            attestation_public_key=public_key,
+        )
+
+
+def verify_skill_disclosure_summary(
+    *,
+    pairs: int,
+    seed: int = 7,
+    invalid_candidate_pairs=(),
+    analysis_mutator=None,
+    evidence_mutator=None,
+):
+    schedule = module.balanced_schedule(pairs, seed=seed)
+    run_evidence = passing_skill_disclosure_run_evidence(
+        schedule,
+        invalid_candidate_pairs=invalid_candidate_pairs,
+    )
+    return verify_run_evidence_summary(
+        scenario="skill-disclosure",
+        schedule=schedule,
+        run_evidence=run_evidence,
+        candidate_commit="a" * 40,
+        baseline_commit=module.DEFAULT_BASELINE_REF,
+        analysis_mutator=analysis_mutator,
+        evidence_mutator=evidence_mutator,
+    )
 
 
 class AgentGatewayAbTests(unittest.TestCase):
@@ -663,6 +898,37 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(orders.count(("A", "B")), 5)
         self.assertEqual(orders.count(("B", "A")), 5)
 
+    def test_codex_command_allows_slow_mcp_startup_for_both_arms(self) -> None:
+        args = module.argparse.Namespace(
+            codex="codex",
+            codex_cwd=Path("/workspace"),
+            model=module.QUALIFICATION_MODEL,
+            codex_config=[],
+        )
+        configs = module.run_configs(
+            "skill-disclosure",
+            Path("/variants/baseline"),
+            Path("/variants/candidate"),
+        )
+
+        for arm in ("A", "B"):
+            command = module.codex_exec_command(
+                args,
+                configs[arm],
+                Path(f"/results/{arm}/final.md"),
+            )
+
+            self.assertIn(
+                "mcp_servers.openubmc-target-runtime.startup_timeout_sec=120",
+                command,
+                arm,
+            )
+            self.assertIn(
+                "mcp_servers.openubmc-target-runtime.tool_timeout_sec=900",
+                command,
+                arm,
+            )
+
     def test_candidate_execute_prompt_uses_the_current_gate_response_shape(self) -> None:
         prompt = module._prompt(
             Path("/tmp/openubmc-debug/SKILL.md"),
@@ -687,6 +953,479 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("response 内只含 status、summary、payload", prompt)
         self.assertNotIn("response 只含上述固定 receipt", prompt)
 
+    def test_skill_disclosure_uses_the_same_agent_profile_and_prompt_semantics(self) -> None:
+        baseline = Path("/tmp/baseline/openubmc-debug/SKILL.md")
+        candidate = Path("/tmp/candidate/openubmc-debug/SKILL.md")
+
+        configs = module.run_configs(
+            "skill-disclosure",
+            baseline.parent.parent,
+            candidate.parent.parent,
+        )
+        first = module._prompt(baseline, scenario="skill-disclosure", arm="A")
+        second = module._prompt(candidate, scenario="skill-disclosure", arm="B")
+
+        self.assertEqual(configs["A"].interface_profile, "agent")
+        self.assertEqual(configs["B"].interface_profile, "agent")
+        self.assertEqual(first, second)
+        self.assertIn("$openubmc-debug", first)
+        self.assertNotIn(str(baseline), first)
+        self.assertNotIn(str(candidate), second)
+        self.assertIn("按需读取直接链接的 references", first)
+        self.assertIn("openubmc-target-runtime.observe", first)
+        self.assertIn("已在当前基准会话注册", first)
+        self.assertIn("尚未发出 MCP 调用", first)
+        self.assertIn("不算一次失败或重试", first)
+        self.assertNotIn("tools.openubmc_target_runtime_observe", first)
+        self.assertNotIn("JavaScript wrapper", first)
+        self.assertIn("不要列出 MCP resources/templates", first)
+        self.assertNotIn("assurance", first)
+        self.assertIn(
+            '"freshness":{"max_age_seconds":0,"mode":"live"}', first
+        )
+        self.assertIn(
+            '"selectors":[{"id":"capabilities","kind":"capability",'
+            '"names":["MDBCTL"]},'
+            '{"id":"drive","kind":"mdb","queries":[',
+            first,
+        )
+        self.assertNotIn("TemperatureCelsius", first)
+        self.assertEqual(first.count("getprop Drive_1_010102"), 3)
+
+    def test_skill_disclosure_metrics_apply_candidate_scope_to_both_arms(self) -> None:
+        events = [
+            skill_disclosure_observe_event(),
+            {
+                "type": "turn.completed",
+                "usage": {"input_tokens": 100, "output_tokens": 10},
+            },
+        ]
+        final = (
+            "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1，"
+            "不能证明 ResourceId 异常。"
+        )
+
+        for arm in ("A", "B"):
+            record = module.RunEvidenceRecord.capture(
+                arm=arm,
+                pair=1,
+                order=1 if arm == "A" else 2,
+                scenario="skill-disclosure",
+                events=events,
+                final=final,
+                exit_code=0,
+                duration_seconds=1,
+            )
+            self.assertTrue(record.metric()["valid"], arm)
+
+    def test_skill_disclosure_rejects_a_final_without_observed_raw_values(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final="MDBCTL Name ResourceId Presence，不能证明 ResourceId 异常。",
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        metric = record.metric()
+
+        self.assertFalse(metric["valid"])
+        self.assertIn("mdbctl=available", metric["semantic_acceptance"]["missing"])
+        self.assertIn("name=disk0", metric["semantic_acceptance"]["missing"])
+        self.assertIn("resourceid=0", metric["semantic_acceptance"]["missing"])
+        self.assertIn("presence=1", metric["semantic_acceptance"]["missing"])
+
+    def test_skill_disclosure_accepts_localized_available_status(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="A",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "MDBCTL 可用。Name：Disk0；ResourceId：0；Presence：1。"
+                "这些证据不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        self.assertTrue(record.metric()["valid"])
+
+    def test_skill_disclosure_accepts_explicit_uncertainty_wording(self) -> None:
+        conclusions = (
+            "无法判定 ResourceId 是否异常。",
+            "不能确定 ResourceId 是否异常。",
+            "无法单独证明 ResourceId=0 属于异常。判定异常仍需接口规范。",
+            "不能单独证明该值异常。"
+            "判定异常还需要接口规范、预期值或其他权威语义依据。",
+            "无法单独证明 ResourceId=0 属于异常。"
+            "最终结论是：是否异常仍需接口规范。",
+            "无法单独证明 ResourceId=0 属于异常。"
+            "最终结论是：是否异常仍需接口规范。"
+            "判定异常仍需补充证据。",
+            "无法单独证明 ResourceId=0 属于异常。"
+            "结论如下：是否异常仍需接口规范。"
+            "仍需更多证据才能判定异常。",
+        )
+
+        for conclusion in conclusions:
+            with self.subTest(conclusion=conclusion):
+                record = module.RunEvidenceRecord.capture(
+                    arm="B",
+                    pair=1,
+                    order=1,
+                    scenario="skill-disclosure",
+                    events=[
+                        skill_disclosure_observe_event(),
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 100, "output_tokens": 10},
+                        },
+                    ],
+                    final=(
+                        "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1。"
+                        + conclusion
+                    ),
+                    exit_code=0,
+                    duration_seconds=1,
+                )
+
+                self.assertTrue(record.metric()["valid"])
+
+    def test_skill_disclosure_accepts_exact_value_with_parenthetical_raw_rendering(self) -> None:
+        finals = (
+            "MDBCTL=available Name=Disk0（原始返回：\\Disk0\\） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0（原始返回Disk0） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0（原始返回 Disk0） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=\"Disk0\"（原始值含引号） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+        )
+
+        for final in finals:
+            with self.subTest(final=final):
+                record = module.RunEvidenceRecord.capture(
+                    arm="B",
+                    pair=1,
+                    order=1,
+                    scenario="skill-disclosure",
+                    events=[
+                        skill_disclosure_observe_event(),
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 100, "output_tokens": 10},
+                        },
+                    ],
+                    final=final,
+                    exit_code=0,
+                    duration_seconds=1,
+                )
+
+                self.assertTrue(record.metric()["valid"])
+
+    def test_skill_disclosure_rejects_superstring_value_mismatches(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "MDBCTL=unavailable Name=Disk01 ResourceId=10 Presence=11，"
+                "不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        metric = record.metric()
+
+        self.assertFalse(metric["valid"])
+        self.assertEqual(
+            metric["semantic_acceptance"]["missing"],
+            [
+                "mdbctl=available",
+                "name=disk0",
+                "resourceid=0",
+                "presence=1",
+            ],
+        )
+
+    def test_skill_disclosure_rejects_extended_reported_values(self) -> None:
+        finals = (
+            "MDBCTL=available Name=Disk0-wrong ResourceId=0 Presence=1，"
+            "不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0,wrong ResourceId=0 Presence=1，"
+            "不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0 ResourceId=0.0 Presence=1，"
+            "不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1 wrong，"
+            "不能证明 ResourceId 异常。",
+        )
+
+        for final in finals:
+            with self.subTest(final=final):
+                record = module.RunEvidenceRecord.capture(
+                    arm="B",
+                    pair=1,
+                    order=1,
+                    scenario="skill-disclosure",
+                    events=[
+                        skill_disclosure_observe_event(),
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 100, "output_tokens": 10},
+                        },
+                    ],
+                    final=final,
+                    exit_code=0,
+                    duration_seconds=1,
+                )
+
+                self.assertFalse(record.metric()["valid"])
+
+    def test_skill_disclosure_rejects_a_contradictory_conclusion(self) -> None:
+        conclusions = (
+            "不能证明 ResourceId 异常，但最终结论是 ResourceId 异常。",
+            "不能证明 ResourceId 异常，但最终结论是异常。",
+            "不能证明 ResourceId 异常，但最终结论：异常。",
+            "不能证明 ResourceId 异常，但最终结论为异常。",
+            "不能证明 ResourceId 异常。最终结论是异常仍需处理。",
+            "不能证明 ResourceId 异常。最终结论是异常需要立即维修。",
+            "不能证明 ResourceId 异常。最终判定异常仍需接口维修。",
+            "不能证明 ResourceId 异常。最终判定异常仍需参考维修手册。",
+            "不能证明 ResourceId 异常。最终判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。最终判定异常仍需收集更多证据。",
+            "不能证明 ResourceId 异常。最终判定异常仍需制定接口规范。",
+            "不能证明 ResourceId 异常。明确认定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。已认定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。正式判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。据此认定异常仍需更多证据"
+            "才能判定异常。",
+            "不能证明 ResourceId 异常而最终判定异常。",
+            "不能证明 ResourceId 异常同时最终判定异常。",
+            "不能证明 ResourceId 异常。最终，判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。最终\n判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。结论，判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。结果，认定异常仍需接口规范。",
+            "不能证明 ResourceId 异常。最终，基于现有证据，"
+            "判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。结论：综合当前结果；"
+            "认定异常仍需接口规范。",
+            "不能证明 ResourceId 异常。最终，异常相关背景如下，"
+            "判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。最终，关于异常的背景如下，"
+            "认定异常仍需接口规范。",
+            "不能证明 ResourceId 异常。结论如下：\n"
+            "判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。最终结论如下：\n"
+            "判定异常仍需补充证据。",
+            "不能证明 ResourceId 异常。最终判断如下：\n"
+            "认定异常仍需接口规范。",
+            "不能证明 ResourceId 异常却判定 ResourceId 异常。",
+            "无法排除 ResourceId 异常。",
+        )
+
+        for conclusion in conclusions:
+            with self.subTest(conclusion=conclusion):
+                record = module.RunEvidenceRecord.capture(
+                    arm="B",
+                    pair=1,
+                    order=1,
+                    scenario="skill-disclosure",
+                    events=[
+                        skill_disclosure_observe_event(),
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 100, "output_tokens": 10},
+                        },
+                    ],
+                    final=(
+                        "MDBCTL=available Name=Disk0 ResourceId=0 Presence=1。"
+                        + conclusion
+                    ),
+                    exit_code=0,
+                    duration_seconds=1,
+                )
+
+                metric = record.metric()
+
+                self.assertFalse(metric["valid"])
+                self.assertFalse(
+                    metric["semantic_acceptance"]["conclusion_supported"]
+                )
+
+    def test_skill_disclosure_rejects_mismatched_parenthetical_raw_values(self) -> None:
+        finals = (
+            "MDBCTL=available Name=Disk0（原始返回：Disk01） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0（实际值：NotDisk0Value） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+        )
+
+        for final in finals:
+            with self.subTest(final=final):
+                record = module.RunEvidenceRecord.capture(
+                    arm="B",
+                    pair=1,
+                    order=1,
+                    scenario="skill-disclosure",
+                    events=[
+                        skill_disclosure_observe_event(),
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 100, "output_tokens": 10},
+                        },
+                    ],
+                    final=final,
+                    exit_code=0,
+                    duration_seconds=1,
+                )
+
+                metric = record.metric()
+
+                self.assertFalse(metric["valid"])
+                self.assertIn("name=disk0", metric["semantic_acceptance"]["missing"])
+
+    def test_skill_disclosure_rejects_values_swapped_between_fields(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "Name=0 ResourceId=1 Presence=Disk0 MDBCTL=available，"
+                "不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        metric = record.metric()
+
+        self.assertFalse(metric["valid"])
+        self.assertIn("name=disk0", metric["semantic_acceptance"]["missing"])
+        self.assertIn("resourceid=0", metric["semantic_acceptance"]["missing"])
+        self.assertIn("presence=1", metric["semantic_acceptance"]["missing"])
+
+    def test_skill_disclosure_rejects_expected_values_only_in_annotations(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "MDBCTL=unavailable（期望 available） Name=Disk01（期望 Disk0） "
+                "ResourceId=10（期望 0） Presence=11（期望 1），"
+                "不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        metric = record.metric()
+
+        self.assertFalse(metric["valid"])
+        self.assertEqual(
+            metric["semantic_acceptance"]["missing"],
+            [
+                "mdbctl=available",
+                "name=disk0",
+                "resourceid=0",
+                "presence=1",
+            ],
+        )
+
+    def test_skill_disclosure_accepts_json_escaped_raw_value_rendering(self) -> None:
+        record = module.RunEvidenceRecord.capture(
+            arm="B",
+            pair=1,
+            order=1,
+            scenario="skill-disclosure",
+            events=[
+                skill_disclosure_observe_event(),
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                },
+            ],
+            final=(
+                "- MDBCTL：available\n"
+                "- Name 原始值：`\"\\\"Disk0\\\"\"`\n"
+                "- ResourceId 原始值：`\"0\"`\n"
+                "- Presence 原始值：`\"1\"`\n"
+                "这些证据不能证明 ResourceId 异常。"
+            ),
+            exit_code=0,
+            duration_seconds=1,
+        )
+
+        self.assertTrue(record.metric()["valid"])
+
+    def test_candidate_scope_rejects_unrelated_mcp_discovery(self) -> None:
+        tools = [
+            {
+                "type": "mcp_tool_call",
+                "server": "codex",
+                "tool": "list_mcp_resources",
+                "arguments": {},
+                "result": {"structured_content": {}},
+            },
+            candidate_observe_event()["item"],
+        ]
+
+        validation = module.observe_scope_acceptance(tools)
+
+        self.assertFalse(validation["passed"])
+        self.assertIn("unrelated MCP tools", validation["errors"])
+
+    def test_candidate_scope_rejects_legacy_assurance_input(self) -> None:
+        observe = candidate_observe_event()["item"]
+        observe["arguments"]["assurance"] = "auto"
+
+        validation = module.observe_scope_acceptance([observe])
+
+        self.assertFalse(validation["passed"])
+        self.assertIn("legacy assurance input", validation["errors"])
+
     def test_documented_qualification_command_locks_model_and_codex_config(self) -> None:
         documentation = (
             Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
@@ -708,6 +1447,22 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertEqual(models, [module.QUALIFICATION_MODEL])
         self.assertEqual(tuple(codex_config), module.QUALIFICATION_CODEX_CONFIG)
+
+    def test_documentation_requires_independent_full_expansion_runs(self) -> None:
+        documentation = (
+            Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join(documentation.split())
+
+        self.assertIn(
+            "start a new independent run at the full 20-pair target",
+            normalized,
+        )
+        self.assertIn(
+            "start another new independent run at the full 30-pair target",
+            normalized,
+        )
+        self.assertIn("Never append, merge, or selectively reuse pairs", normalized)
 
     def test_candidate_execute_acceptance_binds_response_to_the_start_gate(self) -> None:
         start = candidate_execute_event(
@@ -747,6 +1502,18 @@ class AgentGatewayAbTests(unittest.TestCase):
         )
         self.assertTrue(module.semantic_acceptance(text)["passed"])
         self.assertFalse(module.semantic_acceptance(text.replace("Health", ""))["passed"])
+
+    def test_observation_acceptance_preserves_the_legacy_conclusion_contract(self) -> None:
+        text = (
+            "SSH Telnet MDBCTL BUSCTL；Name Disk0，Protocol 3，ResourceId 0，"
+            "SlotNumber 0，Presence 1，TemperatureCelsius 29，Type SATA/SAS，"
+            "SocketId 0，Health 0。不能证明 ResourceId 异常，"
+            "但最终结论是 ResourceId 异常。"
+        )
+
+        self.assertTrue(
+            module.semantic_acceptance(text, scenario="observation")["passed"]
+        )
 
     def test_metric_parser_requires_candidate_to_use_one_observe(self) -> None:
         events = [
@@ -1345,6 +2112,137 @@ class AgentGatewayAbTests(unittest.TestCase):
             result["invalid_pairs"][0]["missing_or_nonpositive_metrics"]["A"],
         )
 
+    def test_skill_disclosure_allows_one_signed_invalid_candidate_run_at_twenty_pairs(self) -> None:
+        result = module.analyze(
+            skill_disclosure_metrics(20, invalid_candidate_pairs={1})
+        )
+
+        self.assertEqual(result["decision"], "passed")
+        self.assertEqual(result["valid_pairs"], 19)
+        self.assertTrue(result["validity"]["passed"])
+        self.assertEqual(result["validity"]["arm_valid_rates"]["B"], 0.95)
+        self.assertEqual(len(result["invalid_pairs"]), 1)
+
+    def test_skill_disclosure_fails_when_candidate_validity_drops_below_ninety_five_percent(self) -> None:
+        result = module.analyze(
+            skill_disclosure_metrics(30, invalid_candidate_pairs={1, 2})
+        )
+
+        self.assertEqual(result["decision"], "failed")
+        self.assertFalse(result["validity"]["passed"])
+        self.assertIn(
+            "candidate arm validity is below 95%",
+            result["validity"]["errors"],
+        )
+
+    def test_skill_disclosure_rejects_non_noise_invalid_behavior(self) -> None:
+        metrics = skill_disclosure_metrics(30, invalid_candidate_pairs={1})
+        candidate = next(
+            item
+            for item in metrics
+            if item["arm"] == "B" and item["pair"] == 1
+        )
+        candidate["semantic_acceptance"] = {"passed": True}
+        candidate["mcp_events"] = 2
+        candidate["tool_events"] = 2
+        candidate["scope_validation"] = {
+            "passed": False,
+            "errors": ["unrelated MCP tools"],
+            "reason_codes": ["unrelated_mcp_tools"],
+        }
+
+        result = module.analyze(metrics)
+
+        self.assertEqual(result["validity"]["arm_valid_rates"]["B"], 0.966667)
+        self.assertFalse(result["validity"]["passed"])
+        self.assertIn(
+            "candidate non-noise invalid behavior is not allowed",
+            result["validity"]["errors"],
+        )
+        self.assertEqual(result["decision"], "failed")
+
+    def test_skill_disclosure_allows_baseline_behavior_noise_within_rate(self) -> None:
+        metrics = skill_disclosure_metrics(20)
+        baseline = next(
+            item
+            for item in metrics
+            if item["arm"] == "A" and item["pair"] == 1
+        )
+        baseline["semantic_acceptance"] = {"passed": False}
+
+        result = module.analyze(metrics)
+
+        self.assertEqual(result["validity"]["arm_valid_rates"]["A"], 0.95)
+        self.assertEqual(result["validity"]["arm_valid_rates"]["B"], 1.0)
+        self.assertTrue(result["validity"]["passed"])
+        self.assertEqual(result["decision"], "passed")
+
+    def test_skill_disclosure_terminal_checkpoint_applies_p95_to_valid_pairs(self) -> None:
+        metrics = skill_disclosure_metrics(30, invalid_candidate_pairs={1})
+        for item in metrics:
+            if (
+                item["arm"] == "B"
+                and item["pair"] in {2, 3}
+            ):
+                item["noncached_input_plus_output"] = 150
+
+        result = module.analyze(metrics)
+
+        self.assertEqual(result["valid_pairs"], 29)
+        self.assertEqual(
+            result["metrics"]["noncached_input_plus_output"]["p95_ratio"],
+            1.5,
+        )
+        self.assertFalse(
+            result["metrics"]["noncached_input_plus_output"]["passed"]
+        )
+        self.assertEqual(result["decision"], "failed")
+
+    def test_verify_accepts_signed_skill_disclosure_validity_with_one_invalid_candidate_run(self) -> None:
+        verified = verify_skill_disclosure_summary(
+            pairs=20,
+            invalid_candidate_pairs={1},
+        )
+
+        self.assertTrue(verified["promotable"], verified)
+        self.assertEqual(len(verified["invalid_pairs"]), 1)
+
+    def test_verify_rejects_missing_terminal_p95_with_one_invalid_pair(self) -> None:
+        def remove_p95(analysis):
+            for metric in module.METRICS:
+                analysis["metrics"][metric]["p95_ratio"] = None
+
+        verified = verify_skill_disclosure_summary(
+            pairs=30,
+            invalid_candidate_pairs={1},
+            analysis_mutator=remove_p95,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("terminal p95" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_rejects_signed_terminal_evidence_truncated_to_twenty_pairs(self) -> None:
+        def truncate(run_evidence, schedule):
+            run_evidence["runs"] = [
+                run for run in run_evidence["runs"] if run["pair"] <= 20
+            ]
+            return schedule[:20]
+
+        verified = verify_skill_disclosure_summary(
+            pairs=30,
+            seed=1,
+            evidence_mutator=truncate,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("qualification contract" in error for error in verified["errors"]),
+            verified,
+        )
+
     def test_release_evidence_records_source_environment_thresholds_and_digests(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -1413,6 +2311,79 @@ class AgentGatewayAbTests(unittest.TestCase):
                 "prompt_digest": module.QUALIFICATION_PROMPT_DIGEST,
                 "codex_config": list(module.QUALIFICATION_CODEX_CONFIG),
             },
+        )
+
+    def test_skill_disclosure_records_its_own_prompt_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            metrics = root / "all_metrics.json"
+            schedule = root / "schedule.json"
+            metrics.write_text("[]\n", encoding="utf-8")
+            schedule.write_text("[]\n", encoding="utf-8")
+
+            evidence = module.release_evidence(
+                scenario="skill-disclosure",
+                requested_pairs=10,
+                candidate_source_commit="a" * 40,
+                baseline_source_commit=module.DEFAULT_BASELINE_REF,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=module.QUALIFICATION_CODEX_CONFIG,
+                metrics_path=metrics,
+                schedule_path=schedule,
+                run_evidence_path=write_run_evidence(root),
+                analysis={"valid_pairs": 10, "invalid_pairs": []},
+                environment={"python": "3.12", "node": "v22"},
+            )
+
+        self.assertEqual(
+            evidence["benchmark"]["prompt_digest"],
+            "sha256:d662debf10ba737762e0bee10730e279aad3b5bc24c14a9851131f65db1ad386",
+        )
+        self.assertNotEqual(
+            evidence["benchmark"]["prompt_digest"],
+            module.QUALIFICATION_PROMPT_DIGEST,
+        )
+
+    def test_documentation_covers_the_skill_disclosure_scenario(self) -> None:
+        documentation = (
+            Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("--scenario skill-disclosure", documentation)
+        self.assertIn("尚未发出的 MCP 调用不算失败或重试", documentation)
+        self.assertIn("same Agent profile", documentation)
+        self.assertIn("valid pairs", documentation)
+        self.assertIn("95%", documentation)
+        self.assertIn("5 percentage points", documentation)
+        self.assertIn("Both arms use identical per-run acceptance checks", documentation)
+        self.assertIn("Only a candidate non-noise invalid run", documentation)
+
+    def test_verify_cli_uses_the_selected_baseline_ref(self) -> None:
+        with patch.object(
+            module, "_git_commit", side_effect=lambda _repo, ref: ref
+        ), patch.object(
+            module,
+            "verify_summary",
+            return_value={"promotable": True},
+        ) as verify, patch("builtins.print"):
+            result = module.main(
+                [
+                    "verify",
+                    "summary.json",
+                    "--source-ref",
+                    "candidate",
+                    "--baseline-ref",
+                    "github/main",
+                    "--scenario",
+                    "skill-disclosure",
+                    "--attestation-public-key",
+                    "key.pub",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            verify.call_args.kwargs["expected_baseline_commit"], "github/main"
         )
 
     def test_verify_summary_rejects_claims_not_derived_from_raw_metrics(self) -> None:
@@ -1523,6 +2494,32 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertFalse(verified["promotable"], verified)
         self.assertTrue(
             any("run source commit" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_rejects_attested_runs_from_a_different_prompt(self) -> None:
+        verified = verify_passing_summary(
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            run_prompt_override="Use a different qualification prompt.\n",
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("prompt contract" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_summary_rejects_environment_not_bound_to_attested_runs(self) -> None:
+        verified = verify_passing_summary(
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            release_environment={"python": "rewritten", "node": "v22"},
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("run environment" in error for error in verified["errors"]),
             verified,
         )
 

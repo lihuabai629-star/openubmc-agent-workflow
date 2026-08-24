@@ -227,6 +227,69 @@ python scripts/agent_gateway_ab.py verify \
   --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub
 ```
 
+For a Skill-only progressive-disclosure comparison, run both variants through the same Agent profile
+and the same semantic observation prompt:
+
+The fixed live scope intentionally contains only MDBCTL readiness plus the Drive name, ResourceId,
+and presence values needed for the conclusion. Keeping the benchmark question narrow prevents a
+long multi-surface target snapshot from dominating a test whose independent variable is Skill
+entrypoint disclosure.
+
+The prompt also distinguishes dispatch from execution: a not-yet-dispatched MCP call is not a
+failure or retry. In particular, 尚未发出的 MCP 调用不算失败或重试; the Agent waits for the
+registered benchmark tool entry and still issues exactly one actual `observe` call. This avoids
+turning transient tool-entry resolution into an arm-specific validity failure.
+
+```bash
+python scripts/agent_gateway_ab.py run \
+  --work-root /path/to/benchmark-work \
+  --credentials /path/to/private/credentials.env \
+  --attestation-private-key /path/to/private/ab-evidence-signing-key \
+  --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
+  --model gpt-5.6-sol \
+  --baseline-ref github/main \
+  --scenario skill-disclosure \
+  --pairs 10 \
+  --codex-config 'features.shell_tool=false' \
+  --codex-config 'model_provider="cliproxy"' \
+  --codex-config 'model_providers.cliproxy.name="CLIProxyAPI"' \
+  --codex-config 'model_providers.cliproxy.base_url="http://82.156.104.157/v1"' \
+  --codex-config 'model_providers.cliproxy.env_key="CLI_PROXY_API_KEY"' \
+  --codex-config 'model_providers.cliproxy.wire_api="responses"' \
+  --codex-config 'model_providers.cliproxy.supports_websockets=false'
+
+python scripts/agent_gateway_ab.py verify \
+  /path/to/benchmark-work/results-*/summary.json \
+  --scenario skill-disclosure \
+  --source-ref <candidate-commit> \
+  --baseline-ref github/main \
+  --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub
+```
+
+The candidate is acceptable only when semantic and exact-scope checks pass for the paired metric
+sample, there are at least ten valid pairs, and every bounded regression metric passes. Because
+this Skill-only scenario has no side effects, zero-tool dispatch misses remain signed instead of
+being selectively rerun: each arm must stay at or above 95% validity, invalid pairs may not exceed
+10%, and candidate validity may not regress by more than 5 percentage points versus the baseline.
+Both arms use identical per-run acceptance checks. A baseline non-noise invalid run counts against
+the shared rate and invalid-pair thresholds, allowing measured baseline behavior noise within those
+bounds. Only a candidate non-noise invalid run blocks the checkpoint immediately, so a candidate
+cannot be promoted by averaging an active semantic, tool, or scope violation into the sample.
+Runtime release and execute qualification continue to require zero invalid pairs.
+The scenario records its own prompt digest, source commits, schedule, raw metrics, environment,
+and signed run evidence. It evaluates Skill disclosure behavior; the default release qualification
+remains `execute-source-only`.
+
+Treat each checkpoint as a complete preregistered experiment. If a 10-pair result says
+`collect_more`, start a new independent run at the full 20-pair target. If that result is still
+uncertain, start another new independent run at the full 30-pair target. Never append, merge, or
+selectively reuse pairs from an earlier checkpoint; verify and promote only the single complete
+result directory for the final checkpoint. Reaching the 30-pair checkpoint activates the p95 bound
+for every metric even when the validity policy excludes one or more signed pairs: calculate p95 from
+the retained valid paired sample, and fail verification when any terminal p95 value is missing.
+Every signed run also binds the complete checkpoint pair count and schedule digest, so a 30-pair run
+cannot be truncated or rebound as a smaller checkpoint.
+
 Every run record carries its tested source commit and a unique execution identity. The runner
 signs that record with the qualification key; verification uses a public key held outside the
 candidate checkout. The GitHub Release workflow restores that trust root from the
