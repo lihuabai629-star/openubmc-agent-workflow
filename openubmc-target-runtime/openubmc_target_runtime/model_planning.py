@@ -1,0 +1,1369 @@
+"""Runtime-internal model planning Effect and bounded Plan IR prototype."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+import hashlib
+import json
+from pathlib import Path
+import re
+import sqlite3
+import threading
+import time
+from typing import Protocol
+
+from .contracts import RUNTIME_API_VERSION
+
+
+MODEL_INVOCATION_SCHEMA = f"{RUNTIME_API_VERSION}/model-invocation-v1"
+PLAN_PROPOSAL_SCHEMA = f"{RUNTIME_API_VERSION}/plan-proposal-v1"
+PLAN_REVISION_SCHEMA = f"{RUNTIME_API_VERSION}/plan-revision-v1"
+PLANNING_INPUT_SCHEMA = f"{RUNTIME_API_VERSION}/planning-input-v1"
+BOUNDED_PLAN_IR_VERSION = "bounded-plan-ir/v1"
+
+_SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
+_SUPPORTED_NODE_KINDS = frozenset(
+    {"action", "sequence", "choice", "parallel", "repeat", "timer", "gate", "subflow"}
+)
+_INVOCATION_STATUSES = frozenset(
+    {"running", "unknown", "succeeded", "rejected", "failed"}
+)
+
+
+class ModelPlanningError(ValueError):
+    """Base error for the model-planning Module."""
+
+
+class ModelInvocationConflict(ModelPlanningError):
+    """Raised when a stable model invocation identity is rebound."""
+
+
+class PlanProposalRejected(ModelPlanningError):
+    """Raised when model output exceeds the deliberately bounded IR."""
+
+
+def _json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _fingerprint(value: object) -> str:
+    return "sha256:" + hashlib.sha256(_json_bytes(value)).hexdigest()
+
+
+def _required_id(value: object, name: str) -> str:
+    selected = str(value).strip()
+    if _SAFE_ID.fullmatch(selected) is None:
+        raise ModelPlanningError(f"{name} must be a safe identifier")
+    return selected
+
+
+def _required_text(value: object, name: str, *, max_bytes: int = 4096) -> str:
+    selected = str(value).strip()
+    if not selected:
+        raise ModelPlanningError(f"{name} is required")
+    if len(selected.encode("utf-8")) > max_bytes:
+        raise ModelPlanningError(f"{name} exceeds its byte budget")
+    return selected
+
+
+@dataclass(frozen=True)
+class ModelConfiguration:
+    provider: str
+    model: str
+    parameters_json: str
+    timeout_seconds: float
+    adapter_version: str = "1"
+    model_revision: str = "pinned"
+    template_id: str = "bounded-plan"
+    template_version: int = 1
+    max_output_bytes: int = 32 * 1024
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        _required_id(self.provider, "model provider")
+        _required_id(self.model, "model name")
+        _required_id(self.adapter_version, "model Adapter version")
+        _required_id(self.model_revision, "model revision")
+        _required_id(self.template_id, "model template id")
+        if self.version != 1:
+            raise ModelPlanningError("unsupported model configuration version")
+        if self.template_version < 1:
+            raise ModelPlanningError("model template version must be positive")
+        if self.max_output_bytes < 1 or self.max_output_bytes > 1024 * 1024:
+            raise ModelPlanningError("model output byte budget is invalid")
+        if self.timeout_seconds <= 0 or self.timeout_seconds > 300:
+            raise ModelPlanningError("model timeout must be in (0, 300] seconds")
+        decoded = json.loads(self.parameters_json)
+        if not isinstance(decoded, Mapping):
+            raise ModelPlanningError("model parameters must be an object")
+
+    @classmethod
+    def freeze(
+        cls,
+        *,
+        provider: str,
+        model: str,
+        parameters: Mapping[str, object] | None = None,
+        timeout_seconds: float = 30.0,
+        adapter_version: str = "1",
+        model_revision: str = "pinned",
+        template_id: str = "bounded-plan",
+        template_version: int = 1,
+        max_output_bytes: int = 32 * 1024,
+    ) -> "ModelConfiguration":
+        return cls(
+            provider=_required_id(provider, "model provider"),
+            model=_required_id(model, "model name"),
+            parameters_json=_json_bytes(dict(parameters or {})).decode("ascii"),
+            timeout_seconds=float(timeout_seconds),
+            adapter_version=adapter_version,
+            model_revision=model_revision,
+            template_id=template_id,
+            template_version=int(template_version),
+            max_output_bytes=int(max_output_bytes),
+        )
+
+    @property
+    def parameters(self) -> Mapping[str, object]:
+        decoded = json.loads(self.parameters_json)
+        assert isinstance(decoded, Mapping)
+        return dict(decoded)
+
+    @property
+    def digest(self) -> str:
+        return _fingerprint(self.to_public_dict())
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "provider": self.provider,
+            "model": self.model,
+            "adapter_version": self.adapter_version,
+            "model_revision": self.model_revision,
+            "template_id": self.template_id,
+            "template_version": self.template_version,
+            "parameters": dict(self.parameters),
+            "timeout_seconds": self.timeout_seconds,
+            "max_output_bytes": self.max_output_bytes,
+        }
+
+
+@dataclass(frozen=True)
+class PlanningInput:
+    objective: str
+    context_digests: tuple[str, ...] = ()
+    constraints: tuple[str, ...] = ()
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        _required_text(self.objective, "planning objective", max_bytes=8192)
+        if self.version != 1:
+            raise ModelPlanningError("unsupported PlanningInput version")
+        if len(self.context_digests) > 32:
+            raise ModelPlanningError("PlanningInput has too many context digests")
+        if len(self.constraints) > 32:
+            raise ModelPlanningError("PlanningInput has too many constraints")
+        for digest in self.context_digests:
+            if _SHA256_REF.fullmatch(digest) is None:
+                raise ModelPlanningError("PlanningInput context digest must be SHA-256")
+        for constraint in self.constraints:
+            _required_text(constraint, "planning constraint", max_bytes=1024)
+
+    @property
+    def digest(self) -> str:
+        return _fingerprint(self.to_public_dict())
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "schema": PLANNING_INPUT_SCHEMA,
+            "version": self.version,
+            "objective": self.objective,
+            "context_digests": list(self.context_digests),
+            "constraints": list(self.constraints),
+        }
+
+
+@dataclass(frozen=True)
+class PlanningRequest:
+    run_id: str
+    planning_input: PlanningInput
+    slot_id: str = "primary"
+    generation: int = 1
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        _required_id(self.run_id, "model planning run_id")
+        _required_id(self.slot_id, "model planning slot_id")
+        if (
+            isinstance(self.generation, bool)
+            or not isinstance(self.generation, int)
+            or self.generation < 1
+        ):
+            raise ModelPlanningError("model planning generation must be positive")
+        if self.version != 1:
+            raise ModelPlanningError("unsupported PlanningRequest version")
+
+    @property
+    def invocation_id(self) -> str:
+        identity = _fingerprint(
+            {
+                "run_id": self.run_id,
+                "slot_id": self.slot_id,
+                "generation": self.generation,
+            }
+        )
+        return "model-plan:" + identity.removeprefix("sha256:")[:48]
+
+
+@dataclass(frozen=True)
+class PlanNode:
+    node_id: str
+    kind: str
+    children: tuple[str, ...] = ()
+    branches: tuple[str, ...] = ()
+    body: str = ""
+    action: str = ""
+    repeat_max: int = 0
+    timer_seconds: int = 0
+    gate_schema: str = ""
+    subflow: str = ""
+    subflow_version: str = ""
+    compensation: str = ""
+    compensation_only: bool = False
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> "PlanNode":
+        allowed = {
+            "node_id",
+            "kind",
+            "children",
+            "branches",
+            "body",
+            "action",
+            "repeat_max",
+            "timer_seconds",
+            "gate_schema",
+            "subflow",
+            "subflow_version",
+            "compensation",
+            "compensation_only",
+        }
+        unknown = sorted(set(value) - allowed)
+        if unknown:
+            raise PlanProposalRejected(
+                "Plan node contains unknown fields: " + ", ".join(unknown)
+            )
+        raw_children = value.get("children", [])
+        raw_branches = value.get("branches", [])
+        if not isinstance(raw_children, list) or not all(
+            isinstance(item, str) for item in raw_children
+        ):
+            raise PlanProposalRejected("Plan node children must be a string array")
+        if not isinstance(raw_branches, list) or not all(
+            isinstance(item, str) for item in raw_branches
+        ):
+            raise PlanProposalRejected("Plan node branches must be a string array")
+        return cls(
+            node_id=_required_id(value.get("node_id", ""), "Plan node_id"),
+            kind=_required_id(value.get("kind", ""), "Plan node kind"),
+            children=tuple(raw_children),
+            branches=tuple(raw_branches),
+            body=str(value.get("body", "")),
+            action=str(value.get("action", "")),
+            repeat_max=int(value.get("repeat_max", 0)),
+            timer_seconds=int(value.get("timer_seconds", 0)),
+            gate_schema=str(value.get("gate_schema", "")),
+            subflow=str(value.get("subflow", "")),
+            subflow_version=str(value.get("subflow_version", "")),
+            compensation=str(value.get("compensation", "")),
+            compensation_only=bool(value.get("compensation_only", False)),
+        )
+
+    def to_public_dict(self) -> dict[str, object]:
+        value: dict[str, object] = {
+            "node_id": self.node_id,
+            "kind": self.kind,
+        }
+        for name, selected in (
+            ("children", list(self.children)),
+            ("branches", list(self.branches)),
+            ("body", self.body),
+            ("action", self.action),
+            ("repeat_max", self.repeat_max),
+            ("timer_seconds", self.timer_seconds),
+            ("gate_schema", self.gate_schema),
+            ("subflow", self.subflow),
+            ("subflow_version", self.subflow_version),
+            ("compensation", self.compensation),
+            ("compensation_only", self.compensation_only),
+        ):
+            if selected not in ("", 0, False, []):
+                value[name] = selected
+        return value
+
+
+@dataclass(frozen=True)
+class PlanProposal:
+    run_id: str
+    root_node_id: str
+    nodes: tuple[PlanNode, ...]
+    invocation_id: str = ""
+    input_digest: str = ""
+    provider_config: Mapping[str, object] = field(default_factory=dict)
+    provider_config_digest: str = ""
+    status: str = "proposed"
+    error_code: str = ""
+    error_message: str = ""
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        _required_id(self.run_id, "PlanProposal run_id")
+        _required_id(self.root_node_id, "PlanProposal root_node_id")
+        if self.version != 1:
+            raise PlanProposalRejected("unsupported PlanProposal version")
+        if not self.nodes:
+            raise PlanProposalRejected("PlanProposal requires nodes")
+        if self.status != "proposed":
+            raise PlanProposalRejected("PlanProposal status must be proposed")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> "PlanProposal":
+        allowed = {
+            "schema",
+            "version",
+            "run_id",
+            "invocation_id",
+            "input_digest",
+            "provider_config",
+            "provider_config_digest",
+            "status",
+            "error_code",
+            "error_message",
+            "root_node_id",
+            "nodes",
+        }
+        unknown = sorted(set(value) - allowed)
+        if unknown:
+            raise PlanProposalRejected(
+                "PlanProposal contains unknown fields: " + ", ".join(unknown)
+            )
+        if value.get("schema") != PLAN_PROPOSAL_SCHEMA:
+            raise PlanProposalRejected("unsupported PlanProposal schema")
+        raw_nodes = value.get("nodes")
+        if not isinstance(raw_nodes, list) or not all(
+            isinstance(item, Mapping) for item in raw_nodes
+        ):
+            raise PlanProposalRejected("PlanProposal nodes must be an object array")
+        raw_provider_config = value.get("provider_config", {})
+        if not isinstance(raw_provider_config, Mapping):
+            raise PlanProposalRejected("PlanProposal provider_config must be an object")
+        return cls(
+            run_id=str(value.get("run_id", "")),
+            root_node_id=str(value.get("root_node_id", "")),
+            nodes=tuple(PlanNode.from_mapping(item) for item in raw_nodes),
+            invocation_id=str(value.get("invocation_id", "")),
+            input_digest=str(value.get("input_digest", "")),
+            provider_config=dict(raw_provider_config),
+            provider_config_digest=str(value.get("provider_config_digest", "")),
+            status=str(value.get("status", "proposed")),
+            error_code=str(value.get("error_code", "")),
+            error_message=str(value.get("error_message", "")),
+            version=int(value.get("version", 0)),
+        )
+
+    def bind(self, record: "ModelInvocationRecord") -> "PlanProposal":
+        for name, current, expected in (
+            ("run_id", self.run_id, record.run_id),
+            ("invocation_id", self.invocation_id, record.invocation_id),
+            ("input_digest", self.input_digest, record.input_digest),
+            (
+                "provider_config_digest",
+                self.provider_config_digest,
+                record.provider_config_digest,
+            ),
+        ):
+            if current and current != expected:
+                raise PlanProposalRejected(
+                    f"PlanProposal {name} does not match its invocation"
+                )
+        return replace(
+            self,
+            run_id=record.run_id,
+            invocation_id=record.invocation_id,
+            input_digest=record.input_digest,
+            provider_config=dict(record.provider_config),
+            provider_config_digest=record.provider_config_digest,
+            status="proposed",
+            error_code="",
+            error_message="",
+        )
+
+    @property
+    def digest(self) -> str:
+        return _fingerprint(self.to_public_dict())
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "schema": PLAN_PROPOSAL_SCHEMA,
+            "version": self.version,
+            "run_id": self.run_id,
+            "invocation_id": self.invocation_id,
+            "input_digest": self.input_digest,
+            "provider_config": dict(self.provider_config),
+            "provider_config_digest": self.provider_config_digest,
+            "status": self.status,
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+            "root_node_id": self.root_node_id,
+            "nodes": [node.to_public_dict() for node in self.nodes],
+        }
+
+
+@dataclass(frozen=True)
+class PlanPolicy:
+    allowed_actions: frozenset[str]
+    allowed_gate_schemas: frozenset[str]
+    allowed_subflows: tuple[tuple[str, tuple[str, ...]], ...]
+    max_serialized_bytes: int = 32 * 1024
+    max_nodes: int = 32
+    max_depth: int = 8
+    max_parallel_width: int = 4
+    max_repeat: int = 3
+    max_timer_seconds: int = 300
+    max_expanded_steps: int = 64
+    version: int = 1
+
+    @classmethod
+    def freeze(
+        cls,
+        *,
+        allowed_actions: set[str] | frozenset[str],
+        allowed_gate_schemas: set[str] | frozenset[str],
+        allowed_subflows: Mapping[str, set[str] | frozenset[str]],
+        max_serialized_bytes: int = 32 * 1024,
+        max_nodes: int = 32,
+        max_depth: int = 8,
+        max_parallel_width: int = 4,
+        max_repeat: int = 3,
+        max_timer_seconds: int = 300,
+        max_expanded_steps: int = 64,
+    ) -> "PlanPolicy":
+        return cls(
+            allowed_actions=frozenset(allowed_actions),
+            allowed_gate_schemas=frozenset(allowed_gate_schemas),
+            allowed_subflows=tuple(
+                sorted((name, tuple(sorted(versions))) for name, versions in allowed_subflows.items())
+            ),
+            max_serialized_bytes=int(max_serialized_bytes),
+            max_nodes=int(max_nodes),
+            max_depth=int(max_depth),
+            max_parallel_width=int(max_parallel_width),
+            max_repeat=int(max_repeat),
+            max_timer_seconds=int(max_timer_seconds),
+            max_expanded_steps=int(max_expanded_steps),
+        )
+
+    def __post_init__(self) -> None:
+        if self.version != 1:
+            raise ModelPlanningError("unsupported PlanPolicy version")
+        for name, value in (
+            ("max_serialized_bytes", self.max_serialized_bytes),
+            ("max_nodes", self.max_nodes),
+            ("max_depth", self.max_depth),
+            ("max_parallel_width", self.max_parallel_width),
+            ("max_repeat", self.max_repeat),
+            ("max_timer_seconds", self.max_timer_seconds),
+            ("max_expanded_steps", self.max_expanded_steps),
+        ):
+            if value <= 0:
+                raise ModelPlanningError(f"PlanPolicy {name} must be positive")
+
+    @property
+    def subflows(self) -> Mapping[str, frozenset[str]]:
+        return {name: frozenset(versions) for name, versions in self.allowed_subflows}
+
+    @property
+    def digest(self) -> str:
+        return _fingerprint(self.to_public_dict())
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "allowed_actions": sorted(self.allowed_actions),
+            "allowed_gate_schemas": sorted(self.allowed_gate_schemas),
+            "allowed_subflows": {
+                name: list(versions) for name, versions in self.allowed_subflows
+            },
+            "limits": {
+                "max_serialized_bytes": self.max_serialized_bytes,
+                "max_nodes": self.max_nodes,
+                "max_depth": self.max_depth,
+                "max_parallel_width": self.max_parallel_width,
+                "max_repeat": self.max_repeat,
+                "max_timer_seconds": self.max_timer_seconds,
+                "max_expanded_steps": self.max_expanded_steps,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class ModelInvocationRecord:
+    invocation_id: str
+    run_id: str
+    slot_id: str
+    generation: int
+    input_digest: str
+    provider: str
+    model: str
+    provider_config: Mapping[str, object]
+    provider_config_digest: str
+    policy_digest: str
+    status: str
+    effect_kind: str
+    result_digest: str
+    plan_revision_id: str
+    error_code: str
+    error_message: str
+    started_at: float
+    updated_at: float
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        _required_id(self.invocation_id, "ModelInvocationRecord invocation_id")
+        _required_id(self.run_id, "ModelInvocationRecord run_id")
+        _required_id(self.slot_id, "ModelInvocationRecord slot_id")
+        if self.generation < 1:
+            raise ModelPlanningError("ModelInvocationRecord generation must be positive")
+        for name, value in (
+            ("input_digest", self.input_digest),
+            ("provider_config_digest", self.provider_config_digest),
+            ("policy_digest", self.policy_digest),
+        ):
+            if _SHA256_REF.fullmatch(value) is None:
+                raise ModelPlanningError(
+                    f"ModelInvocationRecord {name} must be SHA-256"
+                )
+        _required_id(self.provider, "ModelInvocationRecord provider")
+        _required_id(self.model, "ModelInvocationRecord model")
+        if self.status not in _INVOCATION_STATUSES:
+            raise ModelPlanningError("unsupported ModelInvocationRecord status")
+        if self.effect_kind != "non_deterministic":
+            raise ModelPlanningError(
+                "ModelInvocationRecord effect_kind must be non_deterministic"
+            )
+        if self.result_digest and _SHA256_REF.fullmatch(self.result_digest) is None:
+            raise ModelPlanningError("ModelInvocationRecord result_digest must be SHA-256")
+        if self.status == "succeeded" and (
+            not self.result_digest or not self.plan_revision_id
+        ):
+            raise ModelPlanningError(
+                "succeeded ModelInvocationRecord requires result and revision identity"
+            )
+        if self.updated_at < self.started_at:
+            raise ModelPlanningError(
+                "ModelInvocationRecord updated_at precedes started_at"
+            )
+        if self.version != 1:
+            raise ModelPlanningError("unsupported ModelInvocationRecord version")
+
+    @property
+    def binding_digest(self) -> str:
+        return _fingerprint(
+            {
+                "run_id": self.run_id,
+                "input_digest": self.input_digest,
+                "provider_config_digest": self.provider_config_digest,
+                "policy_digest": self.policy_digest,
+            }
+        )
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "schema": MODEL_INVOCATION_SCHEMA,
+            "version": self.version,
+            "invocation_id": self.invocation_id,
+            "run_id": self.run_id,
+            "slot_id": self.slot_id,
+            "generation": self.generation,
+            "input_digest": self.input_digest,
+            "provider": self.provider,
+            "model": self.model,
+            "provider_config": dict(self.provider_config),
+            "provider_config_digest": self.provider_config_digest,
+            "policy_digest": self.policy_digest,
+            "status": self.status,
+            "effect_kind": self.effect_kind,
+            "result_digest": self.result_digest,
+            "plan_revision_id": self.plan_revision_id,
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+            "started_at": self.started_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_public_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "ModelInvocationRecord":
+        if value.get("schema") != MODEL_INVOCATION_SCHEMA:
+            raise ModelPlanningError("unsupported ModelInvocationRecord schema")
+        provider_config = value.get("provider_config")
+        if not isinstance(provider_config, Mapping):
+            raise ModelPlanningError(
+                "ModelInvocationRecord provider_config must be an object"
+            )
+        return cls(
+            invocation_id=str(value.get("invocation_id", "")),
+            run_id=str(value.get("run_id", "")),
+            slot_id=str(value.get("slot_id", "")),
+            generation=int(value.get("generation", 0)),
+            input_digest=str(value.get("input_digest", "")),
+            provider=str(value.get("provider", "")),
+            model=str(value.get("model", "")),
+            provider_config=dict(provider_config),
+            provider_config_digest=str(value.get("provider_config_digest", "")),
+            policy_digest=str(value.get("policy_digest", "")),
+            status=str(value.get("status", "")),
+            effect_kind=str(value.get("effect_kind", "")),
+            result_digest=str(value.get("result_digest", "")),
+            plan_revision_id=str(value.get("plan_revision_id", "")),
+            error_code=str(value.get("error_code", "")),
+            error_message=str(value.get("error_message", "")),
+            started_at=float(value.get("started_at", 0.0)),
+            updated_at=float(value.get("updated_at", 0.0)),
+            version=int(value.get("version", 0)),
+        )
+
+
+@dataclass(frozen=True)
+class PlanRevision:
+    revision_id: str
+    run_id: str
+    slot_id: str
+    generation: int
+    invocation_id: str
+    input_digest: str
+    provider_config_digest: str
+    policy_digest: str
+    proposal_digest: str
+    proposal: PlanProposal
+    status: str
+    ir_version: str
+    error_code: str
+    error_message: str
+    created_at: float
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        _required_id(self.revision_id, "PlanRevision revision_id")
+        _required_id(self.run_id, "PlanRevision run_id")
+        _required_id(self.slot_id, "PlanRevision slot_id")
+        _required_id(self.invocation_id, "PlanRevision invocation_id")
+        if self.generation < 1:
+            raise ModelPlanningError("PlanRevision generation must be positive")
+        for name, value in (
+            ("input_digest", self.input_digest),
+            ("provider_config_digest", self.provider_config_digest),
+            ("policy_digest", self.policy_digest),
+            ("proposal_digest", self.proposal_digest),
+        ):
+            if _SHA256_REF.fullmatch(value) is None:
+                raise ModelPlanningError(f"PlanRevision {name} must be SHA-256")
+        if self.status != "pinned":
+            raise ModelPlanningError("PlanRevision status must be pinned")
+        if self.ir_version != BOUNDED_PLAN_IR_VERSION:
+            raise ModelPlanningError("unsupported PlanRevision IR version")
+        if self.error_code or self.error_message:
+            raise ModelPlanningError("pinned PlanRevision cannot contain an error")
+        if self.proposal.run_id != self.run_id:
+            raise ModelPlanningError("PlanRevision proposal belongs to another Run")
+        if self.proposal.digest != self.proposal_digest:
+            raise ModelPlanningError("PlanRevision proposal digest mismatch")
+        if self.version != 1:
+            raise ModelPlanningError("unsupported PlanRevision version")
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "schema": PLAN_REVISION_SCHEMA,
+            "version": self.version,
+            "revision_id": self.revision_id,
+            "run_id": self.run_id,
+            "slot_id": self.slot_id,
+            "generation": self.generation,
+            "invocation_id": self.invocation_id,
+            "input_digest": self.input_digest,
+            "provider_config_digest": self.provider_config_digest,
+            "policy_digest": self.policy_digest,
+            "proposal_digest": self.proposal_digest,
+            "proposal": self.proposal.to_public_dict(),
+            "status": self.status,
+            "ir_version": self.ir_version,
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_public_dict(cls, value: Mapping[str, object]) -> "PlanRevision":
+        if value.get("schema") != PLAN_REVISION_SCHEMA:
+            raise ModelPlanningError("unsupported PlanRevision schema")
+        raw_proposal = value.get("proposal")
+        if not isinstance(raw_proposal, Mapping):
+            raise ModelPlanningError("PlanRevision proposal must be an object")
+        return cls(
+            revision_id=str(value.get("revision_id", "")),
+            run_id=str(value.get("run_id", "")),
+            slot_id=str(value.get("slot_id", "")),
+            generation=int(value.get("generation", 0)),
+            invocation_id=str(value.get("invocation_id", "")),
+            input_digest=str(value.get("input_digest", "")),
+            provider_config_digest=str(value.get("provider_config_digest", "")),
+            policy_digest=str(value.get("policy_digest", "")),
+            proposal_digest=str(value.get("proposal_digest", "")),
+            proposal=PlanProposal.from_mapping(raw_proposal),
+            status=str(value.get("status", "")),
+            ir_version=str(value.get("ir_version", "")),
+            error_code=str(value.get("error_code", "")),
+            error_message=str(value.get("error_message", "")),
+            created_at=float(value.get("created_at", 0.0)),
+            version=int(value.get("version", 0)),
+        )
+
+
+@dataclass(frozen=True)
+class ModelAdapterResult:
+    status: str
+    proposal: Mapping[str, object] | None = None
+    error_code: str = ""
+    error_message: str = ""
+
+    def __post_init__(self) -> None:
+        if self.status not in {"succeeded", "unknown", "failed"}:
+            raise ModelPlanningError("unsupported model Adapter result status")
+        if self.status == "succeeded" and not isinstance(self.proposal, Mapping):
+            raise ModelPlanningError(
+                "succeeded model Adapter result requires a proposal object"
+            )
+        if self.status != "succeeded" and self.proposal is not None:
+            raise ModelPlanningError(
+                "non-success model Adapter result cannot contain a proposal"
+            )
+        if self.status in {"unknown", "failed"} and not self.error_code:
+            raise ModelPlanningError(
+                "non-success model Adapter result requires an error code"
+            )
+
+    @classmethod
+    def succeeded(
+        cls,
+        proposal: PlanProposal | Mapping[str, object],
+    ) -> "ModelAdapterResult":
+        return cls(
+            status="succeeded",
+            proposal=(
+                proposal.to_public_dict()
+                if isinstance(proposal, PlanProposal)
+                else dict(proposal)
+            ),
+        )
+
+    @classmethod
+    def unknown(cls, message: str = "model invocation outcome is unknown") -> "ModelAdapterResult":
+        return cls(status="unknown", error_code="model_outcome_unknown", error_message=message)
+
+    @classmethod
+    def failed(cls, code: str, message: str) -> "ModelAdapterResult":
+        return cls(status="failed", error_code=code, error_message=message)
+
+
+class ModelAdapter(Protocol):
+    configuration: ModelConfiguration
+
+    def invoke(self, request: PlanningRequest) -> ModelAdapterResult: ...
+
+    def reconcile(self, record: ModelInvocationRecord) -> ModelAdapterResult: ...
+
+
+class CallableModelAdapter:
+    """Adapt injected provider callables to the model planning Seam."""
+
+    def __init__(
+        self,
+        configuration: ModelConfiguration,
+        invoke: Callable[[PlanningRequest], ModelAdapterResult],
+        reconcile: Callable[[ModelInvocationRecord], ModelAdapterResult],
+    ) -> None:
+        self.configuration = configuration
+        self._invoke = invoke
+        self._reconcile = reconcile
+
+    def invoke(self, request: PlanningRequest) -> ModelAdapterResult:
+        return self._invoke(request)
+
+    def reconcile(self, record: ModelInvocationRecord) -> ModelAdapterResult:
+        return self._reconcile(record)
+
+
+class DeterministicFakeModelAdapter:
+    """Script model outcomes for hermetic CI without credentials or network."""
+
+    def __init__(
+        self,
+        *,
+        invoke_results: tuple[ModelAdapterResult, ...],
+        reconcile_results: tuple[ModelAdapterResult, ...] = (),
+        configuration: ModelConfiguration | None = None,
+    ) -> None:
+        if not invoke_results:
+            raise ModelPlanningError(
+                "deterministic fake requires at least one invoke result"
+            )
+        self.configuration = configuration or ModelConfiguration.freeze(
+            provider="deterministic-fake",
+            model="bounded-planner-v1",
+            parameters={"temperature": 0, "seed": 1},
+            timeout_seconds=1.0,
+        )
+        self._invoke_results = invoke_results
+        self._reconcile_results = reconcile_results or invoke_results
+        self.invoke_calls = 0
+        self.reconcile_calls = 0
+
+    @staticmethod
+    def _select(
+        results: tuple[ModelAdapterResult, ...],
+        index: int,
+    ) -> ModelAdapterResult:
+        return results[min(index, len(results) - 1)]
+
+    def invoke(self, request: PlanningRequest) -> ModelAdapterResult:
+        result = self._select(self._invoke_results, self.invoke_calls)
+        self.invoke_calls += 1
+        return result
+
+    def reconcile(self, record: ModelInvocationRecord) -> ModelAdapterResult:
+        result = self._select(self._reconcile_results, self.reconcile_calls)
+        self.reconcile_calls += 1
+        return result
+
+
+@dataclass(frozen=True)
+class ModelPlanningClaim:
+    record: ModelInvocationRecord
+    created: bool
+
+
+class ModelPlanningRepository(Protocol):
+    def claim(self, record: ModelInvocationRecord) -> ModelPlanningClaim: ...
+
+    def load_invocation(self, invocation_id: str) -> ModelInvocationRecord | None: ...
+
+    def load_revision(self, revision_id: str) -> PlanRevision | None: ...
+
+    def list_revisions(self) -> tuple[PlanRevision, ...]: ...
+
+    def resolve(self, record: ModelInvocationRecord, revision: PlanRevision | None) -> None: ...
+
+
+class InMemoryModelPlanningRepository:
+    def __init__(self) -> None:
+        self._invocations: dict[str, ModelInvocationRecord] = {}
+        self._revisions: dict[str, PlanRevision] = {}
+        self._lock = threading.RLock()
+
+    def claim(self, record: ModelInvocationRecord) -> ModelPlanningClaim:
+        with self._lock:
+            current = self._invocations.get(record.invocation_id)
+            if current is not None:
+                return ModelPlanningClaim(current, created=False)
+            self._invocations[record.invocation_id] = record
+            return ModelPlanningClaim(record, created=True)
+
+    def load_invocation(self, invocation_id: str) -> ModelInvocationRecord | None:
+        with self._lock:
+            return self._invocations.get(invocation_id)
+
+    def load_revision(self, revision_id: str) -> PlanRevision | None:
+        with self._lock:
+            return self._revisions.get(revision_id)
+
+    def list_revisions(self) -> tuple[PlanRevision, ...]:
+        with self._lock:
+            return tuple(
+                self._revisions[key] for key in sorted(self._revisions)
+            )
+
+    def resolve(self, record: ModelInvocationRecord, revision: PlanRevision | None) -> None:
+        with self._lock:
+            if revision is not None:
+                self._revisions.setdefault(revision.revision_id, revision)
+            self._invocations[record.invocation_id] = record
+
+
+class SQLiteModelPlanningRepository:
+    """Persist model invocation and immutable PlanRevision records locally."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=30)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            connection.close()
+            raise
+        return connection
+
+    @contextmanager
+    def _connection(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    def _initialize(self) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS model_planning_invocations ("
+                "invocation_id TEXT PRIMARY KEY, document_json TEXT NOT NULL, "
+                "updated_at REAL NOT NULL)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS model_planning_revisions ("
+                "revision_id TEXT PRIMARY KEY, document_json TEXT NOT NULL, "
+                "created_at REAL NOT NULL)"
+            )
+
+    @staticmethod
+    def _record(row: sqlite3.Row | None) -> ModelInvocationRecord | None:
+        if row is None:
+            return None
+        value = json.loads(str(row["document_json"]))
+        if not isinstance(value, Mapping):
+            raise ModelPlanningError("persisted ModelInvocationRecord is invalid")
+        return ModelInvocationRecord.from_public_dict(value)
+
+    @staticmethod
+    def _revision(row: sqlite3.Row | None) -> PlanRevision | None:
+        if row is None:
+            return None
+        value = json.loads(str(row["document_json"]))
+        if not isinstance(value, Mapping):
+            raise ModelPlanningError("persisted PlanRevision is invalid")
+        return PlanRevision.from_public_dict(value)
+
+    def claim(self, record: ModelInvocationRecord) -> ModelPlanningClaim:
+        document = _json_bytes(record.to_public_dict()).decode("ascii")
+        with self._lock, self._connection() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO model_planning_invocations "
+                "(invocation_id, document_json, updated_at) VALUES (?, ?, ?)",
+                (record.invocation_id, document, record.updated_at),
+            )
+            row = connection.execute(
+                "SELECT document_json FROM model_planning_invocations "
+                "WHERE invocation_id = ?",
+                (record.invocation_id,),
+            ).fetchone()
+        selected = self._record(row)
+        if selected is None:
+            raise ModelPlanningError("model invocation claim was not persisted")
+        return ModelPlanningClaim(selected, created=cursor.rowcount == 1)
+
+    def load_invocation(self, invocation_id: str) -> ModelInvocationRecord | None:
+        with self._lock, self._connection() as connection:
+            row = connection.execute(
+                "SELECT document_json FROM model_planning_invocations "
+                "WHERE invocation_id = ?",
+                (invocation_id,),
+            ).fetchone()
+        return self._record(row)
+
+    def load_revision(self, revision_id: str) -> PlanRevision | None:
+        with self._lock, self._connection() as connection:
+            row = connection.execute(
+                "SELECT document_json FROM model_planning_revisions "
+                "WHERE revision_id = ?",
+                (revision_id,),
+            ).fetchone()
+        return self._revision(row)
+
+    def list_revisions(self) -> tuple[PlanRevision, ...]:
+        with self._lock, self._connection() as connection:
+            rows = connection.execute(
+                "SELECT document_json FROM model_planning_revisions "
+                "ORDER BY revision_id"
+            ).fetchall()
+        return tuple(
+            revision
+            for revision in (self._revision(row) for row in rows)
+            if revision is not None
+        )
+
+    def resolve(
+        self,
+        record: ModelInvocationRecord,
+        revision: PlanRevision | None,
+    ) -> None:
+        record_document = _json_bytes(record.to_public_dict()).decode("ascii")
+        revision_document = (
+            _json_bytes(revision.to_public_dict()).decode("ascii")
+            if revision is not None
+            else ""
+        )
+        with self._lock, self._connection() as connection:
+            current = connection.execute(
+                "SELECT document_json FROM model_planning_invocations "
+                "WHERE invocation_id = ?",
+                (record.invocation_id,),
+            ).fetchone()
+            if current is None:
+                raise ModelPlanningError("model invocation must be claimed before resolve")
+            if revision is not None:
+                existing = connection.execute(
+                    "SELECT document_json FROM model_planning_revisions "
+                    "WHERE revision_id = ?",
+                    (revision.revision_id,),
+                ).fetchone()
+                if existing is not None and str(existing["document_json"]) != revision_document:
+                    raise ModelInvocationConflict(
+                        "PlanRevision identity is already bound to different content"
+                    )
+                connection.execute(
+                    "INSERT OR IGNORE INTO model_planning_revisions "
+                    "(revision_id, document_json, created_at) VALUES (?, ?, ?)",
+                    (revision.revision_id, revision_document, revision.created_at),
+                )
+            connection.execute(
+                "UPDATE model_planning_invocations SET document_json = ?, updated_at = ? "
+                "WHERE invocation_id = ?",
+                (record_document, record.updated_at, record.invocation_id),
+            )
+
+
+@dataclass(frozen=True)
+class PlanningDecision:
+    status: str
+    record: ModelInvocationRecord
+    revision: PlanRevision | None
+    reused: bool = False
+    reconciled: bool = False
+
+
+class PlanResolver:
+    """Record, reconcile, validate, and pin one model planning Effect."""
+
+    def __init__(
+        self,
+        repository: ModelPlanningRepository,
+        adapter: ModelAdapter,
+        *,
+        policy: PlanPolicy,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.repository = repository
+        self.adapter = adapter
+        self.policy = policy
+        self._clock = clock
+        self._lock = threading.RLock()
+
+    def resolve(self, request: PlanningRequest) -> PlanningDecision:
+        with self._lock:
+            now = float(self._clock())
+            configuration = self.adapter.configuration
+            input_digest = _fingerprint(
+                {
+                    "planning_input": request.planning_input.to_public_dict(),
+                    "provider_config_digest": configuration.digest,
+                    "policy_digest": self.policy.digest,
+                    "ir_version": BOUNDED_PLAN_IR_VERSION,
+                }
+            )
+            candidate = ModelInvocationRecord(
+                invocation_id=request.invocation_id,
+                run_id=request.run_id,
+                slot_id=request.slot_id,
+                generation=request.generation,
+                input_digest=input_digest,
+                provider=configuration.provider,
+                model=configuration.model,
+                provider_config=configuration.to_public_dict(),
+                provider_config_digest=configuration.digest,
+                policy_digest=self.policy.digest,
+                status="running",
+                effect_kind="non_deterministic",
+                result_digest="",
+                plan_revision_id="",
+                error_code="",
+                error_message="",
+                started_at=now,
+                updated_at=now,
+            )
+            claim = self.repository.claim(candidate)
+            record = claim.record
+            if record.binding_digest != candidate.binding_digest:
+                raise ModelInvocationConflict(
+                    "model invocation identity is already bound to different input or configuration"
+                )
+            if record.status == "succeeded":
+                revision = self.repository.load_revision(record.plan_revision_id)
+                if revision is None:
+                    raise ModelPlanningError("pinned PlanRevision is unavailable")
+                return PlanningDecision("accepted", record, revision, reused=True)
+            if record.status in {"failed", "rejected"}:
+                return PlanningDecision(
+                    record.status,
+                    record,
+                    None,
+                    reused=True,
+                )
+            if claim.created:
+                try:
+                    result = self.adapter.invoke(request)
+                except TimeoutError as exc:
+                    result = ModelAdapterResult.unknown(str(exc))
+                return self._settle(record, result, reconciled=False)
+            try:
+                result = self.adapter.reconcile(record)
+            except TimeoutError as exc:
+                result = ModelAdapterResult.unknown(str(exc))
+            return self._settle(record, result, reconciled=True)
+
+    def _settle(
+        self,
+        record: ModelInvocationRecord,
+        result: ModelAdapterResult,
+        *,
+        reconciled: bool,
+    ) -> PlanningDecision:
+        now = float(self._clock())
+        if result.status != "succeeded" or result.proposal is None:
+            selected = replace(
+                record,
+                status=result.status,
+                error_code=result.error_code,
+                error_message=result.error_message,
+                updated_at=now,
+            )
+            self.repository.resolve(selected, None)
+            return PlanningDecision(result.status, selected, None, reconciled=reconciled)
+        raw_proposal_bytes = len(_json_bytes(result.proposal))
+        if raw_proposal_bytes > min(
+            self.policy.max_serialized_bytes,
+            self.adapter.configuration.max_output_bytes,
+        ):
+            selected = replace(
+                record,
+                status="rejected",
+                error_code="plan_proposal_rejected",
+                error_message="PlanProposal exceeds the serialized byte budget",
+                updated_at=now,
+            )
+            self.repository.resolve(selected, None)
+            return PlanningDecision(
+                "rejected",
+                selected,
+                None,
+                reconciled=reconciled,
+            )
+        try:
+            proposal = PlanProposal.from_mapping(result.proposal).bind(record)
+            self._validate_proposal(proposal, run_id=record.run_id)
+        except (ModelPlanningError, TypeError, ValueError) as exc:
+            selected = replace(
+                record,
+                status="rejected",
+                error_code="plan_proposal_rejected",
+                error_message=str(exc),
+                updated_at=now,
+            )
+            self.repository.resolve(selected, None)
+            return PlanningDecision(
+                "rejected",
+                selected,
+                None,
+                reconciled=reconciled,
+            )
+        proposal_digest = proposal.digest
+        revision_id = "plan-revision:" + proposal_digest.removeprefix("sha256:")[:48]
+        revision = PlanRevision(
+            revision_id=revision_id,
+            run_id=record.run_id,
+            slot_id=record.slot_id,
+            generation=record.generation,
+            invocation_id=record.invocation_id,
+            input_digest=record.input_digest,
+            provider_config_digest=record.provider_config_digest,
+            policy_digest=record.policy_digest,
+            proposal_digest=proposal_digest,
+            proposal=proposal,
+            status="pinned",
+            ir_version=BOUNDED_PLAN_IR_VERSION,
+            error_code="",
+            error_message="",
+            created_at=now,
+        )
+        selected = replace(
+            record,
+            status="succeeded",
+            result_digest=proposal_digest,
+            plan_revision_id=revision_id,
+            error_code="",
+            error_message="",
+            updated_at=now,
+        )
+        self.repository.resolve(selected, revision)
+        return PlanningDecision(
+            status="accepted",
+            record=selected,
+            revision=revision,
+            reconciled=reconciled,
+        )
+
+    def _validate_proposal(self, proposal: PlanProposal, *, run_id: str) -> None:
+        if proposal.run_id != run_id:
+            raise PlanProposalRejected("PlanProposal belongs to another Run")
+        if len(_json_bytes(proposal.to_public_dict())) > self.policy.max_serialized_bytes:
+            raise PlanProposalRejected("PlanProposal exceeds the serialized byte budget")
+        if len(proposal.nodes) > self.policy.max_nodes:
+            raise PlanProposalRejected("PlanProposal exceeds the node budget")
+        nodes: dict[str, PlanNode] = {}
+        for node in proposal.nodes:
+            if node.node_id in nodes:
+                raise PlanProposalRejected(f"duplicate Plan node: {node.node_id}")
+            if node.kind not in _SUPPORTED_NODE_KINDS:
+                raise PlanProposalRejected(f"unsupported Plan node kind: {node.kind}")
+            selected_fields = {
+                "children": bool(node.children),
+                "branches": bool(node.branches),
+                "body": bool(node.body),
+                "action": bool(node.action),
+                "repeat_max": bool(node.repeat_max),
+                "timer_seconds": bool(node.timer_seconds),
+                "gate_schema": bool(node.gate_schema),
+                "subflow": bool(node.subflow),
+                "subflow_version": bool(node.subflow_version),
+                "compensation": bool(node.compensation),
+                "compensation_only": node.compensation_only,
+            }
+            allowed_fields = {
+                "action": {"action", "compensation", "compensation_only"},
+                "sequence": {"children"},
+                "choice": {"branches"},
+                "parallel": {"branches"},
+                "repeat": {"body", "repeat_max"},
+                "timer": {"timer_seconds"},
+                "gate": {"gate_schema"},
+                "subflow": {"subflow", "subflow_version"},
+            }[node.kind]
+            invalid_fields = sorted(
+                name
+                for name, present in selected_fields.items()
+                if present and name not in allowed_fields
+            )
+            if invalid_fields:
+                raise PlanProposalRejected(
+                    f"Plan node {node.node_id} has fields invalid for {node.kind}: "
+                    + ", ".join(invalid_fields)
+                )
+            nodes[node.node_id] = node
+        if proposal.root_node_id not in nodes:
+            raise PlanProposalRejected("PlanProposal root reference is invalid")
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def require(reference: str, owner: str) -> PlanNode:
+            selected = nodes.get(reference)
+            if selected is None:
+                raise PlanProposalRejected(
+                    f"Plan node {owner} references unknown node {reference}"
+                )
+            return selected
+
+        def walk(node_id: str, depth: int, *, compensation_path: bool = False) -> int:
+            if depth > self.policy.max_depth:
+                raise PlanProposalRejected("PlanProposal exceeds the depth budget")
+            if node_id in visiting:
+                raise PlanProposalRejected("PlanProposal contains a cycle")
+            node = require(node_id, node_id)
+            if node.compensation_only and not compensation_path:
+                raise PlanProposalRejected(
+                    "compensation-only action is reachable from normal execution"
+                )
+            if node_id in visited:
+                return 0
+            visiting.add(node_id)
+            expanded = 1
+            if node.kind == "action":
+                if node.action not in self.policy.allowed_actions:
+                    raise PlanProposalRejected(f"unknown Plan action: {node.action}")
+                if node.compensation:
+                    compensation = require(node.compensation, node.node_id)
+                    if compensation.kind != "action" or not compensation.compensation_only:
+                        raise PlanProposalRejected(
+                            "compensation must reference a compensation-only action"
+                        )
+                    expanded += walk(
+                        compensation.node_id,
+                        depth + 1,
+                        compensation_path=True,
+                    )
+            elif node.kind == "sequence":
+                if not node.children:
+                    raise PlanProposalRejected("sequence requires child references")
+                expanded += sum(walk(child, depth + 1) for child in node.children)
+            elif node.kind == "choice":
+                if len(node.branches) < 2:
+                    raise PlanProposalRejected("choice requires at least two branches")
+                expanded += max(walk(branch, depth + 1) for branch in node.branches)
+            elif node.kind == "parallel":
+                if not node.branches or len(node.branches) > self.policy.max_parallel_width:
+                    raise PlanProposalRejected("parallel width exceeds its bound")
+                expanded += sum(walk(branch, depth + 1) for branch in node.branches)
+            elif node.kind == "repeat":
+                if not 1 <= node.repeat_max <= self.policy.max_repeat:
+                    raise PlanProposalRejected("repeat must have a bounded maximum")
+                body = require(node.body, node.node_id)
+                expanded += node.repeat_max * walk(body.node_id, depth + 1)
+            elif node.kind == "timer":
+                if not 1 <= node.timer_seconds <= self.policy.max_timer_seconds:
+                    raise PlanProposalRejected("timer exceeds its bound")
+            elif node.kind == "gate":
+                if node.gate_schema not in self.policy.allowed_gate_schemas:
+                    raise PlanProposalRejected(
+                        f"unknown Gate schema: {node.gate_schema}"
+                    )
+            elif node.kind == "subflow":
+                versions = self.policy.subflows.get(node.subflow, frozenset())
+                if node.subflow_version not in versions:
+                    raise PlanProposalRejected(
+                        "subflow reference is unknown or not version-pinned"
+                    )
+            visiting.remove(node_id)
+            visited.add(node_id)
+            if expanded > self.policy.max_expanded_steps:
+                raise PlanProposalRejected("PlanProposal exceeds the expanded-step budget")
+            return expanded
+
+        walk(proposal.root_node_id, 1)
+        if visited != set(nodes):
+            unreachable = ", ".join(sorted(set(nodes) - visited))
+            raise PlanProposalRejected(f"PlanProposal has unreachable nodes: {unreachable}")

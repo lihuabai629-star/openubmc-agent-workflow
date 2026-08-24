@@ -48,6 +48,9 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Session Outcome** | A governance projection generated from a terminal Outcome for review and possible promotion. |
 | **Target epoch** | A monotonic identity for the observed target state used to reject stale verification and unsafe replay. |
 | **Reconcile** | Read-first recovery of an unknown Effect using the same durable identity; it never silently creates a replacement operation. |
+| **PlanResolver** | An isolated Runtime-internal experimental Module that records one model planning Effect, validates a bounded proposal, and freezes an inert PlanRevision. It is not composed into production Run execution. |
+| **PlanProposal** | Versioned model output bound to one invocation and Run. It has no authority until Runtime validation accepts its bounded IR. |
+| **PlanRevision** | An immutable, version-pinned validated proposal. It remains inert data; only RunEngine could ever pin and interpret it. |
 
 ## Ownership rules
 
@@ -65,6 +68,7 @@ delegate native Run transitions to, then be deleted in favour of, the listed own
 | Artifact bytes, digest verification, retention, and access policy | `ArtifactStore` |
 | Agent-visible redaction and bounded projection | `AgentGateway` |
 | Review, approval, promotion, and lifecycle governance | Operator / CI Plane |
+| Experimental model invocation, proposal validation, and inert revision persistence | `PlanResolver` |
 
 No second Module may independently write the same fact. Compatibility code may translate old
 commands and records, but it must delegate the authoritative transition to the owning Module.
@@ -92,6 +96,8 @@ commands and records, but it must delegate the authoritative transition to the o
   not enter the domain model.
 - Outbox, Inbox, remote Workers, and distributed fencing are introduced only when an actual
   cross-process or active-active seam exists.
+- Model-planning output is always a proposal. The isolated prototype cannot answer a Gate, invoke a
+  Domain Adapter, authorize mutation, write Run state, or form an Outcome.
 
 ## Related decisions
 
