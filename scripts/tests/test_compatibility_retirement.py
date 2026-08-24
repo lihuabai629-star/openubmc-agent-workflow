@@ -428,6 +428,46 @@ class CompatibilityRetirementTests(unittest.TestCase):
                         release_gate("b" * 40),
                     )
 
+    def test_digest_valid_increment_rejects_missing_delta_metrics(self) -> None:
+        baseline = retirement.create_baseline(
+            runtime_status(),
+            source_commit="a" * 40,
+            captured_at=1_700_001_000.0,
+        )
+        increment = retirement.create_increment(
+            baseline,
+            runtime_status(),
+            source_commit="b" * 40,
+            captured_at=1_700_101_000.0,
+        )
+        cases = (
+            ("operation_deltas", {}),
+            (
+                "feature_deltas",
+                {
+                    key: value
+                    for key, value in increment["feature_deltas"].items()
+                    if key != "phase_record"
+                },
+            ),
+        )
+        for mapping, value in cases:
+            with self.subTest(mapping=mapping):
+                tampered = json.loads(json.dumps(increment))
+                tampered[mapping] = value
+                tampered["evidence_digest"] = digest(
+                    {
+                        key: item
+                        for key, item in tampered.items()
+                        if key != "evidence_digest"
+                    }
+                )
+                with self.assertRaisesRegex(ValueError, "must match telemetry counts"):
+                    retirement.evaluate_retirement(
+                        tampered,
+                        release_gate("b" * 40),
+                    )
+
     def test_tampered_or_mismatched_qualification_is_rejected(self) -> None:
         baseline = retirement.create_baseline(
             runtime_status(),

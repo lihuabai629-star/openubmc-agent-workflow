@@ -447,7 +447,7 @@ def evaluate_retirement(
     telemetry = increment.get("telemetry")
     if not isinstance(telemetry, Mapping):
         raise ValueError("compatibility increment telemetry must be an object")
-    _normalize_telemetry(telemetry)
+    normalized_telemetry = _normalize_telemetry(telemetry)
     operation_deltas = _nonnegative_deltas(
         increment.get("operation_deltas"),
         name="operation_deltas",
@@ -456,6 +456,14 @@ def evaluate_retirement(
         increment.get("feature_deltas"),
         name="feature_deltas",
     )
+    if set(operation_deltas) != set(normalized_telemetry["operation_counts"]):
+        raise ValueError(
+            "compatibility increment operation_deltas must match telemetry counts"
+        )
+    if set(feature_deltas) != set(normalized_telemetry["feature_counts"]):
+        raise ValueError(
+            "compatibility increment feature_deltas must match telemetry counts"
+        )
     validated_increment = dict(increment)
     validated_increment["operation_deltas"] = operation_deltas
     validated_increment["feature_deltas"] = feature_deltas
