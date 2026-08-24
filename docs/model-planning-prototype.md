@@ -11,12 +11,11 @@ leverage over pinned static `WorkflowDefinitions`. Keep the implementation isola
 internal `PlanResolver.resolve()` Interface. Do not inject it into `RunEngine`, add Agent
 operations, or claim production adoption.
 
-The deterministic paired evaluation preserves all architecture invariants and correctly accepts
-two valid proposals while rejecting four invalid proposals. It reports zero false accepts and zero
-false rejects. The executed static resolver produces six valid pinned definitions without model
-calls, while the candidate produces two valid revisions and rejects four invalid model outputs.
-It therefore shows containment but no plan-validity advantage, so its verdict is `isolate` rather
-than `advance`.
+The deterministic paired evaluation preserves all architecture invariants and runs both paths on
+six equivalent tasks. The static resolver and isolated candidate each produce six valid pinned
+plans, but only the candidate requires a model call for every task. A separate containment corpus
+rejects four invalid proposals with zero false accepts. The experiment therefore shows containment
+but no plan-validity advantage, so its verdict is `isolate` rather than `advance`.
 
 Run the evaluation with:
 
@@ -120,15 +119,17 @@ failure, timeout, unknown, and reconcile results. Behavior coverage includes:
 - schema, action, construct, reference, and budget rejection;
 - same-identity replay and different-input conflict;
 - timeout-to-unknown and same-identity reconcile;
+- first-terminal-writer settlement so a late unknown cannot erase an accepted revision;
 - SQLite restart for both accepted and unknown invocations;
+- persisted revision rejection when nested proposal bindings contradict the revision;
 - complete bounded IR acceptance;
 - unchanged `observe`/`execute` exposure;
 - proof that an accepted revision cannot bypass a Gate or fresh terminal verification.
 
-The paired evaluation compares six labeled planning cases. Static workflows remain valid with no
-model calls. The isolated candidate accepts both valid cases, rejects all four invalid cases, and
-keeps accepted-plan validity at 100%, but produces fewer valid revisions across the paired corpus
-than the executed static resolver. This is useful containment evidence, not adoption evidence.
+The paired evaluation compares six equivalent planning tasks. Static workflows and isolated model
+planning each produce a valid pinned plan for all six tasks, while the candidate adds six model
+calls and shows no validity improvement. Four deliberately invalid outputs are evaluated
+separately and all are rejected. This is useful containment evidence, not adoption evidence.
 
 ## Adoption gate
 

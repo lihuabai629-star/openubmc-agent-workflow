@@ -12,9 +12,10 @@ Runtime authority. Issue #65 tested whether a Runtime-managed model planning Eff
 creating a second state authority.
 
 The prototype demonstrates safe identity binding, unknown reconciliation, bounded validation, and
-restart reuse. Its deterministic paired evaluation executes the static workflow resolver for every
-case and finds no plan-validity advantage: static definitions are valid in six of six pairs without
-model calls, while the candidate creates two valid revisions and rejects four invalid outputs.
+restart reuse. Its deterministic paired evaluation executes the static workflow resolver and the
+candidate on six equivalent tasks. Both paths produce valid pinned plans in six of six pairs, while
+the candidate requires one model call per task. A separate containment corpus rejects four invalid
+outputs.
 
 ## Proposed decision
 

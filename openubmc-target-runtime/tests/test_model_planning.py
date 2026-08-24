@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 
 
@@ -14,20 +15,27 @@ if str(TEST_ROOT) not in sys.path:
     sys.path.insert(0, str(TEST_ROOT))
 
 from openubmc_target_runtime.model_planning import (  # noqa: E402
+    DeterministicFakeModelAdapter,
     InMemoryModelPlanningRepository,
     ModelAdapterResult,
     ModelConfiguration,
     ModelInvocationConflict,
+    ModelPlanningError,
     PlanResolver,
     PlanPolicy,
     PlanProposal,
+    PlanRevision,
     PlanningInput,
     PlanningRequest,
     SQLiteModelPlanningRepository,
 )
 from openubmc_target_runtime.mcp import RuntimeMcpService  # noqa: E402
-from openubmc_target_runtime.semantic_runtime import ResumeRun, StartRun  # noqa: E402
-from test_agent_gateway import SemanticBackend  # noqa: E402
+from test_agent_gateway import (  # noqa: E402
+    MissingFreshEpochSemanticBackend,
+    SemanticBackend,
+    artifact_ref,
+    gate_binding,
+)
 
 
 def proposal_mapping(
@@ -158,31 +166,33 @@ def complete_ir_proposal(run_id: str = "run-plan-1") -> PlanProposal:
     )
 
 
-class DeterministicModelAdapter:
+def default_policy() -> PlanPolicy:
+    return PlanPolicy.freeze(
+        allowed_actions={"inspect.target", "upgrade.component"},
+        allowed_gate_schemas={"upgrade-approval/v1"},
+        allowed_subflows={"diagnose": {"v1"}},
+    )
+
+
+class DeterministicModelAdapter(DeterministicFakeModelAdapter):
     def __init__(
         self,
         result: ModelAdapterResult,
         *,
         reconcile_result: ModelAdapterResult | None = None,
     ) -> None:
-        self.configuration = ModelConfiguration.freeze(
-            provider="deterministic-fake",
-            model="planner-v1",
-            parameters={"temperature": 0, "seed": 7},
-            timeout_seconds=3.0,
-        )
         self.result = result
-        self.reconcile_result = reconcile_result or result
-        self.invoke_calls = 0
-        self.reconcile_calls = 0
-
-    def invoke(self, request):
-        self.invoke_calls += 1
-        return self.result
-
-    def reconcile(self, record):
-        self.reconcile_calls += 1
-        return self.reconcile_result
+        selected_reconcile = reconcile_result or result
+        super().__init__(
+            invoke_results=(result,),
+            reconcile_results=(selected_reconcile,),
+            configuration=ModelConfiguration.freeze(
+                provider="deterministic-fake",
+                model="planner-v1",
+                parameters={"temperature": 0, "seed": 7},
+                timeout_seconds=3.0,
+            ),
+        )
 
 
 class TimeoutThenRecoverAdapter(DeterministicModelAdapter):
@@ -221,6 +231,19 @@ class ClaimObservingAdapter(DeterministicModelAdapter):
         return super().invoke(request)
 
 
+class BlockingUnknownAdapter(DeterministicModelAdapter):
+    def __init__(self) -> None:
+        super().__init__(ModelAdapterResult.unknown("late provider timeout"))
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def invoke(self, request):
+        self.invoke_calls += 1
+        self.started.set()
+        self.release.wait(timeout=2)
+        return self.result
+
+
 class ModelPlanningRuntimeTests(unittest.TestCase):
     def test_valid_proposal_is_frozen_as_a_pinned_revision(self) -> None:
         adapter = DeterministicModelAdapter(
@@ -229,11 +252,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         runtime = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
             clock=lambda: 100.0,
         )
 
@@ -278,11 +297,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         decision = PlanResolver(
             repository,
             adapter,
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
         ).resolve(
             PlanningRequest(
                 run_id="run-plan-1",
@@ -304,11 +319,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         runtime = PlanResolver(
             repository,
             adapter,
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
         )
 
         decision = runtime.resolve(
@@ -334,11 +345,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         runtime = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
         )
         request = PlanningRequest(
             run_id="run-plan-1",
@@ -355,16 +362,96 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         self.assertEqual(adapter.invoke_calls, 1)
         self.assertEqual(adapter.reconcile_calls, 1)
 
+    def test_late_unknown_cannot_overwrite_a_concurrent_accepted_revision(self) -> None:
+        repository = InMemoryModelPlanningRepository()
+        request = PlanningRequest(
+            run_id="run-plan-1",
+            slot_id="concurrent-settlement",
+            planning_input=PlanningInput(objective="settle one provider identity"),
+        )
+        invoking_adapter = BlockingUnknownAdapter()
+        invoking_resolver = PlanResolver(
+            repository,
+            invoking_adapter,
+            policy=default_policy(),
+        )
+        decisions: list[object] = []
+
+        worker = threading.Thread(
+            target=lambda: decisions.append(invoking_resolver.resolve(request))
+        )
+        worker.start()
+        self.assertTrue(invoking_adapter.started.wait(timeout=1))
+        recovered = PlanResolver(
+            repository,
+            DeterministicModelAdapter(
+                ModelAdapterResult.failed("unused", "unused"),
+                reconcile_result=ModelAdapterResult.succeeded(valid_proposal()),
+            ),
+            policy=default_policy(),
+        ).resolve(request)
+        invoking_adapter.release.set()
+        worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(recovered.status, "accepted")
+        self.assertEqual(decisions[0].status, "accepted")
+        persisted = repository.load_invocation(recovered.record.invocation_id)
+        self.assertEqual(persisted.status, "succeeded")
+        self.assertEqual(persisted.plan_revision_id, recovered.revision.revision_id)
+        self.assertEqual(repository.list_revisions(), (recovered.revision,))
+
+    def test_sqlite_late_unknown_cannot_overwrite_an_accepted_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            database = Path(raw) / "concurrent-runtime.sqlite3"
+            request = PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="sqlite-concurrent-settlement",
+                planning_input=PlanningInput(
+                    objective="settle one persisted provider identity"
+                ),
+            )
+            invoking_adapter = BlockingUnknownAdapter()
+            decisions: list[object] = []
+            worker = threading.Thread(
+                target=lambda: decisions.append(
+                    PlanResolver(
+                        SQLiteModelPlanningRepository(database),
+                        invoking_adapter,
+                        policy=default_policy(),
+                    ).resolve(request)
+                )
+            )
+            worker.start()
+            self.assertTrue(invoking_adapter.started.wait(timeout=1))
+            repository = SQLiteModelPlanningRepository(database)
+            recovered = PlanResolver(
+                repository,
+                DeterministicModelAdapter(
+                    ModelAdapterResult.failed("unused", "unused"),
+                    reconcile_result=ModelAdapterResult.succeeded(valid_proposal()),
+                ),
+                policy=default_policy(),
+            ).resolve(request)
+            invoking_adapter.release.set()
+            worker.join(timeout=2)
+
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(recovered.status, "accepted")
+            self.assertEqual(decisions[0].status, "accepted")
+            persisted = repository.load_invocation(recovered.record.invocation_id)
+            self.assertEqual(persisted.status, "succeeded")
+            self.assertEqual(
+                repository.load_revision(persisted.plan_revision_id),
+                recovered.revision,
+            )
+
     def test_timeout_exception_is_persisted_as_unknown_then_reconciled(self) -> None:
         adapter = TimeoutThenRecoverAdapter()
         runtime = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
         )
         request = PlanningRequest(
             run_id="run-plan-1",
@@ -386,11 +473,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         runtime = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
         )
         request = PlanningRequest(
             run_id="run-plan-1",
@@ -414,11 +497,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         runtime = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
         )
         request = PlanningRequest(
             run_id="run-plan-1",
@@ -442,11 +521,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         runtime = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
         )
         original = PlanningRequest(
             run_id="run-plan-1",
@@ -476,11 +551,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
     def test_sqlite_restart_reuses_the_pinned_revision_without_a_model_call(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             database = Path(raw) / "runtime.sqlite3"
-            policy = PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            )
+            policy = default_policy()
             request = PlanningRequest(
                 run_id="run-plan-1",
                 slot_id="restart-replay",
@@ -516,11 +587,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
     def test_sqlite_restart_reconciles_an_unknown_invocation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             database = Path(raw) / "runtime.sqlite3"
-            policy = PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            )
+            policy = default_policy()
             request = PlanningRequest(
                 run_id="run-plan-1",
                 slot_id="restart-unknown",
@@ -558,11 +625,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         decision = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
         ).resolve(
             PlanningRequest(
                 run_id="run-plan-1",
@@ -694,11 +757,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
                 decision = PlanResolver(
                     InMemoryModelPlanningRepository(),
                     adapter,
-                    policy=PlanPolicy.freeze(
-                        allowed_actions={"inspect.target", "upgrade.component"},
-                        allowed_gate_schemas={"upgrade-approval/v1"},
-                        allowed_subflows={"diagnose": {"v1"}},
-                    ),
+                    policy=default_policy(),
                 ).resolve(
                     PlanningRequest(
                         run_id="run-plan-1",
@@ -715,11 +774,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             DeterministicModelAdapter(
                 ModelAdapterResult.succeeded(valid_proposal())
             ),
-            policy=PlanPolicy.freeze(
-                allowed_actions={"inspect.target", "upgrade.component"},
-                allowed_gate_schemas={"upgrade-approval/v1"},
-                allowed_subflows={"diagnose": {"v1"}},
-            ),
+            policy=default_policy(),
         ).resolve(
             PlanningRequest(
                 run_id="run-plan-1",
@@ -738,56 +793,143 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(decision.revision.proposal_digest, before)
 
-    def test_plan_revision_cannot_advance_a_gate_or_declare_terminal_success(self) -> None:
-        service = RuntimeMcpService(SemanticBackend())
-        try:
-            self.assertEqual(
-                [item["name"] for item in service.tool_definitions()],
-                ["observe", "execute"],
+    def test_persisted_revision_rejects_contradictory_proposal_bindings(self) -> None:
+        decision = PlanResolver(
+            InMemoryModelPlanningRepository(),
+            DeterministicModelAdapter(
+                ModelAdapterResult.succeeded(valid_proposal())
+            ),
+            policy=default_policy(),
+        ).resolve(
+            PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="contradictory-revision",
+                planning_input=PlanningInput(objective="pin consistent bindings"),
             )
-            before = service.semantic_runtime.execute(
-                StartRun(
-                    target="192.0.2.200",
-                    intent="diagnose-and-fix",
-                    purpose="prove planning has no Run authority",
-                    delivery_strategy="source-only",
-                    command_id="model-plan-authority-start",
-                    input_digest="",
-                ),
-                task_id="model-plan-authority",
-                operation_id="model-plan-authority-start",
-            )
-            decision = PlanResolver(
-                InMemoryModelPlanningRepository(),
-                DeterministicModelAdapter(
-                    ModelAdapterResult.succeeded(complete_ir_proposal(before.run_id))
-                ),
-                policy=PlanPolicy.freeze(
-                    allowed_actions={"inspect.target", "upgrade.component"},
-                    allowed_gate_schemas={"upgrade-approval/v1"},
-                    allowed_subflows={"diagnose": {"v1"}},
-                ),
-            ).resolve(
-                PlanningRequest(
-                    run_id=before.run_id,
-                    slot_id="authority-proof",
-                    planning_input=PlanningInput(
-                        objective="propose work without changing Run facts"
-                    ),
-                )
-            )
-            after = service.semantic_runtime.execute(
-                ResumeRun(before.run_id),
-                task_id="model-plan-authority",
-                operation_id="model-plan-authority-resume",
-            )
+        )
+        revision = decision.revision.to_public_dict()
+        cases = {
+            "invocation_id": "model-plan:" + "f" * 48,
+            "input_digest": "sha256:" + "1" * 64,
+            "provider_config_digest": "sha256:" + "2" * 64,
+            "provider_config": {
+                **revision["proposal"]["provider_config"],
+                "model": "contradictory-model",
+            },
+        }
 
-            self.assertEqual(decision.status, "accepted")
-            self.assertEqual(after.state, "waiting_response")
-            self.assertEqual(after.gate.gate_id, before.gate.gate_id)
-            self.assertIsNone(after.outcome)
-        finally:
-            service.close()
+        for name, value in cases.items():
+            with self.subTest(name=name):
+                tampered = dict(revision)
+                raw_proposal = dict(revision["proposal"])
+                raw_proposal[name] = value
+                tampered["proposal"] = raw_proposal
+                tampered["proposal_digest"] = PlanProposal.from_mapping(
+                    raw_proposal
+                ).digest
+                with self.assertRaisesRegex(
+                    ModelPlanningError,
+                    f"proposal {name}",
+                ):
+                    PlanRevision.from_public_dict(tampered)
+
+    def test_plan_revision_cannot_advance_a_gate_or_declare_terminal_success(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            service = RuntimeMcpService(MissingFreshEpochSemanticBackend())
+            try:
+                self.assertEqual(
+                    [item["name"] for item in service.tool_definitions()],
+                    ["observe", "execute"],
+                )
+                before = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.200",
+                        "intent": "diagnose-and-fix",
+                        "purpose": "prove planning has no Run authority",
+                        "delivery_strategy": "live-patch",
+                    },
+                    task_id="model-plan-authority",
+                    operation_id="model-plan-authority-start",
+                )
+                decision = PlanResolver(
+                    InMemoryModelPlanningRepository(),
+                    DeterministicModelAdapter(
+                        ModelAdapterResult.succeeded(
+                            complete_ir_proposal(before["run_id"])
+                        )
+                    ),
+                    policy=default_policy(),
+                ).resolve(
+                    PlanningRequest(
+                        run_id=before["run_id"],
+                        slot_id="authority-proof",
+                        planning_input=PlanningInput(
+                            objective="propose work without changing Run facts"
+                        ),
+                    )
+                )
+                after = service.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": before["run_id"]},
+                    task_id="model-plan-authority",
+                    operation_id="model-plan-authority-resume",
+                )
+
+                self.assertEqual(decision.status, "accepted")
+                self.assertEqual(after["state"], "waiting_response")
+                self.assertEqual(after["gate"]["gate_id"], before["gate"]["gate_id"])
+                self.assertIsNone(after["outcome"])
+
+                patch_file = Path(raw) / "model-planning-authority.lua"
+                patch_file.write_bytes(b"return 'authority-proof'\n")
+                final = service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": before["run_id"],
+                        **gate_binding(before),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair ready",
+                            "payload": {
+                                "source_revision": "authority-proof-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["fresh target verification"],
+                                "artifact_ref": artifact_ref(
+                                    patch_file,
+                                    kind="openubmc-live-patch",
+                                    target="192.0.2.200",
+                                    run_id=before["run_id"],
+                                ),
+                                "remote_path": "/opt/bmc/apps/fix.lua",
+                                "restart_scope": "skynet",
+                            },
+                        },
+                    },
+                    task_id="model-plan-authority",
+                    operation_id="model-plan-authority-respond",
+                )
+                for attempt in range(1, 4):
+                    if final["state"] != "running":
+                        break
+                    final = service.call_exposed_tool(
+                        "execute",
+                        {"kind": "resume", "run_id": before["run_id"]},
+                        task_id="model-plan-authority",
+                        operation_id=f"model-plan-authority-verify-{attempt}",
+                    )
+                projection = service._test.context_runtime.read_case(
+                    before["run_id"]
+                )
+
+                self.assertEqual(final["state"], "running")
+                self.assertIsNone(final["outcome"])
+                self.assertFalse(projection.get("run_outcome"))
+                self.assertIn("fresh target verification", final["next"])
+            finally:
+                service.close()
 
 
 if __name__ == "__main__":

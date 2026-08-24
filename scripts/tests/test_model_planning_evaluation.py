@@ -20,16 +20,16 @@ class ModelPlanningEvaluationTests(unittest.TestCase):
         self.assertFalse(result["demonstrated_leverage"])
         self.assertEqual(result["verdict"], "isolate")
         self.assertEqual(result["agent_interface"], ["observe", "execute"])
-        self.assertEqual(result["isolated_candidate"]["false_accepts"], 0)
-        self.assertEqual(result["isolated_candidate"]["false_rejects"], 0)
+        self.assertEqual(result["paired_tasks"], 6)
         self.assertEqual(result["static_workflow"]["evaluated"], 6)
         self.assertEqual(result["static_workflow"]["valid"], 6)
         self.assertEqual(result["static_workflow"]["invalid"], 0)
-        self.assertEqual(result["isolated_candidate"]["valid_revisions"], 2)
-        self.assertLess(
-            result["isolated_candidate"]["valid_plan_rate"],
-            result["static_workflow"]["valid_plan_rate"],
-        )
+        self.assertEqual(result["isolated_candidate"]["valid_revisions"], 6)
+        self.assertEqual(result["isolated_candidate"]["valid_plan_rate"], 1.0)
+        self.assertEqual(result["static_workflow"]["valid_plan_rate"], 1.0)
+        self.assertEqual(result["containment"]["evaluated"], 4)
+        self.assertEqual(result["containment"]["rejected"], 4)
+        self.assertEqual(result["containment"]["false_accepts"], 0)
 
 
 if __name__ == "__main__":
