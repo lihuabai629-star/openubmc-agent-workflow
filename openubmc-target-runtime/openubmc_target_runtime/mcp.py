@@ -2918,171 +2918,6 @@ class RuntimeMcpService:
                         "additionalProperties": False,
                     },
                 },
-                {
-                    "name": "phase_record",
-                    "description": (
-                        "Record one typed Developer or Build phase outcome in a Case."
-                    ),
-                    "inputSchema": {
-                        "type": "object",
-                        "required": [
-                            "case_id",
-                            "expected_revision",
-                            "idempotency_key",
-                            "phase_type",
-                            "producer_identity",
-                            "status",
-                            "summary",
-                        ],
-                        "properties": {
-                            "case_id": {"type": "string", "minLength": 1},
-                            "expected_revision": {"type": "integer", "minimum": 0},
-                            "idempotency_key": {"type": "string", "minLength": 1},
-                            "phase_type": {
-                                "type": "string",
-                                "enum": list(DEFAULT_PHASE_REGISTRY.names()),
-                            },
-                            "producer_identity": {"type": "string", "minLength": 1},
-                            "status": {
-                                "type": "string",
-                                "enum": ["running", "completed", "failed", "cancelled"],
-                            },
-                            "source_revision": {"type": "string", "minLength": 1},
-                            "summary": {"type": "string", "minLength": 1},
-                            "authored_files": {
-                                "type": "array",
-                                "items": {"type": "string", "minLength": 1},
-                            },
-                            "verification_plan": {
-                                "type": "array",
-                                "items": {"type": "string", "minLength": 1},
-                            },
-                            "design": {
-                                "type": "object",
-                                "description": (
-                                    "Structured solution design: what_changed, rationale, "
-                                    "invariants, tradeoffs, and rollback when applicable."
-                                ),
-                                "additionalProperties": True,
-                            },
-                            "validation_results": {
-                                "type": "array",
-                                "items": {
-                                    "oneOf": [
-                                        {"type": "string", "minLength": 1},
-                                        {"type": "object"},
-                                    ]
-                                },
-                            },
-                            "source_delivery": {
-                                "type": "string",
-                                "enum": [
-                                    "local_only",
-                                    "committed",
-                                    "pushed",
-                                    "pull_request",
-                                ],
-                                "default": "local_only",
-                            },
-                            "artifact_path": {"type": "string"},
-                            "artifact_sha256": {
-                                "type": "string",
-                                "pattern": "^[0-9a-fA-F]{64}$",
-                            },
-                            "product_version": {"type": "string"},
-                            "component_versions": {
-                                "type": "array",
-                                "items": {
-                                    "oneOf": [
-                                        {"type": "string", "minLength": 1},
-                                        {"type": "object"},
-                                    ]
-                                },
-                            },
-                            "build_commands": {
-                                "type": "array",
-                                "items": {"type": "string", "minLength": 1},
-                            },
-                            "build_logs": {
-                                "type": "array",
-                                "items": {"type": "string", "minLength": 1},
-                            },
-                            "known_gaps": {
-                                "type": "array",
-                                "items": {"type": "string", "minLength": 1},
-                            },
-                            "remote_path": {"type": "string"},
-                            "restart_scope": {"enum": ["none", "skynet"]},
-                        },
-                        "allOf": [
-                            {
-                                "if": {
-                                    "properties": {"status": {"const": "completed"}},
-                                    "required": ["status"],
-                                },
-                                "then": {"required": ["source_revision"]},
-                            }
-                        ],
-                        "additionalProperties": True,
-                    },
-                },
-                {
-                    "name": "workflow.advance",
-                    "description": (
-                        "Advance the current Case automatically to completion or a real "
-                        "input, external-phase, budget, cancellation, or mutation blocker."
-                    ),
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            **orchestration_properties,
-                            "case_id": {"type": "string", "minLength": 1},
-                            "ip": common_target,
-                            "expected_revision": {"type": "integer", "minimum": 0},
-                            "idempotency_key": {"type": "string", "minLength": 1},
-                            "max_steps": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 64,
-                                "default": 8,
-                            },
-                            "include_closeout_bundle": {
-                                "type": "boolean",
-                                "default": True,
-                                "description": (
-                                    "Return the immutable closeout JSON/Markdown "
-                                    "bundle manifest when the Case becomes terminal."
-                                ),
-                            },
-                        },
-                        "additionalProperties": True,
-                    },
-                },
-                {
-                    "name": "workflow.next",
-                    "description": (
-                        "Continue an existing Case to the next external gate or "
-                        "terminal result using its frozen targets, credentials, "
-                        "artifacts, authorization, and acceptance plan."
-                    ),
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "case_id": {"type": "string", "minLength": 1},
-                            "max_steps": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 64,
-                                "default": 8,
-                            },
-                            "include_closeout_bundle": {
-                                "type": "boolean",
-                                "default": True,
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                },
             ]
         )
         definitions.append({
@@ -3558,7 +3393,6 @@ class JsonRpcMcpEndpoint:
             "log_bundle_collect": "日志包采集",
             "live_patch_run": "Live Patch",
             "upgrade_run": "固件升级",
-            "workflow.next": "工作流继续",
             "runtime_status": "Target Runtime",
         }.get(tool_name, "MCP 工具调用")
 
@@ -3833,9 +3667,6 @@ class JsonRpcMcpEndpoint:
                 "evidence_read",
                 "case_close",
                 "case_forget",
-                "phase_record",
-                "workflow.advance",
-                "workflow.next",
             }:
                 structured = dict(value.envelope)
                 structured.update(dict(value))

@@ -362,9 +362,6 @@ DEFAULT_OPERATION_CONTRACTS = RuntimeOperationContractRegistry(
         _operator_contract("session_outcome_promote"),
         _operator_contract("case_close", lifecycle="close"),
         _operator_contract("case_forget", lifecycle="close"),
-        RuntimeOperationContract("phase_record", exposure="internal"),
-        RuntimeOperationContract("workflow.advance"),
-        RuntimeOperationContract("workflow.next", exposure="internal"),
         _operator_contract("runtime_status", lifecycle="status"),
     )
 )

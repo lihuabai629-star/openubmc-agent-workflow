@@ -255,29 +255,6 @@ class _RuntimeOperatorPort:
                 operation_id=operation_id,
                 case_id="",
             )
-        if name == "phase_record":
-            return self._context_runtime.phase_record(
-                descriptor,
-                arguments,
-                task_id=task_id,
-                operation_id=operation_id,
-            )
-        if name == "workflow.advance":
-            return self._context_runtime.workflow_advance(
-                descriptor,
-                arguments,
-                task_id=task_id,
-                operation_id=operation_id,
-                domain_invoker=domain_invoker,
-            )
-        if name == "workflow.next":
-            return self._context_runtime.workflow_next(
-                descriptor,
-                arguments,
-                task_id=task_id,
-                operation_id=operation_id,
-                domain_invoker=domain_invoker,
-            )
         return None
 
     def unbind_task(self, task_id: str) -> None:

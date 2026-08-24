@@ -230,9 +230,6 @@ class RuntimeMcpServiceTests(unittest.TestCase):
                 "session_outcome_promote",
                 "case_close",
                 "case_forget",
-                "phase_record",
-                "workflow.advance",
-                "workflow.next",
                 "runtime_status",
             ),
         )
@@ -250,6 +247,19 @@ class RuntimeMcpServiceTests(unittest.TestCase):
         status = self.service._test.catalog.require("runtime_status")
         self.assertIsNone(status.handler_name)
         self.assertEqual(status.lifecycle, "status")
+
+    def test_retired_writer_names_cannot_be_dispatched(self) -> None:
+        for name in ("phase_record", "workflow.advance", "workflow.next"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    ValueError, "unknown openUBMC domain tool"
+                ):
+                    self.service.call_tool(
+                        name,
+                        {},
+                        task_id="retired-writer-task",
+                        operation_id=f"retired-writer-{name}",
+                    )
 
     def test_catalog_rejects_duplicate_or_unbound_operations(self) -> None:
         descriptor = OperationDescriptor(
