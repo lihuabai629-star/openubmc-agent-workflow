@@ -354,16 +354,16 @@ Worker result 跨进程   ──► Inbox + idempotent result commit
 
 Inbox 在 Worker result 可能重复或跨进程返回时同时引入。Outbox/Inbox 不能替代 MutationJournal：前者保证消息至少一次交付和去重，后者解决真实设备副作用是否已经发生。
 
-### 建议遥测门槛（需 ADR 确认）
+### 建议遥测信号（需 ADR 确认）
 
-在至少 200 个 `execute` 样本和连续 14 天数据后，出现任一情况再评估 Agent 调用层的异步 Ack：
+Agent 调用层的异步 Ack 不设置预置等待天数或最小样本门槛。出现任一已测信号时再评估：
 
 - P95 accepted-to-Turn 超过最小支持 caller timeout 的 50%；
 - 至少 1% accepted 调用在 Turn 前断开或超时；
 - operation slot 利用率持续高于 75%，且 P95 queue delay 已明显影响 SLO；
 - 出现明确的独立发布、权限隔离或 active-active 部署要求。
 
-这些数字是准入建议，不是当前已测事实。没有遥测前不得以“未来可能扩容”为理由预建分布式控制平面。
+这些信号用于触发评估，不阻塞当前流程，也不是当前已测事实。没有遥测前不得以“未来可能扩容”为理由预建分布式控制平面。
 
 ## 8. Gate、Blocker 与 Incident
 
