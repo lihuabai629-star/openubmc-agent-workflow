@@ -2484,6 +2484,34 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertTrue(verified["promotable"], verified)
         self.assertRegex(verified["summary_sha256"], r"^[0-9a-f]{64}$")
 
+    def test_verify_summary_normalizes_real_execute_skill_paths(self) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        run_evidence = passing_execute_run_evidence(
+            schedule,
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+        for run in run_evidence["runs"]:
+            prompt = module._prompt(
+                Path(f"/qualification/{run['arm']}/openubmc-debug/SKILL.md"),
+                scenario="execute-source-only",
+                arm=run["arm"],
+            )
+            run["prompt"] = prompt
+            run["prompt_sha256"] = (
+                "sha256:" + hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            )
+
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=run_evidence,
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+
+        self.assertTrue(verified["promotable"], verified)
+
     def test_verify_summary_rejects_run_evidence_rebound_to_another_candidate(self) -> None:
         verified = verify_passing_summary(
             candidate_commit="b" * 40,
