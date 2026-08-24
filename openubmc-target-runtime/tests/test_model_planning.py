@@ -257,19 +257,19 @@ class BlockingUnknownAdapter(DeterministicModelAdapter):
         return self.result
 
 
-class ModelPlanningRuntimeTests(unittest.TestCase):
+class PlanResolverTests(unittest.TestCase):
     def test_valid_proposal_is_frozen_as_a_pinned_revision(self) -> None:
         adapter = DeterministicModelAdapter(
             ModelAdapterResult.succeeded(valid_proposal())
         )
-        runtime = PlanResolver(
+        resolver = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
             policy=default_policy(),
             clock=lambda: 100.0,
         )
 
-        decision = runtime.resolve(
+        decision = resolver.resolve(
             PlanningRequest(
                 run_id="run-plan-1",
                 planning_input=PlanningInput(
@@ -329,13 +329,13 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             ModelAdapterResult.succeeded(PlanProposal.from_mapping(raw))
         )
         repository = InMemoryModelPlanningRepository()
-        runtime = PlanResolver(
+        resolver = PlanResolver(
             repository,
             adapter,
             policy=default_policy(),
         )
 
-        decision = runtime.resolve(
+        decision = resolver.resolve(
             PlanningRequest(
                 run_id="run-plan-1",
                 slot_id="invalid-proposal",
@@ -449,7 +449,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             ModelAdapterResult.unknown("provider timed out after dispatch"),
             reconcile_result=ModelAdapterResult.succeeded(valid_proposal()),
         )
-        runtime = PlanResolver(
+        resolver = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
             policy=default_policy(),
@@ -460,8 +460,8 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             planning_input=PlanningInput(objective="recover one timed-out plan"),
         )
 
-        first = runtime.resolve(request)
-        second = runtime.resolve(request)
+        first = resolver.resolve(request)
+        second = resolver.resolve(request)
 
         self.assertEqual(first.status, "unknown")
         self.assertEqual(second.status, "accepted")
@@ -555,7 +555,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
 
     def test_timeout_exception_is_persisted_as_unknown_then_reconciled(self) -> None:
         adapter = TimeoutThenRecoverAdapter()
-        runtime = PlanResolver(
+        resolver = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
             policy=default_policy(),
@@ -566,8 +566,8 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             planning_input=PlanningInput(objective="recover the provider timeout"),
         )
 
-        unknown = runtime.resolve(request)
-        recovered = runtime.resolve(request)
+        unknown = resolver.resolve(request)
+        recovered = resolver.resolve(request)
 
         self.assertEqual(unknown.status, "unknown")
         self.assertEqual(unknown.record.error_code, "model_outcome_unknown")
@@ -577,7 +577,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
 
     def test_post_dispatch_connection_failure_is_unknown_not_running(self) -> None:
         adapter = ConnectionFailureThenRecoverAdapter()
-        runtime = PlanResolver(
+        resolver = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
             policy=default_policy(),
@@ -588,8 +588,8 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             planning_input=PlanningInput(objective="recover connection loss"),
         )
 
-        unknown = runtime.resolve(request)
-        recovered = runtime.resolve(request)
+        unknown = resolver.resolve(request)
+        recovered = resolver.resolve(request)
 
         self.assertEqual(unknown.status, "unknown")
         self.assertEqual(unknown.record.status, "unknown")
@@ -620,7 +620,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         adapter = DeterministicModelAdapter(
             ModelAdapterResult.failed("provider_rejected", "request was rejected")
         )
-        runtime = PlanResolver(
+        resolver = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
             policy=default_policy(),
@@ -631,8 +631,8 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             planning_input=PlanningInput(objective="reuse a known failure"),
         )
 
-        failed = runtime.resolve(request)
-        replay = runtime.resolve(request)
+        failed = resolver.resolve(request)
+        replay = resolver.resolve(request)
 
         self.assertEqual(failed.status, "failed")
         self.assertEqual(replay.status, "failed")
@@ -644,7 +644,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         adapter = DeterministicModelAdapter(
             ModelAdapterResult.succeeded(valid_proposal())
         )
-        runtime = PlanResolver(
+        resolver = PlanResolver(
             InMemoryModelPlanningRepository(),
             adapter,
             policy=default_policy(),
@@ -655,8 +655,8 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             planning_input=PlanningInput(objective="plan the upgrade"),
         )
 
-        first = runtime.resolve(original)
-        replay = runtime.resolve(original)
+        first = resolver.resolve(original)
+        replay = resolver.resolve(original)
 
         self.assertEqual(first.revision, replay.revision)
         self.assertTrue(replay.reused)
@@ -665,7 +665,7 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             ModelInvocationConflict,
             "different input or configuration",
         ):
-            runtime.resolve(
+            resolver.resolve(
                 PlanningRequest(
                     run_id="run-plan-1",
                     slot_id="stable-identity",
@@ -1190,6 +1190,51 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         for name, raw in revision_cases.items():
             with self.subTest(revision=name), self.assertRaises(ModelPlanningError):
                 PlanRevision.from_public_dict(raw)
+
+    def test_sqlite_rejects_ambiguous_or_non_finite_json_documents(self) -> None:
+        corruptions = {
+            "duplicate_key": lambda document: document.replace(
+                '"status":"succeeded"',
+                '"status":"failed","status":"succeeded"',
+                1,
+            ),
+            "non_finite_constant": lambda document: document.removesuffix("}")
+            + ',"unknown_number":NaN}',
+        }
+        for name, corrupt in corruptions.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as raw:
+                database = Path(raw) / "strict-json.sqlite3"
+                decision = PlanResolver(
+                    SQLiteModelPlanningRepository(database),
+                    DeterministicModelAdapter(
+                        ModelAdapterResult.succeeded(valid_proposal())
+                    ),
+                    policy=default_policy(),
+                ).resolve(
+                    PlanningRequest(
+                        run_id="run-plan-1",
+                        slot_id=f"strict-json-{name}",
+                        planning_input=PlanningInput(
+                            objective="reject ambiguous persisted JSON"
+                        ),
+                    )
+                )
+                with sqlite3.connect(database) as connection:
+                    document = connection.execute(
+                        "SELECT document_json FROM model_planning_invocations "
+                        "WHERE invocation_id = ?",
+                        (decision.record.invocation_id,),
+                    ).fetchone()[0]
+                    connection.execute(
+                        "UPDATE model_planning_invocations SET document_json = ? "
+                        "WHERE invocation_id = ?",
+                        (corrupt(document), decision.record.invocation_id),
+                    )
+
+                with self.assertRaisesRegex(ModelPlanningError, "strict JSON"):
+                    SQLiteModelPlanningRepository(database).load_invocation(
+                        decision.record.invocation_id
+                    )
 
     def test_model_configuration_rejects_non_finite_json_and_timeout_values(self) -> None:
         cases = (

@@ -80,41 +80,32 @@ _TERMINAL_INVOCATION_STATUSES = frozenset(
 @dataclass(frozen=True)
 class _PlanNodeSpec:
     allowed_fields: frozenset[str]
-    expander: str
 
 
 _PLAN_NODE_SPECS = {
     PlanNodeKind.ACTION: _PlanNodeSpec(
         frozenset({"action", "compensation", "compensation_only"}),
-        "_expand_action",
     ),
     PlanNodeKind.SEQUENCE: _PlanNodeSpec(
         frozenset({"children"}),
-        "_expand_sequence",
     ),
     PlanNodeKind.CHOICE: _PlanNodeSpec(
         frozenset({"branches"}),
-        "_expand_choice",
     ),
     PlanNodeKind.PARALLEL: _PlanNodeSpec(
         frozenset({"branches"}),
-        "_expand_parallel",
     ),
     PlanNodeKind.REPEAT: _PlanNodeSpec(
         frozenset({"body", "repeat_max"}),
-        "_expand_repeat",
     ),
     PlanNodeKind.TIMER: _PlanNodeSpec(
         frozenset({"timer_seconds"}),
-        "_expand_timer",
     ),
     PlanNodeKind.GATE: _PlanNodeSpec(
         frozenset({"gate_schema"}),
-        "_expand_gate",
     ),
     PlanNodeKind.SUBFLOW: _PlanNodeSpec(
         frozenset({"subflow", "subflow_version"}),
-        "_expand_subflow",
     ),
 }
 
@@ -200,6 +191,40 @@ def _record_number(value: object, name: str) -> float:
     return selected
 
 
+def _strict_json_object(document: object, name: str) -> Mapping[str, object]:
+    if not isinstance(document, str):
+        raise ModelPlanningError(f"{name} must be strict JSON")
+
+    def reject_constant(value: str) -> object:
+        raise ModelPlanningError(
+            f"{name} must be strict JSON; unsupported constant {value}"
+        )
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        selected: dict[str, object] = {}
+        for key, value in pairs:
+            if key in selected:
+                raise ModelPlanningError(
+                    f"{name} must be strict JSON; duplicate key {key}"
+                )
+            selected[key] = value
+        return selected
+
+    try:
+        decoded = json.loads(
+            document,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except ModelPlanningError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise ModelPlanningError(f"{name} must be strict JSON") from exc
+    if not isinstance(decoded, Mapping):
+        raise ModelPlanningError(f"{name} must be a JSON object")
+    return dict(decoded)
+
+
 def _json_string(value: object, name: str, *, default: str = "") -> str:
     if value is None:
         return default
@@ -279,12 +304,7 @@ class ModelConfiguration:
             or self.timeout_seconds > 300
         ):
             raise ModelPlanningError("model timeout must be in (0, 300] seconds")
-        try:
-            decoded = json.loads(self.parameters_json)
-        except (TypeError, ValueError) as exc:
-            raise ModelPlanningError("model parameters must be strict JSON") from exc
-        if not isinstance(decoded, Mapping):
-            raise ModelPlanningError("model parameters must be an object")
+        decoded = _strict_json_object(self.parameters_json, "model parameters")
         _json_bytes(dict(decoded))
 
     @classmethod
@@ -315,9 +335,7 @@ class ModelConfiguration:
 
     @property
     def parameters(self) -> Mapping[str, object]:
-        decoded = json.loads(self.parameters_json)
-        assert isinstance(decoded, Mapping)
-        return dict(decoded)
+        return _strict_json_object(self.parameters_json, "model parameters")
 
     @property
     def digest(self) -> str:
@@ -723,9 +741,10 @@ class PlanProposal:
 
     @property
     def provider_config(self) -> Mapping[str, object]:
-        decoded = json.loads(self.provider_config_json)
-        assert isinstance(decoded, Mapping)
-        return dict(decoded)
+        return _strict_json_object(
+            self.provider_config_json,
+            "PlanProposal provider_config",
+        )
 
     def bind(self, record: "ModelInvocationRecord") -> "PlanProposal":
         for name, current, expected in (
@@ -888,11 +907,10 @@ class ModelInvocationRecord:
     def __post_init__(self) -> None:
         _required_id(self.provider, "ModelInvocationRecord provider")
         _required_id(self.model, "ModelInvocationRecord model")
-        provider_config = json.loads(self.provider_config_json)
-        if not isinstance(provider_config, Mapping):
-            raise ModelPlanningError(
-                "ModelInvocationRecord provider_config must be an object"
-            )
+        provider_config = _strict_json_object(
+            self.provider_config_json,
+            "ModelInvocationRecord provider_config",
+        )
         if _fingerprint(provider_config) != self.provider_config_digest:
             raise ModelPlanningError(
                 "ModelInvocationRecord provider_config digest mismatch"
@@ -994,9 +1012,10 @@ class ModelInvocationRecord:
 
     @property
     def provider_config(self) -> Mapping[str, object]:
-        decoded = json.loads(self.provider_config_json)
-        assert isinstance(decoded, Mapping)
-        return dict(decoded)
+        return _strict_json_object(
+            self.provider_config_json,
+            "ModelInvocationRecord provider_config",
+        )
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -1556,18 +1575,20 @@ class SQLiteModelPlanningRepository:
     def _record(row: sqlite3.Row | None) -> ModelInvocationRecord | None:
         if row is None:
             return None
-        value = json.loads(str(row["document_json"]))
-        if not isinstance(value, Mapping):
-            raise ModelPlanningError("persisted ModelInvocationRecord is invalid")
+        value = _strict_json_object(
+            str(row["document_json"]),
+            "persisted ModelInvocationRecord",
+        )
         return ModelInvocationRecord.from_public_dict(value)
 
     @staticmethod
     def _revision(row: sqlite3.Row | None) -> PlanRevision | None:
         if row is None:
             return None
-        value = json.loads(str(row["document_json"]))
-        if not isinstance(value, Mapping):
-            raise ModelPlanningError("persisted PlanRevision is invalid")
+        value = _strict_json_object(
+            str(row["document_json"]),
+            "persisted PlanRevision",
+        )
         return PlanRevision.from_public_dict(value)
 
     def claim(self, record: ModelInvocationRecord) -> ModelPlanningClaim:
@@ -2069,6 +2090,16 @@ class PlanResolver:
 
         visiting: set[str] = set()
         visited: set[str] = set()
+        expanders: Mapping[PlanNodeKind, Callable[..., int]] = {
+            PlanNodeKind.ACTION: self._expand_action,
+            PlanNodeKind.SEQUENCE: self._expand_sequence,
+            PlanNodeKind.CHOICE: self._expand_choice,
+            PlanNodeKind.PARALLEL: self._expand_parallel,
+            PlanNodeKind.REPEAT: self._expand_repeat,
+            PlanNodeKind.TIMER: self._expand_timer,
+            PlanNodeKind.GATE: self._expand_gate,
+            PlanNodeKind.SUBFLOW: self._expand_subflow,
+        }
 
         def require(reference: str, owner: str) -> PlanNode:
             selected = nodes.get(reference)
@@ -2089,8 +2120,7 @@ class PlanResolver:
                     "compensation-only action is reachable from normal execution"
                 )
             visiting.add(node_id)
-            spec = _PLAN_NODE_SPECS[node.kind]
-            expander = getattr(self, spec.expander)
+            expander = expanders[node.kind]
             expanded = 1 + expander(
                 node,
                 depth,

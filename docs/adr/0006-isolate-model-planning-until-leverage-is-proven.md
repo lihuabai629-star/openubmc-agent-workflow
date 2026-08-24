@@ -12,12 +12,12 @@ Runtime authority. Issue #65 tested whether a Runtime-managed model planning Eff
 creating a second state authority.
 
 The prototype demonstrates safe identity binding, unknown reconciliation, bounded validation, and
-restart reuse. Its deterministic paired evaluation executes the static workflow resolver and the
-candidate on six equivalent tasks. Both paths produce valid pinned plans in six of six pairs, while
-both expose four equivalent semantic Agent Gate turns and the candidate requires one model call per
-task. The candidate Gate and compensation semantics are now validated explicitly. A separate
-containment corpus rejects five invalid outputs, and two negative controls reject unrelated and
-negated upgrade objectives.
+restart reuse. Its deterministic paired evaluation executes the static `WorkflowDefinitions` path
+and the candidate on six equivalent tasks. Both paths produce valid pinned plans in six of six
+pairs, while both expose four equivalent semantic Agent Gate turns and the candidate requires one
+model call per task. The candidate Gate and compensation semantics are now validated explicitly.
+A separate containment corpus rejects five invalid outputs, and two negative controls reject
+unrelated and negated upgrade objectives.
 
 ## Proposed decision
 

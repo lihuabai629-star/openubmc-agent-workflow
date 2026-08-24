@@ -7,6 +7,7 @@ import argparse
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Mapping
 
@@ -23,6 +24,8 @@ from openubmc_target_runtime.model_planning import (  # noqa: E402
     DeterministicFakeModelAdapter,
     InMemoryModelPlanningRepository,
     ModelAdapterResult,
+    ModelConfiguration,
+    ModelInvocationRecord,
     PlanNodeKind,
     PlanPolicy,
     PlanRevision,
@@ -32,7 +35,7 @@ from openubmc_target_runtime.model_planning import (  # noqa: E402
 )
 from openubmc_target_runtime.workflow import (  # noqa: E402
     DEFAULT_PHASE_REGISTRY,
-    DEFAULT_WORKFLOW_REGISTRY,
+    DEFAULT_WORKFLOW_DEFINITIONS,
     WorkflowDefinition,
 )
 
@@ -283,12 +286,15 @@ def evaluation_policy() -> PlanPolicy:
 
 def plan_for_objective(objective: str) -> Mapping[str, object]:
     selected = " ".join(objective.lower().split())
-    if (
-        "do not build" in selected
-        or "do not upgrade" in selected
-        or "without building" in selected
-        or "without upgrading" in selected
-    ):
+    normalized = re.sub(r"\bdon['’]?t\b", "do not", selected)
+    tokens = re.findall(r"[a-z]+", normalized)
+    negators = {"avoid", "never", "no", "not", "skip", "without"}
+    capability_is_negated = any(
+        token.startswith(("build", "upgrad"))
+        and any(negator in negators for negator in tokens[max(0, index - 3) : index])
+        for index, token in enumerate(tokens)
+    )
+    if capability_is_negated:
         return semantic_proposal((("action", "unsupported.objective"),))
     if "log bundle" in selected:
         steps = (
@@ -333,14 +339,19 @@ def plan_for_objective(objective: str) -> Mapping[str, object]:
     return semantic_proposal((("action", "unsupported.objective"),))
 
 
-class DeterministicEvaluationModelAdapter(DeterministicFakeModelAdapter):
+class DeterministicEvaluationModelAdapter:
     """Generate a repeatable proposal from the actual PlanningInput objective."""
 
     def __init__(self) -> None:
-        super().__init__(
-            invoke_results=(ModelAdapterResult.unknown("unused scripted result"),)
+        self.configuration = ModelConfiguration.freeze(
+            provider="deterministic-evaluation",
+            model="objective-feature-planner-v1",
+            parameters={"temperature": 0, "seed": 1},
+            timeout_seconds=1.0,
         )
         self.objectives: list[str] = []
+        self.invoke_calls = 0
+        self.reconcile_calls = 0
 
     def invoke(self, request: PlanningRequest) -> ModelAdapterResult:
         self.invoke_calls += 1
@@ -348,6 +359,29 @@ class DeterministicEvaluationModelAdapter(DeterministicFakeModelAdapter):
         return ModelAdapterResult.succeeded(
             plan_for_objective(request.planning_input.objective)
         )
+
+    def reconcile(self, record: ModelInvocationRecord) -> ModelAdapterResult:
+        del record
+        self.reconcile_calls += 1
+        return ModelAdapterResult.unknown(
+            "deterministic evaluation has no unresolved invocation"
+        )
+
+
+def has_demonstrated_leverage(
+    *,
+    static_valid_plan_rate: float,
+    candidate_valid_plan_rate: float,
+    static_gate_turns: int,
+    candidate_gate_turns: int,
+) -> bool:
+    return (
+        candidate_valid_plan_rate >= static_valid_plan_rate
+        and (
+            candidate_valid_plan_rate > static_valid_plan_rate
+            or candidate_gate_turns < static_gate_turns
+        )
+    )
 
 
 def revision_semantics(revision: PlanRevision) -> tuple[dict[str, str], ...]:
@@ -409,7 +443,9 @@ def evaluate() -> dict[str, object]:
     static_agent_gate_turns = 0
     candidate_agent_gate_turns = 0
     for index, case in enumerate(paired_corpus()):
-        static_definition = DEFAULT_WORKFLOW_REGISTRY.resolve(**case.static_request)
+        static_definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(
+            case.static_request
+        )
         restored_static = WorkflowDefinition.from_public_dict(
             static_definition.to_public_dict()
         )
@@ -597,7 +633,14 @@ def evaluate() -> dict[str, object]:
     )
     static_valid_plan_rate = static_valid / pair_count
     candidate_valid_plan_rate = candidate_valid_revisions / pair_count
-    demonstrated_leverage = candidate_valid_plan_rate > static_valid_plan_rate
+    validity_leverage = candidate_valid_plan_rate > static_valid_plan_rate
+    turn_leverage = candidate_agent_gate_turns < static_agent_gate_turns
+    demonstrated_leverage = has_demonstrated_leverage(
+        static_valid_plan_rate=static_valid_plan_rate,
+        candidate_valid_plan_rate=candidate_valid_plan_rate,
+        static_gate_turns=static_agent_gate_turns,
+        candidate_gate_turns=candidate_agent_gate_turns,
+    )
     verdict = "advance" if invariant_passed and demonstrated_leverage else "isolate"
     return {
         "schema": EVALUATION_SCHEMA,
@@ -640,10 +683,13 @@ def evaluate() -> dict[str, object]:
         },
         "agent_interface": agent_tools,
         "invariants_passed": invariant_passed,
+        "validity_leverage": validity_leverage,
+        "turn_leverage": turn_leverage,
         "demonstrated_leverage": demonstrated_leverage,
         "verdict": verdict,
         "reason": (
-            "The static resolver and isolated candidate both produce valid pinned "
+            "The static WorkflowDefinitions path and isolated candidate both produce "
+            "valid pinned "
             "plans with the same four semantic Gate turns across six equivalent tasks, "
             "while the candidate requires one model call per task; five separate "
             "invalid outputs and two negative controls are contained."

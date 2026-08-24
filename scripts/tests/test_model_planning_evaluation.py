@@ -9,7 +9,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 
-from model_planning_evaluation import evaluate, plan_for_objective  # noqa: E402
+from model_planning_evaluation import (  # noqa: E402
+    evaluate,
+    has_demonstrated_leverage,
+    plan_for_objective,
+)
 
 
 class ModelPlanningEvaluationTests(unittest.TestCase):
@@ -18,6 +22,8 @@ class ModelPlanningEvaluationTests(unittest.TestCase):
 
         self.assertTrue(result["invariants_passed"])
         self.assertFalse(result["demonstrated_leverage"])
+        self.assertFalse(result["turn_leverage"])
+        self.assertFalse(result["validity_leverage"])
         self.assertEqual(result["verdict"], "isolate")
         self.assertEqual(result["agent_interface"], ["observe", "execute"])
         self.assertEqual(result["paired_tasks"], 6)
@@ -80,16 +86,58 @@ class ModelPlanningEvaluationTests(unittest.TestCase):
         self.assertEqual(gate_as_action["candidate_status"], "rejected")
 
     def test_planner_does_not_treat_negated_keywords_as_an_upgrade_request(self) -> None:
-        proposal = plan_for_objective(
-            "write firmware release notes; do not build or upgrade"
+        objectives = (
+            "write firmware release notes; do not build or upgrade",
+            "write firmware release notes; don't build or upgrade",
+            "write firmware release notes; never build or upgrade",
+            "write firmware release notes; no build or upgrade",
+            "write firmware release notes without building or upgrading",
         )
-        actions = [
-            node.get("action")
-            for node in proposal["nodes"]
-            if isinstance(node, dict) and node.get("kind") == "action"
-        ]
 
-        self.assertEqual(actions, ["unsupported.objective"])
+        for objective in objectives:
+            with self.subTest(objective=objective):
+                proposal = plan_for_objective(objective)
+                actions = [
+                    node.get("action")
+                    for node in proposal["nodes"]
+                    if isinstance(node, dict) and node.get("kind") == "action"
+                ]
+
+                self.assertEqual(actions, ["unsupported.objective"])
+
+    def test_leverage_accepts_either_better_validity_or_fewer_gate_turns(self) -> None:
+        self.assertTrue(
+            has_demonstrated_leverage(
+                static_valid_plan_rate=0.8,
+                candidate_valid_plan_rate=1.0,
+                static_gate_turns=4,
+                candidate_gate_turns=4,
+            )
+        )
+        self.assertTrue(
+            has_demonstrated_leverage(
+                static_valid_plan_rate=1.0,
+                candidate_valid_plan_rate=1.0,
+                static_gate_turns=4,
+                candidate_gate_turns=3,
+            )
+        )
+        self.assertFalse(
+            has_demonstrated_leverage(
+                static_valid_plan_rate=1.0,
+                candidate_valid_plan_rate=1.0,
+                static_gate_turns=4,
+                candidate_gate_turns=4,
+            )
+        )
+        self.assertFalse(
+            has_demonstrated_leverage(
+                static_valid_plan_rate=1.0,
+                candidate_valid_plan_rate=0.8,
+                static_gate_turns=4,
+                candidate_gate_turns=3,
+            )
+        )
 
 
 if __name__ == "__main__":

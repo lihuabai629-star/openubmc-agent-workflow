@@ -12,7 +12,7 @@ internal `PlanResolver.resolve()` Interface. Do not inject it into `RunEngine`, 
 operations, or claim production adoption.
 
 The deterministic paired evaluation preserves all architecture invariants and runs both paths on
-six equivalent tasks. The static resolver and isolated candidate each produce six valid pinned
+six equivalent tasks. The static `WorkflowDefinitions` path and isolated candidate each produce
 plans with four equivalent semantic Agent Gate turns, but only the candidate requires a model call
 for every task. The candidate now represents phase handoffs as actual Gate nodes and validates a
 live-patch compensation link. A separate containment corpus rejects five invalid proposals with
@@ -144,9 +144,10 @@ failure, timeout, unknown, and reconcile results. Behavior coverage includes:
 The paired evaluation compares six equivalent planning tasks using exact action/Gate semantics,
 Gate schemas, semantic Agent Gate-turn counts, and expected compensation links. Its deterministic
 fake planner derives proposals from objective features rather than an exact objective lookup, and
-rejects both an unrelated objective and a negated build/upgrade objective. Static workflows and
-isolated model planning each produce a valid pinned plan for all six tasks with four Gate turns,
-while the candidate adds six model calls and shows no validity or turn improvement. Four
+rejects both an unrelated objective and a negated build/upgrade objective. The static
+`WorkflowDefinitions` path and isolated model planning each produce a valid pinned plan for all six
+tasks with four Gate turns, while the candidate adds six model calls and shows no validity or turn
+improvement. Five
 deliberately invalid outputs, including a phase handoff disguised as an action, are evaluated
 separately and all are rejected. This remains a
 deterministic contract and containment evaluation, not a real-task A/B or adoption proof.
@@ -156,7 +157,7 @@ deterministic contract and containment evaluation, not a real-task A/B or adopti
 Production composition requires a later experiment that demonstrates at least one of:
 
 - fewer model-visible turns to the next actionable Gate on real openUBMC tasks;
-- fewer plan defects than the current Skill plus static-workflow path;
+- fewer plan defects than the current Skill plus static `WorkflowDefinitions` path;
 - useful handling of a workflow gap that cannot be expressed economically as a static definition.
 
 That experiment must also prove:
