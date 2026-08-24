@@ -1,10 +1,11 @@
 # openUBMC Agent Workflow 后续演进档案
 
-日期：2026-08-23
-当前基线：GitHub `main` 的 `faf0509`
-v2 候选 source：`89511ae`
-v2 候选 lock-only commit：`22ebc53`
+日期：2026-08-25
+当前基线：GitHub `main` 的 `a28350d19fde5808626f3c73b4e070db440cfa83`
+最终资格 source：`e7dc74c`
+资格 lock-only commit：`7dc350c`
 用途：后续讨论入口、决策索引和实施路线；详细论证仍以链接文档为准。
+机器可读完成证据：[roadmap-completion.json](roadmap-completion.json)。
 
 ## 1. 当前总体判断
 
@@ -20,24 +21,28 @@ openUBMC Agent Workflow 不需要再次换方向。正确路线是：
     └─ 对分布式：等待明确规模和部署证据
 ```
 
-M0 至 M5 已完成并通过完整 execute A/B、Release Gate 与 main CI。当前阶段不再扩张核心架构，重点转为 Incident 闭环、compatibility 退役、内部 Module locality 和长期运行资格。
+M0 至 M6 的既定范围已完成：Incident 闭环、compatibility 退役、恢复与压力资格、
+ArtifactRef/Log Bundle、Domain Pack/只读能力、Evidence 检索和 Skill 渐进披露均已进入
+canonical `main`。完整 execute A/B、Release Gate 与 main CI 通过。后续不扩张核心架构，
+只按真实遥测继续长期资格和条件式能力演进。
 
 ### 1.1 当前实现检查点
 
 | 里程碑 | 当前状态 | 剩余工作 |
 | --- | --- | --- |
 | M0 资源边界与决策更新 | 完成 | 保持资源边界回归测试 |
-| M1 typed seam 与 source-only | 完成 | 退役仅服务旧调用方的输入形状 |
+| M1 typed seam 与 source-only | 完成 | 保持 retired input rejection 与 old-event upcaster 回归测试 |
 | M2 Live Patch 可靠性 | 完成 | 继续扩充真实 target fault evidence |
 | M3 Build-Upgrade Artifact flow | 完成 | 继续扩充长时间 soak 与容量证据 |
-| M4 权威收敛 | 完成 | 集中并删除 compatibility writer；补全 Incident lifecycle |
+| M4 权威收敛 | 完成 | 保持 compatibility writer/profile 已退役和 Incident lifecycle 指标稳定 |
 | M5 Domain Pack | 完成 | 内建与扩展 Pack 共用 typed 作者契约和 Pack-set conformance suite；Log Bundle index/query/export 为真实本地 READ_ONLY Pack |
-| M6 证据驱动扩展 | 进行中 | 由兼容遥测、Incident 数据和容量证据决定扩展 |
+| M6 证据驱动扩展 | 完成（既定范围） | 后续扩展继续由 Incident、容量和真实调用缺口决定 |
 
-v2 release qualification 基线包含 416 项 Runtime 测试；当前 Runtime composition
-主线为 429 项。完整 execute A/B 为 10 组有效、0 无效，
-`decision=passed`；Release Gate 为 `promotable=true`；main CI run `32544813303` 的
-CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2`，是否创建
+最终兼容退役 source 的完整 execute A/B 为 10 组有效、0 无效，`decision=passed`；
+Release Gate 为 13/13 passed、`promotable=true`，证据 digest 为
+`sha256:e18fdbfcbc04e84a5ba79f2160728cedc11d4a873a40e7091f2beaa35c9b2a67`；
+main CI run `32764011480` 的 CI contract 与完整仓库验证均通过。正式 Release 仍停留在
+`v1.2.2`，是否创建
 `v2.0.0` tag 是独立发布决策。
 
 ### 1.2 产品北极星
@@ -78,7 +83,8 @@ CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2
 | [Agent Semantic Gateway](agent-semantic-gateway.md) | 当前 `observe/execute` Interface、profile、预算与恢复能力 | 已实现基线 |
 | [Runtime Stability Qualification](runtime-stability-qualification.md) | duplicate storm、SQLite 并发、crash-cut、容量和 restart soak 的可复核资格 | 已实现 CI 基线 |
 | [领域上下文](../CONTEXT.md) | 产品边界、统一术语、事实所有权和跨版本不变量 | 完成 |
-| [架构决策记录](adr/README.md) | 四项难以逆转的已接受决策及其触发条件 | 完成 |
+| [架构决策记录](adr/README.md) | 五项难以逆转的已接受决策及其触发条件 | 完成 |
+| [路线图完成审计](roadmap-completion-audit.md) | 逐批绑定 Issue、PR、测试、资格证据与 GitHub CI | 完成 |
 | [外部深度研究对照](external-workflow-research-reconciliation.md) | 对 ChatGPT Share 深度报告逐项裁决，区分直接采纳、改造采纳和延后项 | 完成 |
 | 本文档 | 连接事实、决策、阶段路线和后续讨论 | 持续更新 |
 
@@ -120,14 +126,14 @@ CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2
 ### 3.1 产品与 Interface
 
 - 默认 Agent profile 已只暴露 `observe` 和 `execute`；
-- compatibility 与 operator profile 已分离；
+- Agent 与 Operator profile 保持分离；已退役的 compatibility profile 被明确拒绝；
 - Observation scope、Receipt、Turn 和 Gate schema 已有输出预算；
 - Debug Observation 只执行 selector 声明的 preflight surface 及其必要传输依赖，
   cache 与 assurance refresh 不扩大采集范围；
 - `execute` 支持 `start | respond | resume | control`；
 - Observation A/B 已证明两个语义入口的方向正确；
-- 当前真正风险不在工具数量，而在 Incident 闭环、compatibility 写入路径退役、
-  Module locality 和长期运行数据。
+- 当前真正风险不在工具数量，而在长期运行数据、真实 target fault evidence 和按遥测选择
+  后续能力。
 
 ### 3.2 内部状态权威
 
@@ -141,8 +147,8 @@ CI contract 与完整仓库验证均通过。正式 Release 仍停留在 `v1.2.2
 - `DomainExecutor` 在 Runtime 构造时注册 Adapter，只读传输失败有限重试，Mutation 不盲目
   重放；
 - `ContextRuntime` 继续承载 repository 与 Evidence 实现；原生 Agent Gate response 由
-  RunEngine 提交持久 Gate；兼容 writer/profile 的候选移除已完成并由零使用 telemetry 与
-  同源 Release Gate 决定晋级，历史事件继续由显式 upcaster 转换；
+  RunEngine 提交持久 Gate；兼容 writer/profile 已由零增长 telemetry 与同源 Release Gate
+  完成退役，历史事件继续由显式 upcaster 转换；
 - Session Outcome 只从持久 `RunOutcomeRecorded` 投影，terminal replay 不重复写 Run Outcome、
   Closeout 或治理记录。
 
@@ -232,11 +238,12 @@ class RunEngine:
 
 Interface 的目标不是减少方法数字本身，而是让调用方无需理解 definition pinning、Gate lifecycle、事件提交、Effect 调度、reconcile 和 Outcome 形成过程。
 
-## 6. 后续四条主线
+## 6. 实施主线与持续方向
 
 ### 主线 A：发布安全与资格验证
 
-这是当前第一优先级。未完成前不新增 selector 或 workflow family。
+这是 v2 收口时的第一优先级，既定范围已经完成。新 selector 或 workflow family 仍需以
+真实缺口和不退化证据为前提。
 
 1. `execute` 整体 serialized input budget；
 2. 字符串、数组、对象深度和属性数上限；
@@ -251,7 +258,7 @@ Interface 的目标不是减少方法数字本身，而是让调用方无需理�
 ### 主线 B：Runtime 内部深化
 
 1. 先引入 typed Query/Command/Result 和两方法 Port；
-2. 用 compatibility Adapter 接住旧 operations；
+2. 迁移期间用 compatibility Adapter 接住旧 operations，完成后 move-and-delete；
 3. Gateway 切换后，将状态协调移入 `RunEngine`；
 4. `WorkflowKernel` 改为 `WorkflowDefinitions`；
 5. Domain Adapter 构造时注册，形成 `DomainExecutor`；
@@ -291,7 +298,7 @@ Worker result 跨进程    -> Inbox + result dedupe
 
 ## 7. 分阶段路线
 
-### P0：v2 发布收口
+### P0：v2 发布收口（已完成资格）
 
 | 目标 | 验收 |
 | --- | --- |
@@ -299,15 +306,15 @@ Worker result 跨进程    -> Inbox + result dedupe
 | Observation handle 化 | Runtime 可从 handle/digest 重建；篡改、跨 target、GC 后 fail closed |
 | Gate 持久身份 | 重复提交幂等；并发单赢家；旧版本、错误 Gate 和不同输入 conflict |
 | Mutation 恢复证明 | Live Patch/Upgrade 每个切点不重复危险 Effect |
-| 发布证据 | qualification 基线 416 项、当前本地 423 项 Runtime 测试；10 组 execute A/B、Release Gate 与 main CI 已通过 |
+| 发布证据 | 最终 source 的 451 项 Runtime 测试、10 组 execute A/B、13 项 Release Gate 与 main CI 已通过 |
 | ADR | 产品 Interface、状态权威、Effect、Gate、Artifact 和分布式触发条件落盘 |
 
-### P1：v2.x 运行闭环与内部收敛
+### P1：v2.x 运行闭环与内部收敛（既定范围已完成）
 
 | 目标 | 验收 |
 | --- | --- |
 | Incident 闭环 | 内建 Incident 已有确定的 retry、reconcile、correction-then-resume、cancel 或 terminal 路径；Operator 指标从持久 Run ledger 派生并支持重启恢复 |
-| Compatibility 收敛 | feature-level 持久遥测和 Operator 退役判定证据已落地；零增长 telemetry 与一次同 source 完整资格通过后删除旧 writer，old-event reader 保留 |
+| Compatibility 收敛 | 已完成：feature-level 持久遥测与同源完整资格通过，旧 writer/profile 已删除，old-event reader 保留 |
 | Module locality | compatibility、EvidenceStore、Runtime composition 从 MCP transport 中集中 |
 | 测试稳定 | duplicate storm、SQLite 并发、crash-cut、capacity 与 restart soak 已纳入 release qualification；property 与 network fault injection 继续深化 |
 
@@ -366,9 +373,13 @@ submission identity 由 Adapter 从持久 Run/Gate binding 派生。详见 ADR-0
 
 ### 8.6 v2 与 v2.1 的发布边界
 
-`v2.0.0` 尚未正式发布，但资格已经完成。候选 source commit 为 `89511ae`，对应
-lock-only commit 为 `22ebc53`；完整 execute A/B、Release Gate 与 GitHub main CI 均通过。
-发布 tag 必须指向 lock-only commit，不能指向后续 merge commit。
+`v2.0.0` 尚未正式发布，但最终资格已经完成。source commit 为
+`e7dc74c052f3874d3d9214ce0cfae8949a397765`，对应 lock-only commit 为
+`7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4`；完整 execute A/B、13 项 Release Gate 与
+GitHub main CI 均通过。发布 tag 必须指向该次资格对应的 lock-only commit，不能指向后续
+merge commit。`main` 是持续前进的开发分支；它保留的 `release-lock.json` 是历史发布快照，
+不能用来证明当前 mutable `main` 的树身份。新发布必须从新的最终 source 重新资格化并生成
+新的 lock-only commit。
 
 ## 9. 需要持续验证的假设
 

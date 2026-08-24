@@ -8,7 +8,8 @@
 `SemanticRuntimePort`、`RunEngine`、`WorkflowDefinitions`、预注册 `DomainExecutor`、
 ObservationRef/ArtifactRef、持久 Gate identity、自动 reconcile、Incident 和 256 KiB
 request/frame 预算。本文的“当前实现基线”和缺口表保留为调研时快照；后续状态以
-[演进档案](workflow-evolution-roadmap.md)和 ADR-0004 为准。
+[演进档案](workflow-evolution-roadmap.md)、[路线图完成审计](roadmap-completion-audit.md)和
+ADR-0004 为准。
 
 ## 执行摘要
 

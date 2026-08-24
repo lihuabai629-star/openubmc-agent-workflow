@@ -4,8 +4,8 @@
 - Date: 2026-08-19
 - Decision owners: openUBMC Agent Workflow maintainers
 - Supersedes: the one-time secret Gate token requirement in ADR-0003
-- Proposed supersession: [ADR-0005](0005-retire-compatibility-writers-and-profile.md) rejects the
-  legacy assurance input only after its evidence gate passes.
+- Superseded in part by: [ADR-0005](0005-retire-compatibility-writers-and-profile.md), which rejects
+  the legacy assurance input after its evidence gate passed.
 
 ## Context
 
@@ -26,8 +26,8 @@ unknown mutation, and fresh verification. It returns only a real external-input 
 that could not be resolved automatically, a running reattach point, or a terminal Outcome.
 
 Do not expose `fast`, `assured`, `strict`, `safe`, or similar user-selectable execution policies.
-Legacy observation assurance input may be accepted during compatibility migration, but it is
-normalized to automatic Runtime policy and is not returned in the Agent projection.
+The retired observation assurance input is rejected. Assurance remains automatic Runtime policy
+and is not an Agent choice or returned control surface.
 
 A Gate submission is bound by:
 

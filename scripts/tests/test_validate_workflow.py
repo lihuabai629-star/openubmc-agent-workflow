@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -153,6 +154,217 @@ class WorkflowStageReportingTests(unittest.TestCase):
                 "Node syntax: openubmc-kb-mcp",
             ],
         )
+
+
+class RoadmapCloseoutValidationTests(unittest.TestCase):
+    def write_completed_fixture(self, root: Path) -> None:
+        process = [
+            "isolated-worktree",
+            "tdd",
+            "standards-review",
+            "spec-review",
+            "github-ci",
+            "merged",
+        ]
+        merge_commit = "a" * 40
+        batches = []
+        for index, batch_id in enumerate(sorted(validator.ROADMAP_BATCH_IDS), start=1):
+            batches.append(
+                {
+                    "id": batch_id,
+                    "issues": [index],
+                    "pull_requests": [index],
+                    "merge_commits": [
+                        merge_commit
+                        if batch_id == "compatibility-retirement"
+                        else f"{index}" * 40
+                    ],
+                    "test_seams": ["tests/public_seam.py"],
+                    "ci_runs": [{"id": index, "conclusion": "success"}],
+                    "delivery_process": process,
+                    **(
+                        {"qualified_source_commit": "b" * 40}
+                        if batch_id == "compatibility-retirement"
+                        else {}
+                    ),
+                }
+            )
+        evidence = {
+            "schema": "openubmc-agent-workflow.roadmap-completion.v1",
+            "status": "completed",
+            "closeout_issue": 70,
+            "release": {
+                "identity_model": "source-plus-lock-only-commit",
+                "mutable_main_policy": "historical-lock-snapshot",
+                "tag_created": False,
+                "github_release_created": False,
+            },
+            "canonical_main": {
+                "merge_commit": merge_commit,
+                "ci_run": {"id": 1, "conclusion": "success"},
+            },
+            "qualification": {
+                "release_version": "2.0.0",
+                "source_commit": "b" * 40,
+                "lock_only_commit": "c" * 40,
+                "release_lock_digest": "sha256:" + "d" * 64,
+                "source_tree_digest": "sha256:" + "e" * 64,
+                "lock_topology": {
+                    "parent_source_commit": "b" * 40,
+                    "changed_files": ["release-lock.json"],
+                },
+                "execute_ab": {
+                    "valid_pairs": 10,
+                    "invalid_pairs": 0,
+                    "decision": "passed",
+                    "evidence_digest": "sha256:" + "f" * 64,
+                },
+                "release_gate": {
+                    "promotable": True,
+                    "passed_gates": 13,
+                    "total_gates": 13,
+                    "evidence_digest": "sha256:" + "0" * 64,
+                },
+                "compatibility_retirement": {
+                    "writers_ready": {name: True for name in validator.ROADMAP_WRITERS},
+                    "profile_ready": True,
+                    "historical_telemetry": "preserved-read-only",
+                    "old_event_upcasters": "preserved-read-only",
+                },
+            },
+            "batches": batches,
+        }
+        adr = root / "docs" / "adr"
+        adr.mkdir(parents=True)
+        tests = root / "tests"
+        tests.mkdir()
+        (tests / "public_seam.py").write_text("", encoding="utf-8")
+        (root / "README.md").write_text(
+            "[Roadmap evidence](docs/roadmap-completion.json)\n",
+            encoding="utf-8",
+        )
+        (adr / "README.md").write_text(
+            "| [ADR-0005](0005-retire-compatibility-writers-and-profile.md) "
+            "| Accepted | Retire compatibility writers. |\n",
+            encoding="utf-8",
+        )
+        (adr / "0005-retire-compatibility-writers-and-profile.md").write_text(
+            "# ADR-0005\n\n- Status: Accepted\n\n[Evidence](../roadmap-completion.json)\n",
+            encoding="utf-8",
+        )
+        (root / "docs" / "compatibility-retirement.md").write_text(
+            "# Compatibility retirement\n\n"
+            "The compatibility writers and profile are retired from canonical `main`.\n"
+            "[Evidence](roadmap-completion.json)\n",
+            encoding="utf-8",
+        )
+        (root / "docs" / "workflow-evolution-roadmap.md").write_text(
+            "# Evolution roadmap\n\n[Evidence](roadmap-completion.json)\n",
+            encoding="utf-8",
+        )
+        (root / "docs" / "workflow-architecture-arbitration.md").write_text(
+            "Compatibility retirement is merged.\n",
+            encoding="utf-8",
+        )
+        (root / "docs" / "external-workflow-research-reconciliation.md").write_text(
+            "Compatibility retirement is merged.\n",
+            encoding="utf-8",
+        )
+        (root / "docs" / "roadmap-completion-audit.md").write_text(
+            "# Roadmap completion audit\n\n[Evidence](roadmap-completion.json)\n",
+            encoding="utf-8",
+        )
+        (root / "docs" / "roadmap-completion.json").write_text(
+            json.dumps(evidence),
+            encoding="utf-8",
+        )
+
+    def test_release_contract_accepts_a_completed_roadmap_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+
+            with mock.patch.object(validator, "ROOT", root):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_unmerged_candidate_wording(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "README.md"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "The candidate must not be promoted to canonical `main`.\n",
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "obsolete roadmap closeout state"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_requires_final_identity_in_the_evolution_roadmap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            (root / "docs" / "workflow-evolution-roadmap.md").write_text(
+                "# Evolution roadmap\n\nOld candidate identities only.\n",
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "roadmap closeout marker missing"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_inconsistent_structured_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            (root / "docs" / "roadmap-completion.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "openubmc-agent-workflow.roadmap-completion.v1",
+                        "status": "completed",
+                        "release_gate": {
+                            "promotable": True,
+                            "passed_gates": 12,
+                            "total_gates": 13,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "roadmap completion evidence"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_unresolvable_repository_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-qm", "fixture"],
+                check=True,
+            )
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "unresolvable roadmap completion commit"),
+            ):
+                validator.validate_roadmap_closeout()
 
 
 if __name__ == "__main__":
