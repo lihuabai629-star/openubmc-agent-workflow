@@ -1034,6 +1034,10 @@ class AgentGatewayAbTests(unittest.TestCase):
         finals = (
             "MDBCTL=available Name=Disk0（原始返回：\\Disk0\\） "
             "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0（原始返回Disk0） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
+            "MDBCTL=available Name=Disk0（原始返回 Disk0） "
+            "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
             "MDBCTL=available Name=\"Disk0\"（原始值含引号） "
             "ResourceId=0 Presence=1。不能证明 ResourceId 异常。",
         )

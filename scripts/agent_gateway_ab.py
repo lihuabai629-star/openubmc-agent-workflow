@@ -1148,7 +1148,7 @@ def _resource_id_conclusion_supported(text: str, folded: str) -> bool:
 def _parenthetical_annotation_matches(annotation: str, expected: str) -> bool:
     marker = re.match(
         r"^(?:原始(?:返回|值)?|实际(?:返回|值)?|返回(?:值)?|raw(?:\s+value)?|value)"
-        r"\s*(?:[:：=]|为|是)\s*(?P<value>.+?)\s*$",
+        r"\s*(?:[:：=]|为|是)?\s*(?P<value>.+?)\s*$",
         annotation,
     )
     if marker is None:
