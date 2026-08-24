@@ -100,6 +100,26 @@ def _counts(value: object, *, name: str) -> dict[str, int]:
     return dict(sorted(normalized.items()))
 
 
+def _nonnegative_deltas(value: object, *, name: str) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"compatibility increment {name} must be an object")
+    normalized: dict[str, int] = {}
+    for raw_metric, raw_delta in value.items():
+        metric = str(raw_metric).strip()
+        if not metric:
+            raise ValueError(f"compatibility increment {name} has an empty metric")
+        if isinstance(raw_delta, bool) or not isinstance(raw_delta, int):
+            raise ValueError(
+                f"compatibility increment {name}.{metric} must be an integer"
+            )
+        if raw_delta < 0:
+            raise ValueError(
+                f"compatibility increment {name}.{metric} cannot be negative"
+            )
+        normalized[metric] = raw_delta
+    return dict(sorted(normalized.items()))
+
+
 def _timestamps(
     value: object,
     *,
@@ -428,18 +448,29 @@ def evaluate_retirement(
     if not isinstance(telemetry, Mapping):
         raise ValueError("compatibility increment telemetry must be an object")
     _normalize_telemetry(telemetry)
+    operation_deltas = _nonnegative_deltas(
+        increment.get("operation_deltas"),
+        name="operation_deltas",
+    )
+    feature_deltas = _nonnegative_deltas(
+        increment.get("feature_deltas"),
+        name="feature_deltas",
+    )
+    validated_increment = dict(increment)
+    validated_increment["operation_deltas"] = operation_deltas
+    validated_increment["feature_deltas"] = feature_deltas
     source_commit = _full_commit(str(increment.get("source_commit", "")))
     _verify_release_gate(release_gate, source_commit=source_commit)
     writers = {
-        name: _writer_decision(metrics, increment=increment)
+        name: _writer_decision(metrics, increment=validated_increment)
         for name, metrics in WRITER_METRICS.items()
     }
     profile_blockers: list[str] = []
     operation_increase = sum(
-        int(value) for value in increment["operation_deltas"].values()
+        int(value) for value in operation_deltas.values()
     )
     feature_increase = sum(
-        int(value) for value in increment["feature_deltas"].values()
+        int(value) for value in feature_deltas.values()
     )
     if operation_increase:
         profile_blockers.append(

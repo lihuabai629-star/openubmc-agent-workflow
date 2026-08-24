@@ -386,6 +386,48 @@ class CompatibilityRetirementTests(unittest.TestCase):
                 release_gate("b" * 40),
             )
 
+    def test_digest_valid_increment_rejects_invalid_deltas(self) -> None:
+        baseline = retirement.create_baseline(
+            runtime_status(),
+            source_commit="a" * 40,
+            captured_at=1_700_001_000.0,
+        )
+        increment = retirement.create_increment(
+            baseline,
+            runtime_status(),
+            source_commit="b" * 40,
+            captured_at=1_700_101_000.0,
+        )
+        cases = (
+            ("feature_deltas", "phase_record", 0.5, "must be an integer"),
+            ("feature_deltas", "workflow.next", True, "must be an integer"),
+        )
+        tampered = json.loads(json.dumps(increment))
+        tampered["operation_deltas"]["phase_record"] = 1
+        tampered["operation_deltas"]["workflow.next"] = -1
+        tampered["evidence_digest"] = digest(
+            {key: value for key, value in tampered.items() if key != "evidence_digest"}
+        )
+        with self.assertRaisesRegex(ValueError, "cannot be negative"):
+            retirement.evaluate_retirement(tampered, release_gate("b" * 40))
+
+        for mapping, metric, value, expected in cases:
+            with self.subTest(mapping=mapping, metric=metric, value=value):
+                tampered = json.loads(json.dumps(increment))
+                tampered[mapping][metric] = value
+                tampered["evidence_digest"] = digest(
+                    {
+                        key: item
+                        for key, item in tampered.items()
+                        if key != "evidence_digest"
+                    }
+                )
+                with self.assertRaisesRegex(ValueError, expected):
+                    retirement.evaluate_retirement(
+                        tampered,
+                        release_gate("b" * 40),
+                    )
+
     def test_tampered_or_mismatched_qualification_is_rejected(self) -> None:
         baseline = retirement.create_baseline(
             runtime_status(),
