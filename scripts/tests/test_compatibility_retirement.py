@@ -153,7 +153,7 @@ class CompatibilityRetirementTests(unittest.TestCase):
 
         self.assertEqual(
             increment["schema"],
-            "openubmc-agent-workflow.compatibility-retirement-increment.v2",
+            "openubmc-agent-workflow.compatibility-retirement-increment.v3",
         )
         self.assertEqual(
             set(increment),
@@ -205,7 +205,7 @@ class CompatibilityRetirementTests(unittest.TestCase):
 
         self.assertEqual(
             decision["schema"],
-            "openubmc-agent-workflow.compatibility-retirement-decision.v2",
+            "openubmc-agent-workflow.compatibility-retirement-decision.v3",
         )
         self.assertEqual(set(decision["writers"]), set(retirement.WRITER_METRICS))
         self.assertTrue(decision["writers"]["observe.assurance"]["ready"])
@@ -245,6 +245,32 @@ class CompatibilityRetirementTests(unittest.TestCase):
         )
         increment["active_development_dates"] = ["2026-08-01"]
         increment["active_development_day_count"] = 1
+        increment["evidence_digest"] = digest(
+            {key: value for key, value in increment.items() if key != "evidence_digest"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "schema is unsupported"):
+            retirement.evaluate_retirement(
+                increment,
+                release_gate("b" * 40),
+            )
+
+    def test_unbound_v2_increment_is_rejected(self) -> None:
+        baseline = retirement.create_baseline(
+            runtime_status(),
+            source_commit="a" * 40,
+            captured_at=1_700_001_000.0,
+        )
+        increment = retirement.create_increment(
+            baseline,
+            runtime_status(),
+            source_commit="b" * 40,
+            captured_at=1_700_101_000.0,
+        )
+        increment["schema"] = (
+            "openubmc-agent-workflow.compatibility-retirement-increment.v2"
+        )
+        increment.pop("baseline_telemetry")
         increment["evidence_digest"] = digest(
             {key: value for key, value in increment.items() if key != "evidence_digest"}
         )
