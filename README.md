@@ -59,6 +59,7 @@ are maintained in the following records:
 - [External research reconciliation](docs/external-workflow-research-reconciliation.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)
 - [Domain Pack authoring contract](docs/domain-pack-authoring.md)
+- [Runtime-internal model planning prototype](docs/model-planning-prototype.md)
 
 ## Credentials
 

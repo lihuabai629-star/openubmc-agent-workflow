@@ -319,7 +319,11 @@ Worker result 跨进程    -> Inbox + result dedupe
 4. D-Bus、active alarm、bounded log search 等按真实调用缺口增加；
 5. compatibility profile 使用遥测与退役；
 6. 扩展长时 soak、property-based 和 network fault injection；
-7. 原型验证 `ModelInvocationRecord` 与受限 `PlanProposal -> PlanRevision`，模型只生成 Proposal。
+7. `ModelInvocationRecord` 与受限 `PlanProposal -> PlanRevision` 原型已完成；确定性评估证明
+   持久重放、严格 JSON、Gate/compensation 语义和边界安全；六组配对任务中两条路径均为
+   6/6 有效且各含 4 个语义 Gate turn，候选额外产生 6 次模型调用，未证明 Agent-turn 或
+   plan-validity 杠杆，因此保持 isolated，不接入生产 `RunEngine`。详见
+   [模型规划原型](model-planning-prototype.md)。
 
 ### P3：v3 分布式执行
 
@@ -376,6 +380,8 @@ lock-only commit 为 `22ebc53`；完整 execute A/B、Release Gate 与 GitHub ma
 6. Incident 正式化能改善 unknown recovery，而不会形成新的 Operator 工具膨胀；
 7. Skill 渐进披露与阶段上下文隔离能显著降低完整 Build-Upgrade Token；
 8. compatibility profile 可以在有遥测和回滚窗口后安全退役。
+9. Runtime 内模型规划只有在真实任务 A/B 证明降低 Agent turns 或减少 plan defect 后才值得
+   接入；当前确定性评估结论为 `isolate`。
 
 所有假设都必须通过原型、fault injection、A/B 或使用遥测验证，不能直接升级为架构事实。
 
