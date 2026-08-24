@@ -7,10 +7,9 @@ precise semantic contract behind `observe` and `execute`.
 
 The default `openubmc-target-runtime` profile exposes only `observe` and `execute`.
 
-`observe` answers one exact read-only question and returns an inline `ObservationReceipt` in MCP
-`structuredContent`. Combine related capability and MDB selectors needed for the answer. Do not run
-a separate capability preflight: the observation Adapter establishes the declared scope. Split the
-scope only when the Receipt is incomplete and requests a narrower observation.
+`observe` returns an inline `ObservationReceipt` in MCP `structuredContent`. Follow the entrypoint's
+single-observation selector rule. Split the declared scope only when the Receipt is incomplete and
+requests a narrower observation.
 
 Do not send the legacy `assurance` hint from the Agent profile; the Runtime applies its single
 automatic observation policy. Live evidence uses `max_age_seconds: 0`; freshness is a time

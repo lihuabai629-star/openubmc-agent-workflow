@@ -32,8 +32,7 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   the answer in the same `observe` call. Do not run a separate capability preflight; the internal
   Observation Adapter performs it.
 - Call `execute` when work can cross diagnosis, source change, build, live patch, upgrade,
-  recovery, verification, or acceptance phases. Continue the retained Run instead of rebuilding
-  its request.
+  recovery, verification, or acceptance phases.
 - Treat one `ObservationReceipt` or `Turn` as the semantic result. Capability is tri-state:
   `available`, `unavailable`, or `not_checked`; never infer an unobserved capability.
 - Do not use compatibility or operator operations from the default Agent profile. Load the Agent

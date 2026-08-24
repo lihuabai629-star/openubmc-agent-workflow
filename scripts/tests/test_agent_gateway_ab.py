@@ -175,7 +175,17 @@ def skill_disclosure_metrics(pairs: int, *, invalid_candidate_pairs=()):
                     "exit_code": 0,
                     "semantic_acceptance": {"passed": valid},
                     "scope_acceptance": valid,
-                    "scope_validation": {"passed": valid},
+                    "scope_validation": (
+                        {"passed": True, "errors": []}
+                        if valid
+                        else {
+                            "passed": False,
+                            "errors": ["arm must call observe exactly once"],
+                        }
+                    ),
+                    "command_events": 0,
+                    "mcp_events": 1 if valid else 0,
+                    "tool_events": 1 if valid else 0,
                     "total_tokens": 100 if arm == "A" else 82,
                     "noncached_input_plus_output": 100 if arm == "A" else 82,
                     "duration_seconds": 100 if arm == "A" else 82,
@@ -462,6 +472,10 @@ def passing_execute_run_evidence(
     candidate_commit: str = "a" * 40,
     baseline_commit: str = module.DEFAULT_BASELINE_REF,
 ):
+    qualification_contract = {
+        "requested_pairs": len(schedule),
+        "schedule_digest": module._fingerprint(schedule),
+    }
     runs = []
     for pair, first, second in schedule:
         for order, arm in enumerate((first, second), 1):
@@ -585,6 +599,7 @@ def passing_execute_run_evidence(
                         candidate_commit if arm == "B" else baseline_commit
                     ),
                     "execution_id": execution_id,
+                    "qualification_contract": qualification_contract,
                     "events": events,
                     "final": "source-only Runtime Outcome completed",
                 }
@@ -606,6 +621,10 @@ def passing_skill_disclosure_run_evidence(
     baseline_commit: str = module.DEFAULT_BASELINE_REF,
     invalid_candidate_pairs=(),
 ):
+    qualification_contract = {
+        "requested_pairs": len(schedule),
+        "schedule_digest": module._fingerprint(schedule),
+    }
     invalid = set(invalid_candidate_pairs)
     runs = []
     for pair, first, second in schedule:
@@ -656,6 +675,7 @@ def passing_skill_disclosure_run_evidence(
                         candidate_commit if arm == "B" else baseline_commit
                     ),
                     "execution_id": execution_id,
+                    "qualification_contract": qualification_contract,
                     "events": events,
                     "final": final,
                 }
@@ -675,6 +695,64 @@ def write_run_evidence(root: Path, value=None) -> Path:
     document = value or {"schema": module.RUN_EVIDENCE_SCHEMA, "runs": []}
     path.write_text(json.dumps(document), encoding="utf-8")
     return path
+
+
+def verify_skill_disclosure_summary(
+    *,
+    pairs: int,
+    seed: int = 7,
+    invalid_candidate_pairs=(),
+    analysis_mutator=None,
+    evidence_mutator=None,
+):
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        schedule = module.balanced_schedule(pairs, seed=seed)
+        schedule_path = root / "schedule.json"
+        schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+        run_evidence = passing_skill_disclosure_run_evidence(
+            schedule,
+            invalid_candidate_pairs=invalid_candidate_pairs,
+        )
+        private_key, public_key = signing_keys(root)
+        signed_run_evidence(
+            root,
+            run_evidence,
+            private_key=private_key,
+            public_key=public_key,
+        )
+        if evidence_mutator is not None:
+            schedule = evidence_mutator(run_evidence, schedule)
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+        metrics = module.metrics_from_run_evidence(run_evidence)
+        metrics_path = root / "all_metrics.json"
+        run_evidence_path = write_run_evidence(root, run_evidence)
+        metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+        analysis = module.analyze(metrics)
+        if analysis_mutator is not None:
+            analysis_mutator(analysis)
+        analysis["release_evidence"] = module.release_evidence(
+            scenario="skill-disclosure",
+            requested_pairs=len(schedule),
+            candidate_source_commit="a" * 40,
+            baseline_source_commit=module.DEFAULT_BASELINE_REF,
+            model=module.QUALIFICATION_MODEL,
+            codex_config=module.QUALIFICATION_CODEX_CONFIG,
+            metrics_path=metrics_path,
+            schedule_path=schedule_path,
+            run_evidence_path=run_evidence_path,
+            analysis=analysis,
+            environment={"python": "3.12", "node": "v22"},
+        )
+        summary_path = root / "summary.json"
+        summary_path.write_text(json.dumps(analysis), encoding="utf-8")
+        return module.verify_summary(
+            summary_path,
+            expected_source_commit="a" * 40,
+            expected_baseline_commit=module.DEFAULT_BASELINE_REF,
+            expected_scenario="skill-disclosure",
+            attestation_public_key=public_key,
+        )
 
 
 class AgentGatewayAbTests(unittest.TestCase):
@@ -1428,6 +1506,18 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertTrue(module.semantic_acceptance(text)["passed"])
         self.assertFalse(module.semantic_acceptance(text.replace("Health", ""))["passed"])
 
+    def test_observation_acceptance_preserves_the_legacy_conclusion_contract(self) -> None:
+        text = (
+            "SSH Telnet MDBCTL BUSCTL；Name Disk0，Protocol 3，ResourceId 0，"
+            "SlotNumber 0，Presence 1，TemperatureCelsius 29，Type SATA/SAS，"
+            "SocketId 0，Health 0。不能证明 ResourceId 异常，"
+            "但最终结论是 ResourceId 异常。"
+        )
+
+        self.assertTrue(
+            module.semantic_acceptance(text, scenario="observation")["passed"]
+        )
+
     def test_metric_parser_requires_candidate_to_use_one_observe(self) -> None:
         events = [
             candidate_observe_event(),
@@ -2048,6 +2138,31 @@ class AgentGatewayAbTests(unittest.TestCase):
             result["validity"]["errors"],
         )
 
+    def test_skill_disclosure_rejects_non_noise_invalid_behavior(self) -> None:
+        metrics = skill_disclosure_metrics(30, invalid_candidate_pairs={1})
+        candidate = next(
+            item
+            for item in metrics
+            if item["arm"] == "B" and item["pair"] == 1
+        )
+        candidate["semantic_acceptance"] = {"passed": True}
+        candidate["mcp_events"] = 2
+        candidate["tool_events"] = 2
+        candidate["scope_validation"] = {
+            "passed": False,
+            "errors": ["unrelated MCP tools"],
+        }
+
+        result = module.analyze(metrics)
+
+        self.assertEqual(result["validity"]["arm_valid_rates"]["B"], 0.966667)
+        self.assertFalse(result["validity"]["passed"])
+        self.assertIn(
+            "non-noise invalid behavior is not allowed",
+            result["validity"]["errors"],
+        )
+        self.assertEqual(result["decision"], "failed")
+
     def test_skill_disclosure_terminal_checkpoint_applies_p95_to_valid_pairs(self) -> None:
         metrics = skill_disclosure_metrics(30, invalid_candidate_pairs={1})
         for item in metrics:
@@ -2070,105 +2185,47 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(result["decision"], "failed")
 
     def test_verify_accepts_signed_skill_disclosure_validity_with_one_invalid_candidate_run(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            schedule = module.balanced_schedule(20, seed=7)
-            run_evidence = passing_skill_disclosure_run_evidence(
-                schedule,
-                invalid_candidate_pairs={1},
-            )
-            private_key, public_key = signing_keys(root)
-            signed_run_evidence(
-                root,
-                run_evidence,
-                private_key=private_key,
-                public_key=public_key,
-            )
-            metrics = module.metrics_from_run_evidence(run_evidence)
-            metrics_path = root / "all_metrics.json"
-            schedule_path = root / "schedule.json"
-            run_evidence_path = write_run_evidence(root, run_evidence)
-            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
-            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
-            analysis = module.analyze(metrics)
-            analysis["release_evidence"] = module.release_evidence(
-                scenario="skill-disclosure",
-                requested_pairs=20,
-                candidate_source_commit="a" * 40,
-                baseline_source_commit=module.DEFAULT_BASELINE_REF,
-                model=module.QUALIFICATION_MODEL,
-                codex_config=module.QUALIFICATION_CODEX_CONFIG,
-                metrics_path=metrics_path,
-                schedule_path=schedule_path,
-                run_evidence_path=run_evidence_path,
-                analysis=analysis,
-                environment={"python": "3.12", "node": "v22"},
-            )
-            summary_path = root / "summary.json"
-            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
-
-            verified = module.verify_summary(
-                summary_path,
-                expected_source_commit="a" * 40,
-                expected_baseline_commit=module.DEFAULT_BASELINE_REF,
-                expected_scenario="skill-disclosure",
-                attestation_public_key=public_key,
-            )
+        verified = verify_skill_disclosure_summary(
+            pairs=20,
+            invalid_candidate_pairs={1},
+        )
 
         self.assertTrue(verified["promotable"], verified)
         self.assertEqual(len(verified["invalid_pairs"]), 1)
 
     def test_verify_rejects_missing_terminal_p95_with_one_invalid_pair(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            schedule = module.balanced_schedule(30, seed=7)
-            run_evidence = passing_skill_disclosure_run_evidence(
-                schedule,
-                invalid_candidate_pairs={1},
-            )
-            private_key, public_key = signing_keys(root)
-            signed_run_evidence(
-                root,
-                run_evidence,
-                private_key=private_key,
-                public_key=public_key,
-            )
-            metrics = module.metrics_from_run_evidence(run_evidence)
-            metrics_path = root / "all_metrics.json"
-            schedule_path = root / "schedule.json"
-            run_evidence_path = write_run_evidence(root, run_evidence)
-            metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
-            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
-            analysis = module.analyze(metrics)
+        def remove_p95(analysis):
             for metric in module.METRICS:
                 analysis["metrics"][metric]["p95_ratio"] = None
-            analysis["release_evidence"] = module.release_evidence(
-                scenario="skill-disclosure",
-                requested_pairs=30,
-                candidate_source_commit="a" * 40,
-                baseline_source_commit=module.DEFAULT_BASELINE_REF,
-                model=module.QUALIFICATION_MODEL,
-                codex_config=module.QUALIFICATION_CODEX_CONFIG,
-                metrics_path=metrics_path,
-                schedule_path=schedule_path,
-                run_evidence_path=run_evidence_path,
-                analysis=analysis,
-                environment={"python": "3.12", "node": "v22"},
-            )
-            summary_path = root / "summary.json"
-            summary_path.write_text(json.dumps(analysis), encoding="utf-8")
 
-            verified = module.verify_summary(
-                summary_path,
-                expected_source_commit="a" * 40,
-                expected_baseline_commit=module.DEFAULT_BASELINE_REF,
-                expected_scenario="skill-disclosure",
-                attestation_public_key=public_key,
-            )
+        verified = verify_skill_disclosure_summary(
+            pairs=30,
+            invalid_candidate_pairs={1},
+            analysis_mutator=remove_p95,
+        )
 
         self.assertFalse(verified["promotable"], verified)
         self.assertTrue(
             any("terminal p95" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_rejects_signed_terminal_evidence_truncated_to_twenty_pairs(self) -> None:
+        def truncate(run_evidence, schedule):
+            run_evidence["runs"] = [
+                run for run in run_evidence["runs"] if run["pair"] <= 20
+            ]
+            return schedule[:20]
+
+        verified = verify_skill_disclosure_summary(
+            pairs=30,
+            seed=1,
+            evidence_mutator=truncate,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("qualification contract" in error for error in verified["errors"]),
             verified,
         )
 

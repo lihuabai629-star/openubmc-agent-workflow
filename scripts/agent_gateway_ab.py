@@ -28,7 +28,7 @@ import uuid
 
 SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v2"
 RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v2"
-RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v1"
+RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v2"
 RUN_ATTESTATION_IDENTITY = "openubmc-agent-workflow-qualification"
 RUN_ATTESTATION_NAMESPACE = "openubmc-agent-gateway-ab"
 DEFAULT_BASELINE_REF = "35b36efb6503d05a811b51bf09fb5f8dead0e208"
@@ -952,6 +952,36 @@ def _run_environment_binding_errors(
     ]
 
 
+def _run_qualification_contract_errors(
+    value: object,
+    *,
+    expected_requested_pairs: object,
+    expected_schedule_digest: str,
+) -> list[str]:
+    document = _json_object(value)
+    runs = document.get("runs")
+    if not isinstance(runs, list):
+        return []
+    expected = {
+        "requested_pairs": expected_requested_pairs,
+        "schedule_digest": expected_schedule_digest,
+    }
+    mismatches = [
+        index
+        for index, value in enumerate(runs, 1)
+        if _json_object(value).get("qualification_contract") != expected
+    ]
+    if not mismatches:
+        return []
+    suffix = ", ".join(str(index) for index in mismatches[:5])
+    if len(mismatches) > 5:
+        suffix += ", ..."
+    return [
+        "AB run qualification contract does not match the requested checkpoint "
+        f"and schedule at items {suffix}"
+    ]
+
+
 def _run_attestation_errors(
     value: object, *, public_key: Path
 ) -> list[str]:
@@ -1316,7 +1346,11 @@ def semantic_acceptance(
         for token in tokens
         if token not in folded
     ]
-    conclusion = _resource_id_conclusion_supported(text, folded)
+    conclusion = (
+        ("不能" in text or "无法" in text)
+        and "resourceid" in folded
+        and "异常" in text
+    )
     return {
         "passed": not missing and conclusion,
         "missing": missing,
@@ -1373,6 +1407,17 @@ def _raw_run_valid(item: Mapping[str, object]) -> bool:
     )
 
 
+def _skill_disclosure_dispatch_noise(item: Mapping[str, object]) -> bool:
+    scope = _json_object(item.get("scope_validation"))
+    return (
+        item.get("exit_code") == 0
+        and item.get("command_events") == 0
+        and item.get("mcp_events") == 0
+        and item.get("tool_events") == 0
+        and scope.get("errors") == ["arm must call observe exactly once"]
+    )
+
+
 def _skill_disclosure_validity(
     metrics: list[Mapping[str, object]],
     *,
@@ -1402,6 +1447,19 @@ def _skill_disclosure_validity(
         else 1.0
     )
     candidate_regression = round(rates["A"] - rates["B"], 6)
+    attempts_by_key = {
+        (int(item.get("pair", 0)), str(item.get("arm", ""))): item
+        for item in metrics
+    }
+    non_noise_invalid_runs = [
+        {"pair": int(pair["pair"]), "arm": arm}
+        for pair in invalid_pairs
+        for arm, valid in _json_object(pair.get("valid")).items()
+        if valid is not True
+        and not _skill_disclosure_dispatch_noise(
+            attempts_by_key.get((int(pair["pair"]), str(arm)), {})
+        )
+    ]
     errors: list[str] = []
     if any(len(items) != attempted_pairs for items in attempts.values()):
         errors.append("each attempted pair must contain one run for both arms")
@@ -1421,6 +1479,8 @@ def _skill_disclosure_validity(
         ]
     ):
         errors.append("candidate validity regresses by more than 5 percentage points")
+    if non_noise_invalid_runs:
+        errors.append("non-noise invalid behavior is not allowed")
     return {
         "passed": not errors,
         "attempted_pairs": attempted_pairs,
@@ -1428,6 +1488,7 @@ def _skill_disclosure_validity(
         "arm_valid_rates": rates,
         "invalid_pair_fraction": invalid_pair_fraction,
         "candidate_valid_rate_regression": candidate_regression,
+        "non_noise_invalid_runs": non_noise_invalid_runs,
         "errors": errors,
     }
 
@@ -1527,7 +1588,13 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
         else None
     )
     validity_pass = bool(validity["passed"]) if validity is not None else not invalid
-    if valid_pairs < CHECKPOINTS[0]:
+    if attempted_pairs not in CHECKPOINTS:
+        next_pairs = next(
+            (checkpoint for checkpoint in CHECKPOINTS if checkpoint > attempted_pairs),
+            None,
+        )
+        decision = "collect_more" if next_pairs is not None else "failed"
+    elif valid_pairs < CHECKPOINTS[0]:
         next_pairs = next(
             (checkpoint for checkpoint in CHECKPOINTS if checkpoint > attempted_pairs),
             None,
@@ -1576,6 +1643,8 @@ def validate_schedule(
         or requested_pairs < 1
     ):
         return ["AB schedule requested pair count is invalid"]
+    if requested_pairs not in CHECKPOINTS:
+        errors.append("AB schedule requested pair count is not a qualification checkpoint")
     if not isinstance(schedule, list):
         return ["AB schedule must contain an array"]
     if len(schedule) != requested_pairs:
@@ -2270,6 +2339,7 @@ def verify_summary(
             else:
                 raw_metrics = loaded_metrics
     recomputed_metrics: list[dict[str, object]] | None = None
+    run_evidence_value: object | None = None
     run_evidence_path = artifact_paths.get("run_evidence")
     if run_evidence_path is not None:
         try:
@@ -2347,6 +2417,14 @@ def verify_summary(
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             errors.append(f"cannot read AB schedule: {type(exc).__name__}")
         else:
+            if run_evidence_value is not None:
+                errors.extend(
+                    _run_qualification_contract_errors(
+                        run_evidence_value,
+                        expected_requested_pairs=samples.get("requested_pairs"),
+                        expected_schedule_digest=_fingerprint(raw_schedule),
+                    )
+                )
             errors.extend(
                 validate_schedule(
                     raw_schedule,
@@ -2410,6 +2488,10 @@ def run_benchmark(args: argparse.Namespace) -> int:
         json.dumps(schedule, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    qualification_contract = {
+        "requested_pairs": args.pairs,
+        "schedule_digest": _fingerprint(schedule),
+    }
     configs = run_configs(args.scenario, baseline_root, candidate_root)
     environment = os.environ.copy()
     environment["OPENUBMC_CREDENTIALS_FILE"] = str(args.credentials)
@@ -2500,6 +2582,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
             run_mapping["prompt"] = prompt
             run_mapping["prompt_sha256"] = _text_sha256(prompt)
             run_mapping["environment_fingerprint"] = environment_fingerprint
+            run_mapping["qualification_contract"] = qualification_contract
             raw_runs.append(
                 attest_run_record(
                     run_mapping,
@@ -2583,7 +2666,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--work-root", type=Path, required=True)
     run_parser.add_argument("--output", type=Path)
     run_parser.add_argument("--baseline-ref", default=DEFAULT_BASELINE_REF)
-    run_parser.add_argument("--pairs", type=int, default=10)
+    run_parser.add_argument("--pairs", type=int, choices=CHECKPOINTS, default=10)
     run_parser.add_argument("--seed", type=int, default=20260819)
     run_parser.add_argument("--credentials", type=Path, required=True)
     run_parser.add_argument(

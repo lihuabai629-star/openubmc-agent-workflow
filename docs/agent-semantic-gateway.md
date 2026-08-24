@@ -268,10 +268,12 @@ python scripts/agent_gateway_ab.py verify \
 
 The candidate is acceptable only when semantic and exact-scope checks pass for the paired metric
 sample, there are at least ten valid pairs, and every bounded regression metric passes. Because
-this Skill-only scenario has no side effects, stochastic model/tool-dispatch misses remain signed
-instead of being selectively rerun: each arm must stay at or above 95% validity, invalid pairs may
-not exceed 10%, and candidate validity may not regress by more than 5 percentage points versus the
-baseline. Runtime release and execute qualification continue to require zero invalid pairs.
+this Skill-only scenario has no side effects, zero-tool dispatch misses remain signed instead of
+being selectively rerun: each arm must stay at or above 95% validity, invalid pairs may not exceed
+10%, and candidate validity may not regress by more than 5 percentage points versus the baseline.
+An arm that dispatched any tool and then failed semantics or exact scope is not dispatch noise and
+blocks the checkpoint. Runtime release and execute qualification continue to require zero invalid
+pairs.
 The scenario records its own prompt digest, source commits, schedule, raw metrics, environment,
 and signed run evidence. It evaluates Skill disclosure behavior; the default release qualification
 remains `execute-source-only`.
@@ -283,6 +285,8 @@ selectively reuse pairs from an earlier checkpoint; verify and promote only the 
 result directory for the final checkpoint. Reaching the 30-pair checkpoint activates the p95 bound
 for every metric even when the validity policy excludes one or more signed pairs: calculate p95 from
 the retained valid paired sample, and fail verification when any terminal p95 value is missing.
+Every signed run also binds the complete checkpoint pair count and schedule digest, so a 30-pair run
+cannot be truncated or rebound as a smaller checkpoint.
 
 Every run record carries its tested source commit and a unique execution identity. The runner
 signs that record with the qualification key; verification uses a public key held outside the
