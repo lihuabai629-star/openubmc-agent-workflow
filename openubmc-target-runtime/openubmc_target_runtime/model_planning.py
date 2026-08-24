@@ -23,6 +23,7 @@ PLAN_PROPOSAL_SCHEMA = f"{RUNTIME_API_VERSION}/plan-proposal-v1"
 PLAN_REVISION_SCHEMA = f"{RUNTIME_API_VERSION}/plan-revision-v1"
 PLANNING_INPUT_SCHEMA = f"{RUNTIME_API_VERSION}/planning-input-v1"
 BOUNDED_PLAN_IR_VERSION = "bounded-plan-ir/v1"
+MAX_MODEL_ERROR_MESSAGE_BYTES = 4096
 
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
@@ -156,6 +157,17 @@ def _required_text(value: object, name: str, *, max_bytes: int = 4096) -> str:
     if len(selected.encode("utf-8")) > max_bytes:
         raise ModelPlanningError(f"{name} exceeds its byte budget")
     return selected
+
+
+def _bounded_error_message(value: object, default: str) -> str:
+    selected = str(value).strip() or default
+    encoded = selected.encode("utf-8")
+    if len(encoded) <= MAX_MODEL_ERROR_MESSAGE_BYTES:
+        return selected
+    return encoded[:MAX_MODEL_ERROR_MESSAGE_BYTES].decode(
+        "utf-8",
+        errors="ignore",
+    )
 
 
 def _json_string(value: object, name: str, *, default: str = "") -> str:
@@ -565,6 +577,10 @@ class PlanProposal:
             ) from exc
         if self.status is not PlanProposalStatus.PROPOSED:
             raise PlanProposalRejected("PlanProposal status must be proposed")
+        if self.error_code or self.error_message:
+            raise PlanProposalRejected(
+                "proposed PlanProposal cannot contain error evidence"
+            )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "PlanProposal":
@@ -812,6 +828,14 @@ class ModelInvocationRecord:
             raise ModelPlanningError(
                 "ModelInvocationRecord provider_config digest mismatch"
             )
+        if provider_config.get("provider") != self.provider:
+            raise ModelPlanningError(
+                "ModelInvocationRecord provider contradicts provider_config"
+            )
+        if provider_config.get("model") != self.model:
+            raise ModelPlanningError(
+                "ModelInvocationRecord model contradicts provider_config"
+            )
         try:
             object.__setattr__(self, "status", ModelInvocationStatus(self.status))
         except ValueError as exc:
@@ -846,6 +870,16 @@ class ModelInvocationRecord:
             elif not self.error_code:
                 raise ModelPlanningError(
                     "settled non-success ModelInvocationRecord requires an error code"
+                )
+            else:
+                _required_id(
+                    self.error_code,
+                    "ModelInvocationRecord error_code",
+                )
+                _required_text(
+                    self.error_message,
+                    "ModelInvocationRecord error_message",
+                    max_bytes=MAX_MODEL_ERROR_MESSAGE_BYTES,
                 )
         if self.updated_at < self.started_at:
             raise ModelPlanningError(
@@ -1101,6 +1135,13 @@ class ModelAdapterResult:
             raise ModelPlanningError(
                 "non-success model Adapter result requires an error code"
             )
+        if self.status is not ModelAdapterStatus.SUCCEEDED:
+            _required_id(self.error_code, "model Adapter error_code")
+            _required_text(
+                self.error_message,
+                "model Adapter error_message",
+                max_bytes=MAX_MODEL_ERROR_MESSAGE_BYTES,
+            )
 
     @classmethod
     def succeeded(
@@ -1124,7 +1165,10 @@ class ModelAdapterResult:
         return cls(
             status=ModelAdapterStatus.UNKNOWN,
             error_code="model_outcome_unknown",
-            error_message=message,
+            error_message=_bounded_error_message(
+                message,
+                "model invocation outcome is unknown",
+            ),
         )
 
     @classmethod
@@ -1132,7 +1176,10 @@ class ModelAdapterResult:
         return cls(
             status=ModelAdapterStatus.FAILED,
             error_code=code,
-            error_message=message,
+            error_message=_bounded_error_message(
+                message,
+                "model invocation failed",
+            ),
         )
 
 
@@ -1661,17 +1708,15 @@ class PlanResolver:
                 settlement,
                 reconciled=reconciled,
             )
-        raw_proposal_bytes = len(_json_bytes(result.proposal))
-        if raw_proposal_bytes > min(
-            self.policy.max_serialized_bytes,
-            self.adapter.configuration.max_output_bytes,
-        ):
-            return self._reject(
-                record,
-                "PlanProposal exceeds the serialized byte budget",
-                reconciled=reconciled,
-            )
         try:
+            raw_proposal_bytes = len(_json_bytes(result.proposal))
+            if raw_proposal_bytes > min(
+                self.policy.max_serialized_bytes,
+                self.adapter.configuration.max_output_bytes,
+            ):
+                raise PlanProposalRejected(
+                    "PlanProposal exceeds the serialized byte budget"
+                )
             proposal = PlanProposal.from_mapping(result.proposal).bind(record)
             self._validate_proposal(proposal, run_id=record.run_id)
         except (ModelPlanningError, TypeError, ValueError) as exc:

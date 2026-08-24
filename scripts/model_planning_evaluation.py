@@ -223,32 +223,35 @@ def evaluation_policy() -> PlanPolicy:
 
 
 def plan_for_objective(objective: str) -> Mapping[str, object]:
-    selected = objective.lower()
-    if "log bundle" in selected:
-        steps = ("log_bundle_collect", "debug_run")
-    elif "firmware" in selected:
-        steps = (
+    routes = {
+        "collect bounded diagnosis evidence": ("debug_run",),
+        "prepare and verify a source-only repair": (
+            "debug_run",
+            "developer.change",
+        ),
+        "diagnose, approve, apply, and verify a live patch": (
+            "debug_run",
+            "developer.change",
+            "live_patch_run",
+            "debug_collect",
+        ),
+        "diagnose, build, upgrade, and verify firmware": (
             "debug_run",
             "developer.change",
             "build.artifact",
             "upgrade_run",
             "debug_collect",
-        )
-    elif "live patch" in selected:
-        steps = (
-            "debug_run",
-            "developer.change",
-            "live_patch_run",
+        ),
+        "perform a bounded upgrade verification workflow": (
+            "upgrade_run",
             "debug_collect",
-        )
-    elif "source-only" in selected:
-        steps = ("debug_run", "developer.change")
-    elif "upgrade verification" in selected:
-        steps = ("upgrade_run", "debug_collect")
-    elif "diagnosis evidence" in selected:
-        steps = ("debug_run",)
-    else:
-        steps = ("unsupported.objective",)
+        ),
+        "collect and inspect a diagnostic log bundle": (
+            "log_bundle_collect",
+            "debug_run",
+        ),
+    }
+    steps = routes.get(objective, ("unsupported.objective",))
     return linear_proposal(steps)
 
 

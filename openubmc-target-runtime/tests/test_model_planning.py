@@ -27,6 +27,7 @@ from openubmc_target_runtime.model_planning import (  # noqa: E402
     PlanResolver,
     PlanPolicy,
     PlanProposal,
+    PlanProposalRejected,
     PlanRevision,
     PlanningInput,
     PlanningRequest,
@@ -222,6 +223,15 @@ class ConnectionFailureThenRecoverAdapter(DeterministicModelAdapter):
         raise ConnectionError("provider connection ended after dispatch")
 
 
+class OversizedFailureAdapter(DeterministicModelAdapter):
+    def __init__(self) -> None:
+        super().__init__(ModelAdapterResult.failed("unused", "unused"))
+
+    def invoke(self, request):
+        self.invoke_calls += 1
+        raise ConnectionError("x" * 20_000)
+
+
 class ClaimObservingAdapter(DeterministicModelAdapter):
     def __init__(self, repository: InMemoryModelPlanningRepository) -> None:
         super().__init__(ModelAdapterResult.succeeded(valid_proposal()))
@@ -340,6 +350,30 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         self.assertIsNone(decision.revision)
         self.assertEqual(repository.list_revisions(), ())
 
+    def test_non_json_proposal_is_rejected_after_the_invocation_is_claimed(self) -> None:
+        repository = InMemoryModelPlanningRepository()
+        raw = valid_proposal().to_public_dict()
+        raw["nodes"][0]["non_json"] = object()
+
+        decision = PlanResolver(
+            repository,
+            DeterministicModelAdapter(ModelAdapterResult.succeeded(raw)),
+            policy=default_policy(),
+        ).resolve(
+            PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="non-json-proposal",
+                planning_input=PlanningInput(objective="reject non-json output"),
+            )
+        )
+
+        self.assertEqual(decision.status, "rejected")
+        self.assertEqual(decision.record.status, "rejected")
+        self.assertEqual(
+            repository.load_invocation(decision.record.invocation_id).status,
+            "rejected",
+        )
+
     def test_explicit_provider_configuration_must_match_the_invocation(self) -> None:
         configuration = ModelConfiguration.freeze(
             provider="deterministic-fake",
@@ -374,6 +408,14 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
 
         self.assertEqual(decision.status, "rejected")
         self.assertIn("provider_config", decision.record.error_message)
+
+    def test_proposed_plan_cannot_contain_error_evidence(self) -> None:
+        raw = valid_proposal().to_public_dict()
+        raw["error_code"] = "provider_failed"
+        raw["error_message"] = "contradictory error"
+
+        with self.assertRaisesRegex(PlanProposalRejected, "error"):
+            PlanProposal.from_mapping(raw)
 
     def test_unknown_retry_reconciles_the_same_identity_without_reinvocation(self) -> None:
         adapter = DeterministicModelAdapter(
@@ -527,6 +569,25 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
         self.assertEqual(recovered.status, "accepted")
         self.assertEqual(adapter.invoke_calls, 1)
         self.assertEqual(adapter.reconcile_calls, 1)
+
+    def test_provider_exception_is_bounded_before_persistence(self) -> None:
+        decision = PlanResolver(
+            InMemoryModelPlanningRepository(),
+            OversizedFailureAdapter(),
+            policy=default_policy(),
+        ).resolve(
+            PlanningRequest(
+                run_id="run-plan-1",
+                slot_id="bounded-provider-error",
+                planning_input=PlanningInput(objective="bound provider failure"),
+            )
+        )
+
+        self.assertEqual(decision.status, "unknown")
+        self.assertLessEqual(
+            len(decision.record.error_message.encode("utf-8")),
+            4096,
+        )
 
     def test_known_provider_failure_is_reused_without_another_call(self) -> None:
         adapter = DeterministicModelAdapter(
@@ -964,6 +1025,14 @@ class ModelPlanningRuntimeTests(unittest.TestCase):
             "succeeded_with_error": {
                 **succeeded,
                 "error_code": "contradictory_error",
+            },
+            "forged_provider": {
+                **succeeded,
+                "provider": "contradictory-provider",
+            },
+            "forged_model": {
+                **succeeded,
+                "model": "contradictory-model",
             },
         }
 

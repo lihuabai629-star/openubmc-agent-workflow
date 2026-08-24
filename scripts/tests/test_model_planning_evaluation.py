@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 
-from model_planning_evaluation import evaluate  # noqa: E402
+from model_planning_evaluation import evaluate, plan_for_objective  # noqa: E402
 
 
 class ModelPlanningEvaluationTests(unittest.TestCase):
@@ -40,6 +40,18 @@ class ModelPlanningEvaluationTests(unittest.TestCase):
                 self.assertTrue(pair["candidate_used_objective"])
                 self.assertEqual(pair["static_steps"], pair["expected_steps"])
                 self.assertEqual(pair["candidate_steps"], pair["expected_steps"])
+
+    def test_planner_does_not_treat_negated_keywords_as_an_upgrade_request(self) -> None:
+        proposal = plan_for_objective(
+            "write firmware release notes; do not build or upgrade"
+        )
+        actions = [
+            node.get("action")
+            for node in proposal["nodes"]
+            if isinstance(node, dict) and node.get("kind") == "action"
+        ]
+
+        self.assertEqual(actions, ["unsupported.objective"])
 
 
 if __name__ == "__main__":
