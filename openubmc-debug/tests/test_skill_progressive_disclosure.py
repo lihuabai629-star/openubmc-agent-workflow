@@ -40,6 +40,11 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
             "Do not translate the MCP call into JavaScript or a local helper",
             normalized,
         )
+        self.assertIn("native MCP tool-call channel", normalized)
+        self.assertIn(
+            "If no native tool result was recorded, issue the call",
+            normalized,
+        )
         self.assertNotIn("`openubmc-target-runtime.observe`", normalized)
         self.assertNotIn("tools.openubmc_target_runtime_observe", normalized)
 
