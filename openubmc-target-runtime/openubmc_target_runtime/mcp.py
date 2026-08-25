@@ -3507,13 +3507,26 @@ class JsonRpcMcpEndpoint:
         if receipt:
             coverage = _mapping_or_empty(receipt.get("coverage"))
             freshness = _mapping_or_empty(receipt.get("freshness"))
+            requested = coverage.get("requested", 0)
+            evaluable = coverage.get("evaluable", 0)
+            visible_evaluable = coverage.get("visible_evaluable", evaluable)
+            visible_unavailable = coverage.get(
+                "visible_unavailable",
+                coverage.get("unavailable", 0),
+            )
+            visible_not_checked = coverage.get(
+                "visible_not_checked",
+                coverage.get("not_checked", 0),
+            )
             lines.append(
                 "DiagnosticReceipt "
                 f"status={receipt.get('status', 'blocked')} "
-                f"coverage={coverage.get('evaluable', 0)}/"
-                f"{coverage.get('requested', 0)} "
-                f"unavailable={coverage.get('unavailable', 0)} "
-                f"not_checked={coverage.get('not_checked', 0)} "
+                f"source_coverage={evaluable}/{requested} "
+                f"source_unavailable={coverage.get('unavailable', 0)} "
+                f"source_not_checked={coverage.get('not_checked', 0)} "
+                f"visible={visible_evaluable}/{requested} "
+                f"visible_unavailable={visible_unavailable} "
+                f"visible_not_checked={visible_not_checked} "
                 f"complete={str(bool(coverage.get('complete'))).lower()} "
                 f"freshness={freshness.get('status', 'unknown')} "
                 f"truncated={str(bool(receipt.get('truncated'))).lower()} "
@@ -3529,18 +3542,44 @@ class JsonRpcMcpEndpoint:
                         for name, status in list(capabilities.items())[:8]
                     )
                 )
-            results = receipt.get("results", [])
-            if isinstance(results, list):
-                lines.extend(
-                    cls._diagnostic_result_text(result)
-                    for result in results[:8]
-                    if isinstance(result, Mapping)
-                )
             gaps = receipt.get("gaps", [])
             if isinstance(gaps, list) and gaps:
                 lines.append(
                     "diagnostic_gaps: "
                     + ", ".join(str(gap) for gap in gaps[:8])
+                )
+            evidence_ids: list[str] = []
+            evidence = receipt.get("evidence", [])
+            if isinstance(evidence, list):
+                evidence_ids.extend(
+                    str(evidence_id)
+                    for item in evidence
+                    if isinstance(item, Mapping)
+                    and (evidence_id := item.get("evidence_id"))
+                )
+            results = receipt.get("results", [])
+            if isinstance(results, list):
+                for result in results:
+                    if not isinstance(result, Mapping):
+                        continue
+                    result_evidence = result.get("evidence_ids", [])
+                    if isinstance(result_evidence, list):
+                        evidence_ids.extend(
+                            str(evidence_id)
+                            for evidence_id in result_evidence
+                            if evidence_id
+                        )
+                if evidence_ids:
+                    lines.append(
+                        "evidence_ids: "
+                        + ", ".join(dict.fromkeys(evidence_ids[:8]))
+                    )
+                shown = min(8, len(results))
+                lines.append(f"results_shown={shown}/{len(results)}")
+                lines.extend(
+                    cls._diagnostic_result_text(result)
+                    for result in results[:8]
+                    if isinstance(result, Mapping)
                 )
         return "\n".join(lines)
 
@@ -3593,10 +3632,14 @@ class JsonRpcMcpEndpoint:
             gate = gate if isinstance(gate, Mapping) else {}
             state = str(value.get("state", "unknown"))
             if gate:
-                return (
+                gate_text = (
                     f"openUBMC 工作流已推进到 {state}："
                     f"{gate.get('kind', 'gate')} {gate.get('name', '')}。"
                 )
+                if value.get("diagnostic_receipt"):
+                    receipt_text = cls._execute_text(value).splitlines()[1:]
+                    return "\n".join([gate_text, *receipt_text])
+                return gate_text
             return cls._execute_text(value)
         closeout_markdown = value.get("closeout_markdown")
         if isinstance(closeout_markdown, str) and closeout_markdown.strip():

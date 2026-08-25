@@ -942,6 +942,85 @@ class JsonRpcEndpointTests(unittest.TestCase):
         self.assertIn("下一步", unknown_tool["result"]["content"][0]["text"])
         self.assertEqual(self.backend.created, [])
 
+    def test_execute_gate_text_preserves_the_latest_diagnostic_receipt(self) -> None:
+        response = self.endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "target.example",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                        "entry_operation": "debug_run",
+                    },
+                    "_meta": {"codex/taskId": "diagnostic-gate-task"},
+                },
+            }
+        )
+
+        turn = response["result"]["structuredContent"]
+        self.assertEqual(turn["state"], "waiting_response")
+        self.assertIsNotNone(turn["gate"])
+        self.assertIsNotNone(turn["diagnostic_receipt"])
+        summary = response["result"]["content"][0]["text"]
+        self.assertIn("phase developer.change", summary)
+        self.assertIn("DiagnosticReceipt status=complete", summary)
+        self.assertIn("bounded fake diagnosis completed", summary)
+
+    def test_execute_text_distinguishes_source_and_visible_receipt_coverage(
+        self,
+    ) -> None:
+        receipt = {
+            "status": "complete",
+            "coverage": {
+                "requested": 64,
+                "evaluable": 64,
+                "unavailable": 0,
+                "not_checked": 0,
+                "complete": True,
+                "visible_evaluable": 32,
+                "visible_unavailable": 0,
+                "visible_not_checked": 32,
+                "compacted": 64,
+            },
+            "results": [
+                {
+                    "result_id": f"result-{index}",
+                    "status": "available",
+                    "kind": "bounded-logs",
+                    "request": f"request-{index}",
+                    "value": {"summary": [{"path": "$.value", "value": "x" * 512}]},
+                }
+                for index in range(32)
+            ],
+            "freshness": {"status": "fresh"},
+            "capabilities": {"ssh": "available"},
+            "truncated": False,
+            "content_complete": True,
+            "evidence": [{"evidence_id": "evidence-citable"}],
+            "gaps": ["diagnostic_receipt_compacted", "critical-gap"],
+        }
+
+        response = self.endpoint._tool_result(
+            {
+                "state": "completed",
+                "diagnostic_receipt": receipt,
+            },
+            tool_name="execute",
+        )
+
+        summary = response["content"][0]["text"]
+        self.assertLessEqual(len(summary.encode("utf-8")), 4096)
+        self.assertIn("source_coverage=64/64", summary)
+        self.assertIn("visible=32/64", summary)
+        self.assertIn("results_shown=8/32", summary)
+        self.assertIn("diagnostic_gaps: diagnostic_receipt_compacted, critical-gap", summary)
+        self.assertIn("evidence_ids: evidence-citable", summary)
+
     def test_related_domain_results_share_concise_chinese_text_content(self) -> None:
         cases = (
             (
