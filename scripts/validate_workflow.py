@@ -281,6 +281,7 @@ def validate_release_metadata(document: dict[str, object]) -> None:
     legacy_knowledge_files = {
         Path("openubmc-environment-setup/SKILL.md"),
         Path("openubmc-environment-setup/scripts/install_environment.py"),
+        Path("openubmc-environment-setup/tests/test_client_config.py"),
         Path("openubmc-environment-setup/tests/test_install_environment.py"),
     }
     for path in ROOT.rglob("*"):

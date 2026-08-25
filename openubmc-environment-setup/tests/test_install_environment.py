@@ -2068,6 +2068,61 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
         self.assertEqual(codex.read_text(encoding="utf-8"), migrated_kb)
 
+    def test_quoted_external_codex_kb_stdio_is_preserved_without_duplicate(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        external = (
+            '[mcp_servers."openubmc\\u002dkb"]\n'
+            'command = "/opt/external-kb"\n'
+            'args = ["serve", "--stdio"]\n'
+        )
+        codex.write_text(external, encoding="utf-8")
+
+        result, output = self.install("--clients", "codex")
+
+        self.assertEqual(result, 0, output)
+        installed = codex.read_text(encoding="utf-8")
+        self.assertTrue(installed.startswith(external))
+        self.assertNotIn("[mcp_servers.openubmc-kb]", installed)
+        self.assertIn("[mcp_servers.openubmc-target-runtime]", installed)
+        state = installer.load_state(self.home)
+        self.assertEqual(state["mcp"]["codex"]["ownership"], "external")
+        self.assertEqual(self.check()[0], 0)
+
+    def test_custom_external_claude_runtime_entry_is_not_claimed(self) -> None:
+        self.home.mkdir(parents=True)
+        claude = self.home / ".claude.json"
+        external = {
+            "type": "stdio",
+            "command": str(installer.runtime_launcher_path(self.home)),
+            "env": {"MODE": "read-only"},
+        }
+        claude.write_text(
+            json.dumps(
+                {"mcpServers": {installer.TARGET_RUNTIME_MCP_NAME: external}},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError,
+            "existing openubmc-target-runtime MCP command differs",
+        ):
+            installer.validate_runtime_mcp_configuration(
+                self.home,
+                ["claude"],
+                installer.runtime_launcher_path(self.home),
+            )
+
+        preserved = json.loads(claude.read_text(encoding="utf-8"))
+        self.assertEqual(
+            preserved["mcpServers"][installer.TARGET_RUNTIME_MCP_NAME], external
+        )
+
     def test_known_legacy_standalone_codex_kb_migrates_to_managed_stdio(self) -> None:
         self.prepare_credentials()
         codex = self.home / ".codex" / "config.toml"

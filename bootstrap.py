@@ -19,6 +19,14 @@ INSTALLER_API_TEMPLATE = (
     "https://api.github.com/repos/lihuabai629-star/openubmc-agent-workflow/contents/"
     "openubmc-environment-setup/scripts/install_environment.py?ref={ref}"
 )
+CLIENT_CONFIG_API_TEMPLATE = (
+    "https://api.github.com/repos/lihuabai629-star/openubmc-agent-workflow/contents/"
+    "openubmc-environment-setup/scripts/client_config.py?ref={ref}"
+)
+INSTALLER_ASSETS = {
+    "install_environment.py": INSTALLER_API_TEMPLATE,
+    "client_config.py": CLIENT_CONFIG_API_TEMPLATE,
+}
 FULL_COMMIT = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 MUTABLE_REFS = frozenset({"head", "main", "master", "develop", "development", "trunk"})
 FORBIDDEN_FORWARDED_OPTIONS = frozenset(
@@ -34,8 +42,8 @@ def github_token() -> str | None:
     return None
 
 
-def installer_request(ref: str) -> urllib.request.Request:
-    url = INSTALLER_API_TEMPLATE.format(ref=urllib.parse.quote(ref, safe=""))
+def github_file_request(template: str, ref: str) -> urllib.request.Request:
+    url = template.format(ref=urllib.parse.quote(ref, safe=""))
     headers = {
         "Accept": "application/vnd.github.raw",
         "User-Agent": "openubmc-agent-workflow-bootstrap",
@@ -98,21 +106,27 @@ def main(argv: list[str] | None = None) -> int:
             "bootstrap must use the primary GitHub release source; "
             f"forwarding {blocked} is unsupported"
         )
-    request = installer_request(known.ref)
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            installer = response.read()
-    except OSError as error:
-        hint = (
-            "; authenticate private GitHub access with GH_TOKEN or GITHUB_TOKEN"
-            if github_token() is None
-            else ""
-        )
-        print(f"error: unable to download installer: {error}{hint}", file=sys.stderr)
-        return 2
+    assets: dict[str, bytes] = {}
+    for name, template in INSTALLER_ASSETS.items():
+        request = github_file_request(template, known.ref)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                assets[name] = response.read()
+        except OSError as error:
+            hint = (
+                "; authenticate private GitHub access with GH_TOKEN or GITHUB_TOKEN"
+                if github_token() is None
+                else ""
+            )
+            print(
+                f"error: unable to download {name}: {error}{hint}",
+                file=sys.stderr,
+            )
+            return 2
     with tempfile.TemporaryDirectory(prefix="openubmc-bootstrap-") as directory:
         path = Path(directory) / "install_environment.py"
-        path.write_bytes(installer)
+        for name, content in assets.items():
+            (Path(directory) / name).write_bytes(content)
         command = [
             sys.executable,
             str(path),
