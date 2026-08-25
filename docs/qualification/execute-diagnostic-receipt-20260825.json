@@ -1,9 +1,9 @@
 {
   "schema": "openubmc-agent-workflow.execute-diagnostic-receipt-qualification.v1",
-  "generated_at": "2026-08-25T13:58:11.469577+00:00",
+  "generated_at": "2026-08-25T18:29:40.975688+00:00",
   "target": "BMC-T1",
   "model": "gpt-5.6-sol",
-  "source_commit": "01d25d3fa9a722d1eee8cd808db19e5fb9508092",
+  "source_commit": "29138e8873ed333ae3c3b5692f0a8cab9e36d882",
   "candidate_fix_included": true,
   "read_only_proxy_enforced": true,
   "agent_interface": [
@@ -13,12 +13,14 @@
   "verdict": {
     "execute_diagnostic_closure_restored": true,
     "substantive_evidence_scenarios": 6,
-    "scenario_objectives_satisfied": 5,
+    "scenario_objectives_satisfied": 6,
     "scenario_count": 6,
     "false_success_count": 0,
-    "full_status_count": 3,
-    "partial_status_count": 3,
-    "remaining_gap": "The identity scenario did not collect a target-clock result."
+    "source_complete_count": 5,
+    "source_partial_count": 1,
+    "agent_final_completed_count": 1,
+    "agent_final_partial_count": 5,
+    "remaining_gap": null
   },
   "totals": {
     "completed_processes": 6,
@@ -27,49 +29,53 @@
       "execute": 5,
       "observe": 1
     },
-    "total_tokens": 355156,
-    "noncached_input_plus_output_tokens": 144724,
-    "wall_time_seconds": 524.241,
-    "visible_tool_output_bytes": 42527,
-    "compressed_persisted_evidence_bytes": 161135,
+    "total_tokens": 344081,
+    "noncached_input_plus_output_tokens": 137233,
+    "wall_time_seconds": 362.343,
+    "visible_tool_output_bytes": 60535,
+    "compressed_persisted_evidence_bytes": 161979,
     "persisted_artifact_bytes": 0
   },
   "comparison": {
     "legacy_19_tool_baseline": {
       "source_commit": "35b36efb6503d05a811b51bf09fb5f8dead0e208",
-      "total_tokens_reduction_percent": 68.01,
-      "noncached_input_plus_output_reduction_percent": 62.27,
+      "total_tokens_reduction_percent": 69.01,
+      "noncached_input_plus_output_reduction_percent": 64.23,
       "mcp_event_reduction_percent": 71.43,
-      "wall_time_reduction_percent": 8.09,
-      "visible_tool_output_reduction_percent": 99.29,
-      "compressed_persisted_evidence_reduction_percent": 0.29
+      "wall_time_reduction_percent": 36.47,
+      "visible_tool_output_reduction_percent": 98.99,
+      "compressed_persisted_evidence_reduction_percent": -0.24
     },
     "prefixed_two_tool_baseline": {
       "source_commit": "3d8cf49bc3d07ecff71096d6f73e1ef255d7eb8b",
-      "total_tokens_change_percent": -6.15,
-      "noncached_input_plus_output_change_percent": 24.45,
+      "total_tokens_change_percent": -9.08,
+      "noncached_input_plus_output_change_percent": 18.01,
       "mcp_event_change_percent": 0.0,
-      "wall_time_change_percent": 43.24,
-      "visible_tool_output_change_percent": 410.16,
-      "compressed_persisted_evidence_change_percent": 0.25
+      "wall_time_change_percent": -1.0,
+      "visible_tool_output_change_percent": 626.19,
+      "compressed_persisted_evidence_change_percent": 0.77
     }
   },
   "scenarios": [
     {
       "id": "s1_identity_capability",
-      "final_status": "partial",
-      "objective_satisfied": false,
+      "agent_final_status": "partial",
+      "runtime_state": "completed",
+      "objective_satisfied": true,
       "substantive_evidence_visible": true,
       "receipt_status": "complete",
       "coverage_complete": true,
       "freshness_complete": true,
       "source_truncated": false,
       "content_complete": true,
-      "finding": "Deployed version, uptime, four capabilities, MDB output, and D-Bus service evidence are visible; target clock is not collected."
+      "projection_compacted": true,
+      "projection_target_exceeded": false,
+      "finding": "Version, uptime, four requested capabilities, service and MDB evidence, and a target-clock sample that advanced by seven seconds are visible."
     },
     {
       "id": "s2_mctp_timeout",
-      "final_status": "completed",
+      "agent_final_status": "partial",
+      "runtime_state": "completed",
       "objective_satisfied": true,
       "substantive_evidence_visible": true,
       "receipt_status": "complete",
@@ -77,11 +83,14 @@
       "freshness_complete": true,
       "source_truncated": false,
       "content_complete": true,
-      "finding": "A bounded mctpd request-timeout line and service context are visible without a root-cause claim."
+      "projection_compacted": true,
+      "projection_target_exceeded": false,
+      "finding": "A bounded mctpd request-timeout line, target time, and service context are visible without a root-cause, persistence, or recovery claim."
     },
     {
       "id": "s3_storage_hwproxy",
-      "final_status": "completed",
+      "agent_final_status": "partial",
+      "runtime_state": "completed",
       "objective_satisfied": true,
       "substantive_evidence_visible": true,
       "receipt_status": "complete",
@@ -89,11 +98,14 @@
       "freshness_complete": true,
       "source_truncated": false,
       "content_complete": true,
-      "finding": "Storage service evidence, Drive values, and a storage-to-hwproxy request-timeout line survive durable and Agent projection compaction."
+      "projection_compacted": true,
+      "projection_target_exceeded": true,
+      "finding": "Storage service evidence, Drive Name/Presence/Health values, and storage-to-hwproxy request-timeout lines survive durable and Agent projection compaction without assigning unsupported fault semantics."
     },
     {
       "id": "s4_devmon_shmlock",
-      "final_status": "partial",
+      "agent_final_status": "partial",
+      "runtime_state": "completed",
       "objective_satisfied": true,
       "substantive_evidence_visible": true,
       "receipt_status": "complete",
@@ -101,11 +113,14 @@
       "freshness_complete": true,
       "source_truncated": false,
       "content_complete": true,
-      "finding": "Devmon visibility and repeat acquire/release lines are visible; the result correctly avoids promoting them to a proven lock holder, deadlock, or root cause."
+      "projection_compacted": true,
+      "projection_target_exceeded": false,
+      "finding": "Devmon visibility and repeat acquire/release lines are visible; the result correctly avoids promoting them to a proven lock holder, wait chain, deadlock, or root cause."
     },
     {
       "id": "s5_narrow_mdb",
-      "final_status": "completed",
+      "agent_final_status": "completed",
+      "runtime_state": "observed",
       "objective_satisfied": true,
       "substantive_evidence_visible": true,
       "receipt_status": "complete",
@@ -113,11 +128,14 @@
       "freshness_complete": true,
       "source_truncated": false,
       "content_complete": true,
-      "finding": "One observe call returns Name, Presence, Health, complete coverage, coherent consistency, and live freshness."
+      "projection_compacted": false,
+      "projection_target_exceeded": false,
+      "finding": "One observe call returns Name, Presence, Health, 4/4 coverage, coherent consistency, and live freshness."
     },
     {
       "id": "s6_bounded_timeline",
-      "final_status": "partial",
+      "agent_final_status": "partial",
+      "runtime_state": "failed",
       "objective_satisfied": true,
       "substantive_evidence_visible": true,
       "receipt_status": "partial",
@@ -125,6 +143,8 @@
       "freshness_complete": true,
       "source_truncated": true,
       "content_complete": false,
+      "projection_compacted": true,
+      "projection_target_exceeded": true,
       "finding": "The visible timeline is bounded and the result propagates source truncation, incomplete content, and unsupported negative claims."
     }
   ],
