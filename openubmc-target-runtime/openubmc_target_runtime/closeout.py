@@ -618,7 +618,9 @@ def _operation_status(
             diagnostic_receipt = DiagnosticReceipt.from_public_dict(
                 raw_diagnostic_receipt
             )
-            return _DIAGNOSTIC_OPERATION_STATUS[diagnostic_receipt.status]
+            return _DIAGNOSTIC_OPERATION_STATUS[
+                diagnostic_receipt.status_for_agent_acceptance()
+            ]
         projected = build_diagnostic_receipt(
             str(operation.get("operation") or "debug_run"),
             evidence,
@@ -627,7 +629,9 @@ def _operation_status(
             closeout_stage="diagnosis",
         )
         if projected is not None:
-            return _DIAGNOSTIC_OPERATION_STATUS[projected.status]
+            return _DIAGNOSTIC_OPERATION_STATUS[
+                projected.status_for_agent_acceptance()
+            ]
     if stage in {"live_patch", "upgrade"}:
         journal = _mapping(evidence.get("journal"))
         classified = mutation_journal_operation_status(

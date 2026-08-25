@@ -817,6 +817,31 @@ class DiagnosticReceipt:
             result["compacted_results"] = self.compacted_results.to_public_dict()
         return result
 
+    def status_for_agent_acceptance(self) -> DiagnosticStatus:
+        """Classify whether the persisted receipt is fully evaluable by an Agent."""
+
+        if self.status is not DiagnosticStatus.COMPLETE:
+            return self.status
+        visible = (
+            self.coverage.visible_evaluable,
+            self.coverage.visible_unavailable,
+            self.coverage.visible_not_checked,
+        )
+        if all(value is None for value in visible):
+            return self.status
+        visible_evaluable = self.coverage.visible_evaluable or 0
+        if (
+            visible_evaluable == self.coverage.requested
+            and (self.coverage.visible_unavailable or 0) == 0
+            and (self.coverage.visible_not_checked or 0) == 0
+        ):
+            return self.status
+        return (
+            DiagnosticStatus.PARTIAL
+            if visible_evaluable > 0
+            else DiagnosticStatus.BLOCKED
+        )
+
     def compacted_for_agent(self) -> "DiagnosticReceipt":
         selected_items: list[DiagnosticResult] = []
         for item in self.results:

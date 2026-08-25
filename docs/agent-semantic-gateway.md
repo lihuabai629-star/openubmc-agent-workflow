@@ -143,8 +143,10 @@ freshness gaps identify the affected Runtime-owned target ID.
 Requested coverage is derived from Runtime-owned operation arguments and reconciled with the
 Adapter result, so an omitted echoed request or skipped collector cannot shrink the acceptance
 scope. Multi-target diagnosis projects each target result plus the bounded comparison result.
-The same receipt status feeds Closeout acceptance, so a generic operation summary cannot satisfy
-`stage.diagnosis`.
+Closeout derives Agent acceptance from both the source receipt status and `visible_*` coverage.
+Source-complete Evidence remains complete after compaction, but `stage.diagnosis` is partial or
+blocked when the persisted Agent-visible receipt is only partially evaluable or not evaluable.
+A generic operation summary therefore cannot satisfy `stage.diagnosis`.
 
 A Turn targets 8 KiB; each Gate schema remains limited to 4 KiB. If a diagnostic result exceeds
 the Turn target, result previews are compacted while source coverage counts, freshness, truncation,
@@ -166,6 +168,8 @@ The durable Receipt is separately limited to 32 KiB before it enters event histo
 previews do not fit, the Runtime retains bounded result identities, source coverage counts, gaps,
 freshness, capability states, and Evidence references. Persistence compaction records `visible_*`,
 `compacted_results`, and `content_compacted` without rewriting source status or source completeness.
+Closeout still requires every requested identity to remain visibly evaluable before it reports a
+passed diagnosis.
 The public `execute(start)` boundary rejects a Runtime-owned diagnostic scope that would require
 more than 1,024 result identities after applying the target multiplier and multi-target comparison
 item, so an accepted scope always fits the durable identity budget.

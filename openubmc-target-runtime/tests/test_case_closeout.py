@@ -479,6 +479,89 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         self.assertEqual(diagnosis.status, "partial")
         self.assertNotEqual(closeout.closure_status, "completed_in_scope")
 
+    def test_closeout_requires_complete_visible_diagnostic_coverage(self) -> None:
+        plan = AcceptancePlan.freeze(
+            {
+                "intent": "diagnosis-only",
+                "final_purpose": "diagnose",
+            },
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "compacted-diagnostic-coverage",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [{"target_id": "target-1", "address": "192.0.2.30"}],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-compacted-coverage",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 5,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["diagnosis-evidence"],
+                    "diagnostic_receipt": {
+                        "receipt_id": "diagnostic-compacted-coverage",
+                        "operation": "debug_run",
+                        "status": "complete",
+                        "coverage": {
+                            "requested": 3,
+                            "evaluable": 3,
+                            "unavailable": 0,
+                            "not_checked": 0,
+                            "complete": True,
+                            "visible_evaluable": 1,
+                            "visible_unavailable": 0,
+                            "visible_not_checked": 2,
+                            "compacted": 3,
+                        },
+                        "results": [
+                            {
+                                "result_id": "version",
+                                "kind": "target-version",
+                                "request": "/etc/version.json",
+                                "status": "available",
+                                "value": {"version": "12.08.21.06"},
+                            }
+                        ],
+                        "compacted_results": {
+                            "status": "not_checked",
+                            "gap": "result_preview_compacted",
+                            "result_ids": ["uptime", "target-clock"],
+                        },
+                        "freshness": {
+                            "status": "complete",
+                            "observed_at": "2026-08-25T00:00:00Z",
+                            "complete": True,
+                        },
+                        "capabilities": {},
+                        "truncated": False,
+                        "content_complete": True,
+                        "content_compacted": True,
+                        "evidence": [],
+                        "gaps": ["diagnostic_receipt_compacted"],
+                    },
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {"evidence_id": "diagnosis-evidence", "blob_id": "diagnosis"}
+            ],
+        }
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda _reference: {
+                "ok": True,
+                "root_cause": "one visible result",
+            },
+        )
+        diagnosis = next(
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(diagnosis.status, "partial")
+        self.assertNotEqual(closeout.closure_status, "completed_in_scope")
+
     def test_multi_target_stage_uses_the_worst_target_result(self) -> None:
         plan = AcceptancePlan.freeze(
             {

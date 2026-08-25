@@ -270,6 +270,56 @@
       }
     },
     {
+      "name": "source-complete-visible-partial-cannot-pass",
+      "expected_status": "failed",
+      "expected_finding": "diagnostic_false_success",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-source-complete-visible-partial",
+        "operation": "debug_run",
+        "status": "complete",
+        "coverage": {
+          "requested": 3,
+          "evaluable": 3,
+          "unavailable": 0,
+          "not_checked": 0,
+          "complete": true,
+          "visible_evaluable": 1,
+          "visible_unavailable": 0,
+          "visible_not_checked": 2,
+          "compacted": 3
+        },
+        "results": [
+          {
+            "result_id": "visible-summary",
+            "kind": "diagnosis",
+            "request": "bounded diagnosis",
+            "status": "available",
+            "value": {
+              "root_cause": "connector timeout",
+              "content_complete": true
+            }
+          }
+        ],
+        "compacted_results": {
+          "status": "not_checked",
+          "gap": "result_preview_compacted",
+          "result_ids": ["compacted-result-1", "compacted-result-2"]
+        },
+        "freshness": {
+          "status": "fresh",
+          "complete": true,
+          "observed_at": "2026-08-25T04:42:55Z"
+        },
+        "capabilities": {},
+        "truncated": false,
+        "content_complete": true,
+        "content_compacted": true,
+        "evidence": [],
+        "gaps": ["diagnostic_receipt_compacted"]
+      }
+    },
+    {
       "name": "compacted-receipt-counts-visible-results-separately",
       "expected_status": "passed",
       "expected_finding": "diagnostic_truncation_preserved",

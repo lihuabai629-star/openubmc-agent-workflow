@@ -563,6 +563,8 @@ class CaseReplayService:
                         or receipt.truncated
                         or non_evaluable_available
                         or evaluable_count_mismatch
+                        or receipt.status_for_agent_acceptance()
+                        is not DiagnosticStatus.COMPLETE
                     ):
                         findings.append(
                             {

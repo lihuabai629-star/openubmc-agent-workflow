@@ -44,7 +44,8 @@ completion semantics.
 
 ## Consequences
 
-- Projection pressure cannot turn a complete Runtime result into an incomplete workflow result.
+- Projection pressure cannot rewrite a complete Runtime source result; Agent acceptance still
+  fails closed when durable compaction cannot retain complete visible evaluability.
 - Ordinary Turns still target 8 KiB and report compaction telemetry separately from workflow state.
 - A rare oversized semantic Turn is visible and measurable instead of becoming a retry loop that
   asks the Agent to guess a narrower diagnostic scope.
@@ -67,4 +68,3 @@ completion semantics.
 - [Execute DiagnosticReceipt qualification](../qualification/execute-diagnostic-receipt-20260825.md)
 - [ADR-0001](0001-runtime-core-and-semantic-agent-interface.md)
 - [ADR-0003](0003-turn-gate-artifact-and-distribution-boundaries.md)
-
