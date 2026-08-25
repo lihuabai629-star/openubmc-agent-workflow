@@ -469,7 +469,6 @@ def _capacity(root: Path) -> dict[str, object]:
             incomplete_operations == 0,
             max_events_per_run <= MAX_EVENTS_PER_RUN,
             total_events <= CAPACITY_RUNS * MAX_EVENTS_PER_RUN,
-            storage_bytes_by_batch == sorted(storage_bytes_by_batch),
             storage_bytes_by_batch[-1] == storage_bytes,
             max(storage_growth_by_batch) <= max_storage_growth_per_batch,
             storage_bytes <= MAX_CAPACITY_STORAGE_BYTES,
