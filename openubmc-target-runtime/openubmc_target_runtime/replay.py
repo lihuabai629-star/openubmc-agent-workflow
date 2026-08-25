@@ -509,7 +509,15 @@ class CaseReplayService:
                     evaluable_count_mismatch = (
                         visible_evaluable < claimed_visible_evaluable
                     )
-                    if non_evaluable_available or evaluable_count_mismatch:
+                    invalid_non_evaluable = (
+                        "diagnostic_available_result_not_evaluable"
+                        in receipt.gaps
+                    )
+                    if (
+                        non_evaluable_available
+                        or evaluable_count_mismatch
+                        or invalid_non_evaluable
+                    ):
                         findings.append(
                             {
                                 "code": "diagnostic_result_not_evaluable",

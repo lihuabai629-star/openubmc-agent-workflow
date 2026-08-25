@@ -1834,6 +1834,53 @@ class NonEvaluableDiagnosticTurnRuntime:
         )
 
 
+class UncompactableDiagnosticTurnRuntime:
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        value: object = "substantive diagnostic evidence" + "x" * 20_000
+        for index in range(10):
+            value = {f"level-{index}": value}
+        return RunTurn(
+            run_id="case-uncompactable-diagnostic",
+            state="completed",
+            facts=tuple(
+                {"fact_id": index, "details": "x" * 512}
+                for index in range(32)
+            ),
+            diagnostic_receipt=DiagnosticReceipt.from_public_dict({
+                "receipt_id": "diagnostic-uncompactable",
+                "operation": "debug_run",
+                "status": "complete",
+                "coverage": {
+                    "requested": 1,
+                    "evaluable": 1,
+                    "unavailable": 0,
+                    "not_checked": 0,
+                    "complete": True,
+                },
+                "results": [
+                    {
+                        "result_id": "nested-evidence",
+                        "kind": "diagnosis",
+                        "request": "nested diagnostic evidence",
+                        "status": "available",
+                        "value": value,
+                    }
+                ],
+                "freshness": {
+                    "status": "complete",
+                    "observed_at": "2026-08-25T04:42:55Z",
+                    "complete": True,
+                },
+                "capabilities": {},
+                "truncated": False,
+                "content_complete": True,
+                "evidence": [],
+                "gaps": [],
+            }),
+        )
+
+
 class OversizedTerminalTurnRuntime(OversizedDiagnosticTurnRuntime):
     acceptance = [
         {
@@ -3633,11 +3680,13 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(public["coverage"]["visible_evaluable"], 64)
         self.assertEqual(public["coverage"]["visible_not_checked"], 960)
         self.assertEqual(public["coverage"]["compacted"], 1024)
-        self.assertEqual(len(public["results"]), 1024)
-        self.assertEqual(public["results"][-1]["result_id"], "mdb-1023")
-        self.assertEqual(public["results"][-1]["status"], "not_checked")
+        self.assertEqual(len(public["results"]), 64)
+        compacted_results = public["compacted_results"]
+        self.assertEqual(len(compacted_results["result_ids"]), 960)
+        self.assertEqual(compacted_results["result_ids"][-1], "mdb-1023")
+        self.assertEqual(compacted_results["status"], "not_checked")
         self.assertEqual(
-            public["results"][-1]["gap"],
+            compacted_results["gap"],
             "result_preview_compacted",
         )
         self.assertFalse(public["truncated"])
@@ -4692,7 +4741,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIn("bmc.kepler.hwproxy", encoded_results)
         self.assertNotIn("<compacted>", encoded_results)
 
-    def test_execute_turn_fails_closed_when_projection_loses_the_only_result(
+    def test_execute_turn_fails_closed_on_a_non_evaluable_runtime_receipt(
         self,
     ) -> None:
         turn = AgentGateway(NonEvaluableDiagnosticTurnRuntime()).execute(
@@ -4707,10 +4756,26 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(receipt["coverage"]["visible_evaluable"], 0)
         self.assertEqual(receipt["coverage"]["visible_not_checked"], 1)
         self.assertEqual(receipt["results"][0]["status"], "not_checked")
-        self.assertIn(
-            "diagnostic_result_not_evaluable_after_projection",
-            receipt["gaps"],
+        self.assertIn("diagnostic_receipt_invalid", receipt["gaps"])
+
+    def test_execute_turn_exceeds_the_soft_target_instead_of_rewriting_completion(
+        self,
+    ) -> None:
+        turn = AgentGateway(UncompactableDiagnosticTurnRuntime()).execute(
+            {"kind": "start", "target": "192.0.2.20"},
+            task_id="uncompactable-diagnostic",
+            operation_id="uncompactable-diagnostic-1",
         )
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "complete")
+        self.assertTrue(receipt["coverage"]["complete"])
+        self.assertEqual(receipt["results"][0]["status"], "available")
+        self.assertIn(
+            "substantive diagnostic evidence",
+            json.dumps(receipt["results"]),
+        )
+        self.assertTrue(turn["projection_target_exceeded"])
 
     def test_execute_turn_compacts_large_diagnostic_previews_to_the_target(self) -> None:
         turn = AgentGateway(OversizedDiagnosticTurnRuntime(128)).execute(

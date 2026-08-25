@@ -15,7 +15,7 @@ from .redaction import is_secret_key, redact_text
 
 
 DIAGNOSTIC_RECEIPT_SCHEMA = f"{RUNTIME_API_VERSION}/diagnostic-receipt-v1"
-DIAGNOSTIC_RECEIPT_MAX_BYTES = 256 * 1024
+DIAGNOSTIC_RECEIPT_MAX_BYTES = 32 * 1024
 DIAGNOSTIC_RECEIPT_MAX_PREVIEW_RESULTS = 64
 DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS = 1024
 _DIAGNOSIS_FIELDS = (
@@ -372,26 +372,15 @@ class DiagnosticResult:
         )
 
     def compacted_for_storage(self) -> "DiagnosticResult":
-        tracker = [False]
         compacted_value = (
-            _bounded_public(
+            _bounded_diagnostic_value_summary(
                 self.value,
-                truncated=tracker,
-                max_depth=1,
-                max_items=4,
+                max_samples=2,
                 max_string=96,
             )
             if self.value is not None
             else None
         )
-        if tracker[0]:
-            compacted_value = _without_compacted_placeholders(compacted_value)
-            summary = _bounded_diagnostic_value_summary(self.value)
-            if summary is not None:
-                if isinstance(compacted_value, Mapping):
-                    compacted_value = {**compacted_value, **summary}
-                else:
-                    compacted_value = summary
         status = self.status
         gap = self.gap
         if (
@@ -399,23 +388,22 @@ class DiagnosticResult:
             and not diagnostic_result_value_evaluable(compacted_value)
         ):
             compacted_value = _bounded_diagnostic_value_summary(self.value)
-            tracker[0] = True
             if not diagnostic_result_value_evaluable(compacted_value):
                 status = DiagnosticItemStatus.NOT_CHECKED
                 gap = gap or "result_not_visible_after_redaction"
         return replace(
             self,
             result_id=_bounded_text(self.result_id, 128),
-            kind=_bounded_text(self.kind, 96),
-            request=_bounded_text(self.request, 192),
+            kind=_bounded_text(self.kind, 48),
+            request=_bounded_text(self.request, 96),
             status=status,
-            observed_at=_bounded_text(self.observed_at, 128),
-            gap=_bounded_text(gap, 192),
+            observed_at=_bounded_text(self.observed_at, 64),
+            gap=_bounded_text(gap, 96),
             value=compacted_value,
             evidence_ids=tuple(
-                _bounded_text(item, 128) for item in self.evidence_ids[:4]
+                _bounded_text(item, 64) for item in self.evidence_ids[:2]
             ),
-            projection_truncated=self.projection_truncated or tracker[0],
+            projection_truncated=True,
         )
 
 
@@ -543,6 +531,41 @@ class DiagnosticEvidenceRef:
 
 
 @dataclass(frozen=True)
+class DiagnosticCompactedResultSet:
+    status: DiagnosticItemStatus
+    gap: str
+    result_ids: tuple[str, ...]
+
+    @classmethod
+    def from_public_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "DiagnosticCompactedResultSet":
+        raw_ids = value.get("result_ids", [])
+        return cls(
+            status=DiagnosticItemStatus.parse(value.get("status")),
+            gap=str(value.get("gap", "")).strip(),
+            result_ids=tuple(
+                str(item).strip()
+                for item in (
+                    raw_ids
+                    if isinstance(raw_ids, Sequence)
+                    and not isinstance(raw_ids, (str, bytes, bytearray))
+                    else ()
+                )
+                if str(item).strip()
+            ),
+        )
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status.value,
+            "gap": self.gap,
+            "result_ids": list(self.result_ids),
+        }
+
+
+@dataclass(frozen=True)
 class DiagnosticReceipt:
     """Typed durable diagnosis semantics before AgentGateway projection."""
 
@@ -557,6 +580,7 @@ class DiagnosticReceipt:
     content_complete: bool
     evidence: tuple[DiagnosticEvidenceRef, ...]
     gaps: tuple[str, ...]
+    compacted_results: DiagnosticCompactedResultSet | None = None
     schema: str = DIAGNOSTIC_RECEIPT_SCHEMA
     content_compacted: bool = False
 
@@ -567,6 +591,7 @@ class DiagnosticReceipt:
         raw_results = value.get("results", [])
         raw_evidence = value.get("evidence", [])
         raw_gaps = value.get("gaps", [])
+        raw_compacted_results = value.get("compacted_results")
         raw_capabilities = _mapping(value.get("capabilities"))
         receipt = cls(
             receipt_id=str(value.get("receipt_id", "")).strip(),
@@ -613,16 +638,59 @@ class DiagnosticReceipt:
                     else ()
                 )
             ),
+            compacted_results=(
+                DiagnosticCompactedResultSet.from_public_dict(
+                    raw_compacted_results
+                )
+                if isinstance(raw_compacted_results, Mapping)
+                else None
+            ),
             schema=str(value.get("schema") or DIAGNOSTIC_RECEIPT_SCHEMA),
             content_compacted=value.get("content_compacted") is True,
         )
         validation_gaps = receipt._validation_gaps()
         if not validation_gaps:
             return receipt
-        available_results = sum(
-            item.status is DiagnosticItemStatus.AVAILABLE
+        normalized_results = tuple(
+            replace(
+                item,
+                status=DiagnosticItemStatus.NOT_CHECKED,
+                gap=item.gap or "result_not_evaluable",
+                value=None,
+            )
+            if item.status is DiagnosticItemStatus.AVAILABLE
+            and not diagnostic_result_value_evaluable(item.value)
+            else item
             for item in receipt.results
         )
+        compacted_count = (
+            len(receipt.compacted_results.result_ids)
+            if receipt.compacted_results is not None
+            else 0
+        )
+        identity_count = len(normalized_results) + compacted_count
+        requested = max(receipt.coverage.requested, identity_count)
+        available_results = sum(
+            item.status is DiagnosticItemStatus.AVAILABLE
+            for item in normalized_results
+        )
+        unavailable_results = sum(
+            item.status is DiagnosticItemStatus.UNAVAILABLE
+            for item in normalized_results
+        )
+        not_checked_results = sum(
+            item.status is DiagnosticItemStatus.NOT_CHECKED
+            for item in normalized_results
+        )
+        if receipt.compacted_results is not None:
+            if (
+                receipt.compacted_results.status
+                is DiagnosticItemStatus.UNAVAILABLE
+            ):
+                unavailable_results += compacted_count
+            else:
+                not_checked_results += compacted_count
+        not_checked_results += max(0, requested - identity_count)
         gaps = list(receipt.gaps)
         for gap in ("diagnostic_receipt_invalid", *validation_gaps):
             if gap not in gaps:
@@ -631,10 +699,18 @@ class DiagnosticReceipt:
             receipt,
             status=(
                 DiagnosticStatus.PARTIAL
-                if available_results > 0 or receipt.coverage.evaluable > 0
+                if available_results > 0
                 else DiagnosticStatus.BLOCKED
             ),
-            coverage=replace(receipt.coverage, complete=False),
+            coverage=replace(
+                receipt.coverage,
+                requested=requested,
+                evaluable=available_results,
+                unavailable=unavailable_results,
+                not_checked=not_checked_results,
+                complete=False,
+            ),
+            results=normalized_results,
             gaps=tuple(gaps),
         )
 
@@ -646,6 +722,13 @@ class DiagnosticReceipt:
         )
         if coverage.requested != accounted:
             gaps.append("diagnostic_coverage_count_mismatch")
+        non_evaluable_available = sum(
+            item.status is DiagnosticItemStatus.AVAILABLE
+            and not diagnostic_result_value_evaluable(item.value)
+            for item in self.results
+        )
+        if non_evaluable_available:
+            gaps.append("diagnostic_available_result_not_evaluable")
         result_counts = {
             DiagnosticItemStatus.AVAILABLE: sum(
                 item.status is DiagnosticItemStatus.AVAILABLE
@@ -690,10 +773,18 @@ class DiagnosticReceipt:
         }
         if self.content_compacted:
             result["content_compacted"] = True
+        if self.compacted_results is not None:
+            result["compacted_results"] = self.compacted_results.to_public_dict()
         return result
 
     def compacted_for_agent(self) -> "DiagnosticReceipt":
-        selected = tuple(item.compacted_for_agent() for item in self.results)
+        selected_items: list[DiagnosticResult] = []
+        for item in self.results:
+            compacted = item.compacted_for_agent()
+            selected_items.append(
+                item if compacted.status is not item.status else compacted
+            )
+        selected = tuple(selected_items)
         visible_evaluable = sum(
             item.status is DiagnosticItemStatus.AVAILABLE for item in selected
         )
@@ -703,38 +794,28 @@ class DiagnosticReceipt:
         visible_not_checked = sum(
             item.status is DiagnosticItemStatus.NOT_CHECKED for item in selected
         )
+        if self.compacted_results is not None:
+            compacted_count = len(self.compacted_results.result_ids)
+            if (
+                self.compacted_results.status
+                is DiagnosticItemStatus.UNAVAILABLE
+            ):
+                visible_unavailable += compacted_count
+            else:
+                visible_not_checked += compacted_count
         compacted = max(self.coverage.compacted, self.coverage.requested)
         coverage = replace(
             self.coverage,
-            complete=(
-                self.coverage.complete
-                and visible_evaluable == self.coverage.requested
-                and visible_unavailable == 0
-                and visible_not_checked == 0
-            ),
             visible_evaluable=visible_evaluable,
             visible_unavailable=visible_unavailable,
             visible_not_checked=visible_not_checked,
             compacted=compacted,
         )
         gaps = list(self.gaps[:5])
-        projection_lost_evaluable = visible_evaluable < self.coverage.evaluable
-        if (
-            projection_lost_evaluable
-            and "diagnostic_result_not_evaluable_after_projection" not in gaps
-        ):
-            gaps.append("diagnostic_result_not_evaluable_after_projection")
         if "diagnostic_receipt_compacted" not in gaps:
             gaps.append("diagnostic_receipt_compacted")
         return replace(
             self,
-            status=(
-                DiagnosticStatus.BLOCKED
-                if visible_evaluable == 0
-                else DiagnosticStatus.PARTIAL
-                if not coverage.complete
-                else self.status
-            ),
             coverage=coverage,
             results=selected,
             freshness=self.freshness.compacted_for_agent(),
@@ -755,91 +836,97 @@ class DiagnosticReceipt:
     def bounded_for_persistence(self) -> "DiagnosticReceipt":
         if len(_json_bytes(self.to_public_dict())) <= DIAGNOSTIC_RECEIPT_MAX_BYTES:
             return self
-        preview_results = tuple(
-            item.compacted_for_storage()
-            for item in self.results[:DIAGNOSTIC_RECEIPT_MAX_PREVIEW_RESULTS]
+        stored_results = self.results[:DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS]
+        preview_limit = min(
+            DIAGNOSTIC_RECEIPT_MAX_PREVIEW_RESULTS,
+            len(stored_results),
         )
-        identity_results = tuple(
-            item.compacted_identity_for_agent(minimal=True)
-            for item in self.results[
-                DIAGNOSTIC_RECEIPT_MAX_PREVIEW_RESULTS:
-                DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS
-            ]
+        compacted: DiagnosticReceipt | None = None
+        while preview_limit >= 0:
+            preview_results = tuple(
+                item.compacted_for_storage()
+                for item in stored_results[:preview_limit]
+            )
+            compacted_ids = tuple(
+                _bounded_text(item.result_id, 64)
+                for item in stored_results[preview_limit:]
+            )
+            visible_evaluable = sum(
+                item.status is DiagnosticItemStatus.AVAILABLE
+                for item in preview_results
+            )
+            visible_unavailable = sum(
+                item.status is DiagnosticItemStatus.UNAVAILABLE
+                for item in preview_results
+            )
+            visible_not_checked = (
+                sum(
+                    item.status is DiagnosticItemStatus.NOT_CHECKED
+                    for item in preview_results
+                )
+                + len(compacted_ids)
+            )
+            gaps = list(self.gaps[:5])
+            omitted = max(0, self.coverage.requested - len(stored_results))
+            if omitted:
+                gaps.append(f"{omitted}_diagnostic_items_compacted")
+            if "diagnostic_receipt_compacted" not in gaps:
+                gaps.append("diagnostic_receipt_compacted")
+            compacted = replace(
+                self,
+                status=(
+                    DiagnosticStatus.BLOCKED
+                    if visible_evaluable == 0
+                    else DiagnosticStatus.PARTIAL
+                ),
+                coverage=replace(
+                    self.coverage,
+                    complete=False,
+                    visible_evaluable=visible_evaluable,
+                    visible_unavailable=visible_unavailable,
+                    visible_not_checked=visible_not_checked,
+                    compacted=max(
+                        self.coverage.compacted,
+                        self.coverage.requested,
+                    ),
+                ),
+                results=preview_results,
+                freshness=self.freshness.compacted_for_agent(),
+                capabilities=self.capabilities[:8],
+                truncated=self.truncated,
+                content_complete=self.content_complete,
+                evidence=self.evidence[:8],
+                gaps=tuple(_bounded_text(gap, 128) for gap in gaps[:8]),
+                compacted_results=(
+                    DiagnosticCompactedResultSet(
+                        status=DiagnosticItemStatus.NOT_CHECKED,
+                        gap="result_preview_compacted",
+                        result_ids=compacted_ids,
+                    )
+                ) if compacted_ids else None,
+                content_compacted=True,
+            )
+            if len(_json_bytes(compacted.to_public_dict())) <= DIAGNOSTIC_RECEIPT_MAX_BYTES:
+                return compacted
+            if preview_limit == 0:
+                break
+            preview_limit //= 2
+        assert compacted is not None
+        compacted_ids = tuple(
+            _bounded_text(item.result_id, 32)
+            for item in stored_results
         )
-        compacted_results = (*preview_results, *identity_results)
-        visible_evaluable = sum(
-            item.status is DiagnosticItemStatus.AVAILABLE
-            for item in compacted_results
-        )
-        visible_unavailable = sum(
-            item.status is DiagnosticItemStatus.UNAVAILABLE
-            for item in compacted_results
-        )
-        visible_not_checked = sum(
-            item.status is DiagnosticItemStatus.NOT_CHECKED
-            for item in compacted_results
-        )
-        gaps = list(self.gaps[:5])
-        omitted = max(0, self.coverage.requested - len(compacted_results))
-        if omitted:
-            gaps.append(f"{omitted}_diagnostic_items_compacted")
-        if "diagnostic_receipt_compacted" not in gaps:
-            gaps.append("diagnostic_receipt_compacted")
-        visible_complete = (
-            self.coverage.complete
-            and visible_evaluable == self.coverage.requested
-            and visible_unavailable == 0
-            and visible_not_checked == 0
-        )
-        compacted = replace(
-            self,
-            status=(
-                DiagnosticStatus.BLOCKED
-                if visible_evaluable == 0
-                else self.status
-                if visible_complete
-                else DiagnosticStatus.PARTIAL
-            ),
-            coverage=replace(
-                self.coverage,
-                complete=visible_complete,
-                visible_evaluable=visible_evaluable,
-                visible_unavailable=visible_unavailable,
-                visible_not_checked=visible_not_checked,
-                compacted=max(self.coverage.compacted, self.coverage.requested),
-            ),
-            results=tuple(compacted_results),
-            freshness=self.freshness.compacted_for_agent(),
-            capabilities=self.capabilities[:8],
-            truncated=self.truncated,
-            content_complete=self.content_complete,
-            evidence=self.evidence[:8],
-            gaps=tuple(_bounded_text(gap, 128) for gap in gaps[:8]),
-            content_compacted=True,
-        )
-        if len(_json_bytes(compacted.to_public_dict())) <= DIAGNOSTIC_RECEIPT_MAX_BYTES:
-            return compacted
-        identity_results = tuple(
-            item.compacted_identity_for_agent(minimal=True)
-            for item in self.results[:DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS]
-        )
-        return replace(
+        minimal = replace(
             compacted,
             status=DiagnosticStatus.BLOCKED,
             coverage=replace(
                 compacted.coverage,
                 visible_evaluable=0,
-                visible_unavailable=sum(
-                    item.status is DiagnosticItemStatus.UNAVAILABLE
-                    for item in identity_results
-                ),
-                visible_not_checked=sum(
-                    item.status is DiagnosticItemStatus.NOT_CHECKED
-                    for item in identity_results
-                ),
+                visible_unavailable=0,
+                visible_not_checked=len(compacted_ids),
                 compacted=self.coverage.requested,
             ),
-            results=identity_results,
+            results=(),
             freshness=self.freshness.compacted_for_agent(minimal=True),
             capabilities=self.capabilities[:8],
             evidence=tuple(
@@ -851,6 +938,22 @@ class DiagnosticReceipt:
                     byte_count=None,
                 )
                 for item in self.evidence[:8]
+            ),
+            compacted_results=(
+                DiagnosticCompactedResultSet(
+                    status=DiagnosticItemStatus.NOT_CHECKED,
+                    gap="result_preview_compacted",
+                    result_ids=compacted_ids,
+                )
+            ) if compacted_ids else None,
+        )
+        if len(_json_bytes(minimal.to_public_dict())) <= DIAGNOSTIC_RECEIPT_MAX_BYTES:
+            return minimal
+        return replace(
+            minimal,
+            compacted_results=None,
+            gaps=tuple(
+                (*minimal.gaps[:7], "diagnostic_result_identities_exceed_budget")
             ),
         )
 
@@ -981,13 +1084,18 @@ def _without_compacted_placeholders(value: object) -> object | None:
     return value
 
 
-def _bounded_diagnostic_value_summary(value: object) -> object | None:
+def _bounded_diagnostic_value_summary(
+    value: object,
+    *,
+    max_samples: int = 4,
+    max_string: int = 192,
+) -> object | None:
     samples: list[dict[str, object]] = []
     visited = 0
 
     def collect(current: object, path: str, depth: int) -> None:
         nonlocal visited
-        if len(samples) >= 4 or visited >= 64 or depth > 8:
+        if len(samples) >= max_samples or visited >= 64 or depth > 8:
             return
         visited += 1
         if isinstance(current, Mapping):
@@ -1003,7 +1111,7 @@ def _bounded_diagnostic_value_summary(value: object) -> object | None:
                         if summary_item
                         else item
                     )
-                    bounded = _bounded_public(selected, max_string=192)
+                    bounded = _bounded_public(selected, max_string=max_string)
                     if not diagnostic_result_value_evaluable(bounded):
                         continue
                     samples.append(
@@ -1016,7 +1124,7 @@ def _bounded_diagnostic_value_summary(value: object) -> object | None:
                             "value": bounded,
                         }
                     )
-                    if len(samples) >= 4:
+                    if len(samples) >= max_samples:
                         return
                 if len(samples) > preserved:
                     return
@@ -1038,7 +1146,7 @@ def _bounded_diagnostic_value_summary(value: object) -> object | None:
                 ):
                     continue
                 collect(item, f"{path}.{name}", depth + 1)
-                if len(samples) >= 4:
+                if len(samples) >= max_samples:
                     return
             return
         if isinstance(current, Sequence) and not isinstance(
@@ -1046,10 +1154,10 @@ def _bounded_diagnostic_value_summary(value: object) -> object | None:
         ):
             for index, item in enumerate(current[:8]):
                 collect(item, f"{path}[{index}]", depth + 1)
-                if len(samples) >= 4:
+                if len(samples) >= max_samples:
                     return
             return
-        bounded = _bounded_public(current, max_string=192)
+        bounded = _bounded_public(current, max_string=max_string)
         if diagnostic_result_value_evaluable(bounded):
             samples.append(
                 {
