@@ -2,7 +2,7 @@
 
 ## 结论
 
-最终候选提交 `29138e8873ed333ae3c3b5692f0a8cab9e36d882` 完成了
+最终候选提交 `036253c7fc6ced9f0cdb94791f85f6a0604f6d28` 完成了
 `execute(debug_run)` 的端到端诊断闭环。六个真实只读场景全部在一次
 `observe` 或 `execute` 调用内返回实质证据，场景目标 6/6 满足，
 false-success 数为 0，不需要恢复第三个 Agent-facing Evidence 读取工具。
@@ -18,11 +18,15 @@ coverage。结构化诊断还显式记账 `target-clock`；未返回时会形成
 的源 `DiagnosticReceipt` 全部是 complete；S6 因源日志刻意截断而正确保持
 partial。
 
+Closeout 与 Replay 还使用独立的 Agent acceptance 分类：源回执 complete
+但 durable 可见 coverage 只有部分可评价时为 partial，零可见可评价结果时为
+blocked，同时不改写源 `status/coverage.complete`。
+
 ## 验证边界
 
 | 项目 | 值 |
 | --- | --- |
-| Source | `29138e8873ed333ae3c3b5692f0a8cab9e36d882` |
+| Source | `036253c7fc6ced9f0cdb94791f85f6a0604f6d28` |
 | Agent Interface | `observe`、`execute` |
 | 模型 | `gpt-5.6-sol` |
 | 目标 | `BMC-T1` |
@@ -52,19 +56,19 @@ S3 和 S6 的 `projection_target_exceeded=true` 没有成为控制流硬阻塞�
 
 | 指标 | 19 工具旧版 | 修复前两工具版 | 最终候选 |
 | --- | ---: | ---: | ---: |
-| Total tokens | 1,110,135 | 378,431 | 344,081 |
-| 非缓存输入 + 输出 tokens | 383,607 | 116,287 | 137,233 |
+| Total tokens | 1,110,135 | 378,431 | 365,903 |
+| 非缓存输入 + 输出 tokens | 383,607 | 116,287 | 143,695 |
 | MCP events | 21 | 6 | 6 |
-| 累计 wall time | 570.381 s | 365.999 s | 362.343 s |
-| Agent 可见工具输出 | 5,999,095 B | 8,336 B | 60,535 B |
-| 压缩后持久化 Evidence | 161,596 B | 160,737 B | 161,979 B |
+| 累计 wall time | 570.381 s | 365.999 s | 355.602 s |
+| Agent 可见工具输出 | 5,999,095 B | 8,336 B | 60,431 B |
+| 压缩后持久化 Evidence | 161,596 B | 160,737 B | 161,425 B |
 
-相对 19 工具旧版，最终候选减少 69.01% Total tokens、64.23% 非缓存输入与输出、
-71.43% MCP events、36.47% wall time 和 98.99% Agent 可见工具输出，实质证据场景从
-4/6 提升到 6/6。持久化 Evidence 增加 0.24%，基本不变。
+相对 19 工具旧版，最终候选减少 67.04% Total tokens、62.54% 非缓存输入与输出、
+71.43% MCP events、37.66% wall time 和 98.99% Agent 可见工具输出，实质证据场景从
+4/6 提升到 6/6。持久化 Evidence 减少 0.11%，基本不变。
 
-相对修复前两工具版，Total tokens 减少 9.08%，wall time 减少 1.00%；非缓存
-Token 增加 18.01%，Agent 可见输出增加 626.19%，持久化 Evidence 增加 0.77%。
+相对修复前两工具版，Total tokens 减少 3.31%，wall time 减少 2.84%；非缓存
+Token 增加 23.57%，Agent 可见输出增加 624.94%，持久化 Evidence 增加 0.43%。
 可见输出增长是恢复有界诊断回执的预期代价，仍比 19 工具版少 98.99%。
 单次真实模型运行不足以独立证明长期性能趋势。
 
@@ -73,6 +77,7 @@ Token 增加 18.01%，Agent 可见输出增加 626.19%，持久化 Evidence 增�
 - 一个 Runtime Core、`observe` / `execute` 两个语义入口的方向成立。
 - `execute` 的 operation completion 与诊断完成已经分离；零实质结果不会自动形成成功诊断。
 - source coverage 与 visible coverage 已经分离；投影压缩不改写源 `status/coverage.complete`。
+- Closeout 只在 durable visible coverage 完整可评价时通过；部分可评价为 partial，零可评价为 blocked。
 - Gate 继续使用 4 KiB 硬契约；8 KiB Turn 是显示软目标，不阻断 Gate、Incident、Outcome 或 DiagnosticReceipt。
 - 源内容截断会稳定传播 partial、gaps 和不支持的断言；投影压缩本身不会触发这些结论。
 - 原始 Evidence 继续留在 Runtime / Operator 面；Agent 通过有界回执完成诊断，不增加 Broker、Worker fleet 或分布式执行层。

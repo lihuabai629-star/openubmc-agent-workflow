@@ -1,9 +1,9 @@
 {
   "schema": "openubmc-agent-workflow.execute-diagnostic-receipt-qualification.v1",
-  "generated_at": "2026-08-25T18:29:40.975688+00:00",
+  "generated_at": "2026-08-25T19:18:51.627073+00:00",
   "target": "BMC-T1",
   "model": "gpt-5.6-sol",
-  "source_commit": "29138e8873ed333ae3c3b5692f0a8cab9e36d882",
+  "source_commit": "036253c7fc6ced9f0cdb94791f85f6a0604f6d28",
   "candidate_fix_included": true,
   "read_only_proxy_enforced": true,
   "agent_interface": [
@@ -29,31 +29,31 @@
       "execute": 5,
       "observe": 1
     },
-    "total_tokens": 344081,
-    "noncached_input_plus_output_tokens": 137233,
-    "wall_time_seconds": 362.343,
-    "visible_tool_output_bytes": 60535,
-    "compressed_persisted_evidence_bytes": 161979,
+    "total_tokens": 365903,
+    "noncached_input_plus_output_tokens": 143695,
+    "wall_time_seconds": 355.602,
+    "visible_tool_output_bytes": 60431,
+    "compressed_persisted_evidence_bytes": 161425,
     "persisted_artifact_bytes": 0
   },
   "comparison": {
     "legacy_19_tool_baseline": {
       "source_commit": "35b36efb6503d05a811b51bf09fb5f8dead0e208",
-      "total_tokens_reduction_percent": 69.01,
-      "noncached_input_plus_output_reduction_percent": 64.23,
+      "total_tokens_reduction_percent": 67.04,
+      "noncached_input_plus_output_reduction_percent": 62.54,
       "mcp_event_reduction_percent": 71.43,
-      "wall_time_reduction_percent": 36.47,
+      "wall_time_reduction_percent": 37.66,
       "visible_tool_output_reduction_percent": 98.99,
-      "compressed_persisted_evidence_reduction_percent": -0.24
+      "compressed_persisted_evidence_reduction_percent": 0.11
     },
     "prefixed_two_tool_baseline": {
       "source_commit": "3d8cf49bc3d07ecff71096d6f73e1ef255d7eb8b",
-      "total_tokens_change_percent": -9.08,
-      "noncached_input_plus_output_change_percent": 18.01,
+      "total_tokens_change_percent": -3.31,
+      "noncached_input_plus_output_change_percent": 23.57,
       "mcp_event_change_percent": 0.0,
-      "wall_time_change_percent": -1.0,
-      "visible_tool_output_change_percent": 626.19,
-      "compressed_persisted_evidence_change_percent": 0.77
+      "wall_time_change_percent": -2.84,
+      "visible_tool_output_change_percent": 624.94,
+      "compressed_persisted_evidence_change_percent": 0.43
     }
   },
   "scenarios": [
