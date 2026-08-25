@@ -820,7 +820,7 @@ class DiagnosticReceipt:
     def status_for_agent_acceptance(self) -> DiagnosticStatus:
         """Classify whether the persisted receipt is fully evaluable by an Agent."""
 
-        if self.status is not DiagnosticStatus.COMPLETE:
+        if self.status is DiagnosticStatus.BLOCKED:
             return self.status
         visible = (
             self.coverage.visible_evaluable,
@@ -830,7 +830,7 @@ class DiagnosticReceipt:
         if all(value is None for value in visible):
             return self.status
         visible_evaluable = self.coverage.visible_evaluable or 0
-        if (
+        if self.status is DiagnosticStatus.COMPLETE and (
             visible_evaluable == self.coverage.requested
             and (self.coverage.visible_unavailable or 0) == 0
             and (self.coverage.visible_not_checked or 0) == 0

@@ -562,6 +562,46 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         self.assertEqual(diagnosis.status, "partial")
         self.assertNotEqual(closeout.closure_status, "completed_in_scope")
 
+        zero_visible_projection = json.loads(json.dumps(projection))
+        zero_visible_receipt = zero_visible_projection["operations"][0][
+            "diagnostic_receipt"
+        ]
+        zero_visible_receipt["status"] = "partial"
+        zero_visible_receipt["coverage"].update(
+            {
+                "evaluable": 2,
+                "not_checked": 1,
+                "complete": False,
+                "visible_evaluable": 0,
+                "visible_not_checked": 3,
+            }
+        )
+        zero_visible_receipt["results"] = []
+        zero_visible_receipt["compacted_results"]["result_ids"] = [
+            "version",
+            "uptime",
+            "target-clock",
+        ]
+
+        zero_visible_closeout = aggregate_case_closeout(
+            zero_visible_projection,
+            lambda _reference: {
+                "ok": True,
+                "root_cause": "source result is not visible",
+            },
+        )
+        zero_visible_diagnosis = next(
+            receipt
+            for receipt in zero_visible_closeout.receipts
+            if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(zero_visible_diagnosis.status, "blocked")
+        self.assertNotEqual(
+            zero_visible_closeout.closure_status,
+            "completed_in_scope",
+        )
+
     def test_multi_target_stage_uses_the_worst_target_result(self) -> None:
         plan = AcceptancePlan.freeze(
             {

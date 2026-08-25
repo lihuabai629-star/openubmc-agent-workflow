@@ -320,6 +320,45 @@
       }
     },
     {
+      "name": "source-partial-zero-visible-remains-blocked",
+      "expected_status": "passed",
+      "expected_finding": "diagnostic_evidence_blocked_preserved",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-source-partial-zero-visible",
+        "operation": "debug_run",
+        "status": "partial",
+        "coverage": {
+          "requested": 3,
+          "evaluable": 2,
+          "unavailable": 0,
+          "not_checked": 1,
+          "complete": false,
+          "visible_evaluable": 0,
+          "visible_unavailable": 0,
+          "visible_not_checked": 3,
+          "compacted": 3
+        },
+        "results": [],
+        "compacted_results": {
+          "status": "not_checked",
+          "gap": "result_preview_compacted",
+          "result_ids": ["version", "uptime", "target-clock"]
+        },
+        "freshness": {
+          "status": "fresh",
+          "complete": true,
+          "observed_at": "2026-08-25T04:42:55Z"
+        },
+        "capabilities": {},
+        "truncated": false,
+        "content_complete": true,
+        "content_compacted": true,
+        "evidence": [],
+        "gaps": ["1_diagnostic_item_not_checked", "diagnostic_receipt_compacted"]
+      }
+    },
+    {
       "name": "compacted-receipt-counts-visible-results-separately",
       "expected_status": "passed",
       "expected_finding": "diagnostic_truncation_preserved",

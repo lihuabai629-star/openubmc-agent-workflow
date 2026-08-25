@@ -578,8 +578,9 @@ class CaseReplayService:
                             }
                         )
                     elif (
-                        receipt.status is DiagnosticStatus.BLOCKED
-                        and evaluable == 0
+                        receipt.status_for_agent_acceptance()
+                        is DiagnosticStatus.BLOCKED
+                        and visible_evaluable == 0
                     ):
                         findings.append(
                             {
