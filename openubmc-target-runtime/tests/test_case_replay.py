@@ -236,6 +236,48 @@ class CaseReplayTests(unittest.TestCase):
                 )
                 self.assertEqual(first.result_fingerprint, second.result_fingerprint)
 
+    def test_replay_rejects_inconsistent_diagnostic_coverage(self) -> None:
+        events, definition, plan = _base_events()
+        events[-1]["payload"]["diagnostic_receipt"] = {
+            "receipt_id": "diagnostic-invalid-coverage",
+            "operation": "debug_run",
+            "status": "complete",
+            "coverage": {
+                "requested": 2,
+                "evaluable": 1,
+                "unavailable": 0,
+                "not_checked": 0,
+                "complete": True,
+            },
+            "results": [
+                {
+                    "result_id": "version",
+                    "kind": "target-version",
+                    "request": "/etc/version.json",
+                    "status": "available",
+                    "value": {"version": "12.08.21.06"},
+                }
+            ],
+            "freshness": {
+                "status": "complete",
+                "observed_at": "2026-08-25T00:00:00Z",
+                "complete": True,
+            },
+            "capabilities": {},
+            "truncated": False,
+            "content_complete": True,
+            "evidence": [],
+            "gaps": [],
+        }
+
+        result = CaseReplayService.replay(_bundle(events, definition, plan))
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            "diagnostic_receipt_invalid",
+            {item["code"] for item in result.findings},
+        )
+
     def test_repository_export_is_redacted_portable_and_deterministic(self) -> None:
         for repository in (
             InMemoryRuntimeRepository(),

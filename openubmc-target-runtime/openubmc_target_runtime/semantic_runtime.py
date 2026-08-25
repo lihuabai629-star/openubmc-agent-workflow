@@ -792,13 +792,28 @@ def decode_run_command(
                 )
             normalized_targets: list[dict[str, object]] = []
             for item in raw_targets:
-                target_item = dict(item)
-                ip = _text(target_item.get("ip"))
+                unexpected_fields = sorted(
+                    str(name)
+                    for name in item
+                    if name not in {"ip", "role", "target_id"}
+                )
+                if unexpected_fields:
+                    raise AgentGatewayError(
+                        "start target fields contain unexpected values: "
+                        + ", ".join(unexpected_fields)
+                    )
+                ip = _text(item.get("ip"))
                 if not ip:
                     raise AgentGatewayError("each start target requires ip")
                 if len(ip.encode("utf-8")) > TARGET_MAX_BYTES:
                     raise AgentGatewayError("start target ip exceeds 512 bytes")
-                target_item["ip"] = ip
+                target_item: dict[str, object] = {"ip": ip}
+                role = _text(item.get("role"))
+                target_id = _text(item.get("target_id"))
+                if role:
+                    target_item["role"] = role
+                if target_id:
+                    target_item["target_id"] = target_id
                 normalized_targets.append(target_item)
             try:
                 identities = comparison_target_identities(normalized_targets)

@@ -464,14 +464,32 @@ class CaseReplayService:
                     )
                 diagnostic_receipt = payload.get("diagnostic_receipt")
                 if isinstance(diagnostic_receipt, Mapping):
+                    raw_coverage = diagnostic_receipt.get("coverage")
+                    raw_claims_complete = (
+                        str(diagnostic_receipt.get("status", "")).strip()
+                        == "complete"
+                        or (
+                            isinstance(raw_coverage, Mapping)
+                            and raw_coverage.get("complete") is True
+                        )
+                    )
                     receipt = DiagnosticReceipt.from_public_dict(
                         diagnostic_receipt
                     )
+                    if "diagnostic_receipt_invalid" in receipt.gaps:
+                        findings.append(
+                            {
+                                "code": "diagnostic_receipt_invalid",
+                                "severity": "error",
+                                "message": (
+                                    "persisted diagnostic coverage is internally "
+                                    "inconsistent"
+                                ),
+                                "operation_id": operation_id,
+                            }
+                        )
                     evaluable = receipt.coverage.evaluable
-                    claims_complete = (
-                        receipt.status is DiagnosticStatus.COMPLETE
-                        or receipt.coverage.complete
-                    )
+                    claims_complete = raw_claims_complete
                     non_evaluable_available = [
                         result.result_id
                         for result in receipt.results

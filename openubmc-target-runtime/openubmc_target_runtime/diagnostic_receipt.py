@@ -15,8 +15,9 @@ from .redaction import is_secret_key, redact_text
 
 
 DIAGNOSTIC_RECEIPT_SCHEMA = f"{RUNTIME_API_VERSION}/diagnostic-receipt-v1"
-DIAGNOSTIC_RECEIPT_MAX_BYTES = 32 * 1024
-DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS = 64
+DIAGNOSTIC_RECEIPT_MAX_BYTES = 256 * 1024
+DIAGNOSTIC_RECEIPT_MAX_PREVIEW_RESULTS = 64
+DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS = 1024
 _DIAGNOSIS_FIELDS = (
     "symptom",
     "root_cause",
@@ -89,6 +90,7 @@ _DIAGNOSTIC_SUMMARY_COMPLETE_KINDS = frozenset(
         "mdb-class-expansion",
         "service-list",
         "service-tree",
+        "target-clock",
     }
 )
 
@@ -566,7 +568,7 @@ class DiagnosticReceipt:
         raw_evidence = value.get("evidence", [])
         raw_gaps = value.get("gaps", [])
         raw_capabilities = _mapping(value.get("capabilities"))
-        return cls(
+        receipt = cls(
             receipt_id=str(value.get("receipt_id", "")).strip(),
             operation=str(value.get("operation", "")).strip(),
             status=DiagnosticStatus.parse(value.get("status")),
@@ -614,6 +616,60 @@ class DiagnosticReceipt:
             schema=str(value.get("schema") or DIAGNOSTIC_RECEIPT_SCHEMA),
             content_compacted=value.get("content_compacted") is True,
         )
+        validation_gaps = receipt._validation_gaps()
+        if not validation_gaps:
+            return receipt
+        available_results = sum(
+            item.status is DiagnosticItemStatus.AVAILABLE
+            for item in receipt.results
+        )
+        gaps = list(receipt.gaps)
+        for gap in ("diagnostic_receipt_invalid", *validation_gaps):
+            if gap not in gaps:
+                gaps.append(gap)
+        return replace(
+            receipt,
+            status=(
+                DiagnosticStatus.PARTIAL
+                if available_results > 0 or receipt.coverage.evaluable > 0
+                else DiagnosticStatus.BLOCKED
+            ),
+            coverage=replace(receipt.coverage, complete=False),
+            gaps=tuple(gaps),
+        )
+
+    def _validation_gaps(self) -> tuple[str, ...]:
+        gaps: list[str] = []
+        coverage = self.coverage
+        accounted = (
+            coverage.evaluable + coverage.unavailable + coverage.not_checked
+        )
+        if coverage.requested != accounted:
+            gaps.append("diagnostic_coverage_count_mismatch")
+        result_counts = {
+            DiagnosticItemStatus.AVAILABLE: sum(
+                item.status is DiagnosticItemStatus.AVAILABLE
+                for item in self.results
+            ),
+            DiagnosticItemStatus.UNAVAILABLE: sum(
+                item.status is DiagnosticItemStatus.UNAVAILABLE
+                for item in self.results
+            ),
+            DiagnosticItemStatus.NOT_CHECKED: sum(
+                item.status is DiagnosticItemStatus.NOT_CHECKED
+                for item in self.results
+            ),
+        }
+        if self.status is DiagnosticStatus.COMPLETE or coverage.complete:
+            if self.status is not DiagnosticStatus.COMPLETE or not coverage.complete:
+                gaps.append("diagnostic_completion_status_mismatch")
+            if coverage.unavailable or coverage.not_checked:
+                gaps.append("diagnostic_complete_has_coverage_gaps")
+            if len(self.results) != coverage.requested:
+                gaps.append("diagnostic_complete_result_count_mismatch")
+            if result_counts[DiagnosticItemStatus.AVAILABLE] != coverage.requested:
+                gaps.append("diagnostic_complete_results_not_available")
+        return tuple(gaps)
 
     def to_public_dict(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -650,16 +706,35 @@ class DiagnosticReceipt:
         compacted = max(self.coverage.compacted, self.coverage.requested)
         coverage = replace(
             self.coverage,
+            complete=(
+                self.coverage.complete
+                and visible_evaluable == self.coverage.requested
+                and visible_unavailable == 0
+                and visible_not_checked == 0
+            ),
             visible_evaluable=visible_evaluable,
             visible_unavailable=visible_unavailable,
             visible_not_checked=visible_not_checked,
             compacted=compacted,
         )
         gaps = list(self.gaps[:5])
+        projection_lost_evaluable = visible_evaluable < self.coverage.evaluable
+        if (
+            projection_lost_evaluable
+            and "diagnostic_result_not_evaluable_after_projection" not in gaps
+        ):
+            gaps.append("diagnostic_result_not_evaluable_after_projection")
         if "diagnostic_receipt_compacted" not in gaps:
             gaps.append("diagnostic_receipt_compacted")
         return replace(
             self,
+            status=(
+                DiagnosticStatus.BLOCKED
+                if visible_evaluable == 0
+                else DiagnosticStatus.PARTIAL
+                if not coverage.complete
+                else self.status
+            ),
             coverage=coverage,
             results=selected,
             freshness=self.freshness.compacted_for_agent(),
@@ -680,10 +755,18 @@ class DiagnosticReceipt:
     def bounded_for_persistence(self) -> "DiagnosticReceipt":
         if len(_json_bytes(self.to_public_dict())) <= DIAGNOSTIC_RECEIPT_MAX_BYTES:
             return self
-        compacted_results = tuple(
+        preview_results = tuple(
             item.compacted_for_storage()
-            for item in self.results[:DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS]
+            for item in self.results[:DIAGNOSTIC_RECEIPT_MAX_PREVIEW_RESULTS]
         )
+        identity_results = tuple(
+            item.compacted_identity_for_agent(minimal=True)
+            for item in self.results[
+                DIAGNOSTIC_RECEIPT_MAX_PREVIEW_RESULTS:
+                DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS
+            ]
+        )
+        compacted_results = (*preview_results, *identity_results)
         visible_evaluable = sum(
             item.status is DiagnosticItemStatus.AVAILABLE
             for item in compacted_results
@@ -700,32 +783,36 @@ class DiagnosticReceipt:
         omitted = max(0, self.coverage.requested - len(compacted_results))
         if omitted:
             gaps.append(f"{omitted}_diagnostic_items_compacted")
-        for gap in ("diagnostic_receipt_compacted", "content_truncated"):
-            if gap not in gaps:
-                gaps.append(gap)
+        if "diagnostic_receipt_compacted" not in gaps:
+            gaps.append("diagnostic_receipt_compacted")
+        visible_complete = (
+            self.coverage.complete
+            and visible_evaluable == self.coverage.requested
+            and visible_unavailable == 0
+            and visible_not_checked == 0
+        )
         compacted = replace(
             self,
             status=(
                 DiagnosticStatus.BLOCKED
                 if visible_evaluable == 0
+                else self.status
+                if visible_complete
                 else DiagnosticStatus.PARTIAL
             ),
             coverage=replace(
                 self.coverage,
-                complete=False,
+                complete=visible_complete,
                 visible_evaluable=visible_evaluable,
                 visible_unavailable=visible_unavailable,
                 visible_not_checked=visible_not_checked,
-                compacted=max(
-                    self.coverage.compacted,
-                    self.coverage.requested - len(compacted_results),
-                ),
+                compacted=max(self.coverage.compacted, self.coverage.requested),
             ),
-            results=compacted_results,
+            results=tuple(compacted_results),
             freshness=self.freshness.compacted_for_agent(),
             capabilities=self.capabilities[:8],
-            truncated=True,
-            content_complete=False,
+            truncated=self.truncated,
+            content_complete=self.content_complete,
             evidence=self.evidence[:8],
             gaps=tuple(_bounded_text(gap, 128) for gap in gaps[:8]),
             content_compacted=True,
@@ -1352,6 +1439,36 @@ def _structured_results(
                 evidence_ids=evidence_ids,
             )
         )
+    if request.get("mdb_only") is not True:
+        freshness = _mapping(runtime_result.get("freshness")) or _mapping(
+            value.get("freshness")
+        )
+        raw_delta = _mapping(freshness.get("bmc_time_delta"))
+        target_clock = {
+            name: raw_delta[name]
+            for name in (
+                "before",
+                "after",
+                "elapsed_seconds",
+                "comparable",
+                "clock_moved_backwards",
+            )
+            if name in raw_delta
+        }
+        if raw_delta:
+            results.append(
+                _plain_result(
+                    result_id="target-clock",
+                    kind="target-clock",
+                    request="BMC clock movement during diagnosis",
+                    value=target_clock,
+                    observed_at=(
+                        value.get("observed_at")
+                        or runtime_result.get("completed_at")
+                    ),
+                    evidence_ids=evidence_ids,
+                )
+            )
     logs = request.get("logs")
     if isinstance(logs, str) and logs.strip():
         results.append(

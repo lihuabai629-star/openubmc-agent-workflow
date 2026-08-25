@@ -482,6 +482,13 @@ class BoundedDiagnosticBackend(SemanticBackend):
                 "freshness": {
                     "status": "partial",
                     "complete": False,
+                    "bmc_time_delta": {
+                        "before": "2026-08-25 04:42:50 +0000",
+                        "after": "2026-08-25 04:42:55 +0000",
+                        "elapsed_seconds": 5.0,
+                        "comparable": True,
+                        "clock_moved_backwards": False,
+                    },
                     "unavailable_dimensions": ["active_alarms"],
                     "stale_evidence": [],
                 },
@@ -505,7 +512,11 @@ class CompleteBoundedDiagnosticBackend(BoundedDiagnosticBackend):
         runtime_result["lanes"]["telnet"]["files"]["/tmp/custom.txt"][
             "payload"
         ]["result"]["content_complete"] = True
-        runtime_result["freshness"] = {"status": "fresh", "complete": True}
+        runtime_result["freshness"] = {
+            "status": "fresh",
+            "complete": True,
+            "bmc_time_delta": runtime_result["freshness"]["bmc_time_delta"],
+        }
         return value
 
 
@@ -1776,6 +1787,53 @@ class PersistedDiagnosticSummaryTurnRuntime:
         )
 
 
+class NonEvaluableDiagnosticTurnRuntime:
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        return RunTurn(
+            run_id="case-non-evaluable-diagnostic",
+            state="completed",
+            facts=tuple(
+                {"fact_id": index, "details": "x" * 512}
+                for index in range(32)
+            ),
+            diagnostic_receipt=DiagnosticReceipt.from_public_dict({
+                "receipt_id": "diagnostic-non-evaluable",
+                "operation": "debug_run",
+                "status": "complete",
+                "coverage": {
+                    "requested": 1,
+                    "evaluable": 1,
+                    "unavailable": 0,
+                    "not_checked": 0,
+                    "complete": True,
+                },
+                "results": [
+                    {
+                        "result_id": "version",
+                        "kind": "target-version",
+                        "request": "/etc/version.json",
+                        "status": "available",
+                        "value": {
+                            "content_complete": True,
+                            "projection_truncated": True,
+                        },
+                    }
+                ],
+                "freshness": {
+                    "status": "complete",
+                    "observed_at": "2026-08-25T04:42:55Z",
+                    "complete": True,
+                },
+                "capabilities": {},
+                "truncated": False,
+                "content_complete": True,
+                "evidence": [],
+                "gaps": [],
+            }),
+        )
+
+
 class OversizedTerminalTurnRuntime(OversizedDiagnosticTurnRuntime):
     acceptance = [
         {
@@ -2334,6 +2392,43 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="retired-observation-receipt-direct",
             )
 
+    def test_execute_rejects_undeclared_multi_target_fields(self) -> None:
+        action = {
+            "kind": "start",
+            "targets": [
+                {
+                    "ip": "192.0.2.10",
+                    "role": "reference",
+                    "target_id": "reference",
+                    "unexpected_policy": "agent-authored",
+                },
+                {
+                    "ip": "192.0.2.11",
+                    "role": "candidate",
+                    "target_id": "candidate",
+                },
+            ],
+            "intent": "diagnosis-only",
+            "entry_operation": "debug_run",
+        }
+
+        with self.assertRaisesRegex(ValueError, "unexpected_policy.*unexpected"):
+            self.service.call_exposed_tool(
+                "execute",
+                action,
+                task_id="unexpected-target-field",
+                operation_id="unexpected-target-field-1",
+            )
+
+        with self.assertRaisesRegex(
+            AgentGatewayError,
+            "target fields.*unexpected_policy",
+        ):
+            decode_run_command(
+                action,
+                operation_id="unexpected-target-field-direct",
+            )
+
     def test_runtime_rejects_the_retired_compatibility_profile(self) -> None:
         with self.assertRaisesRegex(ValueError, "agent or operator"):
             RuntimeMcpService(
@@ -2814,8 +2909,8 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             receipt["coverage"],
             {
-                "requested": 9,
-                "evaluable": 9,
+                "requested": 10,
+                "evaluable": 10,
                 "unavailable": 0,
                 "not_checked": 0,
                 "complete": False,
@@ -2834,6 +2929,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "version",
                 "uptime",
+                "target-clock",
                 "logs",
                 "service",
                 "mdb-1",
@@ -2849,6 +2945,10 @@ class AgentGatewayTests(unittest.TestCase):
             ["custom diagnostic value"],
         )
         self.assertEqual(results["mdb-1"]["request"], "lsmc")
+        self.assertEqual(
+            results["target-clock"]["value"]["after"],
+            "2026-08-25 04:42:55 +0000",
+        )
         self.assertEqual(
             results["logs"]["value"]["entries"][0]["line_count"],
             31,
@@ -2885,6 +2985,13 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(receipt["coverage"]["complete"])
         self.assertTrue(receipt["content_complete"])
         self.assertFalse(receipt["truncated"])
+        target_clock = next(
+            item for item in receipt["results"] if item["result_id"] == "target-clock"
+        )
+        self.assertEqual(
+            target_clock["value"]["after"],
+            "2026-08-25 04:42:55 +0000",
+        )
 
     def test_execute_blocks_successful_tool_without_visible_result_content(self) -> None:
         service = RuntimeMcpService(EmptyStructuredDiagnosticBackend())
@@ -3479,8 +3586,8 @@ class AgentGatewayTests(unittest.TestCase):
         )
         receipt = terminal["payload"]["diagnostic_receipt"]
         self.assertLessEqual(encoded_size(receipt), DIAGNOSTIC_RECEIPT_MAX_BYTES)
-        self.assertEqual(receipt["status"], "blocked")
-        self.assertTrue(receipt["truncated"])
+        self.assertEqual(receipt["status"], "partial")
+        self.assertFalse(receipt["truncated"])
         self.assertTrue(receipt["content_compacted"])
         self.assertFalse(receipt["content_complete"])
 
@@ -3523,8 +3630,18 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertLessEqual(encoded_size(public), DIAGNOSTIC_RECEIPT_MAX_BYTES)
         self.assertEqual(public["status"], "partial")
         self.assertEqual(public["coverage"]["requested"], 1024)
-        self.assertEqual(public["coverage"]["compacted"], 960)
-        self.assertEqual(len(public["results"]), 64)
+        self.assertEqual(public["coverage"]["visible_evaluable"], 64)
+        self.assertEqual(public["coverage"]["visible_not_checked"], 960)
+        self.assertEqual(public["coverage"]["compacted"], 1024)
+        self.assertEqual(len(public["results"]), 1024)
+        self.assertEqual(public["results"][-1]["result_id"], "mdb-1023")
+        self.assertEqual(public["results"][-1]["status"], "not_checked")
+        self.assertEqual(
+            public["results"][-1]["gap"],
+            "result_preview_compacted",
+        )
+        self.assertFalse(public["truncated"])
+        self.assertTrue(public["content_complete"])
 
     def test_durable_receipt_compaction_preserves_a_log_outcome_summary(self) -> None:
         receipt = DiagnosticReceipt.from_public_dict(
@@ -4574,6 +4691,26 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIn("PluginRequestEx", encoded_results)
         self.assertIn("bmc.kepler.hwproxy", encoded_results)
         self.assertNotIn("<compacted>", encoded_results)
+
+    def test_execute_turn_fails_closed_when_projection_loses_the_only_result(
+        self,
+    ) -> None:
+        turn = AgentGateway(NonEvaluableDiagnosticTurnRuntime()).execute(
+            {"kind": "start", "target": "192.0.2.20"},
+            task_id="non-evaluable-diagnostic",
+            operation_id="non-evaluable-diagnostic-1",
+        )
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertFalse(receipt["coverage"]["complete"])
+        self.assertEqual(receipt["coverage"]["visible_evaluable"], 0)
+        self.assertEqual(receipt["coverage"]["visible_not_checked"], 1)
+        self.assertEqual(receipt["results"][0]["status"], "not_checked")
+        self.assertIn(
+            "diagnostic_result_not_evaluable_after_projection",
+            receipt["gaps"],
+        )
 
     def test_execute_turn_compacts_large_diagnostic_previews_to_the_target(self) -> None:
         turn = AgentGateway(OversizedDiagnosticTurnRuntime(128)).execute(

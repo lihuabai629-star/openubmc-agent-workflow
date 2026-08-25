@@ -805,7 +805,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                             "maxLength": 128,
                         },
                     },
-                    "additionalProperties": True,
+                    "additionalProperties": False,
                 },
             },
             "intent": {"type": "string"},
