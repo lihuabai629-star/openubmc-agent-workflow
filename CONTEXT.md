@@ -105,6 +105,7 @@ records into current projections, but they cannot accept old commands or create 
 - [ADR-0002: Single Run authority and external Effect recovery](docs/adr/0002-single-run-authority-and-effect-recovery.md)
 - [ADR-0003: Turn, Gate, Artifact, and distribution boundaries](docs/adr/0003-turn-gate-artifact-and-distribution-boundaries.md)
 - [ADR-0004: Developer-friendly default execution and Gate submissions](docs/adr/0004-developer-default-and-gate-submissions.md)
+- [ADR-0007: Soft Agent projection budget](docs/adr/0007-soft-agent-projection-budget.md)
 - [Architecture arbitration](docs/workflow-architecture-arbitration.md)
 - [Market workflow design research](docs/workflow-design-market-research.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)
