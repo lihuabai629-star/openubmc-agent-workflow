@@ -17,7 +17,9 @@ SPEC = importlib.util.spec_from_file_location("openubmc_workflow_bootstrap", BOO
 assert SPEC is not None and SPEC.loader is not None
 bootstrap = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bootstrap)
-INSTALLER = REPO_ROOT / "openubmc-environment-setup" / "scripts" / "install_environment.py"
+INSTALLER = (
+    REPO_ROOT / "openubmc-environment-setup" / "scripts" / "install_environment.py"
+)
 INSTALLER_SPEC = importlib.util.spec_from_file_location(
     "openubmc_environment_installer_for_bootstrap_contract", INSTALLER
 )
@@ -55,12 +57,27 @@ class BootstrapTests(unittest.TestCase):
                 urlopen.assert_not_called()
                 run.assert_not_called()
 
-    def test_bootstrap_downloads_installer_and_forwards_managed_install_options(self) -> None:
+    def test_bootstrap_downloads_complete_installer_and_forwards_options(self) -> None:
         completed = subprocess.CompletedProcess([], 0)
+        downloaded: dict[str, bytes] = {}
+
+        def run_installer(command, **_kwargs):
+            installer_path = Path(command[1])
+            downloaded[installer_path.name] = installer_path.read_bytes()
+            parser_path = installer_path.with_name("client_config.py")
+            downloaded[parser_path.name] = parser_path.read_bytes()
+            return completed
+
         with (
-            mock.patch.dict(bootstrap.os.environ, {"GH_TOKEN": "fixture-token"}, clear=True),
-            mock.patch.object(bootstrap.urllib.request, "urlopen", return_value=_Response()) as urlopen,
-            mock.patch.object(bootstrap.subprocess, "run", return_value=completed) as run,
+            mock.patch.dict(
+                bootstrap.os.environ, {"GH_TOKEN": "fixture-token"}, clear=True
+            ),
+            mock.patch.object(
+                bootstrap.urllib.request, "urlopen", return_value=_Response()
+            ) as urlopen,
+            mock.patch.object(
+                bootstrap.subprocess, "run", side_effect=run_installer
+            ) as run,
         ):
             result = bootstrap.main(
                 [
@@ -74,13 +91,24 @@ class BootstrapTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        request = urlopen.call_args.args[0]
+        requests = [call.args[0] for call in urlopen.call_args_list]
         self.assertEqual(
-            request.full_url,
-            bootstrap.INSTALLER_API_TEMPLATE.format(ref="release-v1"),
+            [request.full_url for request in requests],
+            [
+                bootstrap.INSTALLER_API_TEMPLATE.format(ref="release-v1"),
+                bootstrap.CLIENT_CONFIG_API_TEMPLATE.format(ref="release-v1"),
+            ],
         )
-        self.assertEqual(request.get_header("Authorization"), "Bearer fixture-token")
-        self.assertEqual(urlopen.call_args.kwargs, {"timeout": 30})
+        self.assertTrue(
+            all(
+                request.get_header("Authorization") == "Bearer fixture-token"
+                for request in requests
+            )
+        )
+        self.assertTrue(
+            all(call.kwargs == {"timeout": 30} for call in urlopen.call_args_list)
+        )
+        self.assertEqual(set(downloaded), {"install_environment.py", "client_config.py"})
         command = run.call_args.args[0]
         self.assertNotIn("fixture-token", command)
         self.assertEqual(command[2:8], [
@@ -104,19 +132,29 @@ class BootstrapTests(unittest.TestCase):
         completed = subprocess.CompletedProcess([], 0)
         with (
             mock.patch.dict(bootstrap.os.environ, {}, clear=True),
-            mock.patch.object(bootstrap.urllib.request, "urlopen", return_value=_Response()) as urlopen,
+            mock.patch.object(
+                bootstrap.urllib.request, "urlopen", return_value=_Response()
+            ) as urlopen,
             mock.patch.object(bootstrap.subprocess, "run", return_value=completed) as run,
         ):
             self.assertEqual(bootstrap.main(["--ref", "v1.2.3"]), 0)
 
-        request = urlopen.call_args.args[0]
+        requests = [call.args[0] for call in urlopen.call_args_list]
         self.assertEqual(
-            request.full_url,
-            "https://api.github.com/repos/lihuabai629-star/openubmc-agent-workflow/"
-            "contents/openubmc-environment-setup/scripts/install_environment.py?ref=v1.2.3",
+            [request.full_url for request in requests],
+            [
+                "https://api.github.com/repos/lihuabai629-star/openubmc-agent-workflow/"
+                "contents/openubmc-environment-setup/scripts/install_environment.py?ref=v1.2.3",
+                "https://api.github.com/repos/lihuabai629-star/openubmc-agent-workflow/"
+                "contents/openubmc-environment-setup/scripts/client_config.py?ref=v1.2.3",
+            ],
         )
-        self.assertIsNone(request.get_header("Authorization"))
-        self.assertEqual(urlopen.call_args.kwargs, {"timeout": 30})
+        self.assertTrue(
+            all(request.get_header("Authorization") is None for request in requests)
+        )
+        self.assertTrue(
+            all(call.kwargs == {"timeout": 30} for call in urlopen.call_args_list)
+        )
         command = run.call_args.args[0]
         repo_index = command.index("--repo-url") + 1
         ref_index = command.index("--ref") + 1
