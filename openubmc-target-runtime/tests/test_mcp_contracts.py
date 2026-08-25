@@ -918,6 +918,9 @@ class JsonRpcEndpointTests(unittest.TestCase):
         )
         summary = called["result"]["content"][0]["text"]
         self.assertIn("completed", summary)
+        self.assertIn("DiagnosticReceipt status=complete", summary)
+        self.assertIn("result[diagnosis]", summary)
+        self.assertIn("bounded fake diagnosis completed", summary)
         with self.assertRaises(json.JSONDecodeError):
             json.loads(summary)
 

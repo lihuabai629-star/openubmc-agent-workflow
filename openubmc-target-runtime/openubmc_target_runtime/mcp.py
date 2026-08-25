@@ -3462,6 +3462,88 @@ class JsonRpcMcpEndpoint:
             "utf-8", errors="ignore"
         ) + "..."
 
+    @staticmethod
+    def _bounded_summary_value(value: object, *, limit: int = 480) -> str:
+        rendered = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        encoded = rendered.encode("utf-8")
+        if len(encoded) <= limit:
+            return rendered
+        return encoded[: limit - 3].decode("utf-8", errors="ignore") + "..."
+
+    @classmethod
+    def _diagnostic_result_text(cls, value: object) -> str:
+        result = _mapping_or_empty(value)
+        selected = result.get("value")
+        selected_mapping = _mapping_or_empty(selected)
+        summaries = selected_mapping.get("summary", [])
+        if isinstance(summaries, list) and summaries:
+            samples: list[str] = []
+            for raw_sample in summaries[:4]:
+                sample = _mapping_or_empty(raw_sample)
+                path = str(sample.get("path", "value"))
+                samples.append(
+                    f"{path}={cls._bounded_summary_value(sample.get('value'), limit=160)}"
+                )
+            rendered = "; ".join(samples)
+        else:
+            rendered = cls._bounded_summary_value(selected)
+        return (
+            f"result[{result.get('result_id', 'diagnosis')}] "
+            f"status={result.get('status', 'not_checked')} "
+            f"kind={result.get('kind', 'diagnosis')} "
+            f"request={result.get('request', '')} value={rendered}"
+        )
+
+    @classmethod
+    def _execute_text(cls, value: Mapping[str, object]) -> str:
+        state = str(value.get("state", "unknown"))
+        lines = [f"openUBMC 工作流状态：{state}。"]
+        receipt = _mapping_or_empty(value.get("diagnostic_receipt"))
+        if receipt:
+            coverage = _mapping_or_empty(receipt.get("coverage"))
+            freshness = _mapping_or_empty(receipt.get("freshness"))
+            lines.append(
+                "DiagnosticReceipt "
+                f"status={receipt.get('status', 'blocked')} "
+                f"coverage={coverage.get('evaluable', 0)}/"
+                f"{coverage.get('requested', 0)} "
+                f"unavailable={coverage.get('unavailable', 0)} "
+                f"not_checked={coverage.get('not_checked', 0)} "
+                f"complete={str(bool(coverage.get('complete'))).lower()} "
+                f"freshness={freshness.get('status', 'unknown')} "
+                f"truncated={str(bool(receipt.get('truncated'))).lower()} "
+                f"content_complete="
+                f"{str(bool(receipt.get('content_complete'))).lower()}."
+            )
+            capabilities = receipt.get("capabilities", {})
+            if isinstance(capabilities, Mapping) and capabilities:
+                lines.append(
+                    "capabilities: "
+                    + ", ".join(
+                        f"{name}={status}"
+                        for name, status in list(capabilities.items())[:8]
+                    )
+                )
+            results = receipt.get("results", [])
+            if isinstance(results, list):
+                lines.extend(
+                    cls._diagnostic_result_text(result)
+                    for result in results[:8]
+                    if isinstance(result, Mapping)
+                )
+            gaps = receipt.get("gaps", [])
+            if isinstance(gaps, list) and gaps:
+                lines.append(
+                    "diagnostic_gaps: "
+                    + ", ".join(str(gap) for gap in gaps[:8])
+                )
+        return "\n".join(lines)
+
     @classmethod
     def _human_summary(
         cls,
@@ -3515,7 +3597,7 @@ class JsonRpcMcpEndpoint:
                     f"openUBMC 工作流已推进到 {state}："
                     f"{gate.get('kind', 'gate')} {gate.get('name', '')}。"
                 )
-            return f"openUBMC 工作流状态：{state}。"
+            return cls._execute_text(value)
         closeout_markdown = value.get("closeout_markdown")
         if isinstance(closeout_markdown, str) and closeout_markdown.strip():
             return closeout_markdown.strip()

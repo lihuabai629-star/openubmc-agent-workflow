@@ -125,6 +125,10 @@ projection-time compaction may reduce facts and diagnostic previews, but it neve
 Runtime-owned Gate, Incident, terminal Outcome, or diagnostic completion semantics. If the
 preserved semantics still do not fit, the Turn may exceed the projection target and reports that
 condition as telemetry rather than a blocker.
+The MCP Adapter also renders a bounded textual receipt summary in standard `content`, including
+coverage, freshness, source completeness, capabilities, gaps, and citable result previews. The
+typed Turn remains authoritative in `structuredContent`; the text prevents clients that underuse
+structured MCP data from reducing `execute` to a generic completed/failed acknowledgement.
 
 Domain execution completion is not diagnosis completion. Zero Agent-evaluable requested items
 produce a blocked receipt, partial visibility or incomplete content produces a partial receipt,
