@@ -559,9 +559,9 @@ class EnvironmentSetupTests(unittest.TestCase):
 
         self.assertEqual(ref_kind, "tag")
         self.assertEqual(commit, "a" * 40)
-        command = run.call_args.args[0]
-        environment = run.call_args.kwargs["env"]
-        self.assertEqual(command[command.index("--depth") + 1], "2")
+        command = run.call_args_list[0].args[0]
+        environment = run.call_args_list[0].kwargs["env"]
+        self.assertNotIn("--depth", command)
         self.assertNotIn("fixture-github-token", command)
         self.assertEqual(environment["GIT_CONFIG_COUNT"], "2")
         self.assertEqual(environment["GIT_CONFIG_KEY_0"], "credential.helper")
@@ -574,6 +574,24 @@ class EnvironmentSetupTests(unittest.TestCase):
             environment["GIT_CONFIG_VALUE_1"],
             "Authorization: Basic eC1hY2Nlc3MtdG9rZW46Zml4dHVyZS1naXRodWItdG9rZW4=",
         )
+
+    def test_fetch_existing_shallow_checkout_requests_complete_history(self) -> None:
+        root = self.root / "managed-release"
+        (root / ".git").mkdir(parents=True)
+        (root / ".git" / "shallow").write_text("a" * 40 + "\n", encoding="utf-8")
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with (
+            mock.patch.object(
+                installer,
+                "git_output",
+                side_effect=[installer.DEFAULT_REPO_URL, "b" * 40],
+            ),
+            mock.patch.object(installer, "run_command", return_value=completed) as run,
+        ):
+            installer.fetch_immutable_release(root, "b" * 40)
+
+        self.assertIn("--unshallow", run.call_args_list[0].args[0])
 
     def test_clone_source_resolves_tag_and_full_commit_to_detached_head(self) -> None:
         remote, commit = self.create_release_remote()
@@ -620,6 +638,58 @@ class EnvironmentSetupTests(unittest.TestCase):
             destination, "rev-parse", "HEAD^1^{commit}"
         )
         self.assertRegex(parent, r"^[0-9a-f]{40}$")
+
+    def test_clone_source_keeps_history_referenced_by_release_validation(self) -> None:
+        remote, main_commit = self.create_release_remote()
+        release_source = self.root / "release-repository"
+        subprocess.run(
+            ["git", "-C", str(release_source), "switch", "-c", "qualification-side"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        side_evidence = release_source / "qualification.txt"
+        side_evidence.write_text("qualified\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(release_source), "add", "qualification.txt"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(release_source), "commit", "-m", "qualification"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        side_commit = installer.git_output(release_source, "rev-parse", "HEAD")
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(release_source),
+                "push",
+                str(remote),
+                "qualification-side",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(release_source), "switch", "main"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        destination = self.root / "managed-validation-release"
+
+        installer.clone_source(
+            destination,
+            str(remote),
+            main_commit,
+            False,
+            EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+
+        self.assertEqual(
+            installer.git_output(destination, "rev-parse", f"{side_commit}^{{commit}}"),
+            side_commit,
+        )
 
     def test_explicit_new_release_ref_updates_an_existing_managed_checkout(self) -> None:
         remote, first_commit = self.create_release_remote()
@@ -1815,6 +1885,26 @@ class EnvironmentSetupTests(unittest.TestCase):
             {"type": "stdio", "command": str(launcher), "args": []},
         )
 
+    def test_install_migrates_owned_codex_runtime_entry_without_args(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        before_runtime, header, runtime_section = codex.read_text(
+            encoding="utf-8"
+        ).partition("[mcp_servers.openubmc-target-runtime]")
+        codex.write_text(
+            before_runtime + header + runtime_section.replace("args = []\n", "", 1),
+            encoding="utf-8",
+        )
+
+        result, output = self.install("--clients", "codex")
+
+        self.assertEqual(result, 0, output)
+        runtime_section = codex.read_text(encoding="utf-8").split(
+            "[mcp_servers.openubmc-target-runtime]", 1
+        )[1]
+        self.assertIn("args = []", runtime_section)
+
     def test_credentials_map_bmc_to_redfish_and_require_private_import(self) -> None:
         values = {
             "OPENUBMC_SSH_USER": "shared-user",
@@ -2033,6 +2123,235 @@ class EnvironmentSetupTests(unittest.TestCase):
             installed,
         )
         self.assertIs(state["mcp"]["codex"]["created_entry"], True)
+
+    def test_install_removes_duplicate_default_legacy_kb_alias(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex,claude")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        codex.write_text(
+            codex.read_text(encoding="utf-8")
+            + "\n[mcp_servers.openubmc-studio]\n"
+            + f"url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}\n",
+            encoding="utf-8",
+        )
+        claude = self.home / ".claude.json"
+        claude_document = json.loads(claude.read_text(encoding="utf-8"))
+        claude_document["mcpServers"]["openubmc-studio"] = {
+            "type": "http",
+            "url": installer.LEGACY_STUDIO_HTTP_URL,
+        }
+        claude.write_text(
+            json.dumps(claude_document, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        result, output = self.install("--clients", "codex,claude")
+
+        self.assertEqual(result, 0, output)
+        self.assertNotIn("openubmc-studio", codex.read_text(encoding="utf-8"))
+        remaining = json.loads(claude.read_text(encoding="utf-8"))["mcpServers"]
+        self.assertNotIn("openubmc-studio", remaining)
+        self.assertIn("openubmc-kb", remaining)
+
+    def test_install_removes_escaped_default_legacy_kb_alias_in_codex(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        codex.write_text(
+            codex.read_text(encoding="utf-8")
+            + '\n[mcp_servers."openubmc\\u002dstudio"]\n'
+            + f"url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}\n",
+            encoding="utf-8",
+        )
+
+        result, output = self.install("--clients", "codex")
+
+        self.assertEqual(result, 0, output)
+        installed = codex.read_text(encoding="utf-8")
+        self.assertNotIn("openubmc\\u002dstudio", installed)
+        self.assertEqual(installed.count("[mcp_servers.openubmc-kb]"), 1)
+
+    def test_install_rejects_custom_duplicate_legacy_kb_alias_in_codex(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        codex.write_text(
+            codex.read_text(encoding="utf-8")
+            + "\n[mcp_servers.openubmc-studio]\n"
+            + f"url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}\n"
+            + "[mcp_servers.openubmc-studio.headers]\n"
+            + 'Authorization = "custom"\n',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError, "both openubmc-studio and openubmc-kb"
+        ):
+            self.install("--clients", "codex")
+        self.assertIn("Authorization", codex.read_text(encoding="utf-8"))
+
+    def test_install_rejects_quoted_nested_legacy_kb_alias_in_codex(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        codex.write_text(
+            codex.read_text(encoding="utf-8")
+            + "\n[mcp_servers.openubmc-studio]\n"
+            + f"url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}\n"
+            + '[mcp_servers."openubmc-studio".headers]\n'
+            + 'Authorization = "custom"\n',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError, "both openubmc-studio and openubmc-kb"
+        ):
+            self.install("--clients", "codex")
+        self.assertIn("Authorization", codex.read_text(encoding="utf-8"))
+
+    def test_install_rejects_escaped_nested_legacy_kb_alias_in_codex(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        codex.write_text(
+            codex.read_text(encoding="utf-8")
+            + "\n[mcp_servers.openubmc-studio]\n"
+            + f"url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}\n"
+            + '[mcp_servers."openubmc\\u002dstudio".headers]\n'
+            + 'Authorization = "custom"\n',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError, "both openubmc-studio and openubmc-kb"
+        ):
+            self.install("--clients", "codex")
+        self.assertIn("Authorization", codex.read_text(encoding="utf-8"))
+
+    def test_install_rejects_array_table_legacy_kb_alias_in_codex(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        codex.write_text(
+            codex.read_text(encoding="utf-8")
+            + "\n[[mcp_servers.openubmc-studio]]\n"
+            + f"url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError, "mcp_servers.openubmc-studio must be a TOML table"
+        ):
+            self.install("--clients", "codex")
+
+    def test_install_rejects_inline_table_legacy_kb_alias_in_codex(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        codex.write_text(
+            codex.read_text(encoding="utf-8")
+            + "\n[mcp_servers]\n"
+            + '"openubmc\\u002dstudio" = '
+            + f'{{ url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}, '
+            + 'headers = { Authorization = "custom" } }\n',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError, "both openubmc-studio and openubmc-kb"
+        ):
+            self.install("--clients", "codex")
+
+    def test_install_rejects_legacy_alias_after_multiline_toml_string(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        codex = self.home / ".codex" / "config.toml"
+        codex.write_text(
+            'notes = """\n'
+            + "[other]\n"
+            + '"""\n'
+            + "mcp_servers.openubmc-studio = {\n"
+            + f"  url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)},\n"
+            + '  headers = { Authorization = "custom" }\n'
+            + "}\n\n"
+            + codex.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError, "both openubmc-studio and openubmc-kb"
+        ):
+            self.install("--clients", "codex")
+
+    def test_install_rejects_custom_duplicate_legacy_kb_alias_in_claude(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "claude")[0], 0)
+        claude = self.home / ".claude.json"
+        document = json.loads(claude.read_text(encoding="utf-8"))
+        document["mcpServers"]["openubmc-studio"] = {
+            "type": "http",
+            "url": installer.LEGACY_STUDIO_HTTP_URL,
+            "description": "custom alias",
+        }
+        claude.write_text(
+            json.dumps(document, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError, "both openubmc-studio and openubmc-kb"
+        ):
+            self.install("--clients", "claude")
+        remaining = json.loads(claude.read_text(encoding="utf-8"))["mcpServers"]
+        self.assertEqual(remaining["openubmc-studio"]["description"], "custom alias")
+
+    def test_install_rejects_default_legacy_alias_next_to_unmanaged_codex_kb(self) -> None:
+        self.prepare_credentials()
+        codex = self.home / ".codex" / "config.toml"
+        codex.parent.mkdir(parents=True)
+        codex.write_text(
+            "[mcp_servers.openubmc-kb]\n"
+            'command = "/opt/external-kb"\n'
+            "args = []\n\n"
+            "[mcp_servers.openubmc-studio]\n"
+            f"url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError, "both openubmc-studio and openubmc-kb"
+        ):
+            self.install("--clients", "codex")
+
+    def test_install_rejects_default_legacy_alias_next_to_unmanaged_claude_kb(self) -> None:
+        self.prepare_credentials()
+        claude = self.home / ".claude.json"
+        claude.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "openubmc-kb": {
+                            "type": "stdio",
+                            "command": "/opt/external-kb",
+                            "args": [],
+                        },
+                        "openubmc-studio": {
+                            "type": "http",
+                            "url": installer.LEGACY_STUDIO_HTTP_URL,
+                        },
+                    }
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            installer.SetupError, "both openubmc-studio and openubmc-kb"
+        ):
+            self.install("--clients", "claude")
 
     def test_external_codex_kb_stdio_skips_legacy_http_health_probe(self) -> None:
         self.prepare_credentials()

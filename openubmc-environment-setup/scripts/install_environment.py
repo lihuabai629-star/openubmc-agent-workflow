@@ -40,6 +40,8 @@ TARGET_RUNTIME_API_VERSION = "openubmc.target-runtime.v1"
 TARGET_RUNTIME_MCP_NAME = "openubmc-target-runtime"
 TARGET_RUNTIME_INSTALL_SCHEMA = "openubmc-target-runtime.install.v1"
 _RUNTIME_DIGEST_DOMAIN = b"openubmc-target-runtime-content-v1\0"
+TOML_KEY_PATTERN = r'(?:[A-Za-z0-9_-]+|"(?:\\.|[^"\\])*"|\'[^\']*\')'
+TOML_DOTTED_KEY_PATTERN = rf"{TOML_KEY_PATTERN}(?:\s*\.\s*{TOML_KEY_PATTERN})*"
 STATE_VERSION = 1
 COMMANDS = (
     "install",
@@ -1301,18 +1303,18 @@ def fetch_immutable_release(root: Path, ref: str) -> tuple[Literal["tag", "commi
     ref_kind = release_ref_kind(ref)
     fetch_ref = ref if ref_kind == "commit" else f"refs/tags/{ref}"
     remote = git_output(root, "remote", "get-url", "origin")
+    fetch_args = [
+        "git",
+        "-C",
+        str(root),
+        "fetch",
+        "--no-tags",
+    ]
+    if (root / ".git" / "shallow").is_file():
+        fetch_args.append("--unshallow")
+    fetch_args.extend(("origin", fetch_ref))
     fetched = run_command(
-        [
-            "git",
-            "-C",
-            str(root),
-            "fetch",
-            "--no-tags",
-            "--depth",
-            "2",
-            "origin",
-            fetch_ref,
-        ],
+        fetch_args,
         env=git_auth_environment(remote),
     )
     if fetched.returncode != 0:
@@ -1320,7 +1322,24 @@ def fetch_immutable_release(root: Path, ref: str) -> tuple[Literal["tag", "commi
         detail = fetched.stderr.strip() or fetched.stdout.strip()
         suffix = f": {detail}" if detail else ""
         raise SetupError(f"unable to fetch {label} {ref}{suffix}")
-    return ref_kind, git_output(root, "rev-parse", "FETCH_HEAD^{commit}")
+    resolved = git_output(root, "rev-parse", "FETCH_HEAD^{commit}")
+    validation_history = run_command(
+        [
+            "git",
+            "-C",
+            str(root),
+            "fetch",
+            "--no-tags",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+        env=git_auth_environment(remote),
+    )
+    if validation_history.returncode != 0:
+        detail = validation_history.stderr.strip() or validation_history.stdout.strip()
+        suffix = f": {detail}" if detail else ""
+        raise SetupError(f"unable to fetch release validation history{suffix}")
+    return ref_kind, resolved
 
 
 def checkout_detached_release(root: Path, commit: str) -> None:
@@ -2328,25 +2347,270 @@ def backup_config_file(path: Path, backups: Path, dry_run: bool) -> None:
     backup_file(path, backups, dry_run)
 
 
+def decode_toml_basic_key(value: str) -> str | None:
+    def replace_long_escape(match: re.Match[str]) -> str:
+        character = chr(int(match.group(1), 16))
+        return json.dumps(character, ensure_ascii=True)[1:-1]
+
+    try:
+        normalized = re.sub(r"\\U([0-9a-fA-F]{8})", replace_long_escape, value)
+        return json.loads(f'"{normalized}"')
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+
+def toml_dotted_key_path(value: str) -> tuple[str, ...] | None:
+    if re.fullmatch(TOML_DOTTED_KEY_PATTERN, value.strip()) is None:
+        return None
+    parts: list[str] = []
+    for token_match in re.finditer(TOML_KEY_PATTERN, value):
+        token = token_match.group(0)
+        if token.startswith('"'):
+            decoded = decode_toml_basic_key(token[1:-1])
+            if decoded is None:
+                return None
+            parts.append(decoded)
+        elif token.startswith("'"):
+            parts.append(token[1:-1])
+        else:
+            parts.append(token)
+    return tuple(parts)
+
+
+def toml_table_path(
+    line: str,
+) -> tuple[Literal["table", "array"], tuple[str, ...]] | None:
+    value = line.strip()
+    match = re.fullmatch(
+        rf"(?:\[\s*({TOML_DOTTED_KEY_PATTERN})\s*\]"
+        rf"|\[\[\s*({TOML_DOTTED_KEY_PATTERN})\s*\]\])\s*(?:#.*)?",
+        value,
+    )
+    if match is None:
+        return None
+    kind: Literal["table", "array"] = "table" if match.group(1) else "array"
+    raw_path = match.group(1) or match.group(2)
+    path = toml_dotted_key_path(raw_path)
+    return (kind, path) if path is not None else None
+
+
+def toml_assignment_paths(lines: list[str]) -> list[tuple[int, tuple[str, ...]]]:
+    assignments: list[tuple[int, tuple[str, ...]]] = []
+    section: tuple[str, ...] = ()
+    assignment = re.compile(rf"\s*({TOML_DOTTED_KEY_PATTERN})\s*=")
+    for index, line in enumerate(lines):
+        header = toml_table_path(line)
+        if header is not None:
+            section = header[1]
+            continue
+        match = assignment.match(line)
+        if match is None:
+            continue
+        path = toml_dotted_key_path(match.group(1))
+        if path is not None:
+            assignments.append((index, section + path))
+    return assignments
+
+
+def toml_multiline_string_closes(value: str, delimiter: str) -> bool:
+    offset = 0
+    while (index := value.find(delimiter, offset)) >= 0:
+        if delimiter == "'''":
+            return True
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and value[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2 == 0:
+            return True
+        offset = index + len(delimiter)
+    return False
+
+
+def toml_multiline_string_opener(line: str) -> tuple[int, str] | None:
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(line):
+        character = line[index]
+        if quote is not None:
+            if quote == '"' and escaped:
+                escaped = False
+            elif quote == '"' and character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            index += 1
+            continue
+        if character == "#":
+            return None
+        if line.startswith('"""', index) or line.startswith("'''", index):
+            return index, line[index : index + 3]
+        if character in {'"', "'"}:
+            quote = character
+        index += 1
+    return None
+
+
+def toml_structure_lines(lines: list[str]) -> list[str]:
+    structural: list[str] = []
+    active: str | None = None
+    for line in lines:
+        if active is not None:
+            if toml_multiline_string_closes(line, active):
+                active = None
+            structural.append("")
+            continue
+        opener = toml_multiline_string_opener(line)
+        if opener is None:
+            structural.append(line)
+            continue
+        index, delimiter = opener
+        structural.append(line[:index])
+        if not toml_multiline_string_closes(line[index + 3 :], delimiter):
+            active = delimiter
+    return structural
+
+
+def toml_semantic_section_bounds(
+    lines: list[str],
+    path: tuple[str, ...],
+) -> tuple[int, int] | None:
+    matches = [
+        (index, header[0])
+        for index, line in enumerate(lines)
+        if (header := toml_table_path(line)) is not None and header[1] == path
+    ]
+    if len(matches) > 1:
+        raise SetupError(f"duplicate TOML section: {'.'.join(path)}")
+    if not matches:
+        return None
+    start, kind = matches[0]
+    if kind != "table":
+        raise SetupError(f"{'.'.join(path)} must be a TOML table")
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if toml_table_path(lines[index]) is not None
+        ),
+        len(lines),
+    )
+    return start, end
+
+
+def toml_section_is_default_http_alias(
+    lines: list[str],
+    bounds: tuple[int, int],
+) -> bool:
+    if any(
+        len(header[1]) > 2
+        and header[1][:2] == ("mcp_servers", LEGACY_STUDIO_MCP_NAME)
+        for line in lines
+        if (header := toml_table_path(line)) is not None
+    ):
+        return False
+    start, end = bounds
+    meaningful = [
+        line
+        for line in lines[start + 1 : end]
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if len(meaningful) != 1:
+        return False
+    match = re.fullmatch(r"\s*url\s*=\s*(['\"])(.*?)\1\s*", meaningful[0])
+    return match is not None and match.group(2) == LEGACY_STUDIO_HTTP_URL
+
+
+def json_entry_is_default_http_alias(entry: object) -> bool:
+    return (
+        isinstance(entry, dict)
+        and set(entry).issubset({"type", "url"})
+        and entry.get("url") == LEGACY_STUDIO_HTTP_URL
+        and entry.get("type", "http") == "http"
+    )
+
+
 def migrate_legacy_toml_mcp_name(
     path: Path,
     backups: Path,
     dry_run: bool,
+    *,
+    current_managed: bool = False,
 ) -> bool:
     if not path.is_file() or path.is_symlink():
         return False
     original = path.read_text(encoding="utf-8", errors="strict")
     lines = original.splitlines()
+    structural_lines = toml_structure_lines(lines)
     legacy_header = f"[mcp_servers.{LEGACY_STUDIO_MCP_NAME}]"
     current_header = f"[mcp_servers.{KNOWLEDGE_MCP_NAME}]"
-    legacy_bounds = toml_section_bounds(lines, legacy_header)
+    assignments = toml_assignment_paths(structural_lines)
+    legacy_assignment_lines = [
+        index
+        for index, assignment_path in assignments
+        if assignment_path[:2] == ("mcp_servers", LEGACY_STUDIO_MCP_NAME)
+    ]
+    current_assignment_lines = [
+        index
+        for index, assignment_path in assignments
+        if assignment_path[:2] == ("mcp_servers", KNOWLEDGE_MCP_NAME)
+    ]
+    legacy_bounds = toml_semantic_section_bounds(
+        structural_lines, ("mcp_servers", LEGACY_STUDIO_MCP_NAME)
+    )
+    current_bounds = toml_semantic_section_bounds(
+        structural_lines, ("mcp_servers", KNOWLEDGE_MCP_NAME)
+    )
+    current_has_external_assignments = bool(current_assignment_lines) and (
+        current_bounds is None
+        or any(
+            index <= current_bounds[0] or index >= current_bounds[1]
+            for index in current_assignment_lines
+        )
+    )
     if legacy_bounds is None:
+        if legacy_assignment_lines:
+            if current_bounds is not None or current_has_external_assignments:
+                raise SetupError(
+                    f"both {LEGACY_STUDIO_MCP_NAME} and {KNOWLEDGE_MCP_NAME} "
+                    f"MCP entries exist in {path}"
+                )
+            raise SetupError(
+                f"{LEGACY_STUDIO_MCP_NAME} must be a TOML table in {path}"
+            )
         return False
-    if toml_section_bounds(lines, current_header) is not None:
+    start, end = legacy_bounds
+    if any(index <= start or index >= end for index in legacy_assignment_lines):
+        if current_bounds is not None or current_has_external_assignments:
+            raise SetupError(
+                f"both {LEGACY_STUDIO_MCP_NAME} and {KNOWLEDGE_MCP_NAME} MCP entries "
+                f"exist in {path}"
+            )
+        raise SetupError(
+            f"ambiguous {LEGACY_STUDIO_MCP_NAME} TOML assignments in {path}"
+        )
+    if current_has_external_assignments:
         raise SetupError(
             f"both {LEGACY_STUDIO_MCP_NAME} and {KNOWLEDGE_MCP_NAME} MCP entries "
             f"exist in {path}"
         )
+    if current_bounds is not None:
+        if not current_managed or not toml_section_is_default_http_alias(
+            structural_lines, legacy_bounds
+        ):
+            raise SetupError(
+                f"both {LEGACY_STUDIO_MCP_NAME} and {KNOWLEDGE_MCP_NAME} MCP entries "
+                f"exist in {path}"
+            )
+        updated = "\n".join(lines[:start] + lines[end:]).rstrip() + "\n"
+        backup_config_file(path, backups, dry_run)
+        if dry_run:
+            print(f"would remove default {LEGACY_STUDIO_MCP_NAME} alias from {path}")
+        else:
+            atomic_write(path, updated, None)
+        return True
     lines[legacy_bounds[0]] = current_header
     updated = "\n".join(lines).rstrip() + "\n"
     backup_config_file(path, backups, dry_run)
@@ -2364,6 +2628,8 @@ def migrate_legacy_json_mcp_name(
     path: Path,
     backups: Path,
     dry_run: bool,
+    *,
+    current_managed: bool = False,
 ) -> bool:
     if not path.is_file() or path.is_symlink():
         return False
@@ -2375,10 +2641,20 @@ def migrate_legacy_json_mcp_name(
     if not isinstance(servers, dict) or LEGACY_STUDIO_MCP_NAME not in servers:
         return False
     if KNOWLEDGE_MCP_NAME in servers:
-        raise SetupError(
-            f"both {LEGACY_STUDIO_MCP_NAME} and {KNOWLEDGE_MCP_NAME} MCP entries "
-            f"exist in {path}"
-        )
+        legacy = servers[LEGACY_STUDIO_MCP_NAME]
+        if not current_managed or not json_entry_is_default_http_alias(legacy):
+            raise SetupError(
+                f"both {LEGACY_STUDIO_MCP_NAME} and {KNOWLEDGE_MCP_NAME} MCP entries "
+                f"exist in {path}"
+            )
+        servers.pop(LEGACY_STUDIO_MCP_NAME)
+        updated = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        backup_config_file(path, backups, dry_run)
+        if dry_run:
+            print(f"would remove default {LEGACY_STUDIO_MCP_NAME} alias from {path}")
+        else:
+            atomic_write(path, updated, None)
+        return True
     servers[KNOWLEDGE_MCP_NAME] = servers.pop(LEGACY_STUDIO_MCP_NAME)
     updated = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     backup_config_file(path, backups, dry_run)
@@ -2397,19 +2673,29 @@ def migrate_legacy_mcp_names(
     clients: Iterable[str],
     backups: Path,
     dry_run: bool,
+    prior: Mapping[str, object] | None = None,
 ) -> None:
+    prior = prior or {}
     for client in clients:
+        previous = prior.get(client)
+        current_managed = (
+            record_created_entry(previous)
+            if isinstance(previous, Mapping)
+            else False
+        )
         if client == "codex":
             migrate_legacy_toml_mcp_name(
                 home / ".codex" / "config.toml",
                 backups,
                 dry_run,
+                current_managed=current_managed,
             )
         elif client == "claude":
             migrate_legacy_json_mcp_name(
                 home / ".claude.json",
                 backups,
                 dry_run,
+                current_managed=current_managed,
             )
 
 
@@ -2773,6 +3059,10 @@ def remove_json_knowledge_mcp(
         atomic_write(path, updated, None)
 
 
+def is_explicit_empty_toml_args(line: str) -> bool:
+    return re.fullmatch(r"\s*args\s*=\s*\[\s*]\s*", line) is not None
+
+
 def toml_stdio_mcp_entry(path: Path) -> dict[str, object] | None:
     if not path.is_file() or path.is_symlink():
         return None
@@ -2791,14 +3081,24 @@ def toml_stdio_mcp_entry(path: Path) -> dict[str, object] | None:
             )
         )
     ]
-    args_matches = [
+    args_assignments = [
         line
         for line in lines[start + 1 : end]
-        if re.fullmatch(r"\s*args\s*=\s*\[\s*]\s*", line)
+        if re.match(r"\s*args\s*=", line)
     ]
-    if len(command_matches) != 1 or len(args_matches) != 1:
+    args_matches = [
+        line
+        for line in args_assignments
+        if is_explicit_empty_toml_args(line)
+    ]
+    if (
+        len(command_matches) != 1
+        or len(args_assignments) > 1
+        or (args_assignments and len(args_matches) != 1)
+    ):
         raise SetupError(
-            f"{TARGET_RUNTIME_MCP_NAME} TOML section must contain one command and args = []"
+            f"{TARGET_RUNTIME_MCP_NAME} TOML section must contain one command "
+            "and no args or args = []"
         )
     return stdio_mcp_entry(command_matches[0].group(2))
 
@@ -2825,8 +3125,13 @@ def upsert_toml_stdio_mcp(
         lines.extend((header, f"command = {json.dumps(str(launcher))}", "args = []"))
         created_entry = True
     else:
+        start, end = bounds
         current = toml_stdio_mcp_entry(path)
-        if current == expected:
+        has_explicit_empty_args = any(
+            is_explicit_empty_toml_args(line)
+            for line in lines[start + 1 : end]
+        )
+        if current == expected and has_explicit_empty_args:
             return {
                 "path": str(path),
                 "command": str(launcher),
@@ -2838,7 +3143,6 @@ def upsert_toml_stdio_mcp(
             raise SetupError(
                 f"existing {TARGET_RUNTIME_MCP_NAME} MCP command differs in {path}"
             )
-        start, end = bounds
         lines[start:end] = (
             header,
             f"command = {json.dumps(str(launcher))}",
@@ -3873,7 +4177,13 @@ def perform_install(
         ),
     )
     backups = backup_path(home)
-    migrate_legacy_mcp_names(home, clients, backups, args.dry_run)
+    migrate_legacy_mcp_names(
+        home,
+        clients,
+        backups,
+        args.dry_run,
+        prior_mcp,
+    )
     managed_links = install_links(
         home,
         source,
