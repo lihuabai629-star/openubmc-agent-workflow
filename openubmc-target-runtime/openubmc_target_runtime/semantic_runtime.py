@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
@@ -11,7 +11,10 @@ from typing import Protocol, TypeAlias
 
 from .contracts import RUNTIME_API_VERSION
 from .comparison_targets import comparison_target_identities
-from .diagnostic_receipt import DiagnosticReceipt
+from .diagnostic_receipt import (
+    DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS,
+    DiagnosticReceipt,
+)
 from .incident import incident_recovery_policy
 
 
@@ -510,6 +513,24 @@ class ArtifactRef:
 
 
 @dataclass(frozen=True)
+class RunTarget:
+    """One normalized target in a typed multi-target Run scope."""
+
+    ip: str
+    role: str
+    target_id: str
+
+    def to_public_dict(self) -> dict[str, object]:
+        target: dict[str, object] = {
+            "ip": self.ip,
+            "target_id": self.target_id,
+        }
+        if self.role:
+            target["role"] = self.role
+        return target
+
+
+@dataclass(frozen=True)
 class StartRun:
     target: str
     intent: str
@@ -519,7 +540,7 @@ class StartRun:
     input_digest: str
     entry_operation: str = ""
     entry_arguments: Mapping[str, object] | None = None
-    targets: tuple[Mapping[str, object], ...] = ()
+    targets: tuple[RunTarget, ...] = ()
     observation_ref: ObservationRef | None = None
     caller_deadline: float = 120.0
 
@@ -665,7 +686,7 @@ def _run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
     return {
         "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/start-input-v1",
         "target": command.target,
-        "targets": [dict(target) for target in command.targets],
+        "targets": [target.to_public_dict() for target in command.targets],
         "intent": command.intent,
         "entry_operation": command.entry_operation,
         "entry_arguments": dict(command.entry_arguments or {}),
@@ -758,6 +779,51 @@ def _caller_deadline(action: Mapping[str, object]) -> float:
     return deadline
 
 
+def _diagnostic_scope_result_count(
+    arguments: Mapping[str, object], *, target_count: int
+) -> int:
+    requested_per_target = 0
+    for name in ("files", "mdb_queries", "mdb_expand_classes"):
+        raw_items = arguments.get(name, ())
+        if isinstance(raw_items, Sequence) and not isinstance(
+            raw_items, (str, bytes, bytearray)
+        ):
+            requested_per_target += sum(
+                1 for item in raw_items if str(item).strip()
+            )
+    if _text(arguments.get("logs")):
+        requested_per_target += 1
+    if arguments.get("mdb_only") is not True:
+        requested_per_target += 1
+        if "tree_service" in arguments or "tree_head" in arguments:
+            requested_per_target += 1
+        if "mdb_only" in arguments:
+            requested_per_target += 1
+    if arguments.get("source_correlation_requested") is True:
+        requested_per_target += 1
+    requested_per_target = max(requested_per_target, 1)
+    return requested_per_target * target_count + (1 if target_count >= 2 else 0)
+
+
+def _bounded_diagnostic_scope(
+    *,
+    intent: str,
+    arguments: Mapping[str, object],
+    target_count: int,
+) -> None:
+    if intent not in {"diagnosis-only", "diagnose-and-fix"}:
+        return
+    requested = _diagnostic_scope_result_count(
+        arguments,
+        target_count=target_count,
+    )
+    if requested > DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS:
+        raise AgentGatewayError(
+            f"diagnostic scope requests {requested} items; maximum is "
+            f"{DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS}"
+        )
+
+
 def decode_run_command(
     action: Mapping[str, object], *, operation_id: str
 ) -> RunCommand:
@@ -779,7 +845,7 @@ def decode_run_command(
                 "dynamic workflow objects are not supported; choose intent and delivery_strategy"
             )
         raw_targets = action.get("targets")
-        targets: tuple[Mapping[str, object], ...] = ()
+        targets: tuple[RunTarget, ...] = ()
         if raw_targets is not None:
             if (
                 not isinstance(raw_targets, list)
@@ -827,10 +893,17 @@ def decode_run_command(
                     target_item["role"] = role
                 else:
                     target_item.pop("role", None)
-            targets = tuple(normalized_targets)
+            targets = tuple(
+                RunTarget(
+                    ip=_text(target_item.get("ip")),
+                    role=_text(target_item.get("role")),
+                    target_id=_text(target_item.get("target_id")),
+                )
+                for target_item in normalized_targets
+            )
         target = _text(action.get("target"))
         if targets:
-            primary_target = _text(targets[0].get("ip"))
+            primary_target = targets[0].ip
             if target and target != primary_target:
                 raise AgentGatewayError(
                     "start target must match the first targets entry"
@@ -859,6 +932,11 @@ def decode_run_command(
             raise AgentGatewayError(
                 "entry_arguments requires entry_operation"
             )
+        _bounded_diagnostic_scope(
+            intent=intent,
+            arguments=entry_arguments,
+            target_count=len(targets) or 1,
+        )
         raw_delivery = _text(action.get("delivery_strategy")).lower()
         delivery = raw_delivery or (
             "source-only" if intent == "diagnose-and-fix" else ""

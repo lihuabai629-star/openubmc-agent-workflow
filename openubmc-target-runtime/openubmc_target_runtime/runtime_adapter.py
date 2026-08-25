@@ -161,7 +161,7 @@ class RuntimeSemanticAdapter:
         start_input = {
             "schema": "openubmc.semantic-runtime/start-input-v1",
             "target": command.target,
-            "targets": [dict(target) for target in command.targets],
+            "targets": [target.to_public_dict() for target in command.targets],
             "intent": command.intent,
             "entry_operation": command.entry_operation,
             "entry_arguments": dict(command.entry_arguments or {}),
@@ -199,7 +199,9 @@ class RuntimeSemanticAdapter:
             "include_closeout_bundle": False,
         }
         if command.targets:
-            arguments["targets"] = [dict(target) for target in command.targets]
+            arguments["targets"] = [
+                target.to_public_dict() for target in command.targets
+            ]
         else:
             arguments["ip"] = command.target
         if command.entry_operation:

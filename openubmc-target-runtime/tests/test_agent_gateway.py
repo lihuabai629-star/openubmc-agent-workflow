@@ -37,6 +37,7 @@ from openubmc_target_runtime import (  # noqa: E402
     ResumeRun,
     RunDecision,
     RunEngine,
+    RunTarget,
     STDIO_FRAME_MAX_BYTES,
     TOOLS_LIST_MAX_BYTES,
     TURN_MAX_BYTES,
@@ -3288,6 +3289,115 @@ class AgentGatewayTests(unittest.TestCase):
             results["target-2-version"]["value"]["lines"],
             ["12.08.21.07"],
         )
+
+    def test_decode_start_materializes_typed_runtime_targets(self) -> None:
+        command = decode_run_command(
+            {
+                "kind": "start",
+                "targets": [
+                    {
+                        "ip": "192.0.2.20",
+                        "role": "reference",
+                        "target_id": "reference",
+                    },
+                    {
+                        "ip": "192.0.2.21",
+                        "role": "candidate",
+                        "target_id": "candidate",
+                    },
+                ],
+                "intent": "diagnosis-only",
+                "entry_operation": "debug_run",
+                "entry_arguments": {"files": ["/etc/version.json"]},
+            },
+            operation_id="typed-target-start",
+        )
+
+        self.assertIsInstance(command, StartRun)
+        self.assertTrue(
+            all(isinstance(target, RunTarget) for target in command.targets)
+        )
+        self.assertEqual(
+            [target.to_public_dict() for target in command.targets],
+            [
+                {
+                    "ip": "192.0.2.20",
+                    "role": "reference",
+                    "target_id": "reference",
+                },
+                {
+                    "ip": "192.0.2.21",
+                    "role": "candidate",
+                    "target_id": "candidate",
+                },
+            ],
+        )
+
+    def test_execute_rejects_diagnostic_scope_larger_than_durable_receipt(
+        self,
+    ) -> None:
+        backend = MultiTargetDiagnosticBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            with self.assertRaisesRegex(
+                AgentGatewayError,
+                "diagnostic scope requests 16385 items; maximum is 1024",
+            ):
+                service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "targets": [
+                            {"ip": f"192.0.2.{index}"}
+                            for index in range(1, 17)
+                        ],
+                        "intent": "diagnosis-only",
+                        "entry_operation": "debug_run",
+                        "entry_arguments": {
+                            "files": [
+                                f"/tmp/diagnostic-{index}.txt"
+                                for index in range(1024)
+                            ],
+                            "mdb_only": True,
+                        },
+                    },
+                    task_id="oversized-diagnostic-scope",
+                    operation_id="oversized-diagnostic-scope-start",
+                )
+        finally:
+            service.close()
+
+        self.assertEqual(backend.calls, [])
+
+    def test_execute_counts_the_runtime_target_clock_in_diagnostic_scope(self) -> None:
+        backend = GenericCompletionBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            with self.assertRaisesRegex(
+                AgentGatewayError,
+                "diagnostic scope requests 1025 items; maximum is 1024",
+            ):
+                service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.20",
+                        "intent": "diagnosis-only",
+                        "entry_operation": "debug_run",
+                        "entry_arguments": {
+                            "files": [
+                                f"/tmp/diagnostic-{index}.txt"
+                                for index in range(1024)
+                            ],
+                        },
+                    },
+                    task_id="target-clock-diagnostic-scope",
+                    operation_id="target-clock-diagnostic-scope-start",
+                )
+        finally:
+            service.close()
+
+        self.assertEqual(backend.calls, [])
 
     def test_execute_rejects_adapter_owned_multi_target_scope(self) -> None:
         service = RuntimeMcpService(MultiTargetDiagnosticBackend())

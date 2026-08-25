@@ -158,6 +158,9 @@ Turn above the 8 KiB target, `manual_narrowing_required` remains false for execu
 The durable Receipt is separately limited to 32 KiB before it enters event history. If detailed
 previews do not fit, the Runtime retains bounded result identities, source coverage counts, gaps,
 freshness, capability states, and Evidence references while failing completion closed.
+The public `execute(start)` boundary rejects a Runtime-owned diagnostic scope that would require
+more than 1,024 result identities after applying the target multiplier and multi-target comparison
+item, so an accepted scope always fits the durable identity budget.
 
 Each phase Gate exposes stable `gate_id`, `gate_version`, and schema digest. A response may carry a
 submission identity; the Adapter otherwise derives one from the persisted Gate binding. Duplicate
