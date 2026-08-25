@@ -717,6 +717,20 @@ class DiagnosticReceipt:
     def _validation_gaps(self) -> tuple[str, ...]:
         gaps: list[str] = []
         coverage = self.coverage
+        result_ids = [item.result_id for item in self.results]
+        compacted_result_ids = (
+            list(self.compacted_results.result_ids)
+            if self.compacted_results is not None
+            else []
+        )
+        all_result_ids = [*result_ids, *compacted_result_ids]
+        if len(all_result_ids) != coverage.requested:
+            gaps.append("diagnostic_result_identity_count_mismatch")
+        if (
+            any(not result_id for result_id in all_result_ids)
+            or len(set(all_result_ids)) != len(all_result_ids)
+        ):
+            gaps.append("diagnostic_result_identity_invalid")
         accounted = (
             coverage.evaluable + coverage.unavailable + coverage.not_checked
         )

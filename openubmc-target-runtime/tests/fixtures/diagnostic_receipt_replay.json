@@ -286,7 +286,7 @@
           "complete": false,
           "visible_evaluable": 1,
           "visible_unavailable": 0,
-          "visible_not_checked": 0,
+          "visible_not_checked": 2,
           "compacted": 2
         },
         "results": [
@@ -301,6 +301,11 @@
             }
           }
         ],
+        "compacted_results": {
+          "status": "not_checked",
+          "gap": "result_preview_compacted",
+          "result_ids": ["compacted-result-1", "compacted-result-2"]
+        },
         "freshness": {
           "status": "fresh",
           "observed_at": "2026-08-25T04:42:55Z"

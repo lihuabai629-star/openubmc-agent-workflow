@@ -278,6 +278,52 @@ class CaseReplayTests(unittest.TestCase):
             {item["code"] for item in result.findings},
         )
 
+    def test_replay_rejects_partial_receipt_without_all_result_identities(
+        self,
+    ) -> None:
+        events, definition, plan = _base_events()
+        events[-1]["payload"]["diagnostic_receipt"] = {
+            "receipt_id": "diagnostic-missing-result-identities",
+            "operation": "debug_run",
+            "status": "partial",
+            "coverage": {
+                "requested": 3,
+                "evaluable": 1,
+                "unavailable": 0,
+                "not_checked": 2,
+                "complete": False,
+                "visible_evaluable": 1,
+                "visible_unavailable": 0,
+                "visible_not_checked": 2,
+            },
+            "results": [
+                {
+                    "result_id": "visible-summary",
+                    "kind": "diagnosis",
+                    "request": "bounded diagnosis",
+                    "status": "available",
+                    "value": {"root_cause": "connector timeout"},
+                }
+            ],
+            "freshness": {
+                "status": "fresh",
+                "observed_at": "2026-08-25T04:42:55Z",
+            },
+            "capabilities": {},
+            "truncated": True,
+            "content_complete": False,
+            "evidence": [],
+            "gaps": ["diagnostic_receipt_compacted", "content_truncated"],
+        }
+
+        result = CaseReplayService.replay(_bundle(events, definition, plan))
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            "diagnostic_receipt_invalid",
+            {item["code"] for item in result.findings},
+        )
+
     def test_repository_export_is_redacted_portable_and_deterministic(self) -> None:
         for repository in (
             InMemoryRuntimeRepository(),
