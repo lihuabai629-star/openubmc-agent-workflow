@@ -129,7 +129,13 @@ class WorkflowDebugBackend:
     @staticmethod
     def debug_run(_task, _arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
-        return {"ok": True, "summary": "diagnosis completed"}
+        return {
+            "ok": True,
+            "summary": "diagnosis completed",
+            "root_cause": "the bounded upgrade fault was isolated",
+            "observed_at": "2026-08-25T00:00:00Z",
+            "freshness": {"status": "fresh"},
+        }
 
     @staticmethod
     def debug_collect(_task, arguments, context) -> dict[str, object]:

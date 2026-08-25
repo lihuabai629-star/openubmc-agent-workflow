@@ -5,6 +5,8 @@
 - Decision owners: openUBMC Agent Workflow maintainers
 - Superseded in part by: [ADR-0004](0004-developer-default-and-gate-submissions.md), which
   removes the one-time secret Gate token requirement for the internal developer Runtime.
+- Superseded in part by: [ADR-0007](0007-soft-agent-projection-budget.md), which treats 8 KiB as a
+  soft Turn projection target while preserving hard Gate, request, step, and durable-receipt bounds.
 
 ## Context
 

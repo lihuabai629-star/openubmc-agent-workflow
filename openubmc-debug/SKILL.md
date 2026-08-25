@@ -35,6 +35,12 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   recovery, verification, or acceptance phases.
 - Treat one `ObservationReceipt` or `Turn` as the semantic result. Capability is tri-state:
   `available`, `unavailable`, or `not_checked`; never infer an unobserved capability.
+- In an `execute` MCP result, inspect `structured_content.diagnostic_receipt`; the short `content`
+  text is only a state summary. If the receipt exists, do not report that `execute` returned only
+  generic completion. Treat every result with `status=available` and a substantive `value` or
+  bounded `summary` as citable visible evidence. Raw Evidence bytes do not need a separate read.
+  `projection_truncated` and `content_compacted` describe the display; determine source
+  completeness from the receipt's `truncated`, `content_complete`, freshness, coverage, and gaps.
 - Do not use compatibility or operator operations from the default Agent profile. Load the Agent
   Gateway reference only when continuation, recovery, profiles, or Runtime mechanics matter.
 

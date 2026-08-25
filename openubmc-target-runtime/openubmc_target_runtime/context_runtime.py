@@ -32,6 +32,7 @@ from .closeout import (
     render_markdown,
 )
 from .contracts import RUNTIME_API_VERSION
+from .diagnostic_receipt import build_diagnostic_receipt
 from .effect_runner import EffectIntent, EffectSettlementMode, PreparedEffect
 from .evidence_store import EvidenceQuery
 from .mutation import (
@@ -72,6 +73,42 @@ MAX_PROJECTED_PHASE_RECORDS = 32
 MAX_PROJECTED_EVIDENCE_REFS = 256
 MAX_OBSERVATION_SOURCE_BYTES = 8 * 1024 * 1024
 OBSERVATION_REUSE_MAX_AGE_SECONDS = 15 * 60
+
+
+def _diagnostic_receipt_event_fields(
+    operation: str,
+    value: Mapping[str, object],
+    arguments: Mapping[str, object],
+    evidence_refs: Iterable[Mapping[str, object]],
+    *,
+    closeout_stage: str,
+) -> dict[str, object]:
+    receipt = build_diagnostic_receipt(
+        operation,
+        value,
+        arguments,
+        tuple(evidence_refs),
+        closeout_stage=closeout_stage,
+    )
+    return (
+        {"diagnostic_receipt": receipt.to_public_dict()}
+        if receipt is not None
+        else {}
+    )
+
+
+def _operation_closeout_stage(
+    operation: str,
+    overrides: Mapping[str, str],
+) -> str:
+    if operation in overrides:
+        return str(overrides[operation])
+    try:
+        return DEFAULT_OPERATION_CONTRACTS.require(operation).closeout_stage
+    except ValueError:
+        return ""
+
+
 CONTEXT_WORKFLOW_STEP_ARGUMENT = "_context_workflow_step"
 _DELIVERY_STRATEGIES = {"source-only", "live-patch", "build-upgrade"}
 _TASK_POLICY_FIELD = "author" + "ization"
@@ -1116,6 +1153,10 @@ def project_case(
                     completed_counts[name] = completed_counts.get(name, 0) + 1
             operation["terminal_revision"] = revision
             operation["summary"] = str(payload.get("summary", ""))
+            if isinstance(payload.get("diagnostic_receipt"), Mapping):
+                operation["diagnostic_receipt"] = dict(
+                    payload["diagnostic_receipt"]
+                )
             if "target_epoch" in payload:
                 operation["target_epoch"] = payload["target_epoch"]
             if operation["status"] == "mutation_outcome_unknown":
@@ -1342,6 +1383,10 @@ def project_case(
                     completed_counts[name] = completed_counts.get(name, 0) + 1
             operation["reconciled_revision"] = revision
             operation["summary"] = str(payload.get("summary", ""))
+            if isinstance(payload.get("diagnostic_receipt"), Mapping):
+                operation["diagnostic_receipt"] = dict(
+                    payload["diagnostic_receipt"]
+                )
             if "target_epoch" in payload:
                 operation["target_epoch"] = payload["target_epoch"]
             if operation["status"] == "mutation_outcome_unknown":
@@ -4859,6 +4904,20 @@ class ContextRuntime:
                         value,
                         target_id=execution_target_id,
                     ),
+                    **_diagnostic_receipt_event_fields(
+                        descriptor.name,
+                        value,
+                        arguments,
+                        (
+                            (evidence.to_public_dict(),)
+                            if evidence is not None
+                            else ()
+                        ),
+                        closeout_stage=_operation_closeout_stage(
+                            descriptor.name,
+                            self.operation_stages,
+                        ),
+                    ),
                 },
                 operation_id,
             )
@@ -6623,6 +6682,16 @@ class ContextRuntime:
                     "target_epoch": self._observed_target_epoch(
                         value,
                         target_id=target_id,
+                    ),
+                    **_diagnostic_receipt_event_fields(
+                        intent.operation,
+                        value,
+                        arguments,
+                        (evidence.to_public_dict(),),
+                        closeout_stage=_operation_closeout_stage(
+                            intent.operation,
+                            self.operation_stages,
+                        ),
                     ),
                 },
                 intent.effect_id,

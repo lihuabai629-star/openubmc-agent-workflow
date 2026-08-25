@@ -59,6 +59,9 @@ class PlanObservingBackend:
         return {
             "ok": True,
             "summary": "root cause isolated",
+            "root_cause": "a bounded runtime defect was isolated",
+            "observed_at": "2026-08-19T00:00:00Z",
+            "freshness": {"status": "fresh"},
             "target_epoch": 0,
         }
 
@@ -177,6 +180,8 @@ class RecordingTerminalBackend:
             "root_cause": "stale runtime state",
             "mechanism": "the old process retained the previous implementation",
             "affected_surface": "one bounded service",
+            "observed_at": "2026-08-19T00:00:00Z",
+            "freshness": {"status": "fresh"},
             "target_epoch": 0,
         }
 
@@ -357,8 +362,18 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             ],
         }
         evidence = {
-            "old": {"ok": False, "root_cause": "old failed conclusion"},
-            "new": {"ok": True, "root_cause": "new reconciled conclusion"},
+            "old": {
+                "ok": False,
+                "root_cause": "old failed conclusion",
+                "observed_at": "2026-08-19T00:00:00Z",
+                "freshness": {"status": "fresh"},
+            },
+            "new": {
+                "ok": True,
+                "root_cause": "new reconciled conclusion",
+                "observed_at": "2026-08-19T00:01:00Z",
+                "freshness": {"status": "fresh"},
+            },
         }
 
         closeout = aggregate_case_closeout(
@@ -390,6 +405,202 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(degraded.status, "partial")
         self.assertNotIn("old failed conclusion", str(degraded.facts))
+
+    def test_closeout_fails_closed_on_inconsistent_diagnostic_coverage(self) -> None:
+        plan = AcceptancePlan.freeze(
+            {
+                "intent": "diagnosis-only",
+                "final_purpose": "diagnose",
+            },
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "invalid-diagnostic-coverage",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [{"target_id": "target-1", "address": "192.0.2.30"}],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-invalid-coverage",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 5,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["diagnosis-evidence"],
+                    "diagnostic_receipt": {
+                        "receipt_id": "diagnostic-invalid-coverage",
+                        "operation": "debug_run",
+                        "status": "complete",
+                        "coverage": {
+                            "requested": 2,
+                            "evaluable": 1,
+                            "unavailable": 0,
+                            "not_checked": 0,
+                            "complete": True,
+                        },
+                        "results": [
+                            {
+                                "result_id": "version",
+                                "kind": "target-version",
+                                "request": "/etc/version.json",
+                                "status": "available",
+                                "value": {"version": "12.08.21.06"},
+                            }
+                        ],
+                        "freshness": {
+                            "status": "complete",
+                            "observed_at": "2026-08-25T00:00:00Z",
+                            "complete": True,
+                        },
+                        "capabilities": {},
+                        "truncated": False,
+                        "content_complete": True,
+                        "evidence": [],
+                        "gaps": [],
+                    },
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {"evidence_id": "diagnosis-evidence", "blob_id": "diagnosis"}
+            ],
+        }
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda _reference: {
+                "ok": True,
+                "root_cause": "one visible result",
+            },
+        )
+        diagnosis = next(
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(diagnosis.status, "partial")
+        self.assertNotEqual(closeout.closure_status, "completed_in_scope")
+
+    def test_closeout_requires_complete_visible_diagnostic_coverage(self) -> None:
+        plan = AcceptancePlan.freeze(
+            {
+                "intent": "diagnosis-only",
+                "final_purpose": "diagnose",
+            },
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "compacted-diagnostic-coverage",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [{"target_id": "target-1", "address": "192.0.2.30"}],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-compacted-coverage",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 5,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["diagnosis-evidence"],
+                    "diagnostic_receipt": {
+                        "receipt_id": "diagnostic-compacted-coverage",
+                        "operation": "debug_run",
+                        "status": "complete",
+                        "coverage": {
+                            "requested": 3,
+                            "evaluable": 3,
+                            "unavailable": 0,
+                            "not_checked": 0,
+                            "complete": True,
+                            "visible_evaluable": 1,
+                            "visible_unavailable": 0,
+                            "visible_not_checked": 2,
+                            "compacted": 3,
+                        },
+                        "results": [
+                            {
+                                "result_id": "version",
+                                "kind": "target-version",
+                                "request": "/etc/version.json",
+                                "status": "available",
+                                "value": {"version": "12.08.21.06"},
+                            }
+                        ],
+                        "compacted_results": {
+                            "status": "not_checked",
+                            "gap": "result_preview_compacted",
+                            "result_ids": ["uptime", "target-clock"],
+                        },
+                        "freshness": {
+                            "status": "complete",
+                            "observed_at": "2026-08-25T00:00:00Z",
+                            "complete": True,
+                        },
+                        "capabilities": {},
+                        "truncated": False,
+                        "content_complete": True,
+                        "content_compacted": True,
+                        "evidence": [],
+                        "gaps": ["diagnostic_receipt_compacted"],
+                    },
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {"evidence_id": "diagnosis-evidence", "blob_id": "diagnosis"}
+            ],
+        }
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda _reference: {
+                "ok": True,
+                "root_cause": "one visible result",
+            },
+        )
+        diagnosis = next(
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(diagnosis.status, "partial")
+        self.assertNotEqual(closeout.closure_status, "completed_in_scope")
+
+        zero_visible_projection = json.loads(json.dumps(projection))
+        zero_visible_receipt = zero_visible_projection["operations"][0][
+            "diagnostic_receipt"
+        ]
+        zero_visible_receipt["status"] = "partial"
+        zero_visible_receipt["coverage"].update(
+            {
+                "evaluable": 2,
+                "not_checked": 1,
+                "complete": False,
+                "visible_evaluable": 0,
+                "visible_not_checked": 3,
+            }
+        )
+        zero_visible_receipt["results"] = []
+        zero_visible_receipt["compacted_results"]["result_ids"] = [
+            "version",
+            "uptime",
+            "target-clock",
+        ]
+
+        zero_visible_closeout = aggregate_case_closeout(
+            zero_visible_projection,
+            lambda _reference: {
+                "ok": True,
+                "root_cause": "source result is not visible",
+            },
+        )
+        zero_visible_diagnosis = next(
+            receipt
+            for receipt in zero_visible_closeout.receipts
+            if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(zero_visible_diagnosis.status, "blocked")
+        self.assertNotEqual(
+            zero_visible_closeout.closure_status,
+            "completed_in_scope",
+        )
 
     def test_multi_target_stage_uses_the_worst_target_result(self) -> None:
         plan = AcceptancePlan.freeze(

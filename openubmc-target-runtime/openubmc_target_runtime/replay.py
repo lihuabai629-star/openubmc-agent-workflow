@@ -10,6 +10,11 @@ import json
 from .closeout import AcceptancePlan
 from .context_runtime import CaseNotFound, RuntimeRepository, project_case
 from .contracts import RUNTIME_API_VERSION
+from .diagnostic_receipt import (
+    DiagnosticReceipt,
+    DiagnosticStatus,
+    diagnostic_result_value_evaluable,
+)
 from .redaction import is_secret_key, redact_text
 from .workflow import WorkflowDefinition
 
@@ -457,6 +462,176 @@ class CaseReplayService:
                             "operation_id": operation_id,
                         }
                     )
+                diagnostic_receipt = payload.get("diagnostic_receipt")
+                if isinstance(diagnostic_receipt, Mapping):
+                    raw_coverage = diagnostic_receipt.get("coverage")
+                    raw_claims_complete = (
+                        str(diagnostic_receipt.get("status", "")).strip()
+                        == "complete"
+                        or (
+                            isinstance(raw_coverage, Mapping)
+                            and raw_coverage.get("complete") is True
+                        )
+                    )
+                    receipt = DiagnosticReceipt.from_public_dict(
+                        diagnostic_receipt
+                    )
+                    if "diagnostic_receipt_invalid" in receipt.gaps:
+                        findings.append(
+                            {
+                                "code": "diagnostic_receipt_invalid",
+                                "severity": "error",
+                                "message": (
+                                    "persisted diagnostic coverage is internally "
+                                    "inconsistent"
+                                ),
+                                "operation_id": operation_id,
+                            }
+                        )
+                    evaluable = receipt.coverage.evaluable
+                    claims_complete = raw_claims_complete
+                    non_evaluable_available = [
+                        result.result_id
+                        for result in receipt.results
+                        if result.status.value == "available"
+                        and not diagnostic_result_value_evaluable(result.value)
+                    ]
+                    visible_evaluable = sum(
+                        result.status.value == "available"
+                        and diagnostic_result_value_evaluable(result.value)
+                        for result in receipt.results
+                    )
+                    claimed_visible_evaluable = (
+                        receipt.coverage.visible_evaluable
+                        if receipt.coverage.visible_evaluable is not None
+                        else evaluable
+                    )
+                    evaluable_count_mismatch = (
+                        visible_evaluable < claimed_visible_evaluable
+                    )
+                    invalid_non_evaluable = (
+                        "diagnostic_available_result_not_evaluable"
+                        in receipt.gaps
+                    )
+                    if (
+                        non_evaluable_available
+                        or evaluable_count_mismatch
+                        or invalid_non_evaluable
+                    ):
+                        findings.append(
+                            {
+                                "code": "diagnostic_result_not_evaluable",
+                                "severity": "error",
+                                "message": (
+                                    "claimed evaluable diagnostic coverage is not "
+                                    "supported by visible result content"
+                                ),
+                                "operation_id": operation_id,
+                                "result_ids": non_evaluable_available[:8],
+                                "visible_evaluable": visible_evaluable,
+                                "claimed_visible_evaluable": (
+                                    claimed_visible_evaluable
+                                ),
+                            }
+                        )
+                    freshness_gaps = bool(
+                        receipt.freshness.unavailable_dimensions
+                        or receipt.freshness.lost_dimensions
+                        or receipt.freshness.stale_evidence
+                    )
+                    freshness_supports_completion = (
+                        receipt.freshness.status.value in {"complete", "fresh"}
+                        and bool(receipt.freshness.observed_at)
+                        and receipt.freshness.complete is not False
+                        and not freshness_gaps
+                    )
+                    if claims_complete and not freshness_supports_completion:
+                        findings.append(
+                            {
+                                "code": "diagnostic_freshness_false_success",
+                                "severity": "error",
+                                "message": (
+                                    "diagnostic completion is not supported by "
+                                    "fresh gap-free target evidence"
+                                ),
+                                "operation_id": operation_id,
+                            }
+                        )
+                    if claims_complete and (
+                        evaluable <= 0
+                        or not receipt.content_complete
+                        or receipt.truncated
+                        or non_evaluable_available
+                        or evaluable_count_mismatch
+                        or receipt.status_for_agent_acceptance()
+                        is not DiagnosticStatus.COMPLETE
+                    ):
+                        findings.append(
+                            {
+                                "code": "diagnostic_false_success",
+                                "severity": "error",
+                                "message": (
+                                    "diagnostic completion is not supported by "
+                                    "agent-visible complete content"
+                                ),
+                                "operation_id": operation_id,
+                            }
+                        )
+                    elif (
+                        receipt.status_for_agent_acceptance()
+                        is DiagnosticStatus.BLOCKED
+                        and visible_evaluable == 0
+                    ):
+                        findings.append(
+                            {
+                                "code": "diagnostic_evidence_blocked_preserved",
+                                "severity": "info",
+                                "message": (
+                                    "generic operation completion remained blocked "
+                                    "without visible diagnostic content"
+                                ),
+                                "operation_id": operation_id,
+                            }
+                        )
+                    if receipt.truncated and not receipt.content_complete:
+                        findings.append(
+                            {
+                                "code": "diagnostic_truncation_preserved",
+                                "severity": "info",
+                                "message": (
+                                    "diagnostic truncation and incomplete content "
+                                    "survived deterministic replay"
+                                ),
+                                "operation_id": operation_id,
+                            }
+                        )
+                    if receipt.coverage.not_checked > 0 and any(
+                        result.status.value == "not_checked"
+                        for result in receipt.results
+                    ):
+                        findings.append(
+                            {
+                                "code": "diagnostic_target_scope_gap_preserved",
+                                "severity": "info",
+                                "message": (
+                                    "a requested diagnostic target or comparison "
+                                    "remained explicitly not checked"
+                                ),
+                                "operation_id": operation_id,
+                            }
+                        )
+                    if receipt.freshness.status.value in {"partial", "unknown"}:
+                        findings.append(
+                            {
+                                "code": "diagnostic_freshness_gap_preserved",
+                                "severity": "info",
+                                "message": (
+                                    "missing or partial freshness remained explicit "
+                                    "during deterministic replay"
+                                ),
+                                "operation_id": operation_id,
+                            }
+                        )
 
         actual_outcome = _expected_outcome(projection)
         if actual_outcome != dict(selected.expected_outcome):

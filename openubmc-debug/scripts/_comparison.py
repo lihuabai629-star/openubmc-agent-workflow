@@ -1165,30 +1165,18 @@ def run_multi_target_comparison(
 ) -> dict[str, object]:
     if len(targets) < 2:
         raise ValueError("multi-target comparison requires at least two targets")
-    raw_roles = [target.get("role") for target in targets]
-    reference_indexes = [
-        index for index, role in enumerate(raw_roles) if role == "reference"
-    ]
-    if len(reference_indexes) > 1:
-        raise ValueError("only one reference target is allowed")
-    if reference_indexes:
-        if any(role not in {None, "reference", "candidate"} for role in raw_roles):
-            raise ValueError("reference mode accepts only reference/candidate roles")
-        roles = [
-            "reference" if index == reference_indexes[0] else "candidate"
-            for index in range(len(targets))
-        ]
-    else:
-        if any(role is not None for role in raw_roles):
-            raise ValueError("symmetric mode does not accept candidate-only roles")
-        roles = [f"target-{index + 1}" for index in range(len(targets))]
+    from _target_runtime_adapter import _load_runtime_module
+
+    identities = _load_runtime_module().comparison_target_identities(targets)
+    roles = [role for role, _target_id in identities]
 
     requests: list[dict[str, object]] = []
     target_ids: list[str] = []
     for index, target in enumerate(targets):
         request = dict(target)
         request.pop("role", None)
-        target_ids.append(str(request.pop("target_id", None) or roles[index]))
+        request.pop("target_id", None)
+        target_ids.append(identities[index][1])
         requests.append(request)
 
     observations, scheduler_metrics = _run_scheduled_targets(
@@ -1214,23 +1202,17 @@ def run_dual_target_comparison(
 ) -> dict[str, object]:
     if len(targets) != 2:
         raise ValueError("dual comparison requires exactly two targets")
-    explicit_roles = [target.get("role") for target in targets]
-    if all(role is None for role in explicit_roles) or all(
-        role == "symmetric" for role in explicit_roles
-    ):
-        roles = ["target-a", "target-b"]
-    elif set(explicit_roles) == {"reference", "candidate"}:
-        roles = [str(role) for role in explicit_roles]
-    else:
-        raise ValueError(
-            "target roles must both be omitted, both be symmetric, or be reference and candidate"
-        )
+    from _target_runtime_adapter import _load_runtime_module
+
+    identities = _load_runtime_module().comparison_target_identities(targets)
+    roles = [role for role, _target_id in identities]
     requests: list[dict[str, object]] = []
     target_ids: list[str] = []
     for index, target in enumerate(targets):
         request = dict(target)
         request.pop("role", None)
-        target_ids.append(str(request.pop("target_id", None) or roles[index]))
+        request.pop("target_id", None)
+        target_ids.append(identities[index][1])
         requests.append(request)
     observations, scheduler_metrics = _run_scheduled_targets(
         requests=requests,

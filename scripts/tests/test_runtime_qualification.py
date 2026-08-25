@@ -477,6 +477,28 @@ class RuntimeQualificationTests(unittest.TestCase):
 
         self.assertTrue(report["promotable"])
 
+    def test_storage_reclamation_between_samples_is_valid(self) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        capacity = report["scenarios"]["capacity"]
+        capacity["storage_bytes_by_batch"] = [1000, 4000, 3000, 4500]
+        capacity["storage_growth_bytes_by_batch"] = [
+            1000,
+            3000,
+            -1000,
+            1500,
+        ]
+        capacity["storage_bytes"] = 4500
+        soak = report["scenarios"]["restart_soak"]
+        soak["storage_bytes_by_cycle"] = [1000, 3000, 2500, 4000]
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        qualification.verify_runtime_stability_report(
+            report,
+            expected_source_commit=SOURCE_COMMIT,
+            require_promotable=True,
+        )
+
     def test_unrelated_source_commit_is_rejected_before_qualification(self) -> None:
         with self.assertRaisesRegex(ValueError, "workspace HEAD"):
             qualification.qualify_runtime(

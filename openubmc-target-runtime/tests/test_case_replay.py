@@ -216,6 +216,114 @@ class _NoEffectBackend:
 
 
 class CaseReplayTests(unittest.TestCase):
+    def test_diagnostic_receipt_golden_scenarios_are_deterministic(self) -> None:
+        fixture = json.loads(
+            (RUNTIME_ROOT / "tests/fixtures/diagnostic_receipt_replay.json").read_text()
+        )
+        for scenario in fixture["scenarios"]:
+            with self.subTest(scenario=scenario["name"]):
+                events, definition, plan = _base_events()
+                events[-1]["payload"]["diagnostic_receipt"] = scenario["receipt"]
+                bundle = _bundle(events, definition, plan)
+
+                first = CaseReplayService.replay(bundle)
+                second = CaseReplayService.replay(bundle.to_public_dict())
+
+                self.assertEqual(first.status, scenario["expected_status"])
+                self.assertIn(
+                    scenario["expected_finding"],
+                    {item["code"] for item in first.findings},
+                )
+                self.assertEqual(first.result_fingerprint, second.result_fingerprint)
+
+    def test_replay_rejects_inconsistent_diagnostic_coverage(self) -> None:
+        events, definition, plan = _base_events()
+        events[-1]["payload"]["diagnostic_receipt"] = {
+            "receipt_id": "diagnostic-invalid-coverage",
+            "operation": "debug_run",
+            "status": "complete",
+            "coverage": {
+                "requested": 2,
+                "evaluable": 1,
+                "unavailable": 0,
+                "not_checked": 0,
+                "complete": True,
+            },
+            "results": [
+                {
+                    "result_id": "version",
+                    "kind": "target-version",
+                    "request": "/etc/version.json",
+                    "status": "available",
+                    "value": {"version": "12.08.21.06"},
+                }
+            ],
+            "freshness": {
+                "status": "complete",
+                "observed_at": "2026-08-25T00:00:00Z",
+                "complete": True,
+            },
+            "capabilities": {},
+            "truncated": False,
+            "content_complete": True,
+            "evidence": [],
+            "gaps": [],
+        }
+
+        result = CaseReplayService.replay(_bundle(events, definition, plan))
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            "diagnostic_receipt_invalid",
+            {item["code"] for item in result.findings},
+        )
+
+    def test_replay_rejects_partial_receipt_without_all_result_identities(
+        self,
+    ) -> None:
+        events, definition, plan = _base_events()
+        events[-1]["payload"]["diagnostic_receipt"] = {
+            "receipt_id": "diagnostic-missing-result-identities",
+            "operation": "debug_run",
+            "status": "partial",
+            "coverage": {
+                "requested": 3,
+                "evaluable": 1,
+                "unavailable": 0,
+                "not_checked": 2,
+                "complete": False,
+                "visible_evaluable": 1,
+                "visible_unavailable": 0,
+                "visible_not_checked": 2,
+            },
+            "results": [
+                {
+                    "result_id": "visible-summary",
+                    "kind": "diagnosis",
+                    "request": "bounded diagnosis",
+                    "status": "available",
+                    "value": {"root_cause": "connector timeout"},
+                }
+            ],
+            "freshness": {
+                "status": "fresh",
+                "observed_at": "2026-08-25T04:42:55Z",
+            },
+            "capabilities": {},
+            "truncated": True,
+            "content_complete": False,
+            "evidence": [],
+            "gaps": ["diagnostic_receipt_compacted", "content_truncated"],
+        }
+
+        result = CaseReplayService.replay(_bundle(events, definition, plan))
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            "diagnostic_receipt_invalid",
+            {item["code"] for item in result.findings},
+        )
+
     def test_repository_export_is_redacted_portable_and_deterministic(self) -> None:
         for repository in (
             InMemoryRuntimeRepository(),

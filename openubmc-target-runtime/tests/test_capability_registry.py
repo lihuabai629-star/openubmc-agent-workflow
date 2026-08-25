@@ -65,7 +65,13 @@ class _Backend:
     def debug_run(self, _task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
         self.calls += 1
-        return {"ok": True, "profile": arguments.get("profile", "standard")}
+        return {
+            "ok": True,
+            "profile": arguments.get("profile", "standard"),
+            "root_cause": "the requested diagnostic capability is available",
+            "observed_at": "2026-08-25T00:00:00Z",
+            "freshness": {"status": "fresh"},
+        }
 
     def debug_collect(self, _task, arguments, context) -> dict[str, object]:
         return self.debug_run(_task, arguments, context)

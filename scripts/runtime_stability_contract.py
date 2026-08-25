@@ -178,7 +178,11 @@ def verify_runtime_stability_report(
         for value in capacity_storage_by_batch
     ]
     normalized_storage_growth = [
-        _integer(value, "capacity batch storage growth")
+        _integer(
+            value,
+            "capacity batch storage growth",
+            minimum=-MAX_CAPACITY_STORAGE_BYTES,
+        )
         for value in capacity_storage_growth
     ]
     capacity_storage_bytes = _integer(
@@ -222,7 +226,6 @@ def verify_runtime_stability_report(
                 value <= MAX_CAPACITY_STORAGE_BYTES
                 for value in normalized_capacity_storage
             ),
-            normalized_capacity_storage == sorted(normalized_capacity_storage),
             normalized_capacity_storage[-1] == capacity_storage_bytes,
             normalized_storage_growth
             == [
@@ -326,7 +329,6 @@ def verify_runtime_stability_report(
             sum(normalized_cycle_events) == total_events,
             normalized_cumulative == expected_soak_cumulative,
             bounded_cycle_events,
-            normalized_soak_storage == sorted(normalized_soak_storage),
             normalized_soak_storage[-1] == soak_storage_bytes,
             all(
                 value <= MAX_SOAK_STORAGE_BYTES

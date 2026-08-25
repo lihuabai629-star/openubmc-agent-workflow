@@ -18,6 +18,11 @@ from .delivery import (
     DeliveryRecord,
     DeploymentIdentity,
 )
+from .diagnostic_receipt import (
+    DiagnosticReceipt,
+    DiagnosticStatus,
+    build_diagnostic_receipt,
+)
 from .mutation import TaskAuthorizationPolicy, mutation_journal_operation_status
 from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 from .redaction import is_secret_key, redact_text
@@ -34,6 +39,11 @@ MAX_CLOSEOUT_TEXT_BYTES = 4096
 MAX_CLOSEOUT_COLLECTION_ITEMS = 64
 MAX_CLOSEOUT_MARKDOWN_BYTES = 16_384
 _WORKFLOW_CONTROL_OPERATIONS = frozenset({"workflow.advance", "workflow.next"})
+_DIAGNOSTIC_OPERATION_STATUS = {
+    DiagnosticStatus.COMPLETE: "completed",
+    DiagnosticStatus.PARTIAL: "partial",
+    DiagnosticStatus.BLOCKED: "blocked",
+}
 
 
 def case_terminal_status(projection: Mapping[str, object]) -> str:
@@ -602,6 +612,26 @@ def _operation_status(
         return "failed"
     if not evidence_loaded:
         return "partial"
+    if stage == "diagnosis":
+        raw_diagnostic_receipt = operation.get("diagnostic_receipt")
+        if isinstance(raw_diagnostic_receipt, Mapping):
+            diagnostic_receipt = DiagnosticReceipt.from_public_dict(
+                raw_diagnostic_receipt
+            )
+            return _DIAGNOSTIC_OPERATION_STATUS[
+                diagnostic_receipt.status_for_agent_acceptance()
+            ]
+        projected = build_diagnostic_receipt(
+            str(operation.get("operation") or "debug_run"),
+            evidence,
+            _mapping(operation.get("inputs")),
+            (),
+            closeout_stage="diagnosis",
+        )
+        if projected is not None:
+            return _DIAGNOSTIC_OPERATION_STATUS[
+                projected.status_for_agent_acceptance()
+            ]
     if stage in {"live_patch", "upgrade"}:
         journal = _mapping(evidence.get("journal"))
         classified = mutation_journal_operation_status(

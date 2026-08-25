@@ -27,6 +27,7 @@ from .catalog import OperationCatalog
 from .agent_gateway import (
     OBSERVATION_MAX_BYTES,
     agent_operation_descriptors,
+    render_execute_turn_text,
 )
 from .semantic_runtime import (
     AGENT_REQUEST_MAX_BYTES,
@@ -3511,11 +3512,14 @@ class JsonRpcMcpEndpoint:
             gate = gate if isinstance(gate, Mapping) else {}
             state = str(value.get("state", "unknown"))
             if gate:
-                return (
+                gate_text = (
                     f"openUBMC 工作流已推进到 {state}："
                     f"{gate.get('kind', 'gate')} {gate.get('name', '')}。"
                 )
-            return f"openUBMC 工作流状态：{state}。"
+                if value.get("diagnostic_receipt"):
+                    return render_execute_turn_text(value, heading=gate_text)
+                return gate_text
+            return render_execute_turn_text(value)
         closeout_markdown = value.get("closeout_markdown")
         if isinstance(closeout_markdown, str) and closeout_markdown.strip():
             return closeout_markdown.strip()
@@ -3643,7 +3647,7 @@ class JsonRpcMcpEndpoint:
             if isinstance(value, Mapping) and value.get("closeout_markdown")
             else 4096
         )
-        if len(encoded) > text_limit:
+        if len(encoded) > text_limit and not (tool_name == "execute" and not error):
             text = encoded[: text_limit - 3].decode("utf-8", errors="ignore") + "..."
         result: dict[str, object] = {
             "content": [{"type": "text", "text": text}],

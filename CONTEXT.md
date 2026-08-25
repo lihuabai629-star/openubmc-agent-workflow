@@ -36,7 +36,7 @@ operation identities, retry safety, target fencing, or terminal success.
 | **RunEngine** | The only Module allowed to commit Run, Gate, Incident, Effect-reference, and Outcome transitions. |
 | **WorkflowDefinitions** | Versioned deterministic workflow structure and transition rules. It performs no external I/O and does not write Run state. |
 | **DomainExecutor** | The Module that invokes registered Domain Adapters and returns typed Domain results using stable Effect identity. |
-| **Turn** | A bounded Agent projection at the next actionable Gate, Incident, running reattach point, or terminal Outcome. It is not the source of truth. |
+| **Turn** | An Agent projection at the next actionable Gate, Incident, running reattach point, or terminal Outcome. It targets a bounded display size but preserves Runtime-owned control semantics when that target is exceeded. It is not the source of truth. |
 | **Gate** | A durable, versioned request for external input with a one-time submission protocol. |
 | **GateSubmission** | An audited response bound to one Run, Gate identity, Gate version, schema digest, submission identity, and input digest. Actor and time are derived by the Adapter or Runtime. |
 | **Blocker** | A bounded reason the current call cannot advance safely. A Blocker is not automatically a durable Incident. |
@@ -65,7 +65,8 @@ historical event upcasters are read paths and cannot commit new Run transitions.
 | Domain Adapter selection and invocation | `DomainExecutor` |
 | Mutation execution and recovery truth | `MutationJournal` |
 | Artifact bytes, digest verification, retention, and access policy | `ArtifactStore` |
-| Agent-visible redaction and bounded projection | `AgentGateway` |
+| Diagnostic Evidence sanitization, completion semantics, and durable `DiagnosticReceipt` formation | Runtime Core |
+| Final Agent projection and soft display-budget compaction | `AgentGateway` |
 | Review, approval, promotion, and lifecycle governance | Operator / CI Plane |
 | Experimental model invocation, proposal validation, and inert revision persistence | `PlanResolver` |
 
@@ -104,6 +105,7 @@ records into current projections, but they cannot accept old commands or create 
 - [ADR-0002: Single Run authority and external Effect recovery](docs/adr/0002-single-run-authority-and-effect-recovery.md)
 - [ADR-0003: Turn, Gate, Artifact, and distribution boundaries](docs/adr/0003-turn-gate-artifact-and-distribution-boundaries.md)
 - [ADR-0004: Developer-friendly default execution and Gate submissions](docs/adr/0004-developer-default-and-gate-submissions.md)
+- [ADR-0007: Soft Agent projection budget](docs/adr/0007-soft-agent-projection-budget.md)
 - [Architecture arbitration](docs/workflow-architecture-arbitration.md)
 - [Market workflow design research](docs/workflow-design-market-research.md)
 - [Evolution roadmap](docs/workflow-evolution-roadmap.md)

@@ -112,16 +112,74 @@ accepted as `execute` input; callers pass the Receipt's verified `ObservationRef
 
 The Runtime Core advances deterministic steps internally and returns a `Turn` only at a real Gate,
 an unresolved Incident, a running reattach point, or terminal Outcome. A Turn contains the Run ID,
-semantic state, a small Gate input schema, verified facts, gaps, and a bounded terminal Outcome. It
-is limited to 8 KiB; each Gate schema is limited to 4 KiB. The internal advancement limit is fixed
-at 64 steps and is not part of the Agent Interface. Exhaustion appears as an
+semantic state, a small Gate input schema, verified facts, gaps, an optional `DiagnosticReceipt`,
+and a bounded terminal Outcome. A `DiagnosticReceipt` projects each requested diagnostic surface
+as an Agent-visible result or an explicit unavailable/not-checked item. It also carries coverage,
+freshness, capability states, truncation, content completeness, gaps, and bounded Evidence
+references. Raw Evidence remains in the Operator / CI Plane; the Agent does not need a third
+Evidence-read operation to evaluate the current Turn.
+
+The Runtime Core sanitizes, forms, and persists the typed `DiagnosticReceipt` because its status
+participates in Closeout and Replay. `AgentGateway` targets an 8 KiB Turn projection;
+projection-time compaction may reduce facts and diagnostic previews, but it never rewrites the
+Runtime-owned Gate, Incident, terminal Outcome, or diagnostic completion semantics. If the
+preserved semantics still do not fit, the Turn may exceed the projection target and reports that
+condition as telemetry rather than a blocker.
+The MCP Adapter also renders a bounded textual receipt summary in standard `content`, including
+coverage, freshness, source completeness, capabilities, gaps, and citable result previews. The
+typed Turn remains authoritative in `structuredContent`; the text prevents clients that underuse
+structured MCP data from reducing `execute` to a generic completed/failed acknowledgement.
+
+Domain execution completion is not diagnosis completion. Zero source-evaluable requested items
+produce a blocked receipt, incomplete source content produces a partial receipt, and complete is
+permitted only when every requested source item is fresh and content-complete. Every accepted
+request identity remains represented by a visible result or a bounded `compacted_results` gap;
+`visible_*` coverage reports what the current Agent projection can inspect without rewriting the
+source-owned status.
+An observation timestamp alone is not freshness proof: complete also requires an explicit fresh or
+complete freshness status, a non-empty observation time, and no unavailable, lost, or stale
+freshness dimensions. A per-target `complete=false` is also a freshness gap. Multi-target
+freshness gaps identify the affected Runtime-owned target ID.
+Requested coverage is derived from Runtime-owned operation arguments and reconciled with the
+Adapter result, so an omitted echoed request or skipped collector cannot shrink the acceptance
+scope. Multi-target diagnosis projects each target result plus the bounded comparison result.
+Closeout derives Agent acceptance from both the source receipt status and `visible_*` coverage.
+Source-complete Evidence remains complete after compaction, but `stage.diagnosis` is partial or
+blocked when the persisted Agent-visible receipt is only partially evaluable or not evaluable.
+A generic operation summary therefore cannot satisfy `stage.diagnosis`.
+
+A Turn targets 8 KiB; each Gate schema remains limited to 4 KiB. If a diagnostic result exceeds
+the Turn target, result previews are compacted while source coverage counts, freshness, truncation,
+`content_complete`, gaps, capability states, and Evidence references remain visible. Compacted
+results retain a bounded substantive summary; a result that cannot retain evaluable content becomes
+`not_checked` instead of remaining `available`. Coverage also reports `visible_evaluable` and
+`compacted` counts. Projection-only fields such as `projection_truncated`, `lines_truncated`, and
+`stdout_truncated` do not claim that the source Evidence was truncated; explicit source truncation
+and `content_complete=false` still fail completion closed. The internal
+advancement limit is fixed at 64 steps and is not part of the Agent Interface. Exhaustion appears as an
 `internal_step_limit` blocker rather than a caller-controlled continuation budget.
+
+Projection telemetry distinguishes display pressure from workflow state:
+`projection_compacted` reports summary compaction, `projection_target_exceeded` reports a final
+Turn above the 8 KiB target, `manual_narrowing_required` remains false for execute Turns, and
+`budget_blocker` remains false. These fields never participate in Closeout or Outcome formation.
+
+The durable Receipt is separately limited to 32 KiB before it enters event history. If detailed
+previews do not fit, the Runtime retains bounded result identities, source coverage counts, gaps,
+freshness, capability states, and Evidence references. Persistence compaction records `visible_*`,
+`compacted_results`, and `content_compacted` without rewriting source status or source completeness.
+Closeout still requires every requested identity to remain visibly evaluable before it reports a
+passed diagnosis.
+The public `execute(start)` boundary rejects a Runtime-owned diagnostic scope that would require
+more than 1,024 result identities after applying the target multiplier and multi-target comparison
+item, so an accepted scope always fits the durable identity budget.
 
 Each phase Gate exposes stable `gate_id`, `gate_version`, and schema digest. A response may carry a
 submission identity; the Adapter otherwise derives one from the persisted Gate binding. Duplicate
 identity plus identical normalized input is idempotent. Reuse with different input, a different
 Gate, or a stale version is a conflict. The internal developer Runtime does not require a one-time
-secret Gate token.
+secret Gate token. A Runtime Adapter that bypasses Gate construction and returns an oversized phase
+schema is rejected at the Agent boundary; projection never replaces it with a synthetic Gate.
 
 Patch and firmware inputs use `ArtifactRef`. The Runtime requires kind, content digest, byte size,
 provenance, retention hint, target, and Run binding, then streams the local content to verify its
@@ -175,10 +233,14 @@ Replay:
 
 - default tool count is two and `tools/list` stays within 8 KiB;
 - ObservationReceipt stays within 4 KiB;
-- Turn stays within 8 KiB and Gate schemas stay within 4 KiB;
+- ordinary Turns stay within the 8 KiB projection target, while Gate schemas stay within 4 KiB;
+- a Turn may exceed the projection target only to preserve Runtime-owned Gate, Incident, Outcome,
+  or complete DiagnosticReceipt semantics;
 - observations do not create Cases;
 - unsupported scope and stale freshness models are rejected before collection;
 - capability and claim coverage remain explicit;
+- diagnostic completion is fail-closed when requested results are not Agent-evaluable;
+- Turn compaction preserves diagnostic coverage, truncation, completeness, gaps, and Evidence refs;
 - Agent results do not expose Runtime sequencing mechanics;
 - duplicate Gate delivery is idempotent and stale or conflicting delivery is rejected;
 - unknown Mutation is automatically reconciled or returned as an Incident with a bounded recovery
