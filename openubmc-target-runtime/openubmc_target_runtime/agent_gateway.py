@@ -34,6 +34,7 @@ TURN_PROJECTION_TARGET_BYTES = 8 * 1024
 # Runtime-owned Turn semantics may exceed it; it is not a control-flow maximum.
 TURN_MAX_BYTES = TURN_PROJECTION_TARGET_BYTES
 TOOLS_LIST_MAX_BYTES = 8 * 1024
+EXECUTE_TEXT_PROJECTION_TARGET_BYTES = 4 * 1024
 
 def _json_bytes(value: object) -> bytes:
     return json.dumps(
@@ -62,6 +63,144 @@ def _bounded_text(value: object, max_bytes: int) -> str:
     if len(encoded) <= max_bytes:
         return text
     return encoded[: max_bytes - 3].decode("utf-8", errors="ignore") + "..."
+
+
+def _bounded_summary_value(value: object, *, limit: int = 480) -> str:
+    rendered = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    encoded = rendered.encode("utf-8")
+    if len(encoded) <= limit:
+        return rendered
+    return encoded[: limit - 3].decode("utf-8", errors="ignore") + "..."
+
+
+def _diagnostic_result_text(value: object) -> str:
+    result = _mapping(value)
+    selected = result.get("value")
+    selected_mapping = _mapping(selected)
+    summaries = selected_mapping.get("summary", [])
+    if isinstance(summaries, list) and summaries:
+        samples: list[str] = []
+        for raw_sample in summaries[:4]:
+            sample = _mapping(raw_sample)
+            path = str(sample.get("path", "value"))
+            samples.append(
+                f"{path}={_bounded_summary_value(sample.get('value'), limit=160)}"
+            )
+        rendered = "; ".join(samples)
+    else:
+        rendered = _bounded_summary_value(selected)
+    return (
+        f"result[{result.get('result_id', 'diagnosis')}] "
+        f"status={result.get('status', 'not_checked')} "
+        f"kind={result.get('kind', 'diagnosis')} "
+        f"request={result.get('request', '')} value={rendered}"
+    )
+
+
+def render_execute_turn_text(
+    value: Mapping[str, object],
+    *,
+    heading: str | None = None,
+) -> str:
+    """Render the bounded standard-content projection of an execute Turn."""
+
+    state = str(value.get("state", "unknown"))
+    fixed_lines = [
+        _bounded_text(
+            heading if heading is not None else f"openUBMC 工作流状态：{state}。",
+            512,
+        )
+    ]
+    receipt = _mapping(value.get("diagnostic_receipt"))
+    if not receipt:
+        return "\n".join(fixed_lines)
+    coverage = _mapping(receipt.get("coverage"))
+    freshness = _mapping(receipt.get("freshness"))
+    requested = coverage.get("requested", 0)
+    evaluable = coverage.get("evaluable", 0)
+    visible_evaluable = coverage.get("visible_evaluable", evaluable)
+    visible_unavailable = coverage.get(
+        "visible_unavailable",
+        coverage.get("unavailable", 0),
+    )
+    visible_not_checked = coverage.get(
+        "visible_not_checked",
+        coverage.get("not_checked", 0),
+    )
+    fixed_lines.append(
+        "DiagnosticReceipt "
+        f"status={receipt.get('status', 'blocked')} "
+        f"source_coverage={evaluable}/{requested} "
+        f"source_unavailable={coverage.get('unavailable', 0)} "
+        f"source_not_checked={coverage.get('not_checked', 0)} "
+        f"visible={visible_evaluable}/{requested} "
+        f"visible_unavailable={visible_unavailable} "
+        f"visible_not_checked={visible_not_checked} "
+        f"complete={str(bool(coverage.get('complete'))).lower()} "
+        f"freshness={freshness.get('status', 'unknown')} "
+        f"truncated={str(bool(receipt.get('truncated'))).lower()} "
+        "content_complete="
+        f"{str(bool(receipt.get('content_complete'))).lower()}."
+    )
+    capabilities = receipt.get("capabilities", {})
+    if isinstance(capabilities, Mapping) and capabilities:
+        fixed_lines.append(
+            "capabilities: "
+            + ", ".join(
+                f"{_bounded_text(name, 48)}={_bounded_text(status, 32)}"
+                for name, status in list(capabilities.items())[:8]
+            )
+        )
+    gaps = receipt.get("gaps", [])
+    if isinstance(gaps, list) and gaps:
+        fixed_lines.append(
+            "diagnostic_gaps: "
+            + ", ".join(_bounded_text(gap, 128) for gap in gaps[:8])
+        )
+    evidence_ids: list[str] = []
+    evidence = receipt.get("evidence", [])
+    if isinstance(evidence, list):
+        evidence_ids.extend(
+            str(evidence_id)
+            for item in evidence
+            if isinstance(item, Mapping)
+            and (evidence_id := item.get("evidence_id"))
+        )
+    raw_results = receipt.get("results", [])
+    results = raw_results if isinstance(raw_results, list) else []
+    for result in results:
+        result_evidence = _mapping(result).get("evidence_ids", [])
+        if isinstance(result_evidence, list):
+            evidence_ids.extend(str(item) for item in result_evidence if item)
+    unique_evidence_ids = list(dict.fromkeys(evidence_ids))[:8]
+    if unique_evidence_ids:
+        fixed_lines.append(
+            "evidence_ids: "
+            + ", ".join(_bounded_text(item, 128) for item in unique_evidence_ids)
+        )
+    previews = [
+        _diagnostic_result_text(result)
+        for result in results[:8]
+        if isinstance(result, Mapping)
+    ]
+    for shown in range(len(previews), -1, -1):
+        compacted = shown < len(results)
+        lines = [*fixed_lines]
+        if compacted:
+            lines.append("text_projection_compacted=true")
+        lines.append(f"results_shown={shown}/{len(results)}")
+        lines.extend(previews[:shown])
+        rendered = "\n".join(lines)
+        if len(rendered.encode("utf-8")) <= EXECUTE_TEXT_PROJECTION_TARGET_BYTES:
+            return rendered
+    return "\n".join(
+        [*fixed_lines, "text_projection_compacted=true", f"results_shown=0/{len(results)}"]
+    )
 
 
 def _selector_identity_scope(value: object) -> dict[str, object]:

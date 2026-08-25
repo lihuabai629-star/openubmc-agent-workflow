@@ -757,15 +757,41 @@ class DiagnosticReceipt:
                 for item in self.results
             ),
         }
+        visible_counts = dict(result_counts)
+        if self.compacted_results is not None:
+            visible_counts[self.compacted_results.status] += len(
+                self.compacted_results.result_ids
+            )
+        claimed_visible = (
+            coverage.visible_evaluable,
+            coverage.visible_unavailable,
+            coverage.visible_not_checked,
+        )
+        if any(value is not None for value in claimed_visible):
+            if any(value is None for value in claimed_visible):
+                gaps.append("diagnostic_visible_coverage_incomplete")
+            else:
+                expected_visible = (
+                    visible_counts[DiagnosticItemStatus.AVAILABLE],
+                    visible_counts[DiagnosticItemStatus.UNAVAILABLE],
+                    visible_counts[DiagnosticItemStatus.NOT_CHECKED],
+                )
+                if claimed_visible != expected_visible:
+                    gaps.append("diagnostic_visible_coverage_count_mismatch")
+                if sum(claimed_visible) != coverage.requested:
+                    gaps.append("diagnostic_visible_coverage_scope_mismatch")
+        elif self.content_compacted:
+            gaps.append("diagnostic_visible_coverage_missing")
         if self.status is DiagnosticStatus.COMPLETE or coverage.complete:
             if self.status is not DiagnosticStatus.COMPLETE or not coverage.complete:
                 gaps.append("diagnostic_completion_status_mismatch")
             if coverage.unavailable or coverage.not_checked:
                 gaps.append("diagnostic_complete_has_coverage_gaps")
-            if len(self.results) != coverage.requested:
-                gaps.append("diagnostic_complete_result_count_mismatch")
-            if result_counts[DiagnosticItemStatus.AVAILABLE] != coverage.requested:
-                gaps.append("diagnostic_complete_results_not_available")
+            if not self.content_compacted:
+                if len(self.results) != coverage.requested:
+                    gaps.append("diagnostic_complete_result_count_mismatch")
+                if result_counts[DiagnosticItemStatus.AVAILABLE] != coverage.requested:
+                    gaps.append("diagnostic_complete_results_not_available")
         return tuple(gaps)
 
     def to_public_dict(self) -> dict[str, object]:
@@ -888,14 +914,8 @@ class DiagnosticReceipt:
                 gaps.append("diagnostic_receipt_compacted")
             compacted = replace(
                 self,
-                status=(
-                    DiagnosticStatus.BLOCKED
-                    if visible_evaluable == 0
-                    else DiagnosticStatus.PARTIAL
-                ),
                 coverage=replace(
                     self.coverage,
-                    complete=False,
                     visible_evaluable=visible_evaluable,
                     visible_unavailable=visible_unavailable,
                     visible_not_checked=visible_not_checked,
@@ -932,7 +952,6 @@ class DiagnosticReceipt:
         )
         minimal = replace(
             compacted,
-            status=DiagnosticStatus.BLOCKED,
             coverage=replace(
                 compacted.coverage,
                 visible_evaluable=0,

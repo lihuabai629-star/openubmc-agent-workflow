@@ -27,6 +27,7 @@ from .catalog import OperationCatalog
 from .agent_gateway import (
     OBSERVATION_MAX_BYTES,
     agent_operation_descriptors,
+    render_execute_turn_text,
 )
 from .semantic_runtime import (
     AGENT_REQUEST_MAX_BYTES,
@@ -3462,127 +3463,6 @@ class JsonRpcMcpEndpoint:
             "utf-8", errors="ignore"
         ) + "..."
 
-    @staticmethod
-    def _bounded_summary_value(value: object, *, limit: int = 480) -> str:
-        rendered = json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        encoded = rendered.encode("utf-8")
-        if len(encoded) <= limit:
-            return rendered
-        return encoded[: limit - 3].decode("utf-8", errors="ignore") + "..."
-
-    @classmethod
-    def _diagnostic_result_text(cls, value: object) -> str:
-        result = _mapping_or_empty(value)
-        selected = result.get("value")
-        selected_mapping = _mapping_or_empty(selected)
-        summaries = selected_mapping.get("summary", [])
-        if isinstance(summaries, list) and summaries:
-            samples: list[str] = []
-            for raw_sample in summaries[:4]:
-                sample = _mapping_or_empty(raw_sample)
-                path = str(sample.get("path", "value"))
-                samples.append(
-                    f"{path}={cls._bounded_summary_value(sample.get('value'), limit=160)}"
-                )
-            rendered = "; ".join(samples)
-        else:
-            rendered = cls._bounded_summary_value(selected)
-        return (
-            f"result[{result.get('result_id', 'diagnosis')}] "
-            f"status={result.get('status', 'not_checked')} "
-            f"kind={result.get('kind', 'diagnosis')} "
-            f"request={result.get('request', '')} value={rendered}"
-        )
-
-    @classmethod
-    def _execute_text(cls, value: Mapping[str, object]) -> str:
-        state = str(value.get("state", "unknown"))
-        lines = [f"openUBMC 工作流状态：{state}。"]
-        receipt = _mapping_or_empty(value.get("diagnostic_receipt"))
-        if receipt:
-            coverage = _mapping_or_empty(receipt.get("coverage"))
-            freshness = _mapping_or_empty(receipt.get("freshness"))
-            requested = coverage.get("requested", 0)
-            evaluable = coverage.get("evaluable", 0)
-            visible_evaluable = coverage.get("visible_evaluable", evaluable)
-            visible_unavailable = coverage.get(
-                "visible_unavailable",
-                coverage.get("unavailable", 0),
-            )
-            visible_not_checked = coverage.get(
-                "visible_not_checked",
-                coverage.get("not_checked", 0),
-            )
-            lines.append(
-                "DiagnosticReceipt "
-                f"status={receipt.get('status', 'blocked')} "
-                f"source_coverage={evaluable}/{requested} "
-                f"source_unavailable={coverage.get('unavailable', 0)} "
-                f"source_not_checked={coverage.get('not_checked', 0)} "
-                f"visible={visible_evaluable}/{requested} "
-                f"visible_unavailable={visible_unavailable} "
-                f"visible_not_checked={visible_not_checked} "
-                f"complete={str(bool(coverage.get('complete'))).lower()} "
-                f"freshness={freshness.get('status', 'unknown')} "
-                f"truncated={str(bool(receipt.get('truncated'))).lower()} "
-                f"content_complete="
-                f"{str(bool(receipt.get('content_complete'))).lower()}."
-            )
-            capabilities = receipt.get("capabilities", {})
-            if isinstance(capabilities, Mapping) and capabilities:
-                lines.append(
-                    "capabilities: "
-                    + ", ".join(
-                        f"{name}={status}"
-                        for name, status in list(capabilities.items())[:8]
-                    )
-                )
-            gaps = receipt.get("gaps", [])
-            if isinstance(gaps, list) and gaps:
-                lines.append(
-                    "diagnostic_gaps: "
-                    + ", ".join(str(gap) for gap in gaps[:8])
-                )
-            evidence_ids: list[str] = []
-            evidence = receipt.get("evidence", [])
-            if isinstance(evidence, list):
-                evidence_ids.extend(
-                    str(evidence_id)
-                    for item in evidence
-                    if isinstance(item, Mapping)
-                    and (evidence_id := item.get("evidence_id"))
-                )
-            results = receipt.get("results", [])
-            if isinstance(results, list):
-                for result in results:
-                    if not isinstance(result, Mapping):
-                        continue
-                    result_evidence = result.get("evidence_ids", [])
-                    if isinstance(result_evidence, list):
-                        evidence_ids.extend(
-                            str(evidence_id)
-                            for evidence_id in result_evidence
-                            if evidence_id
-                        )
-                if evidence_ids:
-                    lines.append(
-                        "evidence_ids: "
-                        + ", ".join(dict.fromkeys(evidence_ids[:8]))
-                    )
-                shown = min(8, len(results))
-                lines.append(f"results_shown={shown}/{len(results)}")
-                lines.extend(
-                    cls._diagnostic_result_text(result)
-                    for result in results[:8]
-                    if isinstance(result, Mapping)
-                )
-        return "\n".join(lines)
-
     @classmethod
     def _human_summary(
         cls,
@@ -3637,10 +3517,9 @@ class JsonRpcMcpEndpoint:
                     f"{gate.get('kind', 'gate')} {gate.get('name', '')}。"
                 )
                 if value.get("diagnostic_receipt"):
-                    receipt_text = cls._execute_text(value).splitlines()[1:]
-                    return "\n".join([gate_text, *receipt_text])
+                    return render_execute_turn_text(value, heading=gate_text)
                 return gate_text
-            return cls._execute_text(value)
+            return render_execute_turn_text(value)
         closeout_markdown = value.get("closeout_markdown")
         if isinstance(closeout_markdown, str) and closeout_markdown.strip():
             return closeout_markdown.strip()
@@ -3768,7 +3647,7 @@ class JsonRpcMcpEndpoint:
             if isinstance(value, Mapping) and value.get("closeout_markdown")
             else 4096
         )
-        if len(encoded) > text_limit:
+        if len(encoded) > text_limit and not (tool_name == "execute" and not error):
             text = encoded[: text_limit - 3].decode("utf-8", errors="ignore") + "..."
         result: dict[str, object] = {
             "content": [{"type": "text", "text": text}],

@@ -130,9 +130,12 @@ coverage, freshness, source completeness, capabilities, gaps, and citable result
 typed Turn remains authoritative in `structuredContent`; the text prevents clients that underuse
 structured MCP data from reducing `execute` to a generic completed/failed acknowledgement.
 
-Domain execution completion is not diagnosis completion. Zero Agent-evaluable requested items
-produce a blocked receipt, partial visibility or incomplete content produces a partial receipt,
-and complete is permitted only when every requested item is visible, fresh, and content-complete.
+Domain execution completion is not diagnosis completion. Zero source-evaluable requested items
+produce a blocked receipt, incomplete source content produces a partial receipt, and complete is
+permitted only when every requested source item is fresh and content-complete. Every accepted
+request identity remains represented by a visible result or a bounded `compacted_results` gap;
+`visible_*` coverage reports what the current Agent projection can inspect without rewriting the
+source-owned status.
 An observation timestamp alone is not freshness proof: complete also requires an explicit fresh or
 complete freshness status, a non-empty observation time, and no unavailable, lost, or stale
 freshness dimensions. A per-target `complete=false` is also a freshness gap. Multi-target
@@ -161,7 +164,8 @@ Turn above the 8 KiB target, `manual_narrowing_required` remains false for execu
 
 The durable Receipt is separately limited to 32 KiB before it enters event history. If detailed
 previews do not fit, the Runtime retains bounded result identities, source coverage counts, gaps,
-freshness, capability states, and Evidence references while failing completion closed.
+freshness, capability states, and Evidence references. Persistence compaction records `visible_*`,
+`compacted_results`, and `content_compacted` without rewriting source status or source completeness.
 The public `execute(start)` boundary rejects a Runtime-owned diagnostic scope that would require
 more than 1,024 result identities after applying the target multiplier and multi-target comparison
 item, so an accepted scope always fits the durable identity budget.

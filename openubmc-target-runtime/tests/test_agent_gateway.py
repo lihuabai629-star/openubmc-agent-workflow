@@ -3785,8 +3785,9 @@ class AgentGatewayTests(unittest.TestCase):
 
         public = receipt.to_public_dict()
         self.assertLessEqual(encoded_size(public), DIAGNOSTIC_RECEIPT_MAX_BYTES)
-        self.assertEqual(public["status"], "partial")
+        self.assertEqual(public["status"], "complete")
         self.assertEqual(public["coverage"]["requested"], 1024)
+        self.assertTrue(public["coverage"]["complete"])
         self.assertEqual(public["coverage"]["visible_evaluable"], 64)
         self.assertEqual(public["coverage"]["visible_not_checked"], 960)
         self.assertEqual(public["coverage"]["compacted"], 1024)
@@ -3801,6 +3802,10 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertFalse(public["truncated"])
         self.assertTrue(public["content_complete"])
+        round_trip = DiagnosticReceipt.from_public_dict(public)
+        self.assertEqual(round_trip.status.value, "complete")
+        self.assertTrue(round_trip.coverage.complete)
+        self.assertNotIn("diagnostic_receipt_invalid", round_trip.gaps)
 
     def test_durable_receipt_compaction_preserves_a_log_outcome_summary(self) -> None:
         receipt = DiagnosticReceipt.from_public_dict(
