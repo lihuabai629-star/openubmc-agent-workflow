@@ -1580,7 +1580,7 @@ def _structured_results(
                 evidence_ids=evidence_ids,
             )
         )
-    if request.get("mdb_only") is not True:
+    if request and request.get("mdb_only") is not True:
         freshness = _mapping(runtime_result.get("freshness")) or _mapping(
             value.get("freshness")
         )
@@ -1609,6 +1609,22 @@ def _structured_results(
                     ),
                     evidence_ids=evidence_ids,
                 )
+            )
+        else:
+            results.append(
+                {
+                    "result_id": "target-clock",
+                    "kind": "target-clock",
+                    "request": "BMC clock movement during diagnosis",
+                    "status": "not_checked",
+                    "observed_at": _bounded_text(
+                        value.get("observed_at")
+                        or runtime_result.get("completed_at"),
+                        128,
+                    ),
+                    "gap": "target_clock_not_returned",
+                    "evidence_ids": evidence_ids,
+                }
             )
     logs = request.get("logs")
     if isinstance(logs, str) and logs.strip():

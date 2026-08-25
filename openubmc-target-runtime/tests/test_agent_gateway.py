@@ -521,6 +521,13 @@ class CompleteBoundedDiagnosticBackend(BoundedDiagnosticBackend):
         return value
 
 
+class MissingTargetClockDiagnosticBackend(CompleteBoundedDiagnosticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_run(task, arguments, context)
+        value["result"]["freshness"].pop("bmc_time_delta")
+        return value
+
+
 class EmptyStructuredDiagnosticBackend(SemanticBackend):
     def debug_run(self, task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
@@ -587,7 +594,16 @@ class ProjectionCompactedDiagnosticBackend(SemanticBackend):
                         }
                     }
                 },
-                "freshness": {"status": "fresh"},
+                "freshness": {
+                    "status": "fresh",
+                    "bmc_time_delta": {
+                        "before": "2026-08-25 04:42:50 +0000",
+                        "after": "2026-08-25 04:42:55 +0000",
+                        "elapsed_seconds": 5.0,
+                        "comparable": True,
+                        "clock_moved_backwards": False,
+                    },
+                },
             },
         }
 
@@ -3041,6 +3057,42 @@ class AgentGatewayTests(unittest.TestCase):
             "2026-08-25 04:42:55 +0000",
         )
 
+    def test_execute_marks_the_runtime_target_clock_not_checked_when_missing(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(MissingTargetClockDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {
+                        "logs": "app.log",
+                        "tree_service": "bmc.kepler.devmon",
+                        "mdb_queries": ["lsmc"],
+                    },
+                },
+                task_id="missing-target-clock",
+                operation_id="missing-target-clock-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        target_clock = next(
+            item for item in receipt["results"] if item["result_id"] == "target-clock"
+        )
+        self.assertEqual(receipt["status"], "partial")
+        self.assertEqual(receipt["coverage"]["requested"], 10)
+        self.assertEqual(receipt["coverage"]["evaluable"], 9)
+        self.assertEqual(receipt["coverage"]["not_checked"], 1)
+        self.assertFalse(receipt["coverage"]["complete"])
+        self.assertEqual(target_clock["status"], "not_checked")
+        self.assertEqual(target_clock["gap"], "target_clock_not_returned")
+
     def test_execute_blocks_successful_tool_without_visible_result_content(self) -> None:
         service = RuntimeMcpService(EmptyStructuredDiagnosticBackend())
         try:
@@ -3214,10 +3266,15 @@ class AgentGatewayTests(unittest.TestCase):
 
         receipt = turn["diagnostic_receipt"]
         self.assertEqual(receipt["status"], "blocked")
-        self.assertEqual(receipt["coverage"]["requested"], 1)
-        self.assertEqual(receipt["results"][0]["result_id"], "logs")
-        self.assertEqual(receipt["results"][0]["status"], "not_checked")
-        self.assertEqual(receipt["results"][0]["gap"], "result_not_visible")
+        self.assertEqual(receipt["coverage"]["requested"], 2)
+        results = {item["result_id"]: item for item in receipt["results"]}
+        self.assertEqual(results["logs"]["status"], "not_checked")
+        self.assertEqual(results["logs"]["gap"], "result_not_visible")
+        self.assertEqual(results["target-clock"]["status"], "not_checked")
+        self.assertEqual(
+            results["target-clock"]["gap"],
+            "target_clock_not_returned",
+        )
 
     def test_execute_marks_skipped_source_correlation_not_checked(self) -> None:
         service = RuntimeMcpService(SkippedCorrelationDiagnosticBackend())
@@ -3238,8 +3295,11 @@ class AgentGatewayTests(unittest.TestCase):
             service.close()
 
         receipt = turn["diagnostic_receipt"]
-        correlation = receipt["results"][0]
+        correlation = next(
+            item for item in receipt["results"] if item["result_id"] == "correlation"
+        )
         self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["coverage"]["requested"], 2)
         self.assertEqual(correlation["result_id"], "correlation")
         self.assertEqual(correlation["status"], "not_checked")
         self.assertIn("Source correlation disabled", correlation["gap"])
@@ -3267,6 +3327,7 @@ class AgentGatewayTests(unittest.TestCase):
                     "entry_operation": "debug_run",
                     "entry_arguments": {
                         "files": ["/etc/version.json"],
+                        "mdb_only": True,
                     },
                 },
                 task_id="multi-target-diagnosis",
@@ -3409,7 +3470,10 @@ class AgentGatewayTests(unittest.TestCase):
                     "target": "comparison-scope",
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"files": ["/etc/version.json"]},
+                    "entry_arguments": {
+                        "files": ["/etc/version.json"],
+                        "mdb_only": True,
+                    },
                 },
                 task_id="adapter-owned-multi-target-scope",
                 operation_id="adapter-owned-multi-target-scope-start",
@@ -3447,7 +3511,10 @@ class AgentGatewayTests(unittest.TestCase):
                     ],
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"files": ["/etc/version.json"]},
+                    "entry_arguments": {
+                        "files": ["/etc/version.json"],
+                        "mdb_only": True,
+                    },
                 },
                 task_id="missing-target-diagnosis",
                 operation_id="missing-target-diagnosis-start",
@@ -3478,7 +3545,10 @@ class AgentGatewayTests(unittest.TestCase):
                     ],
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"files": ["/etc/version.json"]},
+                    "entry_arguments": {
+                        "files": ["/etc/version.json"],
+                        "mdb_only": True,
+                    },
                 },
                 task_id="symmetric-target-diagnosis",
                 operation_id="symmetric-target-diagnosis-start",
@@ -3511,7 +3581,10 @@ class AgentGatewayTests(unittest.TestCase):
                     ],
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"files": ["/etc/version.json"]},
+                    "entry_arguments": {
+                        "files": ["/etc/version.json"],
+                        "mdb_only": True,
+                    },
                 },
                 task_id="missing-comparison-diagnosis",
                 operation_id="missing-comparison-diagnosis-start",
@@ -3549,7 +3622,10 @@ class AgentGatewayTests(unittest.TestCase):
                     ],
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"files": ["/etc/version.json"]},
+                    "entry_arguments": {
+                        "files": ["/etc/version.json"],
+                        "mdb_only": True,
+                    },
                 },
                 task_id="missing-target-freshness",
                 operation_id="missing-target-freshness-start",
@@ -3592,7 +3668,10 @@ class AgentGatewayTests(unittest.TestCase):
                     ],
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"files": ["/etc/version.json"]},
+                    "entry_arguments": {
+                        "files": ["/etc/version.json"],
+                        "mdb_only": True,
+                    },
                 },
                 task_id="top-level-fresh-target-gap",
                 operation_id="top-level-fresh-target-gap-start",
@@ -3627,7 +3706,10 @@ class AgentGatewayTests(unittest.TestCase):
                     ],
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"files": ["/etc/version.json"]},
+                    "entry_arguments": {
+                        "files": ["/etc/version.json"],
+                        "mdb_only": True,
+                    },
                 },
                 task_id="incomplete-target-freshness",
                 operation_id="incomplete-target-freshness-start",
