@@ -6,7 +6,9 @@ from collections.abc import Mapping
 import json
 
 from .catalog import OperationDescriptor
+from .capabilities import CAPABILITY_ALIASES, CAPABILITY_STATES
 from .contracts import RUNTIME_API_VERSION
+from .diagnostic_receipt import DiagnosticReceipt
 from .semantic_runtime import (
     AgentGatewayError,
     GATE_SCHEMA_MAX_BYTES,
@@ -27,19 +29,11 @@ AGENT_GATEWAY_SCHEMA = f"{RUNTIME_API_VERSION}/agent-gateway-v1"
 OBSERVATION_RECEIPT_SCHEMA = f"{AGENT_GATEWAY_SCHEMA}/observation-receipt"
 TURN_SCHEMA = f"{AGENT_GATEWAY_SCHEMA}/turn"
 OBSERVATION_MAX_BYTES = 4 * 1024
-TURN_MAX_BYTES = 8 * 1024
+TURN_PROJECTION_TARGET_BYTES = 8 * 1024
+# Compatibility name for callers that report the historical projection target.
+# Runtime-owned Turn semantics may exceed it; it is not a control-flow maximum.
+TURN_MAX_BYTES = TURN_PROJECTION_TARGET_BYTES
 TOOLS_LIST_MAX_BYTES = 8 * 1024
-
-_CAPABILITY_ALIASES = {
-    "ssh": "ssh_transport",
-    "telnet": "remote_log_file",
-    "mdbctl": "mdbctl",
-    "busctl": "busctl",
-    "dbus": "dbus_env",
-    "alarms": "active_alarm_endpoint_verified",
-}
-_CAPABILITY_STATES = frozenset({"available", "unavailable", "not_checked"})
-
 
 def _json_bytes(value: object) -> bytes:
     return json.dumps(
@@ -171,80 +165,25 @@ class CostGovernor:
         gate = _mapping(value)
         if not gate:
             return None
-        kind = _bounded_text(gate.get("kind"), 32)
+        kind = _text(gate.get("kind"))
         if kind == "phase":
             input_schema = dict(_mapping(gate.get("input_schema")))
             if len(_json_bytes(input_schema)) > GATE_SCHEMA_MAX_BYTES:
-                return {
-                    "kind": "blocker",
-                    "name": "gate_schema_exceeds_budget",
-                    "message": "phase gate schema exceeded the Agent budget",
-                }
-            return {
-                "kind": kind,
-                "gate_id": _bounded_text(gate.get("gate_id"), 128),
-                "gate_version": gate.get("gate_version", 0),
-                "schema_digest": _bounded_text(gate.get("schema_digest"), 80),
-                "name": _bounded_text(gate.get("name"), 128),
-                "owner": _bounded_text(gate.get("owner"), 128),
-                "input_schema": input_schema,
-            }
-        return {
-            "kind": kind or "blocker",
-            "name": _bounded_text(gate.get("name"), 128),
-            "message": _bounded_text(gate.get("message"), 512),
-        }
+                raise AgentGatewayError(
+                    "Gate schema exceeds the hard 4 KiB contract"
+                )
+        return dict(gate)
 
     @staticmethod
-    def _turn_gaps(value: object) -> list[str]:
-        gaps = value if isinstance(value, list) else []
-        bounded = [_bounded_text(item, 256) for item in gaps[:8]]
-        if "turn_exceeds_8kb_budget" not in bounded:
-            bounded.append("turn_exceeds_8kb_budget")
-        return bounded
-
-    @staticmethod
-    def _turn_outcome(value: object) -> dict[str, object] | None:
-        outcome = _mapping(value)
-        if not outcome:
+    def _turn_diagnostic_receipt(value: object) -> dict[str, object] | None:
+        receipt = _mapping(value)
+        if not receipt:
             return None
-        return {
-            "status": _bounded_text(outcome.get("status"), 64),
-            "summary": _bounded_text(outcome.get("summary"), 512),
-            "acceptance": _compact_value(
-                outcome.get("acceptance", []),
-                max_depth=2,
-                max_items=8,
-                max_string=128,
-            ),
-        }
-
-    @staticmethod
-    def _turn_incident(value: object) -> dict[str, object] | None:
-        incident = _mapping(value)
-        if not incident:
-            return None
-        return {
-            "incident_id": _bounded_text(incident.get("incident_id"), 128),
-            "code": _bounded_text(incident.get("code"), 128),
-            "message": _bounded_text(incident.get("message"), 512),
-            "effect_id": _bounded_text(incident.get("effect_id"), 128),
-            "recoverable": bool(incident.get("recoverable", True)),
-            "recovery_path": _bounded_text(
-                incident.get("recovery_path"), 64
-            ),
-            "allowed_commands": [
-                _bounded_text(item, 32)
-                for item in (
-                    incident.get("allowed_commands", [])
-                    if isinstance(incident.get("allowed_commands"), list)
-                    else []
-                )[:4]
-            ],
-            "operator_action": _bounded_text(
-                incident.get("operator_action"), 512
-            ),
-        }
+        return (
+            DiagnosticReceipt.from_public_dict(receipt)
+            .compacted_for_agent()
+            .to_public_dict()
+        )
 
     @staticmethod
     def observation(document: Mapping[str, object]) -> dict[str, object]:
@@ -357,56 +296,71 @@ class CostGovernor:
     @staticmethod
     def turn(document: Mapping[str, object]) -> dict[str, object]:
         result = dict(document)
+        runtime_gate = CostGovernor._turn_gate(document.get("gate"))
+        if runtime_gate != document.get("gate"):
+            result["gate"] = runtime_gate
+            result["content_compacted"] = True
+            result["projection_compacted"] = True
+            result["projection_target_exceeded"] = False
+            result["manual_narrowing_required"] = False
+            result["budget_blocker"] = False
         if len(_json_bytes(result)) <= TURN_MAX_BYTES:
             return result
         result["content_compacted"] = True
+        result["projection_compacted"] = True
+        result["projection_target_exceeded"] = False
+        result["manual_narrowing_required"] = False
+        result["budget_blocker"] = False
         result["facts"] = _compact_value(
             result.get("facts", []), max_depth=3, max_items=16, max_string=256
         )
-        result["outcome"] = _compact_value(
-            result.get("outcome"), max_depth=3, max_items=12, max_string=512
-        )
+        if "diagnostic_receipt" in result:
+            result["diagnostic_receipt"] = (
+                CostGovernor._turn_diagnostic_receipt(
+                    result.get("diagnostic_receipt")
+                )
+            )
         if len(_json_bytes(result)) <= TURN_MAX_BYTES:
             return result
+        runtime_incident = document.get("incident")
+        runtime_outcome = document.get("outcome")
         fallback: dict[str, object] = {
             "schema": TURN_SCHEMA,
             "run_id": _bounded_text(result.get("run_id"), 512),
             "state": _bounded_text(result.get("state") or "blocked", 64),
-            "gate": CostGovernor._turn_gate(result.get("gate")),
-            "incident": CostGovernor._turn_incident(result.get("incident")),
+            "gate": runtime_gate,
+            "incident": runtime_incident,
             "facts": [],
-            "gaps": CostGovernor._turn_gaps(result.get("gaps")),
-            "outcome": CostGovernor._turn_outcome(result.get("outcome")),
-            "next": _bounded_text(result.get("next"), 512),
+            "gaps": [
+                _bounded_text(item, 256)
+                for item in (
+                    result.get("gaps", [])
+                    if isinstance(result.get("gaps"), list)
+                    else []
+                )[:8]
+            ],
+            "outcome": runtime_outcome,
+            "next": result.get("next"),
             "content_compacted": True,
+            "projection_compacted": True,
+            "projection_target_exceeded": False,
+            "manual_narrowing_required": False,
+            "budget_blocker": False,
         }
         if "observation_ref" in result:
-            fallback["observation_ref"] = _compact_value(
-                result.get("observation_ref"),
-                max_depth=2,
-                max_items=8,
-                max_string=128,
-            )
+            fallback["observation_ref"] = document.get("observation_ref")
         if "outcome_recorded" in result:
             fallback["outcome_recorded"] = bool(result.get("outcome_recorded"))
+        if "diagnostic_receipt" in result:
+            fallback["diagnostic_receipt"] = (
+                CostGovernor._turn_diagnostic_receipt(
+                    result.get("diagnostic_receipt")
+                )
+            )
         if len(_json_bytes(fallback)) <= TURN_MAX_BYTES:
             return fallback
-        return {
-            "schema": TURN_SCHEMA,
-            "run_id": _bounded_text(result.get("run_id"), 128),
-            "state": _bounded_text(result.get("state") or "blocked", 64),
-            "gate": {
-                "kind": "blocker",
-                "name": "output_budget",
-                "message": "Turn details exceeded the 8KB Agent budget",
-            },
-            "incident": CostGovernor._turn_incident(result.get("incident")),
-            "facts": [],
-            "gaps": ["turn_exceeds_8kb_budget"],
-            "outcome": CostGovernor._turn_outcome(result.get("outcome")),
-            "next": "inspect persisted Case evidence through the operator profile",
-            "content_compacted": True,
-        }
+        fallback["projection_target_exceeded"] = True
+        return fallback
 
 
 class ResultProjector:
@@ -486,7 +440,7 @@ class ResultProjector:
 
     @staticmethod
     def _capability_state(capabilities: Mapping[str, object], name: str) -> str:
-        runtime_name = _CAPABILITY_ALIASES[name]
+        runtime_name = CAPABILITY_ALIASES[name]
         if runtime_name not in capabilities:
             return "not_checked"
         value = capabilities.get(runtime_name)
@@ -556,7 +510,7 @@ class ResultProjector:
         observations: dict[str, object] = {}
         claims: list[dict[str, object]] = []
         evidence: list[dict[str, object]] = []
-        counts = {state: 0 for state in _CAPABILITY_STATES}
+        counts = {state: 0 for state in CAPABILITY_STATES}
         mdb_index = 0
         for selector in scope.selectors:
             if selector.kind == "capability":
@@ -700,9 +654,17 @@ class ResultProjector:
         return CostGovernor.observation(document)
 
     def turn(self, turn: RunTurn) -> dict[str, object]:
-        return CostGovernor.turn(
-            {"schema": TURN_SCHEMA, **turn.to_public_dict()}
-        )
+        document = {"schema": TURN_SCHEMA, **turn.to_public_dict()}
+        diagnostic_receipt = document.get("diagnostic_receipt")
+        if isinstance(diagnostic_receipt, Mapping):
+            receipt_gaps = diagnostic_receipt.get("gaps", [])
+            if isinstance(receipt_gaps, list):
+                current_gaps = document.get("gaps", [])
+                gaps = list(current_gaps) if isinstance(current_gaps, list) else []
+                document["gaps"] = list(
+                    dict.fromkeys((*gaps, *receipt_gaps))
+                )[:16]
+        return CostGovernor.turn(document)
 
 
 class AgentGateway:
@@ -820,6 +782,32 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
             "kind": {"type": "string", "enum": ["start", "respond", "resume", "control"]},
             "run_id": {"type": "string", "minLength": 1},
             "target": {"type": "string", "minLength": 1},
+            "targets": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 16,
+                "description": (
+                    "Runtime-owned multi-target diagnosis scope. Target identities and "
+                    "roles are normalized before the Run opens."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["ip"],
+                    "properties": {
+                        "ip": {"type": "string", "minLength": 1, "maxLength": 512},
+                        "role": {
+                            "type": "string",
+                            "enum": ["reference", "candidate", "symmetric"],
+                        },
+                        "target_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                        },
+                    },
+                    "additionalProperties": True,
+                },
+            },
             "intent": {"type": "string"},
             "entry_operation": {
                 "type": "string",

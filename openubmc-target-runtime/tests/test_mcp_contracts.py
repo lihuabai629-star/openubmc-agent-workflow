@@ -59,7 +59,13 @@ class FakeDebugBackend:
     def debug_run(task: FakeTask, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
         task.calls.append("debug_run")
-        return {"schema": "openubmc-debug.v1", "task": task.task_id}
+        return {
+            "schema": "openubmc-debug.v1",
+            "task": task.task_id,
+            "root_cause": "the bounded fake diagnosis completed",
+            "observed_at": "2026-08-25T00:00:00Z",
+            "freshness": {"status": "fresh"},
+        }
 
     @staticmethod
     def debug_collect(task: FakeTask, arguments, context) -> dict[str, object]:

@@ -21,13 +21,17 @@ from openubmc_target_runtime import (  # noqa: E402
     AgentGateway,
     AgentGatewayError,
     CommandConflict,
+    DIAGNOSTIC_RECEIPT_MAX_BYTES,
+    DiagnosticReceipt,
     EvidenceUnavailable,
     EventRunStore,
+    Gate,
     GateConflict,
     InMemoryRuntimeRepository,
     Incident,
     ObservationQuery,
     OBSERVATION_MAX_BYTES,
+    Outcome,
     RevisionConflict,
     ReferenceViolation,
     ResumeRun,
@@ -53,6 +57,9 @@ from openubmc_target_runtime import (  # noqa: E402
 )
 from openubmc_target_runtime.context_runtime import (  # noqa: E402
     BufferedRuntimeRepository,
+)
+from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
+    build_diagnostic_receipt,
 )
 from openubmc_target_runtime.run_store import RunCommitRequest  # noqa: E402
 from tests.compatibility_history import seed_compatibility_history  # noqa: E402
@@ -279,6 +286,9 @@ class SemanticBackend:
             "schema": "openubmc-debug.v1",
             "task": task.task_id,
             "summary": "diagnosis completed",
+            "root_cause": "a bounded source defect was isolated",
+            "observed_at": "2026-08-19T00:00:00Z",
+            "freshness": {"status": "fresh"},
         }
 
     def live_patch_run(self, task, arguments, context) -> dict[str, object]:
@@ -325,6 +335,540 @@ class SemanticBackend:
                 "stage": "verified",
                 "action": "upgrade",
             },
+        }
+
+
+class GenericCompletionBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        return {"ok": True, "summary": "Domain operation completed"}
+
+
+class BoundedDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        observed_at = "2026-08-25T04:42:55Z"
+        return {
+            "ok": True,
+            "observed_at": observed_at,
+            "request": {
+                "logs": "app.log",
+                "files": [
+                    "/etc/version.json",
+                    "/proc/uptime",
+                    "/tmp/custom.txt",
+                ],
+                "tree_service": "bmc.kepler.devmon",
+                "mdb_queries": ["lsmc"],
+                "mdb_expand_classes": ["Drive"],
+                "mdb_only": False,
+                "freshness_requested": True,
+                "source_correlation_requested": True,
+            },
+            "result": {
+                "completed_at": observed_at,
+                "capabilities": {
+                    "ssh_transport": True,
+                    "remote_log_file": True,
+                    "mdbctl": True,
+                    "busctl": True,
+                },
+                "lanes": {
+                    "ssh": {
+                        "busctl": {
+                            "ok": True,
+                            "code": "ok",
+                            "observed_at": observed_at,
+                            "result": {
+                                "stdout_lines": ["/bmc/kepler/devmon"],
+                                "stdout_truncated": False,
+                            },
+                        },
+                        "mdbctl": {
+                            "ok": True,
+                            "code": "ok",
+                            "observed_at": observed_at,
+                            "result": {
+                                "stdout_lines": ["Drive_1_010102"],
+                                "stdout_truncated": False,
+                            },
+                        },
+                        "mdbctl_expand_1": {
+                            "ok": True,
+                            "code": "ok",
+                            "observed_at": observed_at,
+                            "result": {
+                                "stdout_lines": ["Drive_1_010102"],
+                                "stdout_truncated": False,
+                            },
+                        },
+                        "mdbctl_expand_1_object_demo": {
+                            "ok": True,
+                            "code": "ok",
+                            "observed_at": observed_at,
+                            "result": {
+                                "stdout_lines": ["Health=OK"],
+                                "stdout_truncated": False,
+                            },
+                        },
+                        "active_alarms": {
+                            "ok": True,
+                            "code": "ok",
+                            "observed_at": observed_at,
+                            "result": {
+                                "records": [{"event_name": "DiskTimeout"}],
+                                "truncated": False,
+                            },
+                        },
+                    },
+                    "telnet": {
+                        "logs": {
+                            "ok": True,
+                            "code": "ok",
+                            "observed_at": observed_at,
+                            "result": {
+                                "entries": [
+                                    {
+                                        "path": "/var/log/app.log",
+                                        "line_count": 31,
+                                        "lines_preview": [
+                                            "mctpd request timeout",
+                                            "storage PluginRequestEx timeout",
+                                        ],
+                                        "truncated": True,
+                                        "content_complete": False,
+                                    }
+                                ]
+                            },
+                        },
+                        "files": {
+                            "/etc/version.json": {
+                                "ok": True,
+                                "code": "ok",
+                                "observed_at": observed_at,
+                                "result": {
+                                    "lines": ['{"version":"12.08.21.06"}'],
+                                    "truncated": False,
+                                    "content_complete": True,
+                                },
+                            },
+                            "/proc/uptime": {
+                                "ok": True,
+                                "code": "ok",
+                                "observed_at": observed_at,
+                                "result": {
+                                    "lines": ["86400.00 100.00"],
+                                    "truncated": False,
+                                    "content_complete": True,
+                                },
+                            },
+                            "/tmp/custom.txt": {
+                                "ok": True,
+                                "code": "ok",
+                                "completed_at": observed_at,
+                                "payload": {
+                                    "observed_at": observed_at,
+                                    "result": {
+                                        "lines": ["custom diagnostic value"],
+                                        "truncated": False,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                "freshness": {
+                    "status": "partial",
+                    "complete": False,
+                    "unavailable_dimensions": ["active_alarms"],
+                    "stale_evidence": [],
+                },
+                "correlation": {
+                    "records": [{"event_name": "DiskTimeout", "confidence": 0.9}],
+                    "correlation_complete": True,
+                },
+            },
+        }
+
+
+class CompleteBoundedDiagnosticBackend(BoundedDiagnosticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_run(task, arguments, context)
+        runtime_result = value["result"]
+        log_entry = runtime_result["lanes"]["telnet"]["logs"]["result"][
+            "entries"
+        ][0]
+        log_entry["truncated"] = False
+        log_entry["content_complete"] = True
+        runtime_result["lanes"]["telnet"]["files"]["/tmp/custom.txt"][
+            "payload"
+        ]["result"]["content_complete"] = True
+        runtime_result["freshness"] = {"status": "fresh", "complete": True}
+        return value
+
+
+class EmptyStructuredDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        observed_at = "2026-08-25T04:42:55Z"
+        return {
+            "ok": True,
+            "observed_at": observed_at,
+            "request": {"files": ["/etc/version.json"]},
+            "result": {
+                "completed_at": observed_at,
+                "lanes": {
+                    "telnet": {
+                        "files": {
+                            "/etc/version.json": {
+                                "ok": True,
+                                "code": "ok",
+                                "observed_at": observed_at,
+                                "result": {},
+                            }
+                        }
+                    }
+                },
+                "freshness": {"status": "fresh"},
+            },
+        }
+
+
+class MetadataOnlyDiagnosticBackend(EmptyStructuredDiagnosticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_run(task, arguments, context)
+        value["result"]["lanes"]["telnet"]["files"]["/etc/version.json"][
+            "result"
+        ] = {"content_complete": True}
+        return value
+
+
+class ProjectionCompactedDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        observed_at = "2026-08-25T04:42:55Z"
+        return {
+            "ok": True,
+            "observed_at": observed_at,
+            "request": {"files": ["/tmp/records.json"]},
+            "result": {
+                "completed_at": observed_at,
+                "lanes": {
+                    "telnet": {
+                        "files": {
+                            "/tmp/records.json": {
+                                "ok": True,
+                                "code": "ok",
+                                "observed_at": observed_at,
+                                "result": {
+                                    "records": [
+                                        {"record_id": index}
+                                        for index in range(17)
+                                    ],
+                                    "content_complete": True,
+                                },
+                            }
+                        }
+                    }
+                },
+                "freshness": {"status": "fresh"},
+            },
+        }
+
+
+class MissingContentCompleteDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        observed_at = "2026-08-25T04:42:55Z"
+        return {
+            "ok": True,
+            "observed_at": observed_at,
+            "request": {"files": ["/tmp/records.json"]},
+            "result": {
+                "completed_at": observed_at,
+                "lanes": {
+                    "telnet": {
+                        "files": {
+                            "/tmp/records.json": {
+                                "ok": True,
+                                "observed_at": observed_at,
+                                "result": {"records": [{"record_id": 1}]},
+                            }
+                        }
+                    }
+                },
+                "freshness": {"status": "fresh"},
+            },
+        }
+
+
+class TimestampOnlyDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        return {
+            "ok": True,
+            "root_cause": "an old bounded conclusion exists",
+            "observed_at": "2020-01-01T00:00:00Z",
+        }
+
+
+class StaleEvidenceDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        return {
+            "ok": True,
+            "root_cause": "connector timeout",
+            "observed_at": "2026-08-25T00:00:00Z",
+            "freshness": {
+                "status": "fresh",
+                "complete": True,
+                "stale_evidence": [
+                    {
+                        "evidence_id": "evidence-old",
+                        "reason": "target_epoch_mismatch",
+                    }
+                ],
+            },
+        }
+
+
+class OmittedRequestDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        return {
+            "ok": True,
+            "root_cause": "the adapter omitted the requested log check",
+            "observed_at": "2026-08-25T00:00:00Z",
+            "freshness": {"status": "fresh"},
+        }
+
+
+class SkippedCorrelationDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        observed_at = "2026-08-25T00:00:00Z"
+        return {
+            "ok": True,
+            "observed_at": observed_at,
+            "request": {"source_correlation_requested": True},
+            "result": {
+                "completed_at": observed_at,
+                "freshness": {"status": "fresh"},
+                "correlation": {
+                    "source_search": {
+                        "ok": False,
+                        "code": "skipped",
+                        "error": "Source correlation disabled",
+                    },
+                    "records": [],
+                },
+            },
+        }
+
+
+class MultiTargetDiagnosticBackend(SemanticBackend):
+    @staticmethod
+    def _target_result(version: str) -> dict[str, object]:
+        observed_at = "2026-08-25T00:00:00Z"
+        return {
+            "ok": True,
+            "observed_at": observed_at,
+            "request": {"files": ["/etc/version.json"]},
+            "result": {
+                "completed_at": observed_at,
+                "freshness": {"status": "fresh"},
+                "capabilities": {"remote_log_file": True},
+                "lanes": {
+                    "telnet": {
+                        "files": {
+                            "/etc/version.json": {
+                                "ok": True,
+                                "observed_at": observed_at,
+                                "result": {
+                                    "lines": [version],
+                                    "content_complete": True,
+                                },
+                            }
+                        }
+                    }
+                },
+            },
+        }
+
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        observed_at = "2026-08-25T00:00:00Z"
+        return {
+            "ok": True,
+            "observed_at": observed_at,
+            "targets": [
+                {
+                    "role": "reference",
+                    "target_id": "reference",
+                    "status": "ok",
+                    "result": self._target_result("12.08.21.06"),
+                },
+                {
+                    "role": "candidate",
+                    "target_id": "candidate",
+                    "status": "ok",
+                    "result": self._target_result("12.08.21.07"),
+                },
+            ],
+            "comparison": {
+                "status": "complete",
+                "differences": [
+                    {
+                        "path": "$.version",
+                        "reference": "12.08.21.06",
+                        "candidate": "12.08.21.07",
+                    }
+                ],
+            },
+        }
+
+
+class MissingTargetDiagnosticBackend(MultiTargetDiagnosticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_run(task, arguments, context)
+        value["targets"] = value["targets"][1:]
+        return value
+
+
+class MissingComparisonDiagnosticBackend(MultiTargetDiagnosticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_run(task, arguments, context)
+        value.pop("comparison")
+        return value
+
+
+class MissingTargetFreshnessDiagnosticBackend(MultiTargetDiagnosticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_run(task, arguments, context)
+        value["targets"][1]["result"]["result"].pop("freshness")
+        return value
+
+
+class IncompleteTargetFreshnessDiagnosticBackend(MultiTargetDiagnosticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_run(task, arguments, context)
+        value["targets"][1]["result"]["result"]["freshness"] = {
+            "status": "fresh",
+            "complete": False,
+        }
+        return value
+
+
+class TopLevelFreshMissingTargetFreshnessDiagnosticBackend(
+    MissingTargetFreshnessDiagnosticBackend
+):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_run(task, arguments, context)
+        value["freshness"] = {"status": "fresh"}
+        return value
+
+
+class SymmetricMultiTargetDiagnosticBackend(MultiTargetDiagnosticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_run(task, arguments, context)
+        for index, target in enumerate(value["targets"]):
+            target["role"] = f"target-{'a' if index == 0 else 'b'}"
+            target["target_id"] = target["role"]
+        return value
+
+
+class OversizedDurableDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        observed_at = "2026-08-25T00:00:00Z"
+        files = [f"/tmp/diagnostic-{index}.txt" for index in range(64)]
+        return {
+            "ok": True,
+            "observed_at": observed_at,
+            "request": {"files": files},
+            "result": {
+                "completed_at": observed_at,
+                "freshness": {"status": "fresh"},
+                "lanes": {
+                    "telnet": {
+                        "files": {
+                            path: {
+                                "ok": True,
+                                "observed_at": observed_at,
+                                "result": {
+                                    f"field-{field}": "x" * 20_000
+                                    for field in range(16)
+                                },
+                            }
+                            for path in files
+                        }
+                    }
+                },
+            },
+        }
+
+
+class SecretOnlyDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        observed_at = "2026-08-25T00:00:00Z"
+        return {
+            "ok": True,
+            "observed_at": observed_at,
+            "request": {"files": ["/tmp/secret.txt"]},
+            "result": {
+                "completed_at": observed_at,
+                "freshness": {"status": "fresh"},
+                "lanes": {
+                    "telnet": {
+                        "files": {
+                            "/tmp/secret.txt": {
+                                "ok": True,
+                                "observed_at": observed_at,
+                                "result": {"password": "must-not-leak"},
+                            }
+                        }
+                    }
+                },
+            },
+        }
+
+
+class TruncatedDiagnosisTextBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        return {
+            "ok": True,
+            "root_cause": "root-cause-" + "x" * 20_000,
+            "observed_at": "2026-08-25T00:00:00Z",
+            "freshness": {"status": "fresh"},
+        }
+
+
+class SourceTruncatedDiagnosisBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        return {
+            "ok": True,
+            "root_cause": "connector timeout",
+            "observed_at": "2026-08-25T00:00:00Z",
+            "freshness": {"status": "fresh", "complete": True},
+            "truncated": True,
+            "content_complete": False,
         }
 
 
@@ -984,6 +1528,280 @@ class OversizedGateTurnRuntime:
                     "description": "x" * 20_000,
                 },
             },
+        )
+
+
+class OversizedDiagnosticTurnRuntime:
+    def __init__(self, result_count: int = 20) -> None:
+        self.result_count = result_count
+
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        return RunTurn(
+            run_id="case-oversized-diagnostic",
+            state="completed",
+            diagnostic_receipt=DiagnosticReceipt.from_public_dict({
+                "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+                "receipt_id": "diagnostic-oversized",
+                "operation": "debug_run",
+                "status": "complete",
+                "coverage": {
+                    "requested": self.result_count,
+                    "evaluable": self.result_count,
+                    "unavailable": 0,
+                    "not_checked": 0,
+                    "complete": True,
+                },
+                "results": [
+                    {
+                        "result_id": f"result-{index}",
+                        "kind": "bounded-logs",
+                        "request": "r" * 20_000,
+                        "status": "available",
+                        "observed_at": "2026-08-25T04:42:55Z" + "o" * 20_000,
+                        "gap": "g" * 20_000,
+                        "value": {
+                            f"field-{field}": "x" * 20_000
+                            for field in range(10)
+                        },
+                        "evidence_ids": ["e" * 20_000 for _ in range(20)],
+                    }
+                    for index in range(self.result_count)
+                ],
+                "freshness": {
+                    "status": "partial",
+                    "observed_at": "2026-08-25T04:42:55Z",
+                    "unavailable_dimensions": [
+                        {
+                            f"dimension-{field}": "x" * 20_000
+                            for field in range(16)
+                        }
+                        for _ in range(32)
+                    ],
+                    "lost_dimensions": [
+                        {"dimension": "x" * 20_000} for _ in range(32)
+                    ],
+                    "stale_evidence": [
+                        {"evidence_id": "x" * 20_000} for _ in range(32)
+                    ],
+                },
+                "capabilities": {"telnet": "available"},
+                "truncated": False,
+                "content_complete": True,
+                "evidence": [
+                    {
+                        "evidence_id": f"evidence-{index}-" + "e" * 20_000,
+                        "target_id": "target-" + "t" * 20_000,
+                        "observed_at": "2026-08-25T04:42:55Z" + "o" * 20_000,
+                        "target_epoch": index,
+                        "byte_count": 20_000,
+                    }
+                    for index in range(8)
+                ],
+                "gaps": [],
+            }),
+        )
+
+
+class DeeplyNestedDiagnosticTurnRuntime:
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        return RunTurn(
+            run_id="case-deeply-nested-diagnostic",
+            state="completed",
+            facts=tuple(
+                {"fact_id": index, "details": "x" * 512}
+                for index in range(32)
+            ),
+            diagnostic_receipt=DiagnosticReceipt.from_public_dict({
+                "receipt_id": "diagnostic-deeply-nested",
+                "operation": "debug_run",
+                "status": "complete",
+                "coverage": {
+                    "requested": 4,
+                    "evaluable": 4,
+                    "unavailable": 0,
+                    "not_checked": 0,
+                    "complete": True,
+                },
+                "results": [
+                    {
+                        "result_id": "version",
+                        "kind": "target-version",
+                        "request": "/etc/version.json",
+                        "status": "available",
+                        "value": {
+                            "bytes_returned": 32,
+                            "command": "cat /etc/version.json",
+                            "content_complete": True,
+                            "empty": False,
+                            "empty_message": "",
+                            "line_count": 1,
+                            "lines": ['{"version":"12.08.21.06"}'],
+                        },
+                    },
+                    {
+                        "result_id": "logs",
+                        "kind": "bounded-logs",
+                        "request": "app.log",
+                        "status": "available",
+                        "value": {
+                            "boot_time": None,
+                            "entries": [
+                                {
+                                    "path": "app.log",
+                                    "line_count": 31,
+                                    "lines_preview": [
+                                        "mctpd request timeout"
+                                    ],
+                                    "lines_truncated": True,
+                                    "truncated": True,
+                                    "content_complete": False,
+                                }
+                            ],
+                            "redacted": False,
+                            "since_boot_applied": False,
+                            "utc_offset_minutes": 0,
+                            "written_files": [],
+                        },
+                    },
+                    {
+                        "result_id": "service",
+                        "kind": "service-tree",
+                        "request": "bmc.kepler.mctpd",
+                        "status": "available",
+                        "value": {
+                            "dbus_env": {"XDG_RUNTIME_DIR": "/run/user/502"},
+                            "stderr": "",
+                            "stderr_lines": [],
+                            "stdout": "bmc.kepler.mctpd service visible",
+                            "stdout_lines": [
+                                "bmc.kepler.mctpd service visible"
+                            ],
+                            "structured": None,
+                        },
+                    },
+                    {
+                        "result_id": "empty-logs",
+                        "kind": "bounded-logs",
+                        "request": "storage,hwproxy,request timeout",
+                        "status": "available",
+                        "value": {
+                            "boot_time": "2026-08-17 03:58:40",
+                            "entries": [
+                                {
+                                    "path": "app.log",
+                                    "line_count": 0,
+                                    "lines_preview": [],
+                                    "empty": True,
+                                    "empty_message": "No matching log lines",
+                                    "truncated": False,
+                                    "content_complete": True,
+                                }
+                            ],
+                            "since_boot_applied": True,
+                        },
+                    }
+                ],
+                "freshness": {
+                    "status": "fresh",
+                    "observed_at": "2026-08-25T04:42:55Z",
+                },
+                "capabilities": {},
+                "truncated": False,
+                "content_complete": True,
+                "evidence": [],
+                "gaps": [],
+            }),
+        )
+
+
+class PersistedDiagnosticSummaryTurnRuntime:
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        return RunTurn(
+            run_id="case-persisted-diagnostic-summary",
+            state="completed",
+            facts=tuple(
+                {"fact_id": index, "details": "x" * 512}
+                for index in range(32)
+            ),
+            diagnostic_receipt=DiagnosticReceipt.from_public_dict({
+                "receipt_id": "diagnostic-persisted-summary",
+                "operation": "debug_run",
+                "status": "complete",
+                "coverage": {
+                    "requested": 1,
+                    "evaluable": 1,
+                    "unavailable": 0,
+                    "not_checked": 0,
+                    "complete": True,
+                },
+                "results": [
+                    {
+                        "result_id": "logs",
+                        "kind": "bounded-logs",
+                        "request": "storage,hwproxy,request timeout",
+                        "status": "available",
+                        "value": {
+                            "boot_time": "2026-08-17 03:58:40",
+                            "redacted": False,
+                            "since_boot_applied": True,
+                            "utc_offset_minutes": 0,
+                            "summary": [
+                                {
+                                    "path": "$.entries[0].lines[0]",
+                                    "value": (
+                                        "storage request timeout: remote service "
+                                        "bmc.kepler.hwproxy method PluginRequestEx"
+                                    ),
+                                }
+                            ],
+                        },
+                        "projection_truncated": True,
+                    }
+                ],
+                "freshness": {
+                    "status": "complete",
+                    "observed_at": "2026-08-25T04:42:55Z",
+                    "complete": True,
+                },
+                "capabilities": {},
+                "truncated": False,
+                "content_complete": True,
+                "evidence": [],
+                "gaps": ["diagnostic_receipt_compacted"],
+                "content_compacted": True,
+            }),
+        )
+
+
+class OversizedTerminalTurnRuntime(OversizedDiagnosticTurnRuntime):
+    acceptance = [
+        {
+            "requirement_id": f"requirement-{index}",
+            "status": "passed",
+            "details": "x" * 2_000,
+        }
+        for index in range(8)
+    ]
+
+    def execute(self, command, *, task_id, operation_id):
+        turn = super().execute(
+            command,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+        return RunTurn(
+            run_id=turn.run_id,
+            state=turn.state,
+            outcome=Outcome(
+                status="completed",
+                summary="terminal outcome remains Runtime-owned",
+                acceptance=self.acceptance,
+            ),
+            next_action="retain the Runtime-owned terminal instruction exactly",
+            diagnostic_receipt=turn.diagnostic_receipt,
         )
 
 
@@ -1926,6 +2744,844 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(self.service.session_outcome_service.status()["outcome_count"], 0)
 
+    def test_execute_blocks_generic_completion_without_evaluable_diagnosis(self) -> None:
+        service = RuntimeMcpService(GenericCompletionBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "purpose": "identify the bounded root cause",
+                    "entry_operation": "debug_run",
+                },
+                task_id="generic-diagnosis",
+                operation_id="generic-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        typed_turn = RunTurn.from_public_dict(turn)
+        self.assertIsInstance(typed_turn.diagnostic_receipt, DiagnosticReceipt)
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(
+            receipt["coverage"],
+            {
+                "requested": 1,
+                "evaluable": 0,
+                "unavailable": 0,
+                "not_checked": 1,
+                "complete": False,
+            },
+        )
+        self.assertFalse(receipt["content_complete"])
+        self.assertIn("diagnostic_result_not_visible", receipt["gaps"])
+        self.assertIn("diagnostic_result_not_visible", turn["gaps"])
+        diagnosis = next(
+            check
+            for check in turn["outcome"]["acceptance"]
+            if check["requirement_id"] == "stage.diagnosis"
+        )
+        self.assertEqual(diagnosis["status"], "blocked")
+
+    def test_execute_projects_bounded_results_and_truncation_metadata(self) -> None:
+        service = RuntimeMcpService(BoundedDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "purpose": "build a bounded diagnostic timeline",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {
+                        "logs": "app.log",
+                        "tree_service": "bmc.kepler.devmon",
+                        "mdb_queries": ["lsmc"],
+                    },
+                },
+                task_id="bounded-diagnosis",
+                operation_id="bounded-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "partial")
+        self.assertEqual(
+            receipt["coverage"],
+            {
+                "requested": 9,
+                "evaluable": 9,
+                "unavailable": 0,
+                "not_checked": 0,
+                "complete": False,
+            },
+        )
+        self.assertTrue(receipt["truncated"])
+        self.assertFalse(receipt["content_complete"])
+        self.assertEqual(receipt["freshness"]["status"], "partial")
+        self.assertEqual(receipt["capabilities"]["ssh"], "available")
+        self.assertEqual(receipt["capabilities"]["telnet"], "available")
+        self.assertEqual(receipt["capabilities"]["mdbctl"], "available")
+        self.assertEqual(receipt["capabilities"]["busctl"], "available")
+        results = {item["result_id"]: item for item in receipt["results"]}
+        self.assertEqual(
+            set(results),
+            {
+                "version",
+                "uptime",
+                "logs",
+                "service",
+                "mdb-1",
+                "file-3",
+                "mdb-expand-1",
+                "active-alarms",
+                "correlation",
+            },
+        )
+        self.assertEqual(results["active-alarms"]["status"], "available")
+        self.assertEqual(
+            results["file-3"]["value"]["lines"],
+            ["custom diagnostic value"],
+        )
+        self.assertEqual(results["mdb-1"]["request"], "lsmc")
+        self.assertEqual(
+            results["logs"]["value"]["entries"][0]["line_count"],
+            31,
+        )
+        self.assertIn("content_truncated", receipt["gaps"])
+        self.assertIn("content_truncated", turn["gaps"])
+        self.assertLessEqual(encoded_size(turn), TURN_MAX_BYTES)
+
+    def test_execute_completes_when_all_bounded_result_kinds_are_evaluable(self) -> None:
+        service = RuntimeMcpService(CompleteBoundedDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {
+                        "logs": "app.log",
+                        "tree_service": "bmc.kepler.devmon",
+                        "mdb_queries": ["lsmc"],
+                    },
+                },
+                task_id="complete-bounded-diagnosis",
+                operation_id="complete-bounded-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(receipt["status"], "complete")
+        self.assertTrue(receipt["coverage"]["complete"])
+        self.assertTrue(receipt["content_complete"])
+        self.assertFalse(receipt["truncated"])
+
+    def test_execute_blocks_successful_tool_without_visible_result_content(self) -> None:
+        service = RuntimeMcpService(EmptyStructuredDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "purpose": "verify empty tool output fails closed",
+                    "entry_operation": "debug_run",
+                },
+                task_id="empty-structured-diagnosis",
+                operation_id="empty-structured-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(turn["state"], "failed")
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["coverage"]["evaluable"], 0)
+        self.assertEqual(receipt["results"][0]["status"], "not_checked")
+        self.assertEqual(receipt["results"][0]["gap"], "result_not_visible")
+        self.assertFalse(receipt["content_complete"])
+
+    def test_execute_blocks_result_that_contains_only_completeness_metadata(self) -> None:
+        service = RuntimeMcpService(MetadataOnlyDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                },
+                task_id="metadata-only-diagnosis",
+                operation_id="metadata-only-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["coverage"]["evaluable"], 0)
+        self.assertEqual(receipt["results"][0]["status"], "not_checked")
+        self.assertEqual(
+            receipt["results"][0]["gap"],
+            "result_not_evaluable",
+        )
+
+    def test_execute_keeps_complete_source_content_complete_when_projection_compacts(self) -> None:
+        service = RuntimeMcpService(ProjectionCompactedDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "purpose": "preserve projection truncation semantics",
+                    "entry_operation": "debug_run",
+                },
+                task_id="projection-compacted-diagnosis",
+                operation_id="projection-compacted-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(receipt["status"], "complete")
+        self.assertFalse(receipt["truncated"])
+        self.assertTrue(receipt["content_complete"])
+        self.assertNotIn("content_truncated", receipt["gaps"])
+        self.assertTrue(receipt["results"][0]["projection_truncated"])
+        self.assertEqual(len(receipt["results"][0]["value"]["records"]), 16)
+
+    def test_execute_requires_explicit_content_completeness_metadata(self) -> None:
+        service = RuntimeMcpService(MissingContentCompleteDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                },
+                task_id="missing-content-complete",
+                operation_id="missing-content-complete-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["coverage"]["evaluable"], 1)
+        self.assertEqual(receipt["status"], "partial")
+        self.assertFalse(receipt["content_complete"])
+        self.assertIn("diagnostic_content_incomplete", receipt["gaps"])
+
+    def test_execute_does_not_treat_a_timestamp_as_freshness_proof(self) -> None:
+        service = RuntimeMcpService(TimestampOnlyDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "purpose": "require explicit freshness proof",
+                    "entry_operation": "debug_run",
+                },
+                task_id="timestamp-only-diagnosis",
+                operation_id="timestamp-only-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(turn["state"], "failed")
+        self.assertEqual(receipt["status"], "partial")
+        self.assertEqual(receipt["freshness"]["status"], "unknown")
+        self.assertIn("freshness_unknown", receipt["gaps"])
+
+    def test_execute_does_not_complete_when_freshness_contains_stale_evidence(self) -> None:
+        service = RuntimeMcpService(StaleEvidenceDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                },
+                task_id="stale-evidence-diagnosis",
+                operation_id="stale-evidence-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "partial")
+        self.assertEqual(receipt["freshness"]["status"], "stale")
+        self.assertFalse(receipt["freshness"]["complete"])
+        self.assertEqual(
+            receipt["freshness"]["stale_evidence"][0]["evidence_id"],
+            "evidence-old",
+        )
+        self.assertIn("freshness_stale", receipt["gaps"])
+
+    def test_execute_reconciles_adapter_results_with_runtime_arguments(self) -> None:
+        service = RuntimeMcpService(OmittedRequestDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"logs": "app.log"},
+                },
+                task_id="omitted-request-diagnosis",
+                operation_id="omitted-request-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["coverage"]["requested"], 1)
+        self.assertEqual(receipt["results"][0]["result_id"], "logs")
+        self.assertEqual(receipt["results"][0]["status"], "not_checked")
+        self.assertEqual(receipt["results"][0]["gap"], "result_not_visible")
+
+    def test_execute_marks_skipped_source_correlation_not_checked(self) -> None:
+        service = RuntimeMcpService(SkippedCorrelationDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"source_correlation_requested": True},
+                },
+                task_id="skipped-correlation-diagnosis",
+                operation_id="skipped-correlation-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        correlation = receipt["results"][0]
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(correlation["result_id"], "correlation")
+        self.assertEqual(correlation["status"], "not_checked")
+        self.assertIn("Source correlation disabled", correlation["gap"])
+
+    def test_execute_projects_multi_target_results_and_comparison(self) -> None:
+        service = RuntimeMcpService(MultiTargetDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "targets": [
+                        {
+                            "ip": "192.0.2.20",
+                            "role": "reference",
+                            "target_id": "reference",
+                        },
+                        {
+                            "ip": "192.0.2.21",
+                            "role": "candidate",
+                            "target_id": "candidate",
+                        },
+                    ],
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {
+                        "files": ["/etc/version.json"],
+                    },
+                },
+                task_id="multi-target-diagnosis",
+                operation_id="multi-target-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        results = {item["result_id"]: item for item in receipt["results"]}
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(receipt["coverage"]["requested"], 3)
+        self.assertEqual(receipt["coverage"]["evaluable"], 3)
+        self.assertEqual(receipt["freshness"]["status"], "fresh")
+        self.assertEqual(
+            set(results),
+            {"target-1-version", "target-2-version", "comparison"},
+        )
+        self.assertEqual(
+            results["target-2-version"]["value"]["lines"],
+            ["12.08.21.07"],
+        )
+
+    def test_execute_rejects_adapter_owned_multi_target_scope(self) -> None:
+        service = RuntimeMcpService(MultiTargetDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "comparison-scope",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"files": ["/etc/version.json"]},
+                },
+                task_id="adapter-owned-multi-target-scope",
+                operation_id="adapter-owned-multi-target-scope-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["coverage"]["evaluable"], 0)
+        self.assertEqual(receipt["results"][0]["result_id"], "target-scope")
+        self.assertEqual(
+            receipt["results"][0]["gap"],
+            "runtime_target_scope_not_visible",
+        )
+
+    def test_execute_marks_a_requested_but_missing_target_not_checked(self) -> None:
+        service = RuntimeMcpService(MissingTargetDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "targets": [
+                        {
+                            "ip": "192.0.2.20",
+                            "role": "reference",
+                            "target_id": "reference",
+                        },
+                        {
+                            "ip": "192.0.2.21",
+                            "role": "candidate",
+                            "target_id": "candidate",
+                        },
+                    ],
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"files": ["/etc/version.json"]},
+                },
+                task_id="missing-target-diagnosis",
+                operation_id="missing-target-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        results = {item["result_id"]: item for item in receipt["results"]}
+        self.assertEqual(receipt["status"], "partial")
+        self.assertEqual(receipt["coverage"]["requested"], 3)
+        self.assertEqual(receipt["coverage"]["evaluable"], 2)
+        self.assertEqual(receipt["coverage"]["not_checked"], 1)
+        self.assertEqual(results["target-1-version"]["status"], "not_checked")
+        self.assertEqual(results["target-1-version"]["gap"], "result_not_visible")
+        self.assertEqual(results["target-2-version"]["status"], "available")
+
+    def test_execute_reconciles_symmetric_dual_target_identities(self) -> None:
+        service = RuntimeMcpService(SymmetricMultiTargetDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "targets": [
+                        {"ip": "192.0.2.20"},
+                        {"ip": "192.0.2.21"},
+                    ],
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"files": ["/etc/version.json"]},
+                },
+                task_id="symmetric-target-diagnosis",
+                operation_id="symmetric-target-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(receipt["coverage"]["evaluable"], 3)
+
+    def test_execute_marks_a_missing_multi_target_comparison_not_checked(self) -> None:
+        service = RuntimeMcpService(MissingComparisonDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "targets": [
+                        {
+                            "ip": "192.0.2.20",
+                            "role": "reference",
+                            "target_id": "reference",
+                        },
+                        {
+                            "ip": "192.0.2.21",
+                            "role": "candidate",
+                            "target_id": "candidate",
+                        },
+                    ],
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"files": ["/etc/version.json"]},
+                },
+                task_id="missing-comparison-diagnosis",
+                operation_id="missing-comparison-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        results = {item["result_id"]: item for item in receipt["results"]}
+        self.assertEqual(receipt["status"], "partial")
+        self.assertEqual(receipt["coverage"]["requested"], 3)
+        self.assertEqual(receipt["coverage"]["evaluable"], 2)
+        self.assertEqual(receipt["coverage"]["not_checked"], 1)
+        self.assertEqual(results["comparison"]["status"], "not_checked")
+        self.assertEqual(results["comparison"]["gap"], "comparison_not_visible")
+
+    def test_execute_marks_missing_target_freshness_partial(self) -> None:
+        service = RuntimeMcpService(MissingTargetFreshnessDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "targets": [
+                        {
+                            "ip": "192.0.2.20",
+                            "role": "reference",
+                            "target_id": "reference",
+                        },
+                        {
+                            "ip": "192.0.2.21",
+                            "role": "candidate",
+                            "target_id": "candidate",
+                        },
+                    ],
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"files": ["/etc/version.json"]},
+                },
+                task_id="missing-target-freshness",
+                operation_id="missing-target-freshness-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["coverage"]["evaluable"], 3)
+        self.assertEqual(receipt["freshness"]["status"], "partial")
+        self.assertEqual(receipt["status"], "partial")
+        self.assertIn("freshness_partial", receipt["gaps"])
+        self.assertIn(
+            {"target_id": "candidate", "dimension": "freshness"},
+            receipt["freshness"]["unavailable_dimensions"],
+        )
+
+    def test_execute_does_not_allow_top_level_freshness_to_mask_a_target_gap(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(
+            TopLevelFreshMissingTargetFreshnessDiagnosticBackend()
+        )
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "targets": [
+                        {
+                            "ip": "192.0.2.20",
+                            "role": "reference",
+                            "target_id": "reference",
+                        },
+                        {
+                            "ip": "192.0.2.21",
+                            "role": "candidate",
+                            "target_id": "candidate",
+                        },
+                    ],
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"files": ["/etc/version.json"]},
+                },
+                task_id="top-level-fresh-target-gap",
+                operation_id="top-level-fresh-target-gap-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["freshness"]["status"], "partial")
+        self.assertEqual(receipt["status"], "partial")
+
+    def test_execute_does_not_aggregate_incomplete_target_freshness_to_fresh(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(IncompleteTargetFreshnessDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "targets": [
+                        {
+                            "ip": "192.0.2.20",
+                            "role": "reference",
+                            "target_id": "reference",
+                        },
+                        {
+                            "ip": "192.0.2.21",
+                            "role": "candidate",
+                            "target_id": "candidate",
+                        },
+                    ],
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"files": ["/etc/version.json"]},
+                },
+                task_id="incomplete-target-freshness",
+                operation_id="incomplete-target-freshness-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["freshness"]["status"], "partial")
+        self.assertFalse(receipt["freshness"]["complete"])
+        self.assertIn(
+            {
+                "target_id": "candidate",
+                "dimension": "freshness",
+                "reason": "incomplete",
+            },
+            receipt["freshness"]["unavailable_dimensions"],
+        )
+        self.assertEqual(receipt["status"], "partial")
+
+    def test_execute_fails_closed_when_redaction_removes_all_result_content(self) -> None:
+        service = RuntimeMcpService(SecretOnlyDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                },
+                task_id="redacted-diagnosis",
+                operation_id="redacted-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        encoded = json.dumps(turn, ensure_ascii=False)
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["results"][0]["status"], "not_checked")
+        self.assertIn("redaction", receipt["results"][0]["gap"])
+        self.assertNotIn("must-not-leak", encoded)
+
+    def test_execute_marks_bounded_diagnosis_text_partial_without_source_truncation(self) -> None:
+        service = RuntimeMcpService(TruncatedDiagnosisTextBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                },
+                task_id="truncated-diagnosis-text",
+                operation_id="truncated-diagnosis-text-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "partial")
+        self.assertTrue(receipt["results"][0]["projection_truncated"])
+        self.assertFalse(receipt["truncated"])
+        self.assertFalse(receipt["content_complete"])
+
+    def test_execute_preserves_source_truncation_on_diagnosis_fallback(self) -> None:
+        service = RuntimeMcpService(SourceTruncatedDiagnosisBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                },
+                task_id="source-truncated-diagnosis",
+                operation_id="source-truncated-diagnosis-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "partial")
+        self.assertTrue(receipt["truncated"])
+        self.assertFalse(receipt["content_complete"])
+        self.assertIn("content_truncated", receipt["gaps"])
+
+    def test_persisted_diagnostic_receipt_has_an_aggregate_byte_budget(self) -> None:
+        service = RuntimeMcpService(OversizedDurableDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                },
+                task_id="durable-receipt-budget",
+                operation_id="durable-receipt-budget-start",
+            )
+            events = service._test.context_runtime.repository.events(
+                turn["run_id"]
+            )
+        finally:
+            service.close()
+
+        terminal = next(
+            event for event in events if event["kind"] == "OperationTerminal"
+        )
+        receipt = terminal["payload"]["diagnostic_receipt"]
+        self.assertLessEqual(encoded_size(receipt), DIAGNOSTIC_RECEIPT_MAX_BYTES)
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertTrue(receipt["truncated"])
+        self.assertTrue(receipt["content_compacted"])
+        self.assertFalse(receipt["content_complete"])
+
+    def test_durable_receipt_bounds_extreme_requested_item_counts(self) -> None:
+        receipt = DiagnosticReceipt.from_public_dict(
+            {
+                "receipt_id": "diagnostic-extreme-count",
+                "operation": "debug_run",
+                "status": "complete",
+                "coverage": {
+                    "requested": 1024,
+                    "evaluable": 1024,
+                    "unavailable": 0,
+                    "not_checked": 0,
+                    "complete": True,
+                },
+                "results": [
+                    {
+                        "result_id": f"mdb-{index}",
+                        "kind": "mdb",
+                        "request": f"lsprop Object{index}",
+                        "status": "available",
+                        "value": {"stdout_lines": ["x" * 1024]},
+                    }
+                    for index in range(1024)
+                ],
+                "freshness": {
+                    "status": "fresh",
+                    "observed_at": "2026-08-25T00:00:00Z",
+                },
+                "capabilities": {"mdbctl": "available"},
+                "truncated": False,
+                "content_complete": True,
+                "evidence": [],
+                "gaps": [],
+            }
+        ).bounded_for_persistence()
+
+        public = receipt.to_public_dict()
+        self.assertLessEqual(encoded_size(public), DIAGNOSTIC_RECEIPT_MAX_BYTES)
+        self.assertEqual(public["status"], "partial")
+        self.assertEqual(public["coverage"]["requested"], 1024)
+        self.assertEqual(public["coverage"]["compacted"], 960)
+        self.assertEqual(len(public["results"]), 64)
+
+    def test_durable_receipt_compaction_preserves_a_log_outcome_summary(self) -> None:
+        receipt = DiagnosticReceipt.from_public_dict(
+            {
+                "receipt_id": "diagnostic-log-summary",
+                "operation": "debug_run",
+                "status": "complete",
+                "coverage": {
+                    "requested": 1,
+                    "evaluable": 1,
+                    "unavailable": 0,
+                    "not_checked": 0,
+                    "complete": True,
+                },
+                "results": [
+                    {
+                        "result_id": "logs",
+                        "kind": "bounded-logs",
+                        "request": "storage,hwproxy,request timeout",
+                        "status": "available",
+                        "value": {
+                            **{
+                                f"filler-{index}": "x" * 20_000
+                                for index in range(4)
+                            },
+                            "entries": [
+                                {
+                                    "path": "app.log",
+                                    "line_count": 0,
+                                    "lines_preview": [],
+                                    "empty": True,
+                                    "empty_message": "No matching log lines",
+                                    "truncated": False,
+                                    "content_complete": True,
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "freshness": {
+                    "status": "fresh",
+                    "observed_at": "2026-08-25T00:00:00Z",
+                },
+                "capabilities": {},
+                "truncated": False,
+                "content_complete": True,
+                "evidence": [],
+                "gaps": [],
+            }
+        ).bounded_for_persistence()
+
+        public = receipt.to_public_dict()
+        encoded_result = json.dumps(public["results"][0]["value"])
+        self.assertLessEqual(encoded_size(public), DIAGNOSTIC_RECEIPT_MAX_BYTES)
+        self.assertIn("No matching log lines", encoded_result)
+        self.assertNotIn("<compacted>", encoded_result)
+
     def test_operator_projects_session_outcome_from_the_persisted_run_outcome(self) -> None:
         waiting = self.service.call_exposed_tool(
             "execute",
@@ -2809,7 +4465,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(first_after["revision"], first_before["revision"])
         self.assertEqual(first_after["targets"], first_before["targets"])
 
-    def test_execute_turn_hard_limit_survives_oversized_blocker_details(self) -> None:
+    def test_execute_turn_soft_target_preserves_runtime_control_semantics(self) -> None:
         turn = AgentGateway(OversizedTurnRuntime()).execute(
             {
                 "kind": "start",
@@ -2820,28 +4476,170 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="oversized-turn-1",
         )
 
-        self.assertLessEqual(encoded_size(turn), TURN_MAX_BYTES)
+        self.assertGreater(encoded_size(turn), TURN_MAX_BYTES)
         self.assertEqual(turn["run_id"], "case-oversized-turn")
         self.assertEqual(turn["state"], "blocked")
-        self.assertEqual(turn["gate"]["kind"], "blocker")
+        self.assertEqual(
+            turn["gate"],
+            {
+                "kind": "blocker",
+                "name": "oversized-blocker",
+                "message": "message-" + "m" * 20_000,
+            },
+        )
+        self.assertEqual(turn["next"], "next-" + "n" * 20_000)
         self.assertTrue(turn["content_compacted"])
+        self.assertTrue(turn["projection_target_exceeded"])
 
-    def test_execute_turn_replaces_an_oversized_gate_schema_with_a_blocker(self) -> None:
-        turn = AgentGateway(OversizedGateTurnRuntime()).execute(
+    def test_execute_turn_rejects_a_gate_schema_above_its_hard_limit(self) -> None:
+        with self.assertRaisesRegex(AgentGatewayError, "Gate schema.*4 KiB"):
+            AgentGateway(OversizedGateTurnRuntime()).execute(
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="oversized-gate",
+                operation_id="oversized-gate-1",
+            )
+
+    def test_execute_turn_budget_preserves_diagnostic_receipt_semantics(self) -> None:
+        turn = AgentGateway(OversizedDiagnosticTurnRuntime()).execute(
             {
                 "kind": "start",
                 "target": "192.0.2.20",
                 "delivery_strategy": "source-only",
             },
-            task_id="oversized-gate",
-            operation_id="oversized-gate-1",
+            task_id="oversized-diagnostic",
+            operation_id="oversized-diagnostic-1",
         )
 
-        self.assertLessEqual(encoded_size(turn), TURN_MAX_BYTES)
-        self.assertEqual(turn["run_id"], "case-oversized-gate")
-        self.assertEqual(turn["gate"]["kind"], "blocker")
-        self.assertEqual(turn["gate"]["name"], "gate_schema_exceeds_budget")
+        self.assertGreater(encoded_size(turn), TURN_MAX_BYTES)
+        self.assertEqual(turn["state"], "completed")
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(receipt["coverage"]["requested"], 20)
+        self.assertEqual(receipt["coverage"]["evaluable"], 20)
+        self.assertEqual(receipt["coverage"]["visible_evaluable"], 20)
+        self.assertEqual(receipt["coverage"]["visible_not_checked"], 0)
+        self.assertEqual(receipt["coverage"]["not_checked"], 0)
+        self.assertEqual(receipt["coverage"]["compacted"], 20)
+        self.assertFalse(receipt["truncated"])
+        self.assertTrue(receipt["content_complete"])
+        self.assertEqual(
+            [item["result_id"] for item in receipt["results"]],
+            [f"result-{index}" for index in range(20)],
+        )
+        self.assertTrue(all(item["status"] == "available" for item in receipt["results"]))
+        self.assertTrue(
+            all(item["projection_truncated"] for item in receipt["results"])
+        )
+        self.assertTrue(all("value" in item for item in receipt["results"]))
+        self.assertEqual(len(receipt["evidence"]), 8)
+        self.assertTrue(
+            all(
+                item["evidence_id"].startswith("evidence-")
+                for item in receipt["evidence"]
+            )
+        )
+        self.assertIn("diagnostic_receipt_compacted", receipt["gaps"])
+        self.assertNotIn("content_truncated", receipt["gaps"])
         self.assertTrue(turn["content_compacted"])
+        self.assertTrue(turn["projection_target_exceeded"])
+
+    def test_execute_turn_compaction_preserves_an_evaluable_result_summary(self) -> None:
+        turn = AgentGateway(DeeplyNestedDiagnosticTurnRuntime()).execute(
+            {"kind": "start", "target": "192.0.2.20"},
+            task_id="deeply-nested-diagnostic",
+            operation_id="deeply-nested-diagnostic-1",
+        )
+
+        receipt = turn["diagnostic_receipt"]
+        encoded_results = json.dumps(receipt["results"])
+        self.assertEqual(receipt["coverage"]["visible_evaluable"], 4)
+        self.assertIn("12.08.21.06", encoded_results)
+        self.assertIn("mctpd request timeout", encoded_results)
+        self.assertIn("bmc.kepler.mctpd service visible", encoded_results)
+        self.assertIn("No matching log lines", encoded_results)
+        self.assertNotIn("<compacted>", encoded_results)
+
+    def test_execute_turn_preserves_a_persisted_diagnostic_summary(self) -> None:
+        turn = AgentGateway(PersistedDiagnosticSummaryTurnRuntime()).execute(
+            {"kind": "start", "target": "192.0.2.20"},
+            task_id="persisted-diagnostic-summary",
+            operation_id="persisted-diagnostic-summary-1",
+        )
+
+        encoded_results = json.dumps(turn["diagnostic_receipt"]["results"])
+        self.assertIn("PluginRequestEx", encoded_results)
+        self.assertIn("bmc.kepler.hwproxy", encoded_results)
+        self.assertNotIn("<compacted>", encoded_results)
+
+    def test_execute_turn_compacts_large_diagnostic_previews_to_the_target(self) -> None:
+        turn = AgentGateway(OversizedDiagnosticTurnRuntime(128)).execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "delivery_strategy": "source-only",
+            },
+            task_id="unrepresentable-diagnostic",
+            operation_id="unrepresentable-diagnostic-1",
+        )
+
+        self.assertGreater(encoded_size(turn), TURN_MAX_BYTES)
+        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(turn["diagnostic_receipt"]["status"], "complete")
+        self.assertTrue(turn["diagnostic_receipt"]["content_compacted"])
+        self.assertEqual(len(turn["diagnostic_receipt"]["results"]), 128)
+        self.assertTrue(turn["projection_target_exceeded"])
+
+    def test_gate_schema_limit_is_enforced_when_the_gate_is_constructed(self) -> None:
+        oversized_schema = {"type": "object", "description": "x" * 5_000}
+
+        with self.assertRaisesRegex(GateConflict, "4 KiB"):
+            Gate(
+                gate_id="gate-oversized-construction",
+                version=1,
+                name="developer.change",
+                owner="openubmc-developer",
+                input_schema=oversized_schema,
+                schema_digest=hashlib.sha256(
+                    json.dumps(
+                        oversized_schema,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            )
+
+    def test_execute_turn_soft_budget_never_rewrites_terminal_outcome(self) -> None:
+        turn = AgentGateway(OversizedTerminalTurnRuntime(128)).execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "delivery_strategy": "source-only",
+            },
+            task_id="oversized-terminal-outcome",
+            operation_id="oversized-terminal-outcome-1",
+        )
+
+        self.assertGreater(encoded_size(turn), TURN_MAX_BYTES)
+        self.assertEqual(
+            turn["outcome"],
+            {
+                "status": "completed",
+                "summary": "terminal outcome remains Runtime-owned",
+                "acceptance": OversizedTerminalTurnRuntime.acceptance,
+            },
+        )
+        self.assertTrue(turn["projection_target_exceeded"])
+        self.assertFalse(turn["budget_blocker"])
+        self.assertNotIn("turn_exceeds_8kb_budget", turn["gaps"])
+        self.assertEqual(
+            turn["next"],
+            "retain the Runtime-owned terminal instruction exactly",
+        )
 
     def test_execute_start_reuses_a_complete_observation_ref(self) -> None:
         receipt = self.service.call_exposed_tool(

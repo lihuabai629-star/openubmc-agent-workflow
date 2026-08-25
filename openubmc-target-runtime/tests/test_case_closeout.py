@@ -59,6 +59,9 @@ class PlanObservingBackend:
         return {
             "ok": True,
             "summary": "root cause isolated",
+            "root_cause": "a bounded runtime defect was isolated",
+            "observed_at": "2026-08-19T00:00:00Z",
+            "freshness": {"status": "fresh"},
             "target_epoch": 0,
         }
 
@@ -177,6 +180,8 @@ class RecordingTerminalBackend:
             "root_cause": "stale runtime state",
             "mechanism": "the old process retained the previous implementation",
             "affected_surface": "one bounded service",
+            "observed_at": "2026-08-19T00:00:00Z",
+            "freshness": {"status": "fresh"},
             "target_epoch": 0,
         }
 
@@ -357,8 +362,18 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
             ],
         }
         evidence = {
-            "old": {"ok": False, "root_cause": "old failed conclusion"},
-            "new": {"ok": True, "root_cause": "new reconciled conclusion"},
+            "old": {
+                "ok": False,
+                "root_cause": "old failed conclusion",
+                "observed_at": "2026-08-19T00:00:00Z",
+                "freshness": {"status": "fresh"},
+            },
+            "new": {
+                "ok": True,
+                "root_cause": "new reconciled conclusion",
+                "observed_at": "2026-08-19T00:01:00Z",
+                "freshness": {"status": "fresh"},
+            },
         }
 
         closeout = aggregate_case_closeout(

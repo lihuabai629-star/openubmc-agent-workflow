@@ -25,6 +25,7 @@ from .agent_gateway import (
     OBSERVATION_RECEIPT_SCHEMA,
     TOOLS_LIST_MAX_BYTES,
     TURN_MAX_BYTES,
+    TURN_PROJECTION_TARGET_BYTES,
     TURN_SCHEMA,
     AgentGateway,
     AgentGatewayError,
@@ -69,6 +70,7 @@ from .capability import (
     mutation_recovery_route,
     require_effect_recovery_journal,
 )
+from .comparison_targets import comparison_target_identities
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     AGENT_ENVELOPE_SCHEMA,
@@ -149,6 +151,11 @@ from .delivery import (
     DeliveryOutcome,
     DeliveryRecord,
     DeploymentIdentity,
+)
+from .diagnostic_receipt import (
+    DIAGNOSTIC_RECEIPT_MAX_BYTES,
+    DIAGNOSTIC_RECEIPT_SCHEMA,
+    DiagnosticReceipt,
 )
 from .runtime import (
     CredentialResolver,

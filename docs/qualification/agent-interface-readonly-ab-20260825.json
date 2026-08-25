@@ -1,0 +1,70 @@
+{
+  "schema": "openubmc-agent-workflow.paired-readonly-ab.summary.v1",
+  "generated_at": "2026-08-25T05:02:45Z",
+  "target": "BMC-T1",
+  "source_commits": {
+    "old": "35b36efb6503d05a811b51bf09fb5f8dead0e208",
+    "new": "3d8cf49bc3d07ecff71096d6f73e1ef255d7eb8b"
+  },
+  "interface": {
+    "old_agent_visible_tools": 19,
+    "new_agent_visible_tools": 2,
+    "old_tool_schema_bytes": 21889,
+    "new_tool_schema_bytes": 3513
+  },
+  "totals": {
+    "old": {
+      "runs": 6,
+      "total_tokens": 1110135,
+      "noncached_input_plus_output_tokens": 383607,
+      "mcp_events": 21,
+      "wall_time_seconds": 570.381,
+      "visible_tool_output_bytes": 5999095,
+      "compressed_persisted_evidence_bytes": 161596,
+      "uncompressed_persisted_evidence_bytes": 1781709
+    },
+    "new": {
+      "runs": 6,
+      "total_tokens": 378431,
+      "noncached_input_plus_output_tokens": 116287,
+      "mcp_events": 6,
+      "wall_time_seconds": 365.999,
+      "visible_tool_output_bytes": 8336,
+      "compressed_persisted_evidence_bytes": 160737,
+      "uncompressed_persisted_evidence_bytes": 1780521
+    },
+    "new_vs_old_reduction_percent": {
+      "total_tokens": 65.91,
+      "noncached_input_plus_output_tokens": 69.69,
+      "mcp_events": 71.43,
+      "wall_time_seconds": 35.83,
+      "visible_tool_output_bytes": 99.86,
+      "compressed_persisted_evidence_bytes": 0.53,
+      "uncompressed_persisted_evidence_bytes": 0.07
+    }
+  },
+  "legacy_evidence_read": {
+    "calls": 15,
+    "returned_bytes": 5657083,
+    "unique_byte_ranges": 1271961,
+    "duplicate_or_overlapping_bytes": 4385122,
+    "duplicate_or_overlapping_percent": 77.52
+  },
+  "substantive_scenarios": {
+    "old": 4,
+    "new": 1,
+    "total": 6
+  },
+  "finding": "observe succeeds; execute diagnostic evidence visibility and acceptance semantics regress",
+  "qualification_scope": {
+    "phase": "pre-fix baseline",
+    "candidate_fix_included": false,
+    "post_fix_real_scenario_rerun_required": true
+  },
+  "redaction": {
+    "target_address": "replaced with BMC-T1",
+    "credential_paths_and_values": "removed",
+    "hardware_addresses": "removed",
+    "raw_unredacted_data": "deleted after validation"
+  }
+}

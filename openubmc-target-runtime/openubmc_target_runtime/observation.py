@@ -5,22 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 
+from .capabilities import CAPABILITY_ALIASES
 from .semantic_runtime import ObservationQuery
 
 
 OBSERVATION_TIMING_FIELD = "observation_timing"
 OBSERVATION_MAX_SELECTOR_SKEW_SECONDS = 5.0
 _SELECTOR_STATUSES = frozenset({"observed", "missing", "stale"})
-_CAPABILITY_KEYS = {
-    "ssh": "ssh_transport",
-    "telnet": "remote_log_file",
-    "mdbctl": "mdbctl",
-    "busctl": "busctl",
-    "dbus": "dbus_env",
-    "alarms": "active_alarm_endpoint_verified",
-}
-
-
 def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
@@ -47,10 +38,10 @@ def capability_selector_complete(
     names: tuple[str, ...] | list[str],
 ) -> bool:
     return all(
-        _CAPABILITY_KEYS.get(name) in capabilities
+        CAPABILITY_ALIASES.get(name) in capabilities
         and (
             name != "alarms"
-            or capabilities.get(_CAPABILITY_KEYS[name]) is True
+            or capabilities.get(CAPABILITY_ALIASES[name]) is True
         )
         for name in names
     )

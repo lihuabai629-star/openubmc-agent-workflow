@@ -1256,6 +1256,9 @@ class DomainPackConformanceTests(unittest.TestCase):
                     value={
                         "ok": True,
                         "summary": "fake debug completed",
+                        "root_cause": "the injected diagnostic path completed",
+                        "observed_at": "2026-08-25T00:00:00Z",
+                        "freshness": {"status": "fresh"},
                         "target_epoch": 1,
                     },
                 )
@@ -1277,6 +1280,9 @@ class DomainPackConformanceTests(unittest.TestCase):
                         value={
                             "ok": True,
                             "summary": "fake debug completed",
+                            "root_cause": "the injected diagnostic path completed",
+                            "observed_at": "2026-08-25T00:00:00Z",
+                            "freshness": {"status": "fresh"},
                             "target_epoch": 1,
                         },
                     ),
@@ -1355,7 +1361,13 @@ class DomainPackConformanceTests(unittest.TestCase):
             lambda _context, _arguments: DomainReceipt(
                 operation="fake_health",
                 status="succeeded",
-                value={"health": "ok", "summary": "target health is ok"},
+                value={
+                    "health": "ok",
+                    "summary": "target health is ok",
+                    "root_cause": "the target health probe found no fault",
+                    "observed_at": "2026-08-25T00:00:00Z",
+                    "freshness": {"status": "fresh"},
+                },
             )
         )
 
@@ -1379,6 +1391,9 @@ class DomainPackConformanceTests(unittest.TestCase):
                             value={
                                 "health": "ok",
                                 "summary": "target health is ok",
+                                "root_cause": "the target health probe found no fault",
+                                "observed_at": "2026-08-25T00:00:00Z",
+                                "freshness": {"status": "fresh"},
                             },
                         ),
                     ),
@@ -1424,6 +1439,14 @@ class DomainPackConformanceTests(unittest.TestCase):
         self.assertIn("fake_health", capabilities)
         self.assertIn("fake_health", status["domain_pack_conformance"]["operations"])
         self.assertEqual(completed["state"], "completed", completed)
+        self.assertEqual(
+            completed["diagnostic_receipt"]["operation"],
+            "fake_health",
+        )
+        self.assertEqual(
+            completed["diagnostic_receipt"]["status"],
+            "complete",
+        )
 
     def test_extension_contributes_a_mutation_route_with_fresh_verification(self) -> None:
         seen_arguments: list[dict[str, object]] = []

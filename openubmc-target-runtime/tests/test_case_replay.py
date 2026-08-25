@@ -216,6 +216,26 @@ class _NoEffectBackend:
 
 
 class CaseReplayTests(unittest.TestCase):
+    def test_diagnostic_receipt_golden_scenarios_are_deterministic(self) -> None:
+        fixture = json.loads(
+            (RUNTIME_ROOT / "tests/fixtures/diagnostic_receipt_replay.json").read_text()
+        )
+        for scenario in fixture["scenarios"]:
+            with self.subTest(scenario=scenario["name"]):
+                events, definition, plan = _base_events()
+                events[-1]["payload"]["diagnostic_receipt"] = scenario["receipt"]
+                bundle = _bundle(events, definition, plan)
+
+                first = CaseReplayService.replay(bundle)
+                second = CaseReplayService.replay(bundle.to_public_dict())
+
+                self.assertEqual(first.status, scenario["expected_status"])
+                self.assertIn(
+                    scenario["expected_finding"],
+                    {item["code"] for item in first.findings},
+                )
+                self.assertEqual(first.result_fingerprint, second.result_fingerprint)
+
     def test_repository_export_is_redacted_portable_and_deterministic(self) -> None:
         for repository in (
             InMemoryRuntimeRepository(),

@@ -33,6 +33,7 @@ from .semantic_runtime import (
     StartRun,
     SubmitGate,
     fingerprint,
+    json_bytes,
     project_run_turn,
     run_command_identity,
     run_id_for_command,
@@ -236,7 +237,7 @@ def gate_input_schema(
         ],
         "receipt_schema": descriptor.receipt_schema,
     }
-    if len(str(schema).encode("utf-8")) > GATE_SCHEMA_MAX_BYTES:
+    if len(json_bytes(schema)) > GATE_SCHEMA_MAX_BYTES:
         raise GateConflict("Gate schema exceeds the 4 KiB Runtime budget")
     return schema
 

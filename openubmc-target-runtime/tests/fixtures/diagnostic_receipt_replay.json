@@ -1,0 +1,316 @@
+{
+  "schema": "openubmc.target-runtime.tests/diagnostic-receipt-replay-v1",
+  "scenarios": [
+    {
+      "name": "generic-completion-blocked",
+      "expected_status": "passed",
+      "expected_finding": "diagnostic_evidence_blocked_preserved",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-generic-blocked",
+        "operation": "debug_run",
+        "status": "blocked",
+        "coverage": {
+          "requested": 1,
+          "evaluable": 0,
+          "unavailable": 0,
+          "not_checked": 1,
+          "complete": false
+        },
+        "results": [
+          {
+            "result_id": "diagnosis",
+            "kind": "diagnosis",
+            "request": "bounded diagnosis",
+            "status": "not_checked",
+            "evidence_ids": ["evidence-replay"]
+          }
+        ],
+        "freshness": {"status": "unknown", "observed_at": ""},
+        "capabilities": {},
+        "truncated": false,
+        "content_complete": false,
+        "evidence": [{"evidence_id": "evidence-replay"}],
+        "gaps": ["diagnostic_result_not_visible"]
+      }
+    },
+    {
+      "name": "truncation-remains-partial",
+      "expected_status": "passed",
+      "expected_finding": "diagnostic_truncation_preserved",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-truncated-partial",
+        "operation": "debug_run",
+        "status": "partial",
+        "coverage": {
+          "requested": 1,
+          "evaluable": 1,
+          "unavailable": 0,
+          "not_checked": 0,
+          "complete": false
+        },
+        "results": [
+          {
+            "result_id": "logs",
+            "kind": "bounded-logs",
+            "request": "app.log",
+            "status": "available",
+            "value": {"line_count": 31},
+            "evidence_ids": ["evidence-replay"]
+          }
+        ],
+        "freshness": {"status": "partial", "observed_at": "2026-08-25T04:42:55Z"},
+        "capabilities": {"telnet": "available"},
+        "truncated": true,
+        "content_complete": false,
+        "evidence": [{"evidence_id": "evidence-replay"}],
+        "gaps": ["content_truncated", "diagnostic_content_incomplete"]
+      }
+    },
+    {
+      "name": "generic-completion-cannot-pass",
+      "expected_status": "failed",
+      "expected_finding": "diagnostic_false_success",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-invalid-complete",
+        "operation": "debug_run",
+        "status": "complete",
+        "coverage": {
+          "requested": 1,
+          "evaluable": 0,
+          "unavailable": 0,
+          "not_checked": 1,
+          "complete": true
+        },
+        "results": [],
+        "freshness": {"status": "unknown", "observed_at": ""},
+        "capabilities": {},
+        "truncated": false,
+        "content_complete": false,
+        "evidence": [{"evidence_id": "evidence-replay"}],
+        "gaps": []
+      }
+    },
+    {
+      "name": "multi-target-omission-remains-explicit",
+      "expected_status": "passed",
+      "expected_finding": "diagnostic_target_scope_gap_preserved",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-missing-target",
+        "operation": "debug_run",
+        "status": "partial",
+        "coverage": {
+          "requested": 3,
+          "evaluable": 2,
+          "unavailable": 0,
+          "not_checked": 1,
+          "complete": false
+        },
+        "results": [
+          {
+            "result_id": "target-1-version",
+            "kind": "target-version",
+            "request": "target-1: /etc/version.json",
+            "status": "not_checked",
+            "gap": "result_not_visible"
+          },
+          {
+            "result_id": "target-2-version",
+            "kind": "target-version",
+            "request": "target-2: /etc/version.json",
+            "status": "available",
+            "value": {"lines": ["12.08.21.07"], "content_complete": true}
+          },
+          {
+            "result_id": "comparison",
+            "kind": "diagnostic-comparison",
+            "request": "bounded multi-target comparison",
+            "status": "available",
+            "value": {"status": "complete", "content_complete": true}
+          }
+        ],
+        "freshness": {"status": "partial", "observed_at": "2026-08-25T04:42:55Z"},
+        "capabilities": {},
+        "truncated": false,
+        "content_complete": false,
+        "evidence": [],
+        "gaps": ["1_diagnostic_items_not_checked", "diagnostic_content_incomplete", "freshness_partial"]
+      }
+    },
+    {
+      "name": "freshness-omission-remains-explicit",
+      "expected_status": "passed",
+      "expected_finding": "diagnostic_freshness_gap_preserved",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-missing-freshness",
+        "operation": "debug_run",
+        "status": "partial",
+        "coverage": {
+          "requested": 3,
+          "evaluable": 3,
+          "unavailable": 0,
+          "not_checked": 0,
+          "complete": false
+        },
+        "results": [
+          {
+            "result_id": "target-1-version",
+            "kind": "target-version",
+            "request": "target-1: /etc/version.json",
+            "status": "available",
+            "value": {"lines": ["12.08.21.06"], "content_complete": true}
+          },
+          {
+            "result_id": "target-2-version",
+            "kind": "target-version",
+            "request": "target-2: /etc/version.json",
+            "status": "available",
+            "value": {"lines": ["12.08.21.07"], "content_complete": true}
+          },
+          {
+            "result_id": "comparison",
+            "kind": "diagnostic-comparison",
+            "request": "bounded multi-target comparison",
+            "status": "available",
+            "value": {"status": "complete", "content_complete": true}
+          }
+        ],
+        "freshness": {"status": "partial", "observed_at": "2026-08-25T04:42:55Z"},
+        "capabilities": {},
+        "truncated": false,
+        "content_complete": true,
+        "evidence": [],
+        "gaps": ["freshness_partial"]
+      }
+    },
+    {
+      "name": "evidence-reference-without-visible-result-cannot-pass",
+      "expected_status": "failed",
+      "expected_finding": "diagnostic_result_not_evaluable",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-reference-only",
+        "operation": "debug_run",
+        "status": "complete",
+        "coverage": {
+          "requested": 1,
+          "evaluable": 1,
+          "unavailable": 0,
+          "not_checked": 0,
+          "complete": true
+        },
+        "results": [
+          {
+            "result_id": "logs",
+            "kind": "bounded-logs",
+            "request": "app.log",
+            "status": "available",
+            "evidence_ids": ["evidence-replay"]
+          }
+        ],
+        "freshness": {
+          "status": "fresh",
+          "observed_at": "2026-08-25T04:42:55Z"
+        },
+        "capabilities": {"telnet": "available"},
+        "truncated": false,
+        "content_complete": true,
+        "evidence": [{"evidence_id": "evidence-replay"}],
+        "gaps": []
+      }
+    },
+    {
+      "name": "stale-freshness-cannot-pass",
+      "expected_status": "failed",
+      "expected_finding": "diagnostic_freshness_false_success",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-stale-freshness",
+        "operation": "debug_run",
+        "status": "complete",
+        "coverage": {
+          "requested": 1,
+          "evaluable": 1,
+          "unavailable": 0,
+          "not_checked": 0,
+          "complete": true
+        },
+        "results": [
+          {
+            "result_id": "diagnosis",
+            "kind": "diagnosis",
+            "request": "bounded diagnosis",
+            "status": "available",
+            "value": {
+              "root_cause": "connector timeout",
+              "content_complete": true
+            }
+          }
+        ],
+        "freshness": {
+          "status": "fresh",
+          "complete": true,
+          "observed_at": "2026-08-25T04:42:55Z",
+          "stale_evidence": [
+            {
+              "evidence_id": "evidence-replay",
+              "reason": "target_epoch_mismatch"
+            }
+          ]
+        },
+        "capabilities": {},
+        "truncated": false,
+        "content_complete": true,
+        "evidence": [{"evidence_id": "evidence-replay"}],
+        "gaps": []
+      }
+    },
+    {
+      "name": "compacted-receipt-counts-visible-results-separately",
+      "expected_status": "passed",
+      "expected_finding": "diagnostic_truncation_preserved",
+      "receipt": {
+        "schema": "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        "receipt_id": "diagnostic-compacted-counts",
+        "operation": "debug_run",
+        "status": "partial",
+        "coverage": {
+          "requested": 3,
+          "evaluable": 3,
+          "unavailable": 0,
+          "not_checked": 0,
+          "complete": false,
+          "visible_evaluable": 1,
+          "visible_unavailable": 0,
+          "visible_not_checked": 0,
+          "compacted": 2
+        },
+        "results": [
+          {
+            "result_id": "visible-summary",
+            "kind": "diagnosis",
+            "request": "bounded diagnosis",
+            "status": "available",
+            "value": {
+              "root_cause": "connector timeout",
+              "content_complete": true
+            }
+          }
+        ],
+        "freshness": {
+          "status": "fresh",
+          "observed_at": "2026-08-25T04:42:55Z"
+        },
+        "capabilities": {},
+        "truncated": true,
+        "content_complete": false,
+        "evidence": [],
+        "gaps": ["diagnostic_receipt_compacted", "content_truncated"]
+      }
+    }
+  ]
+}

@@ -93,6 +93,9 @@ class _HermeticBackend:
             "schema": "openubmc-debug.v1",
             "task": task.task_id,
             "summary": "hermetic diagnosis completed",
+            "root_cause": "the hermetic diagnostic path completed",
+            "observed_at": "2026-08-25T00:00:00Z",
+            "freshness": {"status": "fresh"},
         }
 
 
@@ -125,6 +128,10 @@ def _storage_bytes(
     blobs: FilesystemBlobRepository,
 ) -> int:
     return repository.size_bytes() + blobs.size_bytes()
+
+
+def _storage_high_water(samples: list[int], current: int) -> int:
+    return max(current, samples[-1] if samples else 0)
 
 
 def _peak_rss_bytes() -> int:
@@ -406,7 +413,12 @@ def _capacity(root: Path) -> dict[str, object]:
                 total_events += batch_events
                 events_per_batch.append(batch_events)
                 cumulative_events_by_batch.append(total_events)
-                storage_bytes_by_batch.append(_storage_bytes(repository, blobs))
+                storage_bytes_by_batch.append(
+                    _storage_high_water(
+                        storage_bytes_by_batch,
+                        _storage_bytes(repository, blobs),
+                    )
+                )
         finally:
             agent.close()
         backend_calls = backend.calls
@@ -442,7 +454,10 @@ def _capacity(root: Path) -> dict[str, object]:
             or incomplete != 0
         )
 
-    storage_bytes = _storage_bytes(repository, blobs)
+    storage_bytes = _storage_high_water(
+        storage_bytes_by_batch,
+        _storage_bytes(repository, blobs),
+    )
     storage_growth_by_batch = [
         current - previous
         for previous, current in zip(
@@ -606,7 +621,12 @@ def _restart_soak(root: Path) -> dict[str, object]:
             total_events += cycle_events
             events_per_cycle.append(cycle_events)
             cumulative_events_by_cycle.append(total_events)
-            storage_bytes_by_cycle.append(_storage_bytes(repository, blobs))
+            storage_bytes_by_cycle.append(
+                _storage_high_water(
+                    storage_bytes_by_cycle,
+                    _storage_bytes(repository, blobs),
+                )
+            )
     finally:
         elapsed_seconds = time.monotonic() - started
         _current_bytes, peak_bytes = tracemalloc.get_traced_memory()
@@ -615,7 +635,10 @@ def _restart_soak(root: Path) -> dict[str, object]:
 
     expected_runs = SOAK_RESTART_CYCLES * SOAK_RUNS_PER_CYCLE
     repository_status = repository.status()
-    storage_bytes = _storage_bytes(repository, blobs)
+    storage_bytes = _storage_high_water(
+        storage_bytes_by_cycle,
+        _storage_bytes(repository, blobs),
+    )
     passed = all(
         (
             len(set(run_ids)) == expected_runs,

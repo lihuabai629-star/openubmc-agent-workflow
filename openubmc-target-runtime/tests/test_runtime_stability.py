@@ -1,33 +1,44 @@
 from __future__ import annotations
 
-import importlib.util
+import json
 from pathlib import Path
 import subprocess
+import sys
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "runtime_stability.py"
-SPEC = importlib.util.spec_from_file_location("runtime_stability", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-stability = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(stability)
 
 
 class RuntimeStabilityTests(unittest.TestCase):
     def test_public_semantic_seams_survive_storm_capacity_and_restart_soak(
         self,
     ) -> None:
-        report = stability.qualify_runtime_stability(
-            ROOT,
-            source_commit=subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=ROOT,
-                check=True,
-                text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip(),
+        source_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--workspace",
+                str(ROOT),
+                "--source-commit",
+                source_commit,
+            ],
+            cwd=ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
+        self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+        report = json.loads(completed.stdout)
 
         self.assertTrue(report["promotable"])
         self.assertEqual(
@@ -38,13 +49,7 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertTrue(report["environment_fingerprint"].startswith("sha256:"))
         self.assertEqual(
             report["source_commit"],
-            subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=ROOT,
-                check=True,
-                text=True,
-                stdout=subprocess.PIPE,
-            ).stdout.strip(),
+            source_commit,
         )
         storm = report["scenarios"]["duplicate_storm"]
         self.assertEqual(storm["status"], "passed")

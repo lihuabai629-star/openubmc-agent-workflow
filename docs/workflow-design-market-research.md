@@ -53,7 +53,7 @@ ADR-0004 为准。
 ### 已验证事实
 
 - 默认 Agent profile 只暴露 `observe` 和 `execute`；兼容面与 Operator 面显式分离。
-- Observation scope 上限为 2 KiB，ObservationReceipt 上限为 4 KiB，Turn 上限为 8 KiB，Gate schema 上限为 4 KiB。
+- Observation scope 上限为 2 KiB，ObservationReceipt 当前上限为 4 KiB，Turn 以 8 KiB 为软投影目标，Gate schema 上限为 4 KiB。
 - `execute` 支持 `start | respond | resume | control`，并把内部推进上限固定为 64 步。
 - `execute` 的 JSON Schema 对 `intent`、`purpose`、`run_id`、`target` 等字符串没有统一长度上限，`workflow`、`response` 与完整 `observation_receipt` 也缺少总字节预算。
 - MCP stdio server 在 `json.loads` 前逐行读取输入，但没有绝对帧长或行长上限。

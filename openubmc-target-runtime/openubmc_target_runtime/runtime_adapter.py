@@ -161,6 +161,7 @@ class RuntimeSemanticAdapter:
         start_input = {
             "schema": "openubmc.semantic-runtime/start-input-v1",
             "target": command.target,
+            "targets": [dict(target) for target in command.targets],
             "intent": command.intent,
             "entry_operation": command.entry_operation,
             "entry_arguments": dict(command.entry_arguments or {}),
@@ -193,11 +194,14 @@ class RuntimeSemanticAdapter:
                     "entry_operation must select a READ_ONLY Domain Pack"
                 )
         arguments: dict[str, object] = {
-            "ip": command.target,
             "intent": command.intent,
             "final_purpose": command.purpose,
             "include_closeout_bundle": False,
         }
+        if command.targets:
+            arguments["targets"] = [dict(target) for target in command.targets]
+        else:
+            arguments["ip"] = command.target
         if command.entry_operation:
             arguments["_context_entry_operation"] = command.entry_operation
             arguments["entry_arguments"] = dict(command.entry_arguments or {})
