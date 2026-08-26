@@ -2,16 +2,17 @@
 
 Date: 2026-08-26
 
-Source: `7124b3b886e9e1232d846254cc304b2dfe72850b`
+Source: `5d9b7e32de563ab85c3c31e7b75d122cd3db4545`
 
 Decision: `promotable=true`
 
-The persisted-Run compatibility group passed 9/9 checks. The current writer versions and known
+The persisted-Run compatibility group passed 10/10 checks. The current writer versions and known
 legacy event kinds are published as a read-only support window. A frozen pre-RunDecision fixture
-replays through current readers, retained compatibility telemetry has no writer API, retired Agent
-inputs remain unavailable, and unknown persisted schemas or versions fail closed.
+replays through SQLite EventRunStore and CaseReplay readers without changing the ledger, retained
+compatibility telemetry has no writer API, retired Agent inputs remain unavailable, and unknown
+persisted schemas, versions, or unversioned event kinds fail closed.
 
-The semantic-projection group passed 15/15 checks. ObservationReceipt and Gate schema 4 KiB values
+The semantic-projection group passed 16/16 checks. ObservationReceipt and Gate schema 4 KiB values
 and the Turn 8 KiB value are soft display targets. Projection pressure preserves ObservationRef,
 Gate, Blocker/Incident, DiagnosticReceipt and Outcome semantics; it neither requests manual
 selector narrowing nor creates a projection budget blocker.
@@ -19,11 +20,14 @@ selector narrowing nor creates a projection budget blocker.
 The Artifact lifecycle scenario created 64 records sharing one raw digest across four persistent
 repository lifecycles, one redacted derivative, and one temporary record. Restart resolution
 succeeded. The first GC removed 33 released/expired records while preserving shared retained
-content; the second removed 31 more. Two audit records and two content files remained.
+content; the second removed the remaining 32 raw references and then deleted their shared content.
+One redacted audit record and one content file remained.
 
 - Aggregate evidence digest:
-  `sha256:9d0d8b873e2c72d68a015c456cc096c93ce9966b223b9153a7d7dcc9c95263b8`
+  `sha256:4fc3bc1b7dc0ad3f6267adcc1d1b1bec1cce425a21c3e429bf61f96725a9c513`
 - Runtime stability digest:
-  `sha256:591e65ef1b41d066067b5f616d2aabfdf251e00183c0755794ae20fc162218b8`
+  `sha256:ee83dba7073088e707dc5456788881e0b5e92864618c894671ad2d6ea3296c18`
 - Machine-readable summary:
   [`p2-lifecycle-qualification-20260826.json`](p2-lifecycle-qualification-20260826.json)
+- Runtime stability evidence:
+  [`p2-runtime-stability-20260826.json`](p2-runtime-stability-20260826.json)

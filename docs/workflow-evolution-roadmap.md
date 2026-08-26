@@ -4,7 +4,7 @@
 当前基线：GitHub `main` 的 `00e5bcc09ed4cd6ac890c347d456fcbe36f34aaf`
 v2 发布资格 source：`e7dc74c`
 资格 lock-only commit：`7dc350c`
-P2 生命周期持续资格 source：`7124b3b886e9e1232d846254cc304b2dfe72850b`
+P2 生命周期持续资格 source：`5d9b7e32de563ab85c3c31e7b75d122cd3db4545`
 用途：后续讨论入口、决策索引和实施路线；详细论证仍以链接文档为准。
 机器可读完成证据：[roadmap-completion.json](roadmap-completion.json)。
 

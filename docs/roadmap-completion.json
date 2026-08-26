@@ -55,13 +55,14 @@
   "continuous_qualification": {
     "schema": "openubmc-agent-workflow.p2-lifecycle-qualification.v1",
     "issue": 79,
-    "source_commit": "7124b3b886e9e1232d846254cc304b2dfe72850b",
+    "source_commit": "5d9b7e32de563ab85c3c31e7b75d122cd3db4545",
     "promotable": true,
-    "evidence_digest": "sha256:9d0d8b873e2c72d68a015c456cc096c93ce9966b223b9153a7d7dcc9c95263b8",
-    "runtime_stability_digest": "sha256:591e65ef1b41d066067b5f616d2aabfdf251e00183c0755794ae20fc162218b8",
+    "evidence_digest": "sha256:7cdee74807cdbfe92612975bd7225a769bb79d69588f40ebd104297843412072",
+    "aggregate_evidence_digest": "sha256:4fc3bc1b7dc0ad3f6267adcc1d1b1bec1cce425a21c3e429bf61f96725a9c513",
+    "runtime_stability_digest": "sha256:ee83dba7073088e707dc5456788881e0b5e92864618c894671ad2d6ea3296c18",
     "qualification_groups": {
-      "persisted_run_compatibility": 9,
-      "semantic_projection_completion": 15
+      "persisted_run_compatibility": 10,
+      "semantic_projection_completion": 16
     },
     "agent_projection_policy": {
       "budget_mode": "soft-display-target",
@@ -76,10 +77,15 @@
       "created_raw_records": 64,
       "restart_record_count": 66,
       "first_gc_deleted_records": 33,
-      "second_gc_deleted_records": 31,
-      "final_audit_record_count": 2,
-      "shared_content_preserved_after_partial_gc": true
-    }
+      "shared_content_preserved_after_partial_gc": true,
+      "released_run_records": 32,
+      "second_gc_deleted_records": 32,
+      "second_gc_deleted_content": 1,
+      "shared_content_deleted_after_final_reference": true,
+      "final_audit_record_count": 1
+    },
+    "summary_path": "docs/qualification/p2-lifecycle-qualification-20260826.json",
+    "stability_path": "docs/qualification/p2-runtime-stability-20260826.json"
   },
   "batches": [
     {

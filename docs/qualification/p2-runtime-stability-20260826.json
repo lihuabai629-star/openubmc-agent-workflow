@@ -1,0 +1,193 @@
+{
+  "environment": {
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "python_implementation": "CPython"
+  },
+  "environment_fingerprint": "sha256:a70873c3a212a66f0f93fde5624857a128890539c9c55dc4d0b7e59913b2789b",
+  "evidence_digest": "sha256:ee83dba7073088e707dc5456788881e0b5e92864618c894671ad2d6ea3296c18",
+  "parameters": {
+    "artifact_capacity_batch_size": 16,
+    "artifact_capacity_records": 64,
+    "capacity_batch_size": 32,
+    "capacity_runs": 128,
+    "gate_workers": 8,
+    "max_artifact_capacity_seconds": 15.0,
+    "max_artifact_storage_bytes": 16777216,
+    "max_capacity_peak_python_bytes": 134217728,
+    "max_capacity_peak_rss_bytes": 536870912,
+    "max_capacity_seconds": 30.0,
+    "max_capacity_storage_bytes": 67108864,
+    "max_events_per_run": 16,
+    "max_soak_peak_bytes": 134217728,
+    "max_soak_peak_rss_bytes": 536870912,
+    "max_soak_seconds": 30.0,
+    "max_soak_storage_bytes": 33554432,
+    "soak_restart_cycles": 4,
+    "soak_runs_per_cycle": 16,
+    "storm_workers": 16
+  },
+  "promotable": true,
+  "scenarios": {
+    "artifact_lifecycle": {
+      "created_ephemeral_records": 1,
+      "created_raw_records": 64,
+      "created_redacted_records": 1,
+      "elapsed_seconds": 0.143,
+      "expired_resolution_rejected": true,
+      "final_audit_record_count": 1,
+      "final_content_files": 1,
+      "final_managed_record_count": 1,
+      "final_record_count": 1,
+      "final_redacted_record_count": 1,
+      "first_gc_deleted_content": 1,
+      "first_gc_deleted_records": 33,
+      "records_by_batch": [
+        16,
+        32,
+        48,
+        64
+      ],
+      "redacted_digest_distinct": true,
+      "released_resolution_rejected": true,
+      "released_run_records": 32,
+      "restart_record_count": 66,
+      "restart_resolutions": 2,
+      "second_gc_deleted_content": 1,
+      "second_gc_deleted_records": 32,
+      "shared_content_deleted_after_final_reference": true,
+      "shared_content_preserved_after_partial_gc": true,
+      "shared_raw_digests": 1,
+      "status": "passed",
+      "storage_bytes": 2586519,
+      "storage_bytes_by_batch": [
+        502498,
+        939218,
+        1380058,
+        205162
+      ]
+    },
+    "capacity": {
+      "backend_read_calls": 128,
+      "completed_runs": 128,
+      "completed_turns": 128,
+      "cumulative_events_by_batch": [
+        352,
+        704,
+        1056,
+        1408
+      ],
+      "elapsed_seconds": 10.819,
+      "events_per_batch": [
+        352,
+        352,
+        352,
+        352
+      ],
+      "execute_calls": 128,
+      "failed_calls": 0,
+      "incomplete_operations": 0,
+      "invalid_runs": 0,
+      "max_events_per_run": 11,
+      "open_incidents": 0,
+      "outcome_events": 128,
+      "peak_python_allocation_bytes": 1151943,
+      "peak_rss_bytes": 42287104,
+      "status": "passed",
+      "storage_bytes": 6520655,
+      "storage_bytes_by_batch": [
+        3771052,
+        5095239,
+        5488803,
+        6520655
+      ],
+      "storage_growth_bytes_by_batch": [
+        3771052,
+        1324187,
+        393564,
+        1031852
+      ],
+      "total_events": 1408
+    },
+    "duplicate_storm": {
+      "backend_read_calls": 9,
+      "command_decisions": 1,
+      "concurrent_workers": 16,
+      "elapsed_seconds": 0.708,
+      "errors": [],
+      "execute_calls": 18,
+      "failed_calls": 0,
+      "open_incidents": 0,
+      "operation_count": 1,
+      "outcome_events": 1,
+      "same_key_different_hash_rejected": true,
+      "status": "passed",
+      "turn_states": {
+        "completed": 15,
+        "running": 1
+      },
+      "unique_runs": 1
+    },
+    "gate_concurrency": {
+      "canonical_reattach_backend_calls": 0,
+      "canonical_turn_matches": true,
+      "canonical_turn_state": "completed",
+      "elapsed_seconds": 0.189,
+      "errors": [],
+      "execute_calls": 9,
+      "failed_calls": 0,
+      "gate_submissions": 1,
+      "open_incidents": 0,
+      "outcome_events": 1,
+      "status": "passed",
+      "turn_states": {
+        "completed": 8
+      },
+      "unique_runs": 1,
+      "unique_turns": 1
+    },
+    "restart_soak": {
+      "backend_read_calls": 64,
+      "completed_runs": 64,
+      "completed_turns": 128,
+      "cumulative_events_by_cycle": [
+        176,
+        352,
+        528,
+        704
+      ],
+      "elapsed_seconds": 6.489,
+      "events_per_cycle": [
+        176,
+        176,
+        176,
+        176
+      ],
+      "execute_calls": 128,
+      "failed_calls": 0,
+      "incomplete_operations": 0,
+      "invalid_runs": 0,
+      "max_events_per_run": 11,
+      "max_run_decisions": 3,
+      "open_incidents": 0,
+      "outcome_events": 64,
+      "peak_rss_bytes": 80322560,
+      "peak_traced_memory_bytes": 1520035,
+      "replay_backend_read_calls": 0,
+      "replay_mismatches": 0,
+      "restart_cycles": 4,
+      "runs_per_cycle": 16,
+      "status": "passed",
+      "storage_bytes": 5734218,
+      "storage_bytes_by_cycle": [
+        2186529,
+        4982374,
+        4985487,
+        5734218
+      ],
+      "total_events": 704
+    }
+  },
+  "schema": "openubmc-agent-workflow.runtime-stability.v1",
+  "source_commit": "5d9b7e32de563ab85c3c31e7b75d122cd3db4545"
+}
