@@ -1,0 +1,66 @@
+{
+  "schema": "openubmc-agent-workflow.p2-lifecycle-qualification.v1",
+  "source_commit": "7124b3b886e9e1232d846254cc304b2dfe72850b",
+  "environment_fingerprint": "sha256:a70873c3a212a66f0f93fde5624857a128890539c9c55dc4d0b7e59913b2789b",
+  "promotable": true,
+  "violations": {
+    "duplicate_dangerous_effects": 0,
+    "false_successes": 0,
+    "persisted_run_compatibility": 0,
+    "real_backend_crash_cuts": 0,
+    "runtime_stability": 0,
+    "semantic_projection_completion": 0,
+    "unknown_new_identity_retries": 0,
+    "wrong_target_or_artifact_mutations": 0
+  },
+  "qualification_counts": {
+    "persisted_run_compatibility": 9,
+    "semantic_projection_completion": 15
+  },
+  "agent_projection_policy": {
+    "budget_mode": "soft-display-target",
+    "observation_receipt_target_bytes": 4096,
+    "gate_schema_target_bytes": 4096,
+    "turn_target_bytes": 8192,
+    "target_exceeded_behavior": "preserve-runtime-semantics",
+    "manual_narrowing_required_on_target_exceeded": false,
+    "projection_budget_blocker": false
+  },
+  "persisted_run_support": {
+    "current_run_decision_version": 1,
+    "current_run_event_version": 1,
+    "legacy_event_kinds": [
+      "CaseOpened",
+      "CaseUpdated",
+      "DeliveryStrategySelected",
+      "OperationProgressed",
+      "RunCancelled",
+      "RunGateOpened",
+      "RunGateSubmitted",
+      "RunOutcomeRecorded",
+      "RunPhaseRecorded"
+    ],
+    "legacy_mode": "read-only-upcast",
+    "unknown_version_behavior": "reject"
+  },
+  "artifact_lifecycle": {
+    "created_raw_records": 64,
+    "created_redacted_records": 1,
+    "created_ephemeral_records": 1,
+    "shared_raw_digests": 1,
+    "redacted_digest_distinct": true,
+    "restart_record_count": 66,
+    "restart_resolutions": 2,
+    "first_gc_deleted_records": 33,
+    "first_gc_deleted_content": 1,
+    "shared_content_preserved_after_partial_gc": true,
+    "released_run_records": 31,
+    "second_gc_deleted_records": 31,
+    "second_gc_deleted_content": 0,
+    "final_record_count": 2,
+    "final_audit_record_count": 2,
+    "final_content_files": 2
+  },
+  "evidence_digest": "sha256:9d0d8b873e2c72d68a015c456cc096c93ce9966b223b9153a7d7dcc9c95263b8",
+  "runtime_stability_digest": "sha256:591e65ef1b41d066067b5f616d2aabfdf251e00183c0755794ae20fc162218b8"
+}

@@ -1,9 +1,10 @@
 # openUBMC Agent Workflow 后续演进档案
 
-日期：2026-08-25
-当前基线：GitHub `main` 的 `a28350d19fde5808626f3c73b4e070db440cfa83`
-最终资格 source：`e7dc74c`
+日期：2026-08-26
+当前基线：GitHub `main` 的 `00e5bcc09ed4cd6ac890c347d456fcbe36f34aaf`
+v2 发布资格 source：`e7dc74c`
 资格 lock-only commit：`7dc350c`
+P2 生命周期持续资格 source：`7124b3b886e9e1232d846254cc304b2dfe72850b`
 用途：后续讨论入口、决策索引和实施路线；详细论证仍以链接文档为准。
 机器可读完成证据：[roadmap-completion.json](roadmap-completion.json)。
 
@@ -37,11 +38,12 @@ canonical `main`。完整 execute A/B、Release Gate 与 main CI 通过。后续
 | M4 权威收敛 | 完成 | 保持 compatibility writer/profile 已退役和 Incident lifecycle 指标稳定 |
 | M5 Domain Pack | 完成 | 内建与扩展 Pack 共用 typed 作者契约和 Pack-set conformance suite；Log Bundle index/query/export 为真实本地 READ_ONLY Pack |
 | M6 证据驱动扩展 | 完成（既定范围） | 后续扩展继续由 Incident、容量和真实调用缺口决定 |
+| P2 生命周期持续资格 | 完成候选 | 旧 Run fixture、Artifact retention/GC 容量和软投影策略已形成持续资格；等待 GitHub 合入证据 |
 
 最终兼容退役 source 的完整 execute A/B 为 10 组有效、0 无效，`decision=passed`；
 Release Gate 为 13/13 passed、`promotable=true`，证据 digest 为
 `sha256:e18fdbfcbc04e84a5ba79f2160728cedc11d4a873a40e7091f2beaa35c9b2a67`；
-main CI run `32764011480` 的 CI contract 与完整仓库验证均通过。正式 Release 仍停留在
+main CI run `32922913410` 的 CI contract 与完整仓库验证均通过。正式 Release 仍停留在
 `v1.2.2`，是否创建
 `v2.0.0` tag 是独立发布决策。
 
@@ -320,12 +322,12 @@ Worker result 跨进程    -> Inbox + result dedupe
 
 ### P2：v2.x 按遥测扩展
 
-1. workflow version migration 与 old-run support；
-2. Artifact retention、redaction 和 GC：已完成持久 Repository、内容寻址、作用域校验、显式释放与红化派生基线；继续补容量和长期保留遥测；
+1. workflow version migration 与 old-run support：已冻结首个支持 fixture，当前 writer 版本、read-only legacy kinds 和未知版本拒绝策略进入机器可读持续资格；新 definition 版本出现前不引入迁移 writer；
+2. Artifact retention、redaction 和 GC：持久 Repository、内容寻址、作用域校验、显式释放、红化派生与 64 引用容量/重启/共享内容 GC 资格已完成；继续积累生产保留时长遥测；
 3. selector 并行与连接复用；
 4. D-Bus、active alarm、bounded log search 等按真实调用缺口增加；
-5. compatibility 历史遥测审计与 old-event upcaster 保留窗口；
-6. 扩展长时 soak、property-based 和 network fault injection；
+5. compatibility 历史遥测审计与 old-event upcaster 保留窗口：支持窗口已机器可读并由 fixture 回放；reader 保持只读，未知 schema/version 明确拒绝；
+6. 扩展长时 soak、property-based 和 network fault injection：Artifact 生命周期容量场景已进入持续资格；property-based、真实网络 fault 和更长 wall-clock soak 仍按失败数据扩展；
 7. `ModelInvocationRecord` 与受限 `PlanProposal -> PlanRevision` 原型已完成；确定性评估证明
    持久重放、严格 JSON、Gate/compensation 语义和边界安全；六组配对任务中两条路径均为
    6/6 有效且各含 4 个语义 Gate turn，候选额外产生 6 次模型调用，未证明 Agent-turn 或
@@ -390,7 +392,7 @@ merge commit。`main` 是持续前进的开发分支；它保留的 `release-loc
 5. Case 暂不独立建模不会阻碍多阶段 Run；
 6. Incident 正式化能改善 unknown recovery，而不会形成新的 Operator 工具膨胀；
 7. Skill 渐进披露与阶段上下文隔离能显著降低完整 Build-Upgrade Token；
-8. compatibility profile 退役后，历史 Run 仍可通过显式 upcaster 稳定读取。
+8. compatibility profile 退役后，历史 Run 仍可通过显式 upcaster 稳定读取：首个冻结 fixture 与当前 reader 已通过持续资格，继续保留长期回归。
 9. Runtime 内模型规划只有在真实任务 A/B 证明降低 Agent turns 或减少 plan defect 后才值得
    接入；当前确定性评估结论为 `isolate`。
 

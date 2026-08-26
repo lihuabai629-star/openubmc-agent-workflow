@@ -52,6 +52,35 @@
       "old_event_upcasters": "preserved-read-only"
     }
   },
+  "continuous_qualification": {
+    "schema": "openubmc-agent-workflow.p2-lifecycle-qualification.v1",
+    "issue": 79,
+    "source_commit": "7124b3b886e9e1232d846254cc304b2dfe72850b",
+    "promotable": true,
+    "evidence_digest": "sha256:9d0d8b873e2c72d68a015c456cc096c93ce9966b223b9153a7d7dcc9c95263b8",
+    "runtime_stability_digest": "sha256:591e65ef1b41d066067b5f616d2aabfdf251e00183c0755794ae20fc162218b8",
+    "qualification_groups": {
+      "persisted_run_compatibility": 9,
+      "semantic_projection_completion": 15
+    },
+    "agent_projection_policy": {
+      "budget_mode": "soft-display-target",
+      "observation_receipt_target_bytes": 4096,
+      "gate_schema_target_bytes": 4096,
+      "turn_target_bytes": 8192,
+      "target_exceeded_behavior": "preserve-runtime-semantics",
+      "manual_narrowing_required_on_target_exceeded": false,
+      "projection_budget_blocker": false
+    },
+    "artifact_lifecycle": {
+      "created_raw_records": 64,
+      "restart_record_count": 66,
+      "first_gc_deleted_records": 33,
+      "second_gc_deleted_records": 31,
+      "final_audit_record_count": 2,
+      "shared_content_preserved_after_partial_gc": true
+    }
+  },
   "batches": [
     {
       "id": "runtime-core-v2-qualification",
