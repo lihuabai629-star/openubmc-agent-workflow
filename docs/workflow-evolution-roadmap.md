@@ -1,9 +1,9 @@
 # openUBMC Agent Workflow 后续演进档案
 
 日期：2026-08-26
-当前基线：GitHub `main` 的 `00e5bcc09ed4cd6ac890c347d456fcbe36f34aaf`
-v2 发布资格 source：`e7dc74c`
-资格 lock-only commit：`7dc350c`
+当前基线：GitHub `main` 的 `2564f3572fd82668dfd90ba3bd2e3439d021ec63`
+历史 v2 发布资格 source：`e7dc74c`
+历史 lock-only commit：`7dc350c`（`superseded-unpublished`，不得直接发布）
 P2 生命周期持续资格 source：`5d9b7e32de563ab85c3c31e7b75d122cd3db4545`
 用途：后续讨论入口、决策索引和实施路线；详细论证仍以链接文档为准。
 机器可读完成证据：[roadmap-completion.json](roadmap-completion.json)。
@@ -38,14 +38,15 @@ canonical `main`。完整 execute A/B、Release Gate 与 main CI 通过。后续
 | M4 权威收敛 | 完成 | 保持 compatibility writer/profile 已退役和 Incident lifecycle 指标稳定 |
 | M5 Domain Pack | 完成 | 内建与扩展 Pack 共用 typed 作者契约和 Pack-set conformance suite；Log Bundle index/query/export 为真实本地 READ_ONLY Pack |
 | M6 证据驱动扩展 | 完成（既定范围） | 后续扩展继续由 Incident、容量和真实调用缺口决定 |
-| P2 生命周期持续资格 | 完成候选 | 旧 Run fixture、Artifact retention/GC 容量和软投影策略已形成持续资格；等待 GitHub 合入证据 |
+| P2 生命周期持续资格 | 完成 | 旧 Run fixture、Artifact retention/GC 容量和软投影策略已进入 canonical `main` 与持续 CI |
 
 最终兼容退役 source 的完整 execute A/B 为 10 组有效、0 无效，`decision=passed`；
 Release Gate 为 13/13 passed、`promotable=true`，证据 digest 为
 `sha256:e18fdbfcbc04e84a5ba79f2160728cedc11d4a873a40e7091f2beaa35c9b2a67`；
-main CI run `32922913410` 的 CI contract 与完整仓库验证均通过。正式 Release 仍停留在
-`v1.2.2`，是否创建
-`v2.0.0` tag 是独立发布决策。
+P2 PR CI run `32933867020` 与 main CI run `32934292608` 的 CI contract 和完整仓库验证均
+通过。正式 Release 仍停留在 `v1.2.2`。此前 `e7dc74c -> 7dc350c` 的 v2 候选早于
+DiagnosticReceipt、软投影和 P2 生命周期资格，已被标记为 `superseded-unpublished`；下一次
+`v2.0.0` 发布必须从新的最终 source 重新资格化并生成新的 lock-only commit。
 
 ### 1.2 产品北极星
 
@@ -375,13 +376,13 @@ submission identity 由 Adapter 从持久 Run/Gate binding 派生。详见 ADR-0
 
 ### 8.6 v2 与 v2.1 的发布边界
 
-`v2.0.0` 尚未正式发布，但最终资格已经完成。source commit 为
-`e7dc74c052f3874d3d9214ce0cfae8949a397765`，对应 lock-only commit 为
-`7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4`；完整 execute A/B、13 项 Release Gate 与
-GitHub main CI 均通过。发布 tag 必须指向该次资格对应的 lock-only commit，不能指向后续
-merge commit。`main` 是持续前进的开发分支；它保留的 `release-lock.json` 是历史发布快照，
-不能用来证明当前 mutable `main` 的树身份。新发布必须从新的最终 source 重新资格化并生成
-新的 lock-only commit。
+`v2.0.0` 尚未正式发布。`e7dc74c052f3874d3d9214ce0cfae8949a397765` 与其 lock-only
+commit `7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4` 保留为可复核的历史资格，但该候选早于
+后续 DiagnosticReceipt、软投影和 P2 生命周期变更，状态为 `superseded-unpublished`，不得
+再用于创建发布 tag。`main` 是持续前进的开发分支；它保留的 `release-lock.json` 是历史发布
+快照，不能证明当前 mutable `main` 的树身份。下一次发布必须选择新的最终 source，重跑完整
+execute A/B、Runtime qualification、Release Gate 与 GitHub CI，再生成只修改
+`release-lock.json` 的新 lock-only commit。
 
 ## 9. 需要持续验证的假设
 

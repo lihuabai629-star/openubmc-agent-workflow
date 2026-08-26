@@ -52,6 +52,10 @@ operation identities, retry safety, target fencing, or terminal success.
 | **PlanResolver** | An isolated Runtime-internal experimental Module that records one model planning Effect, validates a bounded proposal, and freezes an inert PlanRevision. It is not composed into production Run execution. |
 | **PlanProposal** | Versioned model output bound to one invocation and Run. It has no authority until Runtime validation accepts its bounded IR. |
 | **PlanRevision** | An immutable, version-pinned validated proposal. It remains inert data; only RunEngine could ever pin and interpret it. |
+| **Final source** | The exact immutable commit selected to undergo fresh release qualification before a lock-only commit is generated. Mutable `main` is not a Final source until explicitly selected. |
+| **Release candidate** | A qualified Final source and its lock-only child considered for an immutable version tag. It is not a Release until the tag and publication record exist. |
+| **Superseded unpublished candidate** | A Release candidate that was never tagged and is no longer eligible for publication because later canonical changes require a newly qualified Final source. |
+| **Historical release snapshot** | Release identity retained on mutable `main` or in audit evidence for verification. It describes an earlier source and never proves the identity of the current development tree. |
 
 ## Ownership rules
 

@@ -1,14 +1,17 @@
 # openUBMC Agent Workflow roadmap completion audit
 
-Date: 2026-08-25  
+Date: 2026-08-26
+
 Closeout: [Issue #70](https://github.com/lihuabai629-star/openubmc-agent-workflow/issues/70)
+
+Post-P2 reconciliation: [Issue #81](https://github.com/lihuabai629-star/openubmc-agent-workflow/issues/81)
 
 Canonical machine-readable evidence: [`roadmap-completion.json`](roadmap-completion.json)
 
 ## Final state
 
 The implemented roadmap is present on canonical `main` at merge commit
-`a28350d19fde5808626f3c73b4e070db440cfa83`. The final compatibility-retirement qualification used
+`2564f3572fd82668dfd90ba3bd2e3439d021ec63`. The compatibility-retirement qualification used
 source `e7dc74c052f3874d3d9214ce0cfae8949a397765` and lock-only commit
 `7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4`.
 
@@ -18,7 +21,8 @@ source `e7dc74c052f3874d3d9214ce0cfae8949a397765` and lock-only commit
   `sha256:e18fdbfcbc04e84a5ba79f2160728cedc11d4a873a40e7091f2beaa35c9b2a67`.
 - Compatibility decision: five writers and the profile were `ready=true`.
 - Historical telemetry readers and old-event upcasters remain; retired inputs cannot be enabled.
-- Canonical main validation: [run 32764011480](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32764011480), successful.
+- P2 lifecycle qualification: persisted Run 10/10, semantic projection 16/16, `promotable=true`.
+- Canonical main validation: [run 32934292608](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32934292608), successful.
 
 ## Completion matrix
 
@@ -30,6 +34,7 @@ source `e7dc74c052f3874d3d9214ce0cfae8949a397765` and lock-only commit
 | ArtifactRef lifecycle and Log Bundle stages | Issue [#54](https://github.com/lihuabai629-star/openubmc-agent-workflow/issues/54); PR [#55](https://github.com/lihuabai629-star/openubmc-agent-workflow/pull/55) (`d7ea891`) | `openubmc-target-runtime/tests/test_artifact_lifecycle.py`, `openubmc-log-analyzer/tests/test_log_bundle_stages.py` | [main run 32634018685](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32634018685) passed |
 | Domain Pack contract and bounded read-only execution | Issues [#56](https://github.com/lihuabai629-star/openubmc-agent-workflow/issues/56), [#58](https://github.com/lihuabai629-star/openubmc-agent-workflow/issues/58); PR [#57](https://github.com/lihuabai629-star/openubmc-agent-workflow/pull/57) (`88c7e57`), PR [#59](https://github.com/lihuabai629-star/openubmc-agent-workflow/pull/59) (`521a3dd`) | `openubmc-target-runtime/tests/test_domain_pack_conformance.py`, selector and ObservationRef behavior in `test_agent_gateway.py`, Debug lease/scope tests | [main run 32642484271](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32642484271) and [run 32649732340](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32649732340) passed |
 | Evidence retrieval and Skill progressive disclosure | Issues [#60](https://github.com/lihuabai629-star/openubmc-agent-workflow/issues/60), [#62](https://github.com/lihuabai629-star/openubmc-agent-workflow/issues/62); PR [#61](https://github.com/lihuabai629-star/openubmc-agent-workflow/pull/61) (`4bda60f`), PR [#64](https://github.com/lihuabai629-star/openubmc-agent-workflow/pull/64) (`657d6ee`) | `openubmc-target-runtime/tests/test_evidence_index.py`, `openubmc-debug/tests/test_skill_progressive_disclosure.py`, Skill-disclosure A/B in `scripts/tests/test_agent_gateway_ab.py` | [main run 32653027351](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32653027351) and [run 32697848377](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32697848377) passed |
+| P2 lifecycle qualification and soft projection preservation | Issue [#79](https://github.com/lihuabai629-star/openubmc-agent-workflow/issues/79); PR [#80](https://github.com/lihuabai629-star/openubmc-agent-workflow/pull/80) (`2564f35`) | persisted Run fixture replay, Artifact final-reference GC, oversized Observation/Gate/Incident/DiagnosticReceipt/Outcome qualification, committed evidence verification | [PR run 32933867020](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32933867020) and [main run 32934292608](https://github.com/lihuabai629-star/openubmc-agent-workflow/actions/runs/32934292608) passed |
 
 Every delivery PR used a dedicated head branch and passed both GitHub jobs: `CI contract preflight`
 and `Complete repository validation`. The PR records also preserve the independent Standards and
@@ -49,4 +54,7 @@ therefore remains a historical release snapshot and is not expected to verify th
 tree. This does not indicate source corruption. A future release must select a new final source,
 rerun qualification, and create a new lock-only commit; it must not rewrite the previous identity.
 
-No `v2.0.0` tag or GitHub Release is created by this closeout.
+No `v2.0.0` tag or GitHub Release has been created. The detached `e7dc74c -> 7dc350c` candidate is
+retained as historical evidence but is `superseded-unpublished` because current canonical `main`
+contains later DiagnosticReceipt, soft-projection, and P2 lifecycle changes. A publishable v2.0.0
+must be qualified again from a newly selected final source and finalized by a new lock-only commit.

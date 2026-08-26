@@ -43,6 +43,10 @@ ROADMAP_CLOSEOUT_FORBIDDEN = {
     ),
     "docs/workflow-architecture-arbitration.md": ("不得进入 canonical `main`",),
     "docs/external-workflow-research-reconciliation.md": ("不得进入 canonical `main`",),
+    "docs/workflow-evolution-roadmap.md": (
+        "完成候选",
+        "等待 GitHub 合入证据",
+    ),
 }
 ROADMAP_BATCH_IDS = frozenset(
     {
@@ -52,6 +56,7 @@ ROADMAP_BATCH_IDS = frozenset(
         "artifact-log-bundle",
         "domain-pack-read-only",
         "evidence-skill-disclosure",
+        "p2-lifecycle-qualification",
     }
 )
 ROADMAP_WRITERS = frozenset(
@@ -63,6 +68,30 @@ ROADMAP_WRITERS = frozenset(
         "workflow.next",
     }
 )
+RELEASE_CANDIDATE_SUPERSEDED_UNPUBLISHED = "superseded-unpublished"
+RELEASE_SOURCE_POLICY_NEW_FINAL_SOURCE = "new-final-source"
+ROADMAP_P2_ISSUE = 79
+ROADMAP_P2_PULL_REQUEST = 80
+ROADMAP_P2_MERGE_COMMIT = "2564f3572fd82668dfd90ba3bd2e3439d021ec63"
+ROADMAP_P2_PR_CI_RUN = 32933867020
+ROADMAP_P2_MAIN_CI_RUN = 32934292608
+ROADMAP_POST_P2_REFERENCES = {
+    "docs/workflow-evolution-roadmap.md": (
+        ROADMAP_P2_MERGE_COMMIT,
+        "| P2 生命周期持续资格 | 完成 |",
+        f"PR CI run `{ROADMAP_P2_PR_CI_RUN}`",
+        f"main CI run `{ROADMAP_P2_MAIN_CI_RUN}`",
+        RELEASE_CANDIDATE_SUPERSEDED_UNPUBLISHED,
+    ),
+    "docs/roadmap-completion-audit.md": (
+        f"issues/{ROADMAP_P2_ISSUE}",
+        f"pull/{ROADMAP_P2_PULL_REQUEST}",
+        ROADMAP_P2_MERGE_COMMIT,
+        f"runs/{ROADMAP_P2_PR_CI_RUN}",
+        f"runs/{ROADMAP_P2_MAIN_CI_RUN}",
+        RELEASE_CANDIDATE_SUPERSEDED_UNPUBLISHED,
+    ),
+}
 
 
 def evidence_fingerprint(value: object) -> str:
@@ -339,12 +368,26 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
     if evidence.get("status") != "completed" or evidence.get("closeout_issue") != 70:
         raise SystemExit("invalid roadmap completion evidence status")
     release = evidence.get("release")
+    superseded_candidate = (
+        release.get("superseded_candidate") if isinstance(release, dict) else None
+    )
+    next_candidate = release.get("next_candidate") if isinstance(release, dict) else None
     if (
         not isinstance(release, dict)
         or release.get("identity_model") != "source-plus-lock-only-commit"
         or release.get("mutable_main_policy") != "historical-lock-snapshot"
         or release.get("tag_created") is not False
         or release.get("github_release_created") is not False
+        or release.get("candidate_status")
+        != RELEASE_CANDIDATE_SUPERSEDED_UNPUBLISHED
+        or not isinstance(superseded_candidate, dict)
+        or not isinstance(next_candidate, dict)
+        or next_candidate
+        != {
+            "release_version": "2.0.0",
+            "qualification_required": True,
+            "source_policy": RELEASE_SOURCE_POLICY_NEW_FINAL_SOURCE,
+        }
     ):
         raise SystemExit("invalid roadmap completion evidence release policy")
 
@@ -386,6 +429,12 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
         )
     ):
         raise SystemExit("invalid roadmap completion evidence release identity")
+    if superseded_candidate != {
+        "release_version": qualification["release_version"],
+        "source_commit": source_commit,
+        "lock_only_commit": lock_commit,
+    }:
+        raise SystemExit("invalid roadmap completion evidence release policy")
     if (
         not isinstance(lock_topology, dict)
         or lock_topology.get("parent_source_commit") != source_commit
@@ -567,11 +616,30 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
     if len(all_merge_commits) != len(set(all_merge_commits)):
         raise SystemExit("invalid roadmap completion evidence duplicate merge commit")
     compatibility_batch = next(item for item in batches if item["id"] == "compatibility-retirement")
+    p2_batch = next(item for item in batches if item["id"] == "p2-lifecycle-qualification")
     if (
-        merge_commit not in compatibility_batch["merge_commits"]
-        or compatibility_batch.get("qualified_source_commit") != source_commit
+        compatibility_batch.get("qualified_source_commit") != source_commit
     ):
-        raise SystemExit("invalid roadmap completion evidence main merge relationship")
+        raise SystemExit("invalid roadmap completion evidence compatibility relationship")
+    if (
+        merge_commit != ROADMAP_P2_MERGE_COMMIT
+        or main_ci["id"] != ROADMAP_P2_MAIN_CI_RUN
+        or p2_batch.get("issues") != [ROADMAP_P2_ISSUE]
+        or p2_batch.get("pull_requests") != [ROADMAP_P2_PULL_REQUEST]
+        or p2_batch.get("merge_commits") != [ROADMAP_P2_MERGE_COMMIT]
+        or p2_batch.get("qualified_source_commit") != continuous_source
+        or len(p2_batch.get("ci_runs", [])) < 2
+        or {
+            ROADMAP_P2_PR_CI_RUN,
+            ROADMAP_P2_MAIN_CI_RUN,
+        }
+        - {
+            run["id"]
+            for run in p2_batch["ci_runs"]
+            if isinstance(run, dict) and isinstance(run.get("id"), int)
+        }
+    ):
+        raise SystemExit("invalid roadmap completion evidence P2 delivery evidence")
 
     if verify_git:
         repository = subprocess.run(
@@ -676,6 +744,11 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
         for marker in forbidden:
             if marker.lower() in content:
                 raise SystemExit(f"obsolete roadmap closeout state ({marker}): {relative}")
+    for relative, required_markers in ROADMAP_POST_P2_REFERENCES.items():
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        for marker in required_markers:
+            if marker not in content:
+                raise SystemExit(f"post-P2 roadmap marker missing ({marker}): {relative}")
 
 
 def main(argv: list[str] | None = None) -> int:
