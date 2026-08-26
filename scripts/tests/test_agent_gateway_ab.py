@@ -2021,7 +2021,7 @@ class AgentGatewayAbTests(unittest.TestCase):
                     metric["scope_validation"]["errors"],
                 )
 
-    def test_analyzer_passes_ten_good_pairs_and_expands_uncertain_result(self) -> None:
+    def test_analyzer_passes_correct_runs_and_reports_efficiency_separately(self) -> None:
         passing = []
         for pair in range(1, 11):
             passing.extend(
@@ -2052,15 +2052,20 @@ class AgentGatewayAbTests(unittest.TestCase):
                     },
                 )
             )
-        self.assertEqual(module.analyze(passing)["decision"], "passed")
+        passing_result = module.analyze(passing)
+        self.assertEqual(passing_result["decision"], "passed")
+        self.assertEqual(passing_result["efficiency_decision"], "passed")
+        self.assertEqual(passing_result["efficiency_warnings"], [])
 
         uncertain = [dict(item) for item in passing]
         for item in uncertain:
             if item["arm"] == "B":
                 item["duration_seconds"] = 130
         result = module.analyze(uncertain)
-        self.assertEqual(result["decision"], "collect_more")
-        self.assertEqual(result["next_pair_target"], 20)
+        self.assertEqual(result["decision"], "passed")
+        self.assertIsNone(result["next_pair_target"])
+        self.assertEqual(result["efficiency_decision"], "warning")
+        self.assertEqual(result["efficiency_warnings"], ["duration_seconds"])
 
     def test_analyzer_recomputes_validity_from_raw_run_fields(self) -> None:
         schedule = module.balanced_schedule(10, seed=7)
@@ -2096,6 +2101,7 @@ class AgentGatewayAbTests(unittest.TestCase):
                         "arm": arm,
                         "pair": pair,
                         "valid": True,
+                        **passing_run_fields(),
                         "total_tokens": 100,
                         "noncached_input_plus_output": 100,
                         "duration_seconds": 100,
@@ -2105,12 +2111,27 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         result = module.analyze(legacy)
 
-        self.assertEqual(result["decision"], "collect_more")
-        self.assertEqual(result["valid_pairs"], 0)
+        self.assertEqual(result["decision"], "passed")
+        self.assertEqual(result["valid_pairs"], 10)
+        self.assertEqual(result["invalid_pairs"], [])
+        self.assertEqual(result["efficiency_decision"], "incomplete")
         self.assertIn(
             "model_turns",
-            result["invalid_pairs"][0]["missing_or_nonpositive_metrics"]["A"],
+            result["efficiency_gaps"],
         )
+        self.assertFalse(result["metrics"]["model_turns"]["complete"])
+
+    def test_analyzer_marks_terminal_metric_gap_incomplete_without_crashing(self) -> None:
+        metrics = passing_metrics(module.balanced_schedule(30, seed=7))
+        del metrics[0]["duration_seconds"]
+
+        result = module.analyze(metrics)
+
+        self.assertEqual(result["decision"], "passed")
+        self.assertEqual(result["valid_pairs"], 30)
+        self.assertEqual(result["efficiency_decision"], "incomplete")
+        self.assertIn("duration_seconds", result["efficiency_gaps"])
+        self.assertFalse(result["metrics"]["duration_seconds"]["complete"])
 
     def test_skill_disclosure_allows_one_signed_invalid_candidate_run_at_twenty_pairs(self) -> None:
         result = module.analyze(
@@ -2196,7 +2217,12 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertFalse(
             result["metrics"]["noncached_input_plus_output"]["passed"]
         )
-        self.assertEqual(result["decision"], "failed")
+        self.assertEqual(result["decision"], "passed")
+        self.assertEqual(result["efficiency_decision"], "warning")
+        self.assertIn(
+            "noncached_input_plus_output",
+            result["efficiency_warnings"],
+        )
 
     def test_verify_accepts_signed_skill_disclosure_validity_with_one_invalid_candidate_run(self) -> None:
         verified = verify_skill_disclosure_summary(
@@ -2206,6 +2232,89 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertTrue(verified["promotable"], verified)
         self.assertEqual(len(verified["invalid_pairs"]), 1)
+
+    def test_verify_accepts_correct_signed_evidence_with_efficiency_warning(self) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        run_evidence = passing_execute_run_evidence(schedule)
+        for run in run_evidence["runs"]:
+            if run["arm"] != "B":
+                continue
+            runner = next(
+                event
+                for event in run["events"]
+                if event.get("type") == "runner.completed"
+            )
+            runner["duration_seconds"] = 6.0
+
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=run_evidence,
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+
+        self.assertTrue(verified["promotable"], verified)
+        self.assertEqual(verified["efficiency_decision"], "warning")
+        self.assertEqual(verified["efficiency_warnings"], ["duration_seconds"])
+
+    def test_verify_rejects_efficiency_claims_not_derived_from_signed_evidence(self) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        run_evidence = passing_execute_run_evidence(schedule)
+        for run in run_evidence["runs"]:
+            if run["arm"] != "B":
+                continue
+            runner = next(
+                event
+                for event in run["events"]
+                if event.get("type") == "runner.completed"
+            )
+            runner["duration_seconds"] = 6.0
+
+        def hide_warning(analysis):
+            analysis["efficiency_decision"] = "passed"
+            analysis["efficiency_warnings"] = []
+
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=run_evidence,
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            analysis_mutator=hide_warning,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB summary is not derived from the run evidence",
+            verified["errors"],
+        )
+
+    def test_verify_rejects_incomplete_efficiency_evidence_without_requesting_more_pairs(self) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        run_evidence = passing_execute_run_evidence(schedule)
+        candidate = next(run for run in run_evidence["runs"] if run["arm"] == "B")
+        candidate["events"] = [
+            event
+            for event in candidate["events"]
+            if event.get("type") != "turn.completed"
+        ]
+
+        analysis = module.analyze(module.metrics_from_run_evidence(run_evidence))
+        self.assertEqual(analysis["decision"], "passed")
+        self.assertIsNone(analysis["next_pair_target"])
+        self.assertEqual(analysis["efficiency_decision"], "incomplete")
+
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=run_evidence,
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn("AB efficiency evidence is incomplete", verified["errors"])
 
     def test_verify_rejects_missing_terminal_p95_with_one_invalid_pair(self) -> None:
         def remove_p95(analysis):
@@ -2260,11 +2369,23 @@ class AgentGatewayAbTests(unittest.TestCase):
                 metrics_path=metrics,
                 schedule_path=schedule,
                 run_evidence_path=write_run_evidence(root),
-                analysis={"valid_pairs": 10, "invalid_pairs": []},
+                analysis={
+                    "valid_pairs": 10,
+                    "invalid_pairs": [],
+                    "decision": "passed",
+                    "efficiency_decision": "warning",
+                    "efficiency_warnings": ["tool_output_bytes"],
+                },
                 environment={"python": "3.12", "node": "v22"},
             )
 
         self.assertEqual(evidence["samples"]["valid_pairs"], 10)
+        self.assertEqual(evidence["samples"]["decision"], "passed")
+        self.assertEqual(evidence["samples"]["efficiency_decision"], "warning")
+        self.assertEqual(
+            evidence["samples"]["efficiency_warnings"],
+            ["tool_output_bytes"],
+        )
         self.assertEqual(evidence["source"]["candidate_commit"], "a" * 40)
         self.assertIn("geometric_mean_ratio_max", evidence["thresholds"])
         self.assertRegex(evidence["environment_fingerprint"], r"^sha256:[0-9a-f]{64}$")
@@ -2357,6 +2478,17 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("5 percentage points", documentation)
         self.assertIn("Both arms use identical per-run acceptance checks", documentation)
         self.assertIn("Only a candidate non-noise invalid run", documentation)
+
+    def test_documentation_defines_correctness_first_release_qualification(self) -> None:
+        documentation = (
+            Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("correctness-first", documentation)
+        self.assertIn("efficiency_decision", documentation)
+        self.assertIn("does not block promotion", documentation)
+        self.assertIn("not qualification thresholds", documentation)
+        self.assertNotIn("and every bounded regression metric passes", documentation)
 
     def test_verify_cli_uses_the_selected_baseline_ref(self) -> None:
         with patch.object(

@@ -26,7 +26,7 @@ from typing import Iterable, Mapping
 import uuid
 
 
-SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v2"
+SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v3"
 RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v2"
 RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v2"
 RUN_ATTESTATION_IDENTITY = "openubmc-agent-workflow-qualification"
@@ -1509,20 +1509,9 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
         recomputed_validity = {
             arm: _raw_run_valid(item) for arm, item in by_arm.items()
         }
-        metric_gaps = {
-            arm: [
-                metric
-                for metric in METRICS
-                if not isinstance(item.get(metric), (int, float))
-                or isinstance(item.get(metric), bool)
-                or float(item[metric]) <= 0
-            ]
-            for arm, item in by_arm.items()
-        }
         if (
             set(by_arm) != {"A", "B"}
             or not all(recomputed_validity.values())
-            or any(metric_gaps.values())
         ):
             invalid.append(
                 {
@@ -1532,51 +1521,80 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
                     "claimed_valid": {
                         arm: bool(item.get("valid")) for arm, item in by_arm.items()
                     },
-                    "missing_or_nonpositive_metrics": metric_gaps,
                 }
             )
             continue
         paired.append((by_arm["A"], by_arm["B"]))
     summaries: dict[str, object] = {}
-    all_pass = True
+    valid_pairs = len(paired)
     for metric in METRICS:
-        ratios = [float(candidate[metric]) / float(baseline[metric]) for baseline, candidate in paired]
+        metric_pairs = [
+            (baseline, candidate)
+            for baseline, candidate in paired
+            if all(
+                isinstance(item.get(metric), (int, float))
+                and not isinstance(item.get(metric), bool)
+                and math.isfinite(float(item[metric]))
+                and float(item[metric]) > 0
+                for item in (baseline, candidate)
+            )
+        ]
+        metric_complete = valid_pairs > 0 and len(metric_pairs) == valid_pairs
+        ratios = [
+            float(candidate[metric]) / float(baseline[metric])
+            for baseline, candidate in metric_pairs
+        ]
         if ratios:
             point = _geometric_mean(ratios)
             upper = bootstrap_upper(ratios)
-            metric_pass = (
+            threshold_passed = (
                 point <= THRESHOLDS["geometric_mean_ratio_max"]
                 and upper <= THRESHOLDS["one_sided_95_upper_max"]
             )
             p95_ratio = (
                 _percentile(
-                    (float(candidate[metric]) for _baseline, candidate in paired),
+                    (
+                        float(candidate[metric])
+                        for _baseline, candidate in metric_pairs
+                    ),
                     0.95,
                 )
                 / _percentile(
-                    (float(baseline[metric]) for baseline, _candidate in paired),
+                    (
+                        float(baseline[metric])
+                        for baseline, _candidate in metric_pairs
+                    ),
                     0.95,
                 )
                 if attempted_pairs >= CHECKPOINTS[-1]
                 else None
             )
             if p95_ratio is not None:
-                metric_pass = (
-                    metric_pass
+                threshold_passed = (
+                    threshold_passed
                     and p95_ratio <= THRESHOLDS["p95_ratio_max_at_30_pairs"]
                 )
             summaries[metric] = {
                 "paired_ratios": [round(value, 6) for value in ratios],
+                "paired_samples": len(metric_pairs),
+                "expected_paired_samples": valid_pairs,
                 "geometric_mean_ratio": round(point, 6),
                 "one_sided_95_upper": round(upper, 6),
                 "p95_ratio": round(p95_ratio, 6) if p95_ratio is not None else None,
-                "passed": metric_pass,
+                "complete": metric_complete,
+                "passed": metric_complete and threshold_passed,
             }
-            all_pass = all_pass and metric_pass
         else:
-            summaries[metric] = {"passed": False}
-            all_pass = False
-    valid_pairs = len(paired)
+            summaries[metric] = {
+                "paired_ratios": [],
+                "paired_samples": 0,
+                "expected_paired_samples": valid_pairs,
+                "geometric_mean_ratio": None,
+                "one_sided_95_upper": None,
+                "p95_ratio": None,
+                "complete": False,
+                "passed": False,
+            }
     scenarios = {
         str(item.get("scenario", ""))
         for item in metrics
@@ -1605,7 +1623,7 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
             None,
         )
         decision = "collect_more" if next_pairs is not None else "failed"
-    elif all_pass and validity_pass:
+    elif validity_pass:
         decision = "passed"
         next_pairs = None
     elif attempted_pairs < CHECKPOINTS[1]:
@@ -1617,11 +1635,32 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
     else:
         decision = "failed"
         next_pairs = None
+    efficiency_gaps = [
+        metric
+        for metric in METRICS
+        if not bool(_json_object(summaries.get(metric)).get("complete"))
+    ]
+    efficiency_warnings = [
+        metric
+        for metric in METRICS
+        if bool(_json_object(summaries.get(metric)).get("complete"))
+        and not bool(_json_object(summaries.get(metric)).get("passed"))
+    ]
+    efficiency_decision = (
+        "incomplete"
+        if efficiency_gaps
+        else "warning"
+        if efficiency_warnings
+        else "passed"
+    )
     result: dict[str, object] = {
         "schema": SCHEMA,
         "valid_pairs": valid_pairs,
         "invalid_pairs": invalid,
         "metrics": summaries,
+        "efficiency_decision": efficiency_decision,
+        "efficiency_warnings": efficiency_warnings,
+        "efficiency_gaps": efficiency_gaps,
         "decision": decision,
         "next_pair_target": next_pairs,
         "thresholds": dict(THRESHOLDS),
@@ -2175,6 +2214,12 @@ def release_evidence(
             "requested_pairs": requested_pairs,
             "valid_pairs": int(analysis.get("valid_pairs", 0) or 0),
             "invalid_pairs": list(analysis.get("invalid_pairs", [])),
+            "decision": analysis.get("decision"),
+            "efficiency_decision": analysis.get("efficiency_decision"),
+            "efficiency_warnings": list(
+                analysis.get("efficiency_warnings", [])
+            ),
+            "efficiency_gaps": list(analysis.get("efficiency_gaps", [])),
         },
         "artifacts": {
             "all_metrics": {
@@ -2254,9 +2299,32 @@ def verify_summary(
     if summary.get("thresholds") != THRESHOLDS:
         errors.append("AB summary thresholds do not match the release contract")
     metric_summary = _json_object(summary.get("metrics"))
-    for metric in METRICS:
-        if not bool(_json_object(metric_summary.get(metric)).get("passed")):
-            errors.append(f"AB metric did not pass: {metric}")
+    expected_efficiency_gaps = [
+        metric
+        for metric in METRICS
+        if not bool(_json_object(metric_summary.get(metric)).get("complete"))
+    ]
+    expected_efficiency_warnings = [
+        metric
+        for metric in METRICS
+        if bool(_json_object(metric_summary.get(metric)).get("complete"))
+        and not bool(_json_object(metric_summary.get(metric)).get("passed"))
+    ]
+    expected_efficiency_decision = (
+        "incomplete"
+        if expected_efficiency_gaps
+        else "warning"
+        if expected_efficiency_warnings
+        else "passed"
+    )
+    if summary.get("efficiency_decision") != expected_efficiency_decision:
+        errors.append("AB efficiency decision does not match the metric results")
+    if summary.get("efficiency_warnings") != expected_efficiency_warnings:
+        errors.append("AB efficiency warnings do not match the metric results")
+    if summary.get("efficiency_gaps") != expected_efficiency_gaps:
+        errors.append("AB efficiency gaps do not match the metric results")
+    if expected_efficiency_gaps:
+        errors.append("AB efficiency evidence is incomplete")
 
     evidence = _json_object(summary.get("release_evidence"))
     if evidence.get("scenario") != expected_scenario:
@@ -2273,6 +2341,20 @@ def verify_summary(
     samples = _json_object(evidence.get("samples"))
     if samples.get("valid_pairs") != valid_pairs or samples.get("invalid_pairs") != invalid_pairs:
         errors.append("AB release evidence sample counts do not match the summary")
+    if samples.get("decision") != summary.get("decision"):
+        errors.append("AB release evidence decision does not match the summary")
+    if samples.get("efficiency_decision") != summary.get("efficiency_decision"):
+        errors.append(
+            "AB release evidence efficiency decision does not match the summary"
+        )
+    if samples.get("efficiency_warnings") != summary.get("efficiency_warnings"):
+        errors.append(
+            "AB release evidence efficiency warnings do not match the summary"
+        )
+    if samples.get("efficiency_gaps") != summary.get("efficiency_gaps"):
+        errors.append(
+            "AB release evidence efficiency gaps do not match the summary"
+        )
     requested_pairs = samples.get("requested_pairs")
     if (
         isinstance(requested_pairs, int)
@@ -2404,6 +2486,9 @@ def verify_summary(
                 "valid_pairs",
                 "invalid_pairs",
                 "metrics",
+                "efficiency_decision",
+                "efficiency_warnings",
+                "efficiency_gaps",
                 "decision",
                 "next_pair_target",
                 "thresholds",
@@ -2453,6 +2538,9 @@ def verify_summary(
         "summary_path": str(summary_path),
         "summary_sha256": _sha256(summary_path),
         "evidence_digest": expected_evidence_digest,
+        "efficiency_decision": summary.get("efficiency_decision"),
+        "efficiency_warnings": summary.get("efficiency_warnings", []),
+        "efficiency_gaps": summary.get("efficiency_gaps", []),
     }
 
 
