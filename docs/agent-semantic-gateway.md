@@ -88,8 +88,11 @@ automatic Runtime policy and is not returned in the Agent projection.
 An `ObservationReceipt` contains semantic values, tri-state capability results
 (`available | unavailable | not_checked`), coverage, observation time, target identity when
 available, grounded claims, and receipt-local evidence references. It does not open a Case or
-generate a Closeout. The model-visible document is limited to 4 KiB; a result that cannot fit is
-returned as an incomplete receipt requesting narrower selectors.
+generate a Closeout. The model-visible document targets 4 KiB. Projection pressure may compact
+inline values and set `projection_truncated`; it never changes source status or coverage, removes a
+valid `ObservationRef`, or requires the Agent to guess narrower selectors. A projection that still
+cannot preserve those semantics within the target may exceed it with
+`projection_target_exceeded=true`.
 
 The redacted raw observation and its selector timing are persisted in the Runtime Core as a
 content-addressed source. Partial evidence remains available through receipt-local source links,
@@ -126,7 +129,8 @@ Runtime-owned Gate, Incident, terminal Outcome, or diagnostic completion semanti
 preserved semantics still do not fit, the Turn may exceed the projection target and reports that
 condition as telemetry rather than a blocker.
 The MCP Adapter also renders a bounded textual receipt summary in standard `content`, including
-coverage, freshness, source completeness, capabilities, gaps, and citable result previews. The
+source status, `agent_acceptance=complete|partial|blocked`, coverage, freshness, source
+completeness, capabilities, gaps, and citable result previews. The
 typed Turn remains authoritative in `structuredContent`; the text prevents clients that underuse
 structured MCP data from reducing `execute` to a generic completed/failed acknowledgement.
 
@@ -148,8 +152,9 @@ Source-complete Evidence remains complete after compaction, but `stage.diagnosis
 blocked when the persisted Agent-visible receipt is only partially evaluable or not evaluable.
 A generic operation summary therefore cannot satisfy `stage.diagnosis`.
 
-A Turn targets 8 KiB; each Gate schema remains limited to 4 KiB. If a diagnostic result exceeds
-the Turn target, result previews are compacted while source coverage counts, freshness, truncation,
+A Turn targets 8 KiB and a Gate schema targets 4 KiB; neither target can reject or replace a Gate.
+`gate_projection_target_exceeded` reports a Gate schema above its display target. If a diagnostic
+result exceeds the Turn target, result previews are compacted while source coverage counts, freshness, truncation,
 `content_complete`, gaps, capability states, and Evidence references remain visible. Compacted
 results retain a bounded substantive summary; a result that cannot retain evaluable content becomes
 `not_checked` instead of remaining `available`. Coverage also reports `visible_evaluable` and
@@ -232,10 +237,9 @@ The release gate verifies the semantic interface in addition to install, upgrade
 Replay:
 
 - default tool count is two and `tools/list` stays within 8 KiB;
-- ObservationReceipt stays within 4 KiB;
-- ordinary Turns stay within the 8 KiB projection target, while Gate schemas stay within 4 KiB;
-- a Turn may exceed the projection target only to preserve Runtime-owned Gate, Incident, Outcome,
-  or complete DiagnosticReceipt semantics;
+- ordinary ObservationReceipts and Gate schemas target 4 KiB, while Turns target 8 KiB;
+- a projection may exceed its display target to preserve Runtime-owned Observation, Gate,
+  Incident, Outcome, or complete DiagnosticReceipt semantics;
 - observations do not create Cases;
 - unsupported scope and stale freshness models are rejected before collection;
 - capability and claim coverage remain explicit;

@@ -12,6 +12,6 @@ documents; ADRs define the decisions implementation must preserve.
 | [ADR-0004](0004-developer-default-and-gate-submissions.md) | Accepted | Use one developer-friendly automatic behavior and bind Gate submissions by durable identity and digest without a secret Agent token. |
 | [ADR-0005](0005-retire-compatibility-writers-and-profile.md) | Accepted | Retire compatibility writers and profile after the same-source evidence gate, while preserving historical telemetry and old-event upcasters. |
 | [ADR-0006](0006-isolate-model-planning-until-leverage-is-proven.md) | Proposed | Keep model planning isolated until real-task evidence proves leverage over pinned static workflows. |
-| [ADR-0007](0007-soft-agent-projection-budget.md) | Accepted | Treat 8 KiB as a soft Turn projection target without rewriting Runtime-owned semantics. |
+| [ADR-0007](0007-soft-agent-projection-budget.md) | Accepted | Treat 4/8 KiB as soft Agent display targets without rewriting Runtime-owned semantics. |
 
 New ADRs supersede earlier decisions explicitly; they do not silently reinterpret them.

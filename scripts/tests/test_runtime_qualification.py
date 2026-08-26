@@ -157,12 +157,13 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "false_successes": 0,
                 "wrong_target_or_artifact_mutations": 0,
                 "unknown_new_identity_retries": 0,
+                "semantic_projection_completion": 0,
                 "real_backend_crash_cuts": 0,
                 "runtime_stability": 0,
             },
         )
         self.assertTrue(report["ordinary_partial_result_accepted"])
-        self.assertEqual(len(calls), 7)
+        self.assertEqual(len(calls), 8)
         self.assertEqual(report["source_commit"], SOURCE_COMMIT)
         self.assertEqual(
             report["environment"],
@@ -204,7 +205,7 @@ class RuntimeQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["promotable"])
         self.assertGreater(report["violations"]["false_successes"], 0)
-        self.assertEqual(call_count, 7)
+        self.assertEqual(call_count, 8)
 
     def test_incomplete_stability_report_blocks_promotion(self) -> None:
         def incomplete(command, *, cwd):

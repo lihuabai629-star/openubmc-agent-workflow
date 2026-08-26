@@ -63,6 +63,16 @@ QUALIFICATIONS = (
             "tests.test_domain_pack_conformance.DomainPackConformanceTests.test_mutation_pack_never_retries_an_unknown_result",
         ),
     ),
+    (
+        "semantic_projection_completion",
+        (
+            "tests.test_agent_gateway.AgentGatewayTests.test_observe_projection_target_preserves_complete_source_semantics",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_gate_target_preserves_runtime_gate_semantics",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_budget_never_rewrites_terminal_outcome",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_budget_preserves_diagnostic_receipt_semantics",
+            "tests.test_mcp_contracts.JsonRpcEndpointTests.test_execute_text_does_not_treat_projection_compaction_as_incomplete_source",
+        ),
+    ),
 )
 
 PARTIAL_RESULT_TESTS = (

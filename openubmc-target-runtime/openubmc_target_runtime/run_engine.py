@@ -18,7 +18,6 @@ from .semantic_runtime import (
     CommandConflict,
     Gate,
     GateConflict,
-    GATE_SCHEMA_MAX_BYTES,
     Incident,
     ObservationQuery,
     ObservationRef,
@@ -237,8 +236,6 @@ def gate_input_schema(
         ],
         "receipt_schema": descriptor.receipt_schema,
     }
-    if len(json_bytes(schema)) > GATE_SCHEMA_MAX_BYTES:
-        raise GateConflict("Gate schema exceeds the 4 KiB Runtime budget")
     return schema
 
 

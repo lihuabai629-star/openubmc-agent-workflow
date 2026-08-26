@@ -30,6 +30,7 @@ operation identities, retry safety, target fencing, or terminal success.
 | **ObservationResult** | The Runtime-owned result of an ObservationQuery before Agent projection. |
 | **ObservationReceipt** | A bounded Agent projection of an ObservationResult. It is not Run state or mutation evidence. |
 | **ObservationRef** | A stable handle and digest that lets the Runtime reconstruct and validate persisted observation content. |
+| **DiagnosticRequestPlan** | One Runtime-internal normalized representation of accepted diagnostic result identities, shared by scope validation and durable receipt materialization. |
 | **ArtifactRef** | A bounded handle, digest, type, size, provenance, retention, target, and Run binding for content stored outside Run state. |
 | **Run** | One durable execution of a pinned workflow definition for a target and intent. |
 | **RunCommand** | A typed request to start, respond to, resume, or control a Run. |
@@ -66,6 +67,7 @@ historical event upcasters are read paths and cannot commit new Run transitions.
 | Mutation execution and recovery truth | `MutationJournal` |
 | Artifact bytes, digest verification, retention, and access policy | `ArtifactStore` |
 | Diagnostic Evidence sanitization, completion semantics, and durable `DiagnosticReceipt` formation | Runtime Core |
+| Diagnostic result identity planning and accepted-scope counting | `DiagnosticRequestPlan` |
 | Final Agent projection and soft display-budget compaction | `AgentGateway` |
 | Review, approval, promotion, and lifecycle governance | Operator / CI Plane |
 | Experimental model invocation, proposal validation, and inert revision persistence | `PlanResolver` |

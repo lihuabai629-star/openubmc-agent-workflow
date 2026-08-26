@@ -1017,9 +1017,41 @@ class JsonRpcEndpointTests(unittest.TestCase):
         self.assertLessEqual(len(summary.encode("utf-8")), 4096)
         self.assertIn("source_coverage=64/64", summary)
         self.assertIn("visible=32/64", summary)
+        self.assertIn("agent_acceptance=partial", summary)
         self.assertIn("results_shown=8/32", summary)
         self.assertIn("diagnostic_gaps: diagnostic_receipt_compacted, critical-gap", summary)
         self.assertIn("evidence_ids: evidence-citable", summary)
+
+    def test_execute_text_does_not_treat_projection_compaction_as_incomplete_source(self) -> None:
+        response = self.endpoint._tool_result(
+            {
+                "state": "completed",
+                "diagnostic_receipt": {
+                    "status": "complete",
+                    "coverage": {
+                        "requested": 7,
+                        "evaluable": 7,
+                        "unavailable": 0,
+                        "not_checked": 0,
+                        "complete": True,
+                        "visible_evaluable": 7,
+                        "visible_unavailable": 0,
+                        "visible_not_checked": 0,
+                        "compacted": 7,
+                    },
+                    "results": [],
+                    "freshness": {"status": "fresh"},
+                    "truncated": False,
+                    "content_complete": True,
+                    "gaps": ["diagnostic_receipt_compacted"],
+                },
+            },
+            tool_name="execute",
+        )
+
+        summary = response["content"][0]["text"]
+        self.assertIn("DiagnosticReceipt status=complete", summary)
+        self.assertIn("agent_acceptance=complete", summary)
 
     def test_related_domain_results_share_concise_chinese_text_content(self) -> None:
         cases = (

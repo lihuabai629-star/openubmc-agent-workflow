@@ -1,4 +1,4 @@
-# ADR-0007: Treat the Agent Turn budget as a soft projection target
+# ADR-0007: Treat Agent display budgets as soft projection targets
 
 - Status: Accepted
 - Date: 2026-08-26
@@ -21,15 +21,15 @@ is projecting.
 
 ## Decision
 
-Keep 8 KiB as the target size for an Agent-visible Turn, not a hard control-flow maximum.
-`AgentGateway` compacts facts and diagnostic previews first. If the authoritative Gate, Incident,
-Outcome, or `DiagnosticReceipt` semantics still do not fit, it returns the larger Turn and records
-`projection_target_exceeded=true` rather than changing Runtime completion or creating a budget
-blocker.
+Keep 4 KiB as the target size for an Agent-visible `ObservationReceipt` and Gate schema, and 8 KiB
+as the target size for an Agent-visible Turn. None is a control-flow maximum. `AgentGateway`
+compacts observation values, facts, and diagnostic previews first. If authoritative Observation,
+Gate, Incident, Outcome, or `DiagnosticReceipt` semantics still do not fit, it returns the larger
+projection and records projection telemetry rather than changing Runtime completion, removing a
+reusable `ObservationRef`, or creating a budget blocker.
 
-The following remain hard bounds:
+The following remain hard anti-runaway bounds:
 
-- each Gate input schema is at most 4 KiB;
 - each MCP Agent request is at most 256 KiB;
 - one `execute` call advances at most 64 internal steps;
 - each durable `DiagnosticReceipt` is at most 32 KiB and an accepted diagnostic scope requires at
@@ -46,7 +46,8 @@ completion semantics.
 
 - Projection pressure cannot rewrite a complete Runtime source result; Agent acceptance still
   fails closed when durable compaction cannot retain complete visible evaluability.
-- Ordinary Turns still target 8 KiB and report compaction telemetry separately from workflow state.
+- Ordinary ObservationReceipts and Gate schemas still target 4 KiB, and Turns target 8 KiB; all
+  report compaction or target-exceeded telemetry separately from workflow state.
 - A rare oversized semantic Turn is visible and measurable instead of becoming a retry loop that
   asks the Agent to guess a narrower diagnostic scope.
 - Large source bytes remain externalized; this decision does not permit raw Evidence or logs in
@@ -57,9 +58,10 @@ completion semantics.
 ## Rejected alternatives
 
 - Restore an 8 KiB hard failure or output-budget blocker.
+- Restore a 4 KiB ObservationReceipt or Gate-schema completeness/control-flow boundary.
 - Drop Gate, Incident, Outcome, or diagnostic completion fields until the Turn fits.
 - Add a third Agent-facing Evidence-read tool to recover information removed by projection.
-- Remove the hard Gate, request, internal-step, durable-receipt, or ArtifactRef boundaries.
+- Remove the request, internal-step, durable-receipt, or ArtifactRef boundaries.
 
 ## Evidence and references
 

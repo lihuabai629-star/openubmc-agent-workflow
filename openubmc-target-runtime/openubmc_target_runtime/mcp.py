@@ -25,7 +25,7 @@ from .contracts import (
 )
 from .catalog import OperationCatalog
 from .agent_gateway import (
-    OBSERVATION_MAX_BYTES,
+    OBSERVATION_PROJECTION_TARGET_BYTES,
     agent_operation_descriptors,
     render_execute_turn_text,
 )
@@ -3457,9 +3457,9 @@ class JsonRpcMcpEndpoint:
         )
         text = "\n".join(lines)
         encoded = text.encode("utf-8")
-        if len(encoded) <= OBSERVATION_MAX_BYTES:
+        if len(encoded) <= OBSERVATION_PROJECTION_TARGET_BYTES:
             return text
-        return encoded[: OBSERVATION_MAX_BYTES - 3].decode(
+        return encoded[: OBSERVATION_PROJECTION_TARGET_BYTES - 3].decode(
             "utf-8", errors="ignore"
         ) + "..."
 

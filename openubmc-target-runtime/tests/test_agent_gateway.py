@@ -1553,7 +1553,7 @@ class OversizedGateTurnRuntime:
                 "owner": "openubmc-developer",
                 "input_schema": {
                     "type": "object",
-                    "description": "x" * 20_000,
+                    "description": "x" * 5_000,
                 },
             },
         )
@@ -2187,7 +2187,7 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(receipt["status"], "incomplete")
 
-    def test_observe_compaction_is_incomplete_and_never_exceeds_four_kib(self) -> None:
+    def test_observe_projection_target_preserves_complete_source_semantics(self) -> None:
         service = RuntimeMcpService(LargeObservationBackend())
         try:
             receipt = service.call_exposed_tool(
@@ -2208,13 +2208,16 @@ class AgentGatewayTests(unittest.TestCase):
         finally:
             service.close()
 
-        self.assertLessEqual(encoded_size(receipt), OBSERVATION_MAX_BYTES)
-        self.assertEqual(receipt["status"], "incomplete")
-        self.assertFalse(receipt["coverage"]["complete"])
+        self.assertEqual(receipt["status"], "complete")
+        self.assertTrue(receipt["coverage"]["complete"])
         self.assertTrue(receipt["content_compacted"])
-        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(receipt["projection_truncated"])
+        self.assertFalse(receipt["manual_narrowing_required"])
+        self.assertFalse(receipt["budget_blocker"])
+        self.assertIn("observation_ref", receipt)
+        self.assertNotIn("narrow the selectors", json.dumps(receipt))
 
-    def test_observe_hard_limit_survives_oversized_target_metadata(self) -> None:
+    def test_observe_projection_target_does_not_rewrite_oversized_target_metadata(self) -> None:
         service = RuntimeMcpService(OversizedObservationBackend())
         try:
             receipt = service.call_exposed_tool(
@@ -2231,11 +2234,13 @@ class AgentGatewayTests(unittest.TestCase):
         finally:
             service.close()
 
-        self.assertLessEqual(encoded_size(receipt), OBSERVATION_MAX_BYTES)
-        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(receipt["status"], "complete")
+        self.assertTrue(receipt["coverage"]["complete"])
         self.assertTrue(receipt["content_compacted"])
+        self.assertTrue(receipt["projection_truncated"])
+        self.assertIn("observation_ref", receipt)
 
-    def test_observe_hard_limit_survives_maximum_legal_scope_and_large_result(self) -> None:
+    def test_observe_soft_target_survives_maximum_legal_scope_and_large_result(self) -> None:
         service = RuntimeMcpService(LargeObservationBackend())
         try:
             receipt = service.call_exposed_tool(
@@ -2256,9 +2261,12 @@ class AgentGatewayTests(unittest.TestCase):
         finally:
             service.close()
 
-        self.assertLessEqual(encoded_size(receipt), OBSERVATION_MAX_BYTES)
-        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(receipt["status"], "complete")
+        self.assertTrue(receipt["coverage"]["complete"])
         self.assertTrue(receipt["content_compacted"])
+        self.assertTrue(receipt["projection_truncated"])
+        self.assertFalse(receipt["manual_narrowing_required"])
+        self.assertIn("observation_ref", receipt)
 
     def test_compacted_observation_preserves_selector_identity_and_order(self) -> None:
         service = RuntimeMcpService(OversizedObservationBackend())
@@ -2279,8 +2287,10 @@ class AgentGatewayTests(unittest.TestCase):
         finally:
             service.close()
 
-        self.assertLessEqual(encoded_size(receipt), OBSERVATION_MAX_BYTES)
+        self.assertGreater(encoded_size(receipt), OBSERVATION_MAX_BYTES)
         self.assertTrue(receipt["content_compacted"])
+        self.assertTrue(receipt["projection_target_exceeded"])
+        self.assertIn("observation_ref", receipt)
         self.assertEqual(
             [selector["id"] for selector in receipt["scope"]["selectors"]],
             selector_ids,
@@ -4854,17 +4864,28 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(turn["content_compacted"])
         self.assertTrue(turn["projection_target_exceeded"])
 
-    def test_execute_turn_rejects_a_gate_schema_above_its_hard_limit(self) -> None:
-        with self.assertRaisesRegex(AgentGatewayError, "Gate schema.*4 KiB"):
-            AgentGateway(OversizedGateTurnRuntime()).execute(
-                {
-                    "kind": "start",
-                    "target": "192.0.2.20",
-                    "delivery_strategy": "source-only",
-                },
-                task_id="oversized-gate",
-                operation_id="oversized-gate-1",
-            )
+    def test_execute_turn_soft_gate_target_preserves_runtime_gate_semantics(self) -> None:
+        turn = AgentGateway(OversizedGateTurnRuntime()).execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "delivery_strategy": "source-only",
+            },
+            task_id="oversized-gate",
+            operation_id="oversized-gate-1",
+        )
+
+        self.assertEqual(turn["state"], "waiting_response")
+        self.assertEqual(turn["gate"]["gate_id"], "gate-oversized")
+        self.assertEqual(
+            turn["gate"]["input_schema"]["description"],
+            "x" * 5_000,
+        )
+        self.assertLess(encoded_size(turn), TURN_MAX_BYTES)
+        self.assertTrue(turn["gate_projection_target_exceeded"])
+        self.assertTrue(turn["projection_target_exceeded"])
+        self.assertFalse(turn["manual_narrowing_required"])
+        self.assertFalse(turn["budget_blocker"])
 
     def test_execute_turn_budget_preserves_diagnostic_receipt_semantics(self) -> None:
         turn = AgentGateway(OversizedDiagnosticTurnRuntime()).execute(
@@ -4992,25 +5013,26 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(len(turn["diagnostic_receipt"]["results"]), 128)
         self.assertTrue(turn["projection_target_exceeded"])
 
-    def test_gate_schema_limit_is_enforced_when_the_gate_is_constructed(self) -> None:
+    def test_gate_construction_preserves_schema_above_the_projection_target(self) -> None:
         oversized_schema = {"type": "object", "description": "x" * 5_000}
 
-        with self.assertRaisesRegex(GateConflict, "4 KiB"):
-            Gate(
-                gate_id="gate-oversized-construction",
-                version=1,
-                name="developer.change",
-                owner="openubmc-developer",
-                input_schema=oversized_schema,
-                schema_digest=hashlib.sha256(
-                    json.dumps(
-                        oversized_schema,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest(),
-            )
+        gate = Gate(
+            gate_id="gate-oversized-construction",
+            version=1,
+            name="developer.change",
+            owner="openubmc-developer",
+            input_schema=oversized_schema,
+            schema_digest=hashlib.sha256(
+                json.dumps(
+                    oversized_schema,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        )
+
+        self.assertEqual(gate.input_schema, oversized_schema)
 
     def test_execute_turn_soft_budget_never_rewrites_terminal_outcome(self) -> None:
         turn = AgentGateway(OversizedTerminalTurnRuntime(128)).execute(
