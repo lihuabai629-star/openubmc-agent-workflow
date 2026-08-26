@@ -1559,6 +1559,21 @@ class OversizedGateTurnRuntime:
         )
 
 
+class AdapterExpandedDiagnosticBackend(SemanticBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("debug_run", dict(arguments)))
+        return {
+            "ok": True,
+            "observed_at": "2026-08-26T00:00:00Z",
+            "request": {
+                "files": [f"/tmp/adapter-{index}.txt" for index in range(1025)],
+                "mdb_only": True,
+            },
+            "freshness": {"status": "fresh"},
+        }
+
+
 class OversizedDiagnosticTurnRuntime:
     def __init__(self, result_count: int = 20) -> None:
         self.result_count = result_count
@@ -2216,6 +2231,9 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(receipt["budget_blocker"])
         self.assertIn("observation_ref", receipt)
         self.assertNotIn("narrow the selectors", json.dumps(receipt))
+        projected_value = receipt["results"]["large"]["values"][0]["value"]
+        self.assertIn("Large", json.dumps(projected_value))
+        self.assertNotIn("<compacted>", json.dumps(projected_value))
 
     def test_observe_projection_target_does_not_rewrite_oversized_target_metadata(self) -> None:
         service = RuntimeMcpService(OversizedObservationBackend())
@@ -2236,8 +2254,9 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertEqual(receipt["status"], "complete")
         self.assertTrue(receipt["coverage"]["complete"])
-        self.assertTrue(receipt["content_compacted"])
-        self.assertTrue(receipt["projection_truncated"])
+        self.assertFalse(receipt["content_compacted"])
+        self.assertFalse(receipt["projection_truncated"])
+        self.assertTrue(receipt["projection_target_exceeded"])
         self.assertIn("observation_ref", receipt)
 
     def test_observe_soft_target_survives_maximum_legal_scope_and_large_result(self) -> None:
@@ -2288,7 +2307,7 @@ class AgentGatewayTests(unittest.TestCase):
             service.close()
 
         self.assertGreater(encoded_size(receipt), OBSERVATION_MAX_BYTES)
-        self.assertTrue(receipt["content_compacted"])
+        self.assertFalse(receipt["content_compacted"])
         self.assertTrue(receipt["projection_target_exceeded"])
         self.assertIn("observation_ref", receipt)
         self.assertEqual(
@@ -2979,12 +2998,13 @@ class AgentGatewayTests(unittest.TestCase):
             service.close()
 
         receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["agent_acceptance"], "partial")
         self.assertEqual(receipt["status"], "partial")
         self.assertEqual(
             receipt["coverage"],
             {
-                "requested": 10,
-                "evaluable": 10,
+                "requested": 4,
+                "evaluable": 4,
                 "unavailable": 0,
                 "not_checked": 0,
                 "complete": False,
@@ -3001,22 +3021,11 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             set(results),
             {
-                "version",
-                "uptime",
                 "target-clock",
                 "logs",
                 "service",
                 "mdb-1",
-                "file-3",
-                "mdb-expand-1",
-                "active-alarms",
-                "correlation",
             },
-        )
-        self.assertEqual(results["active-alarms"]["status"], "available")
-        self.assertEqual(
-            results["file-3"]["value"]["lines"],
-            ["custom diagnostic value"],
         )
         self.assertEqual(results["mdb-1"]["request"], "lsmc")
         self.assertEqual(
@@ -3096,8 +3105,8 @@ class AgentGatewayTests(unittest.TestCase):
             item for item in receipt["results"] if item["result_id"] == "target-clock"
         )
         self.assertEqual(receipt["status"], "partial")
-        self.assertEqual(receipt["coverage"]["requested"], 10)
-        self.assertEqual(receipt["coverage"]["evaluable"], 9)
+        self.assertEqual(receipt["coverage"]["requested"], 4)
+        self.assertEqual(receipt["coverage"]["evaluable"], 3)
         self.assertEqual(receipt["coverage"]["not_checked"], 1)
         self.assertFalse(receipt["coverage"]["complete"])
         self.assertEqual(target_clock["status"], "not_checked")
@@ -3123,6 +3132,7 @@ class AgentGatewayTests(unittest.TestCase):
 
         receipt = turn["diagnostic_receipt"]
         self.assertEqual(turn["state"], "failed")
+        self.assertEqual(receipt["agent_acceptance"], "blocked")
         self.assertEqual(receipt["status"], "blocked")
         self.assertEqual(receipt["coverage"]["evaluable"], 0)
         self.assertEqual(receipt["results"][0]["status"], "not_checked")
@@ -4883,7 +4893,7 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertLess(encoded_size(turn), TURN_MAX_BYTES)
         self.assertTrue(turn["gate_projection_target_exceeded"])
-        self.assertTrue(turn["projection_target_exceeded"])
+        self.assertFalse(turn.get("projection_target_exceeded", False))
         self.assertFalse(turn["manual_narrowing_required"])
         self.assertFalse(turn["budget_blocker"])
 
@@ -4901,6 +4911,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertGreater(encoded_size(turn), TURN_MAX_BYTES)
         self.assertEqual(turn["state"], "completed")
         receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["agent_acceptance"], "complete")
         self.assertEqual(receipt["status"], "complete")
         self.assertEqual(receipt["coverage"]["requested"], 20)
         self.assertEqual(receipt["coverage"]["evaluable"], 20)
@@ -4930,6 +4941,110 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertNotIn("content_truncated", receipt["gaps"])
         self.assertTrue(turn["content_compacted"])
         self.assertTrue(turn["projection_target_exceeded"])
+
+    def test_adapter_cannot_expand_diagnostic_scope_beyond_the_durable_contract(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(AdapterExpandedDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                },
+                task_id="adapter-expanded-diagnostic-scope",
+                operation_id="adapter-expanded-diagnostic-scope-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["coverage"]["requested"], 1)
+        self.assertEqual(len(receipt["results"]), 1)
+        self.assertEqual(receipt["results"][0]["kind"], "diagnostic-scope")
+        self.assertEqual(
+            receipt["results"][0]["gap"],
+            "runtime_diagnostic_scope_exceeds_1024_result_identities",
+        )
+
+    def test_multi_target_adapter_defaults_cannot_expand_the_durable_scope(
+        self,
+    ) -> None:
+        targets = [
+            {
+                "ip": "192.0.2.20",
+                "role": "reference",
+                "target_id": "reference",
+            },
+            {
+                "ip": "192.0.2.21",
+                "role": "candidate",
+                "target_id": "candidate",
+            },
+        ]
+        value = {
+            "targets": [
+                {
+                    "target_id": target["target_id"],
+                    "result": {
+                        "request": {
+                            "files": [
+                                f"/tmp/{target['target_id']}-{index}.txt"
+                                for index in range(600)
+                            ],
+                            "mdb_only": True,
+                        }
+                    },
+                }
+                for target in targets
+            ]
+        }
+
+        receipt = build_diagnostic_receipt(
+            "debug_run",
+            value,
+            {"targets": targets},
+            (),
+            closeout_stage="diagnosis",
+        )
+
+        self.assertIsNotNone(receipt)
+        public = receipt.to_public_dict()
+        self.assertEqual(public["status"], "blocked")
+        self.assertEqual(public["coverage"]["requested"], 1)
+        self.assertEqual(public["results"][0]["kind"], "diagnostic-scope")
+
+    def test_duplicate_special_file_requests_receive_unique_result_identities(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(BoundedDiagnosticBackend())
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.20",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {
+                        "files": ["/etc/version.json", "/etc/version.json"],
+                        "mdb_only": True,
+                    },
+                },
+                task_id="duplicate-special-file-identities",
+                operation_id="duplicate-special-file-identities-start",
+            )
+        finally:
+            service.close()
+
+        receipt = turn["diagnostic_receipt"]
+        result_ids = [item["result_id"] for item in receipt["results"]]
+        self.assertEqual(result_ids, ["version", "version-2"])
+        self.assertNotIn("diagnostic_result_identity_invalid", receipt["gaps"])
 
     def test_execute_turn_compaction_preserves_an_evaluable_result_summary(self) -> None:
         turn = AgentGateway(DeeplyNestedDiagnosticTurnRuntime()).execute(

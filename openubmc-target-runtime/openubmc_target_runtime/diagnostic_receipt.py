@@ -224,35 +224,6 @@ class DiagnosticCoverage:
             result["compacted"] = self.compacted
         return result
 
-    def status_for_agent_acceptance(
-        self,
-        source_status: DiagnosticStatus,
-    ) -> DiagnosticStatus:
-        """Classify Agent evaluability without rewriting source completion."""
-
-        if source_status is DiagnosticStatus.BLOCKED:
-            return source_status
-        visible = (
-            self.visible_evaluable,
-            self.visible_unavailable,
-            self.visible_not_checked,
-        )
-        if all(value is None for value in visible):
-            return source_status
-        visible_evaluable = self.visible_evaluable or 0
-        if source_status is DiagnosticStatus.COMPLETE and (
-            visible_evaluable == self.requested
-            and (self.visible_unavailable or 0) == 0
-            and (self.visible_not_checked or 0) == 0
-        ):
-            return source_status
-        return (
-            DiagnosticStatus.PARTIAL
-            if visible_evaluable > 0
-            else DiagnosticStatus.BLOCKED
-        )
-
-
 @dataclass(frozen=True)
 class DiagnosticResult:
     result_id: str
@@ -848,7 +819,36 @@ class DiagnosticReceipt:
 
     def status_for_agent_acceptance(self) -> DiagnosticStatus:
         """Classify whether the persisted receipt is fully evaluable by an Agent."""
-        return self.coverage.status_for_agent_acceptance(self.status)
+        return self.agent_acceptance_for(self.status, self.coverage)
+
+    @staticmethod
+    def agent_acceptance_for(
+        source_status: DiagnosticStatus,
+        coverage: DiagnosticCoverage,
+    ) -> DiagnosticStatus:
+        """Classify Agent evaluability without rewriting source completion."""
+
+        if source_status is DiagnosticStatus.BLOCKED:
+            return source_status
+        visible = (
+            coverage.visible_evaluable,
+            coverage.visible_unavailable,
+            coverage.visible_not_checked,
+        )
+        if all(value is None for value in visible):
+            return source_status
+        visible_evaluable = coverage.visible_evaluable or 0
+        if source_status is DiagnosticStatus.COMPLETE and (
+            visible_evaluable == coverage.requested
+            and (coverage.visible_unavailable or 0) == 0
+            and (coverage.visible_not_checked or 0) == 0
+        ):
+            return source_status
+        return (
+            DiagnosticStatus.PARTIAL
+            if visible_evaluable > 0
+            else DiagnosticStatus.BLOCKED
+        )
 
     def compacted_for_agent(self) -> "DiagnosticReceipt":
         selected_items: list[DiagnosticResult] = []
@@ -1555,11 +1555,12 @@ def _diagnostic_request(
     value: Mapping[str, object],
     arguments: Mapping[str, object],
 ) -> dict[str, object]:
-    request = dict(_mapping(value.get("request")))
-    for name in _DIAGNOSTIC_REQUEST_FIELDS:
-        if name in arguments:
-            request[name] = arguments[name]
-    return request
+    runtime_request = {
+        name: arguments[name]
+        for name in _DIAGNOSTIC_REQUEST_FIELDS
+        if name in arguments
+    }
+    return runtime_request or dict(_mapping(value.get("request")))
 
 
 def _expected_comparison_scope(
@@ -1580,6 +1581,21 @@ def _expected_comparison_scope(
     return targets, identities
 
 
+def _diagnostic_scope_limit_result(
+    evidence_ids: list[str],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "result_id": "diagnostic-scope",
+            "kind": "diagnostic-scope",
+            "request": "Runtime-owned diagnostic result identities",
+            "status": "not_checked",
+            "gap": "runtime_diagnostic_scope_exceeds_1024_result_identities",
+            "evidence_ids": evidence_ids,
+        }
+    ]
+
+
 def _structured_results(
     value: Mapping[str, object],
     evidence_ids: list[str],
@@ -1587,17 +1603,27 @@ def _structured_results(
 ) -> list[dict[str, object]]:
     request = _diagnostic_request(value, arguments)
     plan = DiagnosticRequestPlan.from_mapping(request)
+    if plan.result_count > DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS:
+        return _diagnostic_scope_limit_result(evidence_ids)
     runtime_result = _mapping(value.get("result"))
     lanes = _mapping(runtime_result.get("lanes"))
     ssh = _mapping(lanes.get("ssh"))
     telnet = _mapping(lanes.get("telnet"))
     files = _mapping(telnet.get("files"))
     results: list[dict[str, object]] = []
+    result_id_counts: dict[str, int] = {}
     for index, path in enumerate(plan.files, start=1):
-        result_id, kind = {
+        base_result_id, kind = {
             "/etc/version.json": ("version", "target-version"),
             "/proc/uptime": ("uptime", "target-uptime"),
         }.get(path, (f"file-{index}", "target-file"))
+        occurrence = result_id_counts.get(base_result_id, 0) + 1
+        result_id_counts[base_result_id] = occurrence
+        result_id = (
+            base_result_id
+            if occurrence == 1
+            else f"{base_result_id}-{occurrence}"
+        )
         results.append(
             _tool_result(
                 result_id=result_id,
@@ -1787,6 +1813,11 @@ def _comparison_results(
             evidence_ids,
             target_arguments,
         )
+        if (
+            len(results) + len(child_results) + 1
+            > DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS
+        ):
+            return _diagnostic_scope_limit_result(evidence_ids)
         for child_result in child_results:
             projected = dict(child_result)
             projected["result_id"] = (
@@ -2086,9 +2117,24 @@ def build_diagnostic_receipt(
         for reference in evidence_refs[:8]
         if _bounded_text(reference.get("evidence_id"), 128)
     ]
-    results = _comparison_results(value, reference_ids, arguments)
-    if not results:
-        results = _structured_results(value, reference_ids, arguments)
+    request = _diagnostic_request(value, arguments)
+    raw_targets = arguments.get("targets", [])
+    target_count = (
+        len(raw_targets)
+        if isinstance(raw_targets, Sequence)
+        and not isinstance(raw_targets, (str, bytes, bytearray))
+        and raw_targets
+        else 1
+    )
+    requested_result_count = DiagnosticRequestPlan.from_mapping(
+        request
+    ).total_result_count(target_count=target_count)
+    if requested_result_count > DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS:
+        results = _diagnostic_scope_limit_result(reference_ids)
+    else:
+        results = _comparison_results(value, reference_ids, arguments)
+        if not results:
+            results = _structured_results(value, reference_ids, arguments)
     diagnosis, diagnosis_truncated = _diagnostic_content_with_flags(value)
     source_truncated, source_completeness = _content_flags(value)
     diagnosis_content_complete = (

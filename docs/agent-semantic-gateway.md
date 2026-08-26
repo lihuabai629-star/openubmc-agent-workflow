@@ -133,6 +133,8 @@ source status, `agent_acceptance=complete|partial|blocked`, coverage, freshness,
 completeness, capabilities, gaps, and citable result previews. The
 typed Turn remains authoritative in `structuredContent`; the text prevents clients that underuse
 structured MCP data from reducing `execute` to a generic completed/failed acknowledgement.
+The projected `diagnostic_receipt` in `structuredContent` carries the same `agent_acceptance`
+classification so clients do not need to parse text or reinterpret visible coverage.
 
 Domain execution completion is not diagnosis completion. Zero source-evaluable requested items
 produce a blocked receipt, incomplete source content produces a partial receipt, and complete is
@@ -168,6 +170,8 @@ Projection telemetry distinguishes display pressure from workflow state:
 `projection_compacted` reports summary compaction, `projection_target_exceeded` reports a final
 Turn above the 8 KiB target, `manual_narrowing_required` remains false for execute Turns, and
 `budget_blocker` remains false. These fields never participate in Closeout or Outcome formation.
+Gate-only pressure is reported independently as `gate_projection_target_exceeded`; it does not set
+the Turn-wide target-exceeded flag unless the final Turn itself exceeds 8 KiB.
 
 The durable Receipt is separately limited to 32 KiB before it enters event history. If detailed
 previews do not fit, the Runtime retains bounded result identities, source coverage counts, gaps,
