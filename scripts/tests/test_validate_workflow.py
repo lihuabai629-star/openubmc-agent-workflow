@@ -166,19 +166,17 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
             "github-ci",
             "merged",
         ]
-        merge_commit = "a" * 40
+        merge_commit = validator.ROADMAP_P2_MERGE_COMMIT
         batches = []
         for index, batch_id in enumerate(sorted(validator.ROADMAP_BATCH_IDS), start=1):
+            if batch_id == "p2-lifecycle-qualification":
+                continue
             batches.append(
                 {
                     "id": batch_id,
                     "issues": [index],
                     "pull_requests": [index],
-                    "merge_commits": [
-                        merge_commit
-                        if batch_id == "compatibility-retirement"
-                        else f"{index}" * 40
-                    ],
+                    "merge_commits": [f"{index}" * 40],
                     "test_seams": ["tests/public_seam.py"],
                     "ci_runs": [{"id": index, "conclusion": "success"}],
                     "delivery_process": process,
@@ -189,6 +187,21 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
                     ),
                 }
             )
+        batches.append(
+            {
+                "id": "p2-lifecycle-qualification",
+                "issues": [79],
+                "pull_requests": [80],
+                "merge_commits": [merge_commit],
+                "qualified_source_commit": "9" * 40,
+                "test_seams": ["tests/public_seam.py"],
+                "ci_runs": [
+                    {"id": validator.ROADMAP_P2_PR_CI_RUN, "conclusion": "success"},
+                    {"id": validator.ROADMAP_P2_MAIN_CI_RUN, "conclusion": "success"},
+                ],
+                "delivery_process": process,
+            }
+        )
         evidence = {
             "schema": "openubmc-agent-workflow.roadmap-completion.v1",
             "status": "completed",
@@ -198,10 +211,24 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
                 "mutable_main_policy": "historical-lock-snapshot",
                 "tag_created": False,
                 "github_release_created": False,
+                "candidate_status": validator.RELEASE_CANDIDATE_SUPERSEDED_UNPUBLISHED,
+                "superseded_candidate": {
+                    "release_version": "2.0.0",
+                    "source_commit": "b" * 40,
+                    "lock_only_commit": "c" * 40,
+                },
+                "next_candidate": {
+                    "release_version": "2.0.0",
+                    "qualification_required": True,
+                    "source_policy": validator.RELEASE_SOURCE_POLICY_NEW_FINAL_SOURCE,
+                },
             },
             "canonical_main": {
                 "merge_commit": merge_commit,
-                "ci_run": {"id": 1, "conclusion": "success"},
+                "ci_run": {
+                    "id": validator.ROADMAP_P2_MAIN_CI_RUN,
+                    "conclusion": "success",
+                },
             },
             "qualification": {
                 "release_version": "2.0.0",
@@ -322,7 +349,13 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "docs" / "workflow-evolution-roadmap.md").write_text(
-            "# Evolution roadmap\n\n[Evidence](roadmap-completion.json)\n",
+            "# Evolution roadmap\n\n"
+            "[Evidence](roadmap-completion.json)\n"
+            f"Current baseline: {validator.ROADMAP_P2_MERGE_COMMIT}\n"
+            "| P2 生命周期持续资格 | 完成 | qualified |\n"
+            f"PR CI run `{validator.ROADMAP_P2_PR_CI_RUN}` and "
+            f"main CI run `{validator.ROADMAP_P2_MAIN_CI_RUN}` passed.\n"
+            f"Candidate status: {validator.RELEASE_CANDIDATE_SUPERSEDED_UNPUBLISHED}.\n",
             encoding="utf-8",
         )
         (root / "docs" / "workflow-architecture-arbitration.md").write_text(
@@ -334,7 +367,14 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "docs" / "roadmap-completion-audit.md").write_text(
-            "# Roadmap completion audit\n\n[Evidence](roadmap-completion.json)\n",
+            "# Roadmap completion audit\n\n"
+            "[Evidence](roadmap-completion.json)\n"
+            f"Issue https://github.com/example/repo/issues/{validator.ROADMAP_P2_ISSUE}\n"
+            f"PR https://github.com/example/repo/pull/{validator.ROADMAP_P2_PULL_REQUEST}\n"
+            f"Merge {validator.ROADMAP_P2_MERGE_COMMIT}\n"
+            f"PR CI https://github.com/example/repo/actions/runs/{validator.ROADMAP_P2_PR_CI_RUN}\n"
+            f"main CI https://github.com/example/repo/actions/runs/{validator.ROADMAP_P2_MAIN_CI_RUN}\n"
+            f"Candidate status: {validator.RELEASE_CANDIDATE_SUPERSEDED_UNPUBLISHED}.\n",
             encoding="utf-8",
         )
         (root / "docs" / "roadmap-completion.json").write_text(
@@ -421,6 +461,117 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
             with (
                 mock.patch.object(validator, "ROOT", root),
                 self.assertRaisesRegex(SystemExit, "continuous qualification"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_missing_p2_delivery_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "roadmap-completion.json"
+            evidence = json.loads(path.read_text(encoding="utf-8"))
+            p2 = next(
+                batch
+                for batch in evidence["batches"]
+                if batch["id"] == "p2-lifecycle-qualification"
+            )
+            p2["pull_requests"] = [81]
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "P2 delivery evidence"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_requires_canonical_main_ci_in_p2_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "roadmap-completion.json"
+            evidence = json.loads(path.read_text(encoding="utf-8"))
+            evidence["canonical_main"]["ci_run"]["id"] = 999
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "P2 delivery evidence"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_substituted_p2_merge_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "roadmap-completion.json"
+            evidence = json.loads(path.read_text(encoding="utf-8"))
+            replacement = "f" * 40
+            evidence["canonical_main"]["merge_commit"] = replacement
+            p2 = next(
+                batch
+                for batch in evidence["batches"]
+                if batch["id"] == "p2-lifecycle-qualification"
+            )
+            p2["merge_commits"] = [replacement]
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "P2 delivery evidence"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_substituted_p2_pr_ci_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "roadmap-completion.json"
+            evidence = json.loads(path.read_text(encoding="utf-8"))
+            p2 = next(
+                batch
+                for batch in evidence["batches"]
+                if batch["id"] == "p2-lifecycle-qualification"
+            )
+            p2["ci_runs"][0]["id"] = 123
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "P2 delivery evidence"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_requires_human_p2_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "workflow-evolution-roadmap.md"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    f"PR CI run `{validator.ROADMAP_P2_PR_CI_RUN}`",
+                    "PR CI run removed",
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "post-P2 roadmap marker missing"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_publishable_historical_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "roadmap-completion.json"
+            evidence = json.loads(path.read_text(encoding="utf-8"))
+            evidence["release"]["candidate_status"] = "publishable"
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "release policy"),
             ):
                 validator.validate_roadmap_closeout(verify_git=False)
 
