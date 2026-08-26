@@ -401,6 +401,51 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
     ):
         raise SystemExit("invalid roadmap completion evidence retirement")
 
+    continuous = evidence.get("continuous_qualification")
+    if not isinstance(continuous, dict):
+        raise SystemExit("invalid roadmap continuous qualification evidence")
+    continuous_source = continuous.get("source_commit")
+    continuous_groups = continuous.get("qualification_groups")
+    projection_policy = continuous.get("agent_projection_policy")
+    artifact_lifecycle = continuous.get("artifact_lifecycle")
+    if (
+        continuous.get("schema")
+        != "openubmc-agent-workflow.p2-lifecycle-qualification.v1"
+        or continuous.get("issue") != 79
+        or not isinstance(continuous_source, str)
+        or commit_pattern.fullmatch(continuous_source) is None
+        or continuous.get("promotable") is not True
+        or any(
+            not isinstance(digest, str) or digest_pattern.fullmatch(digest) is None
+            for digest in (
+                continuous.get("evidence_digest"),
+                continuous.get("runtime_stability_digest"),
+            )
+        )
+        or not isinstance(continuous_groups, dict)
+        or continuous_groups.get("persisted_run_compatibility", 0) < 9
+        or continuous_groups.get("semantic_projection_completion", 0) < 15
+        or projection_policy
+        != {
+            "budget_mode": "soft-display-target",
+            "observation_receipt_target_bytes": 4096,
+            "gate_schema_target_bytes": 4096,
+            "turn_target_bytes": 8192,
+            "target_exceeded_behavior": "preserve-runtime-semantics",
+            "manual_narrowing_required_on_target_exceeded": False,
+            "projection_budget_blocker": False,
+        }
+        or not isinstance(artifact_lifecycle, dict)
+        or artifact_lifecycle.get("created_raw_records") != 64
+        or artifact_lifecycle.get("restart_record_count") != 66
+        or artifact_lifecycle.get("first_gc_deleted_records") != 33
+        or artifact_lifecycle.get("second_gc_deleted_records") != 31
+        or artifact_lifecycle.get("final_audit_record_count") != 2
+        or artifact_lifecycle.get("shared_content_preserved_after_partial_gc")
+        is not True
+    ):
+        raise SystemExit("invalid roadmap continuous qualification evidence")
+
     batches = evidence.get("batches")
     if not isinstance(batches, list) or {
         item.get("id") for item in batches if isinstance(item, dict)
@@ -468,7 +513,13 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
         )
         if repository.returncode or repository.stdout.strip() != "true":
             raise SystemExit("roadmap completion validation requires a git repository")
-        commits = {merge_commit, source_commit, lock_commit, *all_merge_commits}
+        commits = {
+            merge_commit,
+            source_commit,
+            lock_commit,
+            continuous_source,
+            *all_merge_commits,
+        }
         for commit in commits:
             result = subprocess.run(
                 ["git", "-C", str(ROOT), "cat-file", "-e", f"{commit}^{{commit}}"],
@@ -481,6 +532,7 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
         for ancestor, descendant in (
             (source_commit, merge_commit),
             (merge_commit, "HEAD"),
+            (continuous_source, "HEAD"),
             *((commit, merge_commit) for commit in all_merge_commits),
         ):
             result = subprocess.run(
