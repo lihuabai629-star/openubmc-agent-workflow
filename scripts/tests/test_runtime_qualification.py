@@ -158,12 +158,13 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "wrong_target_or_artifact_mutations": 0,
                 "unknown_new_identity_retries": 0,
                 "semantic_projection_completion": 0,
+                "persisted_run_compatibility": 0,
                 "real_backend_crash_cuts": 0,
                 "runtime_stability": 0,
             },
         )
         self.assertTrue(report["ordinary_partial_result_accepted"])
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 9)
         self.assertEqual(report["source_commit"], SOURCE_COMMIT)
         self.assertEqual(
             report["environment"],
@@ -174,6 +175,26 @@ class RuntimeQualificationTests(unittest.TestCase):
             qualification.evidence_fingerprint(report["environment"]),
         )
         self.assertEqual(report["parameters"]["stability_profile"], "ci")
+        self.assertEqual(
+            report["parameters"]["persisted_run_support"],
+            {
+                "current_run_decision_version": 1,
+                "current_run_event_version": 1,
+                "legacy_event_kinds": [
+                    "CaseOpened",
+                    "CaseUpdated",
+                    "DeliveryStrategySelected",
+                    "OperationProgressed",
+                    "RunCancelled",
+                    "RunGateOpened",
+                    "RunGateSubmitted",
+                    "RunOutcomeRecorded",
+                    "RunPhaseRecorded",
+                ],
+                "legacy_mode": "read-only-upcast",
+                "unknown_version_behavior": "reject",
+            },
+        )
         stability_call = next(
             command
             for command in calls
