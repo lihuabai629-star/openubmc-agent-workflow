@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import unittest
 from unittest import mock
+import urllib.error
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -127,6 +128,80 @@ class BootstrapTests(unittest.TestCase):
             "--clients",
             "codex,claude",
         ])
+
+    def test_bootstrap_runs_legacy_installer_without_companion_module(self) -> None:
+        completed = subprocess.CompletedProcess([], 0)
+
+        def run_installer(command, **_kwargs):
+            installer_path = Path(command[1])
+            self.assertTrue(installer_path.is_file())
+            self.assertFalse(installer_path.with_name("client_config.py").exists())
+            return completed
+
+        missing_companion = urllib.error.HTTPError(
+            bootstrap.CLIENT_CONFIG_API_TEMPLATE.format(ref="v1.2.2"),
+            404,
+            "Not Found",
+            {},
+            None,
+        )
+        with (
+            mock.patch.object(
+                bootstrap.urllib.request,
+                "urlopen",
+                side_effect=[_Response(), missing_companion],
+            ) as urlopen,
+            mock.patch.object(
+                bootstrap.subprocess, "run", side_effect=run_installer
+            ) as run,
+        ):
+            result = bootstrap.main(["--ref", "v1.2.2"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(urlopen.call_count, 2)
+        run.assert_called_once()
+
+    def test_bootstrap_still_requires_the_installer_asset(self) -> None:
+        missing_installer = urllib.error.HTTPError(
+            bootstrap.INSTALLER_API_TEMPLATE.format(ref="v1.2.2"),
+            404,
+            "Not Found",
+            {},
+            None,
+        )
+        with (
+            mock.patch.object(
+                bootstrap.urllib.request,
+                "urlopen",
+                side_effect=missing_installer,
+            ),
+            mock.patch.object(bootstrap.subprocess, "run") as run,
+        ):
+            result = bootstrap.main(["--ref", "v1.2.2"])
+
+        self.assertEqual(result, 2)
+        run.assert_not_called()
+
+    def test_bootstrap_does_not_ignore_other_companion_download_failures(self) -> None:
+        failed_companion = urllib.error.HTTPError(
+            bootstrap.CLIENT_CONFIG_API_TEMPLATE.format(ref="v1.2.2"),
+            500,
+            "Server Error",
+            {},
+            None,
+        )
+        with (
+            mock.patch.object(
+                bootstrap.urllib.request,
+                "urlopen",
+                side_effect=[_Response(), failed_companion],
+            ),
+            mock.patch.object(bootstrap.subprocess, "run") as run,
+        ):
+            result = bootstrap.main(["--ref", "v1.2.2"])
+
+        self.assertEqual(result, 2)
+        run.assert_not_called()
 
     def test_bootstrap_defaults_to_the_github_primary_release_source(self) -> None:
         completed = subprocess.CompletedProcess([], 0)
