@@ -232,6 +232,35 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
                     "old_event_upcasters": "preserved-read-only",
                 },
             },
+            "continuous_qualification": {
+                "schema": "openubmc-agent-workflow.p2-lifecycle-qualification.v1",
+                "issue": 79,
+                "source_commit": "9" * 40,
+                "promotable": True,
+                "evidence_digest": "sha256:" + "1" * 64,
+                "runtime_stability_digest": "sha256:" + "2" * 64,
+                "qualification_groups": {
+                    "persisted_run_compatibility": 9,
+                    "semantic_projection_completion": 15,
+                },
+                "agent_projection_policy": {
+                    "budget_mode": "soft-display-target",
+                    "observation_receipt_target_bytes": 4096,
+                    "gate_schema_target_bytes": 4096,
+                    "turn_target_bytes": 8192,
+                    "target_exceeded_behavior": "preserve-runtime-semantics",
+                    "manual_narrowing_required_on_target_exceeded": False,
+                    "projection_budget_blocker": False,
+                },
+                "artifact_lifecycle": {
+                    "created_raw_records": 64,
+                    "restart_record_count": 66,
+                    "first_gc_deleted_records": 33,
+                    "second_gc_deleted_records": 31,
+                    "final_audit_record_count": 2,
+                    "shared_content_preserved_after_partial_gc": True,
+                },
+            },
             "batches": batches,
         }
         adr = root / "docs" / "adr"
@@ -341,6 +370,23 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
             with (
                 mock.patch.object(validator, "ROOT", root),
                 self.assertRaisesRegex(SystemExit, "roadmap completion evidence"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_a_hard_projection_budget_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "roadmap-completion.json"
+            evidence = json.loads(path.read_text(encoding="utf-8"))
+            evidence["continuous_qualification"]["agent_projection_policy"][
+                "projection_budget_blocker"
+            ] = True
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "continuous qualification"),
             ):
                 validator.validate_roadmap_closeout(verify_git=False)
 
