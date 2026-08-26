@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -31,6 +32,49 @@ from openubmc_target_runtime.run_store import RunStore  # noqa: E402
 
 
 class RunDecisionContractTests(unittest.TestCase):
+    def test_supported_persisted_run_fixture_replays_through_current_readers(self) -> None:
+        fixture_path = (
+            RUNTIME_ROOT / "tests" / "fixtures" / "supported_run_history.json"
+        )
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            fixture["support"],
+            {
+                "current_run_decision_version": 1,
+                "current_run_event_version": 1,
+                "legacy_event_kinds": [
+                    "CaseOpened",
+                    "CaseUpdated",
+                    "DeliveryStrategySelected",
+                    "OperationProgressed",
+                    "RunCancelled",
+                    "RunGateOpened",
+                    "RunGateSubmitted",
+                    "RunOutcomeRecorded",
+                    "RunPhaseRecorded",
+                ],
+                "legacy_mode": "read-only-upcast",
+                "unknown_version_behavior": "reject",
+            },
+        )
+        for example in fixture["fixtures"]:
+            with self.subTest(fixture_id=example["fixture_id"]):
+                projection = project_case(example["run_id"], example["events"])
+                expected = example["expected"]
+                self.assertEqual(
+                    projection["workflow_definition"]["schema"],
+                    expected["workflow_definition_schema"],
+                )
+                self.assertEqual(
+                    projection["phase_records"][0]["status"],
+                    expected["phase_status"],
+                )
+                self.assertEqual(
+                    projection["run_outcome"]["status"],
+                    expected["outcome_status"],
+                )
+
     def test_context_runtime_exposes_no_peer_run_transition_writers(self) -> None:
         retired = {
             "persist_run_gate",

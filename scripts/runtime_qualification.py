@@ -82,6 +82,7 @@ QUALIFICATIONS = (
     (
         "persisted_run_compatibility",
         (
+            "tests.test_run_store.RunDecisionContractTests.test_supported_persisted_run_fixture_replays_through_current_readers",
             "tests.test_run_store.RunDecisionContractTests.test_legacy_run_events_are_explicitly_upcast_to_the_current_projection",
             "tests.test_run_store.RunDecisionContractTests.test_legacy_and_current_phase_facts_replay_to_the_same_projection",
             "tests.test_run_store.RunDecisionContractTests.test_every_legacy_workflow_definition_event_is_explicitly_upcast",
