@@ -256,19 +256,25 @@ Replay:
 - Operator Incident metrics are reconstructed from persisted Run events;
 - legacy operations are absent and governance operations require the operator profile.
 
-Live performance qualification remains a separate paired AB/BA gate because token and wall-time
-limits require a fixed model, target snapshot, and sufficient valid pairs. Historical execute
-qualification may check out a pinned pre-retirement source for the baseline arm; the candidate and
-all current installations use the Agent profile.
+Live qualification remains a separate paired AB/BA experiment with a correctness-first release
+contract. Historical execute qualification may check out a pinned pre-retirement source for the
+baseline arm; the candidate and all current installations use the Agent profile.
 
 Use `scripts/agent_gateway_ab.py` to run or re-evaluate the qualification. The runner creates a
 balanced AB/BA schedule, isolates every Codex home, applies semantic and scope acceptance, and
 computes the paired geometric mean plus the one-sided 95% bootstrap upper bound for total tokens,
 non-cached input plus output, tool-output bytes, model turns, wall time, and time to the next
-actionable Turn. Ten valid pairs are the first decision point; an uncertain result expands to
-twenty and then thirty pairs. Each result records both source commits, the model and environment
-fingerprint, thresholds, valid and invalid pairs, and digests for the schedule, raw metrics, and
-the run events used to recompute every promoted metric.
+actionable Turn. Correctness, semantic acceptance, exact scope, and scenario validity determine the
+release `decision`. The six efficiency metrics produce a separate `efficiency_decision` and an
+ordered list of `efficiency_warnings`; an authentic efficiency warning does not block promotion.
+Missing or non-positive efficiency measurements produce `efficiency_decision=incomplete`: the
+correctness decision remains unchanged and does not request more pairs, while verification rejects
+the incomplete evidence. The 4 KiB Observation/Gate and 8 KiB Turn targets are display targets,
+not qualification thresholds.
+Ten valid pairs are the first decision point. A correctness or validity result that is not yet
+sufficient expands to twenty and then thirty pairs. Each result records both source commits, the
+model and environment fingerprint, thresholds, valid and invalid pairs, both decisions, warnings,
+and digests for the schedule, raw metrics, and signed run events used to recompute every result.
 
 ```bash
 python scripts/agent_gateway_ab.py run \
@@ -332,11 +338,14 @@ python scripts/agent_gateway_ab.py verify \
   --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub
 ```
 
-The candidate is acceptable only when semantic and exact-scope checks pass for the paired metric
-sample, there are at least ten valid pairs, and every bounded regression metric passes. Because
-this Skill-only scenario has no side effects, zero-tool dispatch misses remain signed instead of
-being selectively rerun: each arm must stay at or above 95% validity, invalid pairs may not exceed
-10%, and candidate validity may not regress by more than 5 percentage points versus the baseline.
+The candidate is acceptable only when the signed evidence has at least ten valid pairs and passes
+the scenario's semantic, exact-scope, source-binding, schedule, and validity gates. Efficiency
+thresholds remain visible and tamper-checked optimization signals; missing or inconsistent metric
+evidence fails verification, while an honestly reported threshold regression does not block
+promotion. Because this Skill-only scenario has no side effects, zero-tool dispatch misses remain
+signed instead of being selectively rerun: each arm must stay at or above 95% validity, invalid
+pairs may not exceed 10%, and candidate validity may not regress by more than 5 percentage points
+versus the baseline.
 Both arms use identical per-run acceptance checks. A baseline non-noise invalid run counts against
 the shared rate and invalid-pair thresholds, allowing measured baseline behavior noise within those
 bounds. Only a candidate non-noise invalid run blocks the checkpoint immediately, so a candidate
@@ -346,15 +355,16 @@ The scenario records its own prompt digest, source commits, schedule, raw metric
 and signed run evidence. It evaluates Skill disclosure behavior; the default release qualification
 remains `execute-source-only`.
 
-Treat each checkpoint as a complete preregistered experiment. If a 10-pair result says
-`collect_more`, start a new independent run at the full 20-pair target. If that result is still
-uncertain, start another new independent run at the full 30-pair target. Never append, merge, or
-selectively reuse pairs from an earlier checkpoint; verify and promote only the single complete
-result directory for the final checkpoint. Reaching the 30-pair checkpoint activates the p95 bound
-for every metric even when the validity policy excludes one or more signed pairs: calculate p95 from
-the retained valid paired sample, and fail verification when any terminal p95 value is missing.
-Every signed run also binds the complete checkpoint pair count and schedule digest, so a 30-pair run
-cannot be truncated or rebound as a smaller checkpoint.
+Treat each checkpoint as a complete preregistered experiment. `collect_more` is reserved for
+insufficient correctness or scenario-validity evidence; an efficiency warning never expands the
+sample. If a 10-pair result says `collect_more`, start a new independent run at the full 20-pair
+target. If that result is still insufficient, start another new independent run at the full
+30-pair target. Never append, merge, or selectively reuse pairs from an earlier checkpoint; verify
+and promote only the single complete result directory for the final checkpoint. Reaching the
+30-pair checkpoint calculates p95 for every metric even when the validity policy excludes one or
+more signed pairs. A missing terminal p95 value fails evidence verification; exceeding its target
+adds an efficiency warning. Every signed run also binds the complete checkpoint pair count and
+schedule digest, so a 30-pair run cannot be truncated or rebound as a smaller checkpoint.
 
 Every run record carries its tested source commit and a unique execution identity. The runner
 signs that record with the qualification key; verification uses a public key held outside the
