@@ -121,6 +121,33 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "peak_traced_memory_bytes": 1000000,
                     "elapsed_seconds": 5.0,
                 },
+                "artifact_lifecycle": {
+                    "status": "passed",
+                    "created_raw_records": 64,
+                    "created_redacted_records": 1,
+                    "created_ephemeral_records": 1,
+                    "shared_raw_digests": 1,
+                    "redacted_digest_distinct": True,
+                    "records_by_batch": [16, 32, 48, 64],
+                    "storage_bytes_by_batch": [2000, 3000, 4000, 5000],
+                    "restart_record_count": 66,
+                    "restart_resolutions": 2,
+                    "first_gc_deleted_records": 33,
+                    "first_gc_deleted_content": 1,
+                    "shared_content_preserved_after_partial_gc": True,
+                    "released_run_records": 31,
+                    "second_gc_deleted_records": 31,
+                    "second_gc_deleted_content": 0,
+                    "expired_resolution_rejected": True,
+                    "released_resolution_rejected": True,
+                    "final_record_count": 2,
+                    "final_managed_record_count": 2,
+                    "final_redacted_record_count": 1,
+                    "final_audit_record_count": 2,
+                    "final_content_files": 2,
+                    "storage_bytes": 6000,
+                    "elapsed_seconds": 1.0,
+                },
             },
             "promotable": True,
         }
@@ -226,7 +253,36 @@ class RuntimeQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["promotable"])
         self.assertGreater(report["violations"]["false_successes"], 0)
-        self.assertEqual(call_count, 8)
+        self.assertEqual(call_count, 9)
+
+    def test_artifact_lifecycle_without_shared_content_safety_blocks_promotion(
+        self,
+    ) -> None:
+        def unsafe_gc(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            artifact = report["scenarios"]["artifact_lifecycle"]
+            artifact["shared_content_preserved_after_partial_gc"] = False
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            WORKSPACE,
+            executor=unsafe_gc,
+            source_commit=SOURCE_COMMIT,
+        )
+
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertFalse(report["promotable"])
+        self.assertIn("Artifact lifecycle", stability_result["verification_error"])
 
     def test_incomplete_stability_report_blocks_promotion(self) -> None:
         def incomplete(command, *, cwd):
