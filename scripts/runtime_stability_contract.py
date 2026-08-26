@@ -12,12 +12,16 @@ STORM_WORKERS = 16
 GATE_WORKERS = 8
 CAPACITY_RUNS = 128
 CAPACITY_BATCH_SIZE = 32
+ARTIFACT_CAPACITY_RECORDS = 64
+ARTIFACT_CAPACITY_BATCH_SIZE = 16
 SOAK_RESTART_CYCLES = 4
 SOAK_RUNS_PER_CYCLE = 16
 MAX_CAPACITY_SECONDS = 30.0
 MAX_CAPACITY_PEAK_RSS_BYTES = 512 * 1024 * 1024
 MAX_CAPACITY_PEAK_PYTHON_BYTES = 128 * 1024 * 1024
 MAX_CAPACITY_STORAGE_BYTES = 64 * 1024 * 1024
+MAX_ARTIFACT_CAPACITY_SECONDS = 15.0
+MAX_ARTIFACT_STORAGE_BYTES = 16 * 1024 * 1024
 MAX_SOAK_SECONDS = 30.0
 MAX_SOAK_PEAK_RSS_BYTES = 512 * 1024 * 1024
 MAX_SOAK_PEAK_BYTES = 128 * 1024 * 1024
@@ -31,12 +35,16 @@ def ci_parameters() -> dict[str, int | float]:
         "gate_workers": GATE_WORKERS,
         "capacity_runs": CAPACITY_RUNS,
         "capacity_batch_size": CAPACITY_BATCH_SIZE,
+        "artifact_capacity_records": ARTIFACT_CAPACITY_RECORDS,
+        "artifact_capacity_batch_size": ARTIFACT_CAPACITY_BATCH_SIZE,
         "soak_restart_cycles": SOAK_RESTART_CYCLES,
         "soak_runs_per_cycle": SOAK_RUNS_PER_CYCLE,
         "max_capacity_seconds": MAX_CAPACITY_SECONDS,
         "max_capacity_peak_rss_bytes": MAX_CAPACITY_PEAK_RSS_BYTES,
         "max_capacity_peak_python_bytes": MAX_CAPACITY_PEAK_PYTHON_BYTES,
         "max_capacity_storage_bytes": MAX_CAPACITY_STORAGE_BYTES,
+        "max_artifact_capacity_seconds": MAX_ARTIFACT_CAPACITY_SECONDS,
+        "max_artifact_storage_bytes": MAX_ARTIFACT_STORAGE_BYTES,
         "max_soak_seconds": MAX_SOAK_SECONDS,
         "max_soak_peak_rss_bytes": MAX_SOAK_PEAK_RSS_BYTES,
         "max_soak_peak_bytes": MAX_SOAK_PEAK_BYTES,
@@ -255,6 +263,132 @@ def verify_runtime_stability_report(
     ):
         raise ValueError("Runtime stability capacity exceeded a hard threshold")
 
+    artifact = _scenario(report, "artifact_lifecycle")
+    artifact_batches = ARTIFACT_CAPACITY_RECORDS // ARTIFACT_CAPACITY_BATCH_SIZE
+    artifact_records_by_batch = artifact.get("records_by_batch")
+    artifact_storage_by_batch = artifact.get("storage_bytes_by_batch")
+    if (
+        not isinstance(artifact_records_by_batch, list)
+        or not isinstance(artifact_storage_by_batch, list)
+        or len(artifact_records_by_batch) != artifact_batches
+        or len(artifact_storage_by_batch) != artifact_batches
+    ):
+        raise ValueError("Runtime stability Artifact lifecycle growth evidence is incomplete")
+    normalized_artifact_records = [
+        _integer(value, "Artifact lifecycle records", minimum=1)
+        for value in artifact_records_by_batch
+    ]
+    normalized_artifact_storage = [
+        _integer(value, "Artifact lifecycle storage", minimum=1)
+        for value in artifact_storage_by_batch
+    ]
+    if not all(
+        (
+            _integer(artifact.get("created_raw_records"), "Artifact raw records")
+            == ARTIFACT_CAPACITY_RECORDS,
+            _integer(
+                artifact.get("created_redacted_records"),
+                "Artifact redacted records",
+            )
+            == 1,
+            _integer(
+                artifact.get("created_ephemeral_records"),
+                "Artifact ephemeral records",
+            )
+            == 1,
+            _integer(artifact.get("shared_raw_digests"), "Artifact shared digests")
+            == 1,
+            artifact.get("redacted_digest_distinct") is True,
+            normalized_artifact_records
+            == list(
+                range(
+                    ARTIFACT_CAPACITY_BATCH_SIZE,
+                    ARTIFACT_CAPACITY_RECORDS + 1,
+                    ARTIFACT_CAPACITY_BATCH_SIZE,
+                )
+            ),
+            all(
+                value <= MAX_ARTIFACT_STORAGE_BYTES
+                for value in normalized_artifact_storage
+            ),
+            _integer(
+                artifact.get("restart_record_count"),
+                "Artifact restart records",
+            )
+            == ARTIFACT_CAPACITY_RECORDS + 2,
+            _integer(
+                artifact.get("restart_resolutions"),
+                "Artifact restart resolutions",
+            )
+            == 2,
+            _integer(
+                artifact.get("first_gc_deleted_records"),
+                "Artifact first GC records",
+            )
+            == ARTIFACT_CAPACITY_RECORDS // 2 + 1,
+            _integer(
+                artifact.get("first_gc_deleted_content"),
+                "Artifact first GC content",
+            )
+            == 1,
+            artifact.get("shared_content_preserved_after_partial_gc") is True,
+            _integer(
+                artifact.get("released_run_records"),
+                "Artifact released Run records",
+            )
+            == ARTIFACT_CAPACITY_RECORDS // 2 - 1,
+            _integer(
+                artifact.get("second_gc_deleted_records"),
+                "Artifact second GC records",
+            )
+            == ARTIFACT_CAPACITY_RECORDS // 2 - 1,
+            _integer(
+                artifact.get("second_gc_deleted_content"),
+                "Artifact second GC content",
+            )
+            == 0,
+            artifact.get("expired_resolution_rejected") is True,
+            artifact.get("released_resolution_rejected") is True,
+            _integer(
+                artifact.get("final_record_count"),
+                "Artifact final records",
+            )
+            == 2,
+            _integer(
+                artifact.get("final_managed_record_count"),
+                "Artifact final managed records",
+            )
+            == 2,
+            _integer(
+                artifact.get("final_redacted_record_count"),
+                "Artifact final redacted records",
+            )
+            == 1,
+            _integer(
+                artifact.get("final_audit_record_count"),
+                "Artifact final audit records",
+            )
+            == 2,
+            _integer(
+                artifact.get("final_content_files"),
+                "Artifact final content files",
+            )
+            == 2,
+            _integer(
+                artifact.get("storage_bytes"),
+                "Artifact storage bytes",
+                minimum=1,
+            )
+            <= MAX_ARTIFACT_STORAGE_BYTES,
+            _number(
+                artifact.get("elapsed_seconds"),
+                "Artifact lifecycle elapsed seconds",
+            )
+            <= MAX_ARTIFACT_CAPACITY_SECONDS,
+        )
+    ):
+        raise ValueError("Runtime stability Artifact lifecycle contract failed")
+
     soak = _scenario(report, "restart_soak")
     expected_runs = SOAK_RESTART_CYCLES * SOAK_RUNS_PER_CYCLE
     expected_calls = expected_runs * 2
@@ -359,6 +493,7 @@ def verify_runtime_stability_report(
             "duplicate_storm",
             "gate_concurrency",
             "capacity",
+            "artifact_lifecycle",
             "restart_soak",
         )
     }

@@ -28,6 +28,8 @@ from scripts.evidence_report import (  # noqa: E402
     source_commit as selected_source_commit,
 )
 from scripts.runtime_stability_contract import (  # noqa: E402
+    ARTIFACT_CAPACITY_BATCH_SIZE,
+    ARTIFACT_CAPACITY_RECORDS,
     CAPACITY_BATCH_SIZE,
     CAPACITY_RUNS,
     GATE_WORKERS,
@@ -35,6 +37,8 @@ from scripts.runtime_stability_contract import (  # noqa: E402
     MAX_CAPACITY_PEAK_RSS_BYTES,
     MAX_CAPACITY_SECONDS,
     MAX_CAPACITY_STORAGE_BYTES,
+    MAX_ARTIFACT_CAPACITY_SECONDS,
+    MAX_ARTIFACT_STORAGE_BYTES,
     MAX_EVENTS_PER_RUN,
     MAX_SOAK_PEAK_BYTES,
     MAX_SOAK_PEAK_RSS_BYTES,
@@ -51,8 +55,15 @@ from openubmc_target_runtime.context_runtime import (  # noqa: E402
     FilesystemBlobRepository,
     SQLiteRuntimeRepository,
 )
+from openubmc_target_runtime.artifact_store import (  # noqa: E402
+    LocalArtifactStore,
+    SQLiteArtifactRepository,
+)
 from openubmc_target_runtime.mcp import RuntimeMcpService  # noqa: E402
-from openubmc_target_runtime.semantic_runtime import CommandConflict  # noqa: E402
+from openubmc_target_runtime.semantic_runtime import (  # noqa: E402
+    CommandConflict,
+    ReferenceViolation,
+)
 
 
 class _Task:
@@ -133,6 +144,21 @@ def _storage_bytes(
 def _peak_rss_bytes() -> int:
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return int(peak if sys.platform == "darwin" else peak * 1024)
+
+
+def _path_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def _artifact_storage_bytes(database: Path, content_root: Path) -> int:
+    database_bytes = sum(
+        path.stat().st_size
+        for path in database.parent.glob(f"{database.name}*")
+        if path.is_file()
+    )
+    return database_bytes + _path_bytes(content_root)
 
 
 def _duplicate_storm(root: Path) -> dict[str, object]:
@@ -501,6 +527,169 @@ def _capacity(root: Path) -> dict[str, object]:
     }
 
 
+def _artifact_lifecycle(root: Path) -> dict[str, object]:
+    database = root / "artifact-capacity.sqlite3"
+    content_root = root / "artifact-capacity-content"
+    source = root / "artifact-capacity-source.json"
+    source.write_text('{"password":"shared-secret","status":"ok"}', encoding="utf-8")
+    ephemeral_source = root / "artifact-capacity-ephemeral.txt"
+    ephemeral_source.write_text("ephemeral artifact", encoding="utf-8")
+    now = [100.0]
+
+    def open_store() -> LocalArtifactStore:
+        return LocalArtifactStore(
+            content_root=content_root,
+            repository=SQLiteArtifactRepository(database),
+            clock=lambda: now[0],
+            temporary_retention_seconds=10,
+        )
+
+    raw_references = []
+    records_by_batch: list[int] = []
+    storage_bytes_by_batch: list[int] = []
+    started = time.monotonic()
+    for batch_start in range(
+        0,
+        ARTIFACT_CAPACITY_RECORDS,
+        ARTIFACT_CAPACITY_BATCH_SIZE,
+    ):
+        store = open_store()
+        for index in range(
+            batch_start,
+            batch_start + ARTIFACT_CAPACITY_BATCH_SIZE,
+        ):
+            audit = index == ARTIFACT_CAPACITY_RECORDS - 1
+            raw_references.append(
+                store.put(
+                    source,
+                    kind="artifact-capacity-raw",
+                    provenance="runtime-stability",
+                    retention_hint="audit" if audit else "run-lifetime",
+                    target="198.51.100.200",
+                    run_id="artifact-capacity-audit" if audit else f"artifact-capacity-{index:03d}",
+                    created_by_effect=f"artifact-capacity-create-{index:03d}",
+                )
+            )
+        records_by_batch.append(store.status()["record_count"])
+        storage_bytes_by_batch.append(
+            _artifact_storage_bytes(database, content_root)
+        )
+
+    store = open_store()
+    redacted = store.redact(
+        raw_references[-1],
+        kind="artifact-capacity-redacted",
+        provenance="runtime-stability-redaction",
+        retention_hint="audit",
+        created_by_effect="artifact-capacity-redact",
+    )
+    ephemeral = store.put(
+        ephemeral_source,
+        kind="artifact-capacity-ephemeral",
+        provenance="runtime-stability",
+        retention_hint="temporary",
+        target="198.51.100.200",
+        run_id="artifact-capacity-ephemeral",
+        created_by_effect="artifact-capacity-ephemeral",
+    )
+
+    reopened = open_store()
+    restart_status = reopened.status()
+    restart_resolutions = sum(
+        path.is_file()
+        for path in (
+            reopened.resolve(raw_references[0]),
+            reopened.resolve(redacted, require_redacted=True),
+        )
+    )
+    for index in range(ARTIFACT_CAPACITY_RECORDS // 2):
+        reopened.release_run(f"artifact-capacity-{index:03d}")
+    now[0] = 111.0
+    first_gc = reopened.garbage_collect()
+    shared_content_preserved = reopened.resolve(raw_references[-1]).is_file()
+    expired_resolution_rejected = False
+    released_resolution_rejected = False
+    try:
+        reopened.resolve(ephemeral)
+    except ReferenceViolation:
+        expired_resolution_rejected = True
+    try:
+        reopened.resolve(raw_references[0])
+    except ReferenceViolation:
+        released_resolution_rejected = True
+
+    released_run_records = 0
+    for index in range(
+        ARTIFACT_CAPACITY_RECORDS // 2,
+        ARTIFACT_CAPACITY_RECORDS - 1,
+    ):
+        released_run_records += reopened.release_run(
+            f"artifact-capacity-{index:03d}"
+        )
+    second_gc = reopened.garbage_collect()
+    final_status = open_store().status()
+    final_content_files = sum(
+        path.is_file() for path in content_root.rglob("*")
+    )
+    elapsed_seconds = time.monotonic() - started
+    storage_bytes = _artifact_storage_bytes(database, content_root)
+    passed = all(
+        (
+            len(raw_references) == ARTIFACT_CAPACITY_RECORDS,
+            len({reference.digest for reference in raw_references}) == 1,
+            redacted.digest != raw_references[-1].digest,
+            restart_status["record_count"] == ARTIFACT_CAPACITY_RECORDS + 2,
+            restart_resolutions == 2,
+            first_gc == {
+                "deleted_records": ARTIFACT_CAPACITY_RECORDS // 2 + 1,
+                "deleted_content": 1,
+            },
+            shared_content_preserved,
+            expired_resolution_rejected,
+            released_resolution_rejected,
+            released_run_records == ARTIFACT_CAPACITY_RECORDS // 2 - 1,
+            second_gc == {
+                "deleted_records": ARTIFACT_CAPACITY_RECORDS // 2 - 1,
+                "deleted_content": 0,
+            },
+            final_status["record_count"] == 2,
+            final_status["managed_record_count"] == 2,
+            final_status["redacted_record_count"] == 1,
+            final_status["retention_counts"]["audit"] == 2,
+            final_content_files == 2,
+            storage_bytes <= MAX_ARTIFACT_STORAGE_BYTES,
+            elapsed_seconds <= MAX_ARTIFACT_CAPACITY_SECONDS,
+        )
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "created_raw_records": len(raw_references),
+        "created_redacted_records": 1,
+        "created_ephemeral_records": 1,
+        "shared_raw_digests": len({reference.digest for reference in raw_references}),
+        "redacted_digest_distinct": redacted.digest != raw_references[-1].digest,
+        "records_by_batch": records_by_batch,
+        "storage_bytes_by_batch": storage_bytes_by_batch,
+        "restart_record_count": restart_status["record_count"],
+        "restart_resolutions": restart_resolutions,
+        "first_gc_deleted_records": first_gc["deleted_records"],
+        "first_gc_deleted_content": first_gc["deleted_content"],
+        "shared_content_preserved_after_partial_gc": shared_content_preserved,
+        "released_run_records": released_run_records,
+        "second_gc_deleted_records": second_gc["deleted_records"],
+        "second_gc_deleted_content": second_gc["deleted_content"],
+        "expired_resolution_rejected": expired_resolution_rejected,
+        "released_resolution_rejected": released_resolution_rejected,
+        "final_record_count": final_status["record_count"],
+        "final_managed_record_count": final_status["managed_record_count"],
+        "final_redacted_record_count": final_status["redacted_record_count"],
+        "final_audit_record_count": final_status["retention_counts"]["audit"],
+        "final_content_files": final_content_files,
+        "storage_bytes": storage_bytes,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+    }
+
+
 def _restart_soak(root: Path) -> dict[str, object]:
     storage = _RuntimeStorage(root / "soak.sqlite3", root / "soak-blobs")
     repository = SQLiteRuntimeRepository(storage.database)
@@ -676,6 +865,7 @@ def qualify_runtime_stability(
         evidence_root = Path(raw)
         scenarios: dict[str, dict[str, object]] = {}
         for name, scenario in (
+            ("artifact_lifecycle", _artifact_lifecycle),
             ("capacity", _capacity),
             ("duplicate_storm", _duplicate_storm),
             ("gate_concurrency", _gate_concurrency),
