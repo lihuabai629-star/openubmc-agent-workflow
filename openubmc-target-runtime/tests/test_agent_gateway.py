@@ -1559,6 +1559,24 @@ class OversizedGateTurnRuntime:
         )
 
 
+class OversizedIncidentTurnRuntime:
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        return RunTurn(
+            run_id="case-oversized-incident",
+            state="incident",
+            incident=Incident(
+                incident_id="incident-oversized",
+                code="artifact_reference_invalid",
+                message="incident-" + "i" * 20_000,
+                effect_id="effect-oversized",
+            ),
+            facts=({"value": "f" * 20_000},),
+            gaps=("incident-gap-" + "g" * 20_000,),
+            next_action="restore the ArtifactRef and resume the same Run",
+        )
+
+
 class AdapterExpandedDiagnosticBackend(SemanticBackend):
     def debug_run(self, task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
@@ -4894,6 +4912,37 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertLess(encoded_size(turn), TURN_MAX_BYTES)
         self.assertTrue(turn["gate_projection_target_exceeded"])
         self.assertFalse(turn.get("projection_target_exceeded", False))
+        self.assertFalse(turn["manual_narrowing_required"])
+        self.assertFalse(turn["budget_blocker"])
+
+    def test_execute_turn_soft_target_preserves_runtime_incident_semantics(self) -> None:
+        turn = AgentGateway(OversizedIncidentTurnRuntime()).execute(
+            {
+                "kind": "resume",
+                "run_id": "case-oversized-incident",
+            },
+            task_id="oversized-incident",
+            operation_id="oversized-incident-1",
+        )
+
+        self.assertGreater(encoded_size(turn), TURN_MAX_BYTES)
+        self.assertEqual(turn["state"], "incident")
+        self.assertEqual(
+            turn["incident"],
+            {
+                "incident_id": "incident-oversized",
+                "code": "artifact_reference_invalid",
+                "message": "incident-" + "i" * 20_000,
+                "effect_id": "effect-oversized",
+                "recovery_path": "correction_then_resume",
+                "allowed_commands": ["resume", "cancel"],
+                "operator_action": (
+                    "restore the digest-bound artifact content, then resume the Run"
+                ),
+                "recoverable": True,
+            },
+        )
+        self.assertTrue(turn["projection_target_exceeded"])
         self.assertFalse(turn["manual_narrowing_required"])
         self.assertFalse(turn["budget_blocker"])
 

@@ -27,6 +27,30 @@ _LEGACY_RUN_EVENT_KINDS = (
     "RunOutcomeRecorded",
     "RunPhaseRecorded",
 )
+_SUPPORTED_UNVERSIONED_RUN_EVENT_KINDS = (
+    "CaseClosed",
+    "CaseOpened",
+    "CaseUpdated",
+    "CloseoutRecorded",
+    "DeliveryStrategySelected",
+    "EvidenceAttached",
+    "OperationAccepted",
+    "OperationProgressed",
+    "OperationReconciled",
+    "OperationStarted",
+    "OperationTerminal",
+    "RunCancelled",
+    "RunDecisionCommitted",
+    "RunGateOpened",
+    "RunGateSubmitted",
+    "RunIncidentRaised",
+    "RunIncidentResolved",
+    "RunOutcomeRecorded",
+    "RunPhaseRecorded",
+    "RunVerificationDeferred",
+    "WorkflowCycleStarted",
+    "WorkflowStepsInvalidated",
+)
 
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -50,6 +74,9 @@ def persisted_run_support() -> dict[str, object]:
     return {
         "current_run_decision_version": RUN_DECISION_VERSION,
         "current_run_event_version": 1,
+        "accepted_unversioned_event_kinds": list(
+            _SUPPORTED_UNVERSIONED_RUN_EVENT_KINDS
+        ),
         "legacy_event_kinds": list(_LEGACY_RUN_EVENT_KINDS),
         "legacy_mode": "read-only-upcast",
         "unknown_version_behavior": "reject",
@@ -487,6 +514,13 @@ def upcast_run_events(
             f"unsupported persisted Run event version: {declared_version}"
         )
     kind = str(event.get("kind", ""))
+    if (
+        declared_schema in {None, ""}
+        and kind not in _SUPPORTED_UNVERSIONED_RUN_EVENT_KINDS
+    ):
+        raise RunEventSchemaError(
+            f"unsupported unversioned persisted Run event kind: {kind}"
+        )
     if kind in {
         "CaseOpened",
         "DeliveryStrategySelected",

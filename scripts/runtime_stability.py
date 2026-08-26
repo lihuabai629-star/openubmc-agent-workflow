@@ -558,15 +558,14 @@ def _artifact_lifecycle(root: Path) -> dict[str, object]:
             batch_start,
             batch_start + ARTIFACT_CAPACITY_BATCH_SIZE,
         ):
-            audit = index == ARTIFACT_CAPACITY_RECORDS - 1
             raw_references.append(
                 store.put(
                     source,
                     kind="artifact-capacity-raw",
                     provenance="runtime-stability",
-                    retention_hint="audit" if audit else "run-lifetime",
+                    retention_hint="run-lifetime",
                     target="198.51.100.200",
-                    run_id="artifact-capacity-audit" if audit else f"artifact-capacity-{index:03d}",
+                    run_id=f"artifact-capacity-{index:03d}",
                     created_by_effect=f"artifact-capacity-create-{index:03d}",
                 )
             )
@@ -621,12 +620,17 @@ def _artifact_lifecycle(root: Path) -> dict[str, object]:
     released_run_records = 0
     for index in range(
         ARTIFACT_CAPACITY_RECORDS // 2,
-        ARTIFACT_CAPACITY_RECORDS - 1,
+        ARTIFACT_CAPACITY_RECORDS,
     ):
         released_run_records += reopened.release_run(
             f"artifact-capacity-{index:03d}"
         )
     second_gc = reopened.garbage_collect()
+    shared_content_deleted = False
+    try:
+        reopened.resolve(raw_references[-1])
+    except ReferenceViolation:
+        shared_content_deleted = True
     final_status = open_store().status()
     final_content_files = sum(
         path.is_file() for path in content_root.rglob("*")
@@ -647,16 +651,17 @@ def _artifact_lifecycle(root: Path) -> dict[str, object]:
             shared_content_preserved,
             expired_resolution_rejected,
             released_resolution_rejected,
-            released_run_records == ARTIFACT_CAPACITY_RECORDS // 2 - 1,
+            released_run_records == ARTIFACT_CAPACITY_RECORDS // 2,
             second_gc == {
-                "deleted_records": ARTIFACT_CAPACITY_RECORDS // 2 - 1,
-                "deleted_content": 0,
+                "deleted_records": ARTIFACT_CAPACITY_RECORDS // 2,
+                "deleted_content": 1,
             },
-            final_status["record_count"] == 2,
-            final_status["managed_record_count"] == 2,
+            shared_content_deleted,
+            final_status["record_count"] == 1,
+            final_status["managed_record_count"] == 1,
             final_status["redacted_record_count"] == 1,
-            final_status["retention_counts"]["audit"] == 2,
-            final_content_files == 2,
+            final_status["retention_counts"]["audit"] == 1,
+            final_content_files == 1,
             storage_bytes <= MAX_ARTIFACT_STORAGE_BYTES,
             elapsed_seconds <= MAX_ARTIFACT_CAPACITY_SECONDS,
         )
@@ -678,6 +683,7 @@ def _artifact_lifecycle(root: Path) -> dict[str, object]:
         "released_run_records": released_run_records,
         "second_gc_deleted_records": second_gc["deleted_records"],
         "second_gc_deleted_content": second_gc["deleted_content"],
+        "shared_content_deleted_after_final_reference": shared_content_deleted,
         "expired_resolution_rejected": expired_resolution_rejected,
         "released_resolution_rejected": released_resolution_rejected,
         "final_record_count": final_status["record_count"],

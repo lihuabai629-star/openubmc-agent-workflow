@@ -336,29 +336,30 @@ def verify_runtime_stability_report(
                 artifact.get("released_run_records"),
                 "Artifact released Run records",
             )
-            == ARTIFACT_CAPACITY_RECORDS // 2 - 1,
+            == ARTIFACT_CAPACITY_RECORDS // 2,
             _integer(
                 artifact.get("second_gc_deleted_records"),
                 "Artifact second GC records",
             )
-            == ARTIFACT_CAPACITY_RECORDS // 2 - 1,
+            == ARTIFACT_CAPACITY_RECORDS // 2,
             _integer(
                 artifact.get("second_gc_deleted_content"),
                 "Artifact second GC content",
             )
-            == 0,
+            == 1,
+            artifact.get("shared_content_deleted_after_final_reference") is True,
             artifact.get("expired_resolution_rejected") is True,
             artifact.get("released_resolution_rejected") is True,
             _integer(
                 artifact.get("final_record_count"),
                 "Artifact final records",
             )
-            == 2,
+            == 1,
             _integer(
                 artifact.get("final_managed_record_count"),
                 "Artifact final managed records",
             )
-            == 2,
+            == 1,
             _integer(
                 artifact.get("final_redacted_record_count"),
                 "Artifact final redacted records",
@@ -368,12 +369,12 @@ def verify_runtime_stability_report(
                 artifact.get("final_audit_record_count"),
                 "Artifact final audit records",
             )
-            == 2,
+            == 1,
             _integer(
                 artifact.get("final_content_files"),
                 "Artifact final content files",
             )
-            == 2,
+            == 1,
             _integer(
                 artifact.get("storage_bytes"),
                 "Artifact storage bytes",

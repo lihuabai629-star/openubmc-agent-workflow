@@ -3,6 +3,30 @@
   "support": {
     "current_run_decision_version": 1,
     "current_run_event_version": 1,
+    "accepted_unversioned_event_kinds": [
+      "CaseClosed",
+      "CaseOpened",
+      "CaseUpdated",
+      "CloseoutRecorded",
+      "DeliveryStrategySelected",
+      "EvidenceAttached",
+      "OperationAccepted",
+      "OperationProgressed",
+      "OperationReconciled",
+      "OperationStarted",
+      "OperationTerminal",
+      "RunCancelled",
+      "RunDecisionCommitted",
+      "RunGateOpened",
+      "RunGateSubmitted",
+      "RunIncidentRaised",
+      "RunIncidentResolved",
+      "RunOutcomeRecorded",
+      "RunPhaseRecorded",
+      "RunVerificationDeferred",
+      "WorkflowCycleStarted",
+      "WorkflowStepsInvalidated"
+    ],
     "legacy_event_kinds": [
       "CaseOpened",
       "CaseUpdated",
@@ -29,6 +53,41 @@
           "payload": {
             "intent": "diagnose-and-fix",
             "delivery_strategy": "source-only",
+            "acceptance_plan": {
+              "schema": "openubmc.target-runtime.v1/acceptance-plan",
+              "plan_id": "acceptance-bb15acbd6554d363f2c4499d1489d7966caeaa264ae1c647ecec4e3627fb96d8",
+              "intent": "diagnose-and-fix",
+              "delivery_strategy": "source-only",
+              "goal": "",
+              "requirements": [
+                {
+                  "schema": "openubmc.target-runtime.v1/acceptance-requirement",
+                  "requirement_id": "stage.diagnosis",
+                  "title": "问题已完成定位并保留证据",
+                  "stage": "diagnosis",
+                  "criticality": "required",
+                  "required": true,
+                  "source": "runtime-derived",
+                  "target": "case",
+                  "verification_method": "stage-receipt",
+                  "expected_result": "completed"
+                },
+                {
+                  "schema": "openubmc.target-runtime.v1/acceptance-requirement",
+                  "requirement_id": "stage.development",
+                  "title": "源码修复和方案记录已完成",
+                  "stage": "development",
+                  "criticality": "required",
+                  "required": true,
+                  "source": "runtime-derived",
+                  "target": "case",
+                  "verification_method": "stage-receipt",
+                  "expected_result": "completed"
+                }
+              ],
+              "frozen_at": 1.0,
+              "source": "runtime-derived"
+            },
             "workflow_definition": {
               "definition_id": "workflow-source-only",
               "version": 1,
