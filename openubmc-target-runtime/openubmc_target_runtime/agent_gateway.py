@@ -8,10 +8,14 @@ import json
 from .catalog import OperationDescriptor
 from .capabilities import CAPABILITY_ALIASES, CAPABILITY_STATES
 from .contracts import RUNTIME_API_VERSION
-from .diagnostic_receipt import DiagnosticReceipt
+from .diagnostic_receipt import (
+    DiagnosticCoverage,
+    DiagnosticReceipt,
+    DiagnosticStatus,
+)
 from .semantic_runtime import (
     AgentGatewayError,
-    GATE_SCHEMA_MAX_BYTES,
+    GATE_SCHEMA_PROJECTION_TARGET_BYTES,
     ObservationQuery,
     ObservationRef,
     RunTurn,
@@ -28,7 +32,10 @@ from .observation import observation_consistency
 AGENT_GATEWAY_SCHEMA = f"{RUNTIME_API_VERSION}/agent-gateway-v1"
 OBSERVATION_RECEIPT_SCHEMA = f"{AGENT_GATEWAY_SCHEMA}/observation-receipt"
 TURN_SCHEMA = f"{AGENT_GATEWAY_SCHEMA}/turn"
-OBSERVATION_MAX_BYTES = 4 * 1024
+OBSERVATION_PROJECTION_TARGET_BYTES = 4 * 1024
+# Compatibility name for callers that report the historical projection target.
+# ObservationReceipts may exceed it; it is not a completeness or control boundary.
+OBSERVATION_MAX_BYTES = OBSERVATION_PROJECTION_TARGET_BYTES
 TURN_PROJECTION_TARGET_BYTES = 8 * 1024
 # Compatibility name for callers that report the historical projection target.
 # Runtime-owned Turn semantics may exceed it; it is not a control-flow maximum.
@@ -102,6 +109,16 @@ def _diagnostic_result_text(value: object) -> str:
     )
 
 
+def _diagnostic_agent_acceptance(receipt: Mapping[str, object]) -> str:
+    coverage = DiagnosticCoverage.from_public_dict(
+        _mapping(receipt.get("coverage"))
+    )
+    return DiagnosticReceipt.agent_acceptance_for(
+        DiagnosticStatus.parse(receipt.get("status")),
+        coverage,
+    ).value
+
+
 def render_execute_turn_text(
     value: Mapping[str, object],
     *,
@@ -135,6 +152,7 @@ def render_execute_turn_text(
     fixed_lines.append(
         "DiagnosticReceipt "
         f"status={receipt.get('status', 'blocked')} "
+        f"agent_acceptance={_diagnostic_agent_acceptance(receipt)} "
         f"source_coverage={evaluable}/{requested} "
         f"source_unavailable={coverage.get('unavailable', 0)} "
         f"source_not_checked={coverage.get('not_checked', 0)} "
@@ -203,57 +221,6 @@ def render_execute_turn_text(
     )
 
 
-def _selector_identity_scope(value: object) -> dict[str, object]:
-    scope = _mapping(value)
-    raw_selectors = scope.get("selectors", [])
-    selectors = [
-        {
-            "id": _bounded_text(_mapping(item).get("id"), 64),
-            "kind": _bounded_text(_mapping(item).get("kind"), 16),
-        }
-        for item in (raw_selectors if isinstance(raw_selectors, list) else [])[:16]
-    ]
-    return {
-        "target": _bounded_text(scope.get("target"), 512),
-        "selectors": selectors,
-        "freshness": _compact_value(
-            scope.get("freshness", {}),
-            max_depth=2,
-            max_items=4,
-            max_string=64,
-        ),
-    }
-
-
-def _selector_identity_consistency(
-    value: object,
-    *,
-    include_selectors: bool = True,
-) -> dict[str, object]:
-    consistency = _mapping(value)
-    raw_selectors = consistency.get("selectors", [])
-    result: dict[str, object] = {
-        "classification": _bounded_text(
-            consistency.get("classification"), 32
-        ),
-        "reusable": False,
-    }
-    if include_selectors:
-        result["selectors"] = [
-            {
-                "selector_id": _bounded_text(
-                    _mapping(item).get("selector_id"), 64
-                ),
-                "kind": _bounded_text(_mapping(item).get("kind"), 16),
-                "status": _bounded_text(_mapping(item).get("status"), 16),
-            }
-            for item in (
-                raw_selectors if isinstance(raw_selectors, list) else []
-            )[:16]
-        ]
-    return result
-
-
 def _compact_value(
     value: object,
     *,
@@ -296,6 +263,52 @@ def _compact_value(
     return str(value)
 
 
+def _compact_observation_results(value: object) -> dict[str, object]:
+    projected: dict[str, object] = {}
+    for selector_id, raw_result in _mapping(value).items():
+        result = dict(_mapping(raw_result))
+        raw_values = result.get("values", [])
+        if isinstance(raw_values, list):
+            result["values"] = [
+                {
+                    **{
+                        str(key): item
+                        for key, item in _mapping(raw_item).items()
+                        if key != "value"
+                    },
+                    **(
+                        {
+                            "value": _compact_value(
+                                _mapping(raw_item).get("value"),
+                                max_depth=8,
+                                max_items=32,
+                                max_string=192,
+                            )
+                        }
+                        if "value" in _mapping(raw_item)
+                        else {}
+                    ),
+                }
+                for raw_item in raw_values
+            ]
+        projected[str(selector_id)] = result
+    return projected
+
+
+def _projection_telemetry(
+    *,
+    compacted: bool,
+    target_exceeded: bool,
+) -> dict[str, bool]:
+    return {
+        "content_compacted": compacted,
+        "projection_compacted": compacted,
+        "projection_target_exceeded": target_exceeded,
+        "manual_narrowing_required": False,
+        "budget_blocker": False,
+    }
+
+
 class CostGovernor:
     """Enforce model-visible result budgets without exposing raw Evidence."""
 
@@ -304,152 +317,73 @@ class CostGovernor:
         gate = _mapping(value)
         if not gate:
             return None
-        kind = _text(gate.get("kind"))
-        if kind == "phase":
-            input_schema = dict(_mapping(gate.get("input_schema")))
-            if len(_json_bytes(input_schema)) > GATE_SCHEMA_MAX_BYTES:
-                raise AgentGatewayError(
-                    "Gate schema exceeds the hard 4 KiB contract"
-                )
         return dict(gate)
+
+    @staticmethod
+    def _gate_projection_target_exceeded(value: object) -> bool:
+        gate = _mapping(value)
+        return bool(
+            _text(gate.get("kind")) == "phase"
+            and len(_json_bytes(_mapping(gate.get("input_schema"))))
+            > GATE_SCHEMA_PROJECTION_TARGET_BYTES
+        )
 
     @staticmethod
     def _turn_diagnostic_receipt(value: object) -> dict[str, object] | None:
         receipt = _mapping(value)
         if not receipt:
             return None
-        return (
+        projected = (
             DiagnosticReceipt.from_public_dict(receipt)
             .compacted_for_agent()
             .to_public_dict()
         )
+        projected["agent_acceptance"] = _diagnostic_agent_acceptance(projected)
+        return projected
 
     @staticmethod
     def observation(document: Mapping[str, object]) -> dict[str, object]:
         result = dict(document)
-        if len(_json_bytes(result)) <= OBSERVATION_MAX_BYTES:
+        if len(_json_bytes(result)) <= OBSERVATION_PROJECTION_TARGET_BYTES:
             return result
         compacted = dict(result)
-        compacted["content_compacted"] = True
-        compacted.pop("observation_ref", None)
-        compacted["results"] = _compact_value(
-            result.get("results", {}), max_depth=3, max_items=10, max_string=192
+        projected_results = _compact_observation_results(
+            result.get("results", {})
         )
-        compacted["status"] = "incomplete"
-        coverage = dict(_mapping(compacted.get("coverage")))
-        coverage["complete"] = False
-        compacted["coverage"] = coverage
-        gaps = list(compacted.get("gaps", []))
-        gaps.append("result_compacted_to_fit_4kb_budget; narrow the selectors")
-        compacted["gaps"] = gaps
-        if len(_json_bytes(compacted)) <= OBSERVATION_MAX_BYTES:
-            return compacted
-        coverage = _mapping(result.get("coverage"))
-        fallback = {
-            "schema": OBSERVATION_RECEIPT_SCHEMA,
-            "receipt_id": _bounded_text(result.get("receipt_id"), 128),
-            "status": "incomplete",
-            "scope": _selector_identity_scope(result.get("scope", {})),
-            "freshness": _compact_value(
-                result.get("freshness", {}),
-                max_depth=2,
-                max_items=8,
-                max_string=128,
-            ),
-            "target": _compact_value(
-                result.get("target", {}),
-                max_depth=3,
-                max_items=8,
-                max_string=128,
-            ),
-            "results": {},
-            "consistency": _selector_identity_consistency(
-                result.get("consistency", {}),
-                include_selectors=False,
-            ),
-            "coverage": {
-                "requested": coverage.get("requested", 0),
-                "available": 0,
-                "unavailable": 0,
-                "not_checked": coverage.get("requested", 0),
-                "complete": False,
-            },
-            "claims": [],
-            "evidence": [],
-            "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
-            "content_compacted": True,
-        }
-        if len(_json_bytes(fallback)) <= OBSERVATION_MAX_BYTES:
-            return fallback
-        minimal = {
-            "schema": OBSERVATION_RECEIPT_SCHEMA,
-            "receipt_id": _bounded_text(result.get("receipt_id"), 128),
-            "status": "incomplete",
-            "scope": _selector_identity_scope(result.get("scope", {})),
-            "freshness": {"status": "unknown"},
-            "consistency": _selector_identity_consistency(
-                result.get("consistency", {})
-            ),
-            "target": {},
-            "results": {},
-            "coverage": {
-                "requested": coverage.get("requested", 0),
-                "available": 0,
-                "unavailable": 0,
-                "not_checked": coverage.get("requested", 0),
-                "complete": False,
-            },
-            "claims": [],
-            "evidence": [],
-            "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
-            "content_compacted": True,
-        }
-        if len(_json_bytes(minimal)) <= OBSERVATION_MAX_BYTES:
-            return minimal
-        scope = _selector_identity_scope(result.get("scope", {}))
-        return {
-            "schema": OBSERVATION_RECEIPT_SCHEMA,
-            "receipt_id": _bounded_text(result.get("receipt_id"), 128),
-            "status": "incomplete",
-            "scope": {
-                "selectors": [
-                    {"id": selector["id"]}
-                    for selector in scope["selectors"]
-                ]
-            },
-            "consistency": _selector_identity_consistency(
-                result.get("consistency", {}),
-                include_selectors=False,
-            ),
-            "coverage": {
-                "requested": coverage.get("requested", 0),
-                "available": 0,
-                "unavailable": 0,
-                "not_checked": coverage.get("requested", 0),
-                "complete": False,
-            },
-            "gaps": ["result_exceeds_4kb_budget; narrow the selectors"],
-            "content_compacted": True,
-        }
+        results_compacted = projected_results != result.get("results", {})
+        compacted.update(
+            _projection_telemetry(
+                compacted=results_compacted,
+                target_exceeded=False,
+            )
+        )
+        compacted["projection_truncated"] = results_compacted
+        compacted["results"] = projected_results
+        compacted["projection_target_exceeded"] = (
+            len(_json_bytes(compacted)) > OBSERVATION_PROJECTION_TARGET_BYTES
+        )
+        return compacted
 
     @staticmethod
     def turn(document: Mapping[str, object]) -> dict[str, object]:
         result = dict(document)
+        if "diagnostic_receipt" in result:
+            receipt = dict(_mapping(result.get("diagnostic_receipt")))
+            receipt["agent_acceptance"] = _diagnostic_agent_acceptance(receipt)
+            result["diagnostic_receipt"] = receipt
         runtime_gate = CostGovernor._turn_gate(document.get("gate"))
-        if runtime_gate != document.get("gate"):
-            result["gate"] = runtime_gate
-            result["content_compacted"] = True
-            result["projection_compacted"] = True
-            result["projection_target_exceeded"] = False
+        gate_projection_target_exceeded = (
+            CostGovernor._gate_projection_target_exceeded(runtime_gate)
+        )
+        if gate_projection_target_exceeded:
+            result["gate_projection_target_exceeded"] = True
             result["manual_narrowing_required"] = False
             result["budget_blocker"] = False
         if len(_json_bytes(result)) <= TURN_MAX_BYTES:
             return result
-        result["content_compacted"] = True
-        result["projection_compacted"] = True
-        result["projection_target_exceeded"] = False
-        result["manual_narrowing_required"] = False
-        result["budget_blocker"] = False
+        result.update(
+            _projection_telemetry(compacted=True, target_exceeded=False)
+        )
         result["facts"] = _compact_value(
             result.get("facts", []), max_depth=3, max_items=16, max_string=256
         )
@@ -480,12 +414,10 @@ class CostGovernor:
             ],
             "outcome": runtime_outcome,
             "next": result.get("next"),
-            "content_compacted": True,
-            "projection_compacted": True,
-            "projection_target_exceeded": False,
-            "manual_narrowing_required": False,
-            "budget_blocker": False,
+            **_projection_telemetry(compacted=True, target_exceeded=False),
         }
+        if gate_projection_target_exceeded:
+            fallback["gate_projection_target_exceeded"] = True
         if "observation_ref" in result:
             fallback["observation_ref"] = document.get("observation_ref")
         if "outcome_recorded" in result:

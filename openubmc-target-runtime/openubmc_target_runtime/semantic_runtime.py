@@ -15,6 +15,7 @@ from .diagnostic_receipt import (
     DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS,
     DiagnosticReceipt,
 )
+from .diagnostic_request import DiagnosticRequestPlan
 from .incident import incident_recovery_policy
 
 
@@ -27,7 +28,10 @@ AGENT_REQUEST_MAX_CONTAINER_ITEMS = 1024
 AGENT_REQUEST_MAX_NODES = 8192
 AGENT_REQUEST_MAX_STRING_BYTES = 128 * 1024
 AGENT_REQUEST_MAX_KEY_BYTES = 256
-GATE_SCHEMA_MAX_BYTES = 4 * 1024
+GATE_SCHEMA_PROJECTION_TARGET_BYTES = 4 * 1024
+# Compatibility name for consumers that still report the historical target.
+# Gate schemas may exceed this value; it is not a Runtime control-flow maximum.
+GATE_SCHEMA_MAX_BYTES = GATE_SCHEMA_PROJECTION_TARGET_BYTES
 OBSERVATION_SCOPE_MAX_BYTES = 2 * 1024
 TARGET_MAX_BYTES = 512
 SELECTOR_ID_MAX_BYTES = 64
@@ -649,7 +653,8 @@ def _normalized_gate_submission(
     }
 
 
-def _run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
+def run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
+    """Return the canonical semantic payload persisted and fingerprinted for a command."""
     if isinstance(command, SubmitGate):
         return {
             "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/submit-gate-input-v1",
@@ -710,7 +715,7 @@ def run_command_identity(
         raise AgentGatewayError(
             "Run command operation_id must be a safe 1-128 character identifier"
         )
-    canonical_digest = fingerprint(_run_command_semantic_input(command))
+    canonical_digest = fingerprint(run_command_semantic_input(command))
     persisted_digest = _text(getattr(command, "input_digest", ""))
     if persisted_digest:
         if _SHA256.fullmatch(persisted_digest) is None:
@@ -779,32 +784,6 @@ def _caller_deadline(action: Mapping[str, object]) -> float:
     return deadline
 
 
-def _diagnostic_scope_result_count(
-    arguments: Mapping[str, object], *, target_count: int
-) -> int:
-    requested_per_target = 0
-    for name in ("files", "mdb_queries", "mdb_expand_classes"):
-        raw_items = arguments.get(name, ())
-        if isinstance(raw_items, Sequence) and not isinstance(
-            raw_items, (str, bytes, bytearray)
-        ):
-            requested_per_target += sum(
-                1 for item in raw_items if str(item).strip()
-            )
-    if _text(arguments.get("logs")):
-        requested_per_target += 1
-    if arguments.get("mdb_only") is not True:
-        requested_per_target += 1
-        if "tree_service" in arguments or "tree_head" in arguments:
-            requested_per_target += 1
-        if "mdb_only" in arguments:
-            requested_per_target += 1
-    if arguments.get("source_correlation_requested") is True:
-        requested_per_target += 1
-    requested_per_target = max(requested_per_target, 1)
-    return requested_per_target * target_count + (1 if target_count >= 2 else 0)
-
-
 def _bounded_diagnostic_scope(
     *,
     intent: str,
@@ -813,9 +792,8 @@ def _bounded_diagnostic_scope(
 ) -> None:
     if intent not in {"diagnosis-only", "diagnose-and-fix"}:
         return
-    requested = _diagnostic_scope_result_count(
-        arguments,
-        target_count=target_count,
+    requested = DiagnosticRequestPlan.from_mapping(arguments).total_result_count(
+        target_count=target_count
     )
     if requested > DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS:
         raise AgentGatewayError(
@@ -1111,10 +1089,6 @@ class Gate:
     input_schema: Mapping[str, object]
     schema_digest: str
     kind: str = "phase"
-
-    def __post_init__(self) -> None:
-        if len(json_bytes(self.input_schema)) > GATE_SCHEMA_MAX_BYTES:
-            raise GateConflict("Gate schema exceeds the 4 KiB Runtime budget")
 
     @classmethod
     def from_public_dict(cls, value: Mapping[str, object]) -> "Gate":

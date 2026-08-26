@@ -53,7 +53,7 @@ ADR-0004 为准。
 ### 已验证事实
 
 - 默认 Agent profile 只暴露 `observe` 和 `execute`；兼容面与 Operator 面显式分离。
-- Observation scope 上限为 2 KiB，ObservationReceipt 当前上限为 4 KiB，Turn 以 8 KiB 为软投影目标，Gate schema 上限为 4 KiB。
+- Observation scope 上限为 2 KiB；ObservationReceipt 与 Gate schema 以 4 KiB 为软投影目标，Turn 以 8 KiB 为软投影目标，三者均不参与流程完成性判定。
 - `execute` 支持 `start | respond | resume | control`，并把内部推进上限固定为 64 步。
 - `execute` 的 JSON Schema 对 `intent`、`purpose`、`run_id`、`target` 等字符串没有统一长度上限，`workflow`、`response` 与完整 `observation_receipt` 也缺少总字节预算。
 - MCP stdio server 在 `json.loads` 前逐行读取输入，但没有绝对帧长或行长上限。
@@ -415,7 +415,7 @@ Agent 与 Run state 只传以下有界元数据：
 | 能力 | 场景 | 预期断言 | 当前状态 |
 | --- | --- | --- | --- |
 | Agent Interface | `tools/list` 默认 profile | 仅两个工具，schema 总量有界 | 已覆盖 |
-| Observation | scope/freshness/assurance/预算 | 超范围 fail closed，Receipt ≤ 4 KiB | 已覆盖 |
+| Observation | scope/freshness/assurance/预算 | scope 超范围 fail closed；投影超目标不改写完整性或移除 ObservationRef | 已覆盖 |
 | Observation 性能 | 固定模型、固定 target snapshot、10/20/30 对 A/B | Token、有效 Token、耗时满足阈值 | 10 对已通过 |
 | Execute 输入 | 超长字符串、深层对象、宽对象、超大 Receipt | 在业务执行前拒绝，错误响应有界 | 256 KiB 总预算已覆盖；shape 细化待评估 |
 | MCP transport | 超大单行、非法 UTF-8/JSON、并发取消 | 在解析前按帧预算拒绝，不影响后续请求 | 超大帧及后续合法请求已覆盖 |

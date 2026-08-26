@@ -385,7 +385,8 @@ required_role_or_capability
 submission_id / submission_digest
 ```
 
-Agent-facing Turn 内嵌不超过 4 KiB 的关闭 schema，并携带 Gate ID、版本和 schema digest。
+Agent-facing Turn 内嵌关闭 schema，并携带 Gate ID、版本和 schema digest。schema 以 4 KiB
+为显示目标；超过目标时保留完整 Gate 语义并记录投影遥测，不得拒绝或替换 Gate。
 内部研发 Runtime 不使用 one-time secret token；这一点由 ADR-0004 修订 ADR-0003。
 
 提交规则：

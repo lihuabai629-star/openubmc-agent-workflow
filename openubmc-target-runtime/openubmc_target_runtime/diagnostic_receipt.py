@@ -11,6 +11,7 @@ import json
 from .capabilities import CAPABILITY_ALIASES
 from .comparison_targets import comparison_target_identities
 from .contracts import RUNTIME_API_VERSION
+from .diagnostic_request import DiagnosticRequestPlan
 from .redaction import is_secret_key, redact_text
 
 
@@ -222,7 +223,6 @@ class DiagnosticCoverage:
         if self.compacted:
             result["compacted"] = self.compacted
         return result
-
 
 @dataclass(frozen=True)
 class DiagnosticResult:
@@ -819,23 +819,31 @@ class DiagnosticReceipt:
 
     def status_for_agent_acceptance(self) -> DiagnosticStatus:
         """Classify whether the persisted receipt is fully evaluable by an Agent."""
+        return self.agent_acceptance_for(self.status, self.coverage)
 
-        if self.status is DiagnosticStatus.BLOCKED:
-            return self.status
+    @staticmethod
+    def agent_acceptance_for(
+        source_status: DiagnosticStatus,
+        coverage: DiagnosticCoverage,
+    ) -> DiagnosticStatus:
+        """Classify Agent evaluability without rewriting source completion."""
+
+        if source_status is DiagnosticStatus.BLOCKED:
+            return source_status
         visible = (
-            self.coverage.visible_evaluable,
-            self.coverage.visible_unavailable,
-            self.coverage.visible_not_checked,
+            coverage.visible_evaluable,
+            coverage.visible_unavailable,
+            coverage.visible_not_checked,
         )
         if all(value is None for value in visible):
-            return self.status
-        visible_evaluable = self.coverage.visible_evaluable or 0
-        if self.status is DiagnosticStatus.COMPLETE and (
-            visible_evaluable == self.coverage.requested
-            and (self.coverage.visible_unavailable or 0) == 0
-            and (self.coverage.visible_not_checked or 0) == 0
+            return source_status
+        visible_evaluable = coverage.visible_evaluable or 0
+        if source_status is DiagnosticStatus.COMPLETE and (
+            visible_evaluable == coverage.requested
+            and (coverage.visible_unavailable or 0) == 0
+            and (coverage.visible_not_checked or 0) == 0
         ):
-            return self.status
+            return source_status
         return (
             DiagnosticStatus.PARTIAL
             if visible_evaluable > 0
@@ -1547,11 +1555,12 @@ def _diagnostic_request(
     value: Mapping[str, object],
     arguments: Mapping[str, object],
 ) -> dict[str, object]:
-    request = dict(_mapping(value.get("request")))
-    for name in _DIAGNOSTIC_REQUEST_FIELDS:
-        if name in arguments:
-            request[name] = arguments[name]
-    return request
+    runtime_request = {
+        name: arguments[name]
+        for name in _DIAGNOSTIC_REQUEST_FIELDS
+        if name in arguments
+    }
+    return runtime_request or dict(_mapping(value.get("request")))
 
 
 def _expected_comparison_scope(
@@ -1572,30 +1581,49 @@ def _expected_comparison_scope(
     return targets, identities
 
 
+def _diagnostic_scope_limit_result(
+    evidence_ids: list[str],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "result_id": "diagnostic-scope",
+            "kind": "diagnostic-scope",
+            "request": "Runtime-owned diagnostic result identities",
+            "status": "not_checked",
+            "gap": "runtime_diagnostic_scope_exceeds_1024_result_identities",
+            "evidence_ids": evidence_ids,
+        }
+    ]
+
+
 def _structured_results(
     value: Mapping[str, object],
     evidence_ids: list[str],
     arguments: Mapping[str, object],
 ) -> list[dict[str, object]]:
     request = _diagnostic_request(value, arguments)
+    plan = DiagnosticRequestPlan.from_mapping(request)
+    if plan.result_count > DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS:
+        return _diagnostic_scope_limit_result(evidence_ids)
     runtime_result = _mapping(value.get("result"))
     lanes = _mapping(runtime_result.get("lanes"))
     ssh = _mapping(lanes.get("ssh"))
     telnet = _mapping(lanes.get("telnet"))
     files = _mapping(telnet.get("files"))
     results: list[dict[str, object]] = []
-    raw_files = request.get("files", [])
-    requested_files = (
-        [str(item) for item in raw_files if str(item).strip()]
-        if isinstance(raw_files, Sequence)
-        and not isinstance(raw_files, (str, bytes, bytearray))
-        else []
-    )
-    for index, path in enumerate(requested_files, start=1):
-        result_id, kind = {
+    result_id_counts: dict[str, int] = {}
+    for index, path in enumerate(plan.files, start=1):
+        base_result_id, kind = {
             "/etc/version.json": ("version", "target-version"),
             "/proc/uptime": ("uptime", "target-uptime"),
         }.get(path, (f"file-{index}", "target-file"))
+        occurrence = result_id_counts.get(base_result_id, 0) + 1
+        result_id_counts[base_result_id] = occurrence
+        result_id = (
+            base_result_id
+            if occurrence == 1
+            else f"{base_result_id}-{occurrence}"
+        )
         results.append(
             _tool_result(
                 result_id=result_id,
@@ -1605,7 +1633,7 @@ def _structured_results(
                 evidence_ids=evidence_ids,
             )
         )
-    if request and request.get("mdb_only") is not True:
+    if plan.include_target_clock:
         freshness = _mapping(runtime_result.get("freshness")) or _mapping(
             value.get("freshness")
         )
@@ -1651,38 +1679,27 @@ def _structured_results(
                     "evidence_ids": evidence_ids,
                 }
             )
-    logs = request.get("logs")
-    if isinstance(logs, str) and logs.strip():
+    if plan.logs:
         results.append(
             _tool_result(
                 result_id="logs",
                 kind="bounded-logs",
-                request=logs,
+                request=plan.logs,
                 tool=telnet.get("logs"),
                 evidence_ids=evidence_ids,
             )
         )
-    if request.get("mdb_only") is not True and (
-        "tree_service" in request or "tree_head" in request
-    ):
-        service = str(request.get("tree_service", "")).strip()
+    if plan.tree_requested:
         results.append(
             _tool_result(
                 result_id="service",
-                kind="service-tree" if service else "service-list",
-                request=service or "bounded service list",
+                kind="service-tree" if plan.tree_service else "service-list",
+                request=plan.tree_service or "bounded service list",
                 tool=ssh.get("busctl"),
                 evidence_ids=evidence_ids,
             )
         )
-    raw_queries = request.get("mdb_queries", [])
-    queries = (
-        [str(item) for item in raw_queries if str(item).strip()]
-        if isinstance(raw_queries, Sequence)
-        and not isinstance(raw_queries, (str, bytes, bytearray))
-        else []
-    )
-    for index, query in enumerate(queries, start=1):
+    for index, query in enumerate(plan.mdb_queries, start=1):
         name = "mdbctl" if index == 1 else f"mdbctl_{index}"
         results.append(
             _tool_result(
@@ -1693,14 +1710,7 @@ def _structured_results(
                 evidence_ids=evidence_ids,
             )
         )
-    raw_expand_classes = request.get("mdb_expand_classes", [])
-    expand_classes = (
-        [str(item) for item in raw_expand_classes if str(item).strip()]
-        if isinstance(raw_expand_classes, Sequence)
-        and not isinstance(raw_expand_classes, (str, bytes, bytearray))
-        else []
-    )
-    for index, class_name in enumerate(expand_classes, start=1):
+    for index, class_name in enumerate(plan.mdb_expand_classes, start=1):
         prefix = f"mdbctl_expand_{index}"
         results.append(
             _aggregate_tool_result(
@@ -1715,17 +1725,17 @@ def _structured_results(
                 evidence_ids=evidence_ids,
             )
         )
-    if "mdb_only" in request and request.get("mdb_only") is not True:
+    if plan.active_alarms_requested:
         results.append(
             _tool_result(
                 result_id="active-alarms",
                 kind="active-alarms",
-                request=str(request.get("alarm_service") or "active alarms"),
+                request=plan.alarm_service or "active alarms",
                 tool=ssh.get("active_alarms"),
                 evidence_ids=evidence_ids,
             )
         )
-    if request.get("source_correlation_requested") is True:
+    if plan.source_correlation_requested:
         results.append(
             _correlation_result(
                 value=runtime_result.get("correlation"),
@@ -1803,6 +1813,11 @@ def _comparison_results(
             evidence_ids,
             target_arguments,
         )
+        if (
+            len(results) + len(child_results) + 1
+            > DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS
+        ):
+            return _diagnostic_scope_limit_result(evidence_ids)
         for child_result in child_results:
             projected = dict(child_result)
             projected["result_id"] = (
@@ -2102,9 +2117,24 @@ def build_diagnostic_receipt(
         for reference in evidence_refs[:8]
         if _bounded_text(reference.get("evidence_id"), 128)
     ]
-    results = _comparison_results(value, reference_ids, arguments)
-    if not results:
-        results = _structured_results(value, reference_ids, arguments)
+    request = _diagnostic_request(value, arguments)
+    raw_targets = arguments.get("targets", [])
+    target_count = (
+        len(raw_targets)
+        if isinstance(raw_targets, Sequence)
+        and not isinstance(raw_targets, (str, bytes, bytearray))
+        and raw_targets
+        else 1
+    )
+    requested_result_count = DiagnosticRequestPlan.from_mapping(
+        request
+    ).total_result_count(target_count=target_count)
+    if requested_result_count > DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS:
+        results = _diagnostic_scope_limit_result(reference_ids)
+    else:
+        results = _comparison_results(value, reference_ids, arguments)
+        if not results:
+            results = _structured_results(value, reference_ids, arguments)
     diagnosis, diagnosis_truncated = _diagnostic_content_with_flags(value)
     source_truncated, source_completeness = _content_flags(value)
     diagnosis_content_complete = (

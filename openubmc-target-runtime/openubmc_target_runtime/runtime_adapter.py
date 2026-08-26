@@ -18,6 +18,7 @@ from .semantic_runtime import (
     ObservationQuery,
     StartRun,
     SubmitGate,
+    run_command_semantic_input,
     run_id_for_command,
 )
 
@@ -158,21 +159,7 @@ class RuntimeSemanticAdapter:
         task_id: str,
         operation_id: str,
     ) -> Mapping[str, object]:
-        start_input = {
-            "schema": "openubmc.semantic-runtime/start-input-v1",
-            "target": command.target,
-            "targets": [target.to_public_dict() for target in command.targets],
-            "intent": command.intent,
-            "entry_operation": command.entry_operation,
-            "entry_arguments": dict(command.entry_arguments or {}),
-            "purpose": command.purpose,
-            "delivery_strategy": command.delivery_strategy,
-            "observation_ref": (
-                command.observation_ref.to_public_dict()
-                if command.observation_ref is not None
-                else None
-            ),
-        }
+        start_input = run_command_semantic_input(command)
         run_id = run_id_for_command(command, command_id=command.command_id)
         try:
             existing = self.context_runtime.reattach_semantic_run(

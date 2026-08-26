@@ -78,7 +78,9 @@ Token 增加 23.57%，Agent 可见输出增加 624.94%，持久化 Evidence 增�
 - `execute` 的 operation completion 与诊断完成已经分离；零实质结果不会自动形成成功诊断。
 - source coverage 与 visible coverage 已经分离；投影压缩不改写源 `status/coverage.complete`。
 - Closeout 只在 durable visible coverage 完整可评价时通过；部分可评价为 partial，零可评价为 blocked。
-- Gate 继续使用 4 KiB 硬契约；8 KiB Turn 是显示软目标，不阻断 Gate、Incident、Outcome 或 DiagnosticReceipt。
+- 本报告生成时 Gate 仍使用 4 KiB 硬契约；后续 ADR-0007 修订已将 Gate schema 与
+  ObservationReceipt 的 4 KiB 一并降为显示软目标。当前实现不再用 4/8 KiB 阻断或改写
+  Observation、Gate、Incident、Outcome 或 DiagnosticReceipt。
 - 源内容截断会稳定传播 partial、gaps 和不支持的断言；投影压缩本身不会触发这些结论。
 - 原始 Evidence 继续留在 Runtime / Operator 面；Agent 通过有界回执完成诊断，不增加 Broker、Worker fleet 或分布式执行层。
 
