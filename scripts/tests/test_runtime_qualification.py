@@ -226,6 +226,18 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "unknown_version_behavior": "reject",
             },
         )
+        self.assertEqual(
+            report["parameters"]["agent_projection_policy"],
+            {
+                "budget_mode": "soft-display-target",
+                "gate_schema_target_bytes": 4096,
+                "manual_narrowing_required_on_target_exceeded": False,
+                "observation_receipt_target_bytes": 4096,
+                "projection_budget_blocker": False,
+                "target_exceeded_behavior": "preserve-runtime-semantics",
+                "turn_target_bytes": 8192,
+            },
+        )
         stability_call = next(
             command
             for command in calls
