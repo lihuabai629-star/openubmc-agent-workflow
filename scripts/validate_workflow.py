@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -12,7 +13,6 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLES = (
@@ -63,6 +63,30 @@ ROADMAP_WRITERS = frozenset(
         "workflow.next",
     }
 )
+
+
+def evidence_fingerprint(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def verified_evidence_document(path: Path, *, schema: str) -> dict[str, object]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid qualification evidence document: {path}") from error
+    if not isinstance(document, dict) or document.get("schema") != schema:
+        raise SystemExit(f"invalid qualification evidence schema: {path}")
+    unsigned = dict(document)
+    digest = unsigned.pop("evidence_digest", None)
+    if digest != evidence_fingerprint(unsigned):
+        raise SystemExit(f"invalid qualification evidence digest: {path}")
+    return document
 
 
 def run(command: list[str], *, cwd: Path = ROOT, stage: str) -> None:
@@ -401,6 +425,96 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
     ):
         raise SystemExit("invalid roadmap completion evidence retirement")
 
+    continuous = evidence.get("continuous_qualification")
+    if not isinstance(continuous, dict):
+        raise SystemExit("invalid roadmap continuous qualification evidence")
+    continuous_source = continuous.get("source_commit")
+    continuous_groups = continuous.get("qualification_groups")
+    projection_policy = continuous.get("agent_projection_policy")
+    artifact_lifecycle = continuous.get("artifact_lifecycle")
+    if (
+        continuous.get("schema")
+        != "openubmc-agent-workflow.p2-lifecycle-qualification.v1"
+        or continuous.get("issue") != 79
+        or not isinstance(continuous_source, str)
+        or commit_pattern.fullmatch(continuous_source) is None
+        or continuous.get("promotable") is not True
+        or any(
+            not isinstance(digest, str) or digest_pattern.fullmatch(digest) is None
+            for digest in (
+                continuous.get("evidence_digest"),
+                continuous.get("aggregate_evidence_digest"),
+                continuous.get("runtime_stability_digest"),
+            )
+        )
+        or not isinstance(continuous_groups, dict)
+        or continuous_groups.get("persisted_run_compatibility", 0) < 10
+        or continuous_groups.get("semantic_projection_completion", 0) < 16
+        or projection_policy
+        != {
+            "budget_mode": "soft-display-target",
+            "observation_receipt_target_bytes": 4096,
+            "gate_schema_target_bytes": 4096,
+            "turn_target_bytes": 8192,
+            "target_exceeded_behavior": "preserve-runtime-semantics",
+            "manual_narrowing_required_on_target_exceeded": False,
+            "projection_budget_blocker": False,
+        }
+        or not isinstance(artifact_lifecycle, dict)
+        or artifact_lifecycle.get("created_raw_records") != 64
+        or artifact_lifecycle.get("restart_record_count") != 66
+        or artifact_lifecycle.get("first_gc_deleted_records") != 33
+        or artifact_lifecycle.get("second_gc_deleted_records") != 32
+        or artifact_lifecycle.get("second_gc_deleted_content") != 1
+        or artifact_lifecycle.get("shared_content_deleted_after_final_reference")
+        is not True
+        or artifact_lifecycle.get("final_audit_record_count") != 1
+        or artifact_lifecycle.get("shared_content_preserved_after_partial_gc")
+        is not True
+    ):
+        raise SystemExit("invalid roadmap continuous qualification evidence")
+
+    summary_path = continuous.get("summary_path")
+    stability_path = continuous.get("stability_path")
+    if not isinstance(summary_path, str) or not isinstance(stability_path, str):
+        raise SystemExit("invalid roadmap continuous qualification evidence paths")
+    summary = verified_evidence_document(
+        ROOT / summary_path,
+        schema="openubmc-agent-workflow.p2-lifecycle-qualification.v1",
+    )
+    stability = verified_evidence_document(
+        ROOT / stability_path,
+        schema="openubmc-agent-workflow.runtime-stability.v1",
+    )
+    stability_scenarios = stability.get("scenarios")
+    stability_artifact = (
+        stability_scenarios.get("artifact_lifecycle")
+        if isinstance(stability_scenarios, dict)
+        else None
+    )
+    if (
+        summary.get("source_commit") != continuous_source
+        or summary.get("promotable") is not True
+        or summary.get("qualification_counts") != continuous_groups
+        or summary.get("agent_projection_policy") != projection_policy
+        or summary.get("artifact_lifecycle") != artifact_lifecycle
+        or summary.get("aggregate_evidence_digest")
+        != continuous.get("aggregate_evidence_digest")
+        or summary.get("runtime_stability_digest")
+        != continuous.get("runtime_stability_digest")
+        or summary.get("evidence_digest") != continuous.get("evidence_digest")
+        or stability.get("source_commit") != continuous_source
+        or stability.get("promotable") is not True
+        or stability.get("evidence_digest")
+        != continuous.get("runtime_stability_digest")
+        or not isinstance(stability_artifact, dict)
+        or any(
+            stability_artifact.get(name) != value
+            for name, value in artifact_lifecycle.items()
+        )
+    ):
+        raise SystemExit("roadmap continuous qualification evidence does not match")
+
     batches = evidence.get("batches")
     if not isinstance(batches, list) or {
         item.get("id") for item in batches if isinstance(item, dict)
@@ -468,7 +582,13 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
         )
         if repository.returncode or repository.stdout.strip() != "true":
             raise SystemExit("roadmap completion validation requires a git repository")
-        commits = {merge_commit, source_commit, lock_commit, *all_merge_commits}
+        commits = {
+            merge_commit,
+            source_commit,
+            lock_commit,
+            continuous_source,
+            *all_merge_commits,
+        }
         for commit in commits:
             result = subprocess.run(
                 ["git", "-C", str(ROOT), "cat-file", "-e", f"{commit}^{{commit}}"],
@@ -481,6 +601,7 @@ def validate_roadmap_closeout(*, verify_git: bool = True) -> None:
         for ancestor, descendant in (
             (source_commit, merge_commit),
             (merge_commit, "HEAD"),
+            (continuous_source, "HEAD"),
             *((commit, merge_commit) for commit in all_merge_commits),
         ):
             result = subprocess.run(

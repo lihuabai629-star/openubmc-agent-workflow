@@ -15,7 +15,11 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = ROOT / "openubmc-target-runtime"
+sys.path.insert(0, str(RUNTIME_ROOT))
 sys.path.insert(0, str(ROOT))
+
+from openubmc_target_runtime.agent_gateway import agent_projection_policy  # noqa: E402
+from openubmc_target_runtime.run_store import persisted_run_support  # noqa: E402
 
 from scripts.evidence_report import (  # noqa: E402
     evidence_fingerprint,
@@ -67,13 +71,36 @@ QUALIFICATIONS = (
         "semantic_projection_completion",
         (
             "tests.test_agent_gateway.AgentGatewayTests.test_observe_projection_target_preserves_complete_source_semantics",
+            "tests.test_agent_gateway.AgentGatewayTests.test_observe_projection_target_does_not_rewrite_oversized_target_metadata",
+            "tests.test_agent_gateway.AgentGatewayTests.test_observe_soft_target_survives_maximum_legal_scope_and_large_result",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_keeps_complete_source_content_complete_when_projection_compacts",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_target_preserves_runtime_control_semantics",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_gate_target_preserves_runtime_gate_semantics",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_target_preserves_runtime_incident_semantics",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_budget_never_rewrites_terminal_outcome",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_budget_preserves_diagnostic_receipt_semantics",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_compaction_preserves_an_evaluable_result_summary",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_exceeds_the_soft_target_instead_of_rewriting_completion",
+            "tests.test_agent_gateway.AgentGatewayTests.test_gate_construction_preserves_schema_above_the_projection_target",
             "tests.test_agent_gateway.AgentGatewayTests.test_adapter_cannot_expand_diagnostic_scope_beyond_the_durable_contract",
             "tests.test_agent_gateway.AgentGatewayTests.test_multi_target_adapter_defaults_cannot_expand_the_durable_scope",
             "tests.test_agent_gateway.AgentGatewayTests.test_duplicate_special_file_requests_receive_unique_result_identities",
             "tests.test_mcp_contracts.JsonRpcEndpointTests.test_execute_text_does_not_treat_projection_compaction_as_incomplete_source",
+        ),
+    ),
+    (
+        "persisted_run_compatibility",
+        (
+            "tests.test_run_store.RunDecisionContractTests.test_supported_persisted_run_fixture_replays_through_current_readers",
+            "tests.test_run_store.RunDecisionContractTests.test_legacy_run_events_are_explicitly_upcast_to_the_current_projection",
+            "tests.test_run_store.RunDecisionContractTests.test_legacy_and_current_phase_facts_replay_to_the_same_projection",
+            "tests.test_run_store.RunDecisionContractTests.test_every_legacy_workflow_definition_event_is_explicitly_upcast",
+            "tests.test_run_store.RunDecisionContractTests.test_unknown_persisted_run_event_schema_is_rejected",
+            "tests.test_run_store.RunDecisionContractTests.test_unknown_unversioned_persisted_event_kind_is_rejected",
+            "tests.test_run_store.RunDecisionContractTests.test_incompatible_persisted_run_decision_version_is_rejected",
+            "tests.test_compatibility.CompatibilityTelemetryTests.test_sqlite_repository_reads_retained_history_without_a_writer_api",
+            "tests.test_mcp_contracts.RuntimeMcpServiceTests.test_agent_catalog_excludes_retired_compatibility_writers",
+            "tests.test_mcp_contracts.RuntimeMcpServiceTests.test_retired_writer_names_cannot_be_dispatched",
         ),
     ),
 )
@@ -240,6 +267,8 @@ def qualify_runtime(
             "stability_profile": "ci",
             "qualification_groups": [name for name, _tests in QUALIFICATIONS],
             "stability_runner": "scripts/runtime_stability.py",
+            "persisted_run_support": persisted_run_support(),
+            "agent_projection_policy": agent_projection_policy(),
             "ordinary_partial_result_tests": list(PARTIAL_RESULT_TESTS),
             "real_backend_crash_tests": list(LIVE_PATCH_CRASH_TESTS),
         },

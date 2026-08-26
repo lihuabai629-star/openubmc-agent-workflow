@@ -35,6 +35,7 @@ from .agent_gateway import (
     ScopeContract,
     ScopeViolation,
     SelectorContract,
+    agent_projection_policy,
     agent_operation_descriptors,
 )
 from .capability import (
@@ -251,6 +252,7 @@ from .run_store import (
     RunEventSchemaError,
     RunStore,
     RunStoreError,
+    persisted_run_support,
 )
 from .semantic_runtime import (
     AGENT_REQUEST_MAX_BYTES,

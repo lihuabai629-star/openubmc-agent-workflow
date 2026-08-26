@@ -232,10 +232,73 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
                     "old_event_upcasters": "preserved-read-only",
                 },
             },
+            "continuous_qualification": {
+                "schema": "openubmc-agent-workflow.p2-lifecycle-qualification.v1",
+                "issue": 79,
+                "source_commit": "9" * 40,
+                "promotable": True,
+                "aggregate_evidence_digest": "sha256:" + "1" * 64,
+                "qualification_groups": {
+                    "persisted_run_compatibility": 10,
+                    "semantic_projection_completion": 16,
+                },
+                "agent_projection_policy": {
+                    "budget_mode": "soft-display-target",
+                    "observation_receipt_target_bytes": 4096,
+                    "gate_schema_target_bytes": 4096,
+                    "turn_target_bytes": 8192,
+                    "target_exceeded_behavior": "preserve-runtime-semantics",
+                    "manual_narrowing_required_on_target_exceeded": False,
+                    "projection_budget_blocker": False,
+                },
+                "artifact_lifecycle": {
+                    "created_raw_records": 64,
+                    "restart_record_count": 66,
+                    "first_gc_deleted_records": 33,
+                    "second_gc_deleted_records": 32,
+                    "second_gc_deleted_content": 1,
+                    "shared_content_deleted_after_final_reference": True,
+                    "final_audit_record_count": 1,
+                    "shared_content_preserved_after_partial_gc": True,
+                },
+                "summary_path": "docs/qualification/p2-summary.json",
+                "stability_path": "docs/qualification/p2-stability.json",
+            },
             "batches": batches,
         }
         adr = root / "docs" / "adr"
         adr.mkdir(parents=True)
+        qualification_root = root / "docs" / "qualification"
+        qualification_root.mkdir()
+        continuous = evidence["continuous_qualification"]
+        stability = {
+            "schema": "openubmc-agent-workflow.runtime-stability.v1",
+            "source_commit": continuous["source_commit"],
+            "promotable": True,
+            "scenarios": {
+                "artifact_lifecycle": dict(continuous["artifact_lifecycle"]),
+            },
+        }
+        stability["evidence_digest"] = validator.evidence_fingerprint(stability)
+        summary = {
+            "schema": "openubmc-agent-workflow.p2-lifecycle-qualification.v1",
+            "source_commit": continuous["source_commit"],
+            "promotable": True,
+            "qualification_counts": dict(continuous["qualification_groups"]),
+            "agent_projection_policy": dict(continuous["agent_projection_policy"]),
+            "artifact_lifecycle": dict(continuous["artifact_lifecycle"]),
+            "aggregate_evidence_digest": continuous["aggregate_evidence_digest"],
+            "runtime_stability_digest": stability["evidence_digest"],
+        }
+        summary["evidence_digest"] = validator.evidence_fingerprint(summary)
+        continuous["evidence_digest"] = summary["evidence_digest"]
+        continuous["runtime_stability_digest"] = stability["evidence_digest"]
+        (qualification_root / "p2-summary.json").write_text(
+            json.dumps(summary), encoding="utf-8"
+        )
+        (qualification_root / "p2-stability.json").write_text(
+            json.dumps(stability), encoding="utf-8"
+        )
         tests = root / "tests"
         tests.mkdir()
         (tests / "public_seam.py").write_text("", encoding="utf-8")
@@ -341,6 +404,38 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
             with (
                 mock.patch.object(validator, "ROOT", root),
                 self.assertRaisesRegex(SystemExit, "roadmap completion evidence"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_a_hard_projection_budget_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "roadmap-completion.json"
+            evidence = json.loads(path.read_text(encoding="utf-8"))
+            evidence["continuous_qualification"]["agent_projection_policy"][
+                "projection_budget_blocker"
+            ] = True
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "continuous qualification"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_tampered_continuous_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "qualification" / "p2-summary.json"
+            summary = json.loads(path.read_text(encoding="utf-8"))
+            summary["artifact_lifecycle"]["created_raw_records"] = 65
+            path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "qualification evidence digest"),
             ):
                 validator.validate_roadmap_closeout(verify_git=False)
 

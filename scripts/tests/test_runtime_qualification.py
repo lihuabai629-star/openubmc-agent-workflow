@@ -40,12 +40,16 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "gate_workers": 8,
                 "capacity_runs": 128,
                 "capacity_batch_size": 32,
+                "artifact_capacity_records": 64,
+                "artifact_capacity_batch_size": 16,
                 "soak_restart_cycles": 4,
                 "soak_runs_per_cycle": 16,
                 "max_capacity_seconds": 30.0,
                 "max_capacity_peak_rss_bytes": 536870912,
                 "max_capacity_peak_python_bytes": 134217728,
                 "max_capacity_storage_bytes": 67108864,
+                "max_artifact_capacity_seconds": 15.0,
+                "max_artifact_storage_bytes": 16777216,
                 "max_soak_seconds": 30.0,
                 "max_soak_peak_rss_bytes": 536870912,
                 "max_soak_peak_bytes": 134217728,
@@ -121,6 +125,34 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "peak_traced_memory_bytes": 1000000,
                     "elapsed_seconds": 5.0,
                 },
+                "artifact_lifecycle": {
+                    "status": "passed",
+                    "created_raw_records": 64,
+                    "created_redacted_records": 1,
+                    "created_ephemeral_records": 1,
+                    "shared_raw_digests": 1,
+                    "redacted_digest_distinct": True,
+                    "records_by_batch": [16, 32, 48, 64],
+                    "storage_bytes_by_batch": [2000, 3000, 4000, 5000],
+                    "restart_record_count": 66,
+                    "restart_resolutions": 2,
+                    "first_gc_deleted_records": 33,
+                    "first_gc_deleted_content": 1,
+                    "shared_content_preserved_after_partial_gc": True,
+                    "released_run_records": 32,
+                    "second_gc_deleted_records": 32,
+                    "second_gc_deleted_content": 1,
+                    "shared_content_deleted_after_final_reference": True,
+                    "expired_resolution_rejected": True,
+                    "released_resolution_rejected": True,
+                    "final_record_count": 1,
+                    "final_managed_record_count": 1,
+                    "final_redacted_record_count": 1,
+                    "final_audit_record_count": 1,
+                    "final_content_files": 1,
+                    "storage_bytes": 6000,
+                    "elapsed_seconds": 1.0,
+                },
             },
             "promotable": True,
         }
@@ -158,12 +190,13 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "wrong_target_or_artifact_mutations": 0,
                 "unknown_new_identity_retries": 0,
                 "semantic_projection_completion": 0,
+                "persisted_run_compatibility": 0,
                 "real_backend_crash_cuts": 0,
                 "runtime_stability": 0,
             },
         )
         self.assertTrue(report["ordinary_partial_result_accepted"])
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 9)
         self.assertEqual(report["source_commit"], SOURCE_COMMIT)
         self.assertEqual(
             report["environment"],
@@ -174,6 +207,62 @@ class RuntimeQualificationTests(unittest.TestCase):
             qualification.evidence_fingerprint(report["environment"]),
         )
         self.assertEqual(report["parameters"]["stability_profile"], "ci")
+        self.assertEqual(
+            report["parameters"]["persisted_run_support"],
+            {
+                "current_run_decision_version": 1,
+                "current_run_event_version": 1,
+                "accepted_unversioned_event_kinds": [
+                    "CaseClosed",
+                    "CaseOpened",
+                    "CaseUpdated",
+                    "CloseoutRecorded",
+                    "DeliveryStrategySelected",
+                    "EvidenceAttached",
+                    "OperationAccepted",
+                    "OperationProgressed",
+                    "OperationReconciled",
+                    "OperationStarted",
+                    "OperationTerminal",
+                    "RunCancelled",
+                    "RunDecisionCommitted",
+                    "RunGateOpened",
+                    "RunGateSubmitted",
+                    "RunIncidentRaised",
+                    "RunIncidentResolved",
+                    "RunOutcomeRecorded",
+                    "RunPhaseRecorded",
+                    "RunVerificationDeferred",
+                    "WorkflowCycleStarted",
+                    "WorkflowStepsInvalidated",
+                ],
+                "legacy_event_kinds": [
+                    "CaseOpened",
+                    "CaseUpdated",
+                    "DeliveryStrategySelected",
+                    "OperationProgressed",
+                    "RunCancelled",
+                    "RunGateOpened",
+                    "RunGateSubmitted",
+                    "RunOutcomeRecorded",
+                    "RunPhaseRecorded",
+                ],
+                "legacy_mode": "read-only-upcast",
+                "unknown_version_behavior": "reject",
+            },
+        )
+        self.assertEqual(
+            report["parameters"]["agent_projection_policy"],
+            {
+                "budget_mode": "soft-display-target",
+                "gate_schema_target_bytes": 4096,
+                "manual_narrowing_required_on_target_exceeded": False,
+                "observation_receipt_target_bytes": 4096,
+                "projection_budget_blocker": False,
+                "target_exceeded_behavior": "preserve-runtime-semantics",
+                "turn_target_bytes": 8192,
+            },
+        )
         stability_call = next(
             command
             for command in calls
@@ -205,7 +294,36 @@ class RuntimeQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["promotable"])
         self.assertGreater(report["violations"]["false_successes"], 0)
-        self.assertEqual(call_count, 8)
+        self.assertEqual(call_count, 9)
+
+    def test_artifact_lifecycle_without_shared_content_safety_blocks_promotion(
+        self,
+    ) -> None:
+        def unsafe_gc(command, *, cwd):
+            del cwd
+            if not any("runtime_stability.py" in str(item) for item in command):
+                return subprocess.CompletedProcess(command, 0, "ok", "")
+            source = command[command.index("--source-commit") + 1]
+            report = json.loads(self.stability_report(source))
+            artifact = report["scenarios"]["artifact_lifecycle"]
+            artifact["shared_content_preserved_after_partial_gc"] = False
+            report.pop("evidence_digest")
+            report["evidence_digest"] = qualification.evidence_fingerprint(report)
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), "")
+
+        report = qualification.qualify_runtime(
+            WORKSPACE,
+            executor=unsafe_gc,
+            source_commit=SOURCE_COMMIT,
+        )
+
+        stability_result = next(
+            item
+            for item in report["qualifications"]
+            if item["name"] == "runtime_stability"
+        )
+        self.assertFalse(report["promotable"])
+        self.assertIn("Artifact lifecycle", stability_result["verification_error"])
 
     def test_incomplete_stability_report_blocks_promotion(self) -> None:
         def incomplete(command, *, cwd):

@@ -1,0 +1,161 @@
+{
+  "schema": "openubmc-agent-workflow.supported-run-history.v1",
+  "support": {
+    "current_run_decision_version": 1,
+    "current_run_event_version": 1,
+    "accepted_unversioned_event_kinds": [
+      "CaseClosed",
+      "CaseOpened",
+      "CaseUpdated",
+      "CloseoutRecorded",
+      "DeliveryStrategySelected",
+      "EvidenceAttached",
+      "OperationAccepted",
+      "OperationProgressed",
+      "OperationReconciled",
+      "OperationStarted",
+      "OperationTerminal",
+      "RunCancelled",
+      "RunDecisionCommitted",
+      "RunGateOpened",
+      "RunGateSubmitted",
+      "RunIncidentRaised",
+      "RunIncidentResolved",
+      "RunOutcomeRecorded",
+      "RunPhaseRecorded",
+      "RunVerificationDeferred",
+      "WorkflowCycleStarted",
+      "WorkflowStepsInvalidated"
+    ],
+    "legacy_event_kinds": [
+      "CaseOpened",
+      "CaseUpdated",
+      "DeliveryStrategySelected",
+      "OperationProgressed",
+      "RunCancelled",
+      "RunGateOpened",
+      "RunGateSubmitted",
+      "RunOutcomeRecorded",
+      "RunPhaseRecorded"
+    ],
+    "legacy_mode": "read-only-upcast",
+    "unknown_version_behavior": "reject"
+  },
+  "fixtures": [
+    {
+      "fixture_id": "pre-run-decision-source-only-v0",
+      "run_id": "supported-run-source-only-v0",
+      "events": [
+        {
+          "revision": 1,
+          "kind": "CaseOpened",
+          "operation_id": "supported-start-v0",
+          "payload": {
+            "intent": "diagnose-and-fix",
+            "delivery_strategy": "source-only",
+            "acceptance_plan": {
+              "schema": "openubmc.target-runtime.v1/acceptance-plan",
+              "plan_id": "acceptance-bb15acbd6554d363f2c4499d1489d7966caeaa264ae1c647ecec4e3627fb96d8",
+              "intent": "diagnose-and-fix",
+              "delivery_strategy": "source-only",
+              "goal": "",
+              "requirements": [
+                {
+                  "schema": "openubmc.target-runtime.v1/acceptance-requirement",
+                  "requirement_id": "stage.diagnosis",
+                  "title": "问题已完成定位并保留证据",
+                  "stage": "diagnosis",
+                  "criticality": "required",
+                  "required": true,
+                  "source": "runtime-derived",
+                  "target": "case",
+                  "verification_method": "stage-receipt",
+                  "expected_result": "completed"
+                },
+                {
+                  "schema": "openubmc.target-runtime.v1/acceptance-requirement",
+                  "requirement_id": "stage.development",
+                  "title": "源码修复和方案记录已完成",
+                  "stage": "development",
+                  "criticality": "required",
+                  "required": true,
+                  "source": "runtime-derived",
+                  "target": "case",
+                  "verification_method": "stage-receipt",
+                  "expected_result": "completed"
+                }
+              ],
+              "frozen_at": 1.0,
+              "source": "runtime-derived"
+            },
+            "workflow_definition": {
+              "definition_id": "workflow-source-only",
+              "version": 1,
+              "intent": "diagnose-and-fix",
+              "entry_domain": "debug",
+              "entry_operation": "",
+              "delivery_strategy": "source-only",
+              "steps": [
+                {
+                  "step_id": "step-developer",
+                  "kind": "phase",
+                  "name": "developer.change",
+                  "owner": "openubmc-developer",
+                  "receipt_schema": "developer-change-v1"
+                }
+              ]
+            }
+          },
+          "created_at": 1.0
+        },
+        {
+          "revision": 2,
+          "kind": "RunGateOpened",
+          "operation_id": "supported-gate-v0",
+          "payload": {
+            "gate": {
+              "gate_id": "supported-gate-v0",
+              "gate_version": 1,
+              "gate_schema_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "workflow_cycle_id": "cycle-1",
+              "workflow_step_id": "step-developer"
+            }
+          },
+          "created_at": 2.0
+        },
+        {
+          "revision": 3,
+          "kind": "OperationProgressed",
+          "operation_id": "supported-phase-v0",
+          "payload": {
+            "phase_record": {
+              "phase_type": "developer.change",
+              "status": "completed",
+              "summary": "supported legacy source completed",
+              "workflow_cycle_id": "cycle-1",
+              "workflow_step_id": "step-developer",
+              "operation_id": "supported-phase-v0"
+            }
+          },
+          "created_at": 3.0
+        },
+        {
+          "revision": 4,
+          "kind": "RunOutcomeRecorded",
+          "operation_id": "supported-outcome-v0",
+          "payload": {
+            "status": "completed",
+            "summary": "supported legacy Run completed",
+            "acceptance": []
+          },
+          "created_at": 4.0
+        }
+      ],
+      "expected": {
+        "workflow_definition_schema": "openubmc.target-runtime.v1/workflow-definition-v1",
+        "phase_status": "completed",
+        "outcome_status": "completed"
+      }
+    }
+  ]
+}

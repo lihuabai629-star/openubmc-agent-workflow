@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -11,8 +12,10 @@ sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
     ContextRuntime,
+    CaseReplayService,
     EventRunStore,
     InMemoryRuntimeRepository,
+    PendingCaseEvent,
     RUN_DECISION_SCHEMA,
     RunDecision,
     RunDecisionConflict,
@@ -21,6 +24,7 @@ from openubmc_target_runtime import (  # noqa: E402
     RunTurn,
     SQLiteRuntimeRepository,
     WORKFLOW_DEFINITION_SCHEMA,
+    persisted_run_support,
     project_case,
 )
 from openubmc_target_runtime.run_store import upcast_run_events  # noqa: E402
@@ -31,6 +35,80 @@ from openubmc_target_runtime.run_store import RunStore  # noqa: E402
 
 
 class RunDecisionContractTests(unittest.TestCase):
+    def test_supported_persisted_run_fixture_replays_through_current_readers(self) -> None:
+        fixture_path = (
+            RUNTIME_ROOT / "tests" / "fixtures" / "supported_run_history.json"
+        )
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(fixture["support"], persisted_run_support())
+        for example in fixture["fixtures"]:
+            with (
+                self.subTest(fixture_id=example["fixture_id"]),
+                tempfile.TemporaryDirectory() as raw,
+            ):
+                repository = SQLiteRuntimeRepository(Path(raw) / "runtime.sqlite3")
+                repository.commit(
+                    example["run_id"],
+                    expected_revision=0,
+                    events=tuple(
+                        PendingCaseEvent(
+                            kind=event["kind"],
+                            operation_id=event["operation_id"],
+                            payload=event["payload"],
+                        )
+                        for event in example["events"]
+                    ),
+                )
+                before_revision = repository.current_revision(example["run_id"])
+                before_events = repository.events(example["run_id"])
+
+                loaded = EventRunStore(repository).load(example["run_id"])
+                replay_bundle = CaseReplayService(repository).export(example["run_id"])
+                replayed = CaseReplayService.replay(replay_bundle)
+
+                projection = loaded.projection
+                self.assertIsNotNone(projection)
+                assert projection is not None
+                expected = example["expected"]
+                self.assertEqual(
+                    projection["workflow_definition"]["schema"],
+                    expected["workflow_definition_schema"],
+                )
+                self.assertEqual(
+                    projection["phase_records"][0]["status"],
+                    expected["phase_status"],
+                )
+                self.assertEqual(
+                    projection["run_outcome"]["status"],
+                    expected["outcome_status"],
+                )
+                self.assertEqual(replayed.status, "passed")
+                self.assertEqual(
+                    repository.current_revision(example["run_id"]),
+                    before_revision,
+                )
+                self.assertEqual(repository.events(example["run_id"]), before_events)
+                self.assertEqual(projection["run_decisions"], [])
+
+    def test_unknown_unversioned_persisted_event_kind_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            RunEventSchemaError,
+            "unsupported unversioned persisted Run event kind",
+        ):
+            project_case(
+                "run-unknown-unversioned-kind",
+                (
+                    {
+                        "revision": 1,
+                        "kind": "FutureEventWithoutSchema",
+                        "operation_id": "unknown-unversioned-kind",
+                        "payload": {},
+                        "created_at": 1.0,
+                    },
+                ),
+            )
+
     def test_context_runtime_exposes_no_peer_run_transition_writers(self) -> None:
         retired = {
             "persist_run_gate",
