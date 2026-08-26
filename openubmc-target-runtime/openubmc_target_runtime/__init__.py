@@ -251,6 +251,7 @@ from .run_store import (
     RunEventSchemaError,
     RunStore,
     RunStoreError,
+    persisted_run_support,
 )
 from .semantic_runtime import (
     AGENT_REQUEST_MAX_BYTES,
