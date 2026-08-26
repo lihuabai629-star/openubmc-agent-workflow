@@ -43,6 +43,21 @@ TURN_MAX_BYTES = TURN_PROJECTION_TARGET_BYTES
 TOOLS_LIST_MAX_BYTES = 8 * 1024
 EXECUTE_TEXT_PROJECTION_TARGET_BYTES = 4 * 1024
 
+
+def agent_projection_policy() -> dict[str, object]:
+    """Describe display targets without granting them control-flow authority."""
+
+    return {
+        "budget_mode": "soft-display-target",
+        "observation_receipt_target_bytes": OBSERVATION_PROJECTION_TARGET_BYTES,
+        "gate_schema_target_bytes": GATE_SCHEMA_PROJECTION_TARGET_BYTES,
+        "turn_target_bytes": TURN_PROJECTION_TARGET_BYTES,
+        "target_exceeded_behavior": "preserve-runtime-semantics",
+        "manual_narrowing_required_on_target_exceeded": False,
+        "projection_budget_blocker": False,
+    }
+
+
 def _json_bytes(value: object) -> bytes:
     return json.dumps(
         value,

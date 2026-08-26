@@ -35,6 +35,7 @@ from .agent_gateway import (
     ScopeContract,
     ScopeViolation,
     SelectorContract,
+    agent_projection_policy,
     agent_operation_descriptors,
 )
 from .capability import (
