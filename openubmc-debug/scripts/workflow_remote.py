@@ -1851,6 +1851,9 @@ def _execute_workflow(
         tool_runner=tool_runner,
     )
     summary = build_summary(preflight_start, lanes)
+    source_correlation_requested = (
+        bool(args.source_root) and not args.no_source_correlation
+    )
     correlation = build_correlation(
         lanes["ssh"]["active_alarms"],
         lanes["telnet"]["alarm_logs"],
@@ -1859,11 +1862,7 @@ def _execute_workflow(
         alarm_limit=args.correlate_alarm_limit,
         timeout=min(float(args.timeout), deadline.remaining()),
         workflow_keyword=args.keyword,
-        enabled=(
-            bool(args.source_root)
-            and not args.no_source_correlation
-            and not deadline.exhausted()
-        ),
+        enabled=source_correlation_requested and not deadline.exhausted(),
         workflow_logs_result=lanes["telnet"]["logs"],
         time_window=args.correlation_time_window,
     )
@@ -1938,7 +1937,7 @@ def _execute_workflow(
             "freshness_requested": not args.no_freshness,
             "source_root": args.source_root,
             "source_root_source": source_root_source,
-            "source_correlation_requested": not args.no_source_correlation,
+            "source_correlation_requested": source_correlation_requested,
             "source_max_matches": args.source_max_matches,
             "correlate_alarm_limit": args.correlate_alarm_limit,
             "correlation_time_window": args.correlation_time_window,

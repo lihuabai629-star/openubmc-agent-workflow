@@ -371,6 +371,35 @@ class PreflightTelnetTransport(FakeTelnetTransport):
 
 
 class TypedDebugRunTests(unittest.TestCase):
+    def test_workflow_request_excludes_source_correlation_without_source_root(
+        self,
+    ) -> None:
+        args = workflow_remote.parse_args(
+            [
+                "--ip",
+                TEST_IP,
+                "--skip-telnet",
+                "--no-freshness",
+                "--json",
+            ]
+        )
+        outputs: list[dict[str, object]] = []
+
+        returncode = workflow_remote._execute_workflow(
+            args,
+            source_root_source="none",
+            engine="v1",
+            env={},
+            tool_runner=FakeTypedToolRunner(),
+            parallel_lanes=False,
+            emit_output=False,
+            output_handler=outputs.append,
+        )
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(len(outputs), 1)
+        self.assertFalse(outputs[0]["request"]["source_correlation_requested"])
+
     def test_capability_ready_workflow_composes_with_real_typed_runner(self) -> None:
         args = workflow_remote.parse_args(
             [
