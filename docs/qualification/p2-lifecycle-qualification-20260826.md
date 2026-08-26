@@ -1,7 +1,9 @@
 # P2 lifecycle continuous qualification
 
-Date: 2026-08-26  
-Source: `7124b3b886e9e1232d846254cc304b2dfe72850b`  
+Date: 2026-08-26
+
+Source: `7124b3b886e9e1232d846254cc304b2dfe72850b`
+
 Decision: `promotable=true`
 
 The persisted-Run compatibility group passed 9/9 checks. The current writer versions and known
