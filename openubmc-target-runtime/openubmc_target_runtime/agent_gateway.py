@@ -148,6 +148,15 @@ def render_execute_turn_text(
             512,
         )
     ]
+    gate = _mapping(value.get("gate"))
+    if gate:
+        fixed_lines.append(
+            "GateBinding "
+            f"run_id={_bounded_text(value.get('run_id'), 128)} "
+            f"gate_id={_bounded_text(gate.get('gate_id'), 128)} "
+            f"gate_version={_bounded_text(gate.get('gate_version'), 32)} "
+            f"schema_digest={_bounded_text(gate.get('schema_digest'), 128)}."
+        )
     receipt = _mapping(value.get("diagnostic_receipt"))
     if not receipt:
         return "\n".join(fixed_lines)
