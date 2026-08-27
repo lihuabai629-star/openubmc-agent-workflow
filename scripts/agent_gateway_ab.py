@@ -1830,6 +1830,15 @@ def _prepare_worktree(repo: Path, destination: Path, ref: str) -> None:
     )
 
 
+def _execute_dispatch_instruction(unresolved_failure: str) -> str:
+    return (
+        "openubmc-target-runtime MCP 调用入口已在当前基准会话注册。"
+        "只有实际发出的 MCP tool call 才计入调用次数；如果尚未发出 MCP 调用，"
+        "就等待对应入口完成解析后发出它，这不算失败或重试。"
+        f"不得在实际调用前把入口尚未解析报告为{unresolved_failure}。"
+    )
+
+
 def _prompt(
     skill_path: Path, *, scenario: str = "observation", arm: str = "B"
 ) -> str:
@@ -1857,6 +1866,7 @@ def _prompt(
                     f"使用已安装的 {skill_path} 所定义的原生 Case Continuation 路径。",
                     "只允许使用 openubmc-debug 与 Gate 指定的 openubmc-developer；不得使用其他 Skill、知识库、网络搜索或 shell。",
                     "不要列出 MCP resources/templates，不要做工具发现。",
+                    _execute_dispatch_instruction("工具不可用或调用失败"),
                     f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
                     "第一次调用 openubmc-target-runtime.workflow.advance：ip 为目标，intent=diagnose-and-fix，delivery_strategy=source-only，final_purpose=qualify Runtime source-only execution。",
                     "保存返回的 case_id、顶层 revision 与 handoff_arguments.phase_record_contract；不得重新开始 Case。",
@@ -1872,6 +1882,7 @@ def _prompt(
                 f"使用已安装的 {skill_path} 所定义的 Agent Gateway 路径。",
                 "只允许使用 openubmc-debug 与 Gate 指定的 openubmc-developer；不得使用其他 Skill、知识库、网络搜索或 shell。",
                 "不要列出 MCP resources/templates，不要做工具发现；直接调用 openubmc-target-runtime.execute。",
+                _execute_dispatch_instruction("工具不可用或 start 失败"),
                 f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
                 "第一次且仅第一次调用：kind=start，intent=diagnose-and-fix，delivery_strategy=source-only。",
                 "读取 start 工具结果的 structured_content，仅从中保存 run_id、gate.gate_id、gate.gate_version 与 gate.schema_digest；不得再次 start。",

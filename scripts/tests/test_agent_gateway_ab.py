@@ -953,6 +953,43 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("response 内只含 status、summary、payload", prompt)
         self.assertNotIn("response 只含上述固定 receipt", prompt)
 
+    def test_execute_prompts_wait_for_deferred_mcp_dispatch_before_counting_calls(self) -> None:
+        expected = (
+            "只有实际发出的 MCP tool call 才计入调用次数；如果尚未发出 MCP 调用，"
+            "就等待对应入口完成解析后发出它，这不算失败或重试。"
+        )
+
+        for arm in ("A", "B"):
+            prompt = module._prompt(
+                Path("/tmp/openubmc-debug/SKILL.md"),
+                scenario="execute-source-only",
+                arm=arm,
+            )
+
+            self.assertIn(
+                "openubmc-target-runtime MCP 调用入口已在当前基准会话注册",
+                prompt,
+                arm,
+            )
+            self.assertIn(expected, prompt, arm)
+
+        self.assertIn(
+            module._execute_dispatch_instruction("工具不可用或调用失败"),
+            module._prompt(
+                Path("/tmp/openubmc-debug/SKILL.md"),
+                scenario="execute-source-only",
+                arm="A",
+            ),
+        )
+        self.assertIn(
+            module._execute_dispatch_instruction("工具不可用或 start 失败"),
+            module._prompt(
+                Path("/tmp/openubmc-debug/SKILL.md"),
+                scenario="execute-source-only",
+                arm="B",
+            ),
+        )
+
     def test_skill_disclosure_uses_the_same_agent_profile_and_prompt_semantics(self) -> None:
         baseline = Path("/tmp/baseline/openubmc-debug/SKILL.md")
         candidate = Path("/tmp/candidate/openubmc-debug/SKILL.md")

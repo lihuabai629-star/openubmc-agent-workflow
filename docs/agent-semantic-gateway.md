@@ -307,10 +307,12 @@ and presence values needed for the conclusion. Keeping the benchmark question na
 long multi-surface target snapshot from dominating a test whose independent variable is Skill
 entrypoint disclosure.
 
-The prompt also distinguishes dispatch from execution: a not-yet-dispatched MCP call is not a
+The live prompts also distinguish dispatch from execution: a not-yet-dispatched MCP call is not a
 failure or retry. In particular, 尚未发出的 MCP 调用不算失败或重试; the Agent waits for the
-registered benchmark tool entry and still issues exactly one actual `observe` call. This avoids
-turning transient tool-entry resolution into an arm-specific validity failure.
+registered benchmark tool entry and still issues the required actual call. Skill disclosure issues
+exactly one `observe`; execute source-only issues its fixed continuation calls. This avoids turning
+transient deferred tool-entry resolution into an arm-specific validity failure without accepting a
+run that never dispatches the required MCP call.
 
 ```bash
 python scripts/agent_gateway_ab.py run \
