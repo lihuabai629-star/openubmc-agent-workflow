@@ -261,7 +261,7 @@ class ReleaseGateTests(unittest.TestCase):
             {
                 "current_ref",
                 "previous_ref",
-                "ab_bundle_base64",
+                "ab_bundle_asset",
                 "ab_bundle_sha256",
                 "promote",
             },
@@ -279,8 +279,12 @@ class ReleaseGateTests(unittest.TestCase):
             "3.12.13",
         )
         restore = steps["Restore execute AB qualification evidence"]["run"]
+        self.assertIn("gh release download", restore)
+        self.assertIn('"$CURRENT_REF"', restore)
+        self.assertIn('"$AB_BUNDLE_ASSET"', restore)
         self.assertIn("sha256sum --check --strict", restore)
         self.assertIn("scripts/restore_ab_bundle.py", restore)
+        self.assertNotIn("base64 --decode", restore)
         trust_root = steps["Restore AB attestation trust root"]
         self.assertEqual(
             trust_root["env"]["AB_ATTESTATION_PUBLIC_KEY_BASE64"],
@@ -319,6 +323,12 @@ class ReleaseGateTests(unittest.TestCase):
             release_gate.execute_release_gate.__kwdefaults__["github_repository"],
             "lihuabai629-star/openubmc-agent-workflow",
         )
+
+        promote = workflow["jobs"]["promote"]["steps"][-1]["run"]
+        self.assertIn('gh release view "$CURRENT_REF" --json isDraft', promote)
+        self.assertIn("grep -qx true", promote)
+        self.assertIn('gh release edit "$CURRENT_REF" --draft=false', promote)
+        self.assertNotIn('gh release create "$CURRENT_REF"', promote)
 
 
 if __name__ == "__main__":
