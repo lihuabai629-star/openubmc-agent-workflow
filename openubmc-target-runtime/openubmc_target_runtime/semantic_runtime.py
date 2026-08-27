@@ -74,6 +74,101 @@ _RUNTIME_OWNED_ENTRY_ARGUMENTS = frozenset(
         "idempotency_key",
         "command_id",
         "input_digest",
+        "run_id",
+        "gate_id",
+        "gate_version",
+        "schema_digest",
+        "submission_id",
+        "incident_id",
+        "operation_id",
+        "effect_id",
+        "target_epoch",
+        "minimum_target_epoch",
+        "authorization",
+        "authorization_policy",
+        "workflow_definition",
+        "workflow_revision",
+        "recovery_mode",
+        "recovery_decision",
+        "actor",
+        "submitted_at",
+    }
+)
+
+EXECUTE_ACTION_FIELD_TYPES = {
+    "start": {
+        "kind": "string",
+        "target": "string",
+        "targets": "array",
+        "intent": "string",
+        "entry_operation": "string",
+        "entry_arguments": "object",
+        "purpose": "string",
+        "delivery_strategy": "string",
+        "observation_ref": "object",
+        "deadline": "number",
+    },
+    "respond": {
+        "kind": "string",
+        "run_id": "string",
+        "gate_id": "string",
+        "gate_version": "integer",
+        "schema_digest": "string",
+        "submission_id": "string",
+        "response": "object",
+        "deadline": "number",
+    },
+    "resume": {
+        "kind": "string",
+        "run_id": "string",
+        "deadline": "number",
+    },
+    "control": {
+        "kind": "string",
+        "run_id": "string",
+        "command": "string",
+        "incident_id": "string",
+        "gate_id": "string",
+        "gate_version": "integer",
+        "schema_digest": "string",
+        "submission_id": "string",
+        "deadline": "number",
+    },
+}
+EXECUTE_ACTION_FIELDS = {
+    kind: frozenset(fields) for kind, fields in EXECUTE_ACTION_FIELD_TYPES.items()
+}
+EXECUTE_ACTION_REQUIRED_FIELDS = {
+    "start": frozenset({"kind", "intent"}),
+    "respond": frozenset(
+        {
+            "kind",
+            "run_id",
+            "gate_id",
+            "gate_version",
+            "schema_digest",
+            "response",
+        }
+    ),
+    "resume": frozenset({"kind", "run_id"}),
+    "control": frozenset({"kind", "run_id", "command"}),
+}
+_RUNTIME_OWNED_ACTION_FIELDS = frozenset(
+    {
+        "authorization",
+        "authorization_policy",
+        "case_id",
+        "command_id",
+        "effect_id",
+        "expected_revision",
+        "input_digest",
+        "operation_id",
+        "recovery_decision",
+        "recovery_mode",
+        "target_epoch",
+        "workflow",
+        "workflow_definition",
+        "workflow_revision",
     }
 )
 
@@ -653,6 +748,32 @@ def _normalized_gate_submission(
     }
 
 
+def _validate_gate_response_shape(response: Mapping[str, object]) -> None:
+    required = {"status", "summary", "payload"}
+    missing = sorted(required - set(response))
+    if missing:
+        raise AgentGatewayError(
+            "response requires fields: " + ", ".join(missing)
+        )
+    unexpected = sorted(set(response) - required)
+    if unexpected:
+        raise AgentGatewayError(
+            "response contains unsupported fields: " + ", ".join(unexpected)
+        )
+    raw_payload = response.get("payload", {})
+    if not isinstance(raw_payload, Mapping):
+        raise AgentGatewayError("response payload must be an object")
+    raw_status = response.get("status")
+    raw_summary = response.get("summary")
+    status = raw_status.strip().lower() if isinstance(raw_status, str) else ""
+    if status not in {"completed", "failed", "cancelled"}:
+        raise AgentGatewayError(
+            "response status must be completed, failed, or cancelled"
+        )
+    if not isinstance(raw_summary, str) or not raw_summary.strip():
+        raise AgentGatewayError("response summary must be a non-empty string")
+
+
 def run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
     """Return the canonical semantic payload persisted and fingerprinted for a command."""
     if isinstance(command, SubmitGate):
@@ -772,14 +893,96 @@ def _submission_id(value: object, *, binding: Mapping[str, object]) -> str:
     return selected
 
 
+def _validate_action_shape(action: Mapping[str, object]) -> str:
+    raw_kind = action.get("kind")
+    if not isinstance(raw_kind, str) or raw_kind not in EXECUTE_ACTION_FIELDS:
+        raise AgentGatewayError(
+            "execute kind must be start, respond, resume, or control"
+        )
+    kind = raw_kind
+    runtime_owned = sorted(set(action) & _RUNTIME_OWNED_ACTION_FIELDS)
+    if runtime_owned:
+        raise AgentGatewayError(
+            "execute Action cannot supply Runtime-owned fields: "
+            + ", ".join(runtime_owned)
+        )
+    unexpected = sorted(set(action) - EXECUTE_ACTION_FIELDS[kind])
+    if unexpected:
+        raise AgentGatewayError(
+            f"{kind} Action contains fields from another Action kind or unsupported fields: "
+            + ", ".join(unexpected)
+        )
+    missing = sorted(EXECUTE_ACTION_REQUIRED_FIELDS[kind] - set(action))
+    if missing:
+        raise AgentGatewayError(
+            f"{kind} Action requires fields: " + ", ".join(missing)
+        )
+    for name, expected in EXECUTE_ACTION_FIELD_TYPES[kind].items():
+        if name not in action:
+            continue
+        value = action[name]
+        valid = (
+            isinstance(value, str)
+            if expected == "string"
+            else isinstance(value, Mapping)
+            if expected == "object"
+            else isinstance(value, list)
+            if expected == "array"
+            else isinstance(value, int) and not isinstance(value, bool)
+            if expected == "integer"
+            else isinstance(value, (int, float)) and not isinstance(value, bool)
+        )
+        if not valid:
+            if name == "deadline":
+                raise AgentGatewayError(
+                    "execute deadline must be greater than 0 and at most 120 seconds"
+                )
+            article = "an" if expected in {"array", "integer", "object"} else "a"
+            raise AgentGatewayError(f"{name} must be {article} {expected}")
+    if kind != "control":
+        return kind
+    command = _text(action.get("command")).lower()
+    gate_fields = {"gate_id", "gate_version", "schema_digest", "submission_id"}
+    if command == "reconcile":
+        invalid = sorted((gate_fields | {"incident_id"}) & set(action))
+        if invalid:
+            raise AgentGatewayError(
+                "control reconcile accepts only kind, run_id, command, and deadline"
+            )
+        return kind
+    if command != "cancel":
+        raise AgentGatewayError(
+            "control command must be one of: reconcile, cancel"
+        )
+    if "incident_id" in action:
+        invalid = sorted(gate_fields & set(action))
+        if invalid:
+            raise AgentGatewayError(
+                "incident cancel cannot include Gate binding fields: "
+                + ", ".join(invalid)
+            )
+        return kind
+    missing_gate = sorted(
+        {"gate_id", "gate_version", "schema_digest"} - set(action)
+    )
+    if missing_gate:
+        raise AgentGatewayError(
+            "control cancel requires a Gate binding or incident_id; missing: "
+            + ", ".join(missing_gate)
+        )
+    return kind
+
+
 def _caller_deadline(action: Mapping[str, object]) -> float:
     value = action.get("deadline", 120)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise AgentGatewayError("execute deadline must be a positive number")
+        raise AgentGatewayError(
+            "execute deadline must be greater than 0 and at most 120 seconds"
+        )
     deadline = float(value)
     if deadline <= 0 or deadline > 120:
         raise AgentGatewayError(
-            "execute deadline must be greater than zero and at most 120 seconds"
+            "execute deadline must be greater than 0 and at most 120 seconds"
         )
     return deadline
 
@@ -808,9 +1011,9 @@ def decode_run_command(
     bounded_request(action)
     if "observation_receipt" in action:
         raise AgentGatewayError(
-            "observation_receipt is retired; use observation_ref"
+            "observation_receipt is retired and unexpected; use observation_ref"
         )
-    kind = _text(action.get("kind")).lower()
+    kind = _validate_action_shape(action)
     caller_deadline = _caller_deadline(action)
     if kind == "start":
         command_id = _text(operation_id)
@@ -843,8 +1046,9 @@ def decode_run_command(
                 )
                 if unexpected_fields:
                     raise AgentGatewayError(
-                        "start target fields contain unexpected values: "
+                        "start target fields contain unexpected field "
                         + ", ".join(unexpected_fields)
+                        + "; unexpected fields are forbidden"
                     )
                 ip = _text(item.get("ip"))
                 if not ip:
@@ -889,7 +1093,9 @@ def decode_run_command(
             target = primary_target
         if not target:
             raise AgentGatewayError("start requires target or targets")
-        intent = _text(action.get("intent") or "diagnosis-only").lower()
+        intent = _text(action.get("intent")).lower()
+        if not intent:
+            raise AgentGatewayError("start requires a non-empty intent")
         entry_operation = _text(action.get("entry_operation"))
         if entry_operation and _SAFE_ID.fullmatch(entry_operation) is None:
             raise AgentGatewayError(
@@ -927,6 +1133,8 @@ def decode_run_command(
             raise AgentGatewayError("unsupported delivery_strategy")
         observation_ref = None
         raw_ref = action.get("observation_ref")
+        if raw_ref is not None and not isinstance(raw_ref, Mapping):
+            raise AgentGatewayError("observation_ref must be an object")
         if isinstance(raw_ref, Mapping):
             if targets:
                 raise AgentGatewayError(
@@ -959,6 +1167,7 @@ def decode_run_command(
         response = action.get("response")
         if not isinstance(response, Mapping):
             raise AgentGatewayError("respond requires a response object")
+        _validate_gate_response_shape(response)
         gate_id = _gate_id(action.get("gate_id"))
         gate_version = _gate_version(action.get("gate_version"))
         schema_digest = _schema_digest(action.get("schema_digest"))
@@ -1076,7 +1285,9 @@ def decode_run_command(
                 input_digest=digest,
                 caller_deadline=caller_deadline,
             )
-        raise AgentGatewayError("control command must be reconcile or cancel")
+        raise AgentGatewayError(
+            "control command must be one of: reconcile, cancel"
+        )
     raise AgentGatewayError("execute kind must be start, respond, resume, or control")
 
 

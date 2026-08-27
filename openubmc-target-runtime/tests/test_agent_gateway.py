@@ -1609,6 +1609,16 @@ class OversizedTurnRuntime:
         )
 
 
+class RejectDispatchRuntime:
+    def __init__(self) -> None:
+        self.execute_calls = 0
+
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        self.execute_calls += 1
+        raise AssertionError("invalid Action must be rejected before Runtime dispatch")
+
+
 class OversizedGateTurnRuntime:
     def execute(self, command, *, task_id, operation_id):
         del command, task_id, operation_id
@@ -2211,7 +2221,315 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertLessEqual(encoded_size(definitions), TOOLS_LIST_MAX_BYTES)
         self.assertEqual(self.service.interface_catalog.names(), ("observe", "execute"))
         execute_schema = definitions[1]["inputSchema"]
-        self.assertNotIn("max_steps", execute_schema["properties"])
+        action_shapes = {
+            branch["properties"]["kind"]["const"]: branch
+            for branch in execute_schema["oneOf"]
+        }
+        self.assertEqual(
+            set(action_shapes),
+            {"start", "respond", "resume", "control"},
+        )
+        self.assertIn("intent", action_shapes["start"]["required"])
+        self.assertIn(
+            {"required": ["target"]},
+            action_shapes["start"]["anyOf"],
+        )
+        self.assertIn(
+            {"required": ["targets"]},
+            action_shapes["start"]["anyOf"],
+        )
+        self.assertEqual(
+            set(action_shapes["respond"]["required"]),
+            {
+                "kind",
+                "run_id",
+                "gate_id",
+                "gate_version",
+                "schema_digest",
+                "response",
+            },
+        )
+        self.assertEqual(
+            set(action_shapes["resume"]["properties"]),
+            {"kind", "run_id", "deadline"},
+        )
+        self.assertIn("oneOf", action_shapes["control"])
+        self.assertNotIn("max_steps", json.dumps(execute_schema))
+
+    def test_execute_rejects_invalid_action_shapes_before_dispatch(self) -> None:
+        runtime = RejectDispatchRuntime()
+        gateway = AgentGateway(runtime)
+        invalid_actions = (
+            ({"kind": "start", "target": "192.0.2.10"}, "intent"),
+            (
+                {
+                    "kind": "start",
+                    "target": 1920210,
+                    "intent": "diagnosis-only",
+                },
+                "target must be a string",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": 42,
+                },
+                "intent must be a string",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "",
+                },
+                "non-empty intent",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "observation_ref": "observation://not-an-object",
+                },
+                "observation_ref must be an object",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "run_id": "run-from-another-action",
+                },
+                "another Action kind",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "target_epoch": 9,
+                },
+                "Runtime-owned",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"recovery_mode": "reconcile"},
+                },
+                "Runtime-owned",
+            ),
+            (
+                {
+                    "kind": "respond",
+                    "run_id": "run-one",
+                    "gate_id": 17,
+                    "gate_version": 1,
+                    "schema_digest": "a" * 64,
+                    "response": {
+                        "status": "completed",
+                        "summary": "done",
+                        "payload": {},
+                    },
+                },
+                "gate_id must be a string",
+            ),
+            (
+                {
+                    "kind": "respond",
+                    "run_id": "run-one",
+                    "gate_version": 1,
+                    "schema_digest": "a" * 64,
+                    "response": {},
+                },
+                "gate_id",
+            ),
+            (
+                {
+                    "kind": "respond",
+                    "run_id": "run-one",
+                    "gate_id": "gate-one",
+                    "gate_version": 1,
+                    "schema_digest": "a" * 64,
+                    "response": {
+                        "status": "completed",
+                        "summary": "done",
+                    },
+                },
+                "response requires fields: payload",
+            ),
+            (
+                {
+                    "kind": "resume",
+                    "run_id": 123,
+                },
+                "run_id must be a string",
+            ),
+            (
+                {
+                    "kind": "resume",
+                    "run_id": "run-one",
+                    "response": {},
+                },
+                "another Action kind",
+            ),
+            (
+                {
+                    "kind": "control",
+                    "run_id": "run-one",
+                    "command": "reconcile",
+                    "incident_id": "incident-one",
+                },
+                "reconcile",
+            ),
+            (
+                {"kind": "control", "run_id": "run-one", "command": "cancel"},
+                "Gate binding or incident_id",
+            ),
+        )
+
+        for action, message in invalid_actions:
+            with self.subTest(action=action):
+                with self.assertRaisesRegex(AgentGatewayError, message):
+                    gateway.execute(
+                        action,
+                        task_id="invalid-action",
+                        operation_id="invalid-action-command",
+                    )
+
+        self.assertEqual(runtime.execute_calls, 0)
+
+    def test_execute_deadline_error_reports_the_accepted_range(self) -> None:
+        for deadline in (0, 120.1, "later"):
+            with self.subTest(deadline=deadline):
+                with self.assertRaisesRegex(
+                    AgentGatewayError,
+                    "greater than 0 and at most 120 seconds",
+                ):
+                    decode_run_command(
+                        {
+                            "kind": "resume",
+                            "run_id": "run-deadline",
+                            "deadline": deadline,
+                        },
+                        operation_id="deadline-command",
+                    )
+
+    def test_actionable_turns_expose_only_a_valid_suggested_action(self) -> None:
+        gate_schema = {
+            "type": "object",
+            "required": ["status", "summary", "payload"],
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "required": ["artifact_ref"],
+                    "properties": {
+                        "artifact_ref": {
+                            "type": "object",
+                            "required": ["handle", "digest", "run_id"],
+                        }
+                    },
+                }
+            },
+        }
+        turns = {
+            "gate": RunTurn(
+                run_id="run-gate",
+                state="waiting_response",
+                gate={
+                    "kind": "phase",
+                    "gate_id": "gate-one",
+                    "gate_version": 3,
+                    "schema_digest": "sha256:" + "a" * 64,
+                    "name": "build.artifact",
+                    "owner": "openubmc-build",
+                    "input_schema": gate_schema,
+                },
+            ),
+            "running": RunTurn(run_id="run-running", state="running"),
+            "resume_incident": RunTurn(
+                run_id="run-artifact-incident",
+                state="incident",
+                incident=Incident(
+                    incident_id="incident-artifact",
+                    code="artifact_reference_invalid",
+                    message="restore the ArtifactRef",
+                ),
+            ),
+            "reconcile_incident": RunTurn(
+                run_id="run-unknown-incident",
+                state="incident",
+                incident=Incident(
+                    incident_id="incident-unknown",
+                    code="mutation_outcome_unknown",
+                    message="reconcile the durable Effect",
+                ),
+            ),
+            "cancel_incident": RunTurn(
+                run_id="run-invalid-continuation",
+                state="incident",
+                incident=Incident(
+                    incident_id="incident-invalid",
+                    code="invalid_run_continuation",
+                    message="cancel the Run",
+                ),
+            ),
+            "terminal": RunTurn(
+                run_id="run-terminal",
+                state="completed",
+                outcome=Outcome(status="completed", summary="done"),
+            ),
+        }
+
+        projected = {
+            name: self.service._test.projector.turn(turn)
+            for name, turn in turns.items()
+        }
+
+        self.assertEqual(
+            projected["gate"]["next_action"],
+            {
+                "kind": "respond",
+                "run_id": "run-gate",
+                "gate_id": "gate-one",
+                "gate_version": 3,
+                "schema_digest": "sha256:" + "a" * 64,
+            },
+        )
+        self.assertEqual(projected["gate"]["gate"]["input_schema"], gate_schema)
+        self.assertEqual(
+            projected["running"]["next_action"],
+            {"kind": "resume", "run_id": "run-running"},
+        )
+        self.assertEqual(
+            projected["resume_incident"]["next_action"],
+            {"kind": "resume", "run_id": "run-artifact-incident"},
+        )
+        self.assertNotIn(
+            "reconcile",
+            json.dumps(projected["resume_incident"]["next_action"]),
+        )
+        self.assertEqual(
+            projected["reconcile_incident"]["next_action"],
+            {
+                "kind": "control",
+                "run_id": "run-unknown-incident",
+                "command": "reconcile",
+            },
+        )
+        self.assertEqual(
+            projected["cancel_incident"]["next_action"],
+            {
+                "kind": "control",
+                "run_id": "run-invalid-continuation",
+                "command": "cancel",
+                "incident_id": "incident-invalid",
+            },
+        )
+        self.assertIsNone(projected["terminal"]["next_action"])
 
     def test_observe_is_bounded_grounded_and_does_not_open_a_case(self) -> None:
         receipt = self.service.call_exposed_tool(
@@ -4942,6 +5260,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="oversized-turn",
@@ -4968,6 +5287,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="oversized-gate",
@@ -5022,6 +5342,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="oversized-diagnostic",
@@ -5168,7 +5489,11 @@ class AgentGatewayTests(unittest.TestCase):
 
     def test_execute_turn_compaction_preserves_an_evaluable_result_summary(self) -> None:
         turn = AgentGateway(DeeplyNestedDiagnosticTurnRuntime()).execute(
-            {"kind": "start", "target": "192.0.2.20"},
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnosis-only",
+            },
             task_id="deeply-nested-diagnostic",
             operation_id="deeply-nested-diagnostic-1",
         )
@@ -5184,7 +5509,11 @@ class AgentGatewayTests(unittest.TestCase):
 
     def test_execute_turn_preserves_a_persisted_diagnostic_summary(self) -> None:
         turn = AgentGateway(PersistedDiagnosticSummaryTurnRuntime()).execute(
-            {"kind": "start", "target": "192.0.2.20"},
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnosis-only",
+            },
             task_id="persisted-diagnostic-summary",
             operation_id="persisted-diagnostic-summary-1",
         )
@@ -5198,7 +5527,11 @@ class AgentGatewayTests(unittest.TestCase):
         self,
     ) -> None:
         turn = AgentGateway(NonEvaluableDiagnosticTurnRuntime()).execute(
-            {"kind": "start", "target": "192.0.2.20"},
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnosis-only",
+            },
             task_id="non-evaluable-diagnostic",
             operation_id="non-evaluable-diagnostic-1",
         )
@@ -5215,7 +5548,11 @@ class AgentGatewayTests(unittest.TestCase):
         self,
     ) -> None:
         turn = AgentGateway(UncompactableDiagnosticTurnRuntime()).execute(
-            {"kind": "start", "target": "192.0.2.20"},
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnosis-only",
+            },
             task_id="uncompactable-diagnostic",
             operation_id="uncompactable-diagnostic-1",
         )
@@ -5235,6 +5572,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="unrepresentable-diagnostic",
@@ -5274,6 +5612,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="oversized-terminal-outcome",

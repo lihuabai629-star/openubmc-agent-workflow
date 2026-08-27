@@ -2949,9 +2949,9 @@ class RuntimeMcpService:
             raise TypeError("tool arguments must be an object")
         if self.interface_profile == "agent":
             bounded_request(arguments)
-        self.interface_catalog.validate_arguments(name, arguments)
         if self.interface_profile == "agent":
             if name == "observe":
+                self.interface_catalog.validate_arguments(name, arguments)
                 return self._runtime.agent.observe(
                     arguments,
                     task_id=task_id,
@@ -2964,6 +2964,7 @@ class RuntimeMcpService:
                     operation_id=operation_id,
                 )
             raise ValueError(f"unknown Agent operation: {name}")
+        self.interface_catalog.validate_arguments(name, arguments)
         return self.call_tool(
             name,
             arguments,
