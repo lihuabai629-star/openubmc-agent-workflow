@@ -177,8 +177,8 @@ python3 scripts/release_gate.py \
 
 The gate requires clean installation, previous-to-current upgrade, rollback, Agent Interface
 contracts, and deterministic Case Replay smoke in that order. A failed gate skips all later gates
-and prevents promotion. The GitHub Release workflow applies the same ordering and only creates a
-release after the gate job succeeds.
+and prevents promotion. The GitHub Release workflow applies the same ordering and publishes the
+prepared draft release only after the gate job succeeds.
 
 ## Session Outcome governance
 

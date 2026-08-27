@@ -380,16 +380,24 @@ candidate checkout. The GitHub Release workflow restores that trust root from th
 a run or rebinding an old result to another candidate invalidates the evidence.
 
 For the GitHub Release workflow, package the four verified files as one xz-compressed,
-digest-bound input. The workflow rejects extra members and non-regular files before extraction.
-High-ratio xz compression keeps the evidence, including the run events, within the supported
-workflow-dispatch input:
+digest-bound asset. The workflow rejects extra members and non-regular files before extraction.
+Attach the archive to the draft release for the immutable release tag; workflow dispatch carries
+only the asset name and digest, avoiding GitHub's total workflow-input size limit. The release stays
+draft until the remote Release Gate passes:
 
 ```bash
 tar -C /path/to/benchmark-work/results-YYYYMMDD-HHMMSS \
   -cJf agent-gateway-ab-evidence.tar.xz \
   summary.json all_metrics.json schedule.json run_evidence.json
 sha256sum agent-gateway-ab-evidence.tar.xz
-base64 -w0 agent-gateway-ab-evidence.tar.xz
+gh release create v2.0.0 --draft --verify-tag --generate-notes
+gh release upload v2.0.0 agent-gateway-ab-evidence.tar.xz
+gh workflow run release.yml --ref main \
+  -f current_ref=v2.0.0 \
+  -f previous_ref=v1.2.2 \
+  -f ab_bundle_asset=agent-gateway-ab-evidence.tar.xz \
+  -f ab_bundle_sha256="$(sha256sum agent-gateway-ab-evidence.tar.xz | cut -d' ' -f1)" \
+  -f promote=true
 ```
 
 ## Recovery coverage
