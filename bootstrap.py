@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -27,6 +28,7 @@ INSTALLER_ASSETS = {
     "install_environment.py": INSTALLER_API_TEMPLATE,
     "client_config.py": CLIENT_CONFIG_API_TEMPLATE,
 }
+LEGACY_OPTIONAL_ASSETS = frozenset({"client_config.py"})
 FULL_COMMIT = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 MUTABLE_REFS = frozenset({"head", "main", "master", "develop", "development", "trunk"})
 FORBIDDEN_FORWARDED_OPTIONS = frozenset(
@@ -113,6 +115,12 @@ def main(argv: list[str] | None = None) -> int:
             with urllib.request.urlopen(request, timeout=30) as response:
                 assets[name] = response.read()
         except OSError as error:
+            if (
+                isinstance(error, urllib.error.HTTPError)
+                and error.code == 404
+                and name in LEGACY_OPTIONAL_ASSETS
+            ):
+                continue
             hint = (
                 "; authenticate private GitHub access with GH_TOKEN or GITHUB_TOKEN"
                 if github_token() is None
