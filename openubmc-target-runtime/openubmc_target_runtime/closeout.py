@@ -586,12 +586,102 @@ def _text_from(value: Mapping[str, object], *keys: str) -> str:
     return ""
 
 
-def _target_epoch(value: Mapping[str, object]) -> int | None:
+def _identity_values(
+    *candidates: object,
+    digest: bool = False,
+) -> tuple[str, ...]:
+    values: list[str] = []
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if digest:
+            text = text.lower().removeprefix("sha256:")
+        if text and text not in values:
+            values.append(text)
+    return tuple(values)
+
+
+def _identity_candidates(value: object) -> tuple[object, ...]:
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return tuple(value)
+    return (value,)
+
+
+@dataclass(frozen=True)
+class _UpgradeReceiptIdentity:
+    artifact_sha256s: tuple[str, ...] = ()
+    product_versions: tuple[str, ...] = ()
+
+    @classmethod
+    def from_evidence(
+        cls,
+        value: Mapping[str, object],
+    ) -> "_UpgradeReceiptIdentity":
+        artifact_ref = _mapping(value.get("artifact_ref"))
+        journal = _mapping(value.get("journal"))
+        verification = _mapping(value.get("verification"))
+        return cls(
+            artifact_sha256s=_identity_values(
+                value.get("artifact_sha256"),
+                artifact_ref.get("digest"),
+                journal.get("expected_checksum"),
+                journal.get("observed_checksum"),
+                verification.get("remote_sha256"),
+                digest=True,
+            ),
+            product_versions=_identity_values(
+                value.get("product_version"),
+                artifact_ref.get("version"),
+                verification.get("installed_version"),
+            ),
+        )
+
+    @classmethod
+    def from_facts(
+        cls,
+        facts: Mapping[str, object],
+    ) -> "_UpgradeReceiptIdentity":
+        persisted = _mapping(facts.get("upgrade_receipt_identity"))
+        return cls(
+            artifact_sha256s=_identity_values(
+                *_identity_candidates(
+                    persisted.get(
+                        "artifact_sha256s",
+                        facts.get("artifact_sha256", ""),
+                    )
+                ),
+                digest=True,
+            ),
+            product_versions=_identity_values(
+                *_identity_candidates(
+                    persisted.get(
+                        "product_versions",
+                        facts.get("product_version", ""),
+                    )
+                )
+            ),
+        )
+
+    def to_public_dict(self) -> dict[str, object]:
+        value: dict[str, object] = {}
+        if self.artifact_sha256s:
+            value["artifact_sha256s"] = list(self.artifact_sha256s)
+        if self.product_versions:
+            value["product_versions"] = list(self.product_versions)
+        return value
+
+
+def _target_epoch(
+    value: Mapping[str, object],
+    operation: Mapping[str, object] | None = None,
+) -> int | None:
     for candidate in (
         value.get("target_epoch"),
         value.get("epoch_after"),
         _mapping(value.get("verification")).get("target_epoch"),
         _mapping(value.get("journal")).get("epoch_after"),
+        _mapping(operation).get("target_epoch"),
     ):
         if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
             return candidate
@@ -693,11 +783,18 @@ def _selected_facts(
             "restart_scope",
             "ssh_host_key_policy",
         ):
-            if name in inputs:
+            if stage == "upgrade" and name in {
+                "artifact_sha256",
+                "product_version",
+            } and name in value:
+                facts[name] = value[name]
+            elif name in inputs:
                 facts[name] = inputs[name]
             elif name in value:
                 facts[name] = value[name]
-        artifact_ref = _mapping(inputs.get("artifact_ref"))
+        artifact_ref = _mapping(value.get("artifact_ref")) or _mapping(
+            inputs.get("artifact_ref")
+        )
         if artifact_ref:
             facts["artifact_ref"] = dict(artifact_ref)
             facts.setdefault("artifact_path", artifact_ref.get("handle", ""))
@@ -737,6 +834,14 @@ def _selected_facts(
                 )
                 if name in verification
             }
+        if stage == "upgrade":
+            identity = _UpgradeReceiptIdentity.from_evidence(value)
+            if identity.artifact_sha256s or identity.product_versions:
+                facts["upgrade_receipt_identity"] = identity.to_public_dict()
+            if identity.artifact_sha256s:
+                facts["artifact_sha256"] = identity.artifact_sha256s[0]
+            if identity.product_versions:
+                facts["product_version"] = identity.product_versions[0]
         if stage == "live_patch":
             mutation = _mapping(value.get("mutation"))
             expected_sha = str(
@@ -943,27 +1048,88 @@ def _phase_receipt(
     )
 
 
-def _business_acceptance(receipts: Sequence[StageReceipt]) -> str:
+def _business_acceptance(
+    plan: AcceptancePlan,
+    receipts: Sequence[StageReceipt],
+) -> str:
     verification_receipts = [
         receipt for receipt in receipts if receipt.stage == "verification"
     ]
     candidates = verification_receipts or list(receipts)
-    statuses: list[str] = []
+    explicit_statuses: list[str] = []
     for receipt in candidates:
         candidate = receipt.facts.get("business_acceptance")
         if not isinstance(candidate, str) or not candidate.strip():
-            statuses.append("unverified")
             continue
         normalized = candidate.strip().lower()
         if normalized in {"passed", "verified", "completed"}:
-            statuses.append("passed")
+            explicit_statuses.append("passed")
         elif normalized == "failed":
-            statuses.append("failed")
+            explicit_statuses.append("failed")
         else:
-            statuses.append("unverified")
-    if "failed" in statuses:
+            explicit_statuses.append("unverified")
+    if "failed" in explicit_statuses:
         return "failed"
-    if statuses and all(status == "passed" for status in statuses):
+
+    business_requirements = [
+        requirement
+        for requirement in plan.requirements
+        if requirement.verification_method == "business-check"
+    ]
+    if business_requirements:
+        requirement_statuses = [
+            _special_acceptance_result(requirement, verification_receipts)
+            for requirement in business_requirements
+        ]
+        normalized = [
+            status
+            for result in requirement_statuses
+            if result is not None
+            for status in (result[0],)
+        ]
+        if "failed" in normalized:
+            return "failed"
+        if len(normalized) == len(business_requirements) and all(
+            status == "passed" for status in normalized
+        ):
+            return "passed"
+        return "unverified"
+
+    structured_statuses = [
+        str(item.get("status", "not_run")).strip().lower()
+        for receipt in verification_receipts
+        for item in receipt.facts.get("acceptance_results", [])
+        if isinstance(item, Mapping)
+    ]
+    normalized_structured = [
+        status
+        if status in {"passed", "failed", "not_run", "not_applicable"}
+        else "not_run"
+        for status in structured_statuses
+    ]
+    if "failed" in normalized_structured:
+        return "failed"
+    if normalized_structured and all(
+        status == "passed" for status in normalized_structured
+    ):
+        return "passed"
+    if normalized_structured:
+        return "unverified"
+    if explicit_statuses:
+        return (
+            "passed"
+            if all(status == "passed" for status in explicit_statuses)
+            else "unverified"
+        )
+    if (
+        plan.delivery_strategy == "build-upgrade"
+        or plan.intent == "upgrade-and-verify"
+    ) and verification_receipts and all(
+        receipt.status == "completed"
+        and receipt.facts.get("ok") is True
+        and receipt.target_epoch is not None
+        for receipt in verification_receipts
+    ):
         return "passed"
     return "unverified"
 
@@ -1146,11 +1312,7 @@ def _special_acceptance_result(
         return "not_run", f"{fact_name}=not_run", "部署验收未形成结论。"
     if method == "business-check":
         explicit: list[str] = []
-        overall: list[str] = []
         for receipt in candidates:
-            business = receipt.facts.get("business_acceptance")
-            if isinstance(business, str) and business:
-                overall.append(business)
             raw_results = receipt.facts.get("acceptance_results", [])
             if not isinstance(raw_results, Sequence) or isinstance(
                 raw_results, (str, bytes, bytearray)
@@ -1163,12 +1325,11 @@ def _special_acceptance_result(
                     item.get("title", "")
                 ).strip() == requirement.title:
                     explicit.append(str(item.get("status", "not_run")).lower())
-        statuses = explicit or overall
         normalized = [
             status
             if status in {"passed", "failed", "not_run", "not_applicable"}
             else "not_run"
-            for status in statuses
+            for status in explicit
         ]
         if "failed" in normalized:
             return "failed", requirement.title, "业务验收失败。"
@@ -1215,15 +1376,38 @@ def _identity_status(
                 else "incomplete",
                 [],
             )
-        expected = str(build.facts.get("artifact_sha256", "")).lower()
-        observed = [
-            str(item.facts.get("artifact_sha256", "")).lower()
-            for item in upgrades
+        expected_digest = str(build.facts.get("artifact_sha256", "")).lower()
+        upgrade_identities = [
+            _UpgradeReceiptIdentity.from_facts(item.facts) for item in upgrades
         ]
-        if expected and observed and all(item == expected for item in observed):
+        observed_digests = [
+            digest
+            for identity in upgrade_identities
+            for digest in identity.artifact_sha256s
+        ]
+        expected_version = str(build.facts.get("product_version", ""))
+        observed_versions = [
+            version
+            for identity in upgrade_identities
+            for version in identity.product_versions
+        ]
+        digest_mismatched = expected_digest and any(observed_digests) and any(
+            item != expected_digest for item in observed_digests
+        )
+        version_mismatched = expected_version and any(observed_versions) and any(
+            item != expected_version for item in observed_versions
+        )
+        if digest_mismatched or version_mismatched:
+            return "mismatched", ["构建产物身份与升级回执不一致。"]
+        digest_matched = expected_digest and observed_digests and all(
+            item == expected_digest for item in observed_digests
+        )
+        version_matched = not expected_version or (
+            observed_versions
+            and all(item == expected_version for item in observed_versions)
+        )
+        if digest_matched and version_matched:
             return "matched", []
-        if expected and any(observed):
-            return "mismatched", ["构建产物 SHA256 与升级输入不一致。"]
         return "incomplete", ["构建到升级的产物身份链不完整。"]
     if plan.delivery_strategy == "live-patch" or plan.intent in {
         "live-patch",
@@ -1410,7 +1594,7 @@ def aggregate_case_closeout(
             evidence_ids=operation_evidence_ids,
             facts=_selected_facts(stage, value, inputs),
             artifacts=_operation_artifacts(stage, value, inputs),
-            target_epoch=_target_epoch(value),
+            target_epoch=_target_epoch(value, operation),
         )
         order = max(
             int(operation.get(name, 0) or 0)
@@ -1597,7 +1781,7 @@ def aggregate_case_closeout(
             )
         )
 
-    business = _business_acceptance(receipts)
+    business = _business_acceptance(plan, receipts)
     delivery_records = _delivery_records(
         projection,
         receipts,

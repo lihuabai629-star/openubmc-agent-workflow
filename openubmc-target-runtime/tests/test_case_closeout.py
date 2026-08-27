@@ -406,6 +406,203 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         self.assertEqual(degraded.status, "partial")
         self.assertNotIn("old failed conclusion", str(degraded.facts))
 
+    def test_closeout_requires_a_structured_result_for_each_business_check(
+        self,
+    ) -> None:
+        first_check = "Redfish health is green"
+        missing_check = "Drive inventory matches the expected topology"
+        plan = AcceptancePlan.freeze(
+            {
+                "intent": "upgrade-and-verify",
+                "delivery_strategy": "build-upgrade",
+                "final_purpose": "verify the repaired target",
+                "verification_checks": [first_check, missing_check],
+            },
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "missing-structured-business-check",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [{"target_id": "target-1", "address": "192.0.2.33"}],
+            "operations": [
+                {
+                    "operation_id": "verification-one",
+                    "operation": "debug_collect",
+                    "status": "completed",
+                    "terminal_revision": 1,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["verification-evidence"],
+                    "target_epoch": 1,
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {
+                    "evidence_id": "verification-evidence",
+                    "blob_id": "verification",
+                }
+            ],
+        }
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda _reference: {
+                "ok": True,
+                "summary": "one required business check was reported",
+                "target_epoch": 1,
+                "business_acceptance": "passed",
+                "acceptance_results": [
+                    {"title": first_check, "status": "passed"}
+                ],
+            },
+        )
+        missing_requirement = next(
+            requirement
+            for requirement in plan.requirements
+            if requirement.title == missing_check
+        )
+        missing_result = next(
+            check
+            for check in closeout.checks
+            if check.requirement_id == missing_requirement.requirement_id
+        )
+
+        self.assertEqual(missing_result.status, "not_run")
+        self.assertEqual(closeout.business_acceptance, "unverified")
+        self.assertNotEqual(closeout.closure_status, "verified")
+
+    def test_closeout_uses_the_upgrade_receipt_artifact_identity(self) -> None:
+        expected_digest = "a" * 64
+        plan = AcceptancePlan.freeze(
+            {
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+                "final_purpose": "install the built firmware",
+            },
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "upgrade-receipt-identity-mismatch",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [{"target_id": "target-1", "address": "192.0.2.34"}],
+            "operations": [
+                {
+                    "operation_id": "upgrade-one",
+                    "operation": "upgrade_run",
+                    "status": "completed",
+                    "terminal_revision": 2,
+                    "inputs": {
+                        "target_id": "target-1",
+                        "artifact_sha256": expected_digest,
+                        "product_version": "3.2.0",
+                    },
+                    "evidence_ids": ["upgrade-evidence"],
+                    "target_epoch": 1,
+                }
+            ],
+            "phase_records": [
+                {
+                    "phase_id": "build-one",
+                    "phase_type": "build.artifact",
+                    "status": "completed",
+                    "artifact_path": "/tmp/product.hpm",
+                    "artifact_sha256": expected_digest,
+                    "product_version": "3.2.0",
+                }
+            ],
+            "evidence_refs": [
+                {"evidence_id": "upgrade-evidence", "blob_id": "upgrade"}
+            ],
+        }
+
+        for receipt_identity in (
+            {"artifact_sha256": "b" * 64, "product_version": "3.2.0"},
+            {"artifact_sha256": expected_digest, "product_version": "9.9.9"},
+            {
+                "artifact_sha256": expected_digest,
+                "product_version": "3.2.0",
+                "artifact_ref": {
+                    "digest": "sha256:" + "b" * 64,
+                    "version": "3.2.0",
+                },
+            },
+            {
+                "artifact_sha256": expected_digest,
+                "product_version": "3.2.0",
+                "journal": {"expected_checksum": "b" * 64},
+            },
+            {
+                "artifact_sha256": expected_digest,
+                "product_version": "3.2.0",
+                "journal": {"observed_checksum": "b" * 64},
+            },
+            {
+                "artifact_sha256": expected_digest,
+                "product_version": "3.2.0",
+                "verification": {"remote_sha256": "b" * 64},
+            },
+            {
+                "artifact_sha256": expected_digest,
+                "product_version": "3.2.0",
+                "artifact_ref": {
+                    "digest": "sha256:" + expected_digest,
+                    "version": "9.9.9",
+                },
+            },
+        ):
+            with self.subTest(receipt_identity=receipt_identity):
+                journal = {
+                    "stage": "verified",
+                    "action": "upgrade",
+                    "operation_id": "upgrade-one",
+                    "epoch_after": 1,
+                    **receipt_identity.get("journal", {}),
+                }
+                evidence = {
+                    "ok": True,
+                    "summary": "target reported a different artifact identity",
+                    "journal": journal,
+                    "verification": {
+                        "installed_version": receipt_identity.get(
+                            "product_version", "3.2.0"
+                        ),
+                        "target_epoch": 1,
+                        **receipt_identity.get("verification", {}),
+                    },
+                    **{
+                        name: value
+                        for name, value in receipt_identity.items()
+                        if name not in {"journal", "verification"}
+                    },
+                }
+                closeout = aggregate_case_closeout(
+                    projection,
+                    lambda _reference: evidence,
+                )
+
+                self.assertEqual(closeout.identity_status, "mismatched")
+                self.assertNotEqual(closeout.closure_status, "verified")
+
+        omitted_digest_closeout = aggregate_case_closeout(
+            projection,
+            lambda _reference: {
+                "ok": True,
+                "summary": "adapter omitted the equivalent digest projection",
+                "journal": {
+                    "stage": "verified",
+                    "action": "upgrade",
+                    "operation_id": "upgrade-one",
+                    "epoch_after": 1,
+                },
+                "verification": {
+                    "installed_version": "3.2.0",
+                    "target_epoch": 1,
+                },
+            },
+        )
+
+        self.assertEqual(omitted_digest_closeout.identity_status, "matched")
+
     def test_closeout_fails_closed_on_inconsistent_diagnostic_coverage(self) -> None:
         plan = AcceptancePlan.freeze(
             {

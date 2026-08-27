@@ -992,6 +992,77 @@ class IncompleteAcceptanceSemanticBackend(SemanticBackend):
         }
 
 
+class ConflictingAcceptanceSemanticBackend(SemanticBackend):
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value["business_acceptance"] = "passed"
+        value["acceptance_results"] = [
+            {
+                "requirement_id": "stage.verification",
+                "status": "failed",
+            }
+        ]
+        return value
+
+
+class AdapterProjectionBuildUpgradeBackend(SemanticBackend):
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("upgrade_run", dict(arguments)))
+        product_version = str(arguments.get("product_version", ""))
+        return {
+            "operation_id": context.operation_id,
+            "action": "upgrade",
+            "epoch_before": 0,
+            "epoch_after": 1,
+            "verification": {
+                "installed_version": product_version,
+                "target_epoch": 1,
+            },
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "upgrade",
+                "epoch_before": 0,
+                "epoch_after": 1,
+                "verification_state": "verified",
+            },
+        }
+
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value.pop("business_acceptance", None)
+        value.pop("target_epoch", None)
+        target_id = str(arguments.get("target_id", ""))
+        result = value["result"]
+        result["runtime"] = {
+            "status": {
+                "targets": [
+                    {
+                        "target_id": target_id,
+                        "epochs": {"target_epoch": 1},
+                    }
+                ]
+            }
+        }
+        return value
+
+
+class DeferredAdapterProjectionBuildUpgradeBackend(
+    AdapterProjectionBuildUpgradeBackend
+):
+    def __init__(self) -> None:
+        super().__init__()
+        self.verification_attempts = 0
+
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        self.verification_attempts += 1
+        if self.verification_attempts <= 2:
+            self.calls.append(("debug_collect", dict(arguments)))
+            raise OSError("verification transport is temporarily unavailable")
+        return super().debug_collect(task, arguments, context)
+
+
 class DeferredVerificationSemanticBackend(SemanticBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -7028,6 +7099,64 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(projection.get("run_outcome"))
         self.assertIn("fresh target verification", final["next"])
 
+    def test_conflicting_acceptance_evidence_fails_closed(self) -> None:
+        backend = ConflictingAcceptanceSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "conflicting-acceptance.lua"
+        patch_file.write_bytes(b"return 'conflicting-acceptance'\n")
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.72",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="conflicting-acceptance",
+                operation_id="conflicting-acceptance-start",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair ready",
+                        "payload": {
+                            "source_revision": "conflicting-acceptance-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh target verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.72",
+                                run_id=waiting["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
+                    },
+                },
+                task_id="conflicting-acceptance",
+                operation_id="conflicting-acceptance-response",
+            )
+            projection = service._test.context_runtime.read_case(waiting["run_id"])
+            events = service._test.context_runtime.repository.events(waiting["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(final["state"], "failed")
+        self.assertEqual(final["outcome"]["status"], "failed")
+        self.assertEqual(projection["closeout"]["business_acceptance"], "failed")
+        self.assertNotEqual(projection["closeout"]["closure_status"], "verified")
+        self.assertEqual(
+            sum(event["kind"] == "RunOutcomeRecorded" for event in events),
+            1,
+        )
+
     def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
         first = self.service.call_exposed_tool(
             "execute",
@@ -7101,6 +7230,232 @@ class AgentGatewayTests(unittest.TestCase):
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
+
+    def test_build_upgrade_closes_from_runtime_adapter_receipts(self) -> None:
+        backend = AdapterProjectionBuildUpgradeBackend()
+        service = RuntimeMcpService(backend)
+        product = self.artifact_root / "adapter-projection-product.hpm"
+        product.write_bytes(b"firmware-3.0.0")
+        try:
+            developer_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.70",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                },
+                task_id="adapter-projection-build-upgrade",
+                operation_id="adapter-projection-start",
+            )
+            build_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(developer_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "adapter-projection-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["build and target verification"],
+                        },
+                    },
+                },
+                task_id="adapter-projection-build-upgrade",
+                operation_id="adapter-projection-source",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(build_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "firmware artifact completed",
+                        "payload": {
+                            "source_revision": "adapter-projection-source",
+                            "artifact_ref": artifact_ref(
+                                product,
+                                kind="openubmc-hpm",
+                                target="192.0.2.70",
+                                run_id=developer_gate["run_id"],
+                                version="3.0.0",
+                            ),
+                        },
+                    },
+                },
+                task_id="adapter-projection-build-upgrade",
+                operation_id="adapter-projection-build",
+            )
+            projection = service._test.context_runtime.read_case(
+                developer_gate["run_id"]
+            )
+            replayed = service.call_exposed_tool(
+                "execute",
+                {"kind": "resume", "run_id": developer_gate["run_id"]},
+                task_id="adapter-projection-replay",
+                operation_id="adapter-projection-replay",
+            )
+            events = service._test.context_runtime.repository.events(
+                developer_gate["run_id"]
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(
+            final["state"],
+            "completed",
+            json.dumps(projection["closeout"], ensure_ascii=False, indent=2),
+        )
+        self.assertEqual(final["outcome"]["status"], "completed")
+        self.assertEqual(replayed["outcome"], final["outcome"])
+        self.assertEqual(projection["closeout"]["closure_status"], "verified")
+        self.assertEqual(projection["closeout"]["business_acceptance"], "passed")
+        self.assertEqual(projection["closeout"]["identity_status"], "matched")
+        self.assertEqual(projection["closeout"]["freshness_status"], "fresh")
+        verification_arguments = backend.calls[-1][1]
+        self.assertEqual(verification_arguments["_minimum_target_epoch"], 1)
+        verification_state = next(
+            state
+            for state in projection["workflow_step_states"].values()
+            if state.get("name") == "debug_collect"
+        )
+        self.assertEqual(verification_state["target_epoch"], 1)
+        self.assertEqual(
+            [name for name, _arguments in backend.calls].count("upgrade_run"),
+            1,
+        )
+        self.assertEqual(
+            sum(event["kind"] == "CloseoutRecorded" for event in events),
+            1,
+        )
+        self.assertEqual(
+            sum(event["kind"] == "RunOutcomeRecorded" for event in events),
+            1,
+        )
+
+    def test_deferred_build_upgrade_verification_resumes_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "deferred-build-upgrade.sqlite3"
+            blobs = root / "deferred-build-upgrade-blobs"
+            product = root / "deferred-build-upgrade.hpm"
+            product.write_bytes(b"firmware-3.1.0")
+            backend = DeferredAdapterProjectionBuildUpgradeBackend()
+            first_service = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                developer_gate = first_service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.71",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "build-upgrade",
+                    },
+                    task_id="deferred-build-upgrade",
+                    operation_id="deferred-build-upgrade-start",
+                )
+                build_gate = first_service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer_gate["run_id"],
+                        **gate_binding(developer_gate),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair completed",
+                            "payload": {
+                                "source_revision": "deferred-build-upgrade-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["build and target verification"],
+                            },
+                        },
+                    },
+                    task_id="deferred-build-upgrade",
+                    operation_id="deferred-build-upgrade-source",
+                )
+                running = first_service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer_gate["run_id"],
+                        **gate_binding(build_gate),
+                        "response": {
+                            "status": "completed",
+                            "summary": "firmware artifact completed",
+                            "payload": {
+                                "source_revision": "deferred-build-upgrade-source",
+                                "artifact_ref": artifact_ref(
+                                    product,
+                                    kind="openubmc-hpm",
+                                    target="192.0.2.71",
+                                    run_id=developer_gate["run_id"],
+                                    version="3.1.0",
+                                ),
+                            },
+                        },
+                    },
+                    task_id="deferred-build-upgrade",
+                    operation_id="deferred-build-upgrade-build",
+                )
+            finally:
+                first_service.close()
+
+            self.assertEqual(running["state"], "running")
+            self.assertEqual(
+                [name for name, _arguments in backend.calls].count("upgrade_run"),
+                1,
+            )
+
+            second_service = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                final = second_service.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": developer_gate["run_id"]},
+                    task_id="deferred-build-upgrade-resume",
+                    operation_id="deferred-build-upgrade-resume",
+                )
+                projection = second_service._test.context_runtime.read_case(
+                    developer_gate["run_id"]
+                )
+                events = second_service._test.context_runtime.repository.events(
+                    developer_gate["run_id"]
+                )
+            finally:
+                second_service.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(final["outcome"]["status"], "completed")
+        self.assertEqual(backend.verification_attempts, 3)
+        self.assertEqual(
+            [name for name, _arguments in backend.calls].count("upgrade_run"),
+            1,
+        )
+        self.assertEqual(projection["closeout"]["closure_status"], "verified")
+        self.assertEqual(
+            sum(event["kind"] == "RunVerificationDeferred" for event in events),
+            1,
+        )
+        self.assertEqual(
+            sum(event["kind"] == "CloseoutRecorded" for event in events),
+            1,
+        )
+        self.assertEqual(
+            sum(event["kind"] == "RunOutcomeRecorded" for event in events),
+            1,
+        )
 
     def test_unknown_mutation_without_a_durable_effect_stays_incident(self) -> None:
         repository = InMemoryRuntimeRepository()
