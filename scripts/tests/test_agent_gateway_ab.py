@@ -937,6 +937,9 @@ class AgentGatewayAbTests(unittest.TestCase):
         )
 
         self.assertIn("读取 start 工具结果的 structured_content", prompt)
+        self.assertIn("标准 content 首部的同值 GateBinding 行", prompt)
+        self.assertIn("四项都必须是非空原值", prompt)
+        self.assertIn("不得提交空字符串或尖括号占位符", prompt)
         self.assertIn(
             '"kind":"respond","run_id":"<structured_content.run_id>",'
             '"gate_id":"<structured_content.gate.gate_id>",'
@@ -989,6 +992,24 @@ class AgentGatewayAbTests(unittest.TestCase):
                 arm="B",
             ),
         )
+
+    def test_baseline_execute_prompt_preserves_the_actionable_continuation(self) -> None:
+        prompt = module._prompt(
+            Path("/tmp/openubmc-debug/SKILL.md"),
+            scenario="execute-source-only",
+            arm="A",
+        )
+
+        self.assertIn(
+            "标准 content 的“尚未完成”只表示 Case 正在等待 phase_record",
+            prompt,
+        )
+        self.assertIn(
+            "case_id、顶层 revision 与 handoff_arguments.phase_record_contract "
+            "都必须从同一次 structured_content 记录为非空原值",
+            prompt,
+        )
+        self.assertIn("不得在读取 structured_content 前报告这些字段缺失", prompt)
 
     def test_skill_disclosure_uses_the_same_agent_profile_and_prompt_semantics(self) -> None:
         baseline = Path("/tmp/baseline/openubmc-debug/SKILL.md")

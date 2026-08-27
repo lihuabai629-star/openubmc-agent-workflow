@@ -130,7 +130,10 @@ preserved semantics still do not fit, the Turn may exceed the projection target 
 condition as telemetry rather than a blocker.
 The MCP Adapter also renders a bounded textual receipt summary in standard `content`, including
 source status, `agent_acceptance=complete|partial|blocked`, coverage, freshness, source
-completeness, capabilities, gaps, and citable result previews. The
+completeness, capabilities, gaps, and citable result previews. A Gate Turn keeps a compact
+`GateBinding` line with `run_id`, `gate_id`, `gate_version`, and `schema_digest` ahead of those
+previews so the immediate response action remains evaluable even when diagnostic content is large
+or compacted. The
 typed Turn remains authoritative in `structuredContent`; the text prevents clients that underuse
 structured MCP data from reducing `execute` to a generic completed/failed acknowledgement.
 The projected `diagnostic_receipt` in `structuredContent` carries the same `agent_acceptance`
@@ -312,7 +315,9 @@ failure or retry. In particular, 尚未发出的 MCP 调用不算失败或重试
 registered benchmark tool entry and still issues the required actual call. Skill disclosure issues
 exactly one `observe`; execute source-only issues its fixed continuation calls. This avoids turning
 transient deferred tool-entry resolution into an arm-specific validity failure without accepting a
-run that never dispatches the required MCP call.
+run that never dispatches the required MCP call. The compatibility arm also treats its standard
+“not completed” text as a waiting phase state and reads the same result's structured continuation
+contract before deciding that `case_id`, revision, or phase arguments are unavailable.
 
 ```bash
 python scripts/agent_gateway_ab.py run \

@@ -3516,9 +3516,7 @@ class JsonRpcMcpEndpoint:
                     f"openUBMC 工作流已推进到 {state}："
                     f"{gate.get('kind', 'gate')} {gate.get('name', '')}。"
                 )
-                if value.get("diagnostic_receipt"):
-                    return render_execute_turn_text(value, heading=gate_text)
-                return gate_text
+                return render_execute_turn_text(value, heading=gate_text)
             return render_execute_turn_text(value)
         closeout_markdown = value.get("closeout_markdown")
         if isinstance(closeout_markdown, str) and closeout_markdown.strip():

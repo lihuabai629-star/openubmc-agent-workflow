@@ -968,8 +968,36 @@ class JsonRpcEndpointTests(unittest.TestCase):
         self.assertIsNotNone(turn["diagnostic_receipt"])
         summary = response["result"]["content"][0]["text"]
         self.assertIn("phase developer.change", summary)
+        self.assertIn(f"run_id={turn['run_id']}", summary)
+        self.assertIn(f"gate_id={turn['gate']['gate_id']}", summary)
+        self.assertIn(f"gate_version={turn['gate']['gate_version']}", summary)
+        self.assertIn(f"schema_digest={turn['gate']['schema_digest']}", summary)
         self.assertIn("DiagnosticReceipt status=complete", summary)
         self.assertIn("bounded fake diagnosis completed", summary)
+
+    def test_execute_gate_text_preserves_binding_without_a_diagnostic_receipt(
+        self,
+    ) -> None:
+        response = self.endpoint._tool_result(
+            {
+                "state": "waiting_response",
+                "run_id": "run-actionable",
+                "gate": {
+                    "kind": "phase",
+                    "name": "developer.change",
+                    "gate_id": "gate-actionable",
+                    "gate_version": 3,
+                    "schema_digest": "sha256:" + "a" * 64,
+                },
+            },
+            tool_name="execute",
+        )
+
+        summary = response["content"][0]["text"]
+        self.assertIn("run_id=run-actionable", summary)
+        self.assertIn("gate_id=gate-actionable", summary)
+        self.assertIn("gate_version=3", summary)
+        self.assertIn("schema_digest=sha256:" + "a" * 64, summary)
 
     def test_execute_text_distinguishes_source_and_visible_receipt_coverage(
         self,
