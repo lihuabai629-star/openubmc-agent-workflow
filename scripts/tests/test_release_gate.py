@@ -268,6 +268,14 @@ class ReleaseGateTests(unittest.TestCase):
         )
         self.assertEqual(workflow["permissions"]["actions"], "read")
         self.assertEqual(workflow["permissions"]["checks"], "read")
+        self.assertEqual(
+            workflow["jobs"]["release-gate"]["permissions"],
+            {
+                "actions": "read",
+                "checks": "read",
+                "contents": "write",
+            },
+        )
 
         steps = {
             step.get("name", step.get("uses", "")): step
