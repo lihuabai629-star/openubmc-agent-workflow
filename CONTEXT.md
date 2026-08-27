@@ -56,6 +56,10 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Release candidate** | A qualified Final source and its lock-only child considered for an immutable version tag. It is not a Release until the tag and publication record exist. |
 | **Superseded unpublished candidate** | A Release candidate that was never tagged and is no longer eligible for publication because later canonical changes require a newly qualified Final source. |
 | **Historical release snapshot** | Release identity retained on mutable `main` or in audit evidence for verification. It describes an earlier source and never proves the identity of the current development tree. |
+| **Operational readiness** | An installer projection that says the installed Runtime, Agent transport, execution engine, and credentials can serve the configured workflow. It does not claim Release identity. |
+| **Release identity verification** | Verification that a managed immutable source matches its recorded commit, release lock, Runtime, Skills, and source-tree identity. It proves source identity, not by itself that a tag was published. |
+| **Release trust mode** | The installer classification of a source as linked development, unverified managed source, or verified immutable source. |
+| **Evaluation readiness** | An Operator / CI Plane projection requiring installation consistency, Operational readiness, and Release identity verification before formal qualification evidence is accepted. |
 
 ## Ownership rules
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+import http.server
 import importlib.util
 import io
 import json
@@ -11,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -182,6 +184,35 @@ class EnvironmentSetupTests(unittest.TestCase):
                 f"---\nname: {canonical}\ndescription: Release fixture.\n---\n",
                 encoding="utf-8",
             )
+        fixture_installer = (
+            source
+            / "openubmc-environment-setup"
+            / "scripts"
+            / "install_environment.py"
+        )
+        fixture_installer.parent.mkdir(parents=True)
+        fixture_installer.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "import os\n"
+            "from pathlib import Path\n"
+            "import sys\n"
+            "capture = os.environ.get('OPENUBMC_REMEDIATION_CAPTURE')\n"
+            "if capture:\n"
+            "    Path(capture).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        release_verifier = (
+            source
+            / "openubmc-target-runtime"
+            / "openubmc_target_runtime"
+            / "release.py"
+        )
+        release_verifier.parent.mkdir(parents=True)
+        release_verifier.write_text(
+            "#!/usr/bin/env python3\nraise SystemExit(0)\n",
+            encoding="utf-8",
+        )
         subprocess.run(
             ["git", "init", "--initial-branch", "main", str(source)],
             check=True,
@@ -505,6 +536,15 @@ class EnvironmentSetupTests(unittest.TestCase):
 
         self.assertEqual(result, 0, output.getvalue())
         document = json.loads(output.getvalue())
+        self.assertTrue(document["operational_ready"])
+        self.assertTrue(document["release_identity_verified"])
+        self.assertTrue(document["evaluation_ready"])
+        self.assertTrue(document["readiness"]["release_identity"])
+        self.assertTrue(document["readiness"]["evaluation"])
+        self.assertEqual(
+            document["release"]["trust_mode"], "verified-immutable-source"
+        )
+        self.assertTrue(document["release"]["verified"])
         self.assertEqual(
             document["release"]["lock_digest"],
             identity["lock_digest"],
@@ -516,6 +556,64 @@ class EnvironmentSetupTests(unittest.TestCase):
         )
         self.assertTrue(release_check["ok"])
         self.assertIn(identity["lock_digest"], release_check["detail"])
+
+    def test_check_json_rejects_release_identity_when_checkout_commit_changed(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        identity = {
+            "schema": "openubmc-agent-workflow.release-lock.v1",
+            "release_version": "1.2.0",
+            "source_commit": "a" * 40,
+            "lock_digest": "sha256:" + "b" * 64,
+            "immutable": True,
+        }
+        state = installer.load_state(self.home)
+        state.update(
+            {
+                "source_mode": "managed",
+                "managed_checkout": True,
+                "ref": "v1.2.0",
+                "requested_ref": "v1.2.0",
+                "ref_kind": "tag",
+                "source_commit": "a" * 40,
+                "resolved_commit": "a" * 40,
+                "release": identity,
+            }
+        )
+        installer.save_state(self.home, state, False)
+        output = io.StringIO()
+
+        with (
+            mock.patch.object(installer, "git_commit", return_value="c" * 40),
+            mock.patch.object(installer, "git_dirty", return_value=False),
+            mock.patch.object(installer, "release_identity", return_value=identity),
+            mock.patch.object(
+                installer, "knowledge_http_health", return_value=(False, "offline")
+            ),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+
+        self.assertEqual(result, 1, output.getvalue())
+        document = json.loads(output.getvalue())
+        self.assertTrue(document["operational_ready"])
+        self.assertFalse(document["release_identity_verified"])
+        self.assertFalse(document["evaluation_ready"])
+        self.assertEqual(
+            document["release"]["trust_mode"], "unverified-managed-source"
+        )
+        commit = next(
+            check for check in document["checks"] if check["name"] == "source_commit"
+        )
+        self.assertFalse(commit["ok"])
 
     def test_clone_source_rejects_a_branch_as_a_release_tag(self) -> None:
         remote, _commit = self.create_release_remote()
@@ -3351,16 +3449,29 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(result, 0)
         document = json.loads(output.getvalue())
         self.assertTrue(document["ok"])
+        self.assertTrue(document["operational_ready"])
+        self.assertFalse(document["release_identity_verified"])
+        self.assertFalse(document["evaluation_ready"])
         self.assertTrue(document["readiness"]["core"])
         self.assertTrue(document["readiness"]["credentials"])
+        self.assertFalse(document["readiness"]["release_identity"])
+        self.assertFalse(document["readiness"]["evaluation"])
         self.assertFalse(document["readiness"]["knowledge"])
         self.assertFalse(document["readiness"]["studio"])
         self.assertEqual(document["source"]["mode"], "linked")
+        self.assertEqual(document["release"]["trust_mode"], "linked-development")
+        self.assertFalse(document["release"]["verified"])
         self.assertEqual(document["source"]["requested_ref"], "")
         self.assertEqual(document["source"]["ref_kind"], "linked")
         self.assertEqual(
             document["source"]["resolved_commit"],
             document["source"]["expected_commit"],
+        )
+        self.assertTrue(
+            any(
+                action.get("code") == "install_immutable_release"
+                for action in document["next_actions"]
+            )
         )
 
     def test_check_json_rejects_inconsistent_immutable_revision_state(self) -> None:
@@ -3398,12 +3509,325 @@ class EnvironmentSetupTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         document = json.loads(output.getvalue())
+        self.assertTrue(document["operational_ready"])
+        self.assertFalse(document["release_identity_verified"])
+        self.assertFalse(document["evaluation_ready"])
         self.assertEqual(document["source"]["ref_kind"], "tag")
         revision = next(
             check for check in document["checks"] if check["name"] == "source_revision"
         )
         self.assertFalse(revision["ok"])
         self.assertIn("resolved commit does not match source commit", revision["detail"])
+
+    def test_check_text_distinguishes_development_health_from_release_trust(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        output = io.StringIO()
+
+        with (
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home)])
+
+        self.assertEqual(result, 0, output.getvalue())
+        rendered = output.getvalue()
+        self.assertIn("operational readiness: ready", rendered)
+        self.assertIn("release identity verified: no", rendered)
+        self.assertIn("evaluation readiness: not ready", rendered)
+        self.assertIn("managed installation pinned to an immutable", rendered)
+        self.assertIn("release trust mode: linked-development", rendered)
+        self.assertNotIn("vX.Y.Z", rendered)
+        self.assertIn(
+            "/repos/lihuabai629-star/openubmc-agent-workflow/releases/latest",
+            rendered,
+        )
+        self.assertIn("GITHUB_API_URL", rendered)
+        self.assertIn(installer.DEFAULT_REPO_URL, rendered)
+        self.assertIn("install_environment.py\" install", rendered)
+
+    def test_release_remediation_uses_recorded_github_repository(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        state["repo_url"] = "https://github.com/example/workflow-fork.git"
+        installer.save_state(self.home, state, False)
+        output = io.StringIO()
+
+        with (
+            mock.patch.object(
+                installer, "knowledge_http_health", return_value=(False, "offline")
+            ),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home)])
+
+        self.assertEqual(result, 0, output.getvalue())
+        rendered = output.getvalue()
+        self.assertIn("/repos/example/workflow-fork/releases/latest", rendered)
+        self.assertIn("https://github.com/example/workflow-fork.git", rendered)
+        self.assertIn("git clone --quiet", rendered)
+        self.assertIn("install_environment.py\" install", rendered)
+        self.assertNotIn("lihuabai629-star/openubmc-agent-workflow", rendered)
+
+        remote, _commit = self.create_release_remote()
+        api_root = self.root / "github-api"
+        release_endpoint = (
+            api_root
+            / "repos"
+            / "example"
+            / "workflow-fork"
+            / "releases"
+            / "latest"
+        )
+        release_endpoint.parent.mkdir(parents=True)
+        release_endpoint.write_text(
+            json.dumps({"tag_name": "v1.2.3"}),
+            encoding="utf-8",
+        )
+
+        class QuietHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(api_root), **kwargs)
+
+            def log_message(self, _format, *args):
+                return
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        fake_bin = self.root / "fake-git-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        fake_git.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -e\n"
+            "args=()\n"
+            "for arg in \"$@\"; do\n"
+            "  if [[ \"$arg\" == "
+            "\"https://github.com/example/workflow-fork.git\" ]]; then\n"
+            f"    arg={json.dumps(str(remote))}\n"
+            "  fi\n"
+            "  args+=(\"$arg\")\n"
+            "done\n"
+            f"exec {real_git} \"${{args[@]}}\"\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        capture = self.root / "github-remediation-arguments.json"
+        environment = dict(os.environ)
+        environment.update(
+            {
+                "GITHUB_API_URL": (
+                    f"http://127.0.0.1:{server.server_address[1]}"
+                ),
+                "OPENUBMC_REMEDIATION_CAPTURE": str(capture),
+                "PATH": str(fake_bin) + os.pathsep + environment["PATH"],
+            }
+        )
+        json_output = io.StringIO()
+        with (
+            mock.patch.object(
+                installer, "knowledge_http_health", return_value=(False, "offline")
+            ),
+            redirect_stdout(json_output),
+        ):
+            json_result = installer.main(
+                ["check", "--home", str(self.home), "--json"]
+            )
+        self.assertEqual(json_result, 0, json_output.getvalue())
+        command = next(
+            action["command"]
+            for action in json.loads(json_output.getvalue())["next_actions"]
+            if action.get("code") == "install_immutable_release"
+        )
+        try:
+            completed = subprocess.run(
+                ["bash", "-c", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(capture.read_text(encoding="utf-8")),
+            [
+                "install",
+                "--source-mode",
+                "managed",
+                "--repo-url",
+                "https://github.com/example/workflow-fork.git",
+                "--ref",
+                "v1.2.3",
+                "--non-interactive",
+            ],
+        )
+
+    def test_release_remediation_for_non_github_repository_avoids_github_api(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        remote, _commit = self.create_release_remote()
+        source = self.root / "release-repository"
+        subprocess.run(
+            ["git", "-C", str(source), "tag", "v1.2.4-rc2"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source), "tag", "experiment-9"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source), "push", str(remote), "--tags"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        state = installer.load_state(self.home)
+        state["repo_url"] = str(remote)
+        installer.save_state(self.home, state, False)
+        output = io.StringIO()
+
+        with (
+            mock.patch.object(
+                installer, "knowledge_http_health", return_value=(False, "offline")
+            ),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+
+        self.assertEqual(result, 0, output.getvalue())
+        document = json.loads(output.getvalue())
+        action = next(
+            action
+            for action in document["next_actions"]
+            if action.get("code") == "install_immutable_release"
+        )
+        command = action["command"]
+        self.assertIn("git ls-remote --tags --refs", command)
+        self.assertIn(str(remote), command)
+        self.assertIn("git clone --quiet", command)
+        self.assertIn("release.py\" verify", command)
+        self.assertIn("install_environment.py\" install", command)
+        self.assertNotIn("gh release view", command)
+        self.assertNotIn("gh api", command)
+        self.assertNotIn("vX.Y.Z", command)
+
+        capture = self.root / "remediation-arguments.json"
+        environment = dict(os.environ)
+        environment["OPENUBMC_REMEDIATION_CAPTURE"] = str(capture)
+        completed = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(capture.read_text(encoding="utf-8")),
+            [
+                "install",
+                "--source-mode",
+                "managed",
+                "--repo-url",
+                str(remote),
+                "--ref",
+                "v1.2.3",
+                "--non-interactive",
+            ],
+        )
+
+    def test_linked_identity_mismatch_is_operational_but_not_evaluation_ready(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        output = io.StringIO()
+        identity = {
+            "schema": "linked-development-source",
+            "release_version": "2.0.0",
+            "immutable": False,
+            "validation_error": (
+                "release lock does not match repository: runtime, skills, "
+                "source_tree_digest"
+            ),
+        }
+
+        with (
+            mock.patch.object(installer, "release_identity", return_value=identity),
+            mock.patch.object(installer, "knowledge_http_health", return_value=(False, "offline")),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+
+        self.assertEqual(result, 0, output.getvalue())
+        document = json.loads(output.getvalue())
+        self.assertTrue(document["operational_ready"])
+        self.assertFalse(document["release_identity_verified"])
+        self.assertFalse(document["evaluation_ready"])
+        self.assertIn("runtime, skills", document["release"]["validation_error"])
+
+    def test_managed_identity_mismatches_do_not_hide_runtime_operability(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        state.update(
+            {
+                "source_mode": "managed",
+                "managed_checkout": True,
+                "ref": "v2.0.0",
+                "requested_ref": "v2.0.0",
+                "ref_kind": "tag",
+                "source_commit": "a" * 40,
+                "resolved_commit": "a" * 40,
+            }
+        )
+        installer.save_state(self.home, state, False)
+
+        mismatches = (
+            "installed release lock identity changed",
+            "release lock does not match repository: runtime",
+            "release lock does not match repository: skills",
+            "release lock does not match repository: source_tree_digest",
+        )
+        for mismatch in mismatches:
+            with self.subTest(mismatch=mismatch):
+                output = io.StringIO()
+                with (
+                    mock.patch.object(installer, "git_commit", return_value="a" * 40),
+                    mock.patch.object(installer, "git_dirty", return_value=False),
+                    mock.patch.object(
+                        installer,
+                        "release_identity",
+                        side_effect=installer.SetupError(mismatch),
+                    ),
+                    mock.patch.object(
+                        installer, "knowledge_http_health", return_value=(False, "offline")
+                    ),
+                    redirect_stdout(output),
+                ):
+                    result = installer.main(
+                        ["check", "--home", str(self.home), "--json"]
+                    )
+
+                self.assertEqual(result, 1, output.getvalue())
+                document = json.loads(output.getvalue())
+                self.assertTrue(document["operational_ready"])
+                self.assertFalse(document["release_identity_verified"])
+                self.assertFalse(document["evaluation_ready"])
+                self.assertIn(mismatch, document["release"]["validation_error"])
 
     def test_noninteractive_dry_run_does_not_plan_tty_credentials(self) -> None:
         args = self.args("--install", "--dry-run")
