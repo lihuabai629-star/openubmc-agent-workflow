@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLES = (
     ROOT / "bootstrap.py",
     ROOT / "scripts" / "compatibility_retirement.py",
+    ROOT / "scripts" / "evaluation_harness.py",
     ROOT / "scripts" / "model_planning_evaluation.py",
     ROOT / "scripts" / "validate_workflow.py",
     ROOT / "scripts" / "live_smoke.py",
@@ -269,6 +270,75 @@ def validate_installer_manifest(document: dict[str, object]) -> None:
         raise SystemExit("workflow.json and installer target-runtime profile differ")
 
 
+def validate_client_and_harness_metadata(document: dict[str, object]) -> None:
+    clients = document.get("clients")
+    if not isinstance(clients, dict) or not clients:
+        raise SystemExit("workflow.json has no supported product clients")
+    for name, raw_client in clients.items():
+        if not isinstance(name, str) or not name or not isinstance(raw_client, dict):
+            raise SystemExit("workflow.json contains an invalid product client")
+        if raw_client.get("role") != "supported-product-client":
+            raise SystemExit(f"invalid product client role: {name}")
+        if not all(isinstance(raw_client.get(field), bool) for field in ("skills", "mcp")):
+            raise SystemExit(f"invalid product client capabilities: {name}")
+
+    harnesses = document.get("evaluation_harnesses")
+    if not isinstance(harnesses, dict) or not harnesses:
+        raise SystemExit("workflow.json has no evaluation harnesses")
+    overlap = sorted(set(clients) & set(harnesses))
+    if overlap:
+        raise SystemExit(
+            "evaluation harnesses must not be product clients: "
+            + ", ".join(overlap)
+        )
+    for name, raw_harness in harnesses.items():
+        if not isinstance(name, str) or not name or not isinstance(raw_harness, dict):
+            raise SystemExit("workflow.json contains an invalid evaluation harness")
+        if raw_harness.get("role") != "evaluation-harness":
+            raise SystemExit(f"invalid evaluation harness role: {name}")
+        for field in ("adapter", "profile"):
+            if not isinstance(raw_harness.get(field), str) or not raw_harness[field].strip():
+                raise SystemExit(f"evaluation harness {name} requires {field}")
+        executable = raw_harness.get("executable")
+        if not isinstance(executable, dict) or any(
+            not isinstance(executable.get(field), str)
+            or not executable[field].strip()
+            for field in (
+                "command",
+                "package",
+                "minimum_version",
+                "maximum_version_exclusive",
+            )
+        ):
+            raise SystemExit(f"evaluation harness {name} executable contract is invalid")
+        version_args = executable.get("version_args")
+        if not isinstance(version_args, list) or not version_args or not all(
+            isinstance(item, str) and item for item in version_args
+        ):
+            raise SystemExit(f"evaluation harness {name} version_args are invalid")
+        identity_fields = raw_harness.get("model_identity_fields")
+        if not isinstance(identity_fields, list) or not identity_fields or any(
+            not isinstance(item, str) or not item for item in identity_fields
+        ) or len(set(identity_fields)) != len(identity_fields):
+            raise SystemExit(f"evaluation harness {name} model identity is invalid")
+        scenarios = raw_harness.get("scenarios")
+        scenario_ids: set[tuple[str, str]] = set()
+        if not isinstance(scenarios, list) or not scenarios:
+            raise SystemExit(f"evaluation harness {name} has no scenarios")
+        for scenario in scenarios:
+            if not isinstance(scenario, dict):
+                raise SystemExit(f"evaluation harness {name} scenario is invalid")
+            identity = (str(scenario.get("name", "")), str(scenario.get("version", "")))
+            if (
+                not all(identity)
+                or identity in scenario_ids
+                or scenario.get("acceptance")
+                not in {"scenario-receipt-v1", "terminal-outcome-v1"}
+            ):
+                raise SystemExit(f"evaluation harness {name} scenario identity is invalid")
+            scenario_ids.add(identity)
+
+
 def validate_manifest() -> dict[str, object]:
     document = json.loads((ROOT / "workflow.json").read_text(encoding="utf-8"))
     skills = document.get("skills")
@@ -293,6 +363,7 @@ def validate_manifest() -> dict[str, object]:
     for profile, selected in dict(profiles).items():
         if not isinstance(selected, list) or not set(selected).issubset(names):
             raise SystemExit(f"invalid Skill profile: {profile}")
+    validate_client_and_harness_metadata(document)
     validate_installer_manifest(document)
     return document
 
