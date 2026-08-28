@@ -73,6 +73,9 @@ from .capability import (
     require_effect_recovery_journal,
 )
 from .comparison_targets import comparison_target_identities
+from .mdb_query import (
+    is_read_only_mdb_query,
+)
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     AGENT_ENVELOPE_SCHEMA,
@@ -698,4 +701,5 @@ __all__ = [
     "telnet_output_limit_details",
     "decide_mutation_recovery",
     "mutation_journal_operation_status",
+    "is_read_only_mdb_query",
 ]

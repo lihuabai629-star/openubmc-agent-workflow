@@ -636,7 +636,9 @@ class DebugMcpBackend:
             for query in selector.get("queries", [])
         ]
         if declared_capability_names != capability_names:
-            raise ValueError("capability selector scope does not match Runtime arguments")
+            raise ValueError(
+                "capability selector scope does not match Runtime arguments"
+            )
         if declared_mdb_queries != list(bounded.get("mdb_queries", [])):
             raise ValueError("MDB selector scope does not match Runtime arguments")
         credential_values = bounded.pop("_credential_values", None)

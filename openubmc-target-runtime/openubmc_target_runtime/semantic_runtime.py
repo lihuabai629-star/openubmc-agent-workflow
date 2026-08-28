@@ -9,6 +9,7 @@ import json
 import re
 from typing import Protocol, TypeAlias
 
+from .capabilities import CAPABILITY_ALIASES
 from .contracts import RUNTIME_API_VERSION
 from .comparison_targets import comparison_target_identities
 from .diagnostic_receipt import (
@@ -17,6 +18,7 @@ from .diagnostic_receipt import (
 )
 from .diagnostic_request import DiagnosticRequestPlan
 from .incident import incident_recovery_policy
+from .mdb_query import MDB_QUERY_CORRECTION, is_read_only_mdb_query
 
 
 SEMANTIC_RUNTIME_SCHEMA = f"{RUNTIME_API_VERSION}/semantic-runtime-v1"
@@ -32,7 +34,11 @@ GATE_SCHEMA_PROJECTION_TARGET_BYTES = 4 * 1024
 # Compatibility name for consumers that still report the historical target.
 # Gate schemas may exceed this value; it is not a Runtime control-flow maximum.
 GATE_SCHEMA_MAX_BYTES = GATE_SCHEMA_PROJECTION_TARGET_BYTES
-OBSERVATION_SCOPE_MAX_BYTES = 2 * 1024
+# Internal collection partitions target this size. It is not an Agent request or
+# workflow-completion limit; individually valid selectors remain accepted.
+OBSERVATION_PARTITION_TARGET_BYTES = 2 * 1024
+# Compatibility name retained for Operator telemetry and older imports.
+OBSERVATION_SCOPE_MAX_BYTES = OBSERVATION_PARTITION_TARGET_BYTES
 TARGET_MAX_BYTES = 512
 SELECTOR_ID_MAX_BYTES = 64
 SELECTOR_MAX_ITEMS = 16
@@ -41,9 +47,7 @@ CAPABILITY_MAX_ITEMS = 16
 MDB_QUERY_MAX_BYTES = 1024
 MDB_QUERY_MAX_ITEMS = 32
 
-_CAPABILITY_ALIASES = frozenset(
-    {"ssh", "telnet", "mdbctl", "busctl", "dbus", "alarms"}
-)
+_CAPABILITY_ALIASES = frozenset(CAPABILITY_ALIASES)
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _RUNTIME_OWNED_ENTRY_ARGUMENTS = frozenset(
@@ -308,7 +312,10 @@ class ObservationSelector:
             unsupported = sorted(set(names) - _CAPABILITY_ALIASES)
             if unsupported:
                 raise ScopeViolation(
-                    "unsupported capability selectors: " + ", ".join(unsupported)
+                    "invalid capability selectors: "
+                    + ", ".join(unsupported)
+                    + "; supported selectors: "
+                    + ", ".join(sorted(_CAPABILITY_ALIASES))
                 )
             return cls(selector_id=selector_id, kind=kind, names=names)
         if kind == "mdb":
@@ -327,6 +334,13 @@ class ObservationSelector:
                 for query in queries
             ):
                 raise ScopeViolation("mdb query exceeds the 1024-byte limit")
+            for query_index, query in enumerate(queries, start=1):
+                parts = query.split()
+                if not is_read_only_mdb_query(parts):
+                    raise ScopeViolation(
+                        f"invalid MDB query #{query_index} {query!r}; "
+                        f"{MDB_QUERY_CORRECTION}"
+                    )
             return cls(selector_id=selector_id, kind=kind, queries=queries)
         raise ScopeViolation(f"unsupported selector kind: {kind or '<empty>'}")
 
@@ -337,6 +351,31 @@ class ObservationSelector:
         if self.queries:
             result["queries"] = list(self.queries)
         return result
+
+    @property
+    def values(self) -> tuple[str, ...]:
+        """Return the exact selected values independent of selector kind."""
+
+        return self.names or self.queries
+
+    @property
+    def mdb_queries(self) -> tuple[str, ...]:
+        """Return MDB queries, or an empty tuple for another selector kind."""
+
+        return self.queries
+
+    def with_values(self, values: tuple[str, ...]) -> "ObservationSelector":
+        """Return the same selector identity narrowed to the supplied values."""
+
+        return ObservationSelector(
+            selector_id=self.selector_id,
+            kind=self.kind,
+            names=values if self.names else (),
+            queries=values if self.queries else (),
+        )
+
+    def has_same_identity(self, other: "ObservationSelector") -> bool:
+        return self.selector_id == other.selector_id and self.kind == other.kind
 
 
 @dataclass(frozen=True)
@@ -400,9 +439,58 @@ class ObservationQuery:
             max_age_seconds=max_age,
             deadline=float(deadline),
         )
-        if len(json_bytes(contract.to_public_dict())) > OBSERVATION_SCOPE_MAX_BYTES:
-            raise ScopeViolation("observation scope exceeds the 2KB budget")
         return contract
+
+    def collection_partitions(self) -> tuple["ObservationQuery", ...]:
+        """Plan bounded internal collection batches without narrowing scope."""
+
+        batches: list[list[ObservationSelector]] = []
+        current: list[ObservationSelector] = []
+
+        def document(selectors: list[ObservationSelector]) -> dict[str, object]:
+            return {
+                "target": self.target,
+                "selectors": [selector.to_public_dict() for selector in selectors],
+                "freshness": {
+                    "mode": self.freshness_mode,
+                    "max_age_seconds": self.max_age_seconds,
+                },
+            }
+
+        for selector in self.selectors:
+            for value in selector.values:
+                fragment = selector.with_values((value,))
+                if (
+                    current
+                    and current[-1].has_same_identity(selector)
+                ):
+                    candidate = [
+                        *current[:-1],
+                        current[-1].with_values((*current[-1].values, value)),
+                    ]
+                else:
+                    candidate = [*current, fragment]
+                if (
+                    current
+                    and len(json_bytes(document(candidate)))
+                    > OBSERVATION_PARTITION_TARGET_BYTES
+                ):
+                    batches.append(current)
+                    current = [fragment]
+                else:
+                    current = candidate
+        if current:
+            batches.append(current)
+        return tuple(
+            ObservationQuery(
+                target=self.target,
+                selectors=tuple(batch),
+                freshness_mode=self.freshness_mode,
+                max_age_seconds=self.max_age_seconds,
+                deadline=self.deadline,
+            )
+            for batch in batches
+        )
 
     def runtime_arguments(self, *, assured: bool) -> dict[str, object]:
         queries = [

@@ -2677,7 +2677,7 @@ class AgentGatewayTests(unittest.TestCase):
                         {
                             "id": "s" * 64,
                             "kind": "mdb",
-                            "queries": ["q" * 1024],
+                            "queries": ["lsprop " + "q" * 1017],
                         }
                     ],
                 },
@@ -2845,6 +2845,457 @@ class AgentGatewayTests(unittest.TestCase):
                     "assurance": "assured",
                 }
             )
+
+    def test_wide_observation_query_is_partitioned_without_becoming_a_blocker(
+        self,
+    ) -> None:
+        backend = SemanticBackend()
+        service = RuntimeMcpService(backend)
+        selectors = [
+            {
+                "id": f"mdb-{index}",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}",
+                ],
+            }
+            for index in range(16)
+        ]
+        self.assertGreater(
+            encoded_size(
+                {
+                    "target": "192.0.2.10",
+                    "selectors": selectors,
+                    "freshness": {"mode": "live", "max_age_seconds": 0},
+                }
+            ),
+            2 * 1024,
+        )
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="wide-observation",
+                operation_id="wide-observation-1",
+            )
+            reference = receipt["observation_ref"]
+            stored = service._test.context_runtime.load_observation(
+                {
+                    "schema": "openubmc.runtime.v1/observation-source-v1",
+                    "blob_id": str(reference["digest"]).removeprefix("sha256:"),
+                    "sha256": str(reference["digest"]).removeprefix("sha256:"),
+                    "uri": reference["handle"],
+                    "byte_count": reference["size"],
+                    "kind": reference["kind"],
+                    "provenance": reference["provenance"],
+                    "retention_hint": reference["retention_hint"],
+                    "target": reference["target"],
+                    "scope_digest": str(reference["scope_digest"]).removeprefix(
+                        "sha256:"
+                    ),
+                    "observed_at": reference["observed_at"],
+                    "target_fingerprint": reference["target_fingerprint"],
+                    "target_epoch": reference["target_epoch"],
+                }
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(list(receipt["results"]), [item["id"] for item in selectors])
+        self.assertIn("observation_ref", receipt)
+        self.assertFalse(receipt["manual_narrowing_required"])
+        calls = [
+            arguments
+            for name, arguments in backend.calls
+            if name == "debug_collect"
+        ]
+        self.assertGreater(len(calls), 1)
+        self.assertTrue(
+            all(
+                encoded_size(
+                    {
+                        "target": arguments["ip"],
+                        "selectors": arguments["selectors"],
+                        "freshness": {
+                            "mode": "live",
+                            "max_age_seconds": 0,
+                        },
+                    }
+                )
+                <= 2 * 1024
+                for arguments in calls
+            )
+        )
+        raw = stored["raw"]
+        collection_partitions = raw["result"]["collection_partitions"]
+        self.assertEqual(len(collection_partitions), len(calls))
+        self.assertEqual(
+            [
+                selector["id"]
+                for partition in collection_partitions
+                for selector in partition["scope"]["selectors"]
+            ],
+            [item["id"] for item in selectors],
+        )
+        self.assertEqual(len(raw["result"]["lanes"]["ssh"]), 16)
+
+    def test_wide_observation_rejects_cross_partition_target_epoch_drift(
+        self,
+    ) -> None:
+        class DriftingPartitionBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                call_index = len(self.calls)
+                value["result"]["runtime"] = {
+                    "status": {
+                        "targets": [
+                            {
+                                "target": {
+                                    "host": "192.0.2.10",
+                                    "fingerprint": "ssh:stable-target",
+                                },
+                                "identity": {
+                                    "fingerprint": "ssh:stable-target",
+                                },
+                                "epochs": {"target_epoch": call_index},
+                            }
+                        ]
+                    }
+                }
+                return value
+
+        backend = DriftingPartitionBackend()
+        service = RuntimeMcpService(backend)
+        selectors = [
+            {
+                "id": f"mdb-{index}",
+                "kind": "mdb",
+                "queries": [f"lsprop Object{index}_{'x' * 180}"],
+            }
+            for index in range(16)
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="drifting-wide-observation",
+                operation_id="drifting-wide-observation-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any("target identity or epoch changed" in gap for gap in receipt["gaps"])
+        )
+
+    def test_wide_observation_rejects_missing_partition_timing(self) -> None:
+        class MissingPartitionTimingBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                if len(self.calls) % 2 == 0:
+                    value.pop("observation_timing", None)
+                return value
+
+        backend = MissingPartitionTimingBackend()
+        service = RuntimeMcpService(backend)
+        selectors = [
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            }
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="missing-partition-timing",
+                operation_id="missing-partition-timing-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any("partition selector timing" in gap for gap in receipt["gaps"])
+        )
+
+    def test_wide_observation_assurance_cannot_mask_fast_target_epoch_drift(
+        self,
+    ) -> None:
+        class DriftingFastAssuranceBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                prior = arguments.get("prior_observation")
+                epoch = 2 if isinstance(prior, dict) else len(self.calls)
+                value["result"]["runtime"] = {
+                    "status": {
+                        "targets": [
+                            {
+                                "target": {
+                                    "host": "192.0.2.10",
+                                    "fingerprint": "ssh:stable-target",
+                                },
+                                "identity": {
+                                    "fingerprint": "ssh:stable-target",
+                                },
+                                "epochs": {"target_epoch": epoch},
+                            }
+                        ]
+                    }
+                }
+                return value
+
+        service = RuntimeMcpService(DriftingFastAssuranceBackend())
+        selectors = [
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            }
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="assurance-target-drift",
+                operation_id="assurance-target-drift-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any("target identity or epoch changed" in gap for gap in receipt["gaps"])
+        )
+
+    def test_wide_observation_keeps_selected_capability_partition_fact(
+        self,
+    ) -> None:
+        class CapabilityPartitionBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                selected_capability = any(
+                    selector.get("kind") == "capability"
+                    for selector in arguments.get("selectors", [])
+                    if isinstance(selector, dict)
+                )
+                value["result"]["capabilities"]["remote_log_file"] = (
+                    selected_capability
+                )
+                return value
+
+        service = RuntimeMcpService(CapabilityPartitionBackend())
+        selectors = [
+            {
+                "id": "caps",
+                "kind": "capability",
+                "names": ["telnet"],
+            },
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            },
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="selected-capability-partition",
+                operation_id="selected-capability-partition-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(
+            receipt["results"]["caps"]["values"],
+            [{"name": "telnet", "status": "available"}],
+        )
+        self.assertIn("observation_ref", receipt)
+
+    def test_wide_observation_does_not_replace_a_missing_selected_capability_fact(
+        self,
+    ) -> None:
+        class MissingCapabilityPartitionFactBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                selected_capability = any(
+                    selector.get("kind") == "capability"
+                    for selector in arguments.get("selectors", [])
+                    if isinstance(selector, dict)
+                )
+                if selected_capability:
+                    value["result"]["capabilities"].pop(
+                        "remote_log_file", None
+                    )
+                else:
+                    value["result"]["capabilities"]["remote_log_file"] = False
+                return value
+
+        service = RuntimeMcpService(MissingCapabilityPartitionFactBackend())
+        selectors = [
+            {
+                "id": "caps",
+                "kind": "capability",
+                "names": ["telnet"],
+            },
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            },
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="missing-selected-capability-fact",
+                operation_id="missing-selected-capability-fact-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(
+            receipt["results"]["caps"]["values"],
+            [{"name": "telnet", "status": "not_checked"}],
+        )
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any(
+                "selected capability fact" in gap
+                for gap in receipt["gaps"]
+            )
+        )
+
+    def test_wide_observation_does_not_share_a_capability_fact_between_selectors(
+        self,
+    ) -> None:
+        class DuplicateCapabilitySelectorBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                selector_ids = {
+                    str(selector.get("id", ""))
+                    for selector in arguments.get("selectors", [])
+                    if isinstance(selector, dict)
+                }
+                if "caps-missing" in selector_ids:
+                    value["result"]["capabilities"].pop(
+                        "remote_log_file", None
+                    )
+                if "caps-observed" in selector_ids:
+                    value["result"]["capabilities"]["remote_log_file"] = True
+                return value
+
+        service = RuntimeMcpService(DuplicateCapabilitySelectorBackend())
+        selectors = [
+            {
+                "id": "caps-missing",
+                "kind": "capability",
+                "names": ["telnet"],
+            },
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            },
+            {
+                "id": "caps-observed",
+                "kind": "capability",
+                "names": ["telnet"],
+            },
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="duplicate-capability-selectors",
+                operation_id="duplicate-capability-selectors-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(
+            receipt["results"]["caps-missing"]["values"],
+            [{"name": "telnet", "status": "not_checked"}],
+        )
+        self.assertEqual(
+            receipt["results"]["caps-observed"]["values"],
+            [{"name": "telnet", "status": "not_checked"}],
+        )
+        self.assertNotIn("observation_ref", receipt)
+
+    def test_observe_validation_errors_name_supported_capabilities_and_mdb_fix(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(SemanticBackend())
+        try:
+            with self.assertRaisesRegex(
+                ScopeViolation,
+                "invalid capability.*made-up.*supported.*alarms.*ssh",
+            ):
+                service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.10",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["ssh", "made-up"],
+                            }
+                        ],
+                    },
+                    task_id="invalid-capability",
+                    operation_id="invalid-capability-1",
+                )
+
+            with self.assertRaisesRegex(
+                ScopeViolation,
+                "invalid MDB query.*setprop Object0.*lsprop <object> \\[interface\\]",
+            ):
+                service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.10",
+                        "selectors": [
+                            {
+                                "id": "mdb",
+                                "kind": "mdb",
+                                "queries": ["setprop Object0 Interface Value"],
+                            }
+                        ],
+                    },
+                    task_id="invalid-mdb",
+                    operation_id="invalid-mdb-1",
+                )
+        finally:
+            service.close()
 
     def test_execute_rejects_the_retired_control_continue_input(self) -> None:
         with self.assertRaisesRegex(ValueError, "command.*must be one of"):

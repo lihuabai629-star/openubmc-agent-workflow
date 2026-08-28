@@ -67,6 +67,97 @@ class FakeLease:
 
 
 class RuntimeMcpBackendTests(unittest.TestCase):
+    def test_agent_observe_executes_wide_mdb_scope_in_runtime_partitions(
+        self,
+    ) -> None:
+        module = load_script("target_runtime_mcp")
+        runtime = module._load_runtime_module()
+        opened: list[FakeLease] = []
+        preflight_calls = 0
+        first_query_calls = 0
+
+        def open_lease(**kwargs):
+            lease = FakeLease(str(kwargs["task_id"]))
+            opened.append(lease)
+            return lease
+
+        def runner(name, command, _environment, _timeout, **_kwargs):
+            nonlocal preflight_calls, first_query_calls
+            if name == "preflight_start":
+                preflight_calls += 1
+                return {
+                    "name": name,
+                    "ok": True,
+                    "code": "ok",
+                    "returncode": 0,
+                    "started_at": "2026-08-23T00:00:00Z",
+                    "completed_at": "2026-08-23T00:00:00Z",
+                    "payload": {
+                        "observed_at": "2026-08-23T00:00:00Z",
+                        "result": {
+                            "checks": {
+                                "SSH": {"ok": True},
+                                "MDBCTL": {"ok": True},
+                            }
+                        },
+                    },
+                }
+            if name == "mdbctl":
+                first_query_calls += 1
+            return {
+                "name": name,
+                "ok": True,
+                "code": "ok",
+                "returncode": 0,
+                "started_at": "2026-08-23T00:00:01Z",
+                "completed_at": "2026-08-23T00:00:02Z",
+                "payload": {"result": {"stdout_lines": [command[-1]]}},
+            }
+
+        selectors = [
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            }
+        ]
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "secret", "port": 22},
+                    "telnet": {"user": "root", "password": "secret", "port": 23},
+                },
+            ),
+            mock.patch.object(module, "open_debug_runtime_lease", open_lease),
+            mock.patch.object(
+                module.workflow_remote,
+                "build_typed_debug_tool_runner",
+                return_value=runner,
+            ),
+        ):
+            service = runtime.RuntimeMcpService(module.DebugMcpBackend())
+            try:
+                receipt = service.call_exposed_tool(
+                    "observe",
+                    {"target": "192.0.2.30", "selectors": selectors},
+                    task_id="partitioned-observation",
+                    operation_id="partitioned-observation-1",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(len(opened), 1)
+        self.assertGreater(preflight_calls, 1)
+        self.assertEqual(first_query_calls, preflight_calls)
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(list(receipt["results"]), ["mdb-wide"])
+        self.assertEqual(len(receipt["results"]["mdb-wide"]["values"]), 16)
+        self.assertIn("observation_ref", receipt)
+
     def test_agent_observe_bounds_parallel_selectors_and_reuses_one_lease(self) -> None:
         module = load_script("target_runtime_mcp")
         runtime = module._load_runtime_module()
@@ -1919,7 +2010,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertEqual(failed["structuredContent"]["status"], "failed")
         self.assertEqual(
             failed["structuredContent"]["error"]["code"],
-            "ValueError",
+            "ScopeViolation",
         )
         exposed_tools = [
             tool["name"] for tool in responses[3]["result"]["tools"]

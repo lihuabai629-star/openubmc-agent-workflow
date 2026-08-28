@@ -56,19 +56,26 @@ operations remain internal to Runtime Core regardless of the selected transport 
 
 `observe` accepts an immutable target and selector set. The initial selector adapters are
 `capability` and `mdb`. An Adapter cannot add evidence surfaces that were not declared in the
-query. The serialized scope is limited to 2 KiB, with explicit limits for target, selector IDs,
-capability names, selector count, and MDB query count and size.
+query. The Runtime accepts the complete query under the 256 KiB Agent request boundary and keeps
+explicit limits for target, selector IDs, capability names, selector count, and MDB query count and
+size. It plans collection partitions around a 2 KiB internal target; that target is not a
+control-flow limit.
 
 All selectors needed for one answer belong in one `observe` call. Capability is not a separate
 Agent preflight step: the internal Adapter performs capability discovery and the exact MDB reads in
-the same observation. Callers split a query only after an explicit incomplete Receipt requests a
-narrower scope.
+the same observation. Wide scopes are partitioned internally and aggregated under one
+`ObservationResult`, persisted source, and `ObservationRef`; the Runtime does not ask the Agent to
+guess narrower selectors because a serialized query exceeds the internal target.
 
 Selector execution is a Runtime-owned bounded plan. Selector IDs and declaration order remain
 stable through the Domain Adapter, persisted source, and Receipt. Independent MDB reads may overlap
 on one target-scoped lease, with a Runtime maximum of four active reads; the Agent cannot select an
 unbounded policy. Lease reuse is bound to target and credential identity, while target epoch changes
 invalidate transport sessions before another read.
+
+Capability and MDB grammar validation runs before target collection. Errors name the invalid
+capability and list the supported names, or quote the invalid MDB query and show the reviewed
+read-only command forms needed to correct it.
 
 Freshness is a time property. The Agent Interface currently accepts only live evidence with
 `max_age_seconds=0`; the old `freshness` and `log-file` profiles are rejected because profiles
