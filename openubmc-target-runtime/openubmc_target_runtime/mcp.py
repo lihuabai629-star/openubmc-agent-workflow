@@ -11,7 +11,7 @@ import json
 import math
 import os
 from pathlib import Path
-import select
+import queue
 import signal
 import sys
 import threading
@@ -3870,19 +3870,27 @@ class StdioMcpServer:
                         break
             return fragment, oversized
 
-        def input_ready() -> bool:
-            if self.process_lifecycle is None:
-                return True
-            try:
-                file_number = input_stream.fileno()
-                readable, _, _ = select.select(
-                    [file_number], [], [], self.lifecycle_poll_seconds
-                )
-                return bool(readable)
-            except InterruptedError:
-                return False
-            except (AttributeError, OSError, TypeError, ValueError):
-                return True
+        reader_queue: queue.Queue[
+            tuple[tuple[str, bool] | None, BaseException | None]
+        ] | None = None
+        if self.process_lifecycle is not None:
+            reader_queue = queue.Queue(maxsize=1)
+
+            def pump_input() -> None:
+                try:
+                    while True:
+                        frame = read_frame()
+                        reader_queue.put((frame, None))
+                        if frame is None:
+                            return
+                except BaseException as exc:
+                    reader_queue.put((None, exc))
+
+            threading.Thread(
+                target=pump_input,
+                name="openubmc-mcp-stdio-reader",
+                daemon=True,
+            ).start()
 
         try:
             while True:
@@ -3891,13 +3899,21 @@ class StdioMcpServer:
                     if due_reason is not None:
                         exit_reason = due_reason
                         break
-                    if not input_ready():
+                    assert reader_queue is not None
+                    try:
+                        frame, read_error = reader_queue.get(
+                            timeout=self.lifecycle_poll_seconds
+                        )
+                    except queue.Empty:
                         continue
+                    if read_error is not None:
+                        raise read_error
                     due_reason = self.process_lifecycle.exit_reason_if_due()
                     if due_reason is not None:
                         exit_reason = due_reason
                         break
-                frame = read_frame()
+                else:
+                    frame = read_frame()
                 if frame is None:
                     exit_reason = "stdin-closed"
                     break
