@@ -988,6 +988,38 @@ def _run_qualification_contract_errors(
     ]
 
 
+def _execution_identity_binding(
+    events: Iterable[Mapping[str, object]],
+) -> tuple[str, bool]:
+    event_list = list(events)
+    thread_ids = [
+        str(event.get("thread_id", ""))
+        for event in event_list
+        if event.get("type") == "thread.started"
+    ]
+    if len(thread_ids) > 1:
+        raise ValueError("AB run must contain one Codex thread identity")
+    runner_ids = [
+        str(event.get("execution_id", ""))
+        for event in event_list
+        if event.get("type") == "runner.started"
+    ]
+    if len(thread_ids) == 1:
+        selected = thread_ids[0]
+        error = "AB run Codex thread identity is invalid"
+        has_thread = True
+    elif len(runner_ids) == 1:
+        selected = runner_ids[0]
+        error = "AB runner execution identity is invalid"
+        has_thread = False
+    else:
+        raise ValueError("AB run must contain one execution identity")
+    try:
+        return str(uuid.UUID(selected)), has_thread
+    except ValueError as exc:
+        raise ValueError(error) from exc
+
+
 def _run_attestation_errors(
     value: object, *, public_key: Path
 ) -> list[str]:
@@ -1022,18 +1054,14 @@ def _run_attestation_errors(
                 errors.append(f"AB run attestation execution identity is invalid at item {index}")
             else:
                 events = run.get("events")
-                thread_ids = [
-                    str(event.get("thread_id", ""))
-                    for event in events
-                    if isinstance(event, Mapping)
-                    and event.get("type") == "thread.started"
-                ] if isinstance(events, list) else []
-                runner_ids = [
-                    str(event.get("execution_id", ""))
-                    for event in events
-                    if isinstance(event, Mapping)
-                    and event.get("type") == "runner.started"
-                ] if isinstance(events, list) else []
+                try:
+                    event_execution_id, has_thread = _execution_identity_binding(
+                        event
+                        for event in events
+                        if isinstance(event, Mapping)
+                    ) if isinstance(events, list) else ("", False)
+                except ValueError:
+                    event_execution_id, has_thread = "", False
                 runner_failures = [
                     event.get("exit_code")
                     for event in events
@@ -1043,14 +1071,11 @@ def _run_attestation_errors(
                     and not isinstance(event.get("exit_code"), bool)
                     and int(event.get("exit_code")) != 0
                 ] if isinstance(events, list) else []
-                if thread_ids and thread_ids != [normalized_execution_id]:
+                if event_execution_id != normalized_execution_id:
                     errors.append(
                         f"AB run attestation execution identity does not match the runner event at item {index}"
                     )
-                elif not thread_ids and (
-                    runner_ids != [normalized_execution_id]
-                    or len(runner_failures) != 1
-                ):
+                elif not has_thread and len(runner_failures) != 1:
                     errors.append(
                         f"AB run attestation execution identity does not match the runner event at item {index}"
                     )
@@ -2219,31 +2244,7 @@ def attest_run_record(
 
 
 def _execution_identity(events: Iterable[Mapping[str, object]]) -> str:
-    event_list = list(events)
-    thread_ids = [
-        str(event.get("thread_id", ""))
-        for event in event_list
-        if event.get("type") == "thread.started"
-    ]
-    if len(thread_ids) > 1:
-        raise ValueError("AB run must contain one Codex thread identity")
-    runner_ids = [
-        str(event.get("execution_id", ""))
-        for event in event_list
-        if event.get("type") == "runner.started"
-    ]
-    if len(thread_ids) == 1:
-        selected = thread_ids[0]
-        error = "AB run Codex thread identity is invalid"
-    elif len(runner_ids) == 1:
-        selected = runner_ids[0]
-        error = "AB runner execution identity is invalid"
-    else:
-        raise ValueError("AB run must contain one execution identity")
-    try:
-        return str(uuid.UUID(selected))
-    except ValueError as exc:
-        raise ValueError(error) from exc
+    return _execution_identity_binding(events)[0]
 
 
 def release_evidence(
