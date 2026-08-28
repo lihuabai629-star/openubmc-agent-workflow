@@ -676,6 +676,7 @@ def verify_run_evidence_summary(
     release_environment: dict[str, str] | None = None,
     analysis_mutator=None,
     evidence_mutator=None,
+    release_evidence_mutator=None,
 ):
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
@@ -715,6 +716,8 @@ def verify_run_evidence_summary(
                 else {"python": "3.12", "node": "v22"}
             ),
         )
+        if release_evidence_mutator is not None:
+            release_evidence_mutator(analysis["release_evidence"])
         summary_path = root / "summary.json"
         summary_path.write_text(json.dumps(analysis), encoding="utf-8")
         return module.verify_summary(
@@ -822,7 +825,9 @@ class AgentGatewayAbTests(unittest.TestCase):
                 pause_seconds=0,
             )
 
-            with patch.object(module, "prepare_arm_home"), patch.object(
+            with patch.object(
+                module, "_version", return_value=module.QUALIFICATION_CODEX_VERSION
+            ), patch.object(module, "prepare_arm_home"), patch.object(
                 module, "_run", side_effect=AssertionError("benchmark executed")
             ) as execute, self.assertRaisesRegex(
                 RuntimeError, "clean benchmark worktree"
@@ -848,6 +853,26 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         prepare.assert_not_called()
 
+    def test_run_benchmark_rejects_an_unqualified_codex_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            initialize_git_repository(root)
+            args = module.argparse.Namespace(
+                repo=root,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+                codex="/tools/codex",
+            )
+
+            with patch.object(
+                module, "_version", return_value="codex-cli 0.148.0"
+            ), patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
+                RuntimeError, "qualification Codex must be codex-cli 0.150.0"
+            ):
+                module.run_benchmark(args)
+
+        prepare.assert_not_called()
+
     def test_run_benchmark_rejects_an_untrusted_attestation_key_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as key_raw:
             root = Path(raw)
@@ -858,11 +883,14 @@ class AgentGatewayAbTests(unittest.TestCase):
                 repo=root,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+                codex="/tools/codex",
                 attestation_private_key=private_key,
                 attestation_public_key=different_public_key,
             )
 
-            with patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
+            with patch.object(
+                module, "_version", return_value=module.QUALIFICATION_CODEX_VERSION
+            ), patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
                 RuntimeError, "does not match"
             ):
                 module.run_benchmark(args)
@@ -925,6 +953,32 @@ class AgentGatewayAbTests(unittest.TestCase):
             )
             self.assertIn(
                 "mcp_servers.openubmc-target-runtime.tool_timeout_sec=900",
+                command,
+                arm,
+            )
+
+    def test_codex_command_requires_runtime_mcp_startup_for_both_arms(self) -> None:
+        args = module.argparse.Namespace(
+            codex="codex",
+            codex_cwd=Path("/workspace"),
+            model=module.QUALIFICATION_MODEL,
+            codex_config=[],
+        )
+        configs = module.run_configs(
+            "skill-disclosure",
+            Path("/variants/baseline"),
+            Path("/variants/candidate"),
+        )
+
+        for arm in ("A", "B"):
+            command = module.codex_exec_command(
+                args,
+                configs[arm],
+                Path(f"/results/{arm}/final.md"),
+            )
+
+            self.assertIn(
+                "mcp_servers.openubmc-target-runtime.required=true",
                 command,
                 arm,
             )
@@ -2488,6 +2542,7 @@ class AgentGatewayAbTests(unittest.TestCase):
             {
                 "target": module.BENCHMARK_TARGET,
                 "prompt_digest": module.QUALIFICATION_PROMPT_DIGEST,
+                "codex_version": module.QUALIFICATION_CODEX_VERSION,
                 "codex_config": list(module.QUALIFICATION_CODEX_CONFIG),
             },
         )
@@ -2547,6 +2602,15 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("does not block promotion", documentation)
         self.assertIn("not qualification thresholds", documentation)
         self.assertNotIn("and every bounded regression metric passes", documentation)
+
+    def test_documentation_pins_the_formal_codex_and_required_runtime_mcp(self) -> None:
+        documentation = (
+            Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("codex-cli 0.150.0", documentation)
+        self.assertIn("--codex /path/to/codex-0.150.0/bin/codex", documentation)
+        self.assertIn("required=true", documentation)
 
     def test_verify_cli_uses_the_selected_baseline_ref(self) -> None:
         with patch.object(
@@ -2955,6 +3019,31 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertFalse(verified["promotable"], verified)
         self.assertIn(
             "AB release evidence model does not match the qualification contract",
+            verified["errors"],
+        )
+
+    def test_verify_summary_rejects_a_different_codex_version_contract(self) -> None:
+        def mutate(evidence) -> None:
+            evidence["benchmark"]["codex_version"] = "codex-cli 0.148.0"
+            evidence_without_digest = dict(evidence)
+            evidence_without_digest.pop("evidence_digest")
+            evidence["evidence_digest"] = module._fingerprint(
+                evidence_without_digest
+            )
+
+        schedule = module.balanced_schedule(10, seed=7)
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=passing_execute_run_evidence(schedule),
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            release_evidence_mutator=mutate,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB Codex version does not match the qualification contract",
             verified["errors"],
         )
 

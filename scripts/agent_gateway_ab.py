@@ -58,6 +58,7 @@ SKILL_DISCLOSURE_VALIDITY_THRESHOLDS = {
 }
 BENCHMARK_TARGET = "10.121.136.200"
 QUALIFICATION_MODEL = "gpt-5.6-sol"
+QUALIFICATION_CODEX_VERSION = "codex-cli 0.150.0"
 QUALIFICATION_CODEX_CONFIG = (
     "features.shell_tool=false",
     'model_provider="cliproxy"',
@@ -2010,6 +2011,8 @@ def codex_exec_command(
             "-c",
             'mcp_servers.openubmc-target-runtime.env_vars=["OPENUBMC_CREDENTIALS_FILE","OPENUBMC_DEBUG_CREDENTIALS_FILE","OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE"]',
             "-c",
+            "mcp_servers.openubmc-target-runtime.required=true",
+            "-c",
             (
                 "mcp_servers.openubmc-target-runtime.startup_timeout_sec="
                 f"{MCP_STARTUP_TIMEOUT_SECONDS}"
@@ -2216,6 +2219,7 @@ def release_evidence(
         "benchmark": {
             "target": BENCHMARK_TARGET,
             "prompt_digest": prompt_digest(scenario),
+            "codex_version": QUALIFICATION_CODEX_VERSION,
             "codex_config": list(codex_config),
         },
         "environment": environment_record,
@@ -2400,6 +2404,8 @@ def verify_summary(
         errors.append("AB benchmark target does not match the qualification contract")
     if benchmark.get("prompt_digest") != prompt_digest(expected_scenario):
         errors.append("AB benchmark prompt does not match the qualification contract")
+    if benchmark.get("codex_version") != QUALIFICATION_CODEX_VERSION:
+        errors.append("AB Codex version does not match the qualification contract")
     if benchmark.get("codex_config") != list(QUALIFICATION_CODEX_CONFIG):
         errors.append("AB Codex config does not match the qualification contract")
     environment = _json_object(evidence.get("environment"))
@@ -2564,6 +2570,12 @@ def run_benchmark(args: argparse.Namespace) -> int:
         )
     if tuple(args.codex_config) != QUALIFICATION_CODEX_CONFIG:
         raise RuntimeError("qualification Codex config does not match the contract")
+    codex_version = _version([args.codex, "--version"])
+    if codex_version != QUALIFICATION_CODEX_VERSION:
+        raise RuntimeError(
+            f"qualification Codex must be {QUALIFICATION_CODEX_VERSION}; "
+            f"got {codex_version}"
+        )
     attestation_private_key = args.attestation_private_key.expanduser().resolve()
     if not attestation_private_key.is_file():
         raise RuntimeError("AB attestation private key is unavailable")
@@ -2603,7 +2615,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
     environment_record = {
         "python": platform.python_version(),
         "node": _version(["node", "--version"]),
-        "codex": _version([args.codex, "--version"]),
+        "codex": codex_version,
         "platform": platform.platform(),
     }
     environment_fingerprint = _fingerprint(environment_record)
