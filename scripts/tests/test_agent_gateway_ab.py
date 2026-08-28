@@ -77,12 +77,21 @@ def initialize_git_repository(root: Path) -> None:
     module.subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True)
 
 
+def codex_executable(root: Path, version: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    executable = root / f"codex-{version.rsplit(' ', 1)[-1]}"
+    executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\n", encoding="utf-8")
+    executable.chmod(0o755)
+    return executable
+
+
 def signed_run_evidence(
     root: Path,
     value: dict[str, object],
     *,
     private_key: Path,
     public_key: Path,
+    environment: dict[str, str] | None = None,
 ) -> dict[str, object]:
     fingerprint = subprocess.run(
         ["ssh-keygen", "-lf", str(public_key), "-E", "sha256"],
@@ -109,7 +118,17 @@ def signed_run_evidence(
         )
         run.setdefault(
             "environment_fingerprint",
-            module._fingerprint({"python": "3.12", "node": "v22"}),
+            module._fingerprint(
+                environment
+                if environment is not None
+                else {
+                    "python": "3.12",
+                    "node": "v22",
+                    "codex": module.QUALIFICATION_CODEX_VERSION,
+                    "codex_executable": "/tools/codex-0.150.0/bin/codex",
+                    "codex_sha256": "0" * 64,
+                }
+            ),
         )
         payload = root / f"run-{index}.json"
         payload.write_text(
@@ -205,6 +224,7 @@ def verify_passing_summary(
     run_candidate_commit: str | None = None,
     run_prompt_override: str | None = None,
     release_environment: dict[str, str] | None = None,
+    run_environment: dict[str, str] | None = None,
 ):
     schedule = module.balanced_schedule(10, seed=7)
     run_evidence = passing_execute_run_evidence(
@@ -226,6 +246,7 @@ def verify_passing_summary(
         candidate_commit=candidate_commit,
         baseline_commit=baseline_commit,
         release_environment=release_environment,
+        run_environment=run_environment,
     )
 
 
@@ -674,11 +695,24 @@ def verify_run_evidence_summary(
     baseline_commit: str,
     expected_baseline_commit: str = module.DEFAULT_BASELINE_REF,
     release_environment: dict[str, str] | None = None,
+    run_environment: dict[str, str] | None = None,
     analysis_mutator=None,
     evidence_mutator=None,
+    release_evidence_mutator=None,
 ):
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
+        environment = (
+            release_environment
+            if release_environment is not None
+            else {
+                "python": "3.12",
+                "node": "v22",
+                "codex": module.QUALIFICATION_CODEX_VERSION,
+                "codex_executable": "/tools/codex-0.150.0/bin/codex",
+                "codex_sha256": "0" * 64,
+            }
+        )
         schedule_path = root / "schedule.json"
         schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
         private_key, public_key = signing_keys(root)
@@ -687,6 +721,7 @@ def verify_run_evidence_summary(
             run_evidence,
             private_key=private_key,
             public_key=public_key,
+            environment=run_environment if run_environment is not None else environment,
         )
         if evidence_mutator is not None:
             schedule = evidence_mutator(run_evidence, schedule)
@@ -709,12 +744,10 @@ def verify_run_evidence_summary(
             schedule_path=schedule_path,
             run_evidence_path=run_evidence_path,
             analysis=analysis,
-            environment=(
-                release_environment
-                if release_environment is not None
-                else {"python": "3.12", "node": "v22"}
-            ),
+            environment=environment,
         )
+        if release_evidence_mutator is not None:
+            release_evidence_mutator(analysis["release_evidence"])
         summary_path = root / "summary.json"
         summary_path.write_text(json.dumps(analysis), encoding="utf-8")
         return module.verify_summary(
@@ -817,7 +850,7 @@ class AgentGatewayAbTests(unittest.TestCase):
                 credentials=credentials,
                 only_arm="B",
                 scenario="execute-source-only",
-                codex="codex",
+                codex=str(codex_executable(root, module.QUALIFICATION_CODEX_VERSION)),
                 codex_cwd=repo,
                 pause_seconds=0,
             )
@@ -848,6 +881,116 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         prepare.assert_not_called()
 
+    def test_run_benchmark_rejects_an_unqualified_codex_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as tool_raw:
+            root = Path(raw)
+            initialize_git_repository(root)
+            args = module.argparse.Namespace(
+                repo=root,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+                codex=str(
+                    codex_executable(Path(tool_raw), "codex-cli 0.148.0")
+                ),
+            )
+
+            with patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
+                RuntimeError, "qualification Codex must be codex-cli 0.150.0"
+            ):
+                module.run_benchmark(args)
+
+        prepare.assert_not_called()
+
+    def test_run_benchmark_requires_an_absolute_codex_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            initialize_git_repository(root)
+            args = module.argparse.Namespace(
+                repo=root,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+                codex="codex",
+            )
+
+            with patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
+                RuntimeError, "qualification Codex executable must be absolute"
+            ):
+                module.run_benchmark(args)
+
+        prepare.assert_not_called()
+
+    def test_qualification_codex_identity_records_the_resolved_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            executable = codex_executable(root, module.QUALIFICATION_CODEX_VERSION)
+
+            identity = module.qualification_codex_identity(str(executable))
+            expected_path = str(executable.resolve())
+            expected_digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+
+        self.assertEqual(identity["codex_executable"], expected_path)
+        self.assertEqual(identity["codex_sha256"], expected_digest)
+
+    def test_run_benchmark_isolates_codex_home_for_each_run(self) -> None:
+        class StopBenchmark(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            initialize_git_repository(repo)
+            for skill_name in ("openubmc-debug", "openubmc-developer"):
+                skill_root = repo / skill_name
+                skill_root.mkdir()
+                (skill_root / "SKILL.md").write_text(
+                    f"---\nname: {skill_name}\ndescription: test\n---\n",
+                    encoding="utf-8",
+                )
+            (repo / "openubmc-debug" / "scripts").mkdir()
+            (repo / "openubmc-debug" / "scripts" / "target_runtime_mcp.py").write_text(
+                "# test\n", encoding="utf-8"
+            )
+            module.subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            module.subprocess.run(
+                ["git", "commit", "-m", "add benchmark skills"], cwd=repo, check=True
+            )
+            private_key, public_key = signing_keys(root / "keys")
+            credentials = root / "credentials.env"
+            credentials.write_text("OPENUBMC_USERNAME=test\n", encoding="utf-8")
+            args = module.argparse.Namespace(
+                repo=repo,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+                attestation_private_key=private_key,
+                attestation_public_key=public_key,
+                work_root=root / "work",
+                baseline_ref="HEAD",
+                output=None,
+                pairs=1,
+                seed=1,
+                credentials=credentials,
+                only_arm="B",
+                scenario="execute-source-only",
+                codex=str(
+                    codex_executable(root / "tools", module.QUALIFICATION_CODEX_VERSION)
+                ),
+                codex_cwd=repo,
+                pause_seconds=0,
+            )
+
+            def stop_after_environment(*_args, env, **_kwargs):
+                self.assertEqual(
+                    Path(env["CODEX_HOME"]),
+                    Path(env["HOME"]) / ".codex",
+                )
+                raise StopBenchmark
+
+            with patch.object(module, "_run", side_effect=stop_after_environment), self.assertRaises(
+                StopBenchmark
+            ):
+                module.run_benchmark(args)
+
     def test_run_benchmark_rejects_an_untrusted_attestation_key_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as key_raw:
             root = Path(raw)
@@ -858,6 +1001,11 @@ class AgentGatewayAbTests(unittest.TestCase):
                 repo=root,
                 model=module.QUALIFICATION_MODEL,
                 codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+                codex=str(
+                    codex_executable(
+                        Path(key_raw), module.QUALIFICATION_CODEX_VERSION
+                    )
+                ),
                 attestation_private_key=private_key,
                 attestation_public_key=different_public_key,
             )
@@ -925,6 +1073,32 @@ class AgentGatewayAbTests(unittest.TestCase):
             )
             self.assertIn(
                 "mcp_servers.openubmc-target-runtime.tool_timeout_sec=900",
+                command,
+                arm,
+            )
+
+    def test_codex_command_requires_runtime_mcp_startup_for_both_arms(self) -> None:
+        args = module.argparse.Namespace(
+            codex="codex",
+            codex_cwd=Path("/workspace"),
+            model=module.QUALIFICATION_MODEL,
+            codex_config=[],
+        )
+        configs = module.run_configs(
+            "skill-disclosure",
+            Path("/variants/baseline"),
+            Path("/variants/candidate"),
+        )
+
+        for arm in ("A", "B"):
+            command = module.codex_exec_command(
+                args,
+                configs[arm],
+                Path(f"/results/{arm}/final.md"),
+            )
+
+            self.assertIn(
+                "mcp_servers.openubmc-target-runtime.required=true",
                 command,
                 arm,
             )
@@ -2488,6 +2662,7 @@ class AgentGatewayAbTests(unittest.TestCase):
             {
                 "target": module.BENCHMARK_TARGET,
                 "prompt_digest": module.QUALIFICATION_PROMPT_DIGEST,
+                "codex_version": module.QUALIFICATION_CODEX_VERSION,
                 "codex_config": list(module.QUALIFICATION_CODEX_CONFIG),
             },
         )
@@ -2547,6 +2722,17 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("does not block promotion", documentation)
         self.assertIn("not qualification thresholds", documentation)
         self.assertNotIn("and every bounded regression metric passes", documentation)
+
+    def test_documentation_pins_the_formal_codex_and_required_runtime_mcp(self) -> None:
+        documentation = (
+            Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("codex-cli 0.150.0", documentation)
+        self.assertIn("--codex /path/to/codex-0.150.0/bin/codex", documentation)
+        self.assertIn("required=true", documentation)
+        self.assertIn("absolute executable path and SHA-256", documentation)
+        self.assertIn("isolated `CODEX_HOME`", documentation)
 
     def test_verify_cli_uses_the_selected_baseline_ref(self) -> None:
         with patch.object(
@@ -2729,10 +2915,18 @@ class AgentGatewayAbTests(unittest.TestCase):
         )
 
     def test_verify_summary_rejects_environment_not_bound_to_attested_runs(self) -> None:
+        canonical_environment = {
+            "python": "3.12",
+            "node": "v22",
+            "codex": module.QUALIFICATION_CODEX_VERSION,
+            "codex_executable": "/tools/codex-0.150.0/bin/codex",
+            "codex_sha256": "0" * 64,
+        }
         verified = verify_passing_summary(
             candidate_commit="a" * 40,
             baseline_commit=module.DEFAULT_BASELINE_REF,
-            release_environment={"python": "rewritten", "node": "v22"},
+            release_environment={**canonical_environment, "python": "rewritten"},
+            run_environment=canonical_environment,
         )
 
         self.assertFalse(verified["promotable"], verified)
@@ -2955,6 +3149,79 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertFalse(verified["promotable"], verified)
         self.assertIn(
             "AB release evidence model does not match the qualification contract",
+            verified["errors"],
+        )
+
+    def test_verify_summary_rejects_a_different_codex_version_contract(self) -> None:
+        def mutate(evidence) -> None:
+            evidence["benchmark"]["codex_version"] = "codex-cli 0.148.0"
+            evidence_without_digest = dict(evidence)
+            evidence_without_digest.pop("evidence_digest")
+            evidence["evidence_digest"] = module._fingerprint(
+                evidence_without_digest
+            )
+
+        schedule = module.balanced_schedule(10, seed=7)
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=passing_execute_run_evidence(schedule),
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            release_evidence_mutator=mutate,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB Codex version does not match the qualification contract",
+            verified["errors"],
+        )
+
+    def test_verify_summary_rejects_a_different_executed_codex_version(self) -> None:
+        environment = {
+            "python": "3.12",
+            "node": "v22",
+            "codex": "codex-cli 0.148.0",
+            "codex_executable": "/tools/codex-0.148.0/bin/codex",
+            "codex_sha256": "1" * 64,
+        }
+        schedule = module.balanced_schedule(10, seed=7)
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=passing_execute_run_evidence(schedule),
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            release_environment=environment,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB executed Codex version does not match the qualification contract",
+            verified["errors"],
+        )
+
+    def test_verify_summary_rejects_an_unbound_codex_executable_identity(self) -> None:
+        environment = {
+            "python": "3.12",
+            "node": "v22",
+            "codex": module.QUALIFICATION_CODEX_VERSION,
+            "codex_executable": "codex",
+            "codex_sha256": "not-a-digest",
+        }
+        schedule = module.balanced_schedule(10, seed=7)
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=passing_execute_run_evidence(schedule),
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            release_environment=environment,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB Codex executable identity is invalid",
             verified["errors"],
         )
 

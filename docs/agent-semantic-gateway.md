@@ -285,9 +285,15 @@ Ten valid pairs are the first decision point. A correctness or validity result t
 sufficient expands to twenty and then thirty pairs. Each result records both source commits, the
 model and environment fingerprint, thresholds, valid and invalid pairs, both decisions, warnings,
 and digests for the schedule, raw metrics, and signed run events used to recompute every result.
+Formal qualification pins an isolated `codex-cli 0.150.0` executable. The runner configures the
+Target Runtime MCP with `required=true`, so failure to initialize the only Agent-facing Runtime
+entry aborts session startup instead of producing a zero-call benchmark run. `--codex` must name
+an absolute executable; the environment evidence binds its resolved absolute executable path and SHA-256.
+Each run receives an isolated `CODEX_HOME` alongside its isolated `HOME`.
 
 ```bash
 python scripts/agent_gateway_ab.py run \
+  --codex /path/to/codex-0.150.0/bin/codex \
   --work-root /path/to/benchmark-work \
   --credentials /path/to/private/credentials.env \
   --attestation-private-key /path/to/private/ab-evidence-signing-key \
@@ -328,6 +334,7 @@ contract before deciding that `case_id`, revision, or phase arguments are unavai
 
 ```bash
 python scripts/agent_gateway_ab.py run \
+  --codex /path/to/codex-0.150.0/bin/codex \
   --work-root /path/to/benchmark-work \
   --credentials /path/to/private/credentials.env \
   --attestation-private-key /path/to/private/ab-evidence-signing-key \
