@@ -609,6 +609,134 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
         self.assertEqual(recorded["exit_reason"], "server-error")
 
+    def test_stdio_processes_buffered_request_burst_without_waiting_for_eof(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            lifecycle_root = Path(raw) / "mcp-processes"
+            child_program = textwrap.dedent(
+                """
+                import os
+                from pathlib import Path
+                import sys
+
+                from openubmc_target_runtime import McpProcessLifecycle, StdioMcpServer
+
+                class Service:
+                    def cancel_operation(self, *_args):
+                        pass
+
+                    def close(self):
+                        pass
+
+                class Endpoint:
+                    session_task_id = "burst-session"
+
+                    def __init__(self):
+                        self.service = Service()
+
+                    def task_id_for_params(self, _params):
+                        return "burst-task"
+
+                    def operation_id_for_params(self, _params, request_id):
+                        return str(request_id)
+
+                    def handle(self, message):
+                        if "id" not in message:
+                            return None
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": message["id"],
+                            "result": {"method": message["method"]},
+                        }
+
+                root = Path(sys.argv[1])
+                lifecycle = McpProcessLifecycle(
+                    component="target-runtime",
+                    version="test",
+                    client="test-client",
+                    task_id="burst-task",
+                    session_id="burst-session",
+                    parent_pid=os.getppid(),
+                    state_path=root / "state",
+                    lifecycle_root=root,
+                    idle_timeout_seconds=30,
+                )
+                StdioMcpServer(
+                    Endpoint(),
+                    process_lifecycle=lifecycle,
+                    lifecycle_poll_seconds=0.01,
+                ).serve()
+                """
+            )
+            child = subprocess.Popen(
+                [sys.executable, "-c", child_program, str(lifecycle_root)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "PYTHONPATH": str(RUNTIME_ROOT)},
+            )
+            try:
+                assert child.stdin is not None
+                assert child.stdout is not None
+                requests = (
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {},
+                        }
+                    )
+                    + "\n"
+                    + json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "notifications/initialized",
+                            "params": {},
+                        }
+                    )
+                    + "\n"
+                    + json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "tools/list",
+                            "params": {},
+                        }
+                    )
+                    + "\n"
+                ).encode()
+                child.stdin.write(requests)
+                child.stdin.flush()
+
+                response_bytes = b""
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    readable, _, _ = select.select([child.stdout], [], [], 0.05)
+                    if readable:
+                        response_bytes += os.read(child.stdout.fileno(), 65536)
+                    responses = [
+                        json.loads(line)
+                        for line in response_bytes.splitlines()
+                        if line.strip()
+                    ]
+                    if {response["id"] for response in responses} == {1, 2}:
+                        break
+
+                self.assertEqual(
+                    {response["id"] for response in responses},
+                    {1, 2},
+                    "buffered tools/list request waited for stdin EOF",
+                )
+            finally:
+                if child.stdin is not None and not child.stdin.closed:
+                    child.stdin.close()
+                if child.poll() is None:
+                    child.terminate()
+                child.wait(timeout=5)
+                child.stdout.close()
+                assert child.stderr is not None
+                child.stderr.close()
+
     def _assert_stdio_signal_drains_the_active_response_before_exit(
         self,
         termination_signal: signal.Signals,
