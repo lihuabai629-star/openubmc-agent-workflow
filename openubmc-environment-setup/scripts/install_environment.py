@@ -1435,6 +1435,7 @@ def fetch_immutable_release(root: Path, ref: str) -> tuple[Literal["tag", "commi
             "--no-tags",
             "origin",
             "+refs/heads/*:refs/remotes/origin/*",
+            "+refs/tags/*:refs/tags/*",
         ],
         env=git_auth_environment(remote),
     )

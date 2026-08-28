@@ -789,6 +789,75 @@ class EnvironmentSetupTests(unittest.TestCase):
             side_commit,
         )
 
+    def test_clone_source_keeps_tag_only_release_validation_history(self) -> None:
+        remote, main_commit = self.create_release_remote()
+        release_source = self.root / "release-repository"
+        subprocess.run(
+            ["git", "-C", str(release_source), "switch", "-c", "historical-release"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        historical_evidence = release_source / "historical-release.txt"
+        historical_evidence.write_text("published\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(release_source), "add", "historical-release.txt"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(release_source), "commit", "-m", "historical release"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        historical_commit = installer.git_output(release_source, "rev-parse", "HEAD")
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(release_source),
+                "tag",
+                "-a",
+                "v1.2.2-history",
+                "-m",
+                "historical release",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(release_source),
+                "push",
+                str(remote),
+                "refs/tags/v1.2.2-history",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(release_source), "switch", "main"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        destination = self.root / "managed-tag-validation-release"
+
+        installer.clone_source(
+            destination,
+            str(remote),
+            main_commit,
+            False,
+            EXPECTED_TARGET_RUNTIME_BUNDLE,
+        )
+
+        self.assertEqual(
+            installer.git_output(
+                destination,
+                "rev-parse",
+                "v1.2.2-history^{commit}",
+            ),
+            historical_commit,
+        )
+
     def test_explicit_new_release_ref_updates_an_existing_managed_checkout(self) -> None:
         remote, first_commit = self.create_release_remote()
         destination = installer.managed_source_dir(self.home)
