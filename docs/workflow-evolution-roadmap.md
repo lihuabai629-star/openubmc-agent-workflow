@@ -1,9 +1,12 @@
 # openUBMC Agent Workflow 后续演进档案
 
 日期：2026-08-26
-当前基线：GitHub `main` 的 `2564f3572fd82668dfd90ba3bd2e3439d021ec63`
+当前实现基线：GitHub `main` 已合入 v2.0.1 Runtime 资格修复
+P2 生命周期完成基线：`2564f3572fd82668dfd90ba3bd2e3439d021ec63`
 历史 v2 发布资格 source：`e7dc74c`
 历史 lock-only commit：`7dc350c`（`superseded-unpublished`，不得直接发布）
+已发布 v2.0.0 source：`f27db4f`
+已发布 v2.0.0 lock-only commit：`c0e095a`
 P2 生命周期持续资格 source：`5d9b7e32de563ab85c3c31e7b75d122cd3db4545`
 用途：后续讨论入口、决策索引和实施路线；详细论证仍以链接文档为准。
 机器可读完成证据：[roadmap-completion.json](roadmap-completion.json)。
@@ -44,9 +47,10 @@ canonical `main`。完整 execute A/B、Release Gate 与 main CI 通过。后续
 Release Gate 为 13/13 passed、`promotable=true`，证据 digest 为
 `sha256:e18fdbfcbc04e84a5ba79f2160728cedc11d4a873a40e7091f2beaa35c9b2a67`；
 P2 PR CI run `32933867020` 与 main CI run `32934292608` 的 CI contract 和完整仓库验证均
-通过。正式 Release 仍停留在 `v1.2.2`。此前 `e7dc74c -> 7dc350c` 的 v2 候选早于
-DiagnosticReceipt、软投影和 P2 生命周期资格，已被标记为 `superseded-unpublished`；下一次
-`v2.0.0` 发布必须从新的最终 source 重新资格化并生成新的 lock-only commit。
+通过。`v2.0.0` 已于 2026-08-27 从 `f27db4f -> c0e095a` 的 source-plus-lock 拓扑正式发布。
+此前 `e7dc74c -> 7dc350c` 仍只作为历史资格证据保留，状态为
+`superseded-unpublished`。下一次发布为 `v2.0.1`，必须从新的最终 source 重新资格化并生成
+新的 lock-only commit。
 
 ### 1.2 产品北极星
 
@@ -376,13 +380,13 @@ submission identity 由 Adapter 从持久 Run/Gate binding 派生。详见 ADR-0
 
 ### 8.6 v2 与 v2.1 的发布边界
 
-`v2.0.0` 尚未正式发布。`e7dc74c052f3874d3d9214ce0cfae8949a397765` 与其 lock-only
-commit `7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4` 保留为可复核的历史资格，但该候选早于
-后续 DiagnosticReceipt、软投影和 P2 生命周期变更，状态为 `superseded-unpublished`，不得
-再用于创建发布 tag。`main` 是持续前进的开发分支；它保留的 `release-lock.json` 是历史发布
-快照，不能证明当前 mutable `main` 的树身份。下一次发布必须选择新的最终 source，重跑完整
-execute A/B、Runtime qualification、Release Gate 与 GitHub CI，再生成只修改
-`release-lock.json` 的新 lock-only commit。
+`v2.0.0` 已从 source `f27db4fc9694797c050cd9bdb26ef1a791e31beb` 和 lock-only commit
+`c0e095af0cbed285cd84ff3eecf05b578644999d` 正式发布。更早的
+`e7dc74c052f3874d3d9214ce0cfae8949a397765 -> 7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4`
+仍是 `superseded-unpublished` 历史候选，不得用于发布。`main` 是持续前进的开发分支；它保留
+的 `release-lock.json` 是历史发布快照，不能证明当前 mutable `main` 的树身份。`v2.0.1`
+必须选择新的最终 source，重跑完整 execute A/B、Runtime qualification、Release Gate 与
+GitHub CI，再生成只修改 `release-lock.json` 的新 lock-only commit。
 
 ## 9. 需要持续验证的假设
 

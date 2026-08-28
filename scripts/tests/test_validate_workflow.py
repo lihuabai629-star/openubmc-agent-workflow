@@ -269,16 +269,24 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
             "release": {
                 "identity_model": "source-plus-lock-only-commit",
                 "mutable_main_policy": "historical-lock-snapshot",
-                "tag_created": False,
-                "github_release_created": False,
-                "candidate_status": validator.RELEASE_CANDIDATE_SUPERSEDED_UNPUBLISHED,
                 "superseded_candidate": {
                     "release_version": "2.0.0",
                     "source_commit": "b" * 40,
                     "lock_only_commit": "c" * 40,
+                    "status": validator.RELEASE_CANDIDATE_SUPERSEDED_UNPUBLISHED,
+                    "tag_created": False,
+                    "github_release_created": False,
                 },
-                "next_candidate": {
+                "published_release": {
                     "release_version": "2.0.0",
+                    "tag": "v2.0.0",
+                    "source_commit": "d" * 40,
+                    "lock_only_commit": "e" * 40,
+                    "github_release_created": True,
+                    "release_gate_promotable": True,
+                },
+                "planned_release": {
+                    "release_version": "2.0.1",
                     "qualification_required": True,
                     "source_policy": validator.RELEASE_SOURCE_POLICY_NEW_FINAL_SOURCE,
                 },
@@ -626,7 +634,37 @@ class RoadmapCloseoutValidationTests(unittest.TestCase):
             self.write_completed_fixture(root)
             path = root / "docs" / "roadmap-completion.json"
             evidence = json.loads(path.read_text(encoding="utf-8"))
-            evidence["release"]["candidate_status"] = "publishable"
+            evidence["release"]["superseded_candidate"]["status"] = "publishable"
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "release policy"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_requires_the_published_v2_0_0_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "roadmap-completion.json"
+            evidence = json.loads(path.read_text(encoding="utf-8"))
+            evidence["release"].pop("published_release")
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+
+            with (
+                mock.patch.object(validator, "ROOT", root),
+                self.assertRaisesRegex(SystemExit, "release policy"),
+            ):
+                validator.validate_roadmap_closeout(verify_git=False)
+
+    def test_release_contract_rejects_ambiguous_top_level_release_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_completed_fixture(root)
+            path = root / "docs" / "roadmap-completion.json"
+            evidence = json.loads(path.read_text(encoding="utf-8"))
+            evidence["release"]["github_release_created"] = False
             path.write_text(json.dumps(evidence), encoding="utf-8")
 
             with (

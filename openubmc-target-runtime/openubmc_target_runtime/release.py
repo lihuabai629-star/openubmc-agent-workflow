@@ -19,6 +19,7 @@ RELEASE_COMMIT_POLICY = "lock-finalization-parent-v1"
 _FULL_COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _RUNTIME_DIGEST_DOMAIN = b"openubmc-target-runtime-content-v1\0"
 _SKILL_DIGEST_DOMAIN = b"openubmc-skill-package-v1\0"
+_DEPENDENCY_DIGEST_DOMAIN = b"openubmc-release-dependency-lock-v1\0"
 
 
 class ReleaseLockError(ValueError):
@@ -190,6 +191,24 @@ def _runtime_record(root: Path) -> dict[str, object]:
     }
 
 
+def _dependency_records(root: Path) -> dict[str, dict[str, str]]:
+    dependencies = {
+        "python_validation": PurePosixPath("requirements-ci.lock"),
+        "knowledge_mcp": PurePosixPath("openubmc-kb-mcp/package-lock.json"),
+    }
+    return {
+        name: {
+            "path": relative.as_posix(),
+            "digest": _file_set_digest(
+                root,
+                (relative,),
+                domain=_DEPENDENCY_DIGEST_DOMAIN,
+            ),
+        }
+        for name, relative in dependencies.items()
+    }
+
+
 def _schema_record(root: Path, workflow: Mapping[str, object]) -> dict[str, object]:
     package = root / "openubmc-target-runtime" / "openubmc_target_runtime"
     runtime_api = str(_constant(package / "contracts.py", "RUNTIME_API_VERSION"))
@@ -269,6 +288,10 @@ def build_release_lock(root: Path, *, source_commit: str) -> dict[str, object]:
     skills = _skill_records(root, workflow)
     runtime = _runtime_record(root)
     schemas = _schema_record(root, workflow)
+    dependencies = _dependency_records(root)
+    evaluation_harnesses = workflow.get("evaluation_harnesses", {})
+    if not isinstance(evaluation_harnesses, Mapping):
+        raise ReleaseLockError("workflow.json evaluation_harnesses must be an object")
     compatibility = {
         "runtime_api": runtime["api_version"],
         "profiles": workflow.get("profiles", {}),
@@ -282,6 +305,8 @@ def build_release_lock(root: Path, *, source_commit: str) -> dict[str, object]:
         "skills": skills,
         "runtime": runtime,
         "schemas": schemas,
+        "dependencies": dependencies,
+        "evaluation_harnesses": dict(evaluation_harnesses),
         "compatibility": compatibility,
     }
     lock = {
@@ -349,6 +374,8 @@ def verify_release_lock(
         "lock_digest": document["lock_digest"],
         "runtime": dict(document["runtime"]),
         "schemas": dict(document["schemas"]),
+        "dependencies": dict(document["dependencies"]),
+        "evaluation_harnesses": dict(document["evaluation_harnesses"]),
         "skill_digests": {
             str(item["name"]): str(item["digest"])
             for item in document["skills"]

@@ -5,16 +5,26 @@
   "release": {
     "identity_model": "source-plus-lock-only-commit",
     "mutable_main_policy": "historical-lock-snapshot",
-    "tag_created": false,
-    "github_release_created": false,
-    "candidate_status": "superseded-unpublished",
     "superseded_candidate": {
       "release_version": "2.0.0",
       "source_commit": "e7dc74c052f3874d3d9214ce0cfae8949a397765",
-      "lock_only_commit": "7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4"
+      "lock_only_commit": "7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4",
+      "status": "superseded-unpublished",
+      "tag_created": false,
+      "github_release_created": false
     },
-    "next_candidate": {
+    "published_release": {
       "release_version": "2.0.0",
+      "tag": "v2.0.0",
+      "source_commit": "f27db4fc9694797c050cd9bdb26ef1a791e31beb",
+      "lock_only_commit": "c0e095af0cbed285cd84ff3eecf05b578644999d",
+      "github_release_created": true,
+      "release_gate_promotable": true,
+      "published_at": "2026-08-27T14:01:52Z",
+      "github_release_url": "https://github.com/lihuabai629-star/openubmc-agent-workflow/releases/tag/v2.0.0"
+    },
+    "planned_release": {
+      "release_version": "2.0.1",
       "qualification_required": true,
       "source_policy": "new-final-source"
     }
