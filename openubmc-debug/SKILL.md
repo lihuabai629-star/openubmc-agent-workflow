@@ -33,6 +33,18 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   Observation Adapter performs it.
 - Call `execute` when work can cross diagnosis, source change, build, live patch, upgrade,
   recovery, verification, or acceptance phases.
+- An `ObservationRef` proves reusable observation evidence; it does not by itself prove a root
+  cause. For `diagnose-and-fix`, inspect the returned `DiagnosticReceipt.agent_acceptance`. A
+  complete Runtime receipt may advance automatically, while a partial or blocked receipt returns
+  a durable `diagnosis.acceptance` Gate owned by this Skill and must not enter
+  `developer.change`.
+- Answer `diagnosis.acceptance` once with the returned `run_id`, `gate_id`, `gate_version`, and
+  `schema_digest`. A completed response supplies `root_cause`, non-empty `evidence_ids` drawn only
+  from the current DiagnosticReceipt, and `known_gaps`. The Runtime derives observation time and
+  freshness from its persisted evidence; do not restate or invent them.
+- `execute(kind=resume)` only reattaches the current Run. It does not answer or repair an
+  unanswered diagnosis Gate, so an unchanged Gate is not a reason to retry resume. Mark the Gate
+  failed or cancelled when no defensible diagnosis can be formed; development must remain closed.
 - Treat one `ObservationReceipt` or `Turn` as the semantic result. Capability is tri-state:
   `available`, `unavailable`, or `not_checked`; never infer an unobserved capability.
 - In an `execute` MCP result, inspect `structured_content.diagnostic_receipt`; the short `content`

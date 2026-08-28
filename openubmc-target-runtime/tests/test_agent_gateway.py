@@ -32,6 +32,7 @@ from openubmc_target_runtime import (  # noqa: E402
     ObservationQuery,
     OBSERVATION_MAX_BYTES,
     Outcome,
+    PendingCaseEvent,
     RevisionConflict,
     ReferenceViolation,
     ResumeRun,
@@ -54,6 +55,8 @@ from openubmc_target_runtime import (  # noqa: E402
     StartRun,
     StdioMcpServer,
     SubmitGate,
+    WorkflowDefinition,
+    WorkflowStepDefinition,
     decode_run_command,
 )
 from openubmc_target_runtime.context_runtime import (  # noqa: E402
@@ -61,8 +64,10 @@ from openubmc_target_runtime.context_runtime import (  # noqa: E402
 )
 from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
     build_diagnostic_receipt,
+    latest_diagnostic_receipt,
 )
 from openubmc_target_runtime.run_store import RunCommitRequest  # noqa: E402
+from openubmc_target_runtime.run_engine import gate_input_schema  # noqa: E402
 from tests.compatibility_history import seed_compatibility_history  # noqa: E402
 def encoded_size(value: object) -> int:
     return len(
@@ -82,6 +87,37 @@ def gate_binding(turn: dict[str, object]) -> dict[str, object]:
         "gate_id": gate["gate_id"],
         "gate_version": gate["gate_version"],
         "schema_digest": gate["schema_digest"],
+    }
+
+
+def diagnostic_receipt_fixture(receipt_id: str) -> dict[str, object]:
+    return {
+        "receipt_id": receipt_id,
+        "operation": "debug_run",
+        "status": "complete",
+        "coverage": {
+            "requested": 1,
+            "evaluable": 1,
+            "unavailable": 0,
+            "not_checked": 0,
+            "complete": True,
+        },
+        "results": [
+            {
+                "result_id": "diagnosis",
+                "kind": "diagnosis",
+                "status": "available",
+                "value": {"root_cause": receipt_id},
+            }
+        ],
+        "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-08-29T00:00:00Z",
+            "complete": True,
+        },
+        "content_complete": True,
+        "evidence": [],
+        "gaps": [],
     }
 
 
@@ -2093,6 +2129,31 @@ class PersistentUnknownRunDriver:
 
 
 class AgentGatewayTests(unittest.TestCase):
+    def test_unscoped_legacy_diagnostic_receipt_is_cycle_one_only(self) -> None:
+        legacy = {
+            "operation": "debug_run",
+            "diagnostic_receipt": diagnostic_receipt_fixture("legacy-cycle-1"),
+        }
+
+        cycle_one = latest_diagnostic_receipt(
+            {
+                "workflow_cycle_id": "cycle-1",
+                "operations": [legacy],
+                "phase_records": [],
+            }
+        )
+        cycle_two = latest_diagnostic_receipt(
+            {
+                "workflow_cycle_id": "cycle-2",
+                "operations": [legacy],
+                "phase_records": [],
+            }
+        )
+
+        self.assertIsNotNone(cycle_one)
+        self.assertEqual(cycle_one.receipt_id, "legacy-cycle-1")
+        self.assertIsNone(cycle_two)
+
     def setUp(self) -> None:
         self.artifact_directory = tempfile.TemporaryDirectory()
         self.artifact_root = Path(self.artifact_directory.name)
@@ -6087,7 +6148,7 @@ class AgentGatewayTests(unittest.TestCase):
             "retain the Runtime-owned terminal instruction exactly",
         )
 
-    def test_execute_start_reuses_a_complete_observation_ref(self) -> None:
+    def test_execute_start_reuses_observation_evidence_before_diagnosis(self) -> None:
         receipt = self.service.call_exposed_tool(
             "observe",
             {
@@ -6115,7 +6176,7 @@ class AgentGatewayTests(unittest.TestCase):
         )
 
         self.assertEqual(first["state"], "waiting_response")
-        self.assertEqual(first["gate"]["name"], "developer.change")
+        self.assertEqual(first["gate"]["name"], "diagnosis.acceptance")
         self.assertEqual(first["observation_ref"], receipt["observation_ref"])
         self.assertEqual(
             [name for name, _arguments in self.backend.calls],
@@ -7525,8 +7586,564 @@ class AgentGatewayTests(unittest.TestCase):
             finally:
                 second.close()
 
-        self.assertEqual(turn["gate"]["name"], "developer.change")
+        self.assertEqual(turn["gate"]["name"], "diagnosis.acceptance")
         self.assertEqual(resumed_backend.calls, [])
+
+    def test_observation_ref_with_blocked_diagnosis_yields_diagnosis_gate(self) -> None:
+        receipt = self.service.call_exposed_tool(
+            "observe",
+            {
+                "target": "192.0.2.43",
+                "selectors": [
+                    {
+                        "id": "drive-facts",
+                        "kind": "mdb",
+                        "queries": ["lsprop Drive_1_010102"],
+                    }
+                ],
+                "freshness": {"mode": "live", "max_age_seconds": 0},
+            },
+            task_id="diagnosis-gate-observe",
+            operation_id="diagnosis-gate-observe-1",
+        )
+
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.43",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "purpose": "repair the diagnosed source defect",
+                "observation_ref": receipt["observation_ref"],
+            },
+            task_id="diagnosis-gate-run",
+            operation_id="diagnosis-gate-start",
+        )
+
+        self.assertEqual(waiting["state"], "waiting_response")
+        self.assertEqual(waiting["diagnostic_receipt"]["status"], "blocked")
+        self.assertIn(
+            "diagnostic_result_not_visible",
+            waiting["diagnostic_receipt"]["gaps"],
+        )
+        self.assertEqual(waiting["gate"]["name"], "diagnosis.acceptance")
+        self.assertNotEqual(waiting["gate"]["name"], "developer.change")
+
+        resumed = self.service.call_exposed_tool(
+            "execute",
+            {"kind": "resume", "run_id": waiting["run_id"]},
+            task_id="diagnosis-gate-run",
+            operation_id="diagnosis-gate-resume",
+        )
+
+        self.assertEqual(resumed["gate"]["gate_id"], waiting["gate"]["gate_id"])
+        self.assertEqual(resumed["gate"]["name"], "diagnosis.acceptance")
+        self.assertFalse(
+            any(
+                fact.get("kind") == "phase"
+                and fact.get("name") == "developer.change"
+                for fact in resumed["facts"]
+            )
+        )
+
+    def test_diagnosis_gate_response_allows_successful_source_delivery(self) -> None:
+        receipt = self.service.call_exposed_tool(
+            "observe",
+            {
+                "target": "192.0.2.44",
+                "selectors": [
+                    {
+                        "id": "drive-facts",
+                        "kind": "mdb",
+                        "queries": ["lsprop Drive_1_010102"],
+                    }
+                ],
+                "freshness": {"mode": "live", "max_age_seconds": 0},
+            },
+            task_id="diagnosis-response-observe",
+            operation_id="diagnosis-response-observe-1",
+        )
+        diagnosis = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.44",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "purpose": "repair the diagnosed source defect",
+                "observation_ref": receipt["observation_ref"],
+            },
+            task_id="diagnosis-response-run",
+            operation_id="diagnosis-response-start",
+        )
+        evidence_ids = [
+            item["evidence_id"]
+            for item in diagnosis["diagnostic_receipt"]["evidence"]
+        ]
+
+        development = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": diagnosis["run_id"],
+                **gate_binding(diagnosis),
+                "response": {
+                    "status": "completed",
+                    "summary": "the drive identity is derived from the wrong scope",
+                    "payload": {
+                        "root_cause": (
+                            "socket-local SlotID was treated as a global drive slot"
+                        ),
+                        "evidence_ids": evidence_ids,
+                        "known_gaps": ["NVMe hardware verification is pending"],
+                    },
+                },
+            },
+            task_id="diagnosis-response-run",
+            operation_id="diagnosis-response-accept",
+        )
+
+        self.assertEqual(development["state"], "waiting_response")
+        self.assertEqual(development["gate"]["name"], "developer.change")
+        self.assertEqual(development["diagnostic_receipt"]["status"], "complete")
+        self.assertEqual(development["diagnostic_receipt"]["gaps"], [])
+
+        final = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": development["run_id"],
+                **gate_binding(development),
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "abc123",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["run focused regression tests"],
+                        "known_gaps": ["official build dependency unavailable"],
+                    },
+                },
+            },
+            task_id="diagnosis-response-run",
+            operation_id="diagnosis-response-development",
+        )
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(final["outcome"]["status"], "completed")
+        acceptance = {
+            item["requirement_id"]: item["status"]
+            for item in final["outcome"]["acceptance"]
+        }
+        self.assertEqual(acceptance["stage.diagnosis"], "passed")
+        self.assertEqual(acceptance["stage.development"], "passed")
+
+    def test_failed_or_cancelled_diagnosis_never_opens_development(self) -> None:
+        for status in ("failed", "cancelled"):
+            with self.subTest(status=status):
+                receipt = self.service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": f"192.0.2.{45 if status == 'failed' else 46}",
+                        "selectors": [
+                            {
+                                "id": "drive-facts",
+                                "kind": "mdb",
+                                "queries": ["lsprop Drive_1_010102"],
+                            }
+                        ],
+                    },
+                    task_id=f"diagnosis-{status}-observe",
+                    operation_id=f"diagnosis-{status}-observe-1",
+                )
+                waiting = self.service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": f"192.0.2.{45 if status == 'failed' else 46}",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                        "observation_ref": receipt["observation_ref"],
+                    },
+                    task_id=f"diagnosis-{status}-run",
+                    operation_id=f"diagnosis-{status}-start",
+                )
+
+                final = self.service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": status,
+                            "summary": f"diagnosis {status}",
+                            "payload": {},
+                        },
+                    },
+                    task_id=f"diagnosis-{status}-run",
+                    operation_id=f"diagnosis-{status}-response",
+                )
+
+                self.assertEqual(final["state"], status)
+                self.assertEqual(final["outcome"]["status"], status)
+                self.assertIsNone(final["gate"])
+                self.assertFalse(
+                    any(
+                        fact.get("kind") == "phase"
+                        and fact.get("name") == "developer.change"
+                        for fact in final["facts"]
+                    )
+                )
+
+    def test_diagnosis_gate_rejects_unbound_evidence_and_keeps_same_gate(self) -> None:
+        receipt = self.service.call_exposed_tool(
+            "observe",
+            {
+                "target": "192.0.2.47",
+                "selectors": [
+                    {
+                        "id": "drive-facts",
+                        "kind": "mdb",
+                        "queries": ["lsprop Drive_1_010102"],
+                    }
+                ],
+            },
+            task_id="diagnosis-evidence-observe",
+            operation_id="diagnosis-evidence-observe-1",
+        )
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.47",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "observation_ref": receipt["observation_ref"],
+            },
+            task_id="diagnosis-evidence-run",
+            operation_id="diagnosis-evidence-start",
+        )
+
+        with self.assertRaisesRegex(GateConflict, "not bound"):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "diagnosis is grounded",
+                        "payload": {
+                            "root_cause": "wrong slot scope",
+                            "evidence_ids": ["evidence-not-in-this-run"],
+                            "known_gaps": [],
+                        },
+                    },
+                },
+                task_id="diagnosis-evidence-run",
+                operation_id="diagnosis-evidence-invalid",
+            )
+
+        resumed = self.service.call_exposed_tool(
+            "execute",
+            {"kind": "resume", "run_id": waiting["run_id"]},
+            task_id="diagnosis-evidence-run",
+            operation_id="diagnosis-evidence-resume",
+        )
+        self.assertEqual(resumed["gate"]["gate_id"], waiting["gate"]["gate_id"])
+        self.assertEqual(resumed["gate"]["name"], "diagnosis.acceptance")
+
+    def test_diagnosis_gate_cannot_reclassify_stale_runtime_evidence_as_fresh(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(StaleEvidenceDiagnosticBackend())
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.48",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="diagnosis-stale-run",
+                operation_id="diagnosis-stale-start",
+            )
+            evidence_ids = [
+                item["evidence_id"]
+                for item in waiting["diagnostic_receipt"]["evidence"]
+            ]
+
+            with self.assertRaisesRegex(GateConflict, "complete evaluable"):
+                service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "the connector timeout was localized",
+                            "payload": {
+                                "root_cause": "connector timeout",
+                                "evidence_ids": evidence_ids,
+                                "known_gaps": ["fresh target evidence is required"],
+                            },
+                        },
+                    },
+                    task_id="diagnosis-stale-run",
+                    operation_id="diagnosis-stale-accept",
+                )
+
+            resumed = service.call_exposed_tool(
+                "execute",
+                {"kind": "resume", "run_id": waiting["run_id"]},
+                task_id="diagnosis-stale-run",
+                operation_id="diagnosis-stale-resume",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(resumed["gate"]["gate_id"], waiting["gate"]["gate_id"])
+        self.assertEqual(resumed["diagnostic_receipt"]["freshness"]["status"], "stale")
+        self.assertEqual(resumed["gate"]["name"], "diagnosis.acceptance")
+
+    def test_diagnosis_gate_cannot_reclassify_partial_runtime_evidence_as_fresh(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(BoundedDiagnosticBackend())
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.49",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "source-only",
+                },
+                task_id="diagnosis-partial-run",
+                operation_id="diagnosis-partial-start",
+            )
+            evidence_ids = [
+                item["evidence_id"]
+                for item in waiting["diagnostic_receipt"]["evidence"]
+            ]
+
+            with self.assertRaisesRegex(GateConflict, "complete evaluable"):
+                service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "the timeout path was localized",
+                            "payload": {
+                                "root_cause": "the request waits on incomplete data",
+                                "evidence_ids": evidence_ids,
+                                "known_gaps": ["active alarm evidence is incomplete"],
+                            },
+                        },
+                    },
+                    task_id="diagnosis-partial-run",
+                    operation_id="diagnosis-partial-accept",
+                )
+
+            resumed = service.call_exposed_tool(
+                "execute",
+                {"kind": "resume", "run_id": waiting["run_id"]},
+                task_id="diagnosis-partial-run",
+                operation_id="diagnosis-partial-resume",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(resumed["gate"]["gate_id"], waiting["gate"]["gate_id"])
+        self.assertEqual(
+            resumed["diagnostic_receipt"]["freshness"]["status"],
+            "partial",
+        )
+        self.assertEqual(resumed["gate"]["name"], "diagnosis.acceptance")
+
+    def test_legacy_v1_run_fails_closed_before_development(self) -> None:
+        repository = InMemoryRuntimeRepository(clock=lambda: 1.0)
+        definition = WorkflowDefinition(
+            definition_id="diagnose-and-fix.debug.source-only",
+            version=1,
+            intent="diagnose-and-fix",
+            entry_domain="debug",
+            entry_operation="",
+            delivery_strategy="source-only",
+            steps=(
+                WorkflowStepDefinition(
+                    "step-01-debug-run",
+                    "operation",
+                    "debug_run",
+                    "openubmc-debug",
+                ),
+                WorkflowStepDefinition(
+                    "step-02-developer-change",
+                    "phase",
+                    "developer.change",
+                    "openubmc-developer",
+                    "openubmc-agent-workflow/developer-change-receipt-v1",
+                ),
+            ),
+        ).to_public_dict()
+        blocked = build_diagnostic_receipt(
+            "debug_run",
+            {"ok": True, "summary": "Domain operation completed"},
+            {},
+            (),
+            closeout_stage="diagnosis",
+        )
+        assert blocked is not None
+        run_id = "run-legacy-v1-blocked-diagnosis"
+        developer_schema = gate_input_schema(
+            "developer.change",
+            delivery_strategy="source-only",
+            artifact_metadata={},
+        )
+        developer_gate = Gate(
+            gate_id="gate-legacy-v1-developer",
+            version=1,
+            name="developer.change",
+            owner="openubmc-developer",
+            input_schema=developer_schema,
+            schema_digest=hashlib.sha256(
+                json.dumps(
+                    developer_schema,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        )
+        repository.commit(
+            run_id,
+            expected_revision=0,
+            events=(
+                PendingCaseEvent(
+                    "CaseOpened",
+                    {
+                        "intent": "diagnose-and-fix",
+                        "entry_domain": "debug",
+                        "entry_operation": "",
+                        "final_purpose": "resume a persisted v1 Run",
+                        "delivery_strategy": "source-only",
+                        "acceptance_plan": {},
+                        "targets": [
+                            {
+                                "target_id": "target-1",
+                                "role": "candidate",
+                                "address": "192.0.2.49",
+                            }
+                        ],
+                        "target_version": 1,
+                        "workflow_cycle_id": "cycle-1",
+                        "workflow_cycle_number": 1,
+                        "workflow_definition": definition,
+                        "workflow_inputs": {},
+                        "start_input": {},
+                    },
+                    "legacy-v1-open",
+                ),
+                PendingCaseEvent(
+                    "OperationAccepted",
+                    {
+                        "operation": "debug_run",
+                        "workflow_cycle_id": "cycle-1",
+                        "workflow_step_id": "step-01-debug-run",
+                        "workflow_step_kind": "operation",
+                        "workflow_definition_id": definition["definition_id"],
+                        "workflow_definition_version": 1,
+                        "workflow_definition_fingerprint": definition["fingerprint"],
+                        "workflow_execution_id": "step-legacy-v1-debug",
+                        "workflow_attempt": 1,
+                        "workflow_input_fingerprint": "a" * 64,
+                        "workflow_target_epoch": 0,
+                        "target_version": 1,
+                        "target_id": "target-1",
+                    },
+                    "legacy-v1-debug",
+                ),
+                PendingCaseEvent("OperationStarted", {}, "legacy-v1-debug"),
+                PendingCaseEvent(
+                    "OperationTerminal",
+                    {
+                        "status": "completed",
+                        "summary": "Domain completed without accepted diagnosis",
+                        "case_status": "open",
+                        "target_epoch": 0,
+                        "diagnostic_receipt": blocked.to_public_dict(),
+                    },
+                    "legacy-v1-debug",
+                ),
+                PendingCaseEvent(
+                    "RunGateOpened",
+                    {
+                        "gate": {
+                            **developer_gate.to_public_dict(),
+                            "run_id": run_id,
+                            "workflow_cycle_id": "cycle-1",
+                            "workflow_step_id": "step-02-developer-change",
+                        }
+                    },
+                    "legacy-v1-developer-gate",
+                ),
+            ),
+        )
+        service = RuntimeMcpService(
+            SemanticBackend(),
+            context_repository=repository,
+        )
+        try:
+            turn = service.call_exposed_tool(
+                "execute",
+                {"kind": "resume", "run_id": run_id},
+                task_id="legacy-v1-task",
+                operation_id="legacy-v1-resume",
+            )
+            with self.assertRaisesRegex(GateConflict, "Incident"):
+                service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": run_id,
+                        "gate_id": developer_gate.gate_id,
+                        "gate_version": developer_gate.version,
+                        "schema_digest": developer_gate.schema_digest,
+                        "response": {
+                            "status": "completed",
+                            "summary": "must not be accepted",
+                            "payload": {
+                                "source_revision": "legacy-source",
+                                "authored_files": ["src/legacy.lua"],
+                                "verification_plan": ["run tests"],
+                            },
+                        },
+                    },
+                    task_id="legacy-v1-task",
+                    operation_id="legacy-v1-invalid-submit",
+                )
+        finally:
+            service.close()
+
+        self.assertEqual(turn["state"], "incident")
+        self.assertEqual(turn["incident"]["code"], "diagnosis_not_accepted")
+        self.assertIsNone(turn["gate"])
+        self.assertFalse(
+            any(
+                fact.get("kind") == "phase"
+                and fact.get("name") == "developer.change"
+                for fact in turn["facts"]
+            )
+        )
+        self.assertFalse(repository.load(run_id)["phase_records"])
 
     def test_source_only_failed_phase_never_produces_a_success_outcome(self) -> None:
         first = self.service.call_exposed_tool(

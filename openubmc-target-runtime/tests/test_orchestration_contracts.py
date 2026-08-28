@@ -32,6 +32,23 @@ from openubmc_target_runtime import (
 FIXTURES = Path(__file__).parent / "fixtures" / "orchestration_intents.json"
 
 
+def complete_diagnosis_result(
+    *evidence_ids: str,
+    target_epoch: int = 0,
+    **extra: object,
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "summary": "diagnosis completed",
+        "root_cause": "the bounded source defect was identified",
+        "observed_at": "2026-08-29T00:00:00Z",
+        "freshness": {"status": "fresh", "complete": True},
+        "target_epoch": target_epoch,
+        "evidence_ids": list(evidence_ids),
+        **extra,
+    }
+
+
 class RecordingMcpBackend:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
@@ -54,7 +71,11 @@ class RecordingMcpBackend:
 
     def _capture(self, name: str, arguments) -> dict[str, object]:
         self.calls.append((name, dict(arguments)))
-        return {"ok": True}
+        return (
+            complete_diagnosis_result("recording-diagnosis")
+            if name == "debug_run"
+            else {"ok": True}
+        )
 
     def debug_run(self, _task, arguments, _context):
         return self._capture("debug_run", arguments)
@@ -170,7 +191,7 @@ class OrchestrationContractTests(unittest.TestCase):
         )
         self.assertEqual(
             [step.key for step in default_route.steps],
-            ["debug:diagnosis", "developer:edit"],
+            ["debug:diagnosis", "debug:accept", "developer:edit"],
         )
         self.assertEqual(source_only.authorization.allowed_actions, frozenset())
         live_patch.authorization.require("live_patch")
@@ -331,6 +352,10 @@ class OrchestrationContractTests(unittest.TestCase):
         result = TaskWorkflowOrchestrator(context).run(
             {
                 "debug": debug,
+                "debug:accept": lambda execution: DomainOutcome.succeeded(
+                    {"diagnosis_acceptance": "complete"},
+                    evidence_ids=execution.previous[-1].evidence_ids,
+                ),
                 "developer": developer,
                 "live_patch": live_patch,
                 "debug:fresh_verification": verify,
@@ -340,14 +365,14 @@ class OrchestrationContractTests(unittest.TestCase):
         self.assertTrue(result.completed)
         self.assertEqual(
             [execution.status for execution in result.executions],
-            ["succeeded", "succeeded", "modified", "verified"],
+            ["succeeded", "succeeded", "succeeded", "modified", "verified"],
         )
         self.assertEqual(len(seen_operation_ids), len(set(seen_operation_ids)))
         self.assertTrue(all(value.startswith("op-") for value in seen_operation_ids))
         self.assertEqual(seen_authorizations, [context.intent.authorization])
-        self.assertEqual(len(result.handoffs), 3)
+        self.assertEqual(len(result.handoffs), 4)
         self.assertEqual(result.handoffs[-1].evidence_ids, ("evidence-patch",))
-        self.assertIs(result.handoffs[1].edit_intent, edit)
+        self.assertIs(result.handoffs[2].edit_intent, edit)
         self.assertNotIn(
             "credentials",
             json.dumps(edit.to_public_dict(), sort_keys=True).lower(),
@@ -372,6 +397,10 @@ class OrchestrationContractTests(unittest.TestCase):
                 "debug": lambda _execution: DomainOutcome.succeeded(
                     {"diagnosed": True}, evidence_ids=("evidence-1",)
                 ),
+                "debug:accept": lambda execution: DomainOutcome.succeeded(
+                    {"diagnosis_acceptance": "complete"},
+                    evidence_ids=execution.previous[-1].evidence_ids,
+                ),
                 "developer": lambda _execution: DomainOutcome.succeeded(
                     {"edited": True}, edit_intent=edit
                 ),
@@ -388,6 +417,34 @@ class OrchestrationContractTests(unittest.TestCase):
             result.phase_states["debug:fresh_verification"], "not_executed"
         )
         self.assertEqual(result.next_action, "live_patch:mutation")
+
+    def test_missing_diagnosis_acceptance_handler_stops_before_development(
+        self,
+    ) -> None:
+        context = TaskOrchestrationContext(
+            task_id="missing-diagnosis-acceptance",
+            intent=self.intent("diagnose-and-fix", delivery_strategy="source-only"),
+        )
+        developer_calls: list[str] = []
+
+        result = TaskWorkflowOrchestrator(context).run(
+            {
+                "debug": lambda _execution: DomainOutcome.succeeded(
+                    {"root_cause": "bounded diagnosis"},
+                    evidence_ids=("evidence-diagnosis",),
+                ),
+                "developer": lambda execution: (
+                    developer_calls.append(execution.operation_id)
+                    or DomainOutcome.succeeded({"changed": True})
+                ),
+            }
+        )
+
+        self.assertFalse(result.completed)
+        self.assertEqual(result.next_action, "debug:accept")
+        self.assertEqual(result.phase_states["debug:accept"], "not_executed")
+        self.assertEqual(result.phase_states["developer:edit"], "not_executed")
+        self.assertEqual(developer_calls, [])
 
     def test_failed_verification_retains_modified_and_not_executed_state(self) -> None:
         context = TaskOrchestrationContext(
@@ -1897,7 +1954,7 @@ class OrchestrationContractTests(unittest.TestCase):
         self.assertTrue(all(value.startswith("op-") for value in operation_ids))
         self.assertTrue(operation_ids[0].startswith("op-mutation-"))
 
-    def test_repeated_debug_workflow_reruns_diagnosis_and_verification_without_reapplying_mutation(
+    def test_repeated_legacy_debug_calls_do_not_cross_into_mutation_or_verification(
         self,
     ) -> None:
         debug_evidence: list[str] = []
@@ -1924,11 +1981,7 @@ class OrchestrationContractTests(unittest.TestCase):
             def debug_run(_task, _arguments, _context):
                 evidence_id = f"debug-evidence-{len(debug_evidence) + 1}"
                 debug_evidence.append(evidence_id)
-                return {
-                    "ok": True,
-                    "target_epoch": 2,
-                    "evidence_ids": [evidence_id],
-                }
+                return complete_diagnosis_result(evidence_id, target_epoch=2)
 
             debug_collect = debug_run
 
@@ -1983,48 +2036,10 @@ class OrchestrationContractTests(unittest.TestCase):
             self.operation_context("fresh-repeated-debug-workflow"),
         )
 
-        self.assertEqual(
-            debug_evidence,
-            [
-                "debug-evidence-1",
-                "debug-evidence-2",
-                "debug-evidence-3",
-                "debug-evidence-4",
-            ],
-        )
-        self.assertEqual(len(mutation_operation_ids), 1)
-        first_evidence = [
-            execution["evidence_ids"]
-            for execution in first["executions"]
-            if execution["domain"] == "debug"
-        ]
-        second_evidence = [
-            execution["evidence_ids"]
-            for execution in second["executions"]
-            if execution["domain"] == "debug"
-        ]
-        self.assertEqual(
-            first_evidence,
-            [["debug-evidence-1"], ["debug-evidence-2"]],
-        )
-        self.assertEqual(
-            second_evidence,
-            [["debug-evidence-3"], ["debug-evidence-4"]],
-        )
-        first_mutation = next(
-            execution
-            for execution in first["executions"]
-            if execution["phase"] == "mutation"
-        )
-        second_mutation = next(
-            execution
-            for execution in second["executions"]
-            if execution["phase"] == "mutation"
-        )
-        self.assertEqual(
-            first_mutation["operation_id"],
-            second_mutation["operation_id"],
-        )
+        self.assertEqual(debug_evidence, ["debug-evidence-1", "debug-evidence-2"])
+        self.assertEqual(mutation_operation_ids, [])
+        self.assertEqual(first["evidence_ids"], ["debug-evidence-1"])
+        self.assertEqual(second["evidence_ids"], ["debug-evidence-2"])
         status = backend.task_status(task)
         self.assertEqual(
             status["workflow_cache"],
@@ -2039,13 +2054,13 @@ class OrchestrationContractTests(unittest.TestCase):
         )
         self.assertEqual(
             status["workflow_history"],
-            {"entry_count": 2, "max_entries": 16},
+            {"entry_count": 0, "max_entries": 16},
         )
-        self.assertEqual(len(status["automatic_workflows"]), 2)
-        self.assertEqual(status["cached_mutation_count"], 1)
+        self.assertEqual(status["automatic_workflows"], [])
+        self.assertEqual(status["cached_mutation_count"], 0)
         self.assertNotIn("debug-evidence", json.dumps(status, sort_keys=True))
 
-    def test_diagnose_and_fix_entry_runs_typed_handoffs_and_parses_credentials_once(self) -> None:
+    def test_legacy_diagnose_and_fix_entry_stays_in_debug_domain(self) -> None:
         calls: list[tuple[str, str, dict[str, object]]] = []
 
         class DomainBackend:
@@ -2068,11 +2083,10 @@ class OrchestrationContractTests(unittest.TestCase):
             @staticmethod
             def debug_run(_task, arguments, context):
                 calls.append(("debug", context.operation_id, dict(arguments)))
-                return {
-                    "ok": True,
-                    "target_epoch": 3,
-                    "evidence_ids": ["debug-evidence"],
-                }
+                return complete_diagnosis_result(
+                    "debug-evidence",
+                    target_epoch=3,
+                )
 
             debug_collect = debug_run
 
@@ -2139,51 +2153,26 @@ class OrchestrationContractTests(unittest.TestCase):
                 self.operation_context("diagnose-fix-workflow"),
             )
 
-        self.assertTrue(result["completed"])
-        self.assertEqual(
-            [execution["status"] for execution in result["executions"]],
-            ["succeeded", "succeeded", "modified", "verified"],
-        )
+        self.assertEqual(result["evidence_ids"], ["debug-evidence"])
         self.assertEqual(
             [name for name, _operation, _arguments in calls],
-            ["debug", "live_patch", "debug"],
+            ["debug"],
         )
         self.assertEqual(load_credentials.call_count, 1)
         self.assertTrue(
             all(call_arguments["_credential_values"] == credentials for *_rest, call_arguments in calls)
         )
-        live_patch_arguments = next(
-            call_arguments
-            for name, _operation, call_arguments in calls
-            if name == "live_patch"
-        )
-        self.assertEqual(live_patch_arguments["_task_intent"], "diagnose-and-fix")
-        self.assertEqual(
-            live_patch_arguments["_task_authorization_policy"]["allowed_actions"],
-            ["live_patch"],
-        )
-        self.assertFalse(
-            live_patch_arguments["_task_authorization_policy"][
-                "authorized_exceptions"
-            ]["force_path"]
-        )
-        self.assertTrue(
-            live_patch_arguments["_task_authorization_policy"][
-                "allow_insecure_tls"
-            ]
-        )
-        self.assertTrue(live_patch_arguments["force_path"])
-        self.assertNotIn("allow_insecure_tls", live_patch_arguments)
-        self.assertNotIn("ssh_password", live_patch_arguments)
-        self.assertNotIn("telnet_password", live_patch_arguments)
-        verification_arguments = calls[-1][2]
-        self.assertEqual(verification_arguments["_minimum_target_epoch"], 3)
+        debug_arguments = calls[0][2]
+        self.assertNotIn("workflow", debug_arguments)
+        self.assertNotIn("ssh_password", debug_arguments)
+        self.assertNotIn("telnet_password", debug_arguments)
         self.assertNotIn("operation_id", json.dumps(arguments, sort_keys=True))
         status = backend.task_status(task)
         self.assertEqual(status["credential_parse_count"], 1)
+        self.assertEqual(status["automatic_workflows"], [])
         self.assertNotIn("one-task-secret", json.dumps(status, sort_keys=True))
 
-    def test_source_only_diagnose_and_fix_stops_after_developer_handoff(self) -> None:
+    def test_source_only_legacy_entry_does_not_create_developer_handoff(self) -> None:
         calls: list[str] = []
 
         class DebugBackend:
@@ -2206,7 +2195,7 @@ class OrchestrationContractTests(unittest.TestCase):
             @staticmethod
             def debug_run(_task, _arguments, _context):
                 calls.append("debug")
-                return {"ok": True, "evidence_ids": ["diagnosis"]}
+                return complete_diagnosis_result("diagnosis")
 
         backend = OrchestratedMcpBackend({"debug_run": DebugBackend()})
         task = backend.open_task("source-only-workflow")
@@ -2227,14 +2216,64 @@ class OrchestrationContractTests(unittest.TestCase):
             self.operation_context("source-only-workflow"),
         )
 
-        self.assertTrue(result["completed"])
+        self.assertEqual(result["evidence_ids"], ["diagnosis"])
         self.assertEqual(calls, ["debug"])
-        self.assertEqual(
-            [execution["key"] for execution in result["executions"]],
-            ["debug:diagnosis", "developer:edit"],
+        self.assertEqual(backend.task_status(task)["automatic_workflows"], [])
+
+    def test_legacy_generic_debug_completion_does_not_enter_development(
+        self,
+    ) -> None:
+        developer_calls: list[str] = []
+
+        class DebugBackend:
+            @staticmethod
+            def open_task(task_id: str):
+                return {"task_id": task_id}
+
+            @staticmethod
+            def close_task(_task) -> None:
+                return None
+
+            @staticmethod
+            def maintain_task(_task) -> int:
+                return 0
+
+            @staticmethod
+            def task_status(_task) -> dict[str, object]:
+                return {}
+
+            @staticmethod
+            def debug_run(_task, _arguments, _context):
+                return {"ok": True, "summary": "Domain operation completed"}
+
+        backend = OrchestratedMcpBackend(
+            {"debug_run": DebugBackend()},
+            phase_adapters={
+                "developer.change": lambda raw: (
+                    developer_calls.append("developer")
+                    or DomainOutcome.succeeded(raw)
+                )
+            },
+        )
+        task = backend.open_task("generic-debug-workflow")
+
+        result = backend.debug_run(
+            task,
+            {
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "ip": "192.0.2.11",
+                "workflow": {"developer": {"source_revision": "not-used"}},
+            },
+            self.operation_context("generic-debug-workflow"),
         )
 
-    def test_workflow_history_distinguishes_the_current_bound_target(self) -> None:
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["summary"], "Domain operation completed")
+        self.assertEqual(developer_calls, [])
+        self.assertEqual(backend.task_status(task)["automatic_workflows"], [])
+
+    def test_legacy_debug_does_not_create_workflow_history_for_bound_targets(self) -> None:
         calls: list[str] = []
 
         class DebugBackend:
@@ -2257,7 +2296,7 @@ class OrchestrationContractTests(unittest.TestCase):
             @staticmethod
             def debug_run(_task, arguments, _context):
                 calls.append(str(arguments["ip"]))
-                return {"ok": True}
+                return complete_diagnosis_result("target-aware-diagnosis")
 
         backend = OrchestratedMcpBackend({"debug_run": DebugBackend()})
         task = backend.open_task("target-aware-workflow-cache")
@@ -2286,14 +2325,10 @@ class OrchestrationContractTests(unittest.TestCase):
             ["192.0.2.10", "192.0.2.10", "192.0.2.11", "192.0.2.11"],
         )
         status = backend.task_status(task)
-        self.assertEqual(status["workflow_history"]["entry_count"], 2)
-        self.assertEqual(len(status["automatic_workflows"]), 2)
-        self.assertNotEqual(
-            status["automatic_workflows"][0]["request_fingerprint"],
-            status["automatic_workflows"][1]["request_fingerprint"],
-        )
+        self.assertEqual(status["workflow_history"]["entry_count"], 0)
+        self.assertEqual(status["automatic_workflows"], [])
 
-    def test_workflow_history_keeps_only_summary_for_oversized_results(self) -> None:
+    def test_legacy_oversized_debug_result_is_not_persisted_as_workflow_history(self) -> None:
         calls = 0
 
         class DebugBackend:
@@ -2317,7 +2352,10 @@ class OrchestrationContractTests(unittest.TestCase):
             def debug_run(_task, _arguments, _context):
                 nonlocal calls
                 calls += 1
-                return {"ok": True, "payload": "x" * (4 * 1024 * 1024)}
+                return complete_diagnosis_result(
+                    "oversized-diagnosis",
+                    payload="x" * (4 * 1024 * 1024),
+                )
 
         backend = OrchestratedMcpBackend({"debug_run": DebugBackend()})
         task = backend.open_task("oversized-workflow-result")
@@ -2338,11 +2376,11 @@ class OrchestrationContractTests(unittest.TestCase):
                 arguments,
                 self.operation_context("oversized-workflow-result"),
             )
-            self.assertTrue(result["completed"])
+            self.assertEqual(result["evidence_ids"], ["oversized-diagnosis"])
 
         self.assertEqual(calls, 2)
         status = backend.task_status(task)
-        self.assertEqual(status["workflow_history"]["entry_count"], 2)
+        self.assertEqual(status["workflow_history"]["entry_count"], 0)
         self.assertFalse(status["workflow_cache"]["enabled"])
         self.assertEqual(status["workflow_cache"]["entry_count"], 0)
         self.assertEqual(status["workflow_cache"]["bytes"], 0)
@@ -2350,7 +2388,7 @@ class OrchestrationContractTests(unittest.TestCase):
         self.assertNotIn("payload", serialized_status)
         self.assertLess(len(serialized_status), 32 * 1024)
 
-    def test_workflow_history_is_bounded_for_repeated_identical_runs(self) -> None:
+    def test_repeated_legacy_debug_calls_do_not_create_workflow_history(self) -> None:
         calls = 0
 
         class DebugBackend:
@@ -2374,7 +2412,10 @@ class OrchestrationContractTests(unittest.TestCase):
             def debug_run(_task, _arguments, _context):
                 nonlocal calls
                 calls += 1
-                return {"ok": True, "payload": f"runtime-evidence-{calls}"}
+                return complete_diagnosis_result(
+                    f"diagnosis-{calls}",
+                    payload=f"runtime-evidence-{calls}",
+                )
 
         backend = OrchestratedMcpBackend({"debug_run": DebugBackend()})
         task = backend.open_task("bounded-workflow-history")
@@ -2397,18 +2438,18 @@ class OrchestrationContractTests(unittest.TestCase):
                 arguments,
                 self.operation_context("bounded-workflow-history"),
             )
-            self.assertTrue(result["completed"])
+            self.assertEqual(result["evidence_ids"], [f"diagnosis-{calls}"])
 
         self.assertEqual(calls, 18)
         status = backend.task_status(task)
         self.assertEqual(
             status["workflow_history"],
-            {"entry_count": 16, "max_entries": 16},
+            {"entry_count": 0, "max_entries": 16},
         )
-        self.assertEqual(len(status["automatic_workflows"]), 16)
+        self.assertEqual(status["automatic_workflows"], [])
         self.assertNotIn("runtime-evidence", json.dumps(status, sort_keys=True))
 
-    def test_build_upgrade_strategy_carries_build_artifact_into_upgrade(self) -> None:
+    def test_legacy_diagnose_and_fix_does_not_enter_build_or_upgrade(self) -> None:
         calls: list[tuple[str, dict[str, object]]] = []
 
         class DomainBackend:
@@ -2431,11 +2472,10 @@ class OrchestrationContractTests(unittest.TestCase):
             @staticmethod
             def debug_run(_task, arguments, _context):
                 calls.append(("debug", dict(arguments)))
-                return {
-                    "ok": True,
-                    "target_epoch": int(arguments.get("_minimum_target_epoch", 0)),
-                    "evidence_ids": ["debug-evidence"],
-                }
+                return complete_diagnosis_result(
+                    "debug-evidence",
+                    target_epoch=int(arguments.get("_minimum_target_epoch", 0)),
+                )
 
             debug_collect = debug_run
 
@@ -2484,26 +2524,9 @@ class OrchestrationContractTests(unittest.TestCase):
             self.operation_context("build-upgrade-workflow"),
         )
 
-        self.assertTrue(result["completed"])
-        self.assertEqual(
-            [execution["key"] for execution in result["executions"]],
-            [
-                "debug:diagnosis",
-                "developer:edit",
-                "build:package",
-                "upgrade:mutation",
-                "debug:fresh_verification",
-            ],
-        )
-        upgrade_arguments = next(arguments for name, arguments in calls if name == "upgrade")
-        self.assertEqual(upgrade_arguments["artifact_path"], "/tmp/openubmc.hpm")
-        self.assertEqual(upgrade_arguments["artifact_sha256"], "b" * 64)
-        self.assertEqual(upgrade_arguments["product_version"], "2.1")
-        self.assertTrue(upgrade_arguments["allow_insecure_tls"])
-        self.assertEqual(upgrade_arguments["_task_intent"], "diagnose-and-fix")
-        self.assertEqual(
-            upgrade_arguments["_task_delivery_strategy"], "build-upgrade"
-        )
+        self.assertEqual(result["evidence_ids"], ["debug-evidence"])
+        self.assertEqual([name for name, _arguments in calls], ["debug"])
+        self.assertEqual(backend.task_status(task)["automatic_workflows"], [])
 
     def test_changed_verification_reuses_mutation_and_runs_fresh_debug(self) -> None:
         calls: list[tuple[str, dict[str, object]]] = []

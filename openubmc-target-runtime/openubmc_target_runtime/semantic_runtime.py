@@ -15,6 +15,7 @@ from .comparison_targets import comparison_target_identities
 from .diagnostic_receipt import (
     DIAGNOSTIC_RECEIPT_MAX_STORED_RESULTS,
     DiagnosticReceipt,
+    latest_diagnostic_receipt,
 )
 from .diagnostic_request import DiagnosticRequestPlan
 from .incident import incident_recovery_policy
@@ -1657,19 +1658,15 @@ def project_run_turn(
     diagnostic_receipt = (
         base_turn.diagnostic_receipt if base_turn is not None else None
     )
-    cycle_id = _text(projection.get("workflow_cycle_id") or "cycle-1")
-    operations = projection.get("operations", [])
-    if isinstance(operations, list):
-        for operation in reversed(operations):
-            if not isinstance(operation, Mapping):
-                continue
-            operation_cycle = _text(operation.get("workflow_cycle_id"))
-            if operation_cycle and operation_cycle != cycle_id:
-                continue
-            candidate = operation.get("diagnostic_receipt")
-            if isinstance(candidate, Mapping):
-                diagnostic_receipt = DiagnosticReceipt.from_public_dict(candidate)
-                break
+    persisted_diagnostic_receipt = latest_diagnostic_receipt(projection)
+    if persisted_diagnostic_receipt is not None:
+        diagnostic_receipt = persisted_diagnostic_receipt
+    persisted_observation_ref = None
+    start_input = projection.get("start_input")
+    if isinstance(start_input, Mapping):
+        raw_start_ref = start_input.get("observation_ref")
+        if isinstance(raw_start_ref, Mapping) and raw_start_ref:
+            persisted_observation_ref = ObservationRef.from_public_dict(raw_start_ref)
     return RunTurn(
         run_id=run_id,
         state=selected_state,
@@ -1688,6 +1685,8 @@ def project_run_turn(
         observation_ref=(
             observation_ref
             if observation_ref is not None
+            else persisted_observation_ref
+            if persisted_observation_ref is not None
             else base_turn.observation_ref
             if base_turn is not None
             else None

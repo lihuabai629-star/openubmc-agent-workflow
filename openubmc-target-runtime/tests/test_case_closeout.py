@@ -406,6 +406,112 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         self.assertEqual(degraded.status, "partial")
         self.assertNotIn("old failed conclusion", str(degraded.facts))
 
+    def test_accepted_diagnosis_supersedes_only_its_bound_runtime_receipt(
+        self,
+    ) -> None:
+        plan = AcceptancePlan.freeze(
+            {"intent": "diagnosis-only", "final_purpose": "diagnose"},
+            frozen_at=1.0,
+        )
+
+        def blocked_receipt(receipt_id: str, evidence_id: str) -> dict[str, object]:
+            return {
+                "receipt_id": receipt_id,
+                "operation": "debug_run",
+                "status": "blocked",
+                "coverage": {
+                    "requested": 1,
+                    "evaluable": 0,
+                    "unavailable": 0,
+                    "not_checked": 1,
+                    "complete": False,
+                },
+                "results": [
+                    {
+                        "result_id": "diagnosis",
+                        "kind": "diagnosis",
+                        "request": "bounded diagnosis",
+                        "status": "not_checked",
+                        "evidence_ids": [evidence_id],
+                    }
+                ],
+                "freshness": {"status": "unknown", "observed_at": ""},
+                "capabilities": {},
+                "truncated": False,
+                "content_complete": False,
+                "evidence": [{"evidence_id": evidence_id}],
+                "gaps": ["diagnostic_result_not_visible"],
+            }
+
+        projection = {
+            "case_id": "diagnosis-lineage-case",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [
+                {"target_id": "target-a", "address": "192.0.2.31"},
+                {"target_id": "target-b", "address": "192.0.2.32"},
+            ],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-a",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 1,
+                    "inputs": {"target_id": "target-a"},
+                    "evidence_ids": ["a-evidence"],
+                    "diagnostic_receipt": blocked_receipt(
+                        "diagnostic-a",
+                        "a-evidence",
+                    ),
+                },
+                {
+                    "operation_id": "diagnosis-b",
+                    "operation": "debug_run",
+                    "status": "failed",
+                    "terminal_revision": 2,
+                    "inputs": {"target_id": "target-b"},
+                    "evidence_ids": ["b-evidence"],
+                    "diagnostic_receipt": blocked_receipt(
+                        "diagnostic-b",
+                        "b-evidence",
+                    ),
+                },
+            ],
+            "phase_records": [
+                {
+                    "phase_type": "diagnosis.acceptance",
+                    "producer_identity": "openubmc-debug",
+                    "status": "completed",
+                    "summary": "target A diagnosis accepted",
+                    "operation_id": "diagnosis-acceptance-a",
+                    "native_run_fact": True,
+                    "evidence_ids": ["a-evidence"],
+                    "root_cause": "target A root cause",
+                    "supersedes_diagnostic_receipt_id": "diagnostic-a",
+                }
+            ],
+            "evidence_refs": [
+                {"evidence_id": "a-evidence", "blob_id": "a"},
+                {"evidence_id": "b-evidence", "blob_id": "b"},
+            ],
+        }
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda reference: {
+                "ok": reference["evidence_id"] == "a-evidence",
+                "summary": "diagnostic evidence",
+            },
+        )
+        diagnosis = [
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        ]
+
+        self.assertEqual(
+            {(receipt.producer, receipt.status) for receipt in diagnosis},
+            {("openubmc-debug", "completed"), ("debug_run", "failed")},
+        )
+        self.assertNotEqual(closeout.closure_status, "completed_in_scope")
+
     def test_closeout_requires_a_structured_result_for_each_business_check(
         self,
     ) -> None:

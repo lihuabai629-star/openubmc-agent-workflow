@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-import sys
 import unittest
 
-
-RUNTIME_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(RUNTIME_ROOT))
-
-from openubmc_target_runtime.workflow import (  # noqa: E402
+from openubmc_target_runtime.run_engine import gate_input_schema
+from openubmc_target_runtime.workflow import (
     DEFAULT_PHASE_REGISTRY,
     DEFAULT_WORKFLOW_KERNEL,
     PhaseDescriptor,
@@ -21,6 +16,48 @@ from openubmc_target_runtime.workflow import (  # noqa: E402
 
 
 class WorkflowKernelTests(unittest.TestCase):
+    def test_diagnosis_acceptance_phase_and_gate_share_one_contract(self) -> None:
+        descriptor = DEFAULT_PHASE_REGISTRY.require("diagnosis.acceptance")
+        schema = gate_input_schema(
+            "diagnosis.acceptance",
+            delivery_strategy="source-only",
+            artifact_metadata={},
+        )
+        required = schema["allOf"][0]["then"]["properties"]["payload"][
+            "required"
+        ]
+
+        self.assertEqual(tuple(required), descriptor.required_fields)
+        self.assertEqual(
+            descriptor.required_fields,
+            ("root_cause", "evidence_ids", "known_gaps"),
+        )
+        self.assertEqual(descriptor.allow_empty_list_fields, ("known_gaps",))
+        self.assertEqual(
+            DEFAULT_PHASE_REGISTRY.validate_receipt(
+                "diagnosis.acceptance",
+                producer="openubmc-debug",
+                receipt={
+                    "root_cause": "bounded root cause",
+                    "evidence_ids": ["evidence-1"],
+                    "known_gaps": [],
+                },
+            ),
+            descriptor,
+        )
+        for invalid in (None, "", ()):
+            with self.subTest(invalid_known_gaps=invalid):
+                with self.assertRaisesRegex(ValueError, "known_gaps"):
+                    DEFAULT_PHASE_REGISTRY.validate_receipt(
+                        "diagnosis.acceptance",
+                        producer="openubmc-debug",
+                        receipt={
+                            "root_cause": "bounded root cause",
+                            "evidence_ids": ["evidence-1"],
+                            "known_gaps": invalid,
+                        },
+                    )
+
     def test_narrow_debug_collect_is_one_versioned_step(self) -> None:
         projection = {
             "intent": "diagnosis-only",
@@ -32,7 +69,7 @@ class WorkflowKernelTests(unittest.TestCase):
 
         definition = DEFAULT_WORKFLOW_KERNEL.definition_for(projection)
 
-        self.assertEqual(definition.version, 1)
+        self.assertEqual(definition.version, 2)
         self.assertEqual(definition.definition_id, "diagnosis-only.debug-collect")
         self.assertEqual(
             [(step.kind, step.name, step.owner) for step in definition.steps],
@@ -59,10 +96,16 @@ class WorkflowKernelTests(unittest.TestCase):
             [(step.kind, step.name) for step in definition.steps],
             [
                 ("operation", "debug_run"),
+                ("phase", "diagnosis.acceptance"),
                 ("phase", "developer.change"),
             ],
         )
-        phase = definition.steps[1]
+        diagnosis = definition.steps[1]
+        self.assertEqual(diagnosis.owner, "openubmc-debug")
+        self.assertTrue(
+            diagnosis.receipt_schema.endswith("diagnosis-acceptance-receipt-v1")
+        )
+        phase = definition.steps[2]
         self.assertEqual(phase.owner, "openubmc-developer")
         self.assertTrue(phase.receipt_schema.endswith("developer-change-receipt-v1"))
 

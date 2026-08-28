@@ -342,7 +342,52 @@ def skill_disclosure_observe_event():
     )
 
 
-def candidate_execute_event(kind: str, state: str, *, elapsed: float):
+def complete_candidate_diagnostic_receipt(
+    *,
+    operation: str = "debug_run",
+):
+    return {
+        "receipt_id": f"receipt-{operation.replace('.', '-')}",
+        "operation": operation,
+        "status": "complete",
+        "agent_acceptance": "complete",
+        "coverage": {
+            "requested": 1,
+            "evaluable": 1,
+            "unavailable": 0,
+            "not_checked": 0,
+            "complete": True,
+            "visible_evaluable": 1,
+            "visible_unavailable": 0,
+            "visible_not_checked": 0,
+        },
+        "freshness": {
+            "status": "fresh",
+            "observed_at": "2026-08-29T00:00:00Z",
+            "complete": True,
+        },
+        "content_complete": True,
+        "results": [
+            {
+                "result_id": "result-qualified",
+                "kind": "diagnosis",
+                "status": "available",
+                "value": {"root_cause": "qualification source defect"},
+                "evidence_ids": ["evidence-qualified"],
+            }
+        ],
+        "evidence": [{"evidence_id": "evidence-qualified"}],
+        "gaps": [],
+    }
+
+
+def candidate_execute_event(
+    kind: str,
+    state: str,
+    *,
+    elapsed: float,
+    gate: str = "developer",
+):
     structured = {
         "run_id": "run-qualified",
         "state": state,
@@ -358,12 +403,56 @@ def candidate_execute_event(kind: str, state: str, *, elapsed: float):
                 "delivery_strategy": "source-only",
             }
         )
+        if gate == "diagnosis":
+            structured["gate"] = {
+                "name": "diagnosis.acceptance",
+                "gate_id": "gate-diagnosis",
+                "gate_version": 1,
+                "schema_digest": "d" * 64,
+                "owner": "openubmc-debug",
+            }
+            structured["diagnostic_receipt"] = {
+                "evidence": [{"evidence_id": "evidence-qualified"}],
+            }
+        else:
+            structured["gate"] = {
+                "name": "developer.change",
+                "gate_id": "gate-developer",
+                "gate_version": 1,
+                "schema_digest": "a" * 64,
+                "owner": "openubmc-developer",
+            }
+            structured["diagnostic_receipt"] = (
+                complete_candidate_diagnostic_receipt()
+            )
+    elif gate == "diagnosis":
+        arguments.update(
+            {
+                "run_id": "run-qualified",
+                "gate_id": "gate-diagnosis",
+                "gate_version": 1,
+                "schema_digest": "d" * 64,
+                "response": {
+                    "status": "completed",
+                    "summary": "qualification diagnosis accepted",
+                    "payload": {
+                        "root_cause": "qualification source defect",
+                        "evidence_ids": ["evidence-qualified"],
+                        "known_gaps": [],
+                    },
+                },
+            }
+        )
         structured["gate"] = {
+            "name": "developer.change",
             "gate_id": "gate-developer",
             "gate_version": 1,
             "schema_digest": "a" * 64,
             "owner": "openubmc-developer",
         }
+        structured["diagnostic_receipt"] = complete_candidate_diagnostic_receipt(
+            operation="diagnosis.acceptance"
+        )
     else:
         arguments.update(
             {
@@ -479,10 +568,25 @@ def passing_execute_run_evidence(
                         "type": "item.completed",
                         "item": {"type": "agent_message", "text": "start"},
                     },
-                    candidate_execute_event("start", "waiting_response", elapsed=0.5),
+                    candidate_execute_event(
+                        "start",
+                        "waiting_response",
+                        elapsed=0.5,
+                        gate="diagnosis",
+                    ),
                     {
                         "type": "item.completed",
-                        "item": {"type": "agent_message", "text": "respond"},
+                        "item": {"type": "agent_message", "text": "diagnose"},
+                    },
+                    candidate_execute_event(
+                        "respond",
+                        "waiting_response",
+                        elapsed=1.0,
+                        gate="diagnosis",
+                    ),
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "develop"},
                     },
                     candidate_execute_event("respond", "completed", elapsed=1.5),
                     {
@@ -1236,10 +1340,13 @@ class AgentGatewayAbTests(unittest.TestCase):
             arm="B",
         )
 
-        self.assertIn("读取 start 工具结果的 structured_content", prompt)
+        self.assertIn("读取每次工具结果的 structured_content", prompt)
         self.assertIn("标准 content 首部的同值 GateBinding 行", prompt)
-        self.assertIn("四项都必须是非空原值", prompt)
+        self.assertIn("绑定字段都必须是非空原值", prompt)
         self.assertIn("不得提交空字符串或尖括号占位符", prompt)
+        self.assertIn("diagnosis.acceptance Gate", prompt)
+        self.assertIn("diagnostic_receipt.evidence", prompt)
+        self.assertIn('"known_gaps":[]', prompt)
         self.assertIn(
             '"kind":"respond","run_id":"<structured_content.run_id>",'
             '"gate_id":"<structured_content.gate.gate_id>",'
@@ -1851,6 +1958,324 @@ class AgentGatewayAbTests(unittest.TestCase):
             "Gate response must match the fixed source receipt",
             accepted["errors"],
         )
+
+    def test_candidate_execute_acceptance_supports_diagnosis_then_development(
+        self,
+    ) -> None:
+        calls = [
+            candidate_execute_event(
+                "start",
+                "waiting_response",
+                elapsed=1,
+                gate="diagnosis",
+            )["item"],
+            candidate_execute_event(
+                "respond",
+                "waiting_response",
+                elapsed=2,
+                gate="diagnosis",
+            )["item"],
+            candidate_execute_event(
+                "respond",
+                "completed",
+                elapsed=3,
+            )["item"],
+        ]
+
+        accepted = module.candidate_execute_acceptance(calls)
+
+        self.assertTrue(accepted["passed"], accepted)
+        self.assertEqual(accepted["gate_roundtrips"], 2)
+        self.assertEqual(accepted["resume_calls"], 0)
+
+    def test_candidate_execute_acceptance_rejects_diagnosis_bypass(self) -> None:
+        for mutation, expected in (
+            (
+                lambda result: result.pop("diagnostic_receipt"),
+                "Developer Gate requires a complete evaluable diagnostic receipt",
+            ),
+            (
+                lambda result: result["diagnostic_receipt"].update(
+                    {"status": "partial"}
+                ),
+                "Developer Gate requires a complete evaluable diagnostic receipt",
+            ),
+            (
+                lambda result: result["gate"].update({"name": ""}),
+                "Developer-owned Gate must be developer.change",
+            ),
+            (
+                lambda result: result["diagnostic_receipt"].update(
+                    {"agent_acceptance": "partial"}
+                ),
+                "Developer Gate requires a complete evaluable diagnostic receipt",
+            ),
+            (
+                lambda result: result["diagnostic_receipt"]["coverage"].update(
+                    {
+                        "visible_evaluable": 0,
+                        "visible_not_checked": 1,
+                    }
+                ),
+                "Developer Gate requires a complete evaluable diagnostic receipt",
+            ),
+            (
+                lambda result: result["diagnostic_receipt"]["freshness"].update(
+                    {"observed_at": ""}
+                ),
+                "Developer Gate requires a complete evaluable diagnostic receipt",
+            ),
+            (
+                lambda result: result["diagnostic_receipt"].pop("results"),
+                "Developer Gate requires a complete evaluable diagnostic receipt",
+            ),
+            (
+                lambda result: result["diagnostic_receipt"]["results"][0].pop(
+                    "value"
+                ),
+                "Developer Gate requires a complete evaluable diagnostic receipt",
+            ),
+            (
+                lambda result: result["diagnostic_receipt"]["results"][0].update(
+                    {"value": {}}
+                ),
+                "Developer Gate requires a complete evaluable diagnostic receipt",
+            ),
+        ):
+            with self.subTest(expected=expected):
+                start = candidate_execute_event(
+                    "start", "waiting_response", elapsed=1
+                )["item"]
+                mutation(start["result"]["structured_content"])
+                respond = candidate_execute_event(
+                    "respond", "completed", elapsed=2
+                )["item"]
+
+                accepted = module.candidate_execute_acceptance([start, respond])
+
+                self.assertFalse(accepted["passed"], accepted)
+                self.assertIn(expected, accepted["errors"])
+
+    def test_candidate_execute_acceptance_allows_complete_compacted_receipt(
+        self,
+    ) -> None:
+        start = candidate_execute_event(
+            "start", "waiting_response", elapsed=1
+        )["item"]
+        receipt = start["result"]["structured_content"]["diagnostic_receipt"]
+        receipt["content_compacted"] = True
+        receipt["coverage"]["compacted"] = 1
+        receipt["gaps"] = ["diagnostic_receipt_compacted"]
+        respond = candidate_execute_event(
+            "respond", "completed", elapsed=2
+        )["item"]
+
+        accepted = module.candidate_execute_acceptance([start, respond])
+
+        self.assertTrue(accepted["passed"], accepted)
+
+    def test_candidate_execute_acceptance_rejects_value_less_compacted_results(
+        self,
+    ) -> None:
+        start = candidate_execute_event(
+            "start", "waiting_response", elapsed=1
+        )["item"]
+        receipt = start["result"]["structured_content"]["diagnostic_receipt"]
+        receipt["results"] = []
+        receipt["compacted_results"] = {
+            "status": "available",
+            "gap": "result_preview_compacted",
+            "result_ids": ["result-qualified"],
+        }
+        receipt["content_compacted"] = True
+        receipt["coverage"]["compacted"] = 1
+        receipt["gaps"] = ["diagnostic_receipt_compacted"]
+        respond = candidate_execute_event(
+            "respond", "completed", elapsed=2
+        )["item"]
+
+        accepted = module.candidate_execute_acceptance([start, respond])
+
+        self.assertFalse(accepted["passed"], accepted)
+        self.assertIn(
+            "Developer Gate requires a complete evaluable diagnostic receipt",
+            accepted["errors"],
+        )
+
+    def test_candidate_execute_acceptance_binds_accepted_root_cause(self) -> None:
+        calls = [
+            candidate_execute_event(
+                "start",
+                "waiting_response",
+                elapsed=1,
+                gate="diagnosis",
+            )["item"],
+            candidate_execute_event(
+                "respond",
+                "waiting_response",
+                elapsed=2,
+                gate="diagnosis",
+            )["item"],
+            candidate_execute_event(
+                "respond",
+                "completed",
+                elapsed=3,
+            )["item"],
+        ]
+        calls[1]["result"]["structured_content"]["diagnostic_receipt"][
+            "results"
+        ][0]["value"]["root_cause"] = "a different diagnosis"
+
+        accepted = module.candidate_execute_acceptance(calls)
+
+        self.assertFalse(accepted["passed"], accepted)
+        self.assertIn(
+            "diagnosis response must return a complete evaluable receipt",
+            accepted["errors"],
+        )
+
+    def test_candidate_execute_acceptance_rejects_unrelated_nested_root_cause(
+        self,
+    ) -> None:
+        for unrelated in (
+            {"unrelated": {"root_cause": "qualification source defect"}},
+            {
+                "summary": [
+                    {
+                        "path": "$.unrelated.root_cause",
+                        "value": "qualification source defect",
+                    }
+                ]
+            },
+        ):
+            with self.subTest(unrelated=unrelated):
+                calls = [
+                    candidate_execute_event(
+                        "start",
+                        "waiting_response",
+                        elapsed=1,
+                        gate="diagnosis",
+                    )["item"],
+                    candidate_execute_event(
+                        "respond",
+                        "waiting_response",
+                        elapsed=2,
+                        gate="diagnosis",
+                    )["item"],
+                    candidate_execute_event(
+                        "respond",
+                        "completed",
+                        elapsed=3,
+                    )["item"],
+                ]
+                value = calls[1]["result"]["structured_content"][
+                    "diagnostic_receipt"
+                ]["results"][0]["value"]
+                value["root_cause"] = "a different diagnosis"
+                value.update(unrelated)
+
+                accepted = module.candidate_execute_acceptance(calls)
+
+                self.assertFalse(accepted["passed"], accepted)
+                self.assertIn(
+                    "diagnosis response must return a complete evaluable receipt",
+                    accepted["errors"],
+                )
+
+    def test_candidate_execute_acceptance_binds_root_cause_result_to_evidence(
+        self,
+    ) -> None:
+        calls = [
+            candidate_execute_event(
+                "start",
+                "waiting_response",
+                elapsed=1,
+                gate="diagnosis",
+            )["item"],
+            candidate_execute_event(
+                "respond",
+                "waiting_response",
+                elapsed=2,
+                gate="diagnosis",
+            )["item"],
+            candidate_execute_event(
+                "respond",
+                "completed",
+                elapsed=3,
+            )["item"],
+        ]
+        calls[1]["result"]["structured_content"]["diagnostic_receipt"][
+            "results"
+        ][0]["evidence_ids"] = ["evidence-from-another-run"]
+
+        accepted = module.candidate_execute_acceptance(calls)
+
+        self.assertFalse(accepted["passed"], accepted)
+        self.assertIn(
+            "diagnosis response must return a complete evaluable receipt",
+            accepted["errors"],
+        )
+
+    def test_candidate_execute_acceptance_rejects_partial_visible_coverage_shape(
+        self,
+    ) -> None:
+        start = candidate_execute_event(
+            "start", "waiting_response", elapsed=1
+        )["item"]
+        coverage = start["result"]["structured_content"]["diagnostic_receipt"][
+            "coverage"
+        ]
+        coverage.pop("visible_not_checked")
+        respond = candidate_execute_event(
+            "respond", "completed", elapsed=2
+        )["item"]
+
+        accepted = module.candidate_execute_acceptance([start, respond])
+
+        self.assertFalse(accepted["passed"], accepted)
+        self.assertIn(
+            "Developer Gate requires a complete evaluable diagnostic receipt",
+            accepted["errors"],
+        )
+
+    def test_candidate_execute_acceptance_rejects_incoherent_compaction(self) -> None:
+        mutations = (
+            lambda receipt: receipt.update(
+                {"gaps": ["diagnostic_receipt_compacted"]}
+            ),
+            lambda receipt: (
+                receipt.update(
+                    {
+                        "content_compacted": True,
+                        "gaps": ["diagnostic_receipt_compacted"],
+                    }
+                ),
+                receipt["coverage"].update({"compacted": 1}),
+                receipt["coverage"].pop("visible_not_checked"),
+                receipt["coverage"].pop("visible_unavailable"),
+                receipt["coverage"].pop("visible_evaluable"),
+            ),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                start = candidate_execute_event(
+                    "start", "waiting_response", elapsed=1
+                )["item"]
+                receipt = start["result"]["structured_content"][
+                    "diagnostic_receipt"
+                ]
+                mutate(receipt)
+                respond = candidate_execute_event(
+                    "respond", "completed", elapsed=2
+                )["item"]
+
+                accepted = module.candidate_execute_acceptance([start, respond])
+
+                self.assertFalse(accepted["passed"], accepted)
+                self.assertIn(
+                    "Developer Gate requires a complete evaluable diagnostic receipt",
+                    accepted["errors"],
+                )
 
     def test_semantic_acceptance_requires_fields_and_cautious_conclusion(self) -> None:
         text = (
@@ -2614,7 +3039,10 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertTrue(verified["promotable"], verified)
         self.assertEqual(verified["efficiency_decision"], "warning")
-        self.assertEqual(verified["efficiency_warnings"], ["duration_seconds"])
+        self.assertEqual(
+            verified["efficiency_warnings"],
+            ["tool_output_bytes", "duration_seconds"],
+        )
 
     def test_verify_rejects_efficiency_claims_not_derived_from_signed_evidence(self) -> None:
         schedule = module.balanced_schedule(10, seed=7)

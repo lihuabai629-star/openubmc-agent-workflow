@@ -13,7 +13,7 @@ operations, or claim production adoption.
 
 The deterministic paired evaluation preserves all architecture invariants and runs both paths on
 six equivalent tasks. The static `WorkflowDefinitions` path and isolated candidate each produce
-plans with four equivalent semantic Agent Gate turns, but only the candidate requires a model call
+plans with seven equivalent semantic Agent Gate turns, but only the candidate requires a model call
 for every task. The candidate now represents phase handoffs as actual Gate nodes and validates a
 live-patch compensation link. A separate containment corpus rejects five invalid proposals with
 zero false accepts, while unrelated and explicitly negated upgrade objectives are rejected. The
@@ -146,7 +146,7 @@ Gate schemas, semantic Agent Gate-turn counts, and expected compensation links. 
 fake planner derives proposals from objective features rather than an exact objective lookup, and
 rejects both an unrelated objective and a negated build/upgrade objective. The static
 `WorkflowDefinitions` path and isolated model planning each produce a valid pinned plan for all six
-tasks with four Gate turns, while the candidate adds six model calls and shows no validity or turn
+tasks with seven Gate turns, while the candidate adds six model calls and shows no validity or turn
 improvement. Five
 deliberately invalid outputs, including a phase handoff disguised as an action, are evaluated
 separately and all are rejected. This remains a
