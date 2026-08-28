@@ -218,6 +218,7 @@ class EvaluationHarnessRunTests(unittest.TestCase):
             self.assertEqual(Path(isolation["harness_home"]), run_root / "dsh-home")
             self.assertEqual(Path(isolation["sessions"]), run_root / "sessions")
             self.assertEqual(Path(isolation["runtime_state"]), run_root / "runtime-state")
+            self.assertEqual(Path(isolation["mcp_lifecycle"]), run_root / "mcp-processes")
             self.assertEqual(Path(isolation["mcp_config"]), run_root / "mcp.patch.yml")
             environment = captured["env"]
             self.assertEqual(environment["HOME"], str(run_root / "home"))
@@ -225,6 +226,15 @@ class EvaluationHarnessRunTests(unittest.TestCase):
             self.assertEqual(
                 environment["OPENUBMC_TARGET_RUNTIME_STATE_DIR"],
                 str(run_root / "runtime-state"),
+            )
+            self.assertEqual(environment["OPENUBMC_MCP_CLIENT"], "dsh")
+            self.assertEqual(
+                environment["OPENUBMC_MCP_TASK_ID"],
+                "qualification-aaaaaaaaaaaa",
+            )
+            self.assertEqual(
+                environment["OPENUBMC_MCP_LIFECYCLE_DIR"],
+                str(run_root / "mcp-processes"),
             )
             self.assertEqual(
                 environment["OPENUBMC_CREDENTIALS_FILE"],

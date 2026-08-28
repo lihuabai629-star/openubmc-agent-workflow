@@ -169,15 +169,33 @@ export function createTools(client) {
 }
 
 
-export function registerTools(server, client) {
+export function registerTools(server, client, processLifecycle = null) {
   for (const tool of createTools(client)) {
     const { name, handler, ...configuration } = tool;
-    server.registerTool(name, configuration, async input => {
-      try {
-        return await handler(input);
-      } catch (error) {
-        return errorResult(error);
+    server.registerTool(name, configuration, async (input, extra = {}) => {
+      if (
+        processLifecycle !== null
+        && typeof processLifecycle.attribute === "function"
+      ) {
+        const metadata = extra?._meta || {};
+        const taskId = metadata["codex/taskId"]
+          || metadata.taskId
+          || metadata.task_id
+          || extra.taskId;
+        processLifecycle.attribute({
+          client: metadata["codex/taskId"] ? "codex" : undefined,
+          taskId,
+          sessionId: extra.sessionId || taskId
+        });
       }
+      const invoke = async () => {
+        try {
+          return await handler(input);
+        } catch (error) {
+          return errorResult(error);
+        }
+      };
+      return invoke();
     });
   }
 }

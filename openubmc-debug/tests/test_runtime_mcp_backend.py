@@ -1758,6 +1758,110 @@ class RuntimeMcpBackendTests(unittest.TestCase):
             ["observe", "execute"],
         )
 
+    def test_stdio_entrypoint_records_task_scoped_process_lifecycle(self) -> None:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {},
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "target_runtime_mcp.py")],
+                input=json.dumps(request) + "\n",
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "OPENUBMC_MCP_CLIENT": "codex",
+                    "OPENUBMC_MCP_TASK_ID": "lifecycle-task",
+                    "OPENUBMC_MCP_SESSION_ID": "lifecycle-session",
+                    "OPENUBMC_MCP_PARENT_PID": str(os.getpid()),
+                    "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
+                    "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
+                },
+            )
+            records = list((root / "processes").glob("*.json"))
+            lifecycle = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(lifecycle["client"], "codex")
+        self.assertEqual(lifecycle["task_id"], "lifecycle-task")
+        self.assertEqual(lifecycle["session_id"], "lifecycle-session")
+        self.assertEqual(lifecycle["parent_pid"], os.getpid())
+        self.assertEqual(lifecycle["lifecycle_state"], "stopped")
+        self.assertEqual(lifecycle["exit_reason"], "stdin-closed")
+
+    def test_stdio_entrypoint_exits_when_recorded_parent_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            missing_parent_pid = (
+                int(Path("/proc/sys/kernel/pid_max").read_text(encoding="utf-8"))
+                + 1
+            )
+            process = subprocess.Popen(
+                [sys.executable, str(SCRIPTS / "target_runtime_mcp.py")],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    **os.environ,
+                    "OPENUBMC_MCP_CLIENT": "codex",
+                    "OPENUBMC_MCP_TASK_ID": "orphan-task",
+                    "OPENUBMC_MCP_SESSION_ID": "orphan-session",
+                    "OPENUBMC_MCP_PARENT_PID": str(missing_parent_pid),
+                    "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
+                    "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
+                    "OPENUBMC_MCP_LIFECYCLE_POLL_SECONDS": "0.01",
+                },
+            )
+            try:
+                return_code = process.wait(timeout=3)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=3)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+            records = list((root / "processes").glob("*.json"))
+            lifecycle = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(lifecycle["lifecycle_state"], "stopped")
+        self.assertEqual(lifecycle["exit_reason"], "parent-exited")
+
+    def test_stdio_entrypoint_records_invalid_parent_environment_as_startup_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "target_runtime_mcp.py")],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "OPENUBMC_MCP_CLIENT": "codex",
+                    "OPENUBMC_MCP_TASK_ID": "invalid-parent-task",
+                    "OPENUBMC_MCP_SESSION_ID": "invalid-parent-session",
+                    "OPENUBMC_MCP_PARENT_PID": "not-a-pid",
+                    "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
+                    "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
+                },
+            )
+            records = list((root / "processes").glob("*.json"))
+            lifecycle = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("must be a non-negative integer", completed.stderr)
+        self.assertEqual(lifecycle["parent_pid"], 0)
+        self.assertEqual(lifecycle["lifecycle_state"], "stopped")
+        self.assertEqual(lifecycle["exit_reason"], "startup-error")
+
     def test_stdio_validation_failure_returns_an_error_and_keeps_serving(self) -> None:
         requests = [
             {

@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { OneIdClient } from "./auth/oneid-client.js";
 import { loadConfig } from "./config.js";
 import { LightRagClient } from "./lightrag-client.js";
+import {
+  McpProcessLifecycle,
+  installMcpProcessSignalHandlers
+} from "./process-lifecycle.js";
 import { registerTools } from "./tools.js";
 
 
@@ -15,7 +21,7 @@ function configPath(argv) {
 }
 
 
-export async function createServer(path) {
+export async function createServer(path, processLifecycle = null) {
   const config = await loadConfig(path, { allowMissingCredentials: true });
   const auth = new OneIdClient(config);
   const lightrag = new LightRagClient(config, auth);
@@ -25,18 +31,242 @@ export async function createServer(path) {
       instructions: "Use the read-only openUBMC knowledge-base tools for candidate discovery. Runtime and repository evidence remain authoritative."
     }
   );
-  registerTools(server, lightrag);
+  registerTools(server, lightrag, processLifecycle);
   return server;
 }
 
 
+function positiveEnvironmentNumber(name, fallback) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !(value > 0)) {
+    throw new Error(`${name} must be finite and positive`);
+  }
+  return value;
+}
+
+
+function createProcessLifecycle(path) {
+  const configuredTask = process.env.OPENUBMC_MCP_TASK_ID?.trim()
+    || process.env.CODEX_TASK_ID?.trim()
+    || process.env.OPENUBMC_EVALUATION_TASK_ID?.trim()
+    || process.env.CLAUDE_CODE_SESSION_ID?.trim()
+    || process.env.CLAUDE_SESSION_ID?.trim();
+  const configuredSession = process.env.OPENUBMC_MCP_SESSION_ID?.trim();
+  const sessionId = configuredSession || configuredTask || "unknown-session";
+  const taskId = configuredTask || "unknown-task";
+  let client = process.env.OPENUBMC_MCP_CLIENT?.trim();
+  if (!client && process.env.CODEX_TASK_ID?.trim()) client = "codex";
+  else if (
+    !client
+    && (process.env.CLAUDE_CODE_SESSION_ID?.trim() || process.env.CLAUDE_SESSION_ID?.trim())
+  ) client = "claude";
+  else if (!client && process.env.OPENUBMC_EVALUATION_TASK_ID?.trim()) client = "dsh";
+  client ||= "unknown-client";
+  const configuredParentPid = process.env.OPENUBMC_MCP_PARENT_PID?.trim();
+  let parentPid = configuredParentPid ? Number(configuredParentPid) : process.ppid;
+  let startupError = null;
+  if (
+    (configuredParentPid && !/^[0-9]+$/.test(configuredParentPid))
+    || !Number.isInteger(parentPid)
+    || parentPid < 0
+  ) {
+    parentPid = 0;
+    startupError = "OPENUBMC_MCP_PARENT_PID must be a non-negative integer";
+  }
+  const statePath = resolve(
+    process.env.OPENUBMC_KB_STATE_PATH?.trim()
+      || path
+      || join(homedir(), ".config", "openubmc", "kb-mcp.json")
+  );
+  const lifecycleRoot = resolve(
+    process.env.OPENUBMC_MCP_LIFECYCLE_DIR?.trim()
+      || join(homedir(), ".local", "state", "openubmc-agent-workflow", "mcp-processes")
+  );
+  let idleTimeoutSeconds = 1800;
+  try {
+    idleTimeoutSeconds = positiveEnvironmentNumber(
+      "OPENUBMC_MCP_IDLE_TIMEOUT_SECONDS",
+      1800
+    );
+  } catch (error) {
+    startupError ||= error.message;
+  }
+  return {
+    lifecycle: new McpProcessLifecycle({
+    component: "knowledge-mcp",
+    version: "1.3.0",
+    client,
+    taskId,
+    sessionId,
+    parentPid,
+    statePath,
+    lifecycleRoot,
+    idleTimeoutSeconds
+    }),
+    startupError
+  };
+}
+
+
+export class PendingResponses {
+  constructor() {
+    this.counts = new Map();
+  }
+
+  add(requestId) {
+    this.counts.set(requestId, (this.counts.get(requestId) || 0) + 1);
+  }
+
+  finish(requestId) {
+    const count = this.counts.get(requestId) || 0;
+    if (count <= 0) return false;
+    if (count === 1) this.counts.delete(requestId);
+    else this.counts.set(requestId, count - 1);
+    return true;
+  }
+
+  get size() {
+    return this.counts.size;
+  }
+}
+
+
 async function main() {
-  const server = await createServer(configPath(process.argv.slice(2)));
+  const selectedConfigPath = configPath(process.argv.slice(2));
+  const { lifecycle: processLifecycle, startupError } = createProcessLifecycle(
+    selectedConfigPath
+  );
+  process.once("exit", () => {
+    try {
+      processLifecycle.recordExit("process-exit");
+    } catch {
+      // Active requests remain non-terminal until their response drains.
+    }
+  });
+  if (startupError !== null) {
+    processLifecycle.recordExit("startup-error");
+    throw new Error(startupError);
+  }
+  let pollMilliseconds;
+  try {
+    pollMilliseconds = positiveEnvironmentNumber(
+      "OPENUBMC_MCP_LIFECYCLE_POLL_SECONDS",
+      0.25
+    ) * 1000;
+  } catch (error) {
+    processLifecycle.recordExit("startup-error");
+    throw error;
+  }
+  let server;
+  try {
+    server = await createServer(selectedConfigPath, processLifecycle);
+  } catch (error) {
+    processLifecycle.recordExit("startup-error");
+    throw error;
+  }
   const transport = new StdioServerTransport();
+  const pendingResponses = new PendingResponses();
+  transport.onmessage = message => {
+    if (!Object.hasOwn(message, "id")) return;
+    processLifecycle.beginRequest();
+    pendingResponses.add(message.id);
+  };
+  let stdinClosed = false;
   transport.onerror = error => {
     console.error(error instanceof Error ? error.message : "MCP stdio transport error");
   };
+  let stopping = false;
+  let pendingExitReason = null;
+  let monitor;
+  const send = transport.send.bind(transport);
+  transport.send = async message => {
+    const hasResponseId = Object.hasOwn(message, "id");
+    const responseId = message.id;
+    try {
+      await send(message);
+    } finally {
+      if (hasResponseId && pendingResponses.finish(responseId)) {
+        processLifecycle.endRequest();
+      }
+    }
+    monitor.unref();
+    if (stdinClosed && pendingResponses.size === 0) {
+      stop("stdin-closed", { exitProcess: true }).catch(() => {});
+    }
+  };
+  const stop = async (reason, { exitProcess = false } = {}) => {
+    if (stopping) return;
+    const selectedReason = processLifecycle.shutdownReason || reason;
+    if (processLifecycle.activeRequests > 0 || pendingResponses.size > 0) {
+      processLifecycle.requestExit(selectedReason);
+      pendingExitReason = selectedReason;
+      return;
+    }
+    stopping = true;
+    if (monitor !== undefined) clearInterval(monitor);
+    processLifecycle.recordExit(selectedReason);
+    await server.close().catch(() => {});
+    if (exitProcess) process.exit(0);
+  };
+  const removeSignalHandlers = installMcpProcessSignalHandlers(processLifecycle);
+  const stdinEnded = () => {
+    stdinClosed = true;
+    if (pendingResponses.size === 0) {
+      stop("stdin-closed", { exitProcess: true }).catch(() => {});
+    }
+  };
+  process.stdin.once("end", stdinEnded);
+  process.stdin.once("close", stdinEnded);
+  monitor = setInterval(async () => {
+    if (
+      pendingExitReason !== null
+      && processLifecycle.activeRequests === 0
+      && pendingResponses.size === 0
+    ) {
+      const reason = pendingExitReason;
+      pendingExitReason = null;
+      await stop(reason, { exitProcess: true });
+      return;
+    }
+    const reason = processLifecycle.exitReasonIfDue();
+    if (reason === null || stopping) return;
+    await stop(reason, { exitProcess: true });
+  }, pollMilliseconds);
   await server.connect(transport);
+  const dispatch = transport.onmessage;
+  transport.onmessage = (message, extra) => {
+    const hasResponse = Object.hasOwn(message, "id");
+    if (processLifecycle.shutdownRequested) {
+      if (hasResponse) {
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32000, message: "MCP process is shutting down" }
+        }).catch(() => {});
+      }
+      return;
+    }
+    if (hasResponse) {
+      const requestId = message.id;
+      try {
+        dispatch?.(message, extra);
+      } catch (error) {
+        pendingResponses.finish(requestId);
+        processLifecycle.endRequest();
+        throw error;
+      }
+      return;
+    }
+    dispatch?.(message, extra);
+  };
+  process.once("exit", () => {
+    removeSignalHandlers();
+    if (processLifecycle.activeRequests > 0) {
+      processLifecycle.recordForcedExit("process-exit");
+    }
+  });
 }
 
 
