@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import uuid
@@ -806,6 +807,16 @@ class AgentGatewayAbTests(unittest.TestCase):
                 baseline_ref="baseline-ref",
             )
 
+    def test_execution_identity_falls_back_to_the_runner_before_thread_start(self) -> None:
+        execution_id = str(uuid.uuid4())
+
+        self.assertEqual(
+            module._execution_identity(
+                [{"type": "runner.started", "execution_id": execution_id}]
+            ),
+            execution_id,
+        )
+
     def test_run_benchmark_rejects_a_dirty_candidate_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -991,6 +1002,107 @@ class AgentGatewayAbTests(unittest.TestCase):
             ):
                 module.run_benchmark(args)
 
+    def test_run_benchmark_records_a_pre_session_failure_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            initialize_git_repository(repo)
+            for skill_name in ("openubmc-debug", "openubmc-developer"):
+                skill_root = repo / skill_name
+                skill_root.mkdir()
+                (skill_root / "SKILL.md").write_text(
+                    f"---\nname: {skill_name}\ndescription: test\n---\n",
+                    encoding="utf-8",
+                )
+            (repo / "openubmc-debug" / "scripts").mkdir()
+            (repo / "openubmc-debug" / "scripts" / "target_runtime_mcp.py").write_text(
+                "# test\n", encoding="utf-8"
+            )
+            module.subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            module.subprocess.run(
+                ["git", "commit", "-m", "add benchmark skills"], cwd=repo, check=True
+            )
+            private_key, public_key = signing_keys(root / "keys")
+            credentials = root / "credentials.env"
+            credentials.write_text("OPENUBMC_USERNAME=test\n", encoding="utf-8")
+            args = module.argparse.Namespace(
+                repo=repo,
+                model=module.QUALIFICATION_MODEL,
+                codex_config=list(module.QUALIFICATION_CODEX_CONFIG),
+                attestation_private_key=private_key,
+                attestation_public_key=public_key,
+                work_root=root / "work",
+                baseline_ref="HEAD",
+                output=None,
+                pairs=1,
+                seed=1,
+                credentials=credentials,
+                only_arm="B",
+                scenario="execute-source-only",
+                codex=str(
+                    codex_executable(root / "tools", module.QUALIFICATION_CODEX_VERSION)
+                ),
+                codex_cwd=repo,
+                pause_seconds=0,
+            )
+
+            observed_environment = {}
+
+            def fail_before_session(*_args, stdout, stderr, env, **_kwargs):
+                observed_environment.update(env)
+                stdout.write_text("", encoding="utf-8")
+                stderr.write_text("required MCP startup failed\n", encoding="utf-8")
+                time.sleep(0.002)
+                return 1
+
+            with patch.object(module, "_run", side_effect=fail_before_session):
+                result = module.run_benchmark(args)
+
+            result_root = next((root / "work").glob("results-*"))
+            run_evidence = json.loads(
+                (result_root / "run_evidence.json").read_text(encoding="utf-8")
+            )
+            recorded_run = run_evidence["runs"][0]
+            source_commit = module._git_commit(repo, "HEAD")
+            verification = module.verify_summary(
+                result_root / "summary.json",
+                expected_source_commit=source_commit,
+                expected_baseline_commit=source_commit,
+                attestation_public_key=public_key,
+            )
+
+        self.assertEqual(result, 1)
+        self.assertFalse(module.metrics_from_run_evidence(run_evidence)[0]["valid"])
+        self.assertTrue(
+            any(
+                event.get("type") == "runner.started"
+                and event.get("execution_id") == recorded_run["execution_id"]
+                for event in recorded_run["events"]
+            )
+        )
+        self.assertFalse(
+            any(
+                "execution identity does not match" in error
+                for error in verification["errors"]
+            ),
+            verification,
+        )
+        for variable in (
+            "OPENUBMC_EVALUATION_TASK_ID",
+            "OPENUBMC_MCP_TASK_ID",
+            "OPENUBMC_MCP_SESSION_ID",
+        ):
+            self.assertEqual(
+                observed_environment[variable],
+                recorded_run["execution_id"],
+                variable,
+            )
+        self.assertEqual(
+            observed_environment["OPENUBMC_MCP_CLIENT"],
+            "codex-qualification",
+        )
+
     def test_run_benchmark_rejects_an_untrusted_attestation_key_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory() as key_raw:
             root = Path(raw)
@@ -1102,6 +1214,20 @@ class AgentGatewayAbTests(unittest.TestCase):
                 command,
                 arm,
             )
+            environment_config = next(
+                value
+                for value in command
+                if value.startswith(
+                    "mcp_servers.openubmc-target-runtime.env_vars="
+                )
+            )
+            for variable in (
+                "OPENUBMC_EVALUATION_TASK_ID",
+                "OPENUBMC_MCP_TASK_ID",
+                "OPENUBMC_MCP_SESSION_ID",
+                "OPENUBMC_MCP_CLIENT",
+            ):
+                self.assertIn(variable, environment_config, arm)
 
     def test_candidate_execute_prompt_uses_the_current_gate_response_shape(self) -> None:
         prompt = module._prompt(
@@ -2628,6 +2754,7 @@ class AgentGatewayAbTests(unittest.TestCase):
             module.QUALIFICATION_CODEX_CONFIG,
             (
                 "features.shell_tool=false",
+                "features.plugins=false",
                 'model_provider="cliproxy"',
                 'model_providers.cliproxy.name="CLIProxyAPI"',
                 'model_providers.cliproxy.base_url="http://82.156.104.157/v1"',
