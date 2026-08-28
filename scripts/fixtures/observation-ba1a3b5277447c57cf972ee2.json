@@ -1,0 +1,24 @@
+{
+  "schema": "openubmc-agent-workflow.diagnosis-chain-fixture.v1",
+  "source_receipt_id": "observation-ba1a3b5277447c57cf972ee2",
+  "target": "192.0.2.115",
+  "source_observed_at": "2026-08-25T04:42:55Z",
+  "freshness": {
+    "mode": "live",
+    "max_age_seconds": 0
+  },
+  "selectors": [
+    {
+      "id": "drive-facts",
+      "kind": "mdb",
+      "queries": [
+        "lsprop Drive_1_010102"
+      ]
+    }
+  ],
+  "capabilities": {
+    "ssh_transport": true,
+    "mdbctl": true
+  },
+  "diagnosis_gap": "diagnostic_result_not_visible"
+}

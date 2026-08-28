@@ -281,6 +281,10 @@ Replay:
 - Operator Incident metrics are reconstructed from persisted Run events;
 - legacy operations are absent and governance operations require the operator profile.
 
+The hermetic [diagnosis-chain qualification](diagnosis-chain-qualification.md) continuously checks
+the blocked and recoverable `ObservationRef → diagnosis.acceptance → developer.change → Outcome`
+path through the public Agent seam. It runs before the broader test roots in repository validation.
+
 Live qualification remains a separate paired AB/BA experiment with a correctness-first release
 contract. Historical execute qualification may check out a pinned pre-retirement source for the
 baseline arm; the candidate and all current installations use the Agent profile.
