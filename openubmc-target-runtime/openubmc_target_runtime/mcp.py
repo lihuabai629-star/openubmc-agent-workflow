@@ -1588,6 +1588,11 @@ class OrchestratedMcpBackend:
         steps = task.orchestration.intent.steps
         if len(steps) <= 1 or steps[0].canonical_name != tool_name:
             return False
+        if any(
+            step.canonical_name == "diagnosis.acceptance"
+            for step in steps
+        ):
+            return False
         required_tools = {
             step.canonical_name
             for step in steps
@@ -1601,8 +1606,11 @@ class OrchestratedMcpBackend:
         ):
             sections = self._workflow_sections(arguments)
             for step in steps:
-                if step.kind == "phase" and not isinstance(
+                if (
+                    step.kind == "phase"
+                    and not isinstance(
                     sections.get(step.domain), Mapping
+                    )
                 ):
                     return False
                 if step.kind == "operation":

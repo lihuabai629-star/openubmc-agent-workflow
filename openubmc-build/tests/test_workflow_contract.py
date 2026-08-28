@@ -49,7 +49,15 @@ class BuildWorkflowBackend:
         context.raise_if_stopped()
         captured = dict(arguments)
         self.calls.append(("debug_run", captured))
-        return {"ok": True, "task_id": task.task_id, "ip": captured.get("ip")}
+        return {
+            "ok": True,
+            "task_id": task.task_id,
+            "ip": captured.get("ip"),
+            "summary": "diagnosis completed",
+            "root_cause": "the bounded source defect was identified",
+            "observed_at": "2026-08-29T00:00:00Z",
+            "freshness": {"status": "fresh"},
+        }
 
     def upgrade_run(self, task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()

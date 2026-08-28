@@ -905,7 +905,6 @@ class DiagnosticReceipt:
             operation=_bounded_text(self.operation, 128),
             content_compacted=True,
         )
-
     def bounded_for_persistence(self) -> "DiagnosticReceipt":
         if len(_json_bytes(self.to_public_dict())) <= DIAGNOSTIC_RECEIPT_MAX_BYTES:
             return self
@@ -1022,6 +1021,32 @@ class DiagnosticReceipt:
                 (*minimal.gaps[:7], "diagnostic_result_identities_exceed_budget")
             ),
         )
+
+
+def latest_diagnostic_receipt(
+    projection: Mapping[str, object],
+) -> DiagnosticReceipt | None:
+    """Return the latest receipt in the current workflow cycle.
+
+    Phase receipts supersede Domain operation receipts, so every Runtime reader
+    observes the same diagnosis lineage after a diagnosis Gate is accepted.
+    """
+
+    cycle_id = str(projection.get("workflow_cycle_id") or "cycle-1").strip()
+    for collection_name in ("phase_records", "operations"):
+        records = projection.get(collection_name, [])
+        if not isinstance(records, list):
+            continue
+        for record in reversed(records):
+            if not isinstance(record, Mapping):
+                continue
+            record_cycle = str(record.get("workflow_cycle_id") or "").strip()
+            if (record_cycle or "cycle-1") != cycle_id:
+                continue
+            candidate = record.get("diagnostic_receipt")
+            if isinstance(candidate, Mapping):
+                return DiagnosticReceipt.from_public_dict(candidate)
+    return None
 
 
 def _mapping(value: object) -> Mapping[str, object]:

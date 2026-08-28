@@ -55,6 +55,11 @@ from .effect_runner import (
     PreparedEffect,
 )
 from .capability import EffectClass
+from .diagnostic_receipt import (
+    DiagnosticStatus,
+    build_diagnostic_receipt,
+    latest_diagnostic_receipt,
+)
 from .observation import (
     aggregate_observation_partitions,
     observation_consistency,
@@ -194,6 +199,17 @@ def gate_input_schema(
             completed_required.extend(
                 ["artifact_ref", "remote_path", "restart_scope"]
             )
+    elif phase_type == "diagnosis.acceptance":
+        payload_properties = {
+            "root_cause": _string_schema(),
+            "evidence_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
+            },
+            "known_gaps": _string_array_schema(),
+        }
+        completed_required = ["root_cause", "evidence_ids", "known_gaps"]
     elif phase_type == "build.artifact":
         payload_properties = {
             "source_revision": _string_schema(),
@@ -850,6 +866,9 @@ class RunEngine:
                         item, child_schema, path=f"{path}.{name}"
                     )
         if isinstance(value, list):
+            minimum = schema.get("minItems")
+            if isinstance(minimum, int) and len(value) < minimum:
+                raise GateConflict(f"{path} requires at least {minimum} item(s)")
             item_schema = schema.get("items")
             if isinstance(item_schema, Mapping):
                 for index, item in enumerate(value):
@@ -1016,7 +1035,81 @@ class RunEngine:
             "native_run_fact": True,
             **payload,
         }
+        if gate.name == "diagnosis.acceptance" and record["status"] == "completed":
+            prior = latest_diagnostic_receipt(projection)
+            if prior is None:
+                raise GateConflict(
+                    "diagnosis acceptance requires a Runtime diagnostic receipt"
+                )
+            requested_evidence_ids = tuple(
+                str(item)
+                for item in payload.get("evidence_ids", [])
+                if isinstance(item, str) and item
+            )
+            available_evidence = {
+                item.evidence_id: item.to_public_dict() for item in prior.evidence
+            }
+            unknown_evidence = sorted(
+                set(requested_evidence_ids) - set(available_evidence)
+            )
+            if unknown_evidence:
+                raise GateConflict(
+                    "diagnosis evidence_ids are not bound to the current receipt: "
+                    + ", ".join(unknown_evidence)
+                )
+            start_input = _mapping(projection.get("start_input"))
+            start_observation = _mapping(start_input.get("observation_ref"))
+            observed_at = (
+                _text(start_observation.get("observed_at"))
+                or prior.freshness.observed_at
+            )
+            if not observed_at:
+                raise GateConflict(
+                    "diagnosis evidence has no Runtime-owned observation time"
+                )
+            runtime_freshness = prior.freshness.to_public_dict()
+            if (
+                start_observation
+                and prior.freshness.status.value == "unknown"
+                and not prior.freshness.unavailable_dimensions
+                and not prior.freshness.lost_dimensions
+                and not prior.freshness.stale_evidence
+            ):
+                runtime_freshness = {"status": "fresh", "complete": True}
+            record["supersedes_diagnostic_receipt_id"] = prior.receipt_id
+            accepted = build_diagnostic_receipt(
+                "diagnosis.acceptance",
+                {
+                    "summary": record["summary"],
+                    "root_cause": payload.get("root_cause", ""),
+                    "observed_at": observed_at,
+                    "freshness": runtime_freshness,
+                },
+                {"evidence_ids": list(requested_evidence_ids)},
+                tuple(
+                    available_evidence[evidence_id]
+                    for evidence_id in requested_evidence_ids
+                ),
+                closeout_stage="diagnosis",
+            )
+            if (
+                accepted is None
+                or accepted.status_for_agent_acceptance()
+                is not DiagnosticStatus.COMPLETE
+            ):
+                raise GateConflict(
+                    "diagnosis response did not form a complete evaluable receipt"
+                )
+            record["diagnostic_receipt"] = accepted.to_public_dict()
         return record
+
+    @classmethod
+    def _diagnosis_accepted(cls, projection: Mapping[str, object]) -> bool:
+        receipt = latest_diagnostic_receipt(projection)
+        return (
+            receipt is not None
+            and receipt.status_for_agent_acceptance() is DiagnosticStatus.COMPLETE
+        )
 
     @staticmethod
     def _current_incident(projection: Mapping[str, object]) -> Incident | None:
@@ -1384,6 +1477,26 @@ class RunEngine:
                 continue
             required_phase = _text(continuation.get("required_phase_type"))
             if required_phase:
+                if (
+                    required_phase == "developer.change"
+                    and _text(projection.get("intent")) == "diagnose-and-fix"
+                    and not self._diagnosis_accepted(projection)
+                ):
+                    snapshot = self._record_incident(
+                        snapshot,
+                        code="diagnosis_not_accepted",
+                        message=(
+                            "developer.change requires a complete evaluable "
+                            "Runtime diagnostic receipt"
+                        ),
+                        effect_id="debug_run",
+                        operation_id=f"{operation_id}-diagnosis-incident",
+                    )
+                    return self._turn(
+                        snapshot,
+                        observation_ref=observation_ref,
+                        state="incident",
+                    )
                 gate = self._current_gate(
                     snapshot,
                     operation_id=f"{operation_id}-gate",
@@ -1535,6 +1648,12 @@ class RunEngine:
                 snapshot,
                 task_id=task_id,
                 operation_id=f"{operation_id}-duplicate",
+            )
+        incident = self._current_incident(_projection(snapshot))
+        if incident is not None:
+            raise GateConflict(
+                "Run is waiting at an Incident; resolve or cancel the Incident "
+                "before submitting a Gate"
             )
         gate = self._current_gate(snapshot, operation_id=f"{operation_id}-gate")
         if gate is None:

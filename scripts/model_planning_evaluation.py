@@ -93,11 +93,16 @@ DEVELOPER_CHANGE_GATE = phase_gate_schema(
     "developer.change",
     delivery_strategy="source-only",
 )
+DIAGNOSIS_ACCEPTANCE_GATE = phase_gate_schema(
+    "diagnosis.acceptance",
+    delivery_strategy="source-only",
+)
 BUILD_ARTIFACT_GATE = phase_gate_schema(
     "build.artifact",
     delivery_strategy="build-upgrade",
 )
 GATE_PHASES = {
+    DIAGNOSIS_ACCEPTANCE_GATE: "diagnosis.acceptance",
     DEVELOPER_CHANGE_GATE: "developer.change",
     BUILD_ARTIFACT_GATE: "build.artifact",
 }
@@ -155,15 +160,21 @@ def semantic_proposal(
 
 def paired_corpus() -> tuple[EvaluationCase, ...]:
     diagnosis = ("debug_run",)
-    source_change = ("debug_run", "developer.change")
+    source_change = (
+        "debug_run",
+        "diagnosis.acceptance",
+        "developer.change",
+    )
     live_patch = (
         "debug_run",
+        "diagnosis.acceptance",
         "developer.change",
         "live_patch_run",
         "debug_collect",
     )
     build_upgrade = (
         "debug_run",
+        "diagnosis.acceptance",
         "developer.change",
         "build.artifact",
         "upgrade_run",
@@ -298,7 +309,11 @@ def evaluation_policy() -> PlanPolicy:
             "upgrade.component",
             "upgrade_run",
         },
-        allowed_gate_schemas={DEVELOPER_CHANGE_GATE, BUILD_ARTIFACT_GATE},
+        allowed_gate_schemas={
+            DIAGNOSIS_ACCEPTANCE_GATE,
+            DEVELOPER_CHANGE_GATE,
+            BUILD_ARTIFACT_GATE,
+        },
         allowed_subflows={"diagnose": {"v1"}},
     )
 
@@ -324,12 +339,14 @@ def plan_for_objective(objective: str) -> Mapping[str, object]:
     if "source-only" in selected or "source only" in selected:
         steps = (
             ("action", "debug_run"),
+            ("gate", DIAGNOSIS_ACCEPTANCE_GATE),
             ("gate", DEVELOPER_CHANGE_GATE),
         )
         return semantic_proposal(steps)
     if "live patch" in selected:
         steps = (
             ("action", "debug_run"),
+            ("gate", DIAGNOSIS_ACCEPTANCE_GATE),
             ("gate", DEVELOPER_CHANGE_GATE),
             ("action", "live_patch_run"),
             ("action", "debug_collect"),
@@ -341,6 +358,7 @@ def plan_for_objective(objective: str) -> Mapping[str, object]:
     if "build" in selected and "upgrade" in selected and "firmware" in selected:
         steps = (
             ("action", "debug_run"),
+            ("gate", DIAGNOSIS_ACCEPTANCE_GATE),
             ("gate", DEVELOPER_CHANGE_GATE),
             ("gate", BUILD_ARTIFACT_GATE),
             ("action", "upgrade_run"),
@@ -708,8 +726,8 @@ def evaluate() -> dict[str, object]:
         "verdict": verdict,
         "reason": (
             "The static WorkflowDefinitions path and isolated candidate both produce "
-            "valid pinned "
-            "plans with the same four semantic Gate turns across six equivalent tasks, "
+            "valid pinned plans with the same "
+            f"{static_agent_gate_turns} semantic Gate turns across six equivalent tasks, "
             "while the candidate requires one model call per task; five separate "
             "invalid outputs and two negative controls are contained."
         ),

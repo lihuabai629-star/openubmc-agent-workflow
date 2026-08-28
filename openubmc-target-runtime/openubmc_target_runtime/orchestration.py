@@ -710,6 +710,8 @@ class TaskWorkflowOrchestrator:
         handlers: Mapping[str, Callable[[DomainExecutionContext], DomainOutcome[object]]],
         step: WorkflowStep,
     ) -> Callable[[DomainExecutionContext], DomainOutcome[object]] | None:
+        if step.canonical_name == "diagnosis.acceptance":
+            return handlers.get(step.key)
         return handlers.get(step.key) or handlers.get(step.domain)
 
     @staticmethod

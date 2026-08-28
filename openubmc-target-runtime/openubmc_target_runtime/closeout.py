@@ -983,6 +983,8 @@ def _phase_receipt(
             "build_commands",
             "build_logs",
             "known_gaps",
+            "root_cause",
+            "supersedes_diagnostic_receipt_id",
             "remote_path",
             "restart_scope",
         )
@@ -1580,6 +1582,14 @@ def aggregate_case_closeout(
             _text_from(value, "summary", "root_cause")
             or str(operation.get("summary", ""))
         )
+        facts = _selected_facts(stage, value, inputs)
+        raw_diagnostic_receipt = operation.get("diagnostic_receipt")
+        if stage == "diagnosis" and isinstance(raw_diagnostic_receipt, Mapping):
+            diagnostic_receipt_id = str(
+                raw_diagnostic_receipt.get("receipt_id", "")
+            ).strip()
+            if diagnostic_receipt_id:
+                facts["diagnostic_receipt_id"] = diagnostic_receipt_id
         receipt = StageReceipt.create(
             stage=stage,
             producer=operation_name,
@@ -1592,7 +1602,7 @@ def aggregate_case_closeout(
             summary=summary,
             operation_id=str(operation.get("operation_id", "")),
             evidence_ids=operation_evidence_ids,
-            facts=_selected_facts(stage, value, inputs),
+            facts=facts,
             artifacts=_operation_artifacts(stage, value, inputs),
             target_epoch=_target_epoch(value, operation),
         )
@@ -1682,6 +1692,27 @@ def aggregate_case_closeout(
                 evidence_loaded=evidence_loaded,
             )
         )
+
+    accepted_diagnosis_producer = DEFAULT_PHASE_REGISTRY.require(
+        "diagnosis.acceptance"
+    ).owner
+    superseded_diagnostic_receipt_ids = {
+        str(receipt.facts.get("supersedes_diagnostic_receipt_id", "")).strip()
+        for receipt in receipts
+        if receipt.stage == "diagnosis"
+        and receipt.status == "completed"
+        and receipt.producer == accepted_diagnosis_producer
+        and str(
+            receipt.facts.get("supersedes_diagnostic_receipt_id", "")
+        ).strip()
+    }
+    if superseded_diagnostic_receipt_ids:
+        receipts = [
+            receipt
+            for receipt in receipts
+            if str(receipt.facts.get("diagnostic_receipt_id", "")).strip()
+            not in superseded_diagnostic_receipt_ids
+        ]
 
     receipts.sort(key=lambda item: (_STAGE_ORDER.get(item.stage, 999), item.receipt_id))
     stage_receipts = _receipts_by_stage(receipts)

@@ -32,7 +32,11 @@ from .closeout import (
     render_markdown,
 )
 from .contracts import RUNTIME_API_VERSION
-from .diagnostic_receipt import build_diagnostic_receipt
+from .diagnostic_receipt import (
+    DiagnosticStatus,
+    build_diagnostic_receipt,
+    latest_diagnostic_receipt,
+)
 from .effect_runner import EffectIntent, EffectSettlementMode, PreparedEffect
 from .evidence_store import EvidenceQuery
 from .mutation import (
@@ -5612,9 +5616,15 @@ class ContextRuntime:
             if kind == "phase":
                 current = projection.get("workflow_phase_values", {})
                 record = current.get(name) if isinstance(current, Mapping) else None
+                if isinstance(record, Mapping):
+                    return str(record.get("status", "")) == "completed"
+                if name != "diagnosis.acceptance":
+                    return False
+                receipt = latest_diagnostic_receipt(projection)
                 return (
-                    isinstance(record, Mapping)
-                    and str(record.get("status", "")) == "completed"
+                    receipt is not None
+                    and receipt.status_for_agent_acceptance()
+                    is DiagnosticStatus.COMPLETE
                 )
             expected_target_id = (
                 cls._workflow_step_target_id(

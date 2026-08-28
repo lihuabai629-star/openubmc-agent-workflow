@@ -26,6 +26,16 @@ from typing import Iterable, Mapping
 import uuid
 
 
+ROOT = Path(__file__).resolve().parents[1]
+TARGET_RUNTIME_ROOT = ROOT / "openubmc-target-runtime"
+if str(TARGET_RUNTIME_ROOT) not in sys.path:
+    sys.path.insert(0, str(TARGET_RUNTIME_ROOT))
+
+from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
+    diagnostic_result_value_evaluable,
+)
+
+
 SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v3"
 RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v2"
 RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v2"
@@ -343,6 +353,220 @@ def _qualification_source_receipt() -> dict[str, object]:
     }
 
 
+def _qualification_diagnosis_receipt(
+    evidence_ids: Iterable[str],
+) -> dict[str, object]:
+    return {
+        "status": "completed",
+        "summary": "qualification diagnosis accepted",
+        "payload": {
+            "root_cause": "qualification source defect",
+            "evidence_ids": list(evidence_ids),
+            "known_gaps": [],
+        },
+    }
+
+
+def _qualification_diagnosis_respond_template() -> str:
+    return json.dumps(
+        {
+            "kind": "respond",
+            "run_id": "<structured_content.run_id>",
+            "gate_id": "<structured_content.gate.gate_id>",
+            "gate_version": "<structured_content.gate.gate_version>",
+            "schema_digest": "<structured_content.gate.schema_digest>",
+            "response": _qualification_diagnosis_receipt(
+                ["<all current diagnostic_receipt.evidence[].evidence_id values>"]
+            ),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).replace(
+        '"gate_version":"<structured_content.gate.gate_version>"',
+        '"gate_version":<structured_content.gate.gate_version>',
+    )
+
+
+def _complete_diagnostic_receipt(
+    value: Mapping[str, object],
+    *,
+    expected_operation: str,
+    expected_evidence_ids: Iterable[str] = (),
+    expected_root_cause: str = "",
+) -> bool:
+    expected = list(expected_evidence_ids)
+    if not str(value.get("receipt_id") or "").strip():
+        return False
+    if value.get("operation") != expected_operation:
+        return False
+    if value.get("agent_acceptance") != "complete":
+        return False
+    if value.get("status") != "complete" or value.get("content_complete") is not True:
+        return False
+    coverage = _json_object(value.get("coverage"))
+    requested = coverage.get("requested")
+    visible_names = (
+        "visible_evaluable",
+        "visible_unavailable",
+        "visible_not_checked",
+    )
+    visible_present = [name in coverage for name in visible_names]
+    if any(visible_present) and not all(visible_present):
+        return False
+    if (
+        isinstance(requested, bool)
+        or not isinstance(requested, int)
+        or requested < 1
+        or coverage.get("complete") is not True
+        or coverage.get("evaluable") != requested
+        or coverage.get("unavailable") != 0
+        or coverage.get("not_checked") != 0
+    ):
+        return False
+    if all(visible_present) and (
+        coverage.get("visible_evaluable") != requested
+        or coverage.get("visible_unavailable") != 0
+        or coverage.get("visible_not_checked") != 0
+    ):
+        return False
+    raw_results = value.get("results")
+    if not isinstance(raw_results, list):
+        return False
+    result_ids: list[str] = []
+    visible_available = 0
+    visible_unavailable = 0
+    visible_not_checked = 0
+    for item in raw_results:
+        if not isinstance(item, Mapping):
+            return False
+        result_id = str(item.get("result_id") or "").strip()
+        if not result_id or result_id in result_ids:
+            return False
+        result_ids.append(result_id)
+        status = item.get("status")
+        if status == "available":
+            if not diagnostic_result_value_evaluable(item.get("value")):
+                return False
+            visible_available += 1
+        elif status == "unavailable":
+            visible_unavailable += 1
+        elif status == "not_checked":
+            visible_not_checked += 1
+        else:
+            return False
+    raw_compacted_results = value.get("compacted_results")
+    compacted_ids: list[str] = []
+    if raw_compacted_results is not None:
+        compacted_results = _json_object(raw_compacted_results)
+        raw_ids = compacted_results.get("result_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return False
+        compacted_ids = [str(item).strip() for item in raw_ids]
+        if (
+            any(not item for item in compacted_ids)
+            or len(compacted_ids) != len(set(compacted_ids))
+            or set(compacted_ids).intersection(result_ids)
+        ):
+            return False
+        compacted_status = compacted_results.get("status")
+        if compacted_status == "available":
+            return False
+        elif compacted_status == "unavailable":
+            visible_unavailable += len(compacted_ids)
+        elif compacted_status == "not_checked":
+            visible_not_checked += len(compacted_ids)
+        else:
+            return False
+    if len(result_ids) + len(compacted_ids) != requested:
+        return False
+    if (
+        visible_available != requested
+        or visible_unavailable != 0
+        or visible_not_checked != 0
+    ):
+        return False
+    freshness = _json_object(value.get("freshness"))
+    if freshness.get("status") not in {"fresh", "complete"}:
+        return False
+    if freshness.get("complete") is False:
+        return False
+    if not str(freshness.get("observed_at") or "").strip():
+        return False
+    for field in ("unavailable_dimensions", "lost_dimensions", "stale_evidence"):
+        if freshness.get(field) not in (None, []):
+            return False
+    raw_evidence = value.get("evidence", [])
+    evidence_ids = [
+        str(item.get("evidence_id"))
+        for item in raw_evidence
+        if isinstance(item, Mapping) and item.get("evidence_id")
+    ] if isinstance(raw_evidence, list) else []
+    raw_gaps = value.get("gaps", [])
+    gaps = (
+        [str(item) for item in raw_gaps]
+        if isinstance(raw_gaps, list)
+        else ["invalid_gap_shape"]
+    )
+    content_compacted = value.get("content_compacted") is True
+    compacted_gap = "diagnostic_receipt_compacted" in gaps
+    raw_compacted_count = coverage.get("compacted", 0)
+    if isinstance(raw_compacted_count, bool) or not isinstance(
+        raw_compacted_count, int
+    ):
+        return False
+    if content_compacted:
+        if (
+            not compacted_gap
+            or not all(visible_present)
+            or raw_compacted_count < requested
+        ):
+            return False
+    elif compacted_gap or raw_compacted_count != 0 or compacted_ids:
+        return False
+    if expected_root_cause:
+        matching_results = [
+            _json_object(item)
+            for item in raw_results
+            if _diagnostic_value_contains_root_cause(
+                _json_object(item).get("value"),
+                expected_root_cause,
+            )
+        ]
+        if not matching_results or not any(
+            isinstance(item.get("evidence_ids"), list)
+            and item.get("evidence_ids") == expected
+            and all(
+                isinstance(evidence_id, str) and evidence_id
+                for evidence_id in item.get("evidence_ids", [])
+            )
+            for item in matching_results
+        ):
+            return False
+    return (
+        bool(evidence_ids)
+        and (not expected or evidence_ids == expected)
+        and set(gaps).issubset({"diagnostic_receipt_compacted"})
+    )
+
+
+def _diagnostic_value_contains_root_cause(
+    value: object,
+    expected_root_cause: str,
+) -> bool:
+    if isinstance(value, Mapping):
+        if str(value.get("root_cause") or "").strip() == expected_root_cause:
+            return True
+        summary = value.get("summary")
+        if isinstance(summary, list) and any(
+            isinstance(item, Mapping)
+            and str(item.get("path") or "") == "$.root_cause"
+            and str(item.get("value") or "").strip() == expected_root_cause
+            for item in summary
+        ):
+            return True
+    return False
+
+
 def _qualification_respond_template() -> str:
     template = {
         "kind": "respond",
@@ -414,32 +638,120 @@ def candidate_execute_acceptance(
     if any(call.get("tool") != "execute" for call in calls):
         errors.append("candidate execute qualification may call only execute")
     kinds = [str(_json_object(call.get("arguments")).get("kind", "")) for call in calls]
-    if kinds != ["start", "respond"]:
-        errors.append("candidate must use one start and one Gate response")
+    if kinds not in (["start", "respond"], ["start", "respond", "respond"]):
+        errors.append(
+            "candidate must use one start and one or two ordered Gate responses"
+        )
     if any(item.get("type") == "command_execution" for item in tools):
         errors.append("candidate must not execute shell commands")
-    if len(calls) == 2:
+    if len(calls) in {2, 3}:
         start_arguments = _json_object(calls[0].get("arguments"))
         start_result = _structured_tool_result(calls[0])
-        final_arguments = _json_object(calls[1].get("arguments"))
-        final_result = _structured_tool_result(calls[1])
         if start_arguments.get("target") != BENCHMARK_TARGET:
             errors.append("execute target does not match the benchmark target")
         if start_arguments.get("intent") != "diagnose-and-fix":
             errors.append("execute intent must be diagnose-and-fix")
         if start_arguments.get("delivery_strategy") != "source-only":
             errors.append("execute delivery strategy must be source-only")
-        gate = _json_object(start_result.get("gate"))
-        if start_result.get("state") != "waiting_response" or not gate:
-            errors.append("start must return one actionable Developer Gate")
-        if gate.get("owner") != "openubmc-developer":
-            errors.append("source-only Gate must be owned by openubmc-developer")
+        current_result = start_result
+        current_gate = _json_object(current_result.get("gate"))
+        if start_result.get("state") != "waiting_response" or not current_gate:
+            errors.append("start must return one actionable Runtime Gate")
+        response_index = 1
+        if current_gate.get("owner") == "openubmc-debug":
+            if current_gate.get("name") != "diagnosis.acceptance":
+                errors.append("Debug-owned Gate must be diagnosis.acceptance")
+            if len(calls) != 3:
+                errors.append(
+                    "diagnosis.acceptance requires a diagnosis response before development"
+                )
+            else:
+                diagnosis_arguments = _json_object(calls[1].get("arguments"))
+                if diagnosis_arguments.get("run_id") != start_result.get("run_id"):
+                    errors.append("Diagnosis response must continue the same Run")
+                for name in ("gate_id", "gate_version", "schema_digest"):
+                    if current_gate.get(name) in (None, ""):
+                        errors.append(f"diagnosis Gate must provide {name}")
+                    elif diagnosis_arguments.get(name) != current_gate.get(name):
+                        errors.append(f"Diagnosis response must preserve {name}")
+                diagnostic_receipt = _json_object(
+                    start_result.get("diagnostic_receipt")
+                )
+                raw_evidence = diagnostic_receipt.get("evidence", [])
+                evidence_ids = [
+                    str(item.get("evidence_id"))
+                    for item in raw_evidence
+                    if isinstance(item, Mapping) and item.get("evidence_id")
+                ] if isinstance(raw_evidence, list) else []
+                if not evidence_ids:
+                    errors.append(
+                        "diagnosis Gate must expose current diagnostic evidence identities"
+                    )
+                if _json_object(diagnosis_arguments.get("response")) != (
+                    _qualification_diagnosis_receipt(evidence_ids)
+                ):
+                    errors.append(
+                        "Diagnosis response must match the fixed grounded receipt"
+                    )
+                current_result = _structured_tool_result(calls[1])
+                current_gate = _json_object(current_result.get("gate"))
+                if (
+                    current_result.get("state") != "waiting_response"
+                    or current_gate.get("owner") != "openubmc-developer"
+                    or current_gate.get("name") != "developer.change"
+                ):
+                    errors.append(
+                        "diagnosis response must return the Developer Gate"
+                    )
+                if not _complete_diagnostic_receipt(
+                    _json_object(current_result.get("diagnostic_receipt")),
+                    expected_operation="diagnosis.acceptance",
+                    expected_evidence_ids=evidence_ids,
+                    expected_root_cause=str(
+                        _json_object(
+                            _json_object(diagnosis_arguments.get("response")).get(
+                                "payload"
+                            )
+                        ).get("root_cause")
+                        or ""
+                    ).strip(),
+                ):
+                    errors.append(
+                        "diagnosis response must return a complete evaluable receipt"
+                    )
+                response_index = 2
+        elif current_gate.get("owner") != "openubmc-developer":
+            errors.append("source-only Gate must be owned by Debug or Developer")
+        elif len(calls) != 2:
+            errors.append(
+                "a start that returns developer.change requires exactly one response"
+            )
+        if current_gate.get("owner") == "openubmc-developer" and (
+            current_gate.get("name") != "developer.change"
+        ):
+            errors.append("Developer-owned Gate must be developer.change")
+        if current_gate.get("owner") == "openubmc-developer" and (
+            not _complete_diagnostic_receipt(
+                _json_object(current_result.get("diagnostic_receipt")),
+                expected_operation=(
+                    "diagnosis.acceptance" if response_index == 2 else "debug_run"
+                ),
+                expected_evidence_ids=(
+                    evidence_ids if response_index == 2 else ()
+                ),
+            )
+        ):
+            errors.append(
+                "Developer Gate requires a complete evaluable diagnostic receipt"
+            )
+        final_arguments = _json_object(calls[response_index].get("arguments"))
+        final_result = _structured_tool_result(calls[response_index])
         if final_arguments.get("run_id") != start_result.get("run_id"):
             errors.append("Gate response must continue the same Run")
         for name in ("gate_id", "gate_version", "schema_digest"):
-            if gate.get(name) in (None, ""):
-                errors.append(f"start Gate must provide {name}")
-            elif final_arguments.get(name) != gate.get(name):
+            if current_gate.get(name) in (None, ""):
+                errors.append(f"Developer Gate must provide {name}")
+            elif final_arguments.get(name) != current_gate.get(name):
                 errors.append(f"Gate response must preserve {name}")
         response = _json_object(final_arguments.get("response"))
         if response != _qualification_source_receipt():
@@ -1934,11 +2246,13 @@ def _prompt(
                 _execute_dispatch_instruction("工具不可用或 start 失败"),
                 f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
                 "第一次且仅第一次调用：kind=start，intent=diagnose-and-fix，delivery_strategy=source-only。",
-                "读取 start 工具结果的 structured_content，保存 run_id、gate.gate_id、gate.gate_version 与 gate.schema_digest；标准 content 首部的同值 GateBinding 行可用于核对。四项都必须是非空原值；如尚未取得就继续读取当前工具结果，不得再次 start，不得提交空字符串或尖括号占位符。",
-                "Runtime 返回 developer.change Gate 后，不读写任何源码，提交固定基准 receipt。第二次且仅第二次调用 execute，参数必须严格采用下面的完整 JSON 模板，并把尖括号占位符替换为 structured_content 中对应的原值：",
+                "读取每次工具结果的 structured_content，保存 run_id、gate.name、gate.owner、gate.gate_id、gate.gate_version 与 gate.schema_digest；标准 content 首部的同值 GateBinding 行可用于核对。绑定字段都必须是非空原值；不得再次 start，不得提交空字符串或尖括号占位符。",
+                "如果 start 返回 diagnosis.acceptance Gate，先使用下面模板响应；evidence_ids 必须替换为当前 diagnostic_receipt.evidence 中全部 evidence_id 原值，随后从响应结果读取新的 developer.change Gate。若 start 已直接返回 developer.change Gate，则跳过本步：",
+                _qualification_diagnosis_respond_template(),
+                "Runtime 返回 developer.change Gate 后，不读写任何源码，提交固定基准 source receipt，参数必须严格采用下面的完整 JSON 模板，并把尖括号占位符替换为当前 structured_content 中对应的原值：",
                 _qualification_respond_template(),
                 "kind、run_id、gate_id、gate_version、schema_digest、response 都是 respond 参数的顶层字段；response 内只含 status、summary、payload，不得把任何 Gate binding 放入 response 或 payload。",
-                "同一 Gate 只能响应一次；不得省略 Gate binding，不得 poll、不得调用 resume、不得修改目标。",
+                "每个 Gate 只能响应一次；全程只能有一次 start 和一到两次 respond，不得省略 Gate binding，不得 poll、不得调用 resume、不得修改目标。",
                 "必须推进到终态，并在最终中文回答中包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
             )
         ) + "\n"

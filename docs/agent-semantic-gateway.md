@@ -164,6 +164,21 @@ Source-complete Evidence remains complete after compaction, but `stage.diagnosis
 blocked when the persisted Agent-visible receipt is only partially evaluable or not evaluable.
 A generic operation summary therefore cannot satisfy `stage.diagnosis`.
 
+Reusable observation evidence and accepted diagnosis are distinct Runtime facts. Passing an
+`ObservationRef` to `execute(start)` avoids recollecting that evidence, but it does not assert a
+root cause. In `diagnose-and-fix`, a complete evaluable Runtime DiagnosticReceipt may satisfy the
+diagnosis step automatically. A partial or blocked receipt instead yields a durable
+`diagnosis.acceptance` Gate before `developer.change`; development cannot open while that Gate is
+unanswered.
+
+A completed `diagnosis.acceptance` response is bound by `run_id`, `gate_id`, `gate_version`, and
+`schema_digest` and supplies `root_cause`, non-empty `evidence_ids` drawn from the current Runtime
+DiagnosticReceipt, and `known_gaps`. The Runtime rejects Evidence IDs from another receipt and
+derives observation time and freshness from the persisted ObservationRef and DiagnosticReceipt.
+`execute(kind=resume)` only reattaches the same unanswered Gate, so repeated resume calls cannot
+repair missing diagnosis input or advance the workflow. A failed or cancelled diagnosis becomes a
+terminal Run before any development phase.
+
 A Turn targets 8 KiB and a Gate schema targets 4 KiB; neither target can reject or replace a Gate.
 `gate_projection_target_exceeded` reports a Gate schema above its display target. If a diagnostic
 result exceeds the Turn target, result previews are compacted while source coverage counts, freshness, truncation,
@@ -424,9 +439,9 @@ The three supported delivery paths are verified through the same `execute` Inter
 
 | Delivery path | Normal completion | Process restart | Injected failure and recovery |
 | --- | --- | --- | --- |
-| source-only | terminal source Outcome | resume phase Gate from persisted Run | failed/cancelled phase remains terminal and never creates a success Outcome |
-| live-patch | mutation, fresh verification, terminal Outcome | resume before or after the phase Gate; deferred verification retries without reapplying | unknown mutation reconciles through the same durable journal, including after restart |
-| build-upgrade | source Gate, build Gate, upgrade, fresh verification | resume either Gate or a running Effect with the same operation identity | interrupted upgrade reconciles through the same durable journal |
+| source-only | accepted diagnosis, source Gate, terminal source Outcome | resume restores the same unanswered diagnosis or source Gate | failed/cancelled diagnosis or source phase remains terminal and never creates a success Outcome |
+| live-patch | accepted diagnosis, source Gate, mutation, fresh verification, terminal Outcome | resume restores the same Gate or running Effect; deferred verification retries without reapplying | unknown mutation reconciles through the same durable journal, including after restart |
+| build-upgrade | accepted diagnosis, source Gate, build Gate, upgrade, fresh verification | resume restores either Gate or a running Effect with the same operation identity | interrupted upgrade reconciles through the same durable journal |
 
 ## Evolution
 

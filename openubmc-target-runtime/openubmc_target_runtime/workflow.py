@@ -13,7 +13,7 @@ from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 
 
 WORKFLOW_DEFINITION_SCHEMA = f"{RUNTIME_API_VERSION}/workflow-definition-v1"
-WORKFLOW_DEFINITION_VERSION = 1
+WORKFLOW_DEFINITION_VERSION = 2
 _STEP_KINDS = frozenset({"operation", "phase"})
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
@@ -39,6 +39,7 @@ class PhaseDescriptor:
     closeout_stage: str = ""
     aliases: tuple[str, ...] = ()
     producer_aliases: tuple[str, ...] = ()
+    allow_empty_list_fields: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not _SAFE_ID.fullmatch(self.name):
@@ -49,6 +50,14 @@ class PhaseDescriptor:
             raise ValueError("phase receipt_schema must not be empty")
         if len(self.required_fields) != len(set(self.required_fields)):
             raise ValueError(f"phase {self.name} has duplicate required fields")
+        if len(self.allow_empty_list_fields) != len(
+            set(self.allow_empty_list_fields)
+        ):
+            raise ValueError(f"phase {self.name} has duplicate empty-allowed fields")
+        if not set(self.allow_empty_list_fields).issubset(self.required_fields):
+            raise ValueError(
+                f"phase {self.name} empty-allowed fields must also be required"
+            )
         if len(self.aliases) != len(set(self.aliases)):
             raise ValueError(f"phase {self.name} has duplicate aliases")
         if self.name in self.aliases:
@@ -75,6 +84,7 @@ class PhaseDescriptor:
             "closeout_stage": self.closeout_stage,
             "aliases": list(self.aliases),
             "producer_aliases": list(self.producer_aliases),
+            "allow_empty_list_fields": list(self.allow_empty_list_fields),
         }
 
 
@@ -133,8 +143,14 @@ class PhaseRegistry:
         self.canonical_producer(descriptor.name, producer)
         missing = []
         for field in descriptor.required_fields:
-            value = receipt.get(field)
-            if value is None or value == "" or value == () or value == []:
+            if field not in receipt:
+                missing.append(field)
+                continue
+            value = receipt[field]
+            if field in descriptor.allow_empty_list_fields:
+                if not isinstance(value, list):
+                    missing.append(field)
+            elif value is None or value == "" or value == () or value == []:
                 missing.append(field)
         if missing:
             raise ValueError(
@@ -689,6 +705,18 @@ class WorkflowDefinitions:
 DEFAULT_PHASE_REGISTRY = PhaseRegistry(
     (
         PhaseDescriptor(
+            "diagnosis.acceptance",
+            "openubmc-debug",
+            f"{RUNTIME_API_VERSION}/diagnosis-acceptance-receipt-v1",
+            ("root_cause", "evidence_ids", "known_gaps"),
+            "debug",
+            "accept",
+            "diagnosis",
+            ("diagnosis", "diagnosis.result"),
+            ("openubmc-debug-skill",),
+            ("known_gaps",),
+        ),
+        PhaseDescriptor(
             "developer.change",
             "openubmc-developer",
             f"{RUNTIME_API_VERSION}/developer-change-receipt-v1",
@@ -746,13 +774,18 @@ DEFAULT_WORKFLOW_REGISTRY = WorkflowRegistry(
         ),
         WorkflowRoute(
             "diagnose-and-fix",
-            (("operation", "debug_run"), ("phase", "developer.change")),
+            (
+                ("operation", "debug_run"),
+                ("phase", "diagnosis.acceptance"),
+                ("phase", "developer.change"),
+            ),
             delivery_strategy="source-only",
         ),
         WorkflowRoute(
             "diagnose-and-fix",
             (
                 ("operation", "debug_run"),
+                ("phase", "diagnosis.acceptance"),
                 ("phase", "developer.change"),
                 ("operation", "live_patch_run"),
                 ("operation", "debug_collect"),
@@ -763,6 +796,7 @@ DEFAULT_WORKFLOW_REGISTRY = WorkflowRegistry(
             "diagnose-and-fix",
             (
                 ("operation", "debug_run"),
+                ("phase", "diagnosis.acceptance"),
                 ("phase", "developer.change"),
                 ("phase", "build.artifact"),
                 ("operation", "upgrade_run"),

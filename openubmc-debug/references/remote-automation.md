@@ -266,9 +266,16 @@ journal reconciliation.
 
 `diagnose-and-fix` uses one of three delivery strategies:
 
-- `source-only`: Debug -> Developer;
-- `live-patch`: Debug -> Developer -> Live Patch -> fresh Debug;
-- `build-upgrade`: Debug -> Developer -> externally supplied Build result -> Upgrade -> fresh Debug.
+- `source-only`: Debug -> diagnosis acceptance -> Developer;
+- `live-patch`: Debug -> diagnosis acceptance -> Developer -> Live Patch -> fresh Debug;
+- `build-upgrade`: Debug -> diagnosis acceptance -> Developer -> externally supplied Build result
+  -> Upgrade -> fresh Debug.
+
+The diagnosis acceptance step may be automatic only when Runtime already has a complete evaluable
+DiagnosticReceipt. Otherwise `execute` returns a durable `diagnosis.acceptance` Gate. Respond with
+the returned Gate binding and a grounded `root_cause`, current-receipt `evidence_ids`, and
+`known_gaps`. Repeated `execute(kind=resume)` only reattaches that same Gate; it never substitutes
+for a Gate response and must not open Developer work.
 
 The MCP layer infers the strategy from typed workflow sections or from the mutation domain invoked
 later in the same task. It must not default every fix to Live Patch or ask for an intent already
@@ -299,7 +306,9 @@ visible in Runtime status.
 
 During active work, default MCP `structuredContent` is an `ObservationReceipt` or `Turn`. Start a
 stateful Run with `execute(kind=start)`, continue it with `execute(kind=resume)`, and satisfy a
-returned phase Gate with `execute(kind=respond)`. `RunEngine` commits every Gate transition directly. Terminal Runs persist Closeout
+returned phase Gate with `execute(kind=respond)`. For a `diagnosis.acceptance` Gate, bind the
+response to its `run_id`, `gate_id`, `gate_version`, and `schema_digest`; use only Evidence IDs
+listed by the current DiagnosticReceipt. `RunEngine` commits every Gate transition directly. Terminal Runs persist Closeout
 and one authoritative Run Outcome. Session Outcome is an
 explicit operator projection of that persisted fact; raw Evidence, Replay, Case inspection,
 review, approval, and promotion stay in the operator profile.
