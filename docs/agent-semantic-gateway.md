@@ -287,7 +287,9 @@ model and environment fingerprint, thresholds, valid and invalid pairs, both dec
 and digests for the schedule, raw metrics, and signed run events used to recompute every result.
 Formal qualification pins an isolated `codex-cli 0.150.0` executable. The runner configures the
 Target Runtime MCP with `required=true`, so failure to initialize the only Agent-facing Runtime
-entry aborts session startup instead of producing a zero-call benchmark run.
+entry aborts session startup instead of producing a zero-call benchmark run. `--codex` must name
+an absolute executable; the environment evidence binds its resolved absolute executable path and SHA-256.
+Each run receives an isolated `CODEX_HOME` alongside its isolated `HOME`.
 
 ```bash
 python scripts/agent_gateway_ab.py run \

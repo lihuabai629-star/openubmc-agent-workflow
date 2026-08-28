@@ -2074,6 +2074,22 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def qualification_codex_identity(executable: str) -> dict[str, str]:
+    selected = Path(executable).expanduser()
+    if not selected.is_absolute():
+        raise RuntimeError("qualification Codex executable must be absolute")
+    try:
+        resolved = selected.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("qualification Codex executable is unavailable") from exc
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise RuntimeError("qualification Codex executable is not executable")
+    return {
+        "codex_executable": str(resolved),
+        "codex_sha256": _sha256(resolved),
+    }
+
+
 def _fingerprint(value: object) -> str:
     encoded = json.dumps(
         value,
@@ -2409,6 +2425,19 @@ def verify_summary(
     if benchmark.get("codex_config") != list(QUALIFICATION_CODEX_CONFIG):
         errors.append("AB Codex config does not match the qualification contract")
     environment = _json_object(evidence.get("environment"))
+    if environment.get("codex") != QUALIFICATION_CODEX_VERSION:
+        errors.append(
+            "AB executed Codex version does not match the qualification contract"
+        )
+    codex_executable = environment.get("codex_executable")
+    codex_sha256 = environment.get("codex_sha256")
+    if (
+        not isinstance(codex_executable, str)
+        or not Path(codex_executable).is_absolute()
+        or not isinstance(codex_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", codex_sha256) is None
+    ):
+        errors.append("AB Codex executable identity is invalid")
     if evidence.get("environment_fingerprint") != _fingerprint(dict(environment)):
         errors.append("AB release evidence environment fingerprint is invalid")
 
@@ -2570,6 +2599,8 @@ def run_benchmark(args: argparse.Namespace) -> int:
         )
     if tuple(args.codex_config) != QUALIFICATION_CODEX_CONFIG:
         raise RuntimeError("qualification Codex config does not match the contract")
+    codex_identity = qualification_codex_identity(args.codex)
+    args.codex = codex_identity["codex_executable"]
     codex_version = _version([args.codex, "--version"])
     if codex_version != QUALIFICATION_CODEX_VERSION:
         raise RuntimeError(
@@ -2616,6 +2647,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
         "python": platform.python_version(),
         "node": _version(["node", "--version"]),
         "codex": codex_version,
+        **codex_identity,
         "platform": platform.platform(),
     }
     environment_fingerprint = _fingerprint(environment_record)
@@ -2652,7 +2684,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
             command = codex_exec_command(args, config, final_path)
             run_env = dict(environment)
             run_env["HOME"] = str(home)
-            run_env["CODEX_HOME"] = os.environ.get("CODEX_HOME", "/root/.codex")
+            run_env["CODEX_HOME"] = str(home / ".codex")
             if config.interface_profile:
                 run_env["OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE"] = config.interface_profile
             else:
