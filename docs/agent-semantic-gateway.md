@@ -290,6 +290,8 @@ Target Runtime MCP with `required=true`, so failure to initialize the only Agent
 entry aborts session startup instead of producing a zero-call benchmark run. `--codex` must name
 an absolute executable; the environment evidence binds its resolved absolute executable path and SHA-256.
 Each run receives an isolated `CODEX_HOME` alongside its isolated `HOME`.
+The fixed config disables Codex plugins because the qualification installs only its selected Skills;
+this removes plugin-registry network synchronization from the MCP startup window.
 
 ```bash
 python scripts/agent_gateway_ab.py run \
@@ -302,6 +304,7 @@ python scripts/agent_gateway_ab.py run \
   --scenario execute-source-only \
   --pairs 10 \
   --codex-config 'features.shell_tool=false' \
+  --codex-config 'features.plugins=false' \
   --codex-config 'model_provider="cliproxy"' \
   --codex-config 'model_providers.cliproxy.name="CLIProxyAPI"' \
   --codex-config 'model_providers.cliproxy.base_url="http://82.156.104.157/v1"' \
@@ -344,6 +347,7 @@ python scripts/agent_gateway_ab.py run \
   --scenario skill-disclosure \
   --pairs 10 \
   --codex-config 'features.shell_tool=false' \
+  --codex-config 'features.plugins=false' \
   --codex-config 'model_provider="cliproxy"' \
   --codex-config 'model_providers.cliproxy.name="CLIProxyAPI"' \
   --codex-config 'model_providers.cliproxy.base_url="http://82.156.104.157/v1"' \

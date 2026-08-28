@@ -61,6 +61,7 @@ QUALIFICATION_MODEL = "gpt-5.6-sol"
 QUALIFICATION_CODEX_VERSION = "codex-cli 0.150.0"
 QUALIFICATION_CODEX_CONFIG = (
     "features.shell_tool=false",
+    "features.plugins=false",
     'model_provider="cliproxy"',
     'model_providers.cliproxy.name="CLIProxyAPI"',
     'model_providers.cliproxy.base_url="http://82.156.104.157/v1"',
@@ -987,6 +988,38 @@ def _run_qualification_contract_errors(
     ]
 
 
+def _execution_identity_binding(
+    events: Iterable[Mapping[str, object]],
+) -> tuple[str, bool]:
+    event_list = list(events)
+    thread_ids = [
+        str(event.get("thread_id", ""))
+        for event in event_list
+        if event.get("type") == "thread.started"
+    ]
+    if len(thread_ids) > 1:
+        raise ValueError("AB run must contain one Codex thread identity")
+    runner_ids = [
+        str(event.get("execution_id", ""))
+        for event in event_list
+        if event.get("type") == "runner.started"
+    ]
+    if len(thread_ids) == 1:
+        selected = thread_ids[0]
+        error = "AB run Codex thread identity is invalid"
+        has_thread = True
+    elif len(runner_ids) == 1:
+        selected = runner_ids[0]
+        error = "AB runner execution identity is invalid"
+        has_thread = False
+    else:
+        raise ValueError("AB run must contain one execution identity")
+    try:
+        return str(uuid.UUID(selected)), has_thread
+    except ValueError as exc:
+        raise ValueError(error) from exc
+
+
 def _run_attestation_errors(
     value: object, *, public_key: Path
 ) -> list[str]:
@@ -1021,13 +1054,28 @@ def _run_attestation_errors(
                 errors.append(f"AB run attestation execution identity is invalid at item {index}")
             else:
                 events = run.get("events")
-                thread_ids = [
-                    str(event.get("thread_id", ""))
+                try:
+                    event_execution_id, has_thread = _execution_identity_binding(
+                        event
+                        for event in events
+                        if isinstance(event, Mapping)
+                    ) if isinstance(events, list) else ("", False)
+                except ValueError:
+                    event_execution_id, has_thread = "", False
+                runner_failures = [
+                    event.get("exit_code")
                     for event in events
                     if isinstance(event, Mapping)
-                    and event.get("type") == "thread.started"
+                    and event.get("type") == "runner.completed"
+                    and isinstance(event.get("exit_code"), int)
+                    and not isinstance(event.get("exit_code"), bool)
+                    and int(event.get("exit_code")) != 0
                 ] if isinstance(events, list) else []
-                if thread_ids != [normalized_execution_id]:
+                if event_execution_id != normalized_execution_id:
+                    errors.append(
+                        f"AB run attestation execution identity does not match the runner event at item {index}"
+                    )
+                elif not has_thread and len(runner_failures) != 1:
                     errors.append(
                         f"AB run attestation execution identity does not match the runner event at item {index}"
                     )
@@ -2009,7 +2057,7 @@ def codex_exec_command(
                 + "]"
             ),
             "-c",
-            'mcp_servers.openubmc-target-runtime.env_vars=["OPENUBMC_CREDENTIALS_FILE","OPENUBMC_DEBUG_CREDENTIALS_FILE","OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE"]',
+            'mcp_servers.openubmc-target-runtime.env_vars=["OPENUBMC_CREDENTIALS_FILE","OPENUBMC_DEBUG_CREDENTIALS_FILE","OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE","OPENUBMC_EVALUATION_TASK_ID","OPENUBMC_MCP_TASK_ID","OPENUBMC_MCP_SESSION_ID","OPENUBMC_MCP_CLIENT"]',
             "-c",
             "mcp_servers.openubmc-target-runtime.required=true",
             "-c",
@@ -2196,17 +2244,7 @@ def attest_run_record(
 
 
 def _execution_identity(events: Iterable[Mapping[str, object]]) -> str:
-    thread_ids = [
-        str(event.get("thread_id", ""))
-        for event in events
-        if event.get("type") == "thread.started"
-    ]
-    if len(thread_ids) != 1:
-        raise ValueError("AB run must contain one Codex thread identity")
-    try:
-        return str(uuid.UUID(thread_ids[0]))
-    except ValueError as exc:
-        raise ValueError("AB run Codex thread identity is invalid") from exc
+    return _execution_identity_binding(events)[0]
 
 
 def release_evidence(
@@ -2682,9 +2720,14 @@ def run_benchmark(args: argparse.Namespace) -> int:
             events_path = run_dir / "events.jsonl"
             stderr_path = run_dir / "stderr.log"
             command = codex_exec_command(args, config, final_path)
+            runner_execution_id = str(uuid.uuid4())
             run_env = dict(environment)
             run_env["HOME"] = str(home)
             run_env["CODEX_HOME"] = str(home / ".codex")
+            run_env["OPENUBMC_EVALUATION_TASK_ID"] = runner_execution_id
+            run_env["OPENUBMC_MCP_TASK_ID"] = runner_execution_id
+            run_env["OPENUBMC_MCP_SESSION_ID"] = runner_execution_id
+            run_env["OPENUBMC_MCP_CLIENT"] = "codex-qualification"
             if config.interface_profile:
                 run_env["OPENUBMC_TARGET_RUNTIME_INTERFACE_PROFILE"] = config.interface_profile
             else:
@@ -2699,7 +2742,13 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 stderr=stderr_path,
             )
             duration = time.monotonic() - started
-            events = _read_events(events_path)
+            events = [
+                {
+                    "type": "runner.started",
+                    "execution_id": runner_execution_id,
+                },
+                *_read_events(events_path),
+            ]
             final = final_path.read_text(encoding="utf-8") if final_path.exists() else ""
             record = RunEvidenceRecord.capture(
                 arm=arm,
