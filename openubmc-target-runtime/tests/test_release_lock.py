@@ -45,6 +45,52 @@ class ReleaseLockTests(unittest.TestCase):
         )
         self.assertTrue(first["runtime"]["content_digest"].startswith("sha256:"))
 
+    def test_release_identity_records_dependencies_and_evaluation_harnesses(
+        self,
+    ) -> None:
+        lock = build_release_lock(REPO_ROOT, source_commit=self.commit)
+
+        self.assertEqual(
+            set(lock["dependencies"]),
+            {"python_validation", "knowledge_mcp"},
+        )
+        self.assertEqual(
+            lock["dependencies"]["python_validation"]["path"],
+            "requirements-ci.lock",
+        )
+        self.assertTrue(
+            lock["dependencies"]["python_validation"]["digest"].startswith(
+                "sha256:"
+            )
+        )
+        self.assertEqual(
+            lock["dependencies"]["knowledge_mcp"]["path"],
+            "openubmc-kb-mcp/package-lock.json",
+        )
+        self.assertEqual(
+            lock["evaluation_harnesses"]["dsh"]["adapter"],
+            "dsh-headless-cli-v1",
+        )
+
+        identity = verify_release_lock(
+            REPO_ROOT,
+            lock,
+            verify_git_topology=True,
+        )
+
+        self.assertEqual(identity["dependencies"], lock["dependencies"])
+        self.assertEqual(
+            identity["evaluation_harnesses"],
+            lock["evaluation_harnesses"],
+        )
+
+    def test_workflow_declares_the_v2_0_1_version(self) -> None:
+        workflow = json.loads(
+            (REPO_ROOT / "workflow.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(workflow["version"], "2.0.1")
+
     def test_lock_verification_reports_the_immutable_release_identity(self) -> None:
         lock = build_release_lock(REPO_ROOT, source_commit=self.commit)
         identity = verify_release_lock(

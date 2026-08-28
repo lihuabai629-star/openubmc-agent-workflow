@@ -54,7 +54,8 @@ therefore remains a historical release snapshot and is not expected to verify th
 tree. This does not indicate source corruption. A future release must select a new final source,
 rerun qualification, and create a new lock-only commit; it must not rewrite the previous identity.
 
-No `v2.0.0` tag or GitHub Release has been created. The detached `e7dc74c -> 7dc350c` candidate is
-retained as historical evidence but is `superseded-unpublished` because current canonical `main`
-contains later DiagnosticReceipt, soft-projection, and P2 lifecycle changes. A publishable v2.0.0
-must be qualified again from a newly selected final source and finalized by a new lock-only commit.
+The earlier detached `e7dc74c -> 7dc350c` Release candidate remains historical
+`superseded-unpublished` evidence. `v2.0.0` was subsequently published on 2026-08-27 from source
+`f27db4f` and lock-only commit `c0e095a` after the complete Release Gate passed. The next planned
+release is `v2.0.1`; it becomes a Release candidate only after a Final source is qualified and its
+lock-only child is created.
