@@ -56,9 +56,11 @@ from .effect_runner import (
 )
 from .capability import EffectClass
 from .observation import (
+    aggregate_observation_partitions,
     observation_consistency,
     observation_improves,
     observation_reusable,
+    observation_target_scope_matches,
     qualify_observation,
     selected_scope_complete,
 )
@@ -339,11 +341,47 @@ class ObservationEngine:
         task_id: str,
         operation_id: str,
     ) -> ObservationResult:
-        raw = self.driver.observe_once(
-            query,
+        partitions = query.collection_partitions()
+
+        def collect(
+            *,
+            assured: bool,
+            attempt_operation_id: str,
+            prior_parts: tuple[Mapping[str, object], ...] | None = None,
+        ) -> tuple[dict[str, object], tuple[Mapping[str, object], ...]]:
+            if prior_parts is not None and len(prior_parts) != len(partitions):
+                raise ValueError("prior observation partition count changed")
+            collected: list[tuple[ObservationQuery, Mapping[str, object]]] = []
+            raw_parts: list[Mapping[str, object]] = []
+            for index, partition in enumerate(partitions, start=1):
+                partition_operation_id = (
+                    attempt_operation_id
+                    if len(partitions) == 1
+                    else f"{attempt_operation_id}-partition-{index}"
+                )
+                part = self.driver.observe_once(
+                    partition,
+                    assured=assured,
+                    task_id=task_id,
+                    operation_id=partition_operation_id,
+                    prior=(prior_parts[index - 1] if prior_parts else None),
+                )
+                if prior_parts is not None and not observation_target_scope_matches(
+                    prior_parts[index - 1], part
+                ):
+                    raise AssuranceUnavailable(
+                        "assured partition target identity or epoch changed"
+                    )
+                raw_parts.append(part)
+                collected.append((partition, part))
+            return (
+                aggregate_observation_partitions(query, tuple(collected)),
+                tuple(raw_parts),
+            )
+
+        raw, fast_parts = collect(
             assured=False,
-            task_id=task_id,
-            operation_id=operation_id,
+            attempt_operation_id=operation_id,
         )
         raw = qualify_observation(
             raw,
@@ -354,12 +392,10 @@ class ObservationEngine:
         assurance = "fast"
         if self._needs_assurance(raw, query):
             try:
-                raw = self.driver.observe_once(
-                    query,
+                raw, _assured_parts = collect(
                     assured=True,
-                    task_id=task_id,
-                    operation_id=f"{operation_id}-assured",
-                    prior=raw,
+                    attempt_operation_id=f"{operation_id}-assured",
+                    prior_parts=fast_parts,
                 )
                 raw = qualify_observation(
                     raw,

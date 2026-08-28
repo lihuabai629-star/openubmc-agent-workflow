@@ -48,6 +48,42 @@ class WorkflowManifestValidationTests(unittest.TestCase):
                         "full": ["example-skill"],
                         "target-runtime": ["example-skill"],
                     },
+                    "clients": {
+                        "codex": {
+                            "role": "supported-product-client",
+                            "skills": True,
+                            "mcp": True,
+                        }
+                    },
+                    "evaluation_harnesses": {
+                        "dsh": {
+                            "role": "evaluation-harness",
+                            "adapter": "dsh-headless-cli-v1",
+                            "profile": "headless",
+                            "executable": {
+                                "command": "dsh",
+                                "package": "@deepseek-ai/dsh",
+                                "version_args": ["--version"],
+                                "minimum_version": "0.1.0-rc.7",
+                                "maximum_version_exclusive": "0.2.0",
+                            },
+                            "runtime_requirements": {
+                                "node": "^22.19.0 || >=24.0.0"
+                            },
+                            "model_identity_fields": [
+                                "provider",
+                                "model",
+                                "reasoning_effort",
+                            ],
+                            "scenarios": [
+                                {
+                                    "name": "example",
+                                    "version": "v1",
+                                    "acceptance": "scenario-receipt-v1",
+                                }
+                            ],
+                        }
+                    },
                 }
             ),
             encoding="utf-8",
@@ -120,6 +156,30 @@ class WorkflowManifestValidationTests(unittest.TestCase):
                     self.assertRaisesRegex(SystemExit, message),
                 ):
                     validator.validate_manifest()
+
+    def test_manifest_keeps_product_clients_disjoint_from_evaluation_harnesses(self) -> None:
+        self.write_manifest()
+        document = json.loads(
+            (self.root / "workflow.json").read_text(encoding="utf-8")
+        )
+        document["clients"]["dsh"] = {
+            "role": "supported-product-client",
+            "skills": True,
+            "mcp": True,
+        }
+        (self.root / "workflow.json").write_text(
+            json.dumps(document),
+            encoding="utf-8",
+        )
+
+        with (
+            mock.patch.object(validator, "ROOT", self.root),
+            self.assertRaisesRegex(
+                SystemExit,
+                "evaluation harnesses must not be product clients: dsh",
+            ),
+        ):
+            validator.validate_manifest()
 
 
 class WorkflowStageReportingTests(unittest.TestCase):

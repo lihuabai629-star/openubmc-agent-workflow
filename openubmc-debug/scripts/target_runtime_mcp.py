@@ -636,7 +636,9 @@ class DebugMcpBackend:
             for query in selector.get("queries", [])
         ]
         if declared_capability_names != capability_names:
-            raise ValueError("capability selector scope does not match Runtime arguments")
+            raise ValueError(
+                "capability selector scope does not match Runtime arguments"
+            )
         if declared_mdb_queries != list(bounded.get("mdb_queries", [])):
             raise ValueError("MDB selector scope does not match Runtime arguments")
         credential_values = bounded.pop("_credential_values", None)
@@ -995,6 +997,32 @@ def _positive_env_int(name: str, default: int) -> int:
     return value
 
 
+def _positive_env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must be finite and positive") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise SystemExit(f"{name} must be finite and positive")
+    return value
+
+
+def _parent_pid_environment() -> tuple[int, str | None]:
+    raw = os.environ.get("OPENUBMC_MCP_PARENT_PID", "").strip()
+    if not raw:
+        return os.getppid(), None
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0, "OPENUBMC_MCP_PARENT_PID must be a non-negative integer"
+    if value < 0:
+        return 0, "OPENUBMC_MCP_PARENT_PID must be a non-negative integer"
+    return value, None
+
+
 def _runtime_state_dir() -> Path:
     configured = os.environ.get("OPENUBMC_TARGET_RUNTIME_STATE_DIR", "").strip()
     if configured:
@@ -1188,12 +1216,93 @@ def create_service():
 
 def main() -> int:
     runtime = _load_runtime_module()
-    service = create_service()
+    configured_task = (
+        os.environ.get("OPENUBMC_MCP_TASK_ID", "").strip()
+        or os.environ.get("CODEX_TASK_ID", "").strip()
+        or os.environ.get("OPENUBMC_EVALUATION_TASK_ID", "").strip()
+        or os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+        or os.environ.get("CLAUDE_SESSION_ID", "").strip()
+    )
+    configured_session = os.environ.get(
+        "OPENUBMC_MCP_SESSION_ID", ""
+    ).strip()
+    session_id = configured_session or configured_task or "unknown-session"
+    task_id = configured_task or "unknown-task"
+    client = os.environ.get("OPENUBMC_MCP_CLIENT", "").strip()
+    if not client and os.environ.get("CODEX_TASK_ID", "").strip():
+        client = "codex"
+    elif not client and (
+        os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+        or os.environ.get("CLAUDE_SESSION_ID", "").strip()
+    ):
+        client = "claude"
+    elif not client and os.environ.get("OPENUBMC_EVALUATION_TASK_ID", "").strip():
+        client = "dsh"
+    client = client or "unknown-client"
+    parent_pid, parent_pid_error = _parent_pid_environment()
+    state_dir = _runtime_state_dir()
+    configured_lifecycle_root = os.environ.get(
+        "OPENUBMC_MCP_LIFECYCLE_DIR", ""
+    ).strip()
+    if configured_lifecycle_root:
+        lifecycle_root = Path(configured_lifecycle_root)
+    elif os.environ.get("OPENUBMC_TARGET_RUNTIME_STATE_DIR", "").strip():
+        lifecycle_root = state_dir / "mcp-processes"
+    else:
+        lifecycle_root = (
+            Path.home()
+            / ".local"
+            / "state"
+            / "openubmc-agent-workflow"
+            / "mcp-processes"
+        )
+    idle_timeout_error: SystemExit | None = None
+    try:
+        mcp_idle_timeout_seconds = _positive_env_float(
+            "OPENUBMC_MCP_IDLE_TIMEOUT_SECONDS", 1800.0
+        )
+    except SystemExit as exc:
+        mcp_idle_timeout_seconds = 1800.0
+        idle_timeout_error = exc
+    process_lifecycle = runtime.McpProcessLifecycle(
+        component="target-runtime",
+        version=runtime.RUNTIME_API_VERSION,
+        client=client,
+        task_id=task_id,
+        session_id=session_id,
+        parent_pid=parent_pid,
+        state_path=state_dir,
+        lifecycle_root=lifecycle_root,
+        idle_timeout_seconds=mcp_idle_timeout_seconds,
+    )
+    if parent_pid_error is not None:
+        process_lifecycle.record_exit("startup-error")
+        raise SystemExit(parent_pid_error)
+    if idle_timeout_error is not None:
+        process_lifecycle.record_exit("startup-error")
+        raise idle_timeout_error
+    try:
+        lifecycle_poll_seconds = _positive_env_float(
+            "OPENUBMC_MCP_LIFECYCLE_POLL_SECONDS", 0.25
+        )
+    except SystemExit:
+        process_lifecycle.record_exit("startup-error")
+        raise
+    try:
+        service = create_service()
+    except BaseException:
+        process_lifecycle.record_exit("startup-error")
+        raise
     endpoint = runtime.JsonRpcMcpEndpoint(
         service,
-        session_task_id=os.environ.get("CODEX_TASK_ID", "") or None,
+        session_task_id=configured_task or None,
     )
-    runtime.StdioMcpServer(endpoint).serve()
+    server = runtime.StdioMcpServer(
+        endpoint,
+        process_lifecycle=process_lifecycle,
+        lifecycle_poll_seconds=lifecycle_poll_seconds,
+    )
+    server.serve()
     return 0
 
 

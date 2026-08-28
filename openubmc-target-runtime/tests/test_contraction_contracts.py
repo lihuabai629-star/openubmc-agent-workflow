@@ -151,7 +151,11 @@ class RuntimeContractionContracts(unittest.TestCase):
                 operation_id="typed-observe-1",
             )
             turn = gateway.execute(
-                {"kind": "start", "target": "192.0.2.10"},
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                },
                 task_id="typed-execute",
                 operation_id="typed-execute-1",
             )

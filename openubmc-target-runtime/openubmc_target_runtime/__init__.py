@@ -73,6 +73,9 @@ from .capability import (
     require_effect_recovery_journal,
 )
 from .comparison_targets import comparison_target_identities
+from .mdb_query import (
+    is_read_only_mdb_query,
+)
 from .context_runtime import (
     AGENT_ENVELOPE_MAX_BYTES,
     AGENT_ENVELOPE_SCHEMA,
@@ -230,6 +233,12 @@ from .mcp import (
     OrchestratedMcpBackend,
     RuntimeMcpService,
     StdioMcpServer,
+)
+from .mcp_lifecycle import (
+    MCP_PROCESS_LIFECYCLE_SCHEMA,
+    McpProcessLifecycle,
+    cleanup_confirmed_orphaned_mcp_processes,
+    inspect_mcp_process_records,
 )
 from .run_engine import ObservationEngine, RunEngine, SemanticRuntime
 from .artifact_store import (
@@ -692,4 +701,5 @@ __all__ = [
     "telnet_output_limit_details",
     "decide_mutation_recovery",
     "mutation_journal_operation_status",
+    "is_read_only_mdb_query",
 ]

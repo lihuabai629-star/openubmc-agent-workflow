@@ -15,6 +15,9 @@ from .diagnostic_receipt import (
 )
 from .semantic_runtime import (
     AgentGatewayError,
+    EXECUTE_ACTION_FIELD_TYPES,
+    EXECUTE_ACTION_FIELDS,
+    EXECUTE_ACTION_REQUIRED_FIELDS,
     GATE_SCHEMA_PROJECTION_TARGET_BYTES,
     ObservationQuery,
     ObservationRef,
@@ -438,6 +441,7 @@ class CostGovernor:
             ],
             "outcome": runtime_outcome,
             "next": result.get("next"),
+            "next_action": document.get("next_action"),
             **_projection_telemetry(compacted=True, target_exceeded=False),
         }
         if gate_projection_target_exceeded:
@@ -532,6 +536,52 @@ class ResultProjector:
                         fact[name] = value
                 facts.append(fact)
         return tuple(facts[-8:])
+
+    @staticmethod
+    def _suggested_action(document: Mapping[str, object]) -> dict[str, object] | None:
+        run_id = _text(document.get("run_id"))
+        state = _text(document.get("state"))
+        if not run_id or state in {"completed", "failed", "cancelled"}:
+            return None
+        gate = _mapping(document.get("gate"))
+        if state == "waiting_response" and _text(gate.get("kind")) == "phase":
+            action = {
+                "kind": "respond",
+                "run_id": run_id,
+                "gate_id": gate.get("gate_id"),
+                "gate_version": gate.get("gate_version"),
+                "schema_digest": gate.get("schema_digest"),
+            }
+            if all(action.get(name) not in (None, "") for name in action):
+                return action
+            return None
+        if state == "running":
+            return {"kind": "resume", "run_id": run_id}
+        incident = _mapping(document.get("incident"))
+        if state != "incident" or not incident:
+            return None
+        raw_allowed = incident.get("allowed_commands", [])
+        allowed_commands = {
+            _text(item)
+            for item in raw_allowed
+            if isinstance(raw_allowed, list) and _text(item)
+        }
+        if (
+            _text(incident.get("recovery_path")) == "reconcile"
+            and "reconcile" in allowed_commands
+        ):
+            return {"kind": "control", "run_id": run_id, "command": "reconcile"}
+        if "resume" in allowed_commands:
+            return {"kind": "resume", "run_id": run_id}
+        incident_id = _text(incident.get("incident_id"))
+        if "cancel" in allowed_commands and incident_id:
+            return {
+                "kind": "control",
+                "run_id": run_id,
+                "command": "cancel",
+                "incident_id": incident_id,
+            }
+        return None
 
     @staticmethod
     def _capability_state(capabilities: Mapping[str, object], name: str) -> str:
@@ -750,6 +800,7 @@ class ResultProjector:
 
     def turn(self, turn: RunTurn) -> dict[str, object]:
         document = {"schema": TURN_SCHEMA, **turn.to_public_dict()}
+        document["next_action"] = self._suggested_action(document)
         diagnostic_receipt = document.get("diagnostic_receipt")
         if isinstance(diagnostic_receipt, Mapping):
             receipt_gaps = diagnostic_receipt.get("gaps", [])
@@ -870,21 +921,34 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
         },
         "additionalProperties": False,
     }
+    deadline_ref = {"$ref": "#/$defs/deadline"}
+    run_id_ref = {"$ref": "#/$defs/run_id"}
+    gate_binding_properties = {
+        "gate_id": {"$ref": "#/$defs/gate_id"},
+        "gate_version": {"$ref": "#/$defs/gate_version"},
+        "schema_digest": {"$ref": "#/$defs/schema_digest"},
+        "submission_id": {"$ref": "#/$defs/submission_id"},
+    }
     execute_schema = {
         "type": "object",
-        "required": ["kind"],
-        "properties": {
-            "kind": {"type": "string", "enum": ["start", "respond", "resume", "control"]},
+        "$defs": {
+            "deadline": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 120,
+                "default": 120,
+                "description": "Accepted range: greater than 0 and at most 120 seconds.",
+            },
             "run_id": {"type": "string", "minLength": 1},
-            "target": {"type": "string", "minLength": 1},
+            "gate_id": {"type": "string", "minLength": 1},
+            "gate_version": {"type": "integer", "minimum": 1},
+            "schema_digest": {"type": "string", "minLength": 64},
+            "submission_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "target": {"type": "string", "minLength": 1, "maxLength": 512},
             "targets": {
                 "type": "array",
                 "minItems": 2,
                 "maxItems": 16,
-                "description": (
-                    "Runtime-owned multi-target diagnosis scope. Target identities and "
-                    "roles are normalized before the Run opens."
-                ),
                 "items": {
                     "type": "object",
                     "required": ["ip"],
@@ -894,38 +958,10 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                             "type": "string",
                             "enum": ["reference", "candidate", "symmetric"],
                         },
-                        "target_id": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128,
-                        },
+                        "target_id": {"type": "string", "minLength": 1, "maxLength": 128},
                     },
                     "additionalProperties": False,
                 },
-            },
-            "intent": {"type": "string"},
-            "entry_operation": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128,
-                "description": (
-                    "Optional registered Domain Pack entry. READ_ONLY entries run as "
-                    "one-step diagnosis-only Runs; mutation entries require a typed "
-                    "Runtime-owned route for the selected intent."
-                ),
-            },
-            "entry_arguments": {
-                "type": "object",
-                "description": (
-                    "Typed arguments for the selected entry_operation; Runtime-owned "
-                    "identity, target, intent, and authorization fields are forbidden."
-                ),
-                "additionalProperties": True,
-            },
-            "purpose": {"type": "string"},
-            "delivery_strategy": {
-                "type": "string",
-                "enum": ["source-only", "live-patch", "build-upgrade"],
             },
             "observation_ref": {
                 "type": "object",
@@ -944,7 +980,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                     "schema": {"type": "string"},
                     "handle": {"type": "string", "minLength": 1},
                     "digest": {"type": "string", "minLength": 64},
-                    "kind": {"type": "string", "enum": ["observation"]},
+                    "kind": {"type": "string", "const": "observation"},
                     "size": {"type": "integer", "minimum": 0},
                     "provenance": {"type": "string"},
                     "retention_hint": {"type": "string"},
@@ -956,11 +992,6 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                 },
                 "additionalProperties": False,
             },
-            "gate_id": {"type": "string", "minLength": 1},
-            "gate_version": {"type": "integer", "minimum": 1},
-            "schema_digest": {"type": "string", "minLength": 64},
-            "incident_id": {"type": "string", "minLength": 1, "maxLength": 128},
-            "submission_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "response": {
                 "type": "object",
                 "required": ["status", "summary", "payload"],
@@ -970,27 +1001,137 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                         "enum": ["completed", "failed", "cancelled"],
                     },
                     "summary": {"type": "string", "minLength": 1},
-                    "payload": {"type": "object", "additionalProperties": True},
+                    "payload": {
+                        "type": "object",
+                        "description": "Must satisfy the active Turn gate input_schema payload contract.",
+                        "additionalProperties": True,
+                    },
                 },
                 "additionalProperties": False,
             },
-            "command": {
-                "type": "string",
-                "enum": ["reconcile", "cancel"],
-            },
-            "deadline": {
-                "type": "number",
-                "exclusiveMinimum": 0,
-                "maximum": 120,
-                "default": 120,
-                "description": (
-                    "Maximum time to wait for the next actionable Turn; "
-                    "it does not change Run command identity."
-                ),
-            },
         },
-        "additionalProperties": False,
+        "oneOf": [
+            {
+                "title": "start",
+                "type": "object",
+                "required": sorted(EXECUTE_ACTION_REQUIRED_FIELDS["start"]),
+                "anyOf": [{"required": ["target"]}, {"required": ["targets"]}],
+                "properties": {
+                    "kind": {"const": "start"},
+                    "target": {"$ref": "#/$defs/target"},
+                    "targets": {"$ref": "#/$defs/targets"},
+                    "intent": {"type": "string", "minLength": 1},
+                    "entry_operation": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "entry_arguments": {
+                        "type": "object",
+                        "description": "Domain arguments only; Runtime-owned identity, authorization, workflow, epoch, and recovery fields are forbidden.",
+                        "additionalProperties": True,
+                    },
+                    "purpose": {"type": "string"},
+                    "delivery_strategy": {
+                        "type": "string",
+                        "enum": ["source-only", "live-patch", "build-upgrade"],
+                    },
+                    "observation_ref": {"$ref": "#/$defs/observation_ref"},
+                    "deadline": deadline_ref,
+                },
+                "additionalProperties": False,
+            },
+            {
+                "title": "respond",
+                "type": "object",
+                "required": sorted(EXECUTE_ACTION_REQUIRED_FIELDS["respond"]),
+                "properties": {
+                    "kind": {"const": "respond"},
+                    "run_id": run_id_ref,
+                    **gate_binding_properties,
+                    "response": {"$ref": "#/$defs/response"},
+                    "deadline": deadline_ref,
+                },
+                "additionalProperties": False,
+            },
+            {
+                "title": "resume",
+                "type": "object",
+                "required": sorted(EXECUTE_ACTION_REQUIRED_FIELDS["resume"]),
+                "properties": {
+                    "kind": {"const": "resume"},
+                    "run_id": run_id_ref,
+                    "deadline": deadline_ref,
+                },
+                "additionalProperties": False,
+            },
+            {
+                "title": "control",
+                "type": "object",
+                "required": sorted(EXECUTE_ACTION_REQUIRED_FIELDS["control"]),
+                "properties": {
+                    "kind": {"const": "control"},
+                    "run_id": run_id_ref,
+                    "command": {"type": "string", "enum": ["reconcile", "cancel"]},
+                    "incident_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                    **gate_binding_properties,
+                    "deadline": deadline_ref,
+                },
+                "oneOf": [
+                    {
+                        "properties": {"command": {"const": "reconcile"}},
+                        "not": {
+                            "anyOf": [
+                                {"required": [name]}
+                                for name in (
+                                    "incident_id",
+                                    "gate_id",
+                                    "gate_version",
+                                    "schema_digest",
+                                    "submission_id",
+                                )
+                            ]
+                        },
+                    },
+                    {
+                        "properties": {"command": {"const": "cancel"}},
+                        "required": ["incident_id"],
+                        "not": {
+                            "anyOf": [
+                                {"required": [name]}
+                                for name in (
+                                    "gate_id",
+                                    "gate_version",
+                                    "schema_digest",
+                                    "submission_id",
+                                )
+                            ]
+                        },
+                    },
+                    {
+                        "properties": {"command": {"const": "cancel"}},
+                        "required": ["gate_id", "gate_version", "schema_digest"],
+                        "not": {"required": ["incident_id"]},
+                    },
+                ],
+                "additionalProperties": False,
+            },
+        ],
     }
+    for action_schema in execute_schema["oneOf"]:
+        kind = action_schema["properties"]["kind"]["const"]
+        if set(action_schema["properties"]) != EXECUTE_ACTION_FIELDS[kind]:
+            raise RuntimeError(f"{kind} execute schema fields drifted from decoder")
+        for name, expected_type in EXECUTE_ACTION_FIELD_TYPES[kind].items():
+            field_schema = action_schema["properties"][name]
+            reference = field_schema.get("$ref")
+            if isinstance(reference, str) and reference.startswith("#/$defs/"):
+                field_schema = execute_schema["$defs"][reference.rsplit("/", 1)[-1]]
+            actual_type = field_schema.get("type")
+            if actual_type is None and "const" in field_schema:
+                actual_type = (
+                    "string" if isinstance(field_schema["const"], str) else None
+                )
+            if actual_type != expected_type:
+                raise RuntimeError(
+                    f"{kind}.{name} execute schema type drifted from decoder"
+                )
     return (
         OperationDescriptor(
             name="observe",

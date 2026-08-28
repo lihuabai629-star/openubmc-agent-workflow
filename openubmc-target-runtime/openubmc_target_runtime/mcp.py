@@ -8,8 +8,11 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import select
+import signal
 import sys
 import threading
 import time
@@ -73,6 +76,7 @@ from .session_outcome import (
 )
 from .credential_file import load_selected_credentials_file
 from .lifecycle import OperationContext, TaskRunRegistry
+from .mcp_lifecycle import McpProcessLifecycle
 from .mutation import (
     MutationAuthorizedExceptions,
     TaskAuthorizationPolicy,
@@ -2949,9 +2953,9 @@ class RuntimeMcpService:
             raise TypeError("tool arguments must be an object")
         if self.interface_profile == "agent":
             bounded_request(arguments)
-        self.interface_catalog.validate_arguments(name, arguments)
         if self.interface_profile == "agent":
             if name == "observe":
+                self.interface_catalog.validate_arguments(name, arguments)
                 return self._runtime.agent.observe(
                     arguments,
                     task_id=task_id,
@@ -2964,6 +2968,7 @@ class RuntimeMcpService:
                     operation_id=operation_id,
                 )
             raise ValueError(f"unknown Agent operation: {name}")
+        self.interface_catalog.validate_arguments(name, arguments)
         return self.call_tool(
             name,
             arguments,
@@ -3766,12 +3771,21 @@ class StdioMcpServer:
         *,
         max_workers: int = 8,
         max_frame_bytes: int = STDIO_FRAME_MAX_BYTES,
+        process_lifecycle: McpProcessLifecycle | None = None,
+        lifecycle_poll_seconds: float = 0.25,
     ) -> None:
         if max_frame_bytes <= 1024:
             raise ValueError("stdio frame limit must exceed 1 KiB")
         self.endpoint = endpoint
         self.max_workers = max_workers
         self.max_frame_bytes = max_frame_bytes
+        if (
+            not math.isfinite(lifecycle_poll_seconds)
+            or lifecycle_poll_seconds <= 0
+        ):
+            raise ValueError("lifecycle_poll_seconds must be finite and positive")
+        self.process_lifecycle = process_lifecycle
+        self.lifecycle_poll_seconds = float(lifecycle_poll_seconds)
 
     def serve(self, reader=None, writer=None) -> None:
         input_stream = sys.stdin if reader is None else reader
@@ -3781,6 +3795,57 @@ class StdioMcpServer:
         executor = ThreadPoolExecutor(max_workers=self.max_workers)
         futures: set[Future[dict[str, object] | None]] = set()
         inflight: dict[str, tuple[str, str]] = {}
+        exit_reason = "server-error"
+        original_signal_handlers: dict[int, object] = {}
+
+        if (
+            self.process_lifecycle is not None
+            and threading.current_thread() is threading.main_thread()
+        ):
+            def request_signal_exit(_signum, _frame) -> None:
+                self.process_lifecycle.request_exit("client-terminated")
+
+            for signal_number in (signal.SIGTERM, signal.SIGINT):
+                original_signal_handlers[signal_number] = signal.getsignal(
+                    signal_number
+                )
+                signal.signal(signal_number, request_signal_exit)
+
+        def begin_request(message: Mapping[str, object]) -> None:
+            if self.process_lifecycle is None:
+                return
+            params = message.get("params", {})
+            metadata = params.get("_meta") if isinstance(params, Mapping) else None
+            client = None
+            session_id = None
+            if isinstance(metadata, Mapping) and isinstance(
+                metadata.get("codex/taskId"), str
+            ):
+                client = "codex"
+            if isinstance(metadata, Mapping):
+                for key in (
+                    "openubmc/sessionId",
+                    "codex/sessionId",
+                    "sessionId",
+                    "session_id",
+                ):
+                    value = metadata.get(key)
+                    if isinstance(value, str) and value.strip():
+                        session_id = value.strip()
+                        break
+            task_id = self.endpoint.task_id_for_params(params)
+            if session_id is None and task_id != "unknown-task":
+                session_id = task_id
+            self.process_lifecycle.attribute(
+                client=client,
+                task_id=task_id,
+                session_id=session_id,
+            )
+            self.process_lifecycle.begin_request()
+
+        def end_request() -> None:
+            if self.process_lifecycle is not None:
+                self.process_lifecycle.end_request()
 
         def write_response(response: dict[str, object] | None) -> None:
             if response is None:
@@ -3805,10 +3870,36 @@ class StdioMcpServer:
                         break
             return fragment, oversized
 
+        def input_ready() -> bool:
+            if self.process_lifecycle is None:
+                return True
+            try:
+                file_number = input_stream.fileno()
+                readable, _, _ = select.select(
+                    [file_number], [], [], self.lifecycle_poll_seconds
+                )
+                return bool(readable)
+            except InterruptedError:
+                return False
+            except (AttributeError, OSError, TypeError, ValueError):
+                return True
+
         try:
             while True:
+                if self.process_lifecycle is not None:
+                    due_reason = self.process_lifecycle.exit_reason_if_due()
+                    if due_reason is not None:
+                        exit_reason = due_reason
+                        break
+                    if not input_ready():
+                        continue
+                    due_reason = self.process_lifecycle.exit_reason_if_due()
+                    if due_reason is not None:
+                        exit_reason = due_reason
+                        break
                 frame = read_frame()
                 if frame is None:
+                    exit_reason = "stdin-closed"
                     break
                 line, oversized = frame
                 if not line.strip():
@@ -3851,6 +3942,19 @@ class StdioMcpServer:
                                 task_id, operation_id
                             )
                     continue
+                if (
+                    self.process_lifecycle is not None
+                    and self.process_lifecycle.shutdown_requested
+                ):
+                    if "id" in message:
+                        write_response(
+                            JsonRpcMcpEndpoint._error(
+                                message.get("id"),
+                                -32000,
+                                "MCP process is shutting down",
+                            )
+                        )
+                    continue
                 if message.get("method") == "tools/call":
                     request_key = str(message.get("id"))
                     params = message.get("params", {})
@@ -3863,7 +3967,24 @@ class StdioMcpServer:
                     )
                     with inflight_lock:
                         inflight[request_key] = (task_id, operation_id)
-                    future = executor.submit(self.endpoint.handle, message)
+                    try:
+                        begin_request(message)
+                    except RuntimeError:
+                        with inflight_lock:
+                            inflight.pop(request_key, None)
+                        write_response(
+                            JsonRpcMcpEndpoint._error(
+                                message.get("id"),
+                                -32000,
+                                "MCP process is shutting down",
+                            )
+                        )
+                        continue
+                    try:
+                        future = executor.submit(self.endpoint.handle, message)
+                    except Exception:
+                        end_request()
+                        raise
                     futures.add(future)
 
                     def completed(
@@ -3885,10 +4006,33 @@ class StdioMcpServer:
                                     f"internal error: {type(exc).__name__}",
                                 )
                             )
+                        finally:
+                            end_request()
 
                     future.add_done_callback(completed)
                 else:
-                    write_response(self.endpoint.handle(message))
+                    try:
+                        begin_request(message)
+                    except RuntimeError:
+                        write_response(
+                            JsonRpcMcpEndpoint._error(
+                                message.get("id"),
+                                -32000,
+                                "MCP process is shutting down",
+                            )
+                        )
+                        continue
+                    try:
+                        write_response(self.endpoint.handle(message))
+                    finally:
+                        end_request()
         finally:
             executor.shutdown(wait=True, cancel_futures=False)
             self.endpoint.service.close()
+            if self.process_lifecycle is not None:
+                due_reason = self.process_lifecycle.exit_reason_if_due()
+                if due_reason is not None:
+                    exit_reason = due_reason
+                self.process_lifecycle.record_exit(exit_reason)
+            for signal_number, handler in original_signal_handlers.items():
+                signal.signal(signal_number, handler)

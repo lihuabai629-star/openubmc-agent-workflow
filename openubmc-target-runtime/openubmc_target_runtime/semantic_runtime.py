@@ -9,6 +9,7 @@ import json
 import re
 from typing import Protocol, TypeAlias
 
+from .capabilities import CAPABILITY_ALIASES
 from .contracts import RUNTIME_API_VERSION
 from .comparison_targets import comparison_target_identities
 from .diagnostic_receipt import (
@@ -17,6 +18,7 @@ from .diagnostic_receipt import (
 )
 from .diagnostic_request import DiagnosticRequestPlan
 from .incident import incident_recovery_policy
+from .mdb_query import MDB_QUERY_CORRECTION, is_read_only_mdb_query
 
 
 SEMANTIC_RUNTIME_SCHEMA = f"{RUNTIME_API_VERSION}/semantic-runtime-v1"
@@ -32,7 +34,11 @@ GATE_SCHEMA_PROJECTION_TARGET_BYTES = 4 * 1024
 # Compatibility name for consumers that still report the historical target.
 # Gate schemas may exceed this value; it is not a Runtime control-flow maximum.
 GATE_SCHEMA_MAX_BYTES = GATE_SCHEMA_PROJECTION_TARGET_BYTES
-OBSERVATION_SCOPE_MAX_BYTES = 2 * 1024
+# Internal collection partitions target this size. It is not an Agent request or
+# workflow-completion limit; individually valid selectors remain accepted.
+OBSERVATION_PARTITION_TARGET_BYTES = 2 * 1024
+# Compatibility name retained for Operator telemetry and older imports.
+OBSERVATION_SCOPE_MAX_BYTES = OBSERVATION_PARTITION_TARGET_BYTES
 TARGET_MAX_BYTES = 512
 SELECTOR_ID_MAX_BYTES = 64
 SELECTOR_MAX_ITEMS = 16
@@ -41,9 +47,7 @@ CAPABILITY_MAX_ITEMS = 16
 MDB_QUERY_MAX_BYTES = 1024
 MDB_QUERY_MAX_ITEMS = 32
 
-_CAPABILITY_ALIASES = frozenset(
-    {"ssh", "telnet", "mdbctl", "busctl", "dbus", "alarms"}
-)
+_CAPABILITY_ALIASES = frozenset(CAPABILITY_ALIASES)
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _RUNTIME_OWNED_ENTRY_ARGUMENTS = frozenset(
@@ -74,6 +78,101 @@ _RUNTIME_OWNED_ENTRY_ARGUMENTS = frozenset(
         "idempotency_key",
         "command_id",
         "input_digest",
+        "run_id",
+        "gate_id",
+        "gate_version",
+        "schema_digest",
+        "submission_id",
+        "incident_id",
+        "operation_id",
+        "effect_id",
+        "target_epoch",
+        "minimum_target_epoch",
+        "authorization",
+        "authorization_policy",
+        "workflow_definition",
+        "workflow_revision",
+        "recovery_mode",
+        "recovery_decision",
+        "actor",
+        "submitted_at",
+    }
+)
+
+EXECUTE_ACTION_FIELD_TYPES = {
+    "start": {
+        "kind": "string",
+        "target": "string",
+        "targets": "array",
+        "intent": "string",
+        "entry_operation": "string",
+        "entry_arguments": "object",
+        "purpose": "string",
+        "delivery_strategy": "string",
+        "observation_ref": "object",
+        "deadline": "number",
+    },
+    "respond": {
+        "kind": "string",
+        "run_id": "string",
+        "gate_id": "string",
+        "gate_version": "integer",
+        "schema_digest": "string",
+        "submission_id": "string",
+        "response": "object",
+        "deadline": "number",
+    },
+    "resume": {
+        "kind": "string",
+        "run_id": "string",
+        "deadline": "number",
+    },
+    "control": {
+        "kind": "string",
+        "run_id": "string",
+        "command": "string",
+        "incident_id": "string",
+        "gate_id": "string",
+        "gate_version": "integer",
+        "schema_digest": "string",
+        "submission_id": "string",
+        "deadline": "number",
+    },
+}
+EXECUTE_ACTION_FIELDS = {
+    kind: frozenset(fields) for kind, fields in EXECUTE_ACTION_FIELD_TYPES.items()
+}
+EXECUTE_ACTION_REQUIRED_FIELDS = {
+    "start": frozenset({"kind", "intent"}),
+    "respond": frozenset(
+        {
+            "kind",
+            "run_id",
+            "gate_id",
+            "gate_version",
+            "schema_digest",
+            "response",
+        }
+    ),
+    "resume": frozenset({"kind", "run_id"}),
+    "control": frozenset({"kind", "run_id", "command"}),
+}
+_RUNTIME_OWNED_ACTION_FIELDS = frozenset(
+    {
+        "authorization",
+        "authorization_policy",
+        "case_id",
+        "command_id",
+        "effect_id",
+        "expected_revision",
+        "input_digest",
+        "operation_id",
+        "recovery_decision",
+        "recovery_mode",
+        "target_epoch",
+        "workflow",
+        "workflow_definition",
+        "workflow_revision",
     }
 )
 
@@ -213,7 +312,10 @@ class ObservationSelector:
             unsupported = sorted(set(names) - _CAPABILITY_ALIASES)
             if unsupported:
                 raise ScopeViolation(
-                    "unsupported capability selectors: " + ", ".join(unsupported)
+                    "invalid capability selectors: "
+                    + ", ".join(unsupported)
+                    + "; supported selectors: "
+                    + ", ".join(sorted(_CAPABILITY_ALIASES))
                 )
             return cls(selector_id=selector_id, kind=kind, names=names)
         if kind == "mdb":
@@ -232,6 +334,13 @@ class ObservationSelector:
                 for query in queries
             ):
                 raise ScopeViolation("mdb query exceeds the 1024-byte limit")
+            for query_index, query in enumerate(queries, start=1):
+                parts = query.split()
+                if not is_read_only_mdb_query(parts):
+                    raise ScopeViolation(
+                        f"invalid MDB query #{query_index} {query!r}; "
+                        f"{MDB_QUERY_CORRECTION}"
+                    )
             return cls(selector_id=selector_id, kind=kind, queries=queries)
         raise ScopeViolation(f"unsupported selector kind: {kind or '<empty>'}")
 
@@ -242,6 +351,31 @@ class ObservationSelector:
         if self.queries:
             result["queries"] = list(self.queries)
         return result
+
+    @property
+    def values(self) -> tuple[str, ...]:
+        """Return the exact selected values independent of selector kind."""
+
+        return self.names or self.queries
+
+    @property
+    def mdb_queries(self) -> tuple[str, ...]:
+        """Return MDB queries, or an empty tuple for another selector kind."""
+
+        return self.queries
+
+    def with_values(self, values: tuple[str, ...]) -> "ObservationSelector":
+        """Return the same selector identity narrowed to the supplied values."""
+
+        return ObservationSelector(
+            selector_id=self.selector_id,
+            kind=self.kind,
+            names=values if self.names else (),
+            queries=values if self.queries else (),
+        )
+
+    def has_same_identity(self, other: "ObservationSelector") -> bool:
+        return self.selector_id == other.selector_id and self.kind == other.kind
 
 
 @dataclass(frozen=True)
@@ -305,9 +439,58 @@ class ObservationQuery:
             max_age_seconds=max_age,
             deadline=float(deadline),
         )
-        if len(json_bytes(contract.to_public_dict())) > OBSERVATION_SCOPE_MAX_BYTES:
-            raise ScopeViolation("observation scope exceeds the 2KB budget")
         return contract
+
+    def collection_partitions(self) -> tuple["ObservationQuery", ...]:
+        """Plan bounded internal collection batches without narrowing scope."""
+
+        batches: list[list[ObservationSelector]] = []
+        current: list[ObservationSelector] = []
+
+        def document(selectors: list[ObservationSelector]) -> dict[str, object]:
+            return {
+                "target": self.target,
+                "selectors": [selector.to_public_dict() for selector in selectors],
+                "freshness": {
+                    "mode": self.freshness_mode,
+                    "max_age_seconds": self.max_age_seconds,
+                },
+            }
+
+        for selector in self.selectors:
+            for value in selector.values:
+                fragment = selector.with_values((value,))
+                if (
+                    current
+                    and current[-1].has_same_identity(selector)
+                ):
+                    candidate = [
+                        *current[:-1],
+                        current[-1].with_values((*current[-1].values, value)),
+                    ]
+                else:
+                    candidate = [*current, fragment]
+                if (
+                    current
+                    and len(json_bytes(document(candidate)))
+                    > OBSERVATION_PARTITION_TARGET_BYTES
+                ):
+                    batches.append(current)
+                    current = [fragment]
+                else:
+                    current = candidate
+        if current:
+            batches.append(current)
+        return tuple(
+            ObservationQuery(
+                target=self.target,
+                selectors=tuple(batch),
+                freshness_mode=self.freshness_mode,
+                max_age_seconds=self.max_age_seconds,
+                deadline=self.deadline,
+            )
+            for batch in batches
+        )
 
     def runtime_arguments(self, *, assured: bool) -> dict[str, object]:
         queries = [
@@ -653,6 +836,32 @@ def _normalized_gate_submission(
     }
 
 
+def _validate_gate_response_shape(response: Mapping[str, object]) -> None:
+    required = {"status", "summary", "payload"}
+    missing = sorted(required - set(response))
+    if missing:
+        raise AgentGatewayError(
+            "response requires fields: " + ", ".join(missing)
+        )
+    unexpected = sorted(set(response) - required)
+    if unexpected:
+        raise AgentGatewayError(
+            "response contains unsupported fields: " + ", ".join(unexpected)
+        )
+    raw_payload = response.get("payload", {})
+    if not isinstance(raw_payload, Mapping):
+        raise AgentGatewayError("response payload must be an object")
+    raw_status = response.get("status")
+    raw_summary = response.get("summary")
+    status = raw_status.strip().lower() if isinstance(raw_status, str) else ""
+    if status not in {"completed", "failed", "cancelled"}:
+        raise AgentGatewayError(
+            "response status must be completed, failed, or cancelled"
+        )
+    if not isinstance(raw_summary, str) or not raw_summary.strip():
+        raise AgentGatewayError("response summary must be a non-empty string")
+
+
 def run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
     """Return the canonical semantic payload persisted and fingerprinted for a command."""
     if isinstance(command, SubmitGate):
@@ -772,14 +981,96 @@ def _submission_id(value: object, *, binding: Mapping[str, object]) -> str:
     return selected
 
 
+def _validate_action_shape(action: Mapping[str, object]) -> str:
+    raw_kind = action.get("kind")
+    if not isinstance(raw_kind, str) or raw_kind not in EXECUTE_ACTION_FIELDS:
+        raise AgentGatewayError(
+            "execute kind must be start, respond, resume, or control"
+        )
+    kind = raw_kind
+    runtime_owned = sorted(set(action) & _RUNTIME_OWNED_ACTION_FIELDS)
+    if runtime_owned:
+        raise AgentGatewayError(
+            "execute Action cannot supply Runtime-owned fields: "
+            + ", ".join(runtime_owned)
+        )
+    unexpected = sorted(set(action) - EXECUTE_ACTION_FIELDS[kind])
+    if unexpected:
+        raise AgentGatewayError(
+            f"{kind} Action contains fields from another Action kind or unsupported fields: "
+            + ", ".join(unexpected)
+        )
+    missing = sorted(EXECUTE_ACTION_REQUIRED_FIELDS[kind] - set(action))
+    if missing:
+        raise AgentGatewayError(
+            f"{kind} Action requires fields: " + ", ".join(missing)
+        )
+    for name, expected in EXECUTE_ACTION_FIELD_TYPES[kind].items():
+        if name not in action:
+            continue
+        value = action[name]
+        valid = (
+            isinstance(value, str)
+            if expected == "string"
+            else isinstance(value, Mapping)
+            if expected == "object"
+            else isinstance(value, list)
+            if expected == "array"
+            else isinstance(value, int) and not isinstance(value, bool)
+            if expected == "integer"
+            else isinstance(value, (int, float)) and not isinstance(value, bool)
+        )
+        if not valid:
+            if name == "deadline":
+                raise AgentGatewayError(
+                    "execute deadline must be greater than 0 and at most 120 seconds"
+                )
+            article = "an" if expected in {"array", "integer", "object"} else "a"
+            raise AgentGatewayError(f"{name} must be {article} {expected}")
+    if kind != "control":
+        return kind
+    command = _text(action.get("command")).lower()
+    gate_fields = {"gate_id", "gate_version", "schema_digest", "submission_id"}
+    if command == "reconcile":
+        invalid = sorted((gate_fields | {"incident_id"}) & set(action))
+        if invalid:
+            raise AgentGatewayError(
+                "control reconcile accepts only kind, run_id, command, and deadline"
+            )
+        return kind
+    if command != "cancel":
+        raise AgentGatewayError(
+            "control command must be one of: reconcile, cancel"
+        )
+    if "incident_id" in action:
+        invalid = sorted(gate_fields & set(action))
+        if invalid:
+            raise AgentGatewayError(
+                "incident cancel cannot include Gate binding fields: "
+                + ", ".join(invalid)
+            )
+        return kind
+    missing_gate = sorted(
+        {"gate_id", "gate_version", "schema_digest"} - set(action)
+    )
+    if missing_gate:
+        raise AgentGatewayError(
+            "control cancel requires a Gate binding or incident_id; missing: "
+            + ", ".join(missing_gate)
+        )
+    return kind
+
+
 def _caller_deadline(action: Mapping[str, object]) -> float:
     value = action.get("deadline", 120)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise AgentGatewayError("execute deadline must be a positive number")
+        raise AgentGatewayError(
+            "execute deadline must be greater than 0 and at most 120 seconds"
+        )
     deadline = float(value)
     if deadline <= 0 or deadline > 120:
         raise AgentGatewayError(
-            "execute deadline must be greater than zero and at most 120 seconds"
+            "execute deadline must be greater than 0 and at most 120 seconds"
         )
     return deadline
 
@@ -808,9 +1099,9 @@ def decode_run_command(
     bounded_request(action)
     if "observation_receipt" in action:
         raise AgentGatewayError(
-            "observation_receipt is retired; use observation_ref"
+            "observation_receipt is retired and unexpected; use observation_ref"
         )
-    kind = _text(action.get("kind")).lower()
+    kind = _validate_action_shape(action)
     caller_deadline = _caller_deadline(action)
     if kind == "start":
         command_id = _text(operation_id)
@@ -843,8 +1134,9 @@ def decode_run_command(
                 )
                 if unexpected_fields:
                     raise AgentGatewayError(
-                        "start target fields contain unexpected values: "
+                        "start target fields contain unexpected field "
                         + ", ".join(unexpected_fields)
+                        + "; unexpected fields are forbidden"
                     )
                 ip = _text(item.get("ip"))
                 if not ip:
@@ -889,7 +1181,9 @@ def decode_run_command(
             target = primary_target
         if not target:
             raise AgentGatewayError("start requires target or targets")
-        intent = _text(action.get("intent") or "diagnosis-only").lower()
+        intent = _text(action.get("intent")).lower()
+        if not intent:
+            raise AgentGatewayError("start requires a non-empty intent")
         entry_operation = _text(action.get("entry_operation"))
         if entry_operation and _SAFE_ID.fullmatch(entry_operation) is None:
             raise AgentGatewayError(
@@ -927,6 +1221,8 @@ def decode_run_command(
             raise AgentGatewayError("unsupported delivery_strategy")
         observation_ref = None
         raw_ref = action.get("observation_ref")
+        if raw_ref is not None and not isinstance(raw_ref, Mapping):
+            raise AgentGatewayError("observation_ref must be an object")
         if isinstance(raw_ref, Mapping):
             if targets:
                 raise AgentGatewayError(
@@ -959,6 +1255,7 @@ def decode_run_command(
         response = action.get("response")
         if not isinstance(response, Mapping):
             raise AgentGatewayError("respond requires a response object")
+        _validate_gate_response_shape(response)
         gate_id = _gate_id(action.get("gate_id"))
         gate_version = _gate_version(action.get("gate_version"))
         schema_digest = _schema_digest(action.get("schema_digest"))
@@ -1076,7 +1373,9 @@ def decode_run_command(
                 input_digest=digest,
                 caller_deadline=caller_deadline,
             )
-        raise AgentGatewayError("control command must be reconcile or cancel")
+        raise AgentGatewayError(
+            "control command must be one of: reconcile, cancel"
+        )
     raise AgentGatewayError("execute kind must be start, respond, resume, or control")
 
 

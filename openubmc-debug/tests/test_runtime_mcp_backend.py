@@ -67,6 +67,97 @@ class FakeLease:
 
 
 class RuntimeMcpBackendTests(unittest.TestCase):
+    def test_agent_observe_executes_wide_mdb_scope_in_runtime_partitions(
+        self,
+    ) -> None:
+        module = load_script("target_runtime_mcp")
+        runtime = module._load_runtime_module()
+        opened: list[FakeLease] = []
+        preflight_calls = 0
+        first_query_calls = 0
+
+        def open_lease(**kwargs):
+            lease = FakeLease(str(kwargs["task_id"]))
+            opened.append(lease)
+            return lease
+
+        def runner(name, command, _environment, _timeout, **_kwargs):
+            nonlocal preflight_calls, first_query_calls
+            if name == "preflight_start":
+                preflight_calls += 1
+                return {
+                    "name": name,
+                    "ok": True,
+                    "code": "ok",
+                    "returncode": 0,
+                    "started_at": "2026-08-23T00:00:00Z",
+                    "completed_at": "2026-08-23T00:00:00Z",
+                    "payload": {
+                        "observed_at": "2026-08-23T00:00:00Z",
+                        "result": {
+                            "checks": {
+                                "SSH": {"ok": True},
+                                "MDBCTL": {"ok": True},
+                            }
+                        },
+                    },
+                }
+            if name == "mdbctl":
+                first_query_calls += 1
+            return {
+                "name": name,
+                "ok": True,
+                "code": "ok",
+                "returncode": 0,
+                "started_at": "2026-08-23T00:00:01Z",
+                "completed_at": "2026-08-23T00:00:02Z",
+                "payload": {"result": {"stdout_lines": [command[-1]]}},
+            }
+
+        selectors = [
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            }
+        ]
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "secret", "port": 22},
+                    "telnet": {"user": "root", "password": "secret", "port": 23},
+                },
+            ),
+            mock.patch.object(module, "open_debug_runtime_lease", open_lease),
+            mock.patch.object(
+                module.workflow_remote,
+                "build_typed_debug_tool_runner",
+                return_value=runner,
+            ),
+        ):
+            service = runtime.RuntimeMcpService(module.DebugMcpBackend())
+            try:
+                receipt = service.call_exposed_tool(
+                    "observe",
+                    {"target": "192.0.2.30", "selectors": selectors},
+                    task_id="partitioned-observation",
+                    operation_id="partitioned-observation-1",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(len(opened), 1)
+        self.assertGreater(preflight_calls, 1)
+        self.assertEqual(first_query_calls, preflight_calls)
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(list(receipt["results"]), ["mdb-wide"])
+        self.assertEqual(len(receipt["results"]["mdb-wide"]["values"]), 16)
+        self.assertIn("observation_ref", receipt)
+
     def test_agent_observe_bounds_parallel_selectors_and_reuses_one_lease(self) -> None:
         module = load_script("target_runtime_mcp")
         runtime = module._load_runtime_module()
@@ -1758,6 +1849,110 @@ class RuntimeMcpBackendTests(unittest.TestCase):
             ["observe", "execute"],
         )
 
+    def test_stdio_entrypoint_records_task_scoped_process_lifecycle(self) -> None:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {},
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "target_runtime_mcp.py")],
+                input=json.dumps(request) + "\n",
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "OPENUBMC_MCP_CLIENT": "codex",
+                    "OPENUBMC_MCP_TASK_ID": "lifecycle-task",
+                    "OPENUBMC_MCP_SESSION_ID": "lifecycle-session",
+                    "OPENUBMC_MCP_PARENT_PID": str(os.getpid()),
+                    "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
+                    "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
+                },
+            )
+            records = list((root / "processes").glob("*.json"))
+            lifecycle = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(lifecycle["client"], "codex")
+        self.assertEqual(lifecycle["task_id"], "lifecycle-task")
+        self.assertEqual(lifecycle["session_id"], "lifecycle-session")
+        self.assertEqual(lifecycle["parent_pid"], os.getpid())
+        self.assertEqual(lifecycle["lifecycle_state"], "stopped")
+        self.assertEqual(lifecycle["exit_reason"], "stdin-closed")
+
+    def test_stdio_entrypoint_exits_when_recorded_parent_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            missing_parent_pid = (
+                int(Path("/proc/sys/kernel/pid_max").read_text(encoding="utf-8"))
+                + 1
+            )
+            process = subprocess.Popen(
+                [sys.executable, str(SCRIPTS / "target_runtime_mcp.py")],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    **os.environ,
+                    "OPENUBMC_MCP_CLIENT": "codex",
+                    "OPENUBMC_MCP_TASK_ID": "orphan-task",
+                    "OPENUBMC_MCP_SESSION_ID": "orphan-session",
+                    "OPENUBMC_MCP_PARENT_PID": str(missing_parent_pid),
+                    "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
+                    "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
+                    "OPENUBMC_MCP_LIFECYCLE_POLL_SECONDS": "0.01",
+                },
+            )
+            try:
+                return_code = process.wait(timeout=3)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=3)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+            records = list((root / "processes").glob("*.json"))
+            lifecycle = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(lifecycle["lifecycle_state"], "stopped")
+        self.assertEqual(lifecycle["exit_reason"], "parent-exited")
+
+    def test_stdio_entrypoint_records_invalid_parent_environment_as_startup_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "target_runtime_mcp.py")],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "OPENUBMC_MCP_CLIENT": "codex",
+                    "OPENUBMC_MCP_TASK_ID": "invalid-parent-task",
+                    "OPENUBMC_MCP_SESSION_ID": "invalid-parent-session",
+                    "OPENUBMC_MCP_PARENT_PID": "not-a-pid",
+                    "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
+                    "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
+                },
+            )
+            records = list((root / "processes").glob("*.json"))
+            lifecycle = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("must be a non-negative integer", completed.stderr)
+        self.assertEqual(lifecycle["parent_pid"], 0)
+        self.assertEqual(lifecycle["lifecycle_state"], "stopped")
+        self.assertEqual(lifecycle["exit_reason"], "startup-error")
+
     def test_stdio_validation_failure_returns_an_error_and_keeps_serving(self) -> None:
         requests = [
             {
@@ -1815,7 +2010,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertEqual(failed["structuredContent"]["status"], "failed")
         self.assertEqual(
             failed["structuredContent"]["error"]["code"],
-            "ValueError",
+            "ScopeViolation",
         )
         exposed_tools = [
             tool["name"] for tool in responses[3]["result"]["tools"]

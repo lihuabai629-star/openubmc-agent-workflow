@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createTools } from "../src/tools.js";
+import { createTools, registerTools } from "../src/tools.js";
+import { PendingResponses } from "../src/server.js";
 
 test("defines the three openUBMC knowledge-base tools", () => {
   const tools = createTools({});
@@ -43,4 +44,42 @@ test("query rejects empty text before contacting LightRAG", async () => {
   const tools = createTools({ query: async () => { called = true; } });
   await assert.rejects(() => tools[0].handler({ query: "   " }), /query/);
   assert.equal(called, false);
+});
+
+test("registered handlers attribute request ownership", async () => {
+  const registered = [];
+  const server = {
+    registerTool: (name, configuration, handler) => {
+      registered.push({ name, configuration, handler });
+    }
+  };
+  const attributes = [];
+  const lifecycle = {
+    attribute: value => attributes.push(value)
+  };
+  registerTools(server, { status: async () => ({ configured: true }) }, lifecycle);
+
+  const status = registered.find(tool => tool.name === "openubmc_kb_status");
+  const result = await status.handler({}, {
+    _meta: { "codex/taskId": "kb-task" },
+    sessionId: "kb-session"
+  });
+
+  assert.deepEqual(attributes, [{
+    client: "codex",
+    taskId: "kb-task",
+    sessionId: "kb-session"
+  }]);
+  assert.equal(result.structuredContent.ok, true);
+});
+
+test("pending responses count duplicate and null JSON-RPC ids independently", () => {
+  const pending = new PendingResponses();
+  pending.add(null);
+  pending.add(null);
+  assert.equal(pending.size, 1);
+  assert.equal(pending.finish(null), true);
+  assert.equal(pending.size, 1);
+  assert.equal(pending.finish(null), true);
+  assert.equal(pending.size, 0);
 });

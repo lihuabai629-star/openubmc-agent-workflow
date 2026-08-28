@@ -6,7 +6,6 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
-import re
 import shlex
 import sys
 import subprocess
@@ -31,7 +30,7 @@ from _remote_common import (
     ssh_transport_failure_code,
     ssh_transport_failure_message,
 )
-from _target_runtime_adapter import run_typed_mdb_one_shot
+from _target_runtime_adapter import _load_runtime_module, run_typed_mdb_one_shot
 
 CLASS_EXIT_CODES = {
     "remote-command-failed": 10,
@@ -51,17 +50,6 @@ CLASS_EXIT_CODES = {
 }
 MDBCTL_STDOUT_LIMIT_BYTES = 8 * 1024 * 1024
 MDBCTL_STDERR_LIMIT_BYTES = 64 * 1024
-READ_ONLY_COMMAND_ARITY = {
-    "lsclass": (0, 0),
-    "lsobj": (1, 1),
-    "lsprop": (1, 2),
-    "getprop": (3, 3),
-    "lsmethod": (1, 2),
-    "lsmc": (0, 0),
-}
-SAFE_MDBCTL_ARGUMENT_RE = re.compile(
-    r"\A[A-Za-z0-9_/][A-Za-z0-9_./:@+-]*\Z", re.ASCII
-)
 FAILURE_PRIORITY = {
     SSH_CLIENT_MISSING_CODE: 150,
     SSH_HOST_KEY_POLICY_ERROR_CODE: 145,
@@ -136,15 +124,7 @@ def normalize_command(parts: list[str]) -> list[str]:
 
 
 def is_read_only_command(parts: list[str]) -> bool:
-    if not parts or parts[0] not in READ_ONLY_COMMAND_ARITY:
-        return False
-    minimum, maximum = READ_ONLY_COMMAND_ARITY[parts[0]]
-    arguments = parts[1:]
-    if not minimum <= len(arguments) <= maximum:
-        return False
-    return all(
-        SAFE_MDBCTL_ARGUMENT_RE.fullmatch(token) is not None for token in arguments
-    )
+    return bool(_load_runtime_module().is_read_only_mdb_query(parts))
 
 
 def build_login_shell_cmd(parts: list[str]) -> str:

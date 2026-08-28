@@ -24,6 +24,7 @@ import tempfile
 import time
 from typing import Any, Callable, Iterable, Literal, Mapping, NamedTuple, TypedDict
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -74,6 +75,27 @@ class ResolvedSkillProfile(NamedTuple):
     name: str
     bundle: SkillBundle
     manages_knowledge_mcp: bool
+
+
+class CheckReadiness(NamedTuple):
+    installation_ok: bool
+    operational_ready: bool
+    release_identity_verified: bool
+    evaluation_ready: bool
+
+    def top_level_fields(self) -> dict[str, bool]:
+        return {
+            "ok": self.installation_ok,
+            "operational_ready": self.operational_ready,
+            "release_identity_verified": self.release_identity_verified,
+            "evaluation_ready": self.evaluation_ready,
+        }
+
+    def readiness_fields(self) -> dict[str, bool]:
+        return {
+            "release_identity": self.release_identity_verified,
+            "evaluation": self.evaluation_ready,
+        }
 
 
 class RecordedInstall(NamedTuple):
@@ -643,6 +665,78 @@ def git_dirty(root: Path, *, paths: Iterable[str] | None = None) -> bool:
 
 def normalized_repo_url(value: str) -> str:
     return value.rstrip("/").removesuffix(".git")
+
+
+def github_repo_slug(repo_url: str) -> str | None:
+    normalized = normalized_repo_url(repo_url.strip())
+    if normalized.startswith("git@github.com:"):
+        candidate = normalized.removeprefix("git@github.com:")
+    else:
+        parsed = urllib.parse.urlsplit(normalized)
+        if parsed.hostname != "github.com":
+            return None
+        candidate = parsed.path.lstrip("/")
+    parts = candidate.split("/")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return "/".join(parts)
+
+
+def immutable_release_remediation_command(
+    *,
+    repo_url: str,
+    source_mode: str,
+    requested_ref: str,
+    ref_kind: str,
+) -> str:
+    immutable_ref = (
+        requested_ref
+        if source_mode == "managed" and ref_kind in {"tag", "commit"}
+        else ""
+    )
+    repo_slug = github_repo_slug(repo_url)
+    if immutable_ref:
+        ref_assignment = f"WORKFLOW_REF={shlex.quote(immutable_ref)}"
+    elif repo_slug is not None:
+        discovery = (
+            "import json,os,urllib.request;"
+            "base=os.environ.get('GITHUB_API_URL','https://api.github.com').rstrip('/');"
+            f"url=base+'/repos/{repo_slug}/releases/latest';"
+            "token=os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN');"
+            "headers={'Accept':'application/vnd.github+json',"
+            "'User-Agent':'openubmc-agent-workflow-installer',"
+            "'X-GitHub-Api-Version':'2022-11-28'};"
+            "headers.update({'Authorization':'Bearer '+token} if token else {});"
+            "request=urllib.request.Request(url,headers=headers);"
+            "print(json.load(urllib.request.urlopen(request,timeout=30))['tag_name'])"
+        )
+        ref_assignment = (
+            f'WORKFLOW_REF="$(python3 -c {shlex.quote(discovery)})"'
+        )
+    else:
+        quoted_repo_url = shlex.quote(repo_url)
+        ref_assignment = (
+            'WORKFLOW_REF="$(git ls-remote --tags --refs '
+            f"{quoted_repo_url} "
+            "| awk '$2 ~ /^refs\\/tags\\/v?[0-9]+\\.[0-9]+\\.[0-9]+$/ "
+            "{sub(\"refs/tags/\",\"\",$2); print $2}' "
+            '| sort -V | tail -n 1)"'
+        )
+    quoted_repo_url = shlex.quote(repo_url)
+    return (
+        f"(set -e; {ref_assignment}; "
+        'test -n "$WORKFLOW_REF"; WORKFLOW_TMP="$(mktemp -d)"; '
+        'trap \'rm -rf -- "$WORKFLOW_TMP"\' EXIT; '
+        f"git clone --quiet --filter=blob:none --no-checkout {quoted_repo_url} "
+        '"$WORKFLOW_TMP"; '
+        'git -C "$WORKFLOW_TMP" fetch --quiet --depth=1 origin "$WORKFLOW_REF"; '
+        'git -C "$WORKFLOW_TMP" checkout --quiet --detach FETCH_HEAD; '
+        'python3 "$WORKFLOW_TMP/openubmc-target-runtime/openubmc_target_runtime/'
+        'release.py" verify --root "$WORKFLOW_TMP" >/dev/null; '
+        'python3 "$WORKFLOW_TMP/openubmc-environment-setup/scripts/'
+        'install_environment.py" install --source-mode managed '
+        f'--repo-url {quoted_repo_url} --ref "$WORKFLOW_REF" --non-interactive)'
+    )
 
 
 def github_token() -> str | None:
@@ -4350,6 +4444,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
     try:
         state = load_state(home)
     except SetupError as error:
+        readiness = CheckReadiness(False, False, False, False)
         record(
             "state",
             False,
@@ -4357,7 +4452,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             f"state: missing or invalid ({error})",
         )
         return {
-            "ok": False,
+            **readiness.top_level_fields(),
             "readiness": {
                 "core": False,
                 "credentials": False,
@@ -4370,6 +4465,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
                 "client": False,
                 "password_ssh": False,
                 "source_search": False,
+                **readiness.readiness_fields(),
             },
             "source": {"mode": "unknown"},
             "runtime": {"healthy": False, "detail": "not checked"},
@@ -4464,6 +4560,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
         state.get("resolved_commit", state.get("source_commit", ""))
     )
     ref_kind = "unknown"
+    source_revision_ok = False
     try:
         ref_kind = ref_kind_from_state(state, source_mode)
         if source_mode == "managed" and ref_kind == "legacy-branch":
@@ -4487,6 +4584,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             f"{ref_kind} {requested_ref or resolved_commit}",
             f"source revision: {ref_kind} {requested_ref or resolved_commit}",
         )
+        source_revision_ok = True
     except SetupError as error:
         record(
             "source_revision",
@@ -5056,8 +5154,62 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
         for check in checks
         if check["category"] == "core" and check["blocking"]
     )
+    installation_ok = core_ok and credentials_ok
+    operational_ready = (
+        credentials_ok and runtime_ok and runtime_mcp_ready and engine_ready
+    )
+    release_identity_verified = bool(
+        source_mode == "managed"
+        and ref_kind in {"tag", "commit"}
+        and source_revision_ok
+        and commit_ok
+        and release_report.get("immutable")
+        and release_report.get("schema")
+        == "openubmc-agent-workflow.release-lock.v1"
+        and not release_report.get("validation_error")
+    )
+    readiness = CheckReadiness(
+        installation_ok=installation_ok,
+        operational_ready=operational_ready,
+        release_identity_verified=release_identity_verified,
+        evaluation_ready=(
+            installation_ok and operational_ready and release_identity_verified
+        ),
+    )
+    release_report["verified"] = release_identity_verified
+    release_report["trust_mode"] = (
+        "verified-immutable-source"
+        if release_identity_verified
+        else (
+            "linked-development"
+            if source_mode == "linked"
+            else "unverified-managed-source"
+        )
+    )
+    repo_url = str(state.get("repo_url", DEFAULT_REPO_URL))
+    remediation_command = immutable_release_remediation_command(
+        repo_url=repo_url,
+        source_mode=source_mode,
+        requested_ref=requested_ref,
+        ref_kind=ref_kind,
+    )
+    release_actions = (
+        []
+        if release_identity_verified
+        else [
+            {
+                "code": "install_immutable_release",
+                "required": False,
+                "detail": (
+                    "Use a managed installation pinned to an immutable tag or full "
+                    "commit before Release qualification."
+                ),
+                "command": remediation_command,
+            }
+        ]
+    )
     return {
-        "ok": core_ok and credentials_ok,
+        **readiness.top_level_fields(),
         "readiness": {
             "core": core_ok,
             "credentials": credentials_ok,
@@ -5070,6 +5222,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             "client": bool(tooling["client_ready"]),
             "password_ssh": bool(tooling["conditional"]["sshpass"]),
             "source_search": bool(tooling["recommended"]["rg"]),
+            **readiness.readiness_fields(),
         },
         "source": {
             "path": str(source),
@@ -5106,6 +5259,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
                 credentials_ok=credentials_ok,
             ),
             *knowledge_next_actions(knowledge_report),
+            *release_actions,
         ],
         "checks": checks,
         "knowledge_mcp": knowledge_report,
@@ -5122,6 +5276,36 @@ def perform_check(args: argparse.Namespace) -> int:
     else:
         for message in messages:
             print(message)
+        print(
+            "operational readiness: "
+            + ("ready" if report["operational_ready"] else "not ready")
+        )
+        release = report.get("release", {})
+        trust_mode = (
+            str(release.get("trust_mode", "unknown"))
+            if isinstance(release, Mapping)
+            else "unknown"
+        )
+        print(f"release trust mode: {trust_mode}")
+        print(
+            "release identity verified: "
+            + ("yes" if report["release_identity_verified"] else "no")
+        )
+        print(
+            "evaluation readiness: "
+            + ("ready" if report["evaluation_ready"] else "not ready")
+        )
+        for action in report.get("next_actions", []):
+            if not isinstance(action, Mapping):
+                continue
+            if action.get("code") != "install_immutable_release":
+                continue
+            detail = str(action.get("detail", "")).strip()
+            if detail:
+                print(f"next action: {detail}")
+            command = str(action.get("command", "")).strip()
+            if command:
+                print(f"command: {command}")
     return 0 if report["ok"] else 1
 
 

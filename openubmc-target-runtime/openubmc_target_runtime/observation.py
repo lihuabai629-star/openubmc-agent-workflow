@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import copy
 from datetime import datetime
 
 from .capabilities import CAPABILITY_ALIASES
@@ -31,6 +32,35 @@ def _instant(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return None
     return parsed
+
+
+def _target_scope_fact(raw: Mapping[str, object]) -> dict[str, object] | None:
+    result = _mapping(raw.get("result"))
+    runtime = _mapping(result.get("runtime"))
+    status = _mapping(runtime.get("status"))
+    targets = status.get("targets", [])
+    if not isinstance(targets, list) or len(targets) != 1:
+        return None
+    detail = _mapping(targets[0])
+    target = _mapping(detail.get("target"))
+    identity = _mapping(detail.get("identity"))
+    epochs = _mapping(detail.get("epochs"))
+    if not target and not identity and "target_epoch" not in epochs:
+        return None
+    return {
+        "target": copy.deepcopy(dict(target)),
+        "identity": copy.deepcopy(dict(identity)),
+        "target_epoch": copy.deepcopy(epochs.get("target_epoch")),
+    }
+
+
+def observation_target_scope_matches(
+    baseline: Mapping[str, object],
+    candidate: Mapping[str, object],
+) -> bool:
+    """Return whether an assured partition stayed on its fast target scope."""
+
+    return _target_scope_fact(baseline) == _target_scope_fact(candidate)
 
 
 def capability_selector_complete(
@@ -67,6 +97,294 @@ def selected_scope_complete(
             if not child or child.get("ok") is not True:
                 return False
     return True
+
+
+def _partition_record(
+    query: ObservationQuery,
+    raw: Mapping[str, object],
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    record = copy.deepcopy(dict(raw))
+    recorded_result = copy.deepcopy(dict(result))
+    recorded_lanes = copy.deepcopy(dict(_mapping(recorded_result.get("lanes"))))
+    recorded_lanes.pop("ssh", None)
+    if recorded_lanes:
+        recorded_result["lanes"] = recorded_lanes
+    else:
+        recorded_result.pop("lanes", None)
+    record["result"] = recorded_result
+    record["scope"] = query.to_public_dict()
+    return record
+
+
+def _merge_mdb_lanes(
+    query: ObservationQuery,
+    ssh: Mapping[str, object],
+    merged: dict[str, object],
+    global_index: int,
+) -> int:
+    local_index = 0
+    for selector in query.selectors:
+        for _query in selector.mdb_queries:
+            local_name = (
+                "mdbctl" if local_index == 0 else f"mdbctl_{local_index + 1}"
+            )
+            global_name = (
+                "mdbctl" if global_index == 0 else f"mdbctl_{global_index + 1}"
+            )
+            if local_name in ssh:
+                merged[global_name] = copy.deepcopy(ssh[local_name])
+            local_index += 1
+            global_index += 1
+    return global_index
+
+
+def _target_scope_changed(
+    facts: list[dict[str, object] | None],
+) -> bool:
+    known = [fact for fact in facts if fact is not None]
+    return bool(known) and (
+        len(known) != len(facts)
+        or any(fact != known[0] for fact in known[1:])
+    )
+
+
+def _merged_selector_timing(
+    query: ObservationQuery,
+    fragments_by_selector: Mapping[
+        tuple[str, str], list[Mapping[str, object]]
+    ],
+    *,
+    target_scope_changed: bool,
+    invalid_partition_timing: set[tuple[str, str]],
+) -> dict[str, object]:
+    selector_facts: list[dict[str, object]] = []
+    for selector in query.selectors:
+        fragments = fragments_by_selector.get(
+            (selector.selector_id, selector.kind), []
+        )
+        starts = [
+            (_instant(fact.get("started_at")), _text(fact.get("started_at")))
+            for fact in fragments
+        ]
+        completions = [
+            (
+                _instant(fact.get("completed_at")),
+                _text(fact.get("completed_at")),
+            )
+            for fact in fragments
+        ]
+        valid_starts = [item for item in starts if item[0] is not None]
+        valid_completions = [item for item in completions if item[0] is not None]
+        statuses = {_text(fact.get("status")) for fact in fragments}
+        status = (
+            "observed"
+            if fragments and statuses == {"observed"}
+            else "stale"
+            if "stale" in statuses
+            else "missing"
+        )
+        if target_scope_changed or (
+            selector.selector_id,
+            selector.kind,
+        ) in invalid_partition_timing:
+            status = "stale"
+        selector_facts.append(
+            {
+                "selector_id": selector.selector_id,
+                "kind": selector.kind,
+                "started_at": (
+                    min(valid_starts, key=lambda item: item[0])[1]
+                    if valid_starts
+                    else ""
+                ),
+                "completed_at": (
+                    max(valid_completions, key=lambda item: item[0])[1]
+                    if valid_completions
+                    else ""
+                ),
+                "status": status,
+            }
+        )
+    attempt_starts = [
+        (_instant(item["started_at"]), str(item["started_at"]))
+        for item in selector_facts
+        if _instant(item["started_at"]) is not None
+    ]
+    attempt_completions = [
+        (_instant(item["completed_at"]), str(item["completed_at"]))
+        for item in selector_facts
+        if _instant(item["completed_at"]) is not None
+    ]
+    return {
+        "started_at": (
+            min(attempt_starts, key=lambda item: item[0])[1]
+            if attempt_starts
+            else ""
+        ),
+        "completed_at": (
+            max(attempt_completions, key=lambda item: item[0])[1]
+            if attempt_completions
+            else ""
+        ),
+        "selectors": selector_facts,
+    }
+
+
+def aggregate_observation_partitions(
+    query: ObservationQuery,
+    partitions: tuple[tuple[ObservationQuery, Mapping[str, object]], ...],
+) -> dict[str, object]:
+    """Aggregate Runtime-enforced collection partitions into one source result."""
+
+    if not partitions:
+        raise ValueError("observation collection requires at least one partition")
+    if len(partitions) == 1:
+        return dict(partitions[0][1])
+
+    aggregate = copy.deepcopy(dict(partitions[0][1]))
+    first_result = _mapping(aggregate.get("result"))
+    merged_result = copy.deepcopy(dict(first_result))
+    merged_capabilities: dict[str, object] = {}
+    selected_capabilities: dict[str, object] = {}
+    merged_lanes: dict[str, object] = {}
+    merged_ssh: dict[str, object] = {}
+    partition_records: list[dict[str, object]] = []
+    timing_fragments: dict[
+        tuple[str, str], list[Mapping[str, object]]
+    ] = {}
+    invalid_partition_timing: set[tuple[str, str]] = set()
+    selected_capability_keys = {
+        CAPABILITY_ALIASES[name]
+        for selector in query.selectors
+        for name in selector.names
+    }
+    missing_selected_capability_facts: set[str] = set()
+    raw_gaps: list[object] = []
+    observed_at_values: list[str] = []
+    target_scope_facts: list[dict[str, object] | None] = []
+    global_mdb_index = 0
+    all_ok = True
+
+    for partition_query, raw_value in partitions:
+        raw = _mapping(raw_value)
+        all_ok = all_ok and raw.get("ok") is True
+        observed_at = _text(raw.get("observed_at"))
+        if observed_at:
+            observed_at_values.append(observed_at)
+        target_scope_facts.append(_target_scope_fact(raw))
+        gaps = raw.get("gaps", [])
+        if isinstance(gaps, list):
+            raw_gaps.extend(gaps)
+        result = _mapping(raw.get("result"))
+        partition_records.append(_partition_record(partition_query, raw, result))
+        capabilities = _mapping(result.get("capabilities"))
+        partition_selected_capability_keys = {
+            CAPABILITY_ALIASES[name]
+            for selector in partition_query.selectors
+            for name in selector.names
+        }
+        for name, value in capabilities.items():
+            normalized_name = str(name)
+            if normalized_name in partition_selected_capability_keys:
+                selected_capabilities[normalized_name] = copy.deepcopy(value)
+            elif normalized_name in selected_capability_keys:
+                continue
+            elif normalized_name not in merged_capabilities:
+                merged_capabilities[normalized_name] = copy.deepcopy(value)
+        missing_selected_capability_facts.update(
+            partition_selected_capability_keys.difference(capabilities)
+        )
+        lanes = _mapping(result.get("lanes"))
+        for lane_name, lane_value in lanes.items():
+            if lane_name != "ssh":
+                merged_lanes[str(lane_name)] = copy.deepcopy(lane_value)
+        ssh = _mapping(lanes.get("ssh"))
+        global_mdb_index = _merge_mdb_lanes(
+            partition_query, ssh, merged_ssh, global_mdb_index
+        )
+        timing = _mapping(raw.get(OBSERVATION_TIMING_FIELD))
+        selector_facts = timing.get("selectors", [])
+        expected_timing = [
+            (selector.selector_id, selector.kind)
+            for selector in partition_query.selectors
+        ]
+        actual_timing = (
+            [
+                (
+                    _text(_mapping(item).get("selector_id")),
+                    _text(_mapping(item).get("kind")),
+                )
+                for item in selector_facts
+            ]
+            if isinstance(selector_facts, list)
+            else []
+        )
+        if actual_timing == expected_timing:
+            for item in selector_facts:
+                fact = _mapping(item)
+                key = (_text(fact.get("selector_id")), _text(fact.get("kind")))
+                timing_fragments.setdefault(key, []).append(fact)
+        else:
+            invalid_partition_timing.update(expected_timing)
+        for key, value in result.items():
+            if key in {"capabilities", "lanes", "preflight_start", "runtime"}:
+                continue
+            merged_result[str(key)] = copy.deepcopy(value)
+        for key, value in raw.items():
+            if key not in {
+                "result",
+                "ok",
+                "observed_at",
+                "gaps",
+                OBSERVATION_TIMING_FIELD,
+            }:
+                aggregate[str(key)] = copy.deepcopy(value)
+
+    merged_lanes["ssh"] = merged_ssh
+    for capability_key in missing_selected_capability_facts:
+        selected_capabilities.pop(capability_key, None)
+    merged_capabilities.update(selected_capabilities)
+    merged_result["capabilities"] = merged_capabilities
+    merged_result["lanes"] = merged_lanes
+    merged_result["collection_partitions"] = partition_records
+    aggregate["result"] = merged_result
+    aggregate["ok"] = all_ok
+    valid_observed = [
+        (instant, value)
+        for value in observed_at_values
+        if (instant := _instant(value)) is not None
+    ]
+    if valid_observed:
+        aggregate["observed_at"] = max(
+            valid_observed, key=lambda item: item[0]
+        )[1]
+    elif observed_at_values:
+        aggregate["observed_at"] = max(observed_at_values)
+    target_scope_changed = _target_scope_changed(target_scope_facts)
+    if target_scope_changed:
+        raw_gaps.append(
+            "target identity or epoch changed across observation partitions"
+        )
+    if invalid_partition_timing:
+        raw_gaps.append(
+            "one or more observation partitions omitted or reordered partition selector timing"
+        )
+    if missing_selected_capability_facts:
+        raw_gaps.append(
+            "one or more selected capability facts were omitted by their observation partition"
+        )
+    normalized_gaps = [_text(gap) for gap in raw_gaps if _text(gap)]
+    if normalized_gaps:
+        aggregate["gaps"] = list(dict.fromkeys(normalized_gaps))[:16]
+
+    aggregate[OBSERVATION_TIMING_FIELD] = _merged_selector_timing(
+        query,
+        timing_fragments,
+        target_scope_changed=target_scope_changed,
+        invalid_partition_timing=invalid_partition_timing,
+    )
+    return aggregate
 
 
 def qualify_observation(

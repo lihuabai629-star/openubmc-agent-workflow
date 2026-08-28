@@ -992,6 +992,77 @@ class IncompleteAcceptanceSemanticBackend(SemanticBackend):
         }
 
 
+class ConflictingAcceptanceSemanticBackend(SemanticBackend):
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value["business_acceptance"] = "passed"
+        value["acceptance_results"] = [
+            {
+                "requirement_id": "stage.verification",
+                "status": "failed",
+            }
+        ]
+        return value
+
+
+class AdapterProjectionBuildUpgradeBackend(SemanticBackend):
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        self.calls.append(("upgrade_run", dict(arguments)))
+        product_version = str(arguments.get("product_version", ""))
+        return {
+            "operation_id": context.operation_id,
+            "action": "upgrade",
+            "epoch_before": 0,
+            "epoch_after": 1,
+            "verification": {
+                "installed_version": product_version,
+                "target_epoch": 1,
+            },
+            "journal": {
+                "operation_id": context.operation_id,
+                "stage": "verified",
+                "action": "upgrade",
+                "epoch_before": 0,
+                "epoch_after": 1,
+                "verification_state": "verified",
+            },
+        }
+
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        value.pop("business_acceptance", None)
+        value.pop("target_epoch", None)
+        target_id = str(arguments.get("target_id", ""))
+        result = value["result"]
+        result["runtime"] = {
+            "status": {
+                "targets": [
+                    {
+                        "target_id": target_id,
+                        "epochs": {"target_epoch": 1},
+                    }
+                ]
+            }
+        }
+        return value
+
+
+class DeferredAdapterProjectionBuildUpgradeBackend(
+    AdapterProjectionBuildUpgradeBackend
+):
+    def __init__(self) -> None:
+        super().__init__()
+        self.verification_attempts = 0
+
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        self.verification_attempts += 1
+        if self.verification_attempts <= 2:
+            self.calls.append(("debug_collect", dict(arguments)))
+            raise OSError("verification transport is temporarily unavailable")
+        return super().debug_collect(task, arguments, context)
+
+
 class DeferredVerificationSemanticBackend(SemanticBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -1536,6 +1607,16 @@ class OversizedTurnRuntime:
             gaps=("gap-" + "g" * 20_000,),
             next_action="next-" + "n" * 20_000,
         )
+
+
+class RejectDispatchRuntime:
+    def __init__(self) -> None:
+        self.execute_calls = 0
+
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        self.execute_calls += 1
+        raise AssertionError("invalid Action must be rejected before Runtime dispatch")
 
 
 class OversizedGateTurnRuntime:
@@ -2140,7 +2221,315 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertLessEqual(encoded_size(definitions), TOOLS_LIST_MAX_BYTES)
         self.assertEqual(self.service.interface_catalog.names(), ("observe", "execute"))
         execute_schema = definitions[1]["inputSchema"]
-        self.assertNotIn("max_steps", execute_schema["properties"])
+        action_shapes = {
+            branch["properties"]["kind"]["const"]: branch
+            for branch in execute_schema["oneOf"]
+        }
+        self.assertEqual(
+            set(action_shapes),
+            {"start", "respond", "resume", "control"},
+        )
+        self.assertIn("intent", action_shapes["start"]["required"])
+        self.assertIn(
+            {"required": ["target"]},
+            action_shapes["start"]["anyOf"],
+        )
+        self.assertIn(
+            {"required": ["targets"]},
+            action_shapes["start"]["anyOf"],
+        )
+        self.assertEqual(
+            set(action_shapes["respond"]["required"]),
+            {
+                "kind",
+                "run_id",
+                "gate_id",
+                "gate_version",
+                "schema_digest",
+                "response",
+            },
+        )
+        self.assertEqual(
+            set(action_shapes["resume"]["properties"]),
+            {"kind", "run_id", "deadline"},
+        )
+        self.assertIn("oneOf", action_shapes["control"])
+        self.assertNotIn("max_steps", json.dumps(execute_schema))
+
+    def test_execute_rejects_invalid_action_shapes_before_dispatch(self) -> None:
+        runtime = RejectDispatchRuntime()
+        gateway = AgentGateway(runtime)
+        invalid_actions = (
+            ({"kind": "start", "target": "192.0.2.10"}, "intent"),
+            (
+                {
+                    "kind": "start",
+                    "target": 1920210,
+                    "intent": "diagnosis-only",
+                },
+                "target must be a string",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": 42,
+                },
+                "intent must be a string",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "",
+                },
+                "non-empty intent",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "observation_ref": "observation://not-an-object",
+                },
+                "observation_ref must be an object",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "run_id": "run-from-another-action",
+                },
+                "another Action kind",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "target_epoch": 9,
+                },
+                "Runtime-owned",
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"recovery_mode": "reconcile"},
+                },
+                "Runtime-owned",
+            ),
+            (
+                {
+                    "kind": "respond",
+                    "run_id": "run-one",
+                    "gate_id": 17,
+                    "gate_version": 1,
+                    "schema_digest": "a" * 64,
+                    "response": {
+                        "status": "completed",
+                        "summary": "done",
+                        "payload": {},
+                    },
+                },
+                "gate_id must be a string",
+            ),
+            (
+                {
+                    "kind": "respond",
+                    "run_id": "run-one",
+                    "gate_version": 1,
+                    "schema_digest": "a" * 64,
+                    "response": {},
+                },
+                "gate_id",
+            ),
+            (
+                {
+                    "kind": "respond",
+                    "run_id": "run-one",
+                    "gate_id": "gate-one",
+                    "gate_version": 1,
+                    "schema_digest": "a" * 64,
+                    "response": {
+                        "status": "completed",
+                        "summary": "done",
+                    },
+                },
+                "response requires fields: payload",
+            ),
+            (
+                {
+                    "kind": "resume",
+                    "run_id": 123,
+                },
+                "run_id must be a string",
+            ),
+            (
+                {
+                    "kind": "resume",
+                    "run_id": "run-one",
+                    "response": {},
+                },
+                "another Action kind",
+            ),
+            (
+                {
+                    "kind": "control",
+                    "run_id": "run-one",
+                    "command": "reconcile",
+                    "incident_id": "incident-one",
+                },
+                "reconcile",
+            ),
+            (
+                {"kind": "control", "run_id": "run-one", "command": "cancel"},
+                "Gate binding or incident_id",
+            ),
+        )
+
+        for action, message in invalid_actions:
+            with self.subTest(action=action):
+                with self.assertRaisesRegex(AgentGatewayError, message):
+                    gateway.execute(
+                        action,
+                        task_id="invalid-action",
+                        operation_id="invalid-action-command",
+                    )
+
+        self.assertEqual(runtime.execute_calls, 0)
+
+    def test_execute_deadline_error_reports_the_accepted_range(self) -> None:
+        for deadline in (0, 120.1, "later"):
+            with self.subTest(deadline=deadline):
+                with self.assertRaisesRegex(
+                    AgentGatewayError,
+                    "greater than 0 and at most 120 seconds",
+                ):
+                    decode_run_command(
+                        {
+                            "kind": "resume",
+                            "run_id": "run-deadline",
+                            "deadline": deadline,
+                        },
+                        operation_id="deadline-command",
+                    )
+
+    def test_actionable_turns_expose_only_a_valid_suggested_action(self) -> None:
+        gate_schema = {
+            "type": "object",
+            "required": ["status", "summary", "payload"],
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "required": ["artifact_ref"],
+                    "properties": {
+                        "artifact_ref": {
+                            "type": "object",
+                            "required": ["handle", "digest", "run_id"],
+                        }
+                    },
+                }
+            },
+        }
+        turns = {
+            "gate": RunTurn(
+                run_id="run-gate",
+                state="waiting_response",
+                gate={
+                    "kind": "phase",
+                    "gate_id": "gate-one",
+                    "gate_version": 3,
+                    "schema_digest": "sha256:" + "a" * 64,
+                    "name": "build.artifact",
+                    "owner": "openubmc-build",
+                    "input_schema": gate_schema,
+                },
+            ),
+            "running": RunTurn(run_id="run-running", state="running"),
+            "resume_incident": RunTurn(
+                run_id="run-artifact-incident",
+                state="incident",
+                incident=Incident(
+                    incident_id="incident-artifact",
+                    code="artifact_reference_invalid",
+                    message="restore the ArtifactRef",
+                ),
+            ),
+            "reconcile_incident": RunTurn(
+                run_id="run-unknown-incident",
+                state="incident",
+                incident=Incident(
+                    incident_id="incident-unknown",
+                    code="mutation_outcome_unknown",
+                    message="reconcile the durable Effect",
+                ),
+            ),
+            "cancel_incident": RunTurn(
+                run_id="run-invalid-continuation",
+                state="incident",
+                incident=Incident(
+                    incident_id="incident-invalid",
+                    code="invalid_run_continuation",
+                    message="cancel the Run",
+                ),
+            ),
+            "terminal": RunTurn(
+                run_id="run-terminal",
+                state="completed",
+                outcome=Outcome(status="completed", summary="done"),
+            ),
+        }
+
+        projected = {
+            name: self.service._test.projector.turn(turn)
+            for name, turn in turns.items()
+        }
+
+        self.assertEqual(
+            projected["gate"]["next_action"],
+            {
+                "kind": "respond",
+                "run_id": "run-gate",
+                "gate_id": "gate-one",
+                "gate_version": 3,
+                "schema_digest": "sha256:" + "a" * 64,
+            },
+        )
+        self.assertEqual(projected["gate"]["gate"]["input_schema"], gate_schema)
+        self.assertEqual(
+            projected["running"]["next_action"],
+            {"kind": "resume", "run_id": "run-running"},
+        )
+        self.assertEqual(
+            projected["resume_incident"]["next_action"],
+            {"kind": "resume", "run_id": "run-artifact-incident"},
+        )
+        self.assertNotIn(
+            "reconcile",
+            json.dumps(projected["resume_incident"]["next_action"]),
+        )
+        self.assertEqual(
+            projected["reconcile_incident"]["next_action"],
+            {
+                "kind": "control",
+                "run_id": "run-unknown-incident",
+                "command": "reconcile",
+            },
+        )
+        self.assertEqual(
+            projected["cancel_incident"]["next_action"],
+            {
+                "kind": "control",
+                "run_id": "run-invalid-continuation",
+                "command": "cancel",
+                "incident_id": "incident-invalid",
+            },
+        )
+        self.assertIsNone(projected["terminal"]["next_action"])
 
     def test_observe_is_bounded_grounded_and_does_not_open_a_case(self) -> None:
         receipt = self.service.call_exposed_tool(
@@ -2288,7 +2677,7 @@ class AgentGatewayTests(unittest.TestCase):
                         {
                             "id": "s" * 64,
                             "kind": "mdb",
-                            "queries": ["q" * 1024],
+                            "queries": ["lsprop " + "q" * 1017],
                         }
                     ],
                 },
@@ -2456,6 +2845,457 @@ class AgentGatewayTests(unittest.TestCase):
                     "assurance": "assured",
                 }
             )
+
+    def test_wide_observation_query_is_partitioned_without_becoming_a_blocker(
+        self,
+    ) -> None:
+        backend = SemanticBackend()
+        service = RuntimeMcpService(backend)
+        selectors = [
+            {
+                "id": f"mdb-{index}",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}",
+                ],
+            }
+            for index in range(16)
+        ]
+        self.assertGreater(
+            encoded_size(
+                {
+                    "target": "192.0.2.10",
+                    "selectors": selectors,
+                    "freshness": {"mode": "live", "max_age_seconds": 0},
+                }
+            ),
+            2 * 1024,
+        )
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="wide-observation",
+                operation_id="wide-observation-1",
+            )
+            reference = receipt["observation_ref"]
+            stored = service._test.context_runtime.load_observation(
+                {
+                    "schema": "openubmc.runtime.v1/observation-source-v1",
+                    "blob_id": str(reference["digest"]).removeprefix("sha256:"),
+                    "sha256": str(reference["digest"]).removeprefix("sha256:"),
+                    "uri": reference["handle"],
+                    "byte_count": reference["size"],
+                    "kind": reference["kind"],
+                    "provenance": reference["provenance"],
+                    "retention_hint": reference["retention_hint"],
+                    "target": reference["target"],
+                    "scope_digest": str(reference["scope_digest"]).removeprefix(
+                        "sha256:"
+                    ),
+                    "observed_at": reference["observed_at"],
+                    "target_fingerprint": reference["target_fingerprint"],
+                    "target_epoch": reference["target_epoch"],
+                }
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(list(receipt["results"]), [item["id"] for item in selectors])
+        self.assertIn("observation_ref", receipt)
+        self.assertFalse(receipt["manual_narrowing_required"])
+        calls = [
+            arguments
+            for name, arguments in backend.calls
+            if name == "debug_collect"
+        ]
+        self.assertGreater(len(calls), 1)
+        self.assertTrue(
+            all(
+                encoded_size(
+                    {
+                        "target": arguments["ip"],
+                        "selectors": arguments["selectors"],
+                        "freshness": {
+                            "mode": "live",
+                            "max_age_seconds": 0,
+                        },
+                    }
+                )
+                <= 2 * 1024
+                for arguments in calls
+            )
+        )
+        raw = stored["raw"]
+        collection_partitions = raw["result"]["collection_partitions"]
+        self.assertEqual(len(collection_partitions), len(calls))
+        self.assertEqual(
+            [
+                selector["id"]
+                for partition in collection_partitions
+                for selector in partition["scope"]["selectors"]
+            ],
+            [item["id"] for item in selectors],
+        )
+        self.assertEqual(len(raw["result"]["lanes"]["ssh"]), 16)
+
+    def test_wide_observation_rejects_cross_partition_target_epoch_drift(
+        self,
+    ) -> None:
+        class DriftingPartitionBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                call_index = len(self.calls)
+                value["result"]["runtime"] = {
+                    "status": {
+                        "targets": [
+                            {
+                                "target": {
+                                    "host": "192.0.2.10",
+                                    "fingerprint": "ssh:stable-target",
+                                },
+                                "identity": {
+                                    "fingerprint": "ssh:stable-target",
+                                },
+                                "epochs": {"target_epoch": call_index},
+                            }
+                        ]
+                    }
+                }
+                return value
+
+        backend = DriftingPartitionBackend()
+        service = RuntimeMcpService(backend)
+        selectors = [
+            {
+                "id": f"mdb-{index}",
+                "kind": "mdb",
+                "queries": [f"lsprop Object{index}_{'x' * 180}"],
+            }
+            for index in range(16)
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="drifting-wide-observation",
+                operation_id="drifting-wide-observation-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any("target identity or epoch changed" in gap for gap in receipt["gaps"])
+        )
+
+    def test_wide_observation_rejects_missing_partition_timing(self) -> None:
+        class MissingPartitionTimingBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                if len(self.calls) % 2 == 0:
+                    value.pop("observation_timing", None)
+                return value
+
+        backend = MissingPartitionTimingBackend()
+        service = RuntimeMcpService(backend)
+        selectors = [
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            }
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="missing-partition-timing",
+                operation_id="missing-partition-timing-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any("partition selector timing" in gap for gap in receipt["gaps"])
+        )
+
+    def test_wide_observation_assurance_cannot_mask_fast_target_epoch_drift(
+        self,
+    ) -> None:
+        class DriftingFastAssuranceBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                prior = arguments.get("prior_observation")
+                epoch = 2 if isinstance(prior, dict) else len(self.calls)
+                value["result"]["runtime"] = {
+                    "status": {
+                        "targets": [
+                            {
+                                "target": {
+                                    "host": "192.0.2.10",
+                                    "fingerprint": "ssh:stable-target",
+                                },
+                                "identity": {
+                                    "fingerprint": "ssh:stable-target",
+                                },
+                                "epochs": {"target_epoch": epoch},
+                            }
+                        ]
+                    }
+                }
+                return value
+
+        service = RuntimeMcpService(DriftingFastAssuranceBackend())
+        selectors = [
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            }
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="assurance-target-drift",
+                operation_id="assurance-target-drift-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any("target identity or epoch changed" in gap for gap in receipt["gaps"])
+        )
+
+    def test_wide_observation_keeps_selected_capability_partition_fact(
+        self,
+    ) -> None:
+        class CapabilityPartitionBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                selected_capability = any(
+                    selector.get("kind") == "capability"
+                    for selector in arguments.get("selectors", [])
+                    if isinstance(selector, dict)
+                )
+                value["result"]["capabilities"]["remote_log_file"] = (
+                    selected_capability
+                )
+                return value
+
+        service = RuntimeMcpService(CapabilityPartitionBackend())
+        selectors = [
+            {
+                "id": "caps",
+                "kind": "capability",
+                "names": ["telnet"],
+            },
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            },
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="selected-capability-partition",
+                operation_id="selected-capability-partition-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(
+            receipt["results"]["caps"]["values"],
+            [{"name": "telnet", "status": "available"}],
+        )
+        self.assertIn("observation_ref", receipt)
+
+    def test_wide_observation_does_not_replace_a_missing_selected_capability_fact(
+        self,
+    ) -> None:
+        class MissingCapabilityPartitionFactBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                selected_capability = any(
+                    selector.get("kind") == "capability"
+                    for selector in arguments.get("selectors", [])
+                    if isinstance(selector, dict)
+                )
+                if selected_capability:
+                    value["result"]["capabilities"].pop(
+                        "remote_log_file", None
+                    )
+                else:
+                    value["result"]["capabilities"]["remote_log_file"] = False
+                return value
+
+        service = RuntimeMcpService(MissingCapabilityPartitionFactBackend())
+        selectors = [
+            {
+                "id": "caps",
+                "kind": "capability",
+                "names": ["telnet"],
+            },
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            },
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="missing-selected-capability-fact",
+                operation_id="missing-selected-capability-fact-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(
+            receipt["results"]["caps"]["values"],
+            [{"name": "telnet", "status": "not_checked"}],
+        )
+        self.assertNotIn("observation_ref", receipt)
+        self.assertTrue(
+            any(
+                "selected capability fact" in gap
+                for gap in receipt["gaps"]
+            )
+        )
+
+    def test_wide_observation_does_not_share_a_capability_fact_between_selectors(
+        self,
+    ) -> None:
+        class DuplicateCapabilitySelectorBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                selector_ids = {
+                    str(selector.get("id", ""))
+                    for selector in arguments.get("selectors", [])
+                    if isinstance(selector, dict)
+                }
+                if "caps-missing" in selector_ids:
+                    value["result"]["capabilities"].pop(
+                        "remote_log_file", None
+                    )
+                if "caps-observed" in selector_ids:
+                    value["result"]["capabilities"]["remote_log_file"] = True
+                return value
+
+        service = RuntimeMcpService(DuplicateCapabilitySelectorBackend())
+        selectors = [
+            {
+                "id": "caps-missing",
+                "kind": "capability",
+                "names": ["telnet"],
+            },
+            {
+                "id": "mdb-wide",
+                "kind": "mdb",
+                "queries": [
+                    f"lsprop Object{index}_{'x' * 180}" for index in range(16)
+                ],
+            },
+            {
+                "id": "caps-observed",
+                "kind": "capability",
+                "names": ["telnet"],
+            },
+        ]
+
+        try:
+            receipt = service.call_exposed_tool(
+                "observe",
+                {"target": "192.0.2.10", "selectors": selectors},
+                task_id="duplicate-capability-selectors",
+                operation_id="duplicate-capability-selectors-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(
+            receipt["results"]["caps-missing"]["values"],
+            [{"name": "telnet", "status": "not_checked"}],
+        )
+        self.assertEqual(
+            receipt["results"]["caps-observed"]["values"],
+            [{"name": "telnet", "status": "not_checked"}],
+        )
+        self.assertNotIn("observation_ref", receipt)
+
+    def test_observe_validation_errors_name_supported_capabilities_and_mdb_fix(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(SemanticBackend())
+        try:
+            with self.assertRaisesRegex(
+                ScopeViolation,
+                "invalid capability.*made-up.*supported.*alarms.*ssh",
+            ):
+                service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.10",
+                        "selectors": [
+                            {
+                                "id": "caps",
+                                "kind": "capability",
+                                "names": ["ssh", "made-up"],
+                            }
+                        ],
+                    },
+                    task_id="invalid-capability",
+                    operation_id="invalid-capability-1",
+                )
+
+            with self.assertRaisesRegex(
+                ScopeViolation,
+                "invalid MDB query.*setprop Object0.*lsprop <object> \\[interface\\]",
+            ):
+                service.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.10",
+                        "selectors": [
+                            {
+                                "id": "mdb",
+                                "kind": "mdb",
+                                "queries": ["setprop Object0 Interface Value"],
+                            }
+                        ],
+                    },
+                    task_id="invalid-mdb",
+                    operation_id="invalid-mdb-1",
+                )
+        finally:
+            service.close()
 
     def test_execute_rejects_the_retired_control_continue_input(self) -> None:
         with self.assertRaisesRegex(ValueError, "command.*must be one of"):
@@ -4871,6 +5711,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="oversized-turn",
@@ -4897,6 +5738,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="oversized-gate",
@@ -4951,6 +5793,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="oversized-diagnostic",
@@ -5097,7 +5940,11 @@ class AgentGatewayTests(unittest.TestCase):
 
     def test_execute_turn_compaction_preserves_an_evaluable_result_summary(self) -> None:
         turn = AgentGateway(DeeplyNestedDiagnosticTurnRuntime()).execute(
-            {"kind": "start", "target": "192.0.2.20"},
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnosis-only",
+            },
             task_id="deeply-nested-diagnostic",
             operation_id="deeply-nested-diagnostic-1",
         )
@@ -5113,7 +5960,11 @@ class AgentGatewayTests(unittest.TestCase):
 
     def test_execute_turn_preserves_a_persisted_diagnostic_summary(self) -> None:
         turn = AgentGateway(PersistedDiagnosticSummaryTurnRuntime()).execute(
-            {"kind": "start", "target": "192.0.2.20"},
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnosis-only",
+            },
             task_id="persisted-diagnostic-summary",
             operation_id="persisted-diagnostic-summary-1",
         )
@@ -5127,7 +5978,11 @@ class AgentGatewayTests(unittest.TestCase):
         self,
     ) -> None:
         turn = AgentGateway(NonEvaluableDiagnosticTurnRuntime()).execute(
-            {"kind": "start", "target": "192.0.2.20"},
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnosis-only",
+            },
             task_id="non-evaluable-diagnostic",
             operation_id="non-evaluable-diagnostic-1",
         )
@@ -5144,7 +5999,11 @@ class AgentGatewayTests(unittest.TestCase):
         self,
     ) -> None:
         turn = AgentGateway(UncompactableDiagnosticTurnRuntime()).execute(
-            {"kind": "start", "target": "192.0.2.20"},
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnosis-only",
+            },
             task_id="uncompactable-diagnostic",
             operation_id="uncompactable-diagnostic-1",
         )
@@ -5164,6 +6023,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="unrepresentable-diagnostic",
@@ -5203,6 +6063,7 @@ class AgentGatewayTests(unittest.TestCase):
             {
                 "kind": "start",
                 "target": "192.0.2.20",
+                "intent": "diagnosis-only",
                 "delivery_strategy": "source-only",
             },
             task_id="oversized-terminal-outcome",
@@ -7028,6 +7889,64 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(projection.get("run_outcome"))
         self.assertIn("fresh target verification", final["next"])
 
+    def test_conflicting_acceptance_evidence_fails_closed(self) -> None:
+        backend = ConflictingAcceptanceSemanticBackend()
+        service = RuntimeMcpService(backend)
+        patch_file = self.artifact_root / "conflicting-acceptance.lua"
+        patch_file.write_bytes(b"return 'conflicting-acceptance'\n")
+        try:
+            waiting = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.72",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "live-patch",
+                },
+                task_id="conflicting-acceptance",
+                operation_id="conflicting-acceptance-start",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair ready",
+                        "payload": {
+                            "source_revision": "conflicting-acceptance-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["fresh target verification"],
+                            "artifact_ref": artifact_ref(
+                                patch_file,
+                                kind="openubmc-live-patch",
+                                target="192.0.2.72",
+                                run_id=waiting["run_id"],
+                            ),
+                            "remote_path": "/opt/bmc/apps/fix.lua",
+                            "restart_scope": "skynet",
+                        },
+                    },
+                },
+                task_id="conflicting-acceptance",
+                operation_id="conflicting-acceptance-response",
+            )
+            projection = service._test.context_runtime.read_case(waiting["run_id"])
+            events = service._test.context_runtime.repository.events(waiting["run_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(final["state"], "failed")
+        self.assertEqual(final["outcome"]["status"], "failed")
+        self.assertEqual(projection["closeout"]["business_acceptance"], "failed")
+        self.assertNotEqual(projection["closeout"]["closure_status"], "verified")
+        self.assertEqual(
+            sum(event["kind"] == "RunOutcomeRecorded" for event in events),
+            1,
+        )
+
     def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
         first = self.service.call_exposed_tool(
             "execute",
@@ -7101,6 +8020,232 @@ class AgentGatewayTests(unittest.TestCase):
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
+
+    def test_build_upgrade_closes_from_runtime_adapter_receipts(self) -> None:
+        backend = AdapterProjectionBuildUpgradeBackend()
+        service = RuntimeMcpService(backend)
+        product = self.artifact_root / "adapter-projection-product.hpm"
+        product.write_bytes(b"firmware-3.0.0")
+        try:
+            developer_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.70",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                },
+                task_id="adapter-projection-build-upgrade",
+                operation_id="adapter-projection-start",
+            )
+            build_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(developer_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "adapter-projection-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["build and target verification"],
+                        },
+                    },
+                },
+                task_id="adapter-projection-build-upgrade",
+                operation_id="adapter-projection-source",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(build_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "firmware artifact completed",
+                        "payload": {
+                            "source_revision": "adapter-projection-source",
+                            "artifact_ref": artifact_ref(
+                                product,
+                                kind="openubmc-hpm",
+                                target="192.0.2.70",
+                                run_id=developer_gate["run_id"],
+                                version="3.0.0",
+                            ),
+                        },
+                    },
+                },
+                task_id="adapter-projection-build-upgrade",
+                operation_id="adapter-projection-build",
+            )
+            projection = service._test.context_runtime.read_case(
+                developer_gate["run_id"]
+            )
+            replayed = service.call_exposed_tool(
+                "execute",
+                {"kind": "resume", "run_id": developer_gate["run_id"]},
+                task_id="adapter-projection-replay",
+                operation_id="adapter-projection-replay",
+            )
+            events = service._test.context_runtime.repository.events(
+                developer_gate["run_id"]
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(
+            final["state"],
+            "completed",
+            json.dumps(projection["closeout"], ensure_ascii=False, indent=2),
+        )
+        self.assertEqual(final["outcome"]["status"], "completed")
+        self.assertEqual(replayed["outcome"], final["outcome"])
+        self.assertEqual(projection["closeout"]["closure_status"], "verified")
+        self.assertEqual(projection["closeout"]["business_acceptance"], "passed")
+        self.assertEqual(projection["closeout"]["identity_status"], "matched")
+        self.assertEqual(projection["closeout"]["freshness_status"], "fresh")
+        verification_arguments = backend.calls[-1][1]
+        self.assertEqual(verification_arguments["_minimum_target_epoch"], 1)
+        verification_state = next(
+            state
+            for state in projection["workflow_step_states"].values()
+            if state.get("name") == "debug_collect"
+        )
+        self.assertEqual(verification_state["target_epoch"], 1)
+        self.assertEqual(
+            [name for name, _arguments in backend.calls].count("upgrade_run"),
+            1,
+        )
+        self.assertEqual(
+            sum(event["kind"] == "CloseoutRecorded" for event in events),
+            1,
+        )
+        self.assertEqual(
+            sum(event["kind"] == "RunOutcomeRecorded" for event in events),
+            1,
+        )
+
+    def test_deferred_build_upgrade_verification_resumes_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "deferred-build-upgrade.sqlite3"
+            blobs = root / "deferred-build-upgrade-blobs"
+            product = root / "deferred-build-upgrade.hpm"
+            product.write_bytes(b"firmware-3.1.0")
+            backend = DeferredAdapterProjectionBuildUpgradeBackend()
+            first_service = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                developer_gate = first_service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.71",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "build-upgrade",
+                    },
+                    task_id="deferred-build-upgrade",
+                    operation_id="deferred-build-upgrade-start",
+                )
+                build_gate = first_service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer_gate["run_id"],
+                        **gate_binding(developer_gate),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source repair completed",
+                            "payload": {
+                                "source_revision": "deferred-build-upgrade-source",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["build and target verification"],
+                            },
+                        },
+                    },
+                    task_id="deferred-build-upgrade",
+                    operation_id="deferred-build-upgrade-source",
+                )
+                running = first_service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": developer_gate["run_id"],
+                        **gate_binding(build_gate),
+                        "response": {
+                            "status": "completed",
+                            "summary": "firmware artifact completed",
+                            "payload": {
+                                "source_revision": "deferred-build-upgrade-source",
+                                "artifact_ref": artifact_ref(
+                                    product,
+                                    kind="openubmc-hpm",
+                                    target="192.0.2.71",
+                                    run_id=developer_gate["run_id"],
+                                    version="3.1.0",
+                                ),
+                            },
+                        },
+                    },
+                    task_id="deferred-build-upgrade",
+                    operation_id="deferred-build-upgrade-build",
+                )
+            finally:
+                first_service.close()
+
+            self.assertEqual(running["state"], "running")
+            self.assertEqual(
+                [name for name, _arguments in backend.calls].count("upgrade_run"),
+                1,
+            )
+
+            second_service = RuntimeMcpService(
+                backend,
+                context_repository=SQLiteRuntimeRepository(database),
+                blob_repository=FilesystemBlobRepository(blobs),
+            )
+            try:
+                final = second_service.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": developer_gate["run_id"]},
+                    task_id="deferred-build-upgrade-resume",
+                    operation_id="deferred-build-upgrade-resume",
+                )
+                projection = second_service._test.context_runtime.read_case(
+                    developer_gate["run_id"]
+                )
+                events = second_service._test.context_runtime.repository.events(
+                    developer_gate["run_id"]
+                )
+            finally:
+                second_service.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(final["outcome"]["status"], "completed")
+        self.assertEqual(backend.verification_attempts, 3)
+        self.assertEqual(
+            [name for name, _arguments in backend.calls].count("upgrade_run"),
+            1,
+        )
+        self.assertEqual(projection["closeout"]["closure_status"], "verified")
+        self.assertEqual(
+            sum(event["kind"] == "RunVerificationDeferred" for event in events),
+            1,
+        )
+        self.assertEqual(
+            sum(event["kind"] == "CloseoutRecorded" for event in events),
+            1,
+        )
+        self.assertEqual(
+            sum(event["kind"] == "RunOutcomeRecorded" for event in events),
+            1,
+        )
 
     def test_unknown_mutation_without_a_durable_effect_stays_incident(self) -> None:
         repository = InMemoryRuntimeRepository()
