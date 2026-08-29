@@ -29,6 +29,15 @@ Submit that reference, source revision, component versions, commands, logs/evide
 gaps with `execute(kind=respond)` using the exact Gate binding. The returned Turn is the next
 workflow state; do not call a legacy continuation tool.
 
+The Gate payload also carries `dependency_readiness` and `validation_results`.
+Check dependency readiness once, set `resolution=available` or
+`resolution=blocked_external`, and reuse its identity for official UT and build.
+Classify build as `compiled`, `compile_failed`, or `dependency_graph_blocked`.
+Supplementary checks remain separate with `counts_as_official_ut=false`. Do not
+fabricate or vendor an unavailable external dependency. A completed Build Gate
+requires the explicit `compiled` result; a verified ArtifactRef alone does not
+infer compilation success.
+
 ## Minimal Handoff
 
 ```json

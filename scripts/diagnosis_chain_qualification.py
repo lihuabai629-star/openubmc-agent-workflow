@@ -24,7 +24,7 @@ DEFAULT_FIXTURE = (
     / "fixtures"
     / "observation-ba1a3b5277447c57cf972ee2.json"
 )
-SCHEMA = "openubmc-agent-workflow.diagnosis-chain-qualification.v1"
+SCHEMA = "openubmc-agent-workflow.diagnosis-chain-qualification.v2"
 
 
 class _Task:
@@ -86,11 +86,16 @@ class _FixtureBackend:
                             "payload": {
                                 "result": {
                                     "properties": {
-                                        "Drive_1_010102": {
+                                        "Disk23": {
                                             "Protocol": "SATA",
                                             "Health": "OK",
                                             "Query": queries[0] if queries else "",
-                                        }
+                                        },
+                                        "Disk24": {
+                                            "Protocol": "SAS",
+                                            "Health": "OK",
+                                            "Query": queries[0] if queries else "",
+                                        },
                                     },
                                     "content_complete": True,
                                 },
@@ -297,6 +302,71 @@ def _acceptance(outcome: Mapping[str, object]) -> dict[str, str]:
     }
 
 
+def _phase_fact(turn: Mapping[str, object], name: str) -> dict[str, object]:
+    facts = turn.get("facts", [])
+    if not isinstance(facts, list):
+        return {}
+    return next(
+        (
+            dict(item)
+            for item in reversed(facts)
+            if isinstance(item, Mapping)
+            and item.get("kind") == "phase"
+            and item.get("name") == name
+        ),
+        {},
+    )
+
+
+def _validation_readiness_projection(
+    turn: Mapping[str, object],
+    closeout: Mapping[str, object],
+) -> dict[str, object]:
+    development = _phase_fact(turn, "developer.change")
+    raw_summary = development.get("validation_summary")
+    summary = raw_summary if isinstance(raw_summary, Mapping) else {}
+    raw_coverage = development.get("hardware_coverage")
+    coverage = raw_coverage if isinstance(raw_coverage, Mapping) else {}
+    raw_gaps = development.get("validation_gaps")
+    gaps = raw_gaps if isinstance(raw_gaps, list) else []
+    dependency = summary.get("dependency_readiness")
+    dependency = dependency if isinstance(dependency, Mapping) else {}
+    return {
+        "dependency_readiness": {
+            name: dependency.get(name)
+            for name in ("status", "resolution", "attempt_count", "reused_by")
+            if name in dependency
+        },
+        "official_ut": dict(
+            summary.get("official_ut")
+            if isinstance(summary.get("official_ut"), Mapping)
+            else {}
+        ),
+        "build": dict(
+            summary.get("build")
+            if isinstance(summary.get("build"), Mapping)
+            else {}
+        ),
+        "supplementary": dict(
+            summary.get("supplementary")
+            if isinstance(summary.get("supplementary"), Mapping)
+            else {}
+        ),
+        "hardware_coverage": {
+            name: coverage.get(name)
+            for name in (
+                "status",
+                "required_protocols",
+                "observed_protocols",
+                "proves_required_protocols",
+            )
+            if name in coverage
+        },
+        "claim_level": str(closeout.get("claim_level") or ""),
+        "gaps_visible": bool(gaps),
+    }
+
+
 def qualification_violations(report: Mapping[str, object]) -> list[str]:
     violations: list[str] = []
     fixture = report.get("fixture")
@@ -342,6 +412,78 @@ def qualification_violations(report: Mapping[str, object]) -> list[str]:
     for requirement in ("stage.diagnosis", "stage.development"):
         if acceptance.get(requirement) != "passed":
             violations.append(f"{requirement} acceptance did not pass")
+    validation = report.get("validation_readiness")
+    validation = validation if isinstance(validation, Mapping) else {}
+    dependency = validation.get("dependency_readiness")
+    dependency = dependency if isinstance(dependency, Mapping) else {}
+    readiness_blocked = (
+        dependency.get("status") == "blocked"
+        and dependency.get("resolution") == "blocked_external"
+    )
+    if dependency.get("attempt_count") != 1:
+        violations.append("dependency readiness was not checked exactly once")
+    if set(dependency.get("reused_by", [])) != {"official_ut", "build"}:
+        violations.append("dependency readiness was not reused by UT and build")
+    official = validation.get("official_ut")
+    official = official if isinstance(official, Mapping) else {}
+    if readiness_blocked and official.get("status") == "passed":
+        violations.append(
+            "blocked dependency readiness was promoted to official UT success"
+        )
+    elif official.get("status") != "dependency_blocked_before_start":
+        violations.append("official UT dependency blocker was not preserved")
+    build = validation.get("build")
+    build = build if isinstance(build, Mapping) else {}
+    if readiness_blocked and build.get("status") == "compiled":
+        violations.append(
+            "blocked dependency readiness was promoted to compile success"
+        )
+    elif build.get("status") != "dependency_graph_blocked":
+        violations.append("build dependency-graph blocker was not preserved")
+    supplementary = validation.get("supplementary")
+    supplementary = (
+        supplementary if isinstance(supplementary, Mapping) else {}
+    )
+    if supplementary.get("counts_as_official_ut") is not False:
+        violations.append("supplementary validation was counted as official UT")
+    if supplementary.get("status") != "passed":
+        violations.append("supplementary regression result was not preserved")
+    coverage = validation.get("hardware_coverage")
+    coverage = coverage if isinstance(coverage, Mapping) else {}
+    required_protocols = set(coverage.get("required_protocols", []))
+    observed_protocols = set(coverage.get("observed_protocols", []))
+    false_nvme_coverage = (
+        "NVMe" in required_protocols
+        and "NVMe" not in observed_protocols
+        and (
+            coverage.get("status") == "covered"
+            or coverage.get("proves_required_protocols") is True
+        )
+    )
+    blocked_nvme_checkpoint = (
+        coverage.get("status") == "blocked"
+        and required_protocols == {"NVMe"}
+        and "NVMe" not in observed_protocols
+        and coverage.get("proves_required_protocols") is False
+    )
+    covered_nvme_checkpoint = (
+        coverage.get("status") == "covered"
+        and required_protocols == {"NVMe"}
+        and "NVMe" in observed_protocols
+        and coverage.get("proves_required_protocols") is True
+    )
+    if false_nvme_coverage:
+        violations.append(
+            "SATA/SAS-only evidence was promoted to NVMe hardware coverage"
+        )
+    elif not (blocked_nvme_checkpoint or covered_nvme_checkpoint):
+        violations.append("representative NVMe hardware gap was not preserved")
+    if validation.get("claim_level") != "source_changed":
+        violations.append(
+            "source-only qualification exceeded the source_changed claim level"
+        )
+    if validation.get("gaps_visible") is not True:
+        violations.append("validation readiness gaps are not visible")
     terminal = report.get("terminal_paths")
     terminal = terminal if isinstance(terminal, Mapping) else {}
     for status in ("failed", "cancelled"):
@@ -462,6 +604,7 @@ def _worker_complete_development(
             task_id="diagnosis-chain-run",
             operation_id="diagnosis-chain-development-restart",
         )
+        hardware_evidence_ids = list(_diagnostic_evidence_ids(replayed))
         final = service.call_exposed_tool(
             "execute",
             {
@@ -475,7 +618,71 @@ def _worker_complete_development(
                         "source_revision": "qualification-source",
                         "authored_files": ["src/qualification.lua"],
                         "verification_plan": ["run focused regression tests"],
-                        "known_gaps": ["official dependency validation is pending"],
+                        "dependency_readiness": {
+                            "readiness_id": "qualification-conan-readiness",
+                            "status": "blocked",
+                            "resolution": "blocked_external",
+                            "summary": (
+                                "libmc4lua is unavailable from configured Conan remotes"
+                            ),
+                            "check_commands": ["conan graph info ."],
+                            "evidence_ids": ["qualification-conan-graph"],
+                            "attempt_count": 1,
+                            "reused_by": ["official_ut", "build"],
+                        },
+                        "validation_results": [
+                            {
+                                "kind": "official_ut",
+                                "status": "dependency_blocked_before_start",
+                                "summary": "official UT did not start",
+                                "commands": ["bingo test"],
+                                "evidence_ids": ["qualification-ut-dependency"],
+                                "dependency_readiness_id": (
+                                    "qualification-conan-readiness"
+                                ),
+                            },
+                            {
+                                "kind": "build",
+                                "status": "dependency_graph_blocked",
+                                "summary": "build stopped before compilation",
+                                "commands": [
+                                    "bmcgo build -bt debug --stage dev"
+                                ],
+                                "evidence_ids": [
+                                    "qualification-build-dependency"
+                                ],
+                                "dependency_readiness_id": (
+                                    "qualification-conan-readiness"
+                                ),
+                            },
+                            {
+                                "kind": "supplementary",
+                                "status": "passed",
+                                "summary": "focused pure-logic regression passed",
+                                "commands": [
+                                    "python -m unittest test_slot_mapping.py"
+                                ],
+                                "evidence_ids": [
+                                    "qualification-supplementary-tests"
+                                ],
+                            },
+                        ],
+                        "hardware_coverage": {
+                            "status": "blocked",
+                            "required_protocols": ["NVMe"],
+                            "devices": [
+                                {"device_id": "Disk23", "protocol": "SATA"},
+                                {"device_id": "Disk24", "protocol": "SAS"},
+                            ],
+                            "evidence_ids": hardware_evidence_ids,
+                            "gaps": [
+                                "representative NVMe target is unavailable"
+                            ],
+                        },
+                        "known_gaps": [
+                            "official UT and compilation are dependency blocked",
+                            "representative NVMe hardware validation is blocked",
+                        ],
                     },
                 },
             },
@@ -516,6 +723,11 @@ def _worker_complete_development(
                 and terminal.get("outcome", {}).get("status") == status
                 and _gate_name(terminal) == ""
             )
+        _, SQLiteRuntimeRepository, _ = runtime_types
+        case = SQLiteRuntimeRepository(database).load(final["run_id"]) or {}
+        closeout = case.get("closeout")
+        closeout = closeout if isinstance(closeout, Mapping) else {}
+        validation_readiness = _validation_readiness_projection(final, closeout)
     finally:
         service.close()
     outcome = final.get("outcome")
@@ -529,6 +741,7 @@ def _worker_complete_development(
         "replayed_receipt_id": _diagnostic_receipt_id(replayed),
         "outcome": outcome.get("status", ""),
         "acceptance": _acceptance(outcome),
+        "validation_readiness": validation_readiness,
         "terminal_paths": terminal_paths,
         "terminal_run_ids": terminal_run_ids,
     }
@@ -638,6 +851,7 @@ def qualify_diagnosis_chain(
         },
         "blocked_path": {},
         "recovery_path": {},
+        "validation_readiness": {},
         "terminal_paths": {"failed": False, "cancelled": False},
         "metrics": {
             "correctness_is_primary": True,
@@ -823,6 +1037,9 @@ def qualify_diagnosis_chain(
             }
         )
         report["terminal_paths"] = dict(completed["terminal_paths"])
+        report["validation_readiness"] = dict(
+            completed["validation_readiness"]
+        )
 
         _, SQLiteRuntimeRepository, _ = runtime_types
         repository = SQLiteRuntimeRepository(database)

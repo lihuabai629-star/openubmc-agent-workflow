@@ -24,6 +24,23 @@ Include Git identity when it already exists and matters, but do not create a
 worktree solely for handoff. Preserve an isolated workspace when downstream work
 still needs it. Do not invent product, target, artifact, or authorization facts.
 
+## Preserve validation readiness
+
+Classify the boundary that was actually reached:
+
+- official UT: `passed`, `failed_after_start`, or
+  `dependency_blocked_before_start`;
+- compilation: `compiled`, `compile_failed`, or
+  `dependency_graph_blocked`;
+- supplementary checks: `passed`, `failed`, or `not_run`, always with
+  `counts_as_official_ut=false`.
+
+For a shared external dependency, check once and reuse the same readiness result
+for official UT and compilation. Do not fabricate or vendor a missing package to
+force success. Record required and observed hardware protocols explicitly;
+SATA/SAS evidence cannot validate NVMe. A source-only handoff may report
+`source_changed` while keeping official-validation and hardware gaps visible.
+
 ## Preserve stage ownership
 
 - `openubmc-build` consumes changed components and generation state, then owns

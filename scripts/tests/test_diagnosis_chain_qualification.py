@@ -73,6 +73,51 @@ class DiagnosisChainQualificationTests(unittest.TestCase):
             report["recovery_path"]["acceptance"],
             {"stage.development": "passed", "stage.diagnosis": "passed"},
         )
+        self.assertEqual(
+            report["validation_readiness"]["dependency_readiness"],
+            {
+                "status": "blocked",
+                "resolution": "blocked_external",
+                "attempt_count": 1,
+                "reused_by": ["official_ut", "build"],
+            },
+        )
+        self.assertEqual(
+            report["validation_readiness"]["official_ut"],
+            {
+                "status": "dependency_blocked_before_start",
+                "acceptance": "blocked",
+            },
+        )
+        self.assertEqual(
+            report["validation_readiness"]["build"],
+            {
+                "status": "dependency_graph_blocked",
+                "acceptance": "blocked",
+            },
+        )
+        self.assertEqual(
+            report["validation_readiness"]["supplementary"],
+            {
+                "status": "passed",
+                "count": 1,
+                "counts_as_official_ut": False,
+            },
+        )
+        self.assertEqual(
+            report["validation_readiness"]["hardware_coverage"],
+            {
+                "status": "blocked",
+                "required_protocols": ["NVMe"],
+                "observed_protocols": ["SAS", "SATA"],
+                "proves_required_protocols": False,
+            },
+        )
+        self.assertEqual(
+            report["validation_readiness"]["claim_level"],
+            "source_changed",
+        )
+        self.assertTrue(report["validation_readiness"]["gaps_visible"])
         self.assertEqual(report["terminal_paths"], {"cancelled": True, "failed": True})
         self.assertEqual(report["metrics"]["target_calls_after_observe"], 0)
         self.assertEqual(report["metrics"]["duplicate_diagnosis_gates"], 0)
@@ -161,6 +206,166 @@ class DiagnosisChainQualificationTests(unittest.TestCase):
         self.assertIn(
             "terminal Outcome is not completed",
             qualification_violations(report),
+        )
+
+    def test_false_official_validation_claim_is_not_promotable(self) -> None:
+        report = {
+            "fixture": {"semantic_match": True},
+            "blocked_path": {
+                "gate": "diagnosis.acceptance",
+                "diagnostic_status": "blocked",
+                "gap_present": True,
+                "gate_binding_complete": True,
+                "evidence_present": True,
+                "same_gate_after_resume": True,
+                "same_gate_after_restart": True,
+                "same_evidence_after_resume": True,
+                "same_evidence_after_restart": True,
+            },
+            "recovery_path": {
+                "gate": "developer.change",
+                "gate_binding_complete": True,
+                "accepted_receipt_present": True,
+                "outcome": "completed",
+                "acceptance": {
+                    "stage.diagnosis": "passed",
+                    "stage.development": "passed",
+                },
+                "accepted_diagnosis_survived_restart": True,
+            },
+            "validation_readiness": {
+                "dependency_readiness": {
+                    "status": "blocked",
+                    "resolution": "blocked_external",
+                    "attempt_count": 1,
+                    "reused_by": ["official_ut", "build"],
+                },
+                "official_ut": {"status": "passed", "acceptance": "passed"},
+                "build": {"status": "compiled", "acceptance": "passed"},
+                "supplementary": {
+                    "status": "passed",
+                    "count": 1,
+                    "counts_as_official_ut": True,
+                },
+                "hardware_coverage": {
+                    "status": "covered",
+                    "required_protocols": ["NVMe"],
+                    "observed_protocols": ["SAS", "SATA"],
+                    "proves_required_protocols": True,
+                },
+                "claim_level": "firmware_validated",
+                "gaps_visible": False,
+            },
+            "terminal_paths": {"failed": True, "cancelled": True},
+            "metrics": {
+                "observe_calls": 1,
+                "target_calls_after_observe": 0,
+                "duplicate_diagnosis_gates": 0,
+                "duplicate_development_gates": 0,
+                "duplicate_development_work": 0,
+                "durable_outcome_records": 1,
+                "durable_outcome_completed": True,
+            },
+        }
+
+        violations = qualification_violations(report)
+
+        self.assertIn(
+            "blocked dependency readiness was promoted to official UT success",
+            violations,
+        )
+        self.assertIn(
+            "blocked dependency readiness was promoted to compile success",
+            violations,
+        )
+        self.assertIn(
+            "supplementary validation was counted as official UT",
+            violations,
+        )
+        self.assertIn(
+            "SATA/SAS-only evidence was promoted to NVMe hardware coverage",
+            violations,
+        )
+        self.assertIn(
+            "source-only qualification exceeded the source_changed claim level",
+            violations,
+        )
+        self.assertIn(
+            "validation readiness gaps are not visible",
+            violations,
+        )
+
+    def test_representative_nvme_coverage_is_an_allowed_checkpoint(self) -> None:
+        report = {
+            "fixture": {"semantic_match": True},
+            "blocked_path": {
+                "gate": "diagnosis.acceptance",
+                "diagnostic_status": "blocked",
+                "gap_present": True,
+                "gate_binding_complete": True,
+                "evidence_present": True,
+                "same_gate_after_resume": True,
+                "same_gate_after_restart": True,
+                "same_evidence_after_resume": True,
+                "same_evidence_after_restart": True,
+            },
+            "recovery_path": {
+                "gate": "developer.change",
+                "gate_binding_complete": True,
+                "accepted_receipt_present": True,
+                "outcome": "completed",
+                "acceptance": {
+                    "stage.diagnosis": "passed",
+                    "stage.development": "passed",
+                },
+                "accepted_diagnosis_survived_restart": True,
+            },
+            "validation_readiness": {
+                "dependency_readiness": {
+                    "status": "blocked",
+                    "resolution": "blocked_external",
+                    "attempt_count": 1,
+                    "reused_by": ["official_ut", "build"],
+                },
+                "official_ut": {
+                    "status": "dependency_blocked_before_start",
+                    "acceptance": "blocked",
+                },
+                "build": {
+                    "status": "dependency_graph_blocked",
+                    "acceptance": "blocked",
+                },
+                "supplementary": {
+                    "status": "passed",
+                    "count": 1,
+                    "counts_as_official_ut": False,
+                },
+                "hardware_coverage": {
+                    "status": "covered",
+                    "required_protocols": ["NVMe"],
+                    "observed_protocols": ["NVMe"],
+                    "proves_required_protocols": True,
+                },
+                "claim_level": "source_changed",
+                "gaps_visible": True,
+            },
+            "terminal_paths": {"failed": True, "cancelled": True},
+            "metrics": {
+                "observe_calls": 1,
+                "target_calls_after_observe": 0,
+                "duplicate_diagnosis_gates": 0,
+                "duplicate_development_gates": 0,
+                "duplicate_development_work": 0,
+                "durable_outcome_records": 1,
+                "durable_outcome_completed": True,
+            },
+        }
+
+        violations = qualification_violations(report)
+
+        self.assertNotIn(
+            "representative NVMe hardware gap was not preserved",
+            violations,
         )
 
     def test_changed_resume_evidence_is_not_promotable(self) -> None:

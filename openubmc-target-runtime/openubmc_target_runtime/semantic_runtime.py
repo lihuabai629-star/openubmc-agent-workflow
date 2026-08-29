@@ -2147,6 +2147,19 @@ def project_run_turn(
     }:
         selected_next_action = ""
     gaps = base_turn.gaps if base_turn is not None else ()
+    validation_gaps = tuple(
+        str(gap)
+        for phase in projection.get("phase_records", [])
+        if isinstance(phase, Mapping)
+        for gap in (
+            phase.get("validation_gaps", [])
+            if isinstance(phase.get("validation_gaps"), list)
+            else []
+        )
+        if str(gap).strip()
+    )
+    if validation_gaps:
+        gaps = tuple(dict.fromkeys((*gaps, *validation_gaps)))
     recovery_gap = _text(projection.get("closeout_recovery_gap"))
     if recovery_gap and recovery_gap not in gaps:
         gaps = (*gaps, recovery_gap)

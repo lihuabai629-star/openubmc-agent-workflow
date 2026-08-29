@@ -46,6 +46,8 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Mutation** | An Effect that can change target, build, repository, package, or deployment state. |
 | **MutationJournal** | The durable authority for mutation identity, effect-start status, result, verification, unknown recovery, and rollback state. |
 | **Outcome** | The sole terminal fact for a Run. Success requires fresh Runtime-grounded verification. |
+| **Validation Readiness** | A durable phase classification that separates dependency availability, official UT start/result, compiler reach/result, and supplementary checks. It never promotes source-only evidence into package or runtime success. |
+| **Hardware Coverage** | The required and observed protocol/device set bound to target Evidence. Coverage is protocol-specific; SATA/SAS observations do not prove NVMe behavior. |
 | **Session Outcome** | A governance projection generated from a terminal Outcome for review and possible promotion. |
 | **Target epoch** | A monotonic identity for the observed target state used to reject stale verification and unsafe replay. |
 | **Reconcile** | Read-first recovery of an unknown Effect using the same durable identity; it never silently creates a replacement operation. |
@@ -77,6 +79,7 @@ historical event upcasters are read paths and cannot commit new Run transitions.
 | Artifact bytes, digest verification, retention, and access policy | `ArtifactStore` |
 | Diagnostic Evidence sanitization, completion semantics, and durable `DiagnosticReceipt` formation | Runtime Core |
 | Diagnostic result identity planning and accepted-scope counting | `DiagnosticRequestPlan` |
+| Validation Readiness and Hardware Coverage normalization | `RunEngine` |
 | Final Agent projection and soft display-budget compaction | `AgentGateway` |
 | Review, approval, promotion, and lifecycle governance | Operator / CI Plane |
 | Experimental model invocation, proposal validation, and inert revision persistence | `PlanResolver` |

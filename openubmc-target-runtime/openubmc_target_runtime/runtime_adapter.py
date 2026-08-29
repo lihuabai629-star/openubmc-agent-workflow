@@ -275,6 +275,19 @@ class RuntimeSemanticAdapter:
             terminal_status=terminal_status,
         )
 
+    def read_evidence(
+        self,
+        run_id: str,
+        evidence_id: str,
+        *,
+        target_id: str,
+    ) -> Mapping[str, object]:
+        return self.context_runtime.read_evidence(
+            run_id,
+            evidence_id,
+            target_id=target_id,
+        )
+
     def prepare_step(
         self,
         run_id: str,

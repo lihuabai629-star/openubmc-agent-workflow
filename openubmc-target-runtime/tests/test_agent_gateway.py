@@ -67,7 +67,13 @@ from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
     latest_diagnostic_receipt,
 )
 from openubmc_target_runtime.run_store import RunCommitRequest  # noqa: E402
-from openubmc_target_runtime.run_engine import gate_input_schema  # noqa: E402
+from openubmc_target_runtime.run_engine import (  # noqa: E402
+    _evidence_supports_device,
+    gate_input_schema,
+)
+from openubmc_target_runtime.validation_readiness import (  # noqa: E402
+    normalize_hardware_protocol,
+)
 from tests.compatibility_history import seed_compatibility_history  # noqa: E402
 def encoded_size(value: object) -> int:
     return len(
@@ -121,6 +127,18 @@ def diagnostic_receipt_fixture(receipt_id: str) -> dict[str, object]:
     }
 
 
+class HardwareProtocolNormalizationTests(unittest.TestCase):
+    def test_validation_and_evidence_use_the_same_protocol_aliases(self) -> None:
+        self.assertEqual(normalize_hardware_protocol("nvme/of"), "NVMe-oF")
+        self.assertTrue(
+            _evidence_supports_device(
+                {"Disk23": {"interface": "nvme-of"}},
+                "Disk23",
+                normalize_hardware_protocol("NVMe/oF"),
+            )
+        )
+
+
 def artifact_ref(
     path: Path,
     *,
@@ -159,6 +177,32 @@ def artifact_ref(
             encoding="utf-8",
         )
     return reference
+
+
+def compiled_validation_payload(identity: str) -> dict[str, object]:
+    readiness_id = f"{identity}-readiness"
+    return {
+        "dependency_readiness": {
+            "readiness_id": readiness_id,
+            "status": "ready",
+            "resolution": "available",
+            "summary": "build dependencies resolved",
+            "check_commands": ["conan graph info ."],
+            "evidence_ids": [f"{identity}-dependency-log"],
+            "attempt_count": 1,
+            "reused_by": ["build"],
+        },
+        "validation_results": [
+            {
+                "kind": "build",
+                "status": "compiled",
+                "summary": "build compilation completed",
+                "commands": ["bmcgo build"],
+                "evidence_ids": [f"{identity}-build-log"],
+                "dependency_readiness_id": readiness_id,
+            }
+        ],
+    }
 
 
 class FakeTask:
@@ -324,6 +368,10 @@ class SemanticBackend:
             "task": task.task_id,
             "summary": "diagnosis completed",
             "root_cause": "a bounded source defect was isolated",
+            "hardware_devices": [
+                {"device_id": "Disk23", "protocol": "SATA"},
+                {"device_id": "Disk24", "protocol": "SAS"},
+            ],
             "observed_at": "2026-08-19T00:00:00Z",
             "freshness": {"status": "fresh"},
         }
@@ -8751,6 +8799,7 @@ class AgentGatewayTests(unittest.TestCase):
                         "payload": {
                             "source_revision": "artifact-ref-source",
                             "artifact_ref": valid,
+                            **compiled_validation_payload("artifact-ref-valid"),
                         },
                     },
                 },
@@ -8817,6 +8866,7 @@ class AgentGatewayTests(unittest.TestCase):
                         "payload": {
                             "source_revision": "artifact-file-uri-source",
                             "artifact_ref": reference,
+                            **compiled_validation_payload("artifact-file-uri"),
                         },
                     },
                 },
@@ -9304,6 +9354,784 @@ class AgentGatewayTests(unittest.TestCase):
         }
         self.assertEqual(acceptance["stage.diagnosis"], "passed")
         self.assertEqual(acceptance["stage.development"], "passed")
+
+    def test_source_only_reports_official_validation_and_build_classifications(
+        self,
+    ) -> None:
+        cases = (
+            ("official_ut", "passed", "ready", "available", "passed"),
+            (
+                "official_ut",
+                "failed_after_start",
+                "ready",
+                "available",
+                "failed",
+            ),
+            (
+                "official_ut",
+                "dependency_blocked_before_start",
+                "blocked",
+                "blocked_external",
+                "blocked",
+            ),
+            ("build", "compiled", "ready", "available", "passed"),
+            (
+                "build",
+                "compile_failed",
+                "ready",
+                "available",
+                "failed",
+            ),
+            (
+                "build",
+                "dependency_graph_blocked",
+                "blocked",
+                "blocked_external",
+                "blocked",
+            ),
+        )
+
+        for index, (kind, status, readiness, resolution, acceptance) in enumerate(
+            cases,
+            start=1,
+        ):
+            with self.subTest(kind=kind, status=status):
+                waiting = self.service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": f"192.0.2.{120 + index}",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                    },
+                    task_id=f"validation-classification-{index}",
+                    operation_id=f"validation-classification-{index}-start",
+                )
+                readiness_id = f"dependency-check-{index}"
+                final = self.service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "source change completed",
+                            "payload": {
+                                "source_revision": f"revision-{index}",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["run official validation"],
+                                "dependency_readiness": {
+                                    "readiness_id": readiness_id,
+                                    "status": readiness,
+                                    "resolution": resolution,
+                                    "summary": "dependency graph checked once",
+                                    "check_commands": ["conan graph info ."],
+                                    "evidence_ids": [f"evidence-readiness-{index}"],
+                                    "attempt_count": 1,
+                                    "reused_by": [kind],
+                                },
+                                "validation_results": [
+                                    {
+                                        "kind": kind,
+                                        "status": status,
+                                        "summary": f"{kind} classified as {status}",
+                                        "commands": [f"run-{kind}"],
+                                        "evidence_ids": [f"evidence-{kind}-{index}"],
+                                        "dependency_readiness_id": readiness_id,
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                    task_id=f"validation-classification-{index}",
+                    operation_id=f"validation-classification-{index}-complete",
+                )
+
+                self.assertEqual(final["outcome"]["status"], "completed")
+                development = next(
+                    fact
+                    for fact in final["facts"]
+                    if fact.get("name") == "developer.change"
+                )
+                summary = development["validation_summary"]
+                self.assertEqual(summary[kind]["status"], status)
+                self.assertEqual(summary[kind]["acceptance"], acceptance)
+                self.assertFalse(summary["claims"]["package"])
+                self.assertFalse(summary["claims"]["firmware"])
+                self.assertFalse(summary["claims"]["upgrade"])
+                self.assertFalse(summary["claims"]["hardware_repair_validated"])
+
+    def test_source_only_without_validation_fields_reports_not_run_gaps(
+        self,
+    ) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.139",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="source-only-unreported-validation",
+            operation_id="source-only-unreported-validation-start",
+        )
+        final = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "revision-without-validation",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["official validation pending"],
+                    },
+                },
+            },
+            task_id="source-only-unreported-validation",
+            operation_id="source-only-unreported-validation-complete",
+        )
+
+        development = next(
+            fact
+            for fact in final["facts"]
+            if fact.get("name") == "developer.change"
+        )
+        self.assertEqual(
+            development["validation_summary"]["official_ut"]["status"],
+            "not_run",
+        )
+        self.assertEqual(
+            development["validation_summary"]["build"]["status"],
+            "not_run",
+        )
+        self.assertEqual(
+            development["hardware_coverage"]["status"],
+            "not_reported",
+        )
+        self.assertIn("official_ut=not_run", final["gaps"])
+        self.assertIn("build=not_run", final["gaps"])
+        self.assertIn("hardware_coverage=not_reported", final["gaps"])
+
+    def test_source_only_keeps_dependency_and_nvme_coverage_gaps_visible(
+        self,
+    ) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.140",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="source-only-validation-gaps",
+            operation_id="source-only-validation-gaps-start",
+        )
+        readiness_id = "dependency-check-storage"
+        hardware_evidence_ids = [
+            item["evidence_id"]
+            for item in waiting["diagnostic_receipt"]["evidence"]
+        ]
+        final = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+                "response": {
+                    "status": "completed",
+                    "summary": "NVMe source repair completed",
+                    "payload": {
+                        "source_revision": "revision-nvme-fix",
+                        "authored_files": ["src/storage/fix.lua"],
+                        "verification_plan": [
+                            "run official UT and compile after dependency recovery",
+                            "verify on representative NVMe hardware",
+                        ],
+                        "dependency_readiness": {
+                            "readiness_id": readiness_id,
+                            "status": "blocked",
+                            "resolution": "blocked_external",
+                            "summary": "libmc4lua is unavailable from configured Conan remotes",
+                            "check_commands": ["conan graph info ."],
+                            "evidence_ids": ["evidence-conan-graph"],
+                            "attempt_count": 1,
+                            "reused_by": ["official_ut", "build"],
+                        },
+                        "validation_results": [
+                            {
+                                "kind": "official_ut",
+                                "status": "dependency_blocked_before_start",
+                                "summary": "official UT did not start",
+                                "commands": ["bingo test"],
+                                "evidence_ids": ["evidence-ut-dependency"],
+                                "dependency_readiness_id": readiness_id,
+                            },
+                            {
+                                "kind": "build",
+                                "status": "dependency_graph_blocked",
+                                "summary": "build stopped before compilation",
+                                "commands": ["bmcgo build -bt debug --stage dev"],
+                                "evidence_ids": ["evidence-build-dependency"],
+                                "dependency_readiness_id": readiness_id,
+                            },
+                            {
+                                "kind": "supplementary",
+                                "status": "passed",
+                                "summary": "pure-logic regression tests passed",
+                                "commands": ["python -m unittest test_slot_mapping.py"],
+                                "evidence_ids": ["evidence-supplementary-tests"],
+                            },
+                        ],
+                        "hardware_coverage": {
+                            "status": "blocked",
+                            "required_protocols": ["NVMe"],
+                            "devices": [
+                                {"device_id": "Disk23", "protocol": "SATA"},
+                                {"device_id": "Disk24", "protocol": "SAS"},
+                            ],
+                            "evidence_ids": hardware_evidence_ids,
+                            "gaps": ["representative NVMe target is unavailable"],
+                        },
+                        "known_gaps": [
+                            "official dependency validation is blocked",
+                            "representative NVMe hardware validation is blocked",
+                        ],
+                    },
+                },
+            },
+            task_id="source-only-validation-gaps",
+            operation_id="source-only-validation-gaps-complete",
+        )
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(final["outcome"]["status"], "completed")
+        development = next(
+            fact
+            for fact in final["facts"]
+            if fact.get("name") == "developer.change"
+        )
+        summary = development["validation_summary"]
+        self.assertEqual(
+            summary["official_ut"]["status"],
+            "dependency_blocked_before_start",
+        )
+        self.assertEqual(
+            summary["build"]["status"],
+            "dependency_graph_blocked",
+        )
+        self.assertEqual(summary["supplementary"]["status"], "passed")
+        self.assertFalse(summary["supplementary"]["counts_as_official_ut"])
+        coverage = development["hardware_coverage"]
+        self.assertEqual(coverage["observed_protocols"], ["SAS", "SATA"])
+        self.assertFalse(coverage["proves_required_protocols"])
+        self.assertIn(
+            "representative NVMe target is unavailable",
+            final["gaps"],
+        )
+        case = self.service._test.context_runtime.read_case(final["run_id"])
+        closeout = case["closeout"]
+        self.assertEqual(closeout["claim_level"], "source_changed")
+        self.assertEqual(
+            closeout["validation_summary"]["official_ut"]["acceptance"],
+            "blocked",
+        )
+        self.assertFalse(
+            closeout["hardware_coverage"]["proves_required_protocols"]
+        )
+
+    def test_validation_evidence_rejects_false_success_and_repeated_preflight(
+        self,
+    ) -> None:
+        invalid_payloads = (
+            {
+                "dependency_readiness": {
+                    "readiness_id": "dependency-repeated",
+                    "status": "blocked",
+                    "resolution": "blocked_external",
+                    "summary": "dependency check repeated",
+                    "check_commands": ["conan graph info ."],
+                    "evidence_ids": ["evidence-dependency"],
+                    "attempt_count": 2,
+                    "reused_by": ["official_ut"],
+                },
+                "validation_results": [
+                    {
+                        "kind": "official_ut",
+                        "status": "dependency_blocked_before_start",
+                        "summary": "tests did not start",
+                        "commands": ["bingo test"],
+                        "evidence_ids": ["evidence-ut"],
+                        "dependency_readiness_id": "dependency-repeated",
+                    }
+                ],
+            },
+            {
+                "dependency_readiness": {
+                    "readiness_id": "dependency-fabricated",
+                    "status": "ready",
+                    "resolution": "vendored",
+                    "summary": "a local package was fabricated",
+                    "check_commands": ["conan graph info ."],
+                    "evidence_ids": ["evidence-fabricated"],
+                    "attempt_count": 1,
+                    "reused_by": ["build"],
+                },
+                "validation_results": [
+                    {
+                        "kind": "build",
+                        "status": "compiled",
+                        "summary": "compile claimed",
+                        "commands": ["bmcgo build"],
+                        "evidence_ids": ["evidence-build"],
+                        "dependency_readiness_id": "dependency-fabricated",
+                    }
+                ],
+            },
+            {
+                "dependency_readiness": {
+                    "readiness_id": "dependency-blocked",
+                    "status": "blocked",
+                    "resolution": "blocked_external",
+                    "summary": "dependency graph is blocked",
+                    "check_commands": ["conan graph info ."],
+                    "evidence_ids": ["evidence-blocked"],
+                    "attempt_count": 1,
+                    "reused_by": ["official_ut"],
+                },
+                "validation_results": [
+                    {
+                        "kind": "official_ut",
+                        "status": "passed",
+                        "summary": "false official success",
+                        "commands": ["bingo test"],
+                        "evidence_ids": ["evidence-false-pass"],
+                        "dependency_readiness_id": "dependency-blocked",
+                    }
+                ],
+            },
+            {
+                "dependency_readiness": {
+                    "readiness_id": "dependency-blocked-unbound",
+                    "status": "blocked",
+                    "resolution": "blocked_external",
+                    "summary": "dependency graph is blocked",
+                    "check_commands": ["conan graph info ."],
+                    "evidence_ids": ["evidence-blocked-unbound"],
+                    "attempt_count": 1,
+                    "reused_by": ["official_ut"],
+                },
+                "validation_results": [
+                    {
+                        "kind": "official_ut",
+                        "status": "passed",
+                        "summary": "false official success without readiness binding",
+                        "commands": ["bingo test"],
+                        "evidence_ids": ["evidence-false-pass-unbound"],
+                    }
+                ],
+            },
+            {
+                "hardware_coverage": {
+                    "status": "covered",
+                    "required_protocols": ["NVMe"],
+                    "devices": [
+                        {"device_id": "Disk23", "protocol": "SATA"},
+                        {"device_id": "Disk24", "protocol": "SAS"},
+                    ],
+                    "evidence_ids": ["evidence-sata-sas"],
+                    "gaps": [],
+                }
+            },
+            {
+                "hardware_coverage": {
+                    "status": "covered",
+                    "required_protocols": ["NVMe"],
+                    "devices": [
+                        {"device_id": "Disk23", "protocol": "NVMe"},
+                    ],
+                    "evidence_ids": ["unknown-target-evidence"],
+                    "gaps": [],
+                }
+            },
+        )
+
+        for index, invalid in enumerate(invalid_payloads, start=1):
+            with self.subTest(index=index):
+                waiting = self.service.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": f"192.0.2.{150 + index}",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                    },
+                    task_id=f"invalid-validation-evidence-{index}",
+                    operation_id=f"invalid-validation-evidence-{index}-start",
+                )
+                with self.assertRaises(GateConflict):
+                    self.service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "respond",
+                            "run_id": waiting["run_id"],
+                            **gate_binding(waiting),
+                            "response": {
+                                "status": "completed",
+                                "summary": "source change completed",
+                                "payload": {
+                                    "source_revision": f"invalid-{index}",
+                                    "authored_files": ["src/fix.lua"],
+                                    "verification_plan": ["validate evidence"],
+                                    **invalid,
+                                },
+                            },
+                        },
+                        task_id=f"invalid-validation-evidence-{index}",
+                        operation_id=f"invalid-validation-evidence-{index}-submit",
+                    )
+                resumed = self.service.call_exposed_tool(
+                    "execute",
+                    {"kind": "resume", "run_id": waiting["run_id"]},
+                    task_id=f"invalid-validation-evidence-{index}",
+                    operation_id=f"invalid-validation-evidence-{index}-resume",
+                )
+                self.assertEqual(
+                    resumed["gate"]["gate_id"],
+                    waiting["gate"]["gate_id"],
+                )
+
+    def test_hardware_coverage_rejects_unrelated_current_evidence(self) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.159",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="hardware-evidence-semantics",
+            operation_id="hardware-evidence-semantics-start",
+        )
+        evidence_id = waiting["diagnostic_receipt"]["evidence"][0]["evidence_id"]
+
+        with self.assertRaisesRegex(
+            GateConflict,
+            "does not support device Disk23 protocol NVMe",
+        ):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **gate_binding(waiting),
+                    "response": {
+                        "status": "completed",
+                        "summary": "false NVMe coverage",
+                        "payload": {
+                            "source_revision": "false-nvme-coverage",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["verify NVMe"],
+                            "hardware_coverage": {
+                                "status": "covered",
+                                "required_protocols": ["NVMe"],
+                                "devices": [
+                                    {"device_id": "Disk23", "protocol": "NVMe"}
+                                ],
+                                "evidence_ids": [evidence_id],
+                                "gaps": [],
+                            },
+                        },
+                    },
+                },
+                task_id="hardware-evidence-semantics",
+                operation_id="hardware-evidence-semantics-submit",
+            )
+
+    def test_completed_failed_build_does_not_advance_to_upgrade(self) -> None:
+        developer_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.160",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+            },
+            task_id="failed-build-does-not-upgrade",
+            operation_id="failed-build-does-not-upgrade-start",
+        )
+        build_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": developer_gate["run_id"],
+                **gate_binding(developer_gate),
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": "failed-build-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["build and verify"],
+                    },
+                },
+            },
+            task_id="failed-build-does-not-upgrade",
+            operation_id="failed-build-does-not-upgrade-source",
+        )
+        product = self.artifact_root / "failed-build.hpm"
+        product.write_bytes(b"incomplete firmware")
+
+        with self.assertRaises(GateConflict):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(build_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "compile failed",
+                        "payload": {
+                            "source_revision": "failed-build-source",
+                            "artifact_ref": artifact_ref(
+                                product,
+                                kind="openubmc-hpm",
+                                target="192.0.2.160",
+                                run_id=developer_gate["run_id"],
+                                version="1.2.3",
+                            ),
+                            "dependency_readiness": {
+                                "readiness_id": "failed-build-readiness",
+                                "status": "ready",
+                                "resolution": "available",
+                                "summary": "dependencies resolved",
+                                "check_commands": ["conan graph info ."],
+                                "evidence_ids": ["dependency-ready"],
+                                "attempt_count": 1,
+                                "reused_by": ["build"],
+                            },
+                            "validation_results": [
+                                {
+                                    "kind": "build",
+                                    "status": "compile_failed",
+                                    "summary": "compiler returned failure",
+                                    "commands": ["bmcgo build"],
+                                    "evidence_ids": ["compile-failure-log"],
+                                    "dependency_readiness_id": (
+                                        "failed-build-readiness"
+                                    ),
+                                }
+                            ],
+                        },
+                    },
+                },
+                task_id="failed-build-does-not-upgrade",
+                operation_id="failed-build-does-not-upgrade-build",
+            )
+
+        with self.assertRaisesRegex(
+            GateConflict,
+            "failed build.artifact requires dependency_readiness and validation_results",
+        ):
+            self.service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": developer_gate["run_id"],
+                    **gate_binding(build_gate),
+                    "response": {
+                        "status": "failed",
+                        "summary": "build failed without classification",
+                        "payload": {},
+                    },
+                },
+                task_id="failed-build-does-not-upgrade",
+                operation_id="failed-build-does-not-upgrade-unclassified",
+            )
+
+        failed = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": developer_gate["run_id"],
+                **gate_binding(build_gate),
+                "response": {
+                    "status": "failed",
+                    "summary": "compiler returned failure",
+                    "payload": {
+                        "dependency_readiness": {
+                            "readiness_id": "failed-build-readiness",
+                            "status": "ready",
+                            "resolution": "available",
+                            "summary": "dependencies resolved",
+                            "check_commands": ["conan graph info ."],
+                            "evidence_ids": ["dependency-ready"],
+                            "attempt_count": 1,
+                            "reused_by": ["build"],
+                        },
+                        "validation_results": [
+                            {
+                                "kind": "build",
+                                "status": "compile_failed",
+                                "summary": "compiler returned failure",
+                                "commands": ["bmcgo build"],
+                                "evidence_ids": ["compile-failure-log"],
+                                "dependency_readiness_id": "failed-build-readiness",
+                            }
+                        ],
+                    },
+                },
+            },
+            task_id="failed-build-does-not-upgrade",
+            operation_id="failed-build-does-not-upgrade-classified",
+        )
+
+        self.assertEqual(failed["state"], "failed")
+        self.assertEqual(
+            [name for name, _arguments in self.backend.calls].count("upgrade_run"),
+            0,
+        )
+
+    def test_closeout_merges_development_and_build_validation_dimensions(
+        self,
+    ) -> None:
+        developer_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.161",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+            },
+            task_id="validation-closeout-merge",
+            operation_id="validation-closeout-merge-start",
+        )
+        build_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": developer_gate["run_id"],
+                **gate_binding(developer_gate),
+                "response": {
+                    "status": "completed",
+                    "summary": "source and official UT completed",
+                    "payload": {
+                        "source_revision": "validation-closeout-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["build and verify"],
+                        "dependency_readiness": {
+                            "readiness_id": "developer-ut-readiness",
+                            "status": "ready",
+                            "resolution": "available",
+                            "summary": "official UT dependencies resolved",
+                            "check_commands": ["conan graph info ."],
+                            "evidence_ids": ["developer-dependency-log"],
+                            "attempt_count": 1,
+                            "reused_by": ["official_ut"],
+                        },
+                        "validation_results": [
+                            {
+                                "kind": "official_ut",
+                                "status": "passed",
+                                "summary": "official UT passed",
+                                "commands": ["bingo test"],
+                                "evidence_ids": ["official-ut-log"],
+                                "dependency_readiness_id": "developer-ut-readiness",
+                            }
+                        ],
+                        "hardware_coverage": {
+                            "status": "blocked",
+                            "required_protocols": ["NVMe"],
+                            "devices": [],
+                            "evidence_ids": [],
+                            "gaps": ["representative NVMe target is unavailable"],
+                        },
+                    },
+                },
+            },
+            task_id="validation-closeout-merge",
+            operation_id="validation-closeout-merge-source",
+        )
+        product = self.artifact_root / "validation-closeout-merge.hpm"
+        product.write_bytes(b"firmware-4.0.0")
+        final = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": developer_gate["run_id"],
+                **gate_binding(build_gate),
+                "response": {
+                    "status": "completed",
+                    "summary": "firmware compiled",
+                    "payload": {
+                        "source_revision": "validation-closeout-source",
+                        "artifact_ref": artifact_ref(
+                            product,
+                            kind="openubmc-hpm",
+                            target="192.0.2.161",
+                            run_id=developer_gate["run_id"],
+                            version="4.0.0",
+                        ),
+                        "dependency_readiness": {
+                            "readiness_id": "build-readiness",
+                            "status": "ready",
+                            "resolution": "available",
+                            "summary": "build dependencies resolved",
+                            "check_commands": ["conan graph info ."],
+                            "evidence_ids": ["build-dependency-log"],
+                            "attempt_count": 1,
+                            "reused_by": ["build"],
+                        },
+                        "validation_results": [
+                            {
+                                "kind": "build",
+                                "status": "compiled",
+                                "summary": "firmware compiled",
+                                "commands": ["bmcgo build"],
+                                "evidence_ids": ["build-log"],
+                                "dependency_readiness_id": "build-readiness",
+                            }
+                        ],
+                    },
+                },
+            },
+            task_id="validation-closeout-merge",
+            operation_id="validation-closeout-merge-build",
+        )
+        case = self.service._test.context_runtime.read_case(final["run_id"])
+
+        self.assertEqual(
+            case["closeout"]["validation_summary"]["official_ut"]["status"],
+            "passed",
+        )
+        self.assertEqual(
+            case["closeout"]["validation_summary"]["build"]["status"],
+            "compiled",
+        )
+        readiness = case["closeout"]["validation_summary"][
+            "dependency_readiness"
+        ]
+        self.assertEqual(
+            readiness["official_ut"]["readiness_id"],
+            "developer-ut-readiness",
+        )
+        self.assertEqual(
+            readiness["build"]["readiness_id"],
+            "build-readiness",
+        )
+        self.assertEqual(
+            case["closeout"]["hardware_coverage"]["status"],
+            "blocked",
+        )
+        self.assertIn(
+            "representative NVMe target is unavailable",
+            case["closeout"]["reasons"],
+        )
 
     def test_failed_or_cancelled_diagnosis_never_opens_development(self) -> None:
         for status in ("failed", "cancelled"):
@@ -10187,6 +11015,7 @@ class AgentGatewayTests(unittest.TestCase):
                             run_id=first["run_id"],
                             version="1.2.3",
                         ),
+                        **compiled_validation_payload("execute-build-upgrade"),
                     },
                 },
             },
@@ -10257,6 +11086,9 @@ class AgentGatewayTests(unittest.TestCase):
                                 target="192.0.2.70",
                                 run_id=developer_gate["run_id"],
                                 version="3.0.0",
+                            ),
+                            **compiled_validation_payload(
+                                "adapter-projection-build-upgrade"
                             ),
                         },
                     },
@@ -10372,6 +11204,9 @@ class AgentGatewayTests(unittest.TestCase):
                                     target="192.0.2.71",
                                     run_id=developer_gate["run_id"],
                                     version="3.1.0",
+                                ),
+                                **compiled_validation_payload(
+                                    "deferred-build-upgrade"
                                 ),
                             },
                         },
@@ -10538,6 +11373,7 @@ class AgentGatewayTests(unittest.TestCase):
                                 run_id=first["run_id"],
                                 version="2.0.0",
                             ),
+                            **compiled_validation_payload("execute-reconcile"),
                         },
                     },
                 },
@@ -10606,6 +11442,9 @@ class AgentGatewayTests(unittest.TestCase):
                                     target="192.0.2.80",
                                     run_id=developer_gate["run_id"],
                                     version="2.1.0",
+                                ),
+                                **compiled_validation_payload(
+                                    "bounded-reconcile"
                                 ),
                             },
                         },
@@ -10693,6 +11532,7 @@ class AgentGatewayTests(unittest.TestCase):
                                 run_id=developer_gate["run_id"],
                                 version="3.0.0",
                             ),
+                            **compiled_validation_payload("running-upgrade"),
                         },
                     },
                 },
@@ -11606,6 +12446,7 @@ class AgentGatewayTests(unittest.TestCase):
                                     run_id=build_gate["run_id"],
                                     version="2.0.0",
                                 ),
+                                **compiled_validation_payload("restart-build"),
                             },
                         },
                     },

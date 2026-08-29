@@ -146,6 +146,9 @@ contract. Repository-local generation, compilation, unit-test builds, tests,
 and validators remain source verification. Prefer executing changed behavior or
 compiling the affected code when practical; distinguish that evidence from text
 inspection, product builds, and runtime validation.
+Classify official UT separately from supplementary checks. A dependency-blocked
+test never started, and supplementary success is never promoted to official UT,
+compilation, package, firmware, or hardware-validation success.
 
 Review the completed diff against the selected precedent for misplaced logic,
 duplicate ownership, layer leakage, bypassed interfaces, unnecessary public

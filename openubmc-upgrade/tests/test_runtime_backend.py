@@ -95,6 +95,32 @@ def artifact_ref(
     }
 
 
+def compiled_validation_payload(identity: str) -> dict[str, object]:
+    readiness_id = f"{identity}-readiness"
+    return {
+        "dependency_readiness": {
+            "readiness_id": readiness_id,
+            "status": "ready",
+            "resolution": "available",
+            "summary": "build dependencies resolved",
+            "check_commands": ["conan graph info ."],
+            "evidence_ids": [f"{identity}-dependency-log"],
+            "attempt_count": 1,
+            "reused_by": ["build"],
+        },
+        "validation_results": [
+            {
+                "kind": "build",
+                "status": "compiled",
+                "summary": "firmware compilation completed",
+                "commands": ["bmcgo build"],
+                "evidence_ids": [f"{identity}-build-log"],
+                "dependency_readiness_id": readiness_id,
+            }
+        ],
+    }
+
+
 def gate_binding(turn: Mapping[str, object]) -> dict[str, object]:
     gate = turn["gate"]
     assert isinstance(gate, Mapping)
@@ -553,6 +579,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                                     run_id=developer["run_id"],
                                     version="2.0.0",
                                 ),
+                                **compiled_validation_payload("public-upgrade"),
                             },
                         },
                         "deadline": deadline,
@@ -698,6 +725,9 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                                     target="bmc.example",
                                     run_id=developer["run_id"],
                                     version="2.0.0",
+                                ),
+                                **compiled_validation_payload(
+                                    "upgrade-upload-loss"
                                 ),
                             },
                         },
