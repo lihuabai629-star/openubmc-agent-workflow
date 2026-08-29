@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from enum import Enum
 import hashlib
 import json
 import re
@@ -190,16 +191,93 @@ class ScopeViolation(AgentGatewayError):
     """Raised when an observation requests an undeclared evidence surface."""
 
 
-class GateConflict(SemanticRuntimeError):
-    """Raised when a Gate submission targets stale or unrelated Gate state."""
+class PreflightReason(str, Enum):
+    """Typed reason used by AgentGateway to project actionable guidance."""
+
+    UNDECLARED_FIELD = "undeclared_field"
+    REQUIRED_VALUE = "required_value"
+    WRONG_TYPE = "wrong_type"
+    VALUE_TOO_LONG = "value_too_long"
+    TOO_MANY_ITEMS = "too_many_items"
+    UNSUPPORTED_CAPABILITY = "unsupported_capability"
+    UNSUPPORTED_SELECTOR_KIND = "unsupported_selector_kind"
+    MDB_GRAMMAR = "mdb_grammar"
+    DUPLICATE_SELECTOR_ID = "duplicate_selector_id"
+    FRESHNESS_MODE = "freshness_mode"
+    LIVE_MAX_AGE = "live_max_age"
+    DEADLINE = "deadline"
+    RUNTIME_OWNED_FIELD = "runtime_owned_field"
+    RUN_ID_REQUIRED = "run_id_required"
+    RECONCILE_PRECONDITION = "reconcile_precondition"
+    ARTIFACT_REQUIRED = "artifact_required"
+    ARTIFACT_BINDING = "artifact_binding"
 
 
-class CommandConflict(SemanticRuntimeError):
-    """Raised when one durable submission identity is reused with new input."""
+@dataclass(frozen=True)
+class PreflightDetail:
+    """Runtime validation facts without Agent-facing prose or examples."""
+
+    reason: PreflightReason
+    field: str
+    supported: tuple[str, ...] = ()
+    limit: object | None = None
+    context: Mapping[str, object] = field(default_factory=dict)
+
+
+class AgentPreflightError(ScopeViolation):
+    """Actionable Agent-input rejection raised before target or Run work."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: PreflightReason,
+        field: str,
+        supported: Sequence[str] = (),
+        limit: object | None = None,
+        context: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.detail = PreflightDetail(
+            reason=reason,
+            field=field,
+            supported=tuple(str(item) for item in supported),
+            limit=limit,
+            context=dict(context or {}),
+        )
 
 
 class ReferenceViolation(SemanticRuntimeError):
     """Raised when an ObservationRef or ArtifactRef is malformed."""
+
+
+class GateConflict(SemanticRuntimeError):
+    """Raised when a Gate submission targets stale or unrelated Gate state."""
+
+
+class GatePreflightError(GateConflict, ReferenceViolation):
+    """Actionable Gate-input rejection raised before transitions or Effects."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: PreflightReason,
+        field: str,
+        limit: object | None = None,
+        context: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.detail = PreflightDetail(
+            reason=reason,
+            field=field,
+            limit=limit,
+            context=dict(context or {}),
+        )
+
+
+class CommandConflict(SemanticRuntimeError):
+    """Raised when one durable submission identity is reused with new input."""
 
 
 class AssuranceUnavailable(SemanticRuntimeError):
@@ -286,64 +364,197 @@ class ObservationSelector:
     ) -> "ObservationSelector":
         unexpected = set(value) - {"id", "kind", "names", "queries"}
         if unexpected:
-            raise ScopeViolation(
-                "selector contains undeclared fields: "
-                + ", ".join(sorted(unexpected))
+            field = sorted(unexpected)[0]
+            raise AgentPreflightError(
+                f"selectors[{index - 1}].{field} is undeclared; selector contains "
+                "undeclared fields: " + ", ".join(sorted(unexpected)),
+                reason=PreflightReason.UNDECLARED_FIELD,
+                field=f"selectors[{index - 1}].{field}",
+                limit={"allowed_fields": ["id", "kind", "names", "queries"]},
+            )
+        raw_selector_id = value.get("id")
+        if raw_selector_id is not None and not isinstance(raw_selector_id, str):
+            raise AgentPreflightError(
+                f"selectors[{index - 1}].id must be a string",
+                reason=PreflightReason.WRONG_TYPE,
+                field=f"selectors[{index - 1}].id",
+                limit={"type": "string"},
+            )
+        raw_kind = value.get("kind")
+        if not isinstance(raw_kind, str):
+            raise AgentPreflightError(
+                f"selectors[{index - 1}].kind must be a string",
+                reason=PreflightReason.WRONG_TYPE,
+                field=f"selectors[{index - 1}].kind",
+                limit={"type": "string"},
             )
         kind = _text(value.get("kind")).lower()
         selector_id = _text(value.get("id")) or f"selector-{index}"
         if len(selector_id.encode("utf-8")) > SELECTOR_ID_MAX_BYTES:
-            raise ScopeViolation("selector id exceeds the 64-byte limit")
+            raise AgentPreflightError(
+                f"selectors[{index - 1}].id exceeds the 64-byte UTF-8 limit",
+                reason=PreflightReason.VALUE_TOO_LONG,
+                field=f"selectors[{index - 1}].id",
+                limit={"unit": "UTF-8 bytes", "maximum": SELECTOR_ID_MAX_BYTES},
+            )
         if kind == "capability":
+            if "queries" in value:
+                raise AgentPreflightError(
+                    "capability selector cannot contain queries",
+                    reason=PreflightReason.UNDECLARED_FIELD,
+                    field=f"selectors[{index - 1}].queries",
+                    limit={"allowed_fields": ["id", "kind", "names"]},
+                )
             raw_names = value.get("names", [])
             if not isinstance(raw_names, list) or not raw_names:
-                raise ScopeViolation(
-                    "capability selector requires a non-empty names array"
+                raise AgentPreflightError(
+                    "capability selector requires a non-empty names array",
+                    reason=PreflightReason.REQUIRED_VALUE,
+                    field=f"selectors[{index - 1}].names",
+                    limit={"minimum_items": 1, "maximum_items": CAPABILITY_MAX_ITEMS},
                 )
             if len(raw_names) > CAPABILITY_MAX_ITEMS:
-                raise ScopeViolation("capability selector exceeds the 16-name limit")
+                raise AgentPreflightError(
+                    "capability selector exceeds the 16-name limit",
+                    reason=PreflightReason.TOO_MANY_ITEMS,
+                    field=f"selectors[{index - 1}].names",
+                    limit={"maximum_items": CAPABILITY_MAX_ITEMS},
+                )
             if not all(isinstance(item, str) and item.strip() for item in raw_names):
-                raise ScopeViolation("capability names must be non-empty strings")
+                name_index = next(
+                    item_index
+                    for item_index, item in enumerate(raw_names)
+                    if not isinstance(item, str) or not item.strip()
+                )
+                raise AgentPreflightError(
+                    "capability names must be non-empty strings",
+                    reason=PreflightReason.WRONG_TYPE,
+                    field=f"selectors[{index - 1}].names[{name_index}]",
+                    limit={"type": "non-empty string"},
+                )
             if any(
                 len(item.strip().encode("utf-8")) > CAPABILITY_NAME_MAX_BYTES
                 for item in raw_names
             ):
-                raise ScopeViolation("capability name exceeds the 64-byte limit")
+                name_index = next(
+                    item_index
+                    for item_index, item in enumerate(raw_names)
+                    if len(item.strip().encode("utf-8")) > CAPABILITY_NAME_MAX_BYTES
+                )
+                raise AgentPreflightError(
+                    "capability name exceeds the 64-byte limit",
+                    reason=PreflightReason.VALUE_TOO_LONG,
+                    field=f"selectors[{index - 1}].names[{name_index}]",
+                    limit={"unit": "UTF-8 bytes", "maximum": CAPABILITY_NAME_MAX_BYTES},
+                )
             names = tuple(dict.fromkeys(_text(item).lower() for item in raw_names))
-            unsupported = sorted(set(names) - _CAPABILITY_ALIASES)
+            unsupported = [
+                (name_index, _text(item).lower())
+                for name_index, item in enumerate(raw_names)
+                if _text(item).lower() not in _CAPABILITY_ALIASES
+            ]
             if unsupported:
-                raise ScopeViolation(
-                    "invalid capability selectors: "
-                    + ", ".join(unsupported)
-                    + "; supported selectors: "
-                    + ", ".join(sorted(_CAPABILITY_ALIASES))
+                name_index, unsupported_name = unsupported[0]
+                supported = tuple(sorted(_CAPABILITY_ALIASES))
+                raise AgentPreflightError(
+                    f"selectors[{index - 1}].names[{name_index}] has invalid capability "
+                    f"{unsupported_name!r}; supported canonical names: "
+                    + ", ".join(supported),
+                    reason=PreflightReason.UNSUPPORTED_CAPABILITY,
+                    field=f"selectors[{index - 1}].names[{name_index}]",
+                    supported=supported,
                 )
             return cls(selector_id=selector_id, kind=kind, names=names)
         if kind == "mdb":
+            if "names" in value:
+                raise AgentPreflightError(
+                    "mdb selector cannot contain names",
+                    reason=PreflightReason.UNDECLARED_FIELD,
+                    field=f"selectors[{index - 1}].names",
+                    limit={"allowed_fields": ["id", "kind", "queries"]},
+                )
             raw_queries = value.get("queries", [])
             if not isinstance(raw_queries, list) or not raw_queries:
-                raise ScopeViolation("mdb selector requires a non-empty queries array")
+                raise AgentPreflightError(
+                    "mdb selector requires a non-empty queries array",
+                    reason=PreflightReason.REQUIRED_VALUE,
+                    field=f"selectors[{index - 1}].queries",
+                    limit={"minimum_items": 1, "maximum_items": MDB_QUERY_MAX_ITEMS},
+                )
             if len(raw_queries) > MDB_QUERY_MAX_ITEMS:
-                raise ScopeViolation("mdb selector exceeds the 32-query limit")
+                raise AgentPreflightError(
+                    "mdb selector exceeds the 32-query limit",
+                    reason=PreflightReason.TOO_MANY_ITEMS,
+                    field=f"selectors[{index - 1}].queries",
+                    limit={"maximum_items": MDB_QUERY_MAX_ITEMS},
+                )
             if not all(isinstance(item, str) for item in raw_queries):
-                raise ScopeViolation("mdb queries must be strings")
+                query_index = next(
+                    item_index
+                    for item_index, item in enumerate(raw_queries)
+                    if not isinstance(item, str)
+                )
+                raise AgentPreflightError(
+                    "mdb queries must be strings",
+                    reason=PreflightReason.WRONG_TYPE,
+                    field=f"selectors[{index - 1}].queries[{query_index}]",
+                    limit={"type": "string"},
+                )
             queries = tuple(_text(item) for item in raw_queries)
             if any(not query for query in queries):
-                raise ScopeViolation("mdb queries must not be empty")
+                query_index = next(
+                    item_index for item_index, query in enumerate(queries) if not query
+                )
+                raise AgentPreflightError(
+                    "mdb queries must not be empty",
+                    reason=PreflightReason.REQUIRED_VALUE,
+                    field=f"selectors[{index - 1}].queries[{query_index}]",
+                    limit={"type": "non-empty string"},
+                )
             if any(
                 len(query.encode("utf-8")) > MDB_QUERY_MAX_BYTES
                 for query in queries
             ):
-                raise ScopeViolation("mdb query exceeds the 1024-byte limit")
+                query_index = next(
+                    item_index
+                    for item_index, query in enumerate(queries)
+                    if len(query.encode("utf-8")) > MDB_QUERY_MAX_BYTES
+                )
+                raise AgentPreflightError(
+                    f"selectors[{index - 1}].queries[{query_index}] exceeds "
+                    f"the {MDB_QUERY_MAX_BYTES}-byte UTF-8 limit",
+                    reason=PreflightReason.VALUE_TOO_LONG,
+                    field=f"selectors[{index - 1}].queries[{query_index}]",
+                    limit={
+                        "unit": "UTF-8 bytes",
+                        "maximum": MDB_QUERY_MAX_BYTES,
+                    },
+                )
             for query_index, query in enumerate(queries, start=1):
                 parts = query.split()
                 if not is_read_only_mdb_query(parts):
-                    raise ScopeViolation(
-                        f"invalid MDB query #{query_index} {query!r}; "
-                        f"{MDB_QUERY_CORRECTION}"
+                    raise AgentPreflightError(
+                        f"invalid MDB query #{query_index} at "
+                        f"selectors[{index - 1}].queries[{query_index - 1}] "
+                        f"{query!r}; {MDB_QUERY_CORRECTION}",
+                        reason=PreflightReason.MDB_GRAMMAR,
+                        field=(
+                            f"selectors[{index - 1}].queries[{query_index - 1}]"
+                        ),
+                        limit={
+                            "grammar": "read-only mdbctl",
+                            "maximum_queries": MDB_QUERY_MAX_ITEMS,
+                        },
                     )
             return cls(selector_id=selector_id, kind=kind, queries=queries)
-        raise ScopeViolation(f"unsupported selector kind: {kind or '<empty>'}")
+        supported = ("capability", "mdb")
+        raise AgentPreflightError(
+            f"selectors[{index - 1}].kind has unsupported selector kind "
+            f"{kind or '<empty>'!r}; supported kinds: " + ", ".join(supported),
+            reason=PreflightReason.UNSUPPORTED_SELECTOR_KIND,
+            field=f"selectors[{index - 1}].kind",
+            supported=supported,
+        )
 
     def to_public_dict(self) -> dict[str, object]:
         result: dict[str, object] = {"id": self.selector_id, "kind": self.kind}
@@ -399,40 +610,141 @@ class ObservationQuery:
             "deadline",
         }
         if unexpected:
-            raise ScopeViolation(
-                "query contains undeclared fields: " + ", ".join(sorted(unexpected))
+            field = sorted(unexpected)[0]
+            raise AgentPreflightError(
+                f"{field} is unexpected; query contains undeclared fields: "
+                + ", ".join(sorted(unexpected)),
+                reason=PreflightReason.UNDECLARED_FIELD,
+                field=field,
+                limit={"allowed_fields": ["target", "selectors", "freshness", "deadline"]},
+            )
+        raw_target = query.get("target")
+        if not isinstance(raw_target, str):
+            raise AgentPreflightError(
+                "target must be a string",
+                reason=PreflightReason.WRONG_TYPE,
+                field="target",
+                limit={"type": "non-empty string"},
             )
         target = _text(query.get("target"))
         if not target:
-            raise ScopeViolation("target is required")
+            raise AgentPreflightError(
+                "target is required",
+                reason=PreflightReason.REQUIRED_VALUE,
+                field="target",
+                limit={"type": "non-empty string"},
+            )
         if len(target.encode("utf-8")) > TARGET_MAX_BYTES:
-            raise ScopeViolation("target exceeds the 512-byte limit")
+            raise AgentPreflightError(
+                "target exceeds the 512-byte limit",
+                reason=PreflightReason.VALUE_TOO_LONG,
+                field="target",
+                limit={"unit": "UTF-8 bytes", "maximum": TARGET_MAX_BYTES},
+            )
         raw_selectors = query.get("selectors")
         if not isinstance(raw_selectors, list) or not raw_selectors:
-            raise ScopeViolation("selectors must be a non-empty array")
+            raise AgentPreflightError(
+                "selectors must be a non-empty array",
+                reason=PreflightReason.REQUIRED_VALUE,
+                field="selectors",
+                limit={"minimum_items": 1, "maximum_items": SELECTOR_MAX_ITEMS},
+            )
         if len(raw_selectors) > SELECTOR_MAX_ITEMS:
-            raise ScopeViolation("selectors exceed the 16-item limit")
+            raise AgentPreflightError(
+                "selectors exceed the 16-item limit",
+                reason=PreflightReason.TOO_MANY_ITEMS,
+                field="selectors",
+                limit={"maximum_items": SELECTOR_MAX_ITEMS},
+            )
+        invalid_selector_index = next(
+            (
+                item_index
+                for item_index, value in enumerate(raw_selectors)
+                if not isinstance(value, Mapping)
+            ),
+            None,
+        )
+        if invalid_selector_index is not None:
+            raise AgentPreflightError(
+                f"selectors[{invalid_selector_index}] must be an object",
+                reason=PreflightReason.WRONG_TYPE,
+                field=f"selectors[{invalid_selector_index}]",
+                limit={"type": "object"},
+            )
         selectors = tuple(
             ObservationSelector.from_value(_mapping(value), index)
             for index, value in enumerate(raw_selectors, start=1)
         )
         selector_ids = [selector.selector_id for selector in selectors]
         if len(set(selector_ids)) != len(selector_ids):
-            raise ScopeViolation("selector ids must be unique")
-        freshness = _mapping(query.get("freshness"))
+            duplicate_index = next(
+                item_index
+                for item_index, selector_id in enumerate(selector_ids)
+                if selector_id in selector_ids[:item_index]
+            )
+            raise AgentPreflightError(
+                "selector ids must be unique",
+                reason=PreflightReason.DUPLICATE_SELECTOR_ID,
+                field=f"selectors[{duplicate_index}].id",
+                limit={"constraint": "unique within the observe request"},
+            )
+        raw_freshness = query.get("freshness", {})
+        if not isinstance(raw_freshness, Mapping):
+            raise AgentPreflightError(
+                "freshness must be an object",
+                reason=PreflightReason.WRONG_TYPE,
+                field="freshness",
+                limit={"type": "object"},
+            )
+        freshness = _mapping(raw_freshness)
         if set(freshness) - {"mode", "max_age_seconds"}:
-            raise ScopeViolation("freshness contains undeclared fields")
-        freshness_mode = _text(freshness.get("mode") or "live").lower()
+            field = sorted(set(freshness) - {"mode", "max_age_seconds"})[0]
+            raise AgentPreflightError(
+                "freshness contains undeclared fields",
+                reason=PreflightReason.UNDECLARED_FIELD,
+                field=f"freshness.{field}",
+                limit={"allowed_fields": ["mode", "max_age_seconds"]},
+            )
+        raw_freshness_mode = freshness.get("mode", "live")
+        if not isinstance(raw_freshness_mode, str):
+            raise AgentPreflightError(
+                "freshness.mode must be a string",
+                reason=PreflightReason.WRONG_TYPE,
+                field="freshness.mode",
+                limit={"type": "string"},
+            )
+        freshness_mode = _text(raw_freshness_mode or "live").lower()
         max_age = freshness.get("max_age_seconds", 0)
         if freshness_mode != "live":
-            raise ScopeViolation("only live evidence is supported by the Agent interface")
+            raise AgentPreflightError(
+                "only live evidence is supported by the Agent interface",
+                reason=PreflightReason.FRESHNESS_MODE,
+                field="freshness.mode",
+                supported=("live",),
+                limit={"allowed": ["live"]},
+            )
         if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age != 0:
-            raise ScopeViolation("live evidence requires max_age_seconds=0")
+            raise AgentPreflightError(
+                "live evidence requires max_age_seconds=0",
+                reason=PreflightReason.LIVE_MAX_AGE,
+                field="freshness.max_age_seconds",
+                limit={"allowed": [0]},
+            )
         deadline = query.get("deadline", 180)
         if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
-            raise ScopeViolation("deadline must be a positive number")
+            raise AgentPreflightError(
+                "deadline must be a positive number",
+                reason=PreflightReason.DEADLINE,
+                field="deadline",
+                limit={"type": "positive number"},
+            )
         if float(deadline) <= 0:
-            raise ScopeViolation("deadline must be a positive number")
+            raise AgentPreflightError(
+                "deadline must be a positive number",
+                reason=PreflightReason.DEADLINE,
+                field="deadline",
+                limit={"exclusive_minimum": 0},
+            )
         contract = cls(
             target=target,
             selectors=selectors,
@@ -982,6 +1294,21 @@ def _submission_id(value: object, *, binding: Mapping[str, object]) -> str:
     return selected
 
 
+def _execute_deadline_error(action: Mapping[str, object]) -> AgentPreflightError:
+    return AgentPreflightError(
+        "execute deadline must be greater than 0 and at most 120 seconds",
+        reason=PreflightReason.DEADLINE,
+        field="deadline",
+        limit={"exclusive_minimum": 0, "maximum_seconds": 120},
+        context={
+            "action_kind": _text(action.get("kind")) or "resume",
+            "target": _text(action.get("target")),
+            "intent": _text(action.get("intent")),
+            "command": _text(action.get("command")),
+        },
+    )
+
+
 def _validate_action_shape(action: Mapping[str, object]) -> str:
     raw_kind = action.get("kind")
     if not isinstance(raw_kind, str) or raw_kind not in EXECUTE_ACTION_FIELDS:
@@ -991,9 +1318,21 @@ def _validate_action_shape(action: Mapping[str, object]) -> str:
     kind = raw_kind
     runtime_owned = sorted(set(action) & _RUNTIME_OWNED_ACTION_FIELDS)
     if runtime_owned:
-        raise AgentGatewayError(
+        field = runtime_owned[0]
+        raise AgentPreflightError(
             "execute Action cannot supply Runtime-owned fields: "
-            + ", ".join(runtime_owned)
+            + ", ".join(runtime_owned),
+            reason=PreflightReason.RUNTIME_OWNED_FIELD,
+            field=field,
+            limit={"ownership": "Runtime"},
+            context={
+                "action_kind": kind,
+                "target": _text(action.get("target")),
+                "intent": _text(action.get("intent")),
+                "command": _text(action.get("command")),
+                "recovery_requested": field
+                in {"recovery_mode", "recovery_decision"},
+            },
         )
     unexpected = sorted(set(action) - EXECUTE_ACTION_FIELDS[kind])
     if unexpected:
@@ -1003,6 +1342,17 @@ def _validate_action_shape(action: Mapping[str, object]) -> str:
         )
     missing = sorted(EXECUTE_ACTION_REQUIRED_FIELDS[kind] - set(action))
     if missing:
+        if "run_id" in missing and kind in {"respond", "resume", "control"}:
+            raise AgentPreflightError(
+                f"{kind} Action requires fields: " + ", ".join(missing),
+                reason=PreflightReason.RUN_ID_REQUIRED,
+                field="run_id",
+                limit={"required": True},
+                context={
+                    "action_kind": kind,
+                    "command": _text(action.get("command")),
+                },
+            )
         raise AgentGatewayError(
             f"{kind} Action requires fields: " + ", ".join(missing)
         )
@@ -1023,9 +1373,7 @@ def _validate_action_shape(action: Mapping[str, object]) -> str:
         )
         if not valid:
             if name == "deadline":
-                raise AgentGatewayError(
-                    "execute deadline must be greater than 0 and at most 120 seconds"
-                )
+                raise _execute_deadline_error(action)
             article = "an" if expected in {"array", "integer", "object"} else "a"
             raise AgentGatewayError(f"{name} must be {article} {expected}")
     if kind != "control":
@@ -1065,14 +1413,10 @@ def _validate_action_shape(action: Mapping[str, object]) -> str:
 def _caller_deadline(action: Mapping[str, object]) -> float:
     value = action.get("deadline", 120)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise AgentGatewayError(
-            "execute deadline must be greater than 0 and at most 120 seconds"
-        )
+        raise _execute_deadline_error(action)
     deadline = float(value)
     if deadline <= 0 or deadline > 120:
-        raise AgentGatewayError(
-            "execute deadline must be greater than 0 and at most 120 seconds"
-        )
+        raise _execute_deadline_error(action)
     return deadline
 
 
@@ -1194,12 +1538,28 @@ def decode_run_command(
         if not isinstance(raw_entry_arguments, Mapping):
             raise AgentGatewayError("entry_arguments must be an object")
         entry_arguments = dict(raw_entry_arguments)
-        if any(
-            name in _RUNTIME_OWNED_ENTRY_ARGUMENTS or name.startswith("_")
+        runtime_owned_entry_fields = sorted(
+            name
             for name in entry_arguments
-        ):
-            raise AgentGatewayError(
-                "entry_arguments cannot override Runtime-owned fields"
+            if name in _RUNTIME_OWNED_ENTRY_ARGUMENTS or name.startswith("_")
+        )
+        if runtime_owned_entry_fields:
+            field = runtime_owned_entry_fields[0]
+            raise AgentPreflightError(
+                "entry_arguments cannot override Runtime-owned fields: "
+                + ", ".join(runtime_owned_entry_fields),
+                reason=PreflightReason.RUNTIME_OWNED_FIELD,
+                field=f"entry_arguments.{field}",
+                limit={"ownership": "Runtime"},
+                context={
+                    "action_kind": "start",
+                    "target": target,
+                    "intent": intent,
+                    "entry_operation": entry_operation,
+                    "entry_arguments": {},
+                    "recovery_requested": field
+                    in {"recovery_mode", "recovery_decision"},
+                },
             )
         if entry_arguments and not entry_operation:
             raise AgentGatewayError(
@@ -1493,6 +1853,8 @@ class RunTurn:
     observation_ref: ObservationRef | None = None
     outcome_recorded: bool = False
     diagnostic_receipt: DiagnosticReceipt | None = None
+    response_required: bool = False
+    progress: Mapping[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_public_dict(cls, value: Mapping[str, object]) -> "RunTurn":
@@ -1549,6 +1911,12 @@ class RunTurn:
                 if isinstance(raw_diagnostic_receipt, Mapping)
                 else None
             ),
+            response_required=bool(value.get("response_required", False)),
+            progress=(
+                dict(value.get("progress", {}))
+                if isinstance(value.get("progress"), Mapping)
+                else {}
+            ),
         )
 
     def to_public_dict(self) -> dict[str, object]:
@@ -1581,6 +1949,10 @@ class RunTurn:
             result["diagnostic_receipt"] = (
                 self.diagnostic_receipt.to_public_dict()
             )
+        if self.response_required:
+            result["response_required"] = True
+        if self.progress:
+            result["progress"] = dict(self.progress)
         return result
 
 

@@ -45,6 +45,8 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
 - `execute(kind=resume)` only reattaches the current Run. It does not answer or repair an
   unanswered diagnosis Gate, so an unchanged Gate is not a reason to retry resume. Mark the Gate
   failed or cancelled when no defensible diagnosis can be formed; development must remain closed.
+  `response_required=true` with `progress.status=no_progress` means respond using the returned
+  binding instead of issuing another resume.
 - Treat one `ObservationReceipt` or `Turn` as the semantic result. Capability is tri-state:
   `available`, `unavailable`, or `not_checked`; never infer an unobserved capability.
 - In an `execute` MCP result, inspect `structured_content.diagnostic_receipt`; the short `content`

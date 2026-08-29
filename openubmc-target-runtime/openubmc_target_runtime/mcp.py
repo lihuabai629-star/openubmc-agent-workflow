@@ -2963,7 +2963,6 @@ class RuntimeMcpService:
             bounded_request(arguments)
         if self.interface_profile == "agent":
             if name == "observe":
-                self.interface_catalog.validate_arguments(name, arguments)
                 return self._runtime.agent.observe(
                     arguments,
                     task_id=task_id,
