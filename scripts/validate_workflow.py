@@ -20,6 +20,7 @@ EXECUTABLES = (
     ROOT / "scripts" / "compatibility_retirement.py",
     ROOT / "scripts" / "evaluation_harness.py",
     ROOT / "scripts" / "model_planning_evaluation.py",
+    ROOT / "scripts" / "diagnosis_chain_qualification.py",
     ROOT / "scripts" / "validate_workflow.py",
     ROOT / "scripts" / "live_smoke.py",
 )
@@ -916,6 +917,10 @@ def main(argv: list[str] | None = None) -> int:
         ["npm", "ci", "--no-audit", "--no-fund"],
         cwd=node_root,
         stage="Node dependencies: openubmc-kb-mcp",
+    )
+    run(
+        [sys.executable, str(ROOT / "scripts" / "diagnosis_chain_qualification.py")],
+        stage="Runtime diagnosis chain qualification",
     )
     test_roots = sorted(
         path.parent
