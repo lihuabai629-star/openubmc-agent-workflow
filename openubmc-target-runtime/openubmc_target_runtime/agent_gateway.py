@@ -17,6 +17,8 @@ from .diagnostic_receipt import (
 from .semantic_runtime import (
     AgentPreflightError,
     AgentGatewayError,
+    CancelIncident,
+    CancelRun,
     EXECUTE_ACTION_FIELD_TYPES,
     EXECUTE_ACTION_FIELDS,
     EXECUTE_ACTION_REQUIRED_FIELDS,
@@ -1424,7 +1426,10 @@ class AgentGateway:
         return self._project_repeated_diagnostic_receipt(
             self.projector.turn(turn),
             task_id=task_id,
-            previous_turn_acknowledged=isinstance(command, SubmitGate),
+            previous_turn_acknowledged=isinstance(
+                command,
+                (SubmitGate, CancelRun, CancelIncident),
+            ),
         )
 
     @staticmethod
