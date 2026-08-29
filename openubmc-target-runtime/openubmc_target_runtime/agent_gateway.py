@@ -307,40 +307,27 @@ def _bounded_text(value: object, max_bytes: int) -> str:
     return encoded[: max_bytes - 3].decode("utf-8", errors="ignore") + "..."
 
 
-def _bounded_summary_value(value: object, *, limit: int = 480) -> str:
-    rendered = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    encoded = rendered.encode("utf-8")
-    if len(encoded) <= limit:
-        return rendered
-    return encoded[: limit - 3].decode("utf-8", errors="ignore") + "..."
-
-
-def _diagnostic_result_text(value: object) -> str:
+def _diagnostic_result_identity(value: object) -> str:
     result = _mapping(value)
-    selected = result.get("value")
-    selected_mapping = _mapping(selected)
-    summaries = selected_mapping.get("summary", [])
-    if isinstance(summaries, list) and summaries:
-        samples: list[str] = []
-        for raw_sample in summaries[:4]:
-            sample = _mapping(raw_sample)
-            path = str(sample.get("path", "value"))
-            samples.append(
-                f"{path}={_bounded_summary_value(sample.get('value'), limit=160)}"
-            )
-        rendered = "; ".join(samples)
-    else:
-        rendered = _bounded_summary_value(selected)
-    return (
+    return _bounded_text(
         f"result[{result.get('result_id', 'diagnosis')}] "
         f"status={result.get('status', 'not_checked')} "
         f"kind={result.get('kind', 'diagnosis')} "
-        f"request={result.get('request', '')} value={rendered}"
+        f"request={result.get('request', '')}",
+        224,
+    )
+
+
+def _diagnostic_compacted_result_identity(
+    result_id: object,
+    compacted: Mapping[str, object],
+) -> str:
+    return _bounded_text(
+        f"result[{result_id}] "
+        f"status={compacted.get('status', 'not_checked')} "
+        "kind=compacted "
+        f"gap={compacted.get('gap', 'result_preview_compacted')}",
+        224,
     )
 
 
@@ -354,6 +341,20 @@ def _diagnostic_agent_acceptance(receipt: Mapping[str, object]) -> str:
     ).value
 
 
+def _gap_text(value: object) -> str:
+    if isinstance(value, (Mapping, list, tuple)):
+        try:
+            return json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            pass
+    return _text(value)
+
+
 def render_execute_turn_text(
     value: Mapping[str, object],
     *,
@@ -365,104 +366,249 @@ def render_execute_turn_text(
     fixed_lines = [
         _bounded_text(
             heading if heading is not None else f"openUBMC 工作流状态：{state}。",
-            512,
+            256,
         )
     ]
     gate = _mapping(value.get("gate"))
     if gate:
         fixed_lines.append(
             "GateBinding "
-            f"run_id={_bounded_text(value.get('run_id'), 128)} "
-            f"gate_id={_bounded_text(gate.get('gate_id'), 128)} "
-            f"gate_version={_bounded_text(gate.get('gate_version'), 32)} "
-            f"schema_digest={_bounded_text(gate.get('schema_digest'), 128)}."
+            f"run_id={_text(value.get('run_id'))} "
+            f"gate_id={_text(gate.get('gate_id'))} "
+            f"gate_version={_bounded_text(gate.get('gate_version'), 24)} "
+            f"schema_digest={_text(gate.get('schema_digest'))}."
         )
-    receipt = _mapping(value.get("diagnostic_receipt"))
-    if not receipt:
-        return "\n".join(fixed_lines)
-    coverage = _mapping(receipt.get("coverage"))
-    freshness = _mapping(receipt.get("freshness"))
-    requested = coverage.get("requested", 0)
-    evaluable = coverage.get("evaluable", 0)
-    visible_evaluable = coverage.get("visible_evaluable", evaluable)
-    visible_unavailable = coverage.get(
-        "visible_unavailable",
-        coverage.get("unavailable", 0),
-    )
-    visible_not_checked = coverage.get(
-        "visible_not_checked",
-        coverage.get("not_checked", 0),
-    )
-    fixed_lines.append(
-        "DiagnosticReceipt "
-        f"status={receipt.get('status', 'blocked')} "
-        f"agent_acceptance={_diagnostic_agent_acceptance(receipt)} "
-        f"source_coverage={evaluable}/{requested} "
-        f"source_unavailable={coverage.get('unavailable', 0)} "
-        f"source_not_checked={coverage.get('not_checked', 0)} "
-        f"visible={visible_evaluable}/{requested} "
-        f"visible_unavailable={visible_unavailable} "
-        f"visible_not_checked={visible_not_checked} "
-        f"complete={str(bool(coverage.get('complete'))).lower()} "
-        f"freshness={freshness.get('status', 'unknown')} "
-        f"truncated={str(bool(receipt.get('truncated'))).lower()} "
-        "content_complete="
-        f"{str(bool(receipt.get('content_complete'))).lower()}."
-    )
-    capabilities = receipt.get("capabilities", {})
-    if isinstance(capabilities, Mapping) and capabilities:
+    incident = _mapping(value.get("incident"))
+    if incident:
         fixed_lines.append(
-            "capabilities: "
-            + ", ".join(
-                f"{_bounded_text(name, 48)}={_bounded_text(status, 32)}"
-                for name, status in list(capabilities.items())[:8]
+            "Incident "
+            f"incident_id={_text(incident.get('incident_id'))} "
+            f"code={_bounded_text(incident.get('code'), 64)} "
+            f"message={_bounded_text(incident.get('message'), 160)}."
+        )
+    outcome = _mapping(value.get("outcome"))
+    if outcome:
+        acceptance = outcome.get("acceptance", [])
+        acceptance_items = (
+            [
+                f"{_bounded_text(item.get('requirement_id'), 48)}="
+                f"{_bounded_text(item.get('status'), 24)}"
+                for item in acceptance[:3]
+                if isinstance(item, Mapping)
+            ]
+            if isinstance(acceptance, list)
+            else []
+        )
+        acceptance_count = len(acceptance) if isinstance(acceptance, list) else 0
+        acceptance_text = (
+            f" acceptance_shown={len(acceptance_items)}/{acceptance_count}"
+            f" acceptance={','.join(acceptance_items)}"
+            if acceptance_items
+            else ""
+        )
+        fixed_lines.append(
+            "Outcome "
+            f"status={_bounded_text(outcome.get('status'), 32)} "
+            f"summary={_bounded_text(outcome.get('summary'), 256)}"
+            f"{acceptance_text}."
+        )
+    next_guidance = _text(value.get("next"))
+    if next_guidance:
+        fixed_lines.append(
+            "next_guidance: " + _bounded_text(next_guidance, 256)
+        )
+    unique_evidence_ids: list[str] = []
+    result_identities: list[str] = []
+    receipt_gaps: list[object] = []
+    receipt = _mapping(value.get("diagnostic_receipt"))
+    if receipt:
+        coverage = _mapping(receipt.get("coverage"))
+        freshness = _mapping(receipt.get("freshness"))
+        requested = coverage.get("requested", 0)
+        evaluable = coverage.get("evaluable", 0)
+        visible_evaluable = coverage.get("visible_evaluable", evaluable)
+        visible_unavailable = coverage.get(
+            "visible_unavailable",
+            coverage.get("unavailable", 0),
+        )
+        visible_not_checked = coverage.get(
+            "visible_not_checked",
+            coverage.get("not_checked", 0),
+        )
+        fixed_lines.append(
+            "DiagnosticReceipt "
+            f"status={_bounded_text(receipt.get('status', 'blocked'), 32)} "
+            f"receipt_id={_bounded_text(receipt.get('receipt_id'), 128)} "
+            f"agent_acceptance={_diagnostic_agent_acceptance(receipt)} "
+            "source_coverage="
+            f"{_bounded_text(evaluable, 24)}/{_bounded_text(requested, 24)} "
+            "source_unavailable="
+            f"{_bounded_text(coverage.get('unavailable', 0), 24)} "
+            "source_not_checked="
+            f"{_bounded_text(coverage.get('not_checked', 0), 24)} "
+            "visible="
+            f"{_bounded_text(visible_evaluable, 24)}/"
+            f"{_bounded_text(requested, 24)} "
+            f"visible_unavailable={_bounded_text(visible_unavailable, 24)} "
+            f"visible_not_checked={_bounded_text(visible_not_checked, 24)} "
+            f"complete={str(bool(coverage.get('complete'))).lower()} "
+            f"freshness={_bounded_text(freshness.get('status', 'unknown'), 32)} "
+            f"truncated={str(bool(receipt.get('truncated'))).lower()} "
+            "content_complete="
+            f"{str(bool(receipt.get('content_complete'))).lower()}."
+        )
+        raw_receipt_gaps = receipt.get("gaps", [])
+        if isinstance(raw_receipt_gaps, list):
+            receipt_gaps = list(raw_receipt_gaps)
+        capabilities = receipt.get("capabilities", {})
+        if isinstance(capabilities, Mapping) and capabilities:
+            standard_capabilities = [
+                name for name in CAPABILITY_ALIASES if name in capabilities
+            ]
+            extra_capabilities = [
+                name for name in capabilities if name not in CAPABILITY_ALIASES
+            ]
+            capability_names = [
+                *standard_capabilities,
+                *extra_capabilities,
+            ]
+            shown_capabilities = capability_names[:8]
+            fixed_lines.append(
+                f"capabilities_shown={len(shown_capabilities)}/"
+                f"{len(capability_names)} capabilities: "
+                + ", ".join(
+                    f"{_bounded_text(name, 32)}="
+                    f"{_bounded_text(capabilities.get(name), 24)}"
+                    for name in shown_capabilities
+                )
+            )
+        evidence_ids: list[str] = []
+        evidence = receipt.get("evidence", [])
+        if isinstance(evidence, list):
+            evidence_ids.extend(
+                str(evidence_id)
+                for item in evidence
+                if isinstance(item, Mapping)
+                and (evidence_id := item.get("evidence_id"))
+            )
+        raw_results = receipt.get("results", [])
+        results = raw_results if isinstance(raw_results, list) else []
+        for result in results:
+            result_evidence = _mapping(result).get("evidence_ids", [])
+            if isinstance(result_evidence, list):
+                evidence_ids.extend(str(item) for item in result_evidence if item)
+        unique_evidence_ids = list(dict.fromkeys(evidence_ids))
+        result_identities = [
+            _diagnostic_result_identity(result)
+            for result in results
+            if isinstance(result, Mapping)
+        ]
+        compacted_results = _mapping(receipt.get("compacted_results"))
+        compacted_result_ids = compacted_results.get("result_ids", [])
+        if isinstance(compacted_result_ids, list):
+            known_result_ids = {
+                _text(_mapping(result).get("result_id"))
+                for result in results
+                if isinstance(result, Mapping)
+            }
+            result_identities.extend(
+                _diagnostic_compacted_result_identity(
+                    result_id,
+                    compacted_results,
+                )
+                for result_id in compacted_result_ids
+                if _text(result_id) and _text(result_id) not in known_result_ids
+            )
+    raw_turn_gaps = value.get("gaps", [])
+    turn_gaps = list(raw_turn_gaps) if isinstance(raw_turn_gaps, list) else []
+    combined_gaps = list(
+        dict.fromkeys(_gap_text(gap) for gap in (*turn_gaps, *receipt_gaps))
+    )
+    if combined_gaps:
+        fixed_lines.append(
+            f"gaps_shown={min(4, len(combined_gaps))}/{len(combined_gaps)} "
+            "gaps: "
+            + ", ".join(_bounded_text(gap, 96) for gap in combined_gaps[:4])
+        )
+    next_action = _mapping(value.get("next_action"))
+    if next_action:
+        fixed_lines.append(
+            "next_action: "
+            + json.dumps(
+                next_action,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
             )
         )
-    gaps = receipt.get("gaps", [])
-    if isinstance(gaps, list) and gaps:
-        fixed_lines.append(
-            "diagnostic_gaps: "
-            + ", ".join(_bounded_text(gap, 128) for gap in gaps[:8])
-        )
-    evidence_ids: list[str] = []
-    evidence = receipt.get("evidence", [])
-    if isinstance(evidence, list):
-        evidence_ids.extend(
-            str(evidence_id)
-            for item in evidence
-            if isinstance(item, Mapping)
-            and (evidence_id := item.get("evidence_id"))
-        )
-    raw_results = receipt.get("results", [])
-    results = raw_results if isinstance(raw_results, list) else []
-    for result in results:
-        result_evidence = _mapping(result).get("evidence_ids", [])
-        if isinstance(result_evidence, list):
-            evidence_ids.extend(str(item) for item in result_evidence if item)
-    unique_evidence_ids = list(dict.fromkeys(evidence_ids))[:8]
-    if unique_evidence_ids:
-        fixed_lines.append(
-            "evidence_ids: "
-            + ", ".join(_bounded_text(item, 128) for item in unique_evidence_ids)
-        )
-    previews = [
-        _diagnostic_result_text(result)
-        for result in results[:8]
-        if isinstance(result, Mapping)
+    maximum_evidence = min(8, len(unique_evidence_ids))
+    maximum_results = min(8, len(result_identities))
+    minimum_evidence = 1 if unique_evidence_ids else 0
+    minimum_results = 1 if result_identities else 0
+    for shown_results in range(
+        maximum_results, minimum_results - 1, -1
+    ):
+        for shown_evidence in range(
+            maximum_evidence, minimum_evidence - 1, -1
+        ):
+            compacted = (
+                shown_results < len(result_identities)
+                or shown_evidence < len(unique_evidence_ids)
+            )
+            lines = [*fixed_lines]
+            if compacted:
+                lines.append("text_projection_compacted=true")
+            if unique_evidence_ids:
+                lines.append(
+                    f"evidence_ids_shown={shown_evidence}/"
+                    f"{len(unique_evidence_ids)}"
+                )
+                lines.append(
+                    "evidence_ids: "
+                    + ", ".join(
+                        _bounded_text(item, 128)
+                        for item in unique_evidence_ids[:shown_evidence]
+                    )
+                )
+            if result_identities:
+                lines.append(
+                    f"results_shown={shown_results}/"
+                    f"{len(result_identities)}"
+                )
+                lines.append(
+                    "result_ids: "
+                    + ", ".join(result_identities[:shown_results])
+                )
+            rendered = "\n".join(lines)
+            if (
+                len(rendered.encode("utf-8"))
+                <= EXECUTE_TEXT_PROJECTION_TARGET_BYTES
+            ):
+                return rendered
+    # Projection targets are not control boundaries. If future semantic fields
+    # exhaust the reserved budget, retain one of every available identity and
+    # allow the compatibility text to exceed its soft target instead of slicing
+    # away Runtime-owned semantics or failing execute.
+    fallback = [
+        *fixed_lines,
+        "text_projection_compacted=true",
+        "text_projection_target_exceeded=true",
     ]
-    for shown in range(len(previews), -1, -1):
-        compacted = shown < len(results)
-        lines = [*fixed_lines]
-        if compacted:
-            lines.append("text_projection_compacted=true")
-        lines.append(f"results_shown={shown}/{len(results)}")
-        lines.extend(previews[:shown])
-        rendered = "\n".join(lines)
-        if len(rendered.encode("utf-8")) <= EXECUTE_TEXT_PROJECTION_TARGET_BYTES:
-            return rendered
-    return "\n".join(
-        [*fixed_lines, "text_projection_compacted=true", f"results_shown=0/{len(results)}"]
-    )
+    if unique_evidence_ids:
+        fallback.extend(
+            (
+                f"evidence_ids_shown=1/{len(unique_evidence_ids)}",
+                "evidence_ids: " + _bounded_text(unique_evidence_ids[0], 128),
+            )
+        )
+    if result_identities:
+        fallback.extend(
+            (
+                f"results_shown=1/{len(result_identities)}",
+                "result_ids: " + result_identities[0],
+            )
+        )
+    return "\n".join(fallback)
 
 
 def _compact_value(

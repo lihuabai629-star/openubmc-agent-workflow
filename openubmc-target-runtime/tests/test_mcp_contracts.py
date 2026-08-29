@@ -920,7 +920,11 @@ class JsonRpcEndpointTests(unittest.TestCase):
         self.assertIn("completed", summary)
         self.assertIn("DiagnosticReceipt status=complete", summary)
         self.assertIn("result[diagnosis]", summary)
-        self.assertIn("bounded fake diagnosis completed", summary)
+        self.assertEqual(
+            turn["diagnostic_receipt"]["results"][0]["value"]["root_cause"],
+            "the bounded fake diagnosis completed",
+        )
+        self.assertNotIn("bounded fake diagnosis completed", summary)
         with self.assertRaises(json.JSONDecodeError):
             json.loads(summary)
 
@@ -973,7 +977,11 @@ class JsonRpcEndpointTests(unittest.TestCase):
         self.assertIn(f"gate_version={turn['gate']['gate_version']}", summary)
         self.assertIn(f"schema_digest={turn['gate']['schema_digest']}", summary)
         self.assertIn("DiagnosticReceipt status=complete", summary)
-        self.assertIn("bounded fake diagnosis completed", summary)
+        self.assertEqual(
+            turn["diagnostic_receipt"]["results"][0]["value"]["root_cause"],
+            "the bounded fake diagnosis completed",
+        )
+        self.assertNotIn("bounded fake diagnosis completed", summary)
 
     def test_execute_gate_text_preserves_binding_without_a_diagnostic_receipt(
         self,
@@ -1047,7 +1055,7 @@ class JsonRpcEndpointTests(unittest.TestCase):
         self.assertIn("visible=32/64", summary)
         self.assertIn("agent_acceptance=partial", summary)
         self.assertIn("results_shown=8/32", summary)
-        self.assertIn("diagnostic_gaps: diagnostic_receipt_compacted, critical-gap", summary)
+        self.assertIn("gaps: diagnostic_receipt_compacted, critical-gap", summary)
         self.assertIn("evidence_ids: evidence-citable", summary)
 
     def test_execute_text_does_not_treat_projection_compaction_as_incomplete_source(self) -> None:

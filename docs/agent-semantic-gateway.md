@@ -137,9 +137,11 @@ preserved semantics still do not fit, the Turn may exceed the projection target 
 condition as telemetry rather than a blocker.
 The MCP Adapter also renders a bounded textual receipt summary in standard `content`, including
 source status, `agent_acceptance=complete|partial|blocked`, coverage, freshness, source
-completeness, capabilities, gaps, and citable result previews. A Gate Turn keeps a compact
+completeness, capabilities, gaps, DiagnosticReceipt/result/Evidence identities, terminal Outcome
+semantics, and next-action guidance. Diagnostic preview values remain in the complete typed Turn
+and are not duplicated into standard text. A Gate Turn keeps a compact
 `GateBinding` line with `run_id`, `gate_id`, `gate_version`, and `schema_digest` ahead of those
-previews so the immediate response action remains evaluable even when diagnostic content is large
+identities so the immediate response action remains evaluable even when diagnostic content is large
 or compacted. The
 typed Turn remains authoritative in `structuredContent`; the text prevents clients that underuse
 structured MCP data from reducing `execute` to a generic completed/failed acknowledgement.
@@ -204,9 +206,9 @@ earlier official-UT or hardware-coverage result.
 
 A Turn targets 8 KiB and a Gate schema targets 4 KiB; neither target can reject or replace a Gate.
 `gate_projection_target_exceeded` reports a Gate schema above its display target. If a diagnostic
-result exceeds the Turn target, result previews are compacted while source coverage counts, freshness, truncation,
+result exceeds the Turn target, structured result previews are compacted while source coverage counts, freshness, truncation,
 `content_complete`, gaps, capability states, and Evidence references remain visible. Compacted
-results retain a bounded substantive summary; a result that cannot retain evaluable content becomes
+structured results retain a bounded substantive summary; a result that cannot retain evaluable content becomes
 `not_checked` instead of remaining `available`. Coverage also reports `visible_evaluable` and
 `compacted` counts. Projection-only fields such as `projection_truncated`, `lines_truncated`, and
 `stdout_truncated` do not claim that the source Evidence was truncated; explicit source truncation
