@@ -352,6 +352,89 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
             any("artifact: digest mismatch" in item for item in report["violations"])
         )
 
+    def test_historical_evidence_rejects_manifest_authored_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(
+                root, mode="historical-reconstruction"
+            )
+            unrelated = root / "unrelated.json"
+            unrelated.write_text('{"name":"official-ut"}', encoding="utf-8")
+            manifest["diagnosis"]["evidence"] = [
+                {
+                    "path": str(unrelated),
+                    "sha256": sha256(unrelated),
+                    "claims": [
+                        {
+                            "kind": "json_equals",
+                            "path": "name",
+                            "value": "official-ut",
+                        }
+                    ],
+                }
+            ]
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["qualified"])
+        self.assertTrue(
+            any(
+                "manifest-authored claims are unsupported" in item
+                for item in report["violations"]
+            )
+        )
+
+    def test_historical_evidence_rejects_unknown_evidence_type(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(
+                root, mode="historical-reconstruction"
+            )
+            diagnosis = root / "diagnosis.txt"
+            diagnosis.write_text(
+                "根因：错误关联键\n修复：使用全局映射\n", encoding="utf-8"
+            )
+            manifest["diagnosis"]["evidence"] = [
+                {
+                    "path": str(diagnosis),
+                    "sha256": sha256(diagnosis),
+                    "evidence_type": "invented-diagnosis-format",
+                }
+            ]
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["qualified"])
+        self.assertTrue(
+            any("unknown historical evidence_type" in item for item in report["violations"])
+        )
+
+    def test_historical_evidence_type_must_match_its_dimension(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(
+                root, mode="historical-reconstruction"
+            )
+            record = root / "record.txt"
+            record.write_text("10/10 passed\n", encoding="utf-8")
+            manifest["diagnosis"]["evidence"] = [
+                {
+                    "path": str(record),
+                    "sha256": sha256(record),
+                    "evidence_type": "workflow-official-ut-record",
+                }
+            ]
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["qualified"])
+        self.assertTrue(
+            any("does not match diagnosis dimension" in item for item in report["violations"])
+        )
+
     def test_historical_product_evidence_is_qualified_but_not_fresh_runtime_promotable(
         self,
     ) -> None:
@@ -381,24 +464,82 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                 check=True,
             ).stdout.strip()
 
-            evidence = {}
-            for name in (
-                "diagnosis",
-                "official-ut",
-                "build",
-                "upgrade",
-                "freshness",
-                "hardware",
-            ):
-                path = root / f"{name}.json"
-                path.write_text(json.dumps({"name": name}), encoding="utf-8")
-                evidence[name] = {
+            diagnosis = root / "diagnosis.md"
+            diagnosis.write_text(
+                "失败位置：storage 使用了错误的关联键。\n"
+                "修复方案：改为消费全局盘位映射。\n",
+                encoding="utf-8",
+            )
+            official_ut = root / "official-ut.log"
+            official_ut.write_text("10/10 passed\n", encoding="utf-8")
+            component_build = root / "component-build.log"
+            component_build.write_text(
+                "storage/1.0.0@openubmc/stable: Created package revision "
+                "0123456789abcdef0123456789abcdef\n"
+                "storage/1.0.0@openubmc/stable: Full package reference: "
+                "storage/1.0.0@openubmc/stable#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#"
+                "0123456789abcdef0123456789abcdef\n"
+                "构建成功\n",
+                encoding="utf-8",
+            )
+            product_build = root / "product-build.log"
+            product_build.write_text(
+                "hpm 构建成功 !!\n"
+                "给 hpm 包 rootfs_openUBMC.hpm 签名\n"
+                "任务 personal 执行成功\n",
+                encoding="utf-8",
+            )
+            upgrade = root / "upgrade.md"
+            upgrade.write_text(
+                "上传与激活 | 完成\n安装版本确认 | `12.08.21.10`\n",
+                encoding="utf-8",
+            )
+            freshness = root / "timeline.log"
+            freshness.write_text(
+                "elapsed=50s manager_ready\n"
+                "elapsed=158s drives=1 direct=1 direct_attributed=1 raid=0 "
+                "raid_zero=0 health_ok=1 presence_ok=1 serial_ok=1\n"
+                "accepted_elapsed=158s\n",
+                encoding="utf-8",
+            )
+            hardware = root / "drive-summary.json"
+            hardware.write_text(
+                json.dumps(
+                    {
+                        "accepted_elapsed_seconds": 158,
+                        "summary": {
+                            "drives": 1,
+                            "direct": 1,
+                            "direct_attributed": 1,
+                            "raid": 0,
+                            "raid_zero": 0,
+                            "health_ok": 1,
+                            "presence_ok": 1,
+                            "serial_ok": 1,
+                        },
+                        "drives": [
+                            {
+                                "id": 23,
+                                "controller": 255,
+                                "resource": 1,
+                                "health": 0,
+                                "presence": 1,
+                                "serial_present": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def historical_ref(path: Path, evidence_type: str) -> dict[str, str]:
+                return {
                     "path": str(path),
                     "sha256": sha256(path),
-                    "claims": [
-                        {"kind": "json_equals", "path": "name", "value": name}
-                    ],
+                    "evidence_type": evidence_type,
                 }
+
             artifact = root / "openubmc.hpm"
             artifact.write_bytes(b"verified-historical-firmware")
 
@@ -414,7 +555,12 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                     "run_id": "",
                     "terminal_outcome": "unavailable",
                 },
-                "diagnosis": {"status": "passed", "evidence": [evidence["diagnosis"]]},
+                "diagnosis": {
+                    "status": "passed",
+                    "evidence": [
+                        historical_ref(diagnosis, "workflow-diagnosis-record")
+                    ],
+                },
                 "source": {
                     "status": "completed",
                     "repositories": [
@@ -424,11 +570,18 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                 "validation": {
                     "official_ut": {
                         "status": "passed",
-                        "evidence": [evidence["official-ut"]],
+                        "evidence": [
+                            historical_ref(
+                                official_ut, "workflow-official-ut-record"
+                            )
+                        ],
                     },
                     "build": {
                         "status": "compiled",
-                        "evidence": [evidence["build"]],
+                        "evidence": [
+                            historical_ref(component_build, "component-build-log"),
+                            historical_ref(product_build, "product-build-log"),
+                        ],
                     },
                 },
                 "artifact": {
@@ -438,13 +591,23 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                     "size": artifact.stat().st_size,
                     "version": "12.08.21.10",
                 },
-                "upgrade": {"status": "completed", "evidence": [evidence["upgrade"]]},
-                "freshness": {"status": "fresh", "evidence": [evidence["freshness"]]},
+                "upgrade": {
+                    "status": "completed",
+                    "evidence": [
+                        historical_ref(upgrade, "workflow-upgrade-record")
+                    ],
+                },
+                "freshness": {
+                    "status": "fresh",
+                    "evidence": [
+                        historical_ref(freshness, "reboot-acceptance-timeline")
+                    ],
+                },
                 "hardware": {
                     "status": "covered",
                     "required_protocols": ["NVMe"],
                     "devices": [{"device_id": "Drive23", "protocol": "NVMe"}],
-                    "evidence": [evidence["hardware"]],
+                    "evidence": [historical_ref(hardware, "drive-summary-json")],
                 },
             }
             manifest_path = root / "manifest.json"

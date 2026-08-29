@@ -12,12 +12,25 @@ python3 scripts/product_closeout_qualification.py evidence.json \
 
 The manifest separates nine dimensions: Runtime continuity, diagnosis, source identity, official
 UT, compiled build, artifact identity, upgrade, freshness, and hardware coverage. Every referenced
-file is verified by SHA-256 and by structured proof fields or explicit content claims; every source
-repository must be clean at the exact recorded commit; the firmware artifact must match its path,
-digest, size, and version. Hardware coverage is exact, so SATA or SAS evidence cannot satisfy an
-NVMe case. Fresh evidence also binds upgrade completion, target observation, hardware acceptance,
-and terminal Runtime Outcome into one ordered, timezone-aware timeline with a declared maximum
-post-upgrade evidence age.
+file is verified by SHA-256. Fresh Runtime evidence uses the structured proof schema. Historical
+manifests select one repository-owned `evidence_type`; they cannot supply executable or declarative
+content claims. The built-in historical types are:
+
+| Evidence type | Dimension | Fixed verification |
+| --- | --- | --- |
+| `workflow-diagnosis-record` | diagnosis | diagnosis/root-cause and fix chain |
+| `workflow-official-ut-record` | official UT | non-zero complete `N/N passed` results |
+| `component-build-log` | build | package revision, matching full package reference, successful terminal state |
+| `product-build-log` | build | HPM build, signing, and successful final task |
+| `workflow-upgrade-record` | upgrade | upload/activation completion and installed artifact version |
+| `reboot-acceptance-timeline` | freshness | manager readiness, final direct/RAID convergence, accepted elapsed time |
+| `drive-summary-json` | hardware | direct attribution, RAID zero attribution, health, presence, serial, and scoped drive identities |
+
+Every source repository must be clean at the exact recorded commit; the firmware artifact must
+match its path, digest, size, and version. Hardware coverage is exact, so SATA or SAS evidence
+cannot satisfy an NVMe case. Fresh evidence also binds upgrade completion, target observation,
+hardware acceptance, and terminal Runtime Outcome into one ordered, timezone-aware timeline with a
+declared maximum post-upgrade evidence age.
 
 Two claim levels are intentionally different:
 

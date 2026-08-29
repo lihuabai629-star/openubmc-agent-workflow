@@ -20,6 +20,30 @@ PROOF_SCHEMA = "openubmc-agent-workflow.product-closeout-proof.v1"
 MODES = {"fresh-runtime", "historical-reconstruction"}
 PROTOCOLS = {"NVMe", "SATA", "SAS"}
 SHA256 = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+PASSED_COUNT = re.compile(r"(?<!\d)(\d+)\s*/\s*(\d+)\s+passed\b", re.IGNORECASE)
+PACKAGE_REVISION = re.compile(
+    r"Created package revision\s+([0-9a-f]{32,64})", re.IGNORECASE
+)
+FULL_PACKAGE_REFERENCE = re.compile(
+    r"Full package reference:\s+\S+#[0-9a-f]{32,64}:[0-9a-f]{32,64}#"
+    r"([0-9a-f]{32,64})",
+    re.IGNORECASE,
+)
+DRIVE_TIMELINE = re.compile(
+    r"elapsed=(\d+)s\s+drives=(\d+)\s+direct=(\d+)\s+"
+    r"direct_attributed=(\d+)\s+raid=(\d+)\s+raid_zero=(\d+)\s+"
+    r"health_ok=(\d+)\s+presence_ok=(\d+)\s+serial_ok=(\d+)"
+)
+HISTORICAL_EVIDENCE_DIMENSIONS = {
+    "workflow-diagnosis-record": "diagnosis",
+    "workflow-official-ut-record": "official_ut",
+    "workflow-upgrade-record": "upgrade",
+    "component-build-log": "build",
+    "product-build-log": "build",
+    "reboot-acceptance-timeline": "freshness",
+    "drive-summary-json": "hardware",
+}
 
 
 def _mapping(value: object) -> dict[str, object]:
@@ -91,88 +115,235 @@ def _proof_documents(value: object) -> list[Mapping[str, object]]:
     return documents
 
 
-def _verify_claims(
+def _decoded_text(raw: bytes) -> str | None:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _last_content_line(text: str) -> str:
+    lines = [ANSI_ESCAPE.sub("", line).strip() for line in text.splitlines()]
+    return next((line for line in reversed(lines) if line), "")
+
+
+def _historical_diagnosis_record(raw: bytes) -> str | None:
+    text = _decoded_text(raw)
+    if text is None:
+        return "diagnosis record must be UTF-8 text"
+    has_cause = any(
+        marker in text.lower()
+        for marker in ("失败位置", "根因", "root cause", "diagnosis")
+    )
+    has_fix = any(marker in text.lower() for marker in ("修复", "fix"))
+    if not has_cause or not has_fix:
+        return "diagnosis record must contain a diagnosis/root-cause and fix chain"
+    return None
+
+
+def _historical_official_ut_record(raw: bytes) -> str | None:
+    text = _decoded_text(raw)
+    if text is None:
+        return "official UT record must be UTF-8 text"
+    results = [(int(passed), int(total)) for passed, total in PASSED_COUNT.findall(text)]
+    if not results or not any(total > 0 and passed == total for passed, total in results):
+        return "official UT record must contain a non-zero N/N passed result"
+    if any(passed != total for passed, total in results):
+        return "official UT record contains an incomplete passed result"
+    return None
+
+
+def _historical_component_build_log(raw: bytes) -> str | None:
+    text = _decoded_text(raw)
+    if text is None:
+        return "component build log must be UTF-8 text"
+    clean = ANSI_ESCAPE.sub("", text)
+    revisions = set(PACKAGE_REVISION.findall(clean))
+    references = set(FULL_PACKAGE_REFERENCE.findall(clean))
+    if not revisions:
+        return "component build log is missing a package revision"
+    if not references or not revisions.intersection(references):
+        return "component build log is missing a matching full package reference"
+    if _last_content_line(clean) != "构建成功":
+        return "component build log is missing its successful terminal state"
+    return None
+
+
+def _historical_product_build_log(raw: bytes) -> str | None:
+    text = _decoded_text(raw)
+    if text is None:
+        return "product build log must be UTF-8 text"
+    clean = ANSI_ESCAPE.sub("", text)
+    if not re.search(r"hpm\s+构建成功", clean, re.IGNORECASE):
+        return "product build log is missing HPM build success"
+    if not re.search(r"给\s*hpm\s*包.*签名", clean, re.IGNORECASE):
+        return "product build log is missing HPM signing"
+    if _last_content_line(clean) != "任务 personal 执行成功":
+        return "product build log is missing its successful terminal task"
+    return None
+
+
+def _historical_upgrade_record(
+    raw: bytes, requirements: Mapping[str, object]
+) -> str | None:
+    text = _decoded_text(raw)
+    if text is None:
+        return "upgrade record must be UTF-8 text"
+    if not re.search(r"上传与激活\s*\|\s*完成", text):
+        return "upgrade record must show upload and activation completion"
+    version_match = re.search(
+        r"安装版本确认\s*\|\s*`?([0-9A-Za-z][0-9A-Za-z._-]*)`?", text
+    )
+    if version_match is None:
+        return "upgrade record must contain the installed version"
+    expected_version = _text(requirements.get("installed_version"))
+    if expected_version and version_match.group(1) != expected_version:
+        return "upgrade record installed version does not match the artifact"
+    return None
+
+
+def _historical_reboot_timeline(raw: bytes) -> str | None:
+    text = _decoded_text(raw)
+    if text is None:
+        return "reboot acceptance timeline must be UTF-8 text"
+    if "manager_ready" not in text:
+        return "reboot acceptance timeline is missing manager readiness"
+    states = [tuple(int(value) for value in match) for match in DRIVE_TIMELINE.findall(text)]
+    if not states:
+        return "reboot acceptance timeline is missing drive convergence"
+    elapsed, drives, direct, attributed, raid, raid_zero, health, presence, serial = states[-1]
+    if (
+        drives <= 0
+        or direct + raid != drives
+        or attributed != direct
+        or raid_zero != raid
+        or health != drives
+        or presence != drives
+        or serial != drives
+    ):
+        return "reboot acceptance timeline final drive state is not converged"
+    accepted = re.findall(r"accepted_elapsed=(\d+)s", text)
+    if not accepted or int(accepted[-1]) != elapsed:
+        return "reboot acceptance timeline is missing its accepted elapsed time"
+    return None
+
+
+def _historical_drive_summary(
+    raw: bytes, requirements: Mapping[str, object]
+) -> str | None:
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "drive summary must be UTF-8 JSON"
+    if not isinstance(document, Mapping):
+        return "drive summary must be a JSON object"
+    summary = _mapping(document.get("summary"))
+    drives = [
+        _mapping(item)
+        for item in _sequence(document.get("drives"))
+        if isinstance(item, Mapping)
+    ]
+    fields = (
+        "drives",
+        "direct",
+        "direct_attributed",
+        "raid",
+        "raid_zero",
+        "health_ok",
+        "presence_ok",
+        "serial_ok",
+    )
+    counts = {field: summary.get(field) for field in fields}
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in counts.values()
+    ):
+        return "drive summary counts must be non-negative integers"
+    if counts["drives"] <= 0 or len(drives) != counts["drives"]:
+        return "drive summary drive count does not match its records"
+    direct = [drive for drive in drives if drive.get("controller") == 255]
+    raid = [drive for drive in drives if drive.get("controller") != 255]
+    actual = {
+        "drives": len(drives),
+        "direct": len(direct),
+        "direct_attributed": sum(
+            isinstance(drive.get("resource"), int)
+            and not isinstance(drive.get("resource"), bool)
+            and drive.get("resource", 0) > 0
+            for drive in direct
+        ),
+        "raid": len(raid),
+        "raid_zero": sum(drive.get("resource") == 0 for drive in raid),
+        "health_ok": sum(drive.get("health") == 0 for drive in drives),
+        "presence_ok": sum(drive.get("presence") == 1 for drive in drives),
+        "serial_ok": sum(drive.get("serial_present") is True for drive in drives),
+    }
+    if any(counts[field] != actual[field] for field in fields):
+        return "drive summary counts are inconsistent with its drive records"
+    expected_ids = {
+        int(match.group(1))
+        for device in _sequence(requirements.get("devices"))
+        if isinstance(device, Mapping)
+        and (match := re.fullmatch(r"Drive(\d+)", _text(device.get("device_id"))))
+    }
+    actual_ids = {
+        drive.get("id")
+        for drive in direct
+        if isinstance(drive.get("id"), int) and not isinstance(drive.get("id"), bool)
+    }
+    if expected_ids and actual_ids != expected_ids:
+        return "drive summary direct device identities do not match the hardware scope"
+    return None
+
+
+def _verify_historical_evidence(
     item: Mapping[str, object],
     *,
     path: Path,
     label: str,
+    requirements: Mapping[str, object],
     violations: list[str],
 ) -> bool:
     claims = _sequence(item.get("claims"))
-    try:
-        raw = path.read_bytes()
-    except OSError as error:
-        violations.append(f"{label}: cannot read evidence content: {error}")
+    if claims:
+        violations.append(f"{label}: manifest-authored claims are unsupported")
         return False
-    parsed: object | None = None
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        parsed = None
-    if isinstance(parsed, Mapping) and parsed.get("schema") == PROOF_SCHEMA:
-        return True
-    if not claims:
+    evidence_type = _text(item.get("evidence_type"))
+    if not evidence_type:
+        violations.append(f"{label}: historical evidence_type is required")
+    elif evidence_type not in HISTORICAL_EVIDENCE_DIMENSIONS:
         violations.append(
-            f"{label}: structured proof or explicit content claims are required"
+            f"{label}: unknown historical evidence_type {evidence_type!r}"
         )
-        return False
-    text: str | None = None
-    accepted = True
-    for index, raw_claim in enumerate(claims):
-        claim_label = f"{label}.claims[{index}]"
-        if not isinstance(raw_claim, Mapping):
-            violations.append(f"{claim_label} must be an object")
-            accepted = False
-            continue
-        claim = dict(raw_claim)
-        kind = _text(claim.get("kind"))
-        if kind == "text_contains":
-            expected = _text(claim.get("value"))
-            if not expected:
-                violations.append(f"{claim_label}: value is required")
-                accepted = False
-                continue
-            if text is None:
-                try:
-                    text = raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    violations.append(f"{claim_label}: evidence is not UTF-8 text")
-                    accepted = False
-                    continue
-            if expected not in text:
-                violations.append(f"{claim_label}: expected text is absent")
-                accepted = False
-        elif kind in {"json_equals", "json_number_at_least"}:
-            json_path = _text(claim.get("path"))
-            if parsed is None or not json_path:
-                violations.append(
-                    f"{claim_label}: JSON evidence and a dotted path are required"
-                )
-                accepted = False
-                continue
-            actual = _nested_value(parsed, json_path)
-            expected = claim.get("value")
-            if kind == "json_equals" and actual != expected:
-                violations.append(
-                    f"{claim_label}: expected {json_path}={expected!r}, actual {actual!r}"
-                )
-                accepted = False
-            elif kind == "json_number_at_least":
-                if (
-                    isinstance(actual, bool)
-                    or not isinstance(actual, (int, float))
-                    or isinstance(expected, bool)
-                    or not isinstance(expected, (int, float))
-                    or actual < expected
-                ):
-                    violations.append(
-                        f"{claim_label}: expected {json_path}>={expected!r}, actual {actual!r}"
-                    )
-                    accepted = False
-        else:
-            violations.append(f"{claim_label}: unsupported claim kind {kind or 'missing'}")
-            accepted = False
-    return accepted
+    elif HISTORICAL_EVIDENCE_DIMENSIONS[evidence_type] != _text(
+        requirements.get("dimension")
+    ):
+        violations.append(
+            f"{label}: historical evidence_type {evidence_type!r} does not match "
+            f"{_text(requirements.get('dimension'))} dimension"
+        )
+    else:
+        try:
+            raw = path.read_bytes()
+        except OSError as error:
+            violations.append(f"{label}: cannot read evidence content: {error}")
+            return False
+        verifier = {
+            "workflow-diagnosis-record": lambda: _historical_diagnosis_record(raw),
+            "workflow-official-ut-record": lambda: _historical_official_ut_record(raw),
+            "workflow-upgrade-record": lambda: _historical_upgrade_record(
+                raw, requirements
+            ),
+            "component-build-log": lambda: _historical_component_build_log(raw),
+            "product-build-log": lambda: _historical_product_build_log(raw),
+            "reboot-acceptance-timeline": lambda: _historical_reboot_timeline(raw),
+            "drive-summary-json": lambda: _historical_drive_summary(raw, requirements),
+        }[evidence_type]
+        reason = verifier()
+        if reason is None:
+            return True
+        violations.append(f"{label}: {reason}")
+    return False
 
 
 def _verify_structured_proof(
@@ -184,15 +355,21 @@ def _verify_structured_proof(
     violations: list[str],
     required: bool,
 ) -> bool:
+    if not required:
+        return _verify_historical_evidence(
+            item,
+            path=path,
+            label=label,
+            requirements=requirements,
+            violations=violations,
+        )
     try:
         proof = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         proof = None
     if not isinstance(proof, Mapping) or proof.get("schema") != PROOF_SCHEMA:
-        if required:
-            violations.append(f"{label}: Runtime evidence requires a structured proof")
-            return False
-        return _verify_claims(item, path=path, label=label, violations=violations)
+        violations.append(f"{label}: Runtime evidence requires a structured proof")
+        return False
     accepted = True
     for field, expected in requirements.items():
         actual = _nested_value(proof, field)
