@@ -2282,6 +2282,16 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertLessEqual(encoded_size(definitions), TOOLS_LIST_MAX_BYTES)
         self.assertEqual(self.service.interface_catalog.names(), ("observe", "execute"))
         execute_schema = definitions[1]["inputSchema"]
+        observe_selector = definitions[0]["inputSchema"]["properties"]["selectors"][
+            "items"
+        ]
+        capability_item = observe_selector["properties"]["names"]["items"]
+        self.assertNotIn("enum", capability_item)
+        self.assertIn(
+            "mdbctl",
+            capability_item["description"],
+        )
+        self.assertIn("response_required", definitions[1]["description"])
         action_shapes = {
             branch["properties"]["kind"]["const"]: branch
             for branch in execute_schema["oneOf"]
@@ -2479,6 +2489,694 @@ class AgentGatewayTests(unittest.TestCase):
                         operation_id="deadline-command",
                     )
 
+    def test_execute_preflight_returns_canonical_examples_before_runtime_dispatch(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="execute-preflight",
+        )
+        cases = (
+            (
+                {"kind": "resume"},
+                "run_id",
+                {"required": True},
+                {"kind": "resume", "run_id": "<structuredContent.run_id>"},
+            ),
+            (
+                {
+                    "kind": "resume",
+                    "run_id": "run-one",
+                    "recovery_mode": "reconcile",
+                },
+                "recovery_mode",
+                {"ownership": "Runtime"},
+                {
+                    "kind": "control",
+                    "run_id": "<structuredContent.run_id>",
+                    "command": "reconcile",
+                },
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"recovery_mode": "reconcile"},
+                },
+                "entry_arguments.recovery_mode",
+                {"ownership": "Runtime"},
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {},
+                },
+            ),
+            (
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "deadline": 121,
+                },
+                "deadline",
+                {"exclusive_minimum": 0, "maximum_seconds": 120},
+                {
+                    "kind": "start",
+                    "target": "192.0.2.10",
+                    "intent": "diagnosis-only",
+                    "deadline": 120,
+                },
+            ),
+            (
+                {"kind": "resume", "run_id": "run-one", "deadline": 121},
+                "deadline",
+                {"exclusive_minimum": 0, "maximum_seconds": 120},
+                {
+                    "kind": "resume",
+                    "run_id": "<structuredContent.run_id>",
+                    "deadline": 120,
+                },
+            ),
+            (
+                {"kind": "resume", "run_id": "run-one", "deadline": "later"},
+                "deadline",
+                {"exclusive_minimum": 0, "maximum_seconds": 120},
+                {
+                    "kind": "resume",
+                    "run_id": "<structuredContent.run_id>",
+                    "deadline": 120,
+                },
+            ),
+        )
+
+        for request_id, (arguments, field, limit, example) in enumerate(
+            cases,
+            start=100,
+        ):
+            with self.subTest(field=field):
+                response = endpoint.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": "execute", "arguments": arguments},
+                    }
+                )
+                structured = response["result"]["structuredContent"]
+                self.assertTrue(response["result"]["isError"])
+                self.assertEqual(structured["error"]["field"], field)
+                self.assertEqual(structured["error"]["limit"], limit)
+                self.assertEqual(structured["error"]["example"], example)
+                self.assertTrue(structured["next_action"])
+
+        self.assertEqual(self.backend.calls, [])
+
+    def test_observe_rejects_selector_shape_and_scalar_types_before_target_access(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="selector-shape-preflight",
+        )
+        cases = (
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {
+                            "id": "mixed",
+                            "kind": "capability",
+                            "names": ["ssh"],
+                            "queries": ["lsprop Object0"],
+                        }
+                    ],
+                },
+                "selectors[0].queries",
+            ),
+            (
+                {
+                    "target": 1234,
+                    "selectors": [
+                        {"id": "mdb", "kind": "mdb", "queries": ["lsprop Object0"]}
+                    ],
+                },
+                "target",
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"id": 1234, "kind": "mdb", "queries": ["lsprop Object0"]}
+                    ],
+                },
+                "selectors[0].id",
+            ),
+        )
+
+        for request_id, (arguments, field) in enumerate(cases, start=150):
+            with self.subTest(field=field):
+                response = endpoint.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": "observe", "arguments": arguments},
+                    }
+                )
+                structured = response["result"]["structuredContent"]
+                self.assertTrue(response["result"]["isError"])
+                self.assertEqual(structured["error"]["field"], field)
+                self.assertTrue(structured["error"]["example"])
+                self.assertTrue(structured["next_action"])
+
+        self.assertEqual(self.backend.calls, [])
+
+    def test_observe_freshness_and_deadline_failures_are_actionable(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="observe-value-preflight",
+        )
+        cases = (
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [{"kind": "mdb", "queries": ["lsprop Object0"]}],
+                    "freshness": {"mode": "live", "max_age_seconds": 1},
+                },
+                "freshness.max_age_seconds",
+                {"allowed": [0]},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [{"kind": "mdb", "queries": ["lsprop Object0"]}],
+                    "deadline": "later",
+                },
+                "deadline",
+                {"type": "positive number"},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [{"kind": "mdb", "queries": ["lsprop Object0"]}],
+                    "deadline": 0,
+                },
+                "deadline",
+                {"exclusive_minimum": 0},
+            ),
+        )
+
+        for request_id, (arguments, field, limit) in enumerate(cases, start=160):
+            with self.subTest(field=field, limit=limit):
+                response = endpoint.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": "observe", "arguments": arguments},
+                    }
+                )
+                structured = response["result"]["structuredContent"]
+                self.assertTrue(response["result"]["isError"])
+                self.assertEqual(structured["error"]["field"], field)
+                self.assertEqual(structured["error"]["limit"], limit)
+                self.assertTrue(structured["error"]["example"])
+                self.assertTrue(structured["next_action"])
+
+        self.assertEqual(self.backend.calls, [])
+
+    def test_reconcile_without_unknown_mutation_is_actionable_and_side_effect_free(
+        self,
+    ) -> None:
+        terminal = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.10",
+                "intent": "diagnosis-only",
+            },
+            task_id="reconcile-preflight",
+            operation_id="reconcile-preflight-start",
+        )
+        before = self.service._test.context_runtime.read_case(terminal["run_id"])
+        call_count = len(self.backend.calls)
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="reconcile-preflight",
+        )
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 200,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "control",
+                        "run_id": terminal["run_id"],
+                        "command": "reconcile",
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(structured["error"]["field"], "command")
+        self.assertEqual(
+            structured["error"]["limit"],
+            {"precondition": "same Run has an unknown mutation outcome"},
+        )
+        self.assertEqual(
+            structured["error"]["example"],
+            {
+                "kind": "control",
+                "run_id": terminal["run_id"],
+                "command": "reconcile",
+            },
+        )
+        self.assertEqual(len(self.backend.calls), call_count)
+        self.assertEqual(
+            self.service._test.context_runtime.read_case(terminal["run_id"])[
+                "revision"
+            ],
+            before["revision"],
+        )
+
+    def test_build_gate_preflights_artifact_ref_and_run_binding_before_effects(
+        self,
+    ) -> None:
+        developer = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.10",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+            },
+            task_id="artifact-preflight",
+            operation_id="artifact-preflight-start",
+        )
+        build_gate = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": developer["run_id"],
+                **gate_binding(developer),
+                "response": {
+                    "status": "completed",
+                    "summary": "source delivered",
+                    "payload": {
+                        "source_revision": "artifact-preflight-source",
+                        "authored_files": ["src/fix.lua"],
+                        "verification_plan": ["build official product"],
+                    },
+                },
+            },
+            task_id="artifact-preflight",
+            operation_id="artifact-preflight-developer",
+        )
+        self.assertEqual(build_gate["gate"]["name"], "build.artifact")
+        before = self.service._test.context_runtime.read_case(build_gate["run_id"])
+        call_count = len(self.backend.calls)
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="artifact-preflight",
+        )
+
+        missing_ref = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 300,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "respond",
+                        "run_id": build_gate["run_id"],
+                        **gate_binding(build_gate),
+                        "response": {
+                            "status": "completed",
+                            "summary": "build completed",
+                            "payload": {
+                                "source_revision": "artifact-preflight-source"
+                            },
+                        },
+                    },
+                },
+            }
+        )
+        missing_binding = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 301,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "respond",
+                        "run_id": build_gate["run_id"],
+                        **gate_binding(build_gate),
+                        "response": {
+                            "status": "completed",
+                            "summary": "build completed",
+                            "payload": {
+                                "source_revision": "artifact-preflight-source",
+                                "artifact_ref": {
+                                    "handle": "/tmp/product.hpm",
+                                    "digest": "sha256:" + "a" * 64,
+                                    "kind": "openubmc-hpm",
+                                    "size": 1,
+                                    "provenance": "openubmc-build",
+                                    "retention_hint": "run-lifetime",
+                                    "version": "1.0.0",
+                                    "target": "192.0.2.10",
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+        )
+
+        def artifact_response(*, target: str, run_id: str, request_id: int):
+            return endpoint.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "execute",
+                        "arguments": {
+                            "kind": "respond",
+                            "run_id": build_gate["run_id"],
+                            **gate_binding(build_gate),
+                            "response": {
+                                "status": "completed",
+                                "summary": "build completed",
+                                "payload": {
+                                    "source_revision": "artifact-preflight-source",
+                                    "artifact_ref": {
+                                        "handle": "/tmp/product.hpm",
+                                        "digest": "sha256:" + "a" * 64,
+                                        "kind": "openubmc-hpm",
+                                        "size": 1,
+                                        "provenance": "openubmc-build",
+                                        "retention_hint": "run-lifetime",
+                                        "version": "1.0.0",
+                                        "target": target,
+                                        "run_id": run_id,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                }
+            )
+
+        wrong_target = artifact_response(
+            target="192.0.2.99",
+            run_id=build_gate["run_id"],
+            request_id=302,
+        )
+        wrong_run = artifact_response(
+            target="192.0.2.10",
+            run_id="run-other",
+            request_id=303,
+        )
+
+        for response, field in (
+            (missing_ref, "response.payload.artifact_ref"),
+            (missing_binding, "response.payload.artifact_ref.run_id"),
+            (wrong_target, "response.payload.artifact_ref.target"),
+            (wrong_run, "response.payload.artifact_ref.run_id"),
+        ):
+            structured = response["result"]["structuredContent"]
+            self.assertTrue(response["result"]["isError"])
+            self.assertEqual(structured["error"]["field"], field)
+            self.assertEqual(
+                structured["error"]["limit"],
+                {"binding": "current Run and target"},
+            )
+            example = structured["error"]["example"]
+            self.assertEqual(example["run_id"], build_gate["run_id"])
+            self.assertEqual(
+                example["response"]["payload"]["artifact_ref"]["run_id"],
+                build_gate["run_id"],
+            )
+            self.assertEqual(
+                example["response"]["payload"]["artifact_ref"]["target"],
+                "192.0.2.10",
+            )
+
+        after = self.service._test.context_runtime.read_case(build_gate["run_id"])
+        self.assertEqual(after["revision"], before["revision"])
+        self.assertEqual(len(self.backend.calls), call_count)
+
+    def test_public_preflight_error_identifies_field_and_canonical_retry(self) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="actionable-preflight",
+        )
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "observe",
+                    "arguments": {
+                        "target": "192.0.2.10",
+                        "selectors": [
+                            {
+                                "id": "capabilities",
+                                "kind": "capability",
+                                "names": ["mdb"],
+                            }
+                        ],
+                    },
+                },
+            }
+        )
+
+        result = response["result"]
+        self.assertTrue(result["isError"])
+        error = result["structuredContent"]["error"]
+        self.assertEqual(error["field"], "selectors[0].names[0]")
+        self.assertIn("mdbctl", error["supported"])
+        self.assertEqual(
+            error["example"],
+            {
+                "target": "<BMC IP>",
+                "selectors": [
+                    {
+                        "id": "capabilities",
+                        "kind": "capability",
+                        "names": ["ssh", "mdbctl"],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(
+            result["structuredContent"]["next_action"],
+            "retry observe with the corrected canonical capability name",
+        )
+
+    def test_mixed_case_canonical_capability_remains_compatible(self) -> None:
+        receipt = self.service.call_exposed_tool(
+            "observe",
+            {
+                "target": "192.0.2.10",
+                "selectors": [
+                    {
+                        "id": "capabilities",
+                        "kind": "capability",
+                        "names": ["SSH", "MDBCTL"],
+                    }
+                ],
+            },
+            task_id="mixed-case-capability",
+            operation_id="mixed-case-capability-observe",
+        )
+
+        self.assertEqual(receipt["status"], "complete")
+        self.assertEqual(
+            receipt["scope"]["selectors"][0]["names"],
+            ["ssh", "mdbctl"],
+        )
+
+    def test_observe_preflight_reports_selector_location_and_limit_before_target_access(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="selector-preflight",
+        )
+        cases = (
+            (
+                [{"id": "unsafe", "kind": "shell", "queries": ["id"]}],
+                "selectors[0].kind",
+                ["capability", "mdb"],
+                None,
+            ),
+            (
+                [{"id": "mdb", "kind": "mdb", "queries": ["x" * 1025]}],
+                "selectors[0].queries[0]",
+                None,
+                {"unit": "UTF-8 bytes", "maximum": 1024},
+            ),
+            (
+                [
+                    {
+                        "id": "mdb",
+                        "kind": "mdb",
+                        "queries": ["setprop Object0 Interface Value"],
+                    }
+                ],
+                "selectors[0].queries[0]",
+                None,
+                {"grammar": "read-only mdbctl", "maximum_queries": 32},
+            ),
+        )
+
+        for request_id, (selectors, field, supported, limit) in enumerate(
+            cases,
+            start=1,
+        ):
+            with self.subTest(field=field):
+                response = endpoint.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "observe",
+                            "arguments": {
+                                "target": "192.0.2.10",
+                                "selectors": selectors,
+                            },
+                        },
+                    }
+                )
+                structured = response["result"]["structuredContent"]
+                self.assertTrue(response["result"]["isError"])
+                self.assertEqual(structured["error"]["field"], field)
+                if supported is not None:
+                    self.assertEqual(structured["error"]["supported"], supported)
+                if limit is not None:
+                    self.assertEqual(structured["error"]["limit"], limit)
+                self.assertTrue(structured["error"]["example"])
+                self.assertTrue(structured["next_action"])
+
+        self.assertEqual(self.backend.calls, [])
+
+    def test_observe_scope_preflight_covers_every_bounded_container(self) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="scope-container-preflight",
+        )
+        cases = (
+            (
+                {
+                    "target": "x" * 513,
+                    "selectors": [{"kind": "mdb", "queries": ["lsprop Object0"]}],
+                },
+                "target",
+                {"unit": "UTF-8 bytes", "maximum": 512},
+            ),
+            (
+                {"target": "192.0.2.10", "selectors": ["not-an-object"]},
+                "selectors[0]",
+                {"type": "object"},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"id": "caps", "kind": "capability", "names": ["ssh"], "shell": "id"}
+                    ],
+                },
+                "selectors[0].shell",
+                {"allowed_fields": ["id", "kind", "names", "queries"]},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"id": "caps", "kind": "capability", "names": ["ssh"] * 17}
+                    ],
+                },
+                "selectors[0].names",
+                {"maximum_items": 16},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"id": "mdb", "kind": "mdb", "queries": ["ls"] * 33}
+                    ],
+                },
+                "selectors[0].queries",
+                {"maximum_items": 32},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"id": "same", "kind": "capability", "names": ["ssh"]},
+                        {"id": "same", "kind": "mdb", "queries": ["lsprop Object0"]},
+                    ],
+                },
+                "selectors[1].id",
+                {"constraint": "unique within the observe request"},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [
+                        {"id": f"caps-{index}", "kind": "capability", "names": ["ssh"]}
+                        for index in range(17)
+                    ],
+                },
+                "selectors",
+                {"maximum_items": 16},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [{"kind": "mdb", "queries": ["lsprop Object0"]}],
+                    "freshness": {"mode": "cache", "max_age_seconds": 60},
+                },
+                "freshness.mode",
+                {"allowed": ["live"]},
+            ),
+        )
+
+        for request_id, (arguments, field, limit) in enumerate(cases, start=20):
+            with self.subTest(field=field):
+                response = endpoint.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": "observe", "arguments": arguments},
+                    }
+                )
+                structured = response["result"]["structuredContent"]
+                self.assertEqual(structured["error"]["field"], field)
+                self.assertEqual(structured["error"]["limit"], limit)
+                self.assertTrue(structured["error"]["example"])
+
+        self.assertEqual(self.backend.calls, [])
+
     def test_actionable_turns_expose_only_a_valid_suggested_action(self) -> None:
         gate_schema = {
             "type": "object",
@@ -2591,6 +3289,38 @@ class AgentGatewayTests(unittest.TestCase):
             },
         )
         self.assertIsNone(projected["terminal"]["next_action"])
+
+    def test_resume_that_advances_to_a_new_gate_is_not_reported_as_no_progress(
+        self,
+    ) -> None:
+        assert_is_instance = self.assertIsInstance
+
+        class AdvancingResumeRuntime:
+            def execute(self, command, *, task_id, operation_id):
+                del task_id, operation_id
+                assert_is_instance(command, ResumeRun)
+                return RunTurn(
+                    run_id=command.run_id,
+                    state="waiting_response",
+                    gate={
+                        "kind": "phase",
+                        "gate_id": "new-gate",
+                        "gate_version": 1,
+                        "schema_digest": "sha256:" + "a" * 64,
+                        "name": "developer.change",
+                        "owner": "openubmc-developer",
+                        "input_schema": {"type": "object"},
+                    },
+                )
+        turn = AgentGateway(AdvancingResumeRuntime()).execute(
+            {"kind": "resume", "run_id": "run-advancing"},
+            task_id="advancing-resume",
+            operation_id="advancing-resume-1",
+        )
+
+        self.assertNotIn("response_required", turn)
+        self.assertNotIn("progress", turn)
+        self.assertEqual(turn["next_action"]["gate_id"], "new-gate")
 
     def test_observe_is_bounded_grounded_and_does_not_open_a_case(self) -> None:
         receipt = self.service.call_exposed_tool(
@@ -7639,6 +8369,19 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertEqual(resumed["gate"]["gate_id"], waiting["gate"]["gate_id"])
         self.assertEqual(resumed["gate"]["name"], "diagnosis.acceptance")
+        self.assertTrue(resumed["response_required"])
+        self.assertEqual(
+            resumed["progress"],
+            {"status": "no_progress", "reason": "response_required"},
+        )
+        self.assertEqual(
+            resumed["next_action"],
+            {
+                "kind": "respond",
+                "run_id": waiting["run_id"],
+                **gate_binding(waiting),
+            },
+        )
         self.assertFalse(
             any(
                 fact.get("kind") == "phase"

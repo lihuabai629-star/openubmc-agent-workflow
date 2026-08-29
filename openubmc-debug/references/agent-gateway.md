@@ -35,6 +35,93 @@ The Runtime owns observation time and freshness. A plain `resume` reattaches the
 Gate and cannot make diagnosis acceptable; a failed or cancelled diagnosis terminates before
 development.
 
+## Canonical calls and preflight
+
+Use only canonical capability names. `mdbctl` is the capability name; MDB queries use selector
+kind `mdb`:
+
+```json
+{
+  "target": "<BMC IP>",
+  "selectors": [
+    {
+      "id": "capabilities",
+      "kind": "capability",
+      "names": ["ssh", "mdbctl"]
+    },
+    {
+      "id": "objects",
+      "kind": "mdb",
+      "queries": ["lsprop Object0"]
+    }
+  ]
+}
+```
+
+Execute deadlines are caller wait bounds from greater than zero through 120 seconds:
+
+```json
+{
+  "kind": "resume",
+  "run_id": "<current Run ID>",
+  "deadline": 120
+}
+```
+
+If resume returns the same Gate, the Turn explicitly reports:
+
+```json
+{
+  "response_required": true,
+  "progress": {"status": "no_progress", "reason": "response_required"}
+}
+```
+
+Use the returned `next_action` Gate binding and answer it. Do not retry resume. Explicit recovery
+is valid only after the same Run reports an unknown mutation outcome:
+
+```json
+{
+  "kind": "control",
+  "run_id": "<current Run ID>",
+  "command": "reconcile"
+}
+```
+
+Completed artifact-producing Gates require the full returned binding plus an `artifact_ref` bound
+to the same Run and target:
+
+```json
+{
+  "kind": "respond",
+  "run_id": "<current Run ID>",
+  "gate_id": "<current Gate ID>",
+  "gate_version": 1,
+  "schema_digest": "sha256:<current Gate schema digest>",
+  "response": {
+    "status": "completed",
+    "summary": "artifact produced",
+    "payload": {
+      "source_revision": "<built source revision>",
+      "artifact_ref": {
+        "handle": "<absolute artifact path>",
+        "digest": "sha256:<64 lowercase hex characters>",
+        "kind": "<Gate artifact kind>",
+        "size": 0,
+        "provenance": "openubmc-build",
+        "retention_hint": "run-lifetime",
+        "target": "<current Run target>",
+        "run_id": "<current Run ID>"
+      }
+    }
+  }
+}
+```
+
+Preflight failures return `error.field`, the accepted `error.limit` or `error.supported`, a
+canonical `error.example`, and one `next_action`. Correct that field before retrying; validation
+does not open a Run, dispatch target work, or create an Effect.
+
 ## Idempotency and recovery
 
 The Runtime supplies or derives submission identity from the persisted Gate binding. Retrying an

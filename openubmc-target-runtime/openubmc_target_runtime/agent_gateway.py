@@ -14,13 +14,17 @@ from .diagnostic_receipt import (
     DiagnosticStatus,
 )
 from .semantic_runtime import (
+    AgentPreflightError,
     AgentGatewayError,
     EXECUTE_ACTION_FIELD_TYPES,
     EXECUTE_ACTION_FIELDS,
     EXECUTE_ACTION_REQUIRED_FIELDS,
     GATE_SCHEMA_PROJECTION_TARGET_BYTES,
+    GatePreflightError,
     ObservationQuery,
     ObservationRef,
+    PreflightDetail,
+    PreflightReason,
     RunTurn,
     ScopeContract,
     ScopeViolation,
@@ -76,6 +80,186 @@ def _fingerprint(value: object) -> str:
 
 def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _observe_preflight_example(detail: PreflightDetail) -> dict[str, object]:
+    if ".names" in detail.field or detail.reason == PreflightReason.UNSUPPORTED_CAPABILITY:
+        return {
+            "target": "<BMC IP>",
+            "selectors": [
+                {
+                    "id": "capabilities",
+                    "kind": "capability",
+                    "names": ["ssh", "mdbctl"],
+                }
+            ],
+        }
+    return {
+        "target": "<BMC IP>",
+        "selectors": [
+            {"id": "mdb", "kind": "mdb", "queries": ["lsprop Object0"]}
+        ],
+        "freshness": {"mode": "live", "max_age_seconds": 0},
+        "deadline": 180,
+    }
+
+
+def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
+    context = detail.context
+    if detail.reason in {
+        PreflightReason.ARTIFACT_REQUIRED,
+        PreflightReason.ARTIFACT_BINDING,
+    }:
+        artifact_ref: dict[str, object] = {
+            "handle": "<absolute artifact path>",
+            "digest": "sha256:" + "0" * 64,
+            "kind": str(context.get("artifact_kind") or "<Gate artifact kind>"),
+            "size": 0,
+            "provenance": "openubmc-build",
+            "retention_hint": "run-lifetime",
+            "target": str(context.get("target") or "<Run target>"),
+            "run_id": str(context.get("run_id") or "<structuredContent.run_id>"),
+        }
+        if bool(context.get("version_required")):
+            artifact_ref["version"] = "<artifact version>"
+        return {
+            "kind": "respond",
+            "run_id": artifact_ref["run_id"],
+            "gate_id": str(context.get("gate_id") or "<next_action.gate_id>"),
+            "gate_version": int(context.get("gate_version") or 1),
+            "schema_digest": str(
+                context.get("schema_digest") or "<next_action.schema_digest>"
+            ),
+            "response": {
+                "status": "completed",
+                "summary": "artifact produced",
+                "payload": {
+                    "source_revision": "<built source revision>",
+                    "artifact_ref": artifact_ref,
+                },
+            },
+        }
+
+    kind = str(context.get("action_kind") or "resume")
+    run_id = str(context.get("run_id") or "<structuredContent.run_id>")
+    if detail.reason == PreflightReason.RECONCILE_PRECONDITION:
+        return {"kind": "control", "run_id": run_id, "command": "reconcile"}
+    if (
+        detail.reason == PreflightReason.RUNTIME_OWNED_FIELD
+        and bool(context.get("recovery_requested"))
+        and kind != "start"
+    ):
+        return {
+            "kind": "control",
+            "run_id": run_id,
+            "command": "reconcile",
+        }
+    if kind == "start":
+        example: dict[str, object] = {
+            "kind": "start",
+            "target": str(context.get("target") or "<BMC IP>"),
+            "intent": str(context.get("intent") or "diagnosis-only"),
+        }
+        if context.get("entry_operation"):
+            example["entry_operation"] = str(context["entry_operation"])
+            example["entry_arguments"] = dict(
+                _mapping(context.get("entry_arguments"))
+            )
+        if detail.reason == PreflightReason.DEADLINE:
+            example["deadline"] = 120
+        return example
+    if kind == "respond":
+        example = {
+            "kind": "respond",
+            "run_id": run_id,
+            "gate_id": "<next_action.gate_id>",
+            "gate_version": 1,
+            "schema_digest": "<next_action.schema_digest>",
+            "response": {
+                "status": "completed",
+                "summary": "<bounded summary>",
+                "payload": {},
+            },
+        }
+    elif kind == "control":
+        example = {
+            "kind": "control",
+            "run_id": run_id,
+            "command": str(context.get("command") or "reconcile"),
+        }
+    else:
+        example = {"kind": "resume", "run_id": run_id}
+    if detail.reason == PreflightReason.DEADLINE:
+        example["deadline"] = 120
+    return example
+
+
+def _preflight_guidance(
+    operation: str,
+    detail: PreflightDetail,
+) -> tuple[dict[str, object], str]:
+    if operation == "observe":
+        actions = {
+            PreflightReason.UNSUPPORTED_CAPABILITY: (
+                "retry observe with the corrected canonical capability name"
+            ),
+            PreflightReason.UNSUPPORTED_SELECTOR_KIND: (
+                "retry observe with capability or mdb selector kind"
+            ),
+            PreflightReason.MDB_GRAMMAR: (
+                "retry observe with the corrected read-only mdbctl grammar"
+            ),
+            PreflightReason.FRESHNESS_MODE: (
+                "retry observe with freshness.mode set to live"
+            ),
+            PreflightReason.LIVE_MAX_AGE: (
+                "retry observe with freshness.max_age_seconds set to 0"
+            ),
+            PreflightReason.DEADLINE: (
+                "retry observe with a positive numeric deadline"
+            ),
+        }
+        return (
+            _observe_preflight_example(detail),
+            actions.get(
+                detail.reason,
+                f"correct {detail.field} to satisfy the reported contract and retry observe",
+            ),
+        )
+    actions = {
+        PreflightReason.RUN_ID_REQUIRED: (
+            "copy run_id from the current execute structuredContent and retry"
+        ),
+        PreflightReason.DEADLINE: (
+            "retry execute with deadline at or below 120 seconds"
+        ),
+        PreflightReason.RECONCILE_PRECONDITION: (
+            "use the current Turn next_action; reconcile only after mutation_outcome_unknown"
+        ),
+        PreflightReason.ARTIFACT_REQUIRED: (
+            "supply the Gate-required ArtifactRef bound to this Run and target, then retry respond"
+        ),
+        PreflightReason.ARTIFACT_BINDING: (
+            "copy the complete ArtifactRef from the current build result, bind it to this Run and target, then retry respond"
+        ),
+    }
+    if detail.reason == PreflightReason.RUNTIME_OWNED_FIELD:
+        if (
+            bool(detail.context.get("recovery_requested"))
+            and detail.context.get("action_kind") != "start"
+        ):
+            next_action = (
+                "omit Runtime-owned recovery fields; use control/reconcile only after "
+                "the current Run reports mutation_outcome_unknown"
+            )
+        else:
+            next_action = "remove Runtime-owned fields and retry execute"
+    else:
+        next_action = actions.get(
+            detail.reason,
+            f"correct {detail.field} to satisfy the reported contract and retry execute",
+        )
+    return _execute_action_example(detail), next_action
 
 
 def _text(value: object) -> str:
@@ -867,16 +1051,33 @@ class AgentGateway:
     def error(operation: str, exc: Exception) -> dict[str, object]:
         schema = OBSERVATION_RECEIPT_SCHEMA if operation == "observe" else TURN_SCHEMA
         key = "receipt_id" if operation == "observe" else "run_id"
-        return {
+        result = {
             "schema": schema,
             key: "",
             "status" if operation == "observe" else "state": "failed",
             "error": {
-                "code": type(exc).__name__,
+                "code": (
+                    "ScopeViolation"
+                    if operation == "observe" and isinstance(exc, AgentPreflightError)
+                    else type(exc).__name__
+                ),
                 "message": _text(exc)[:1024],
             },
             "gaps": ["operation_failed"],
         }
+        if isinstance(exc, (AgentPreflightError, GatePreflightError)):
+            detail = exc.detail
+            error = result["error"]
+            assert isinstance(error, dict)
+            example, next_action = _preflight_guidance(operation, detail)
+            error["field"] = detail.field
+            error["example"] = example
+            if detail.supported:
+                error["supported"] = list(detail.supported)
+            if detail.limit is not None:
+                error["limit"] = detail.limit
+            result["next_action"] = next_action
+        return result
 
 
 def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
@@ -898,7 +1099,15 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                         "names": {
                             "type": "array",
                             "maxItems": 16,
-                            "items": {"type": "string", "minLength": 1, "maxLength": 64},
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                                "description": (
+                                    "Capability names are case-insensitive; canonical names: "
+                                    + ", ".join(sorted(CAPABILITY_ALIASES))
+                                ),
+                            },
                         },
                         "queries": {
                             "type": "array",
@@ -1150,7 +1359,12 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
         ),
         OperationDescriptor(
             name="execute",
-            description="Start or continue one Runtime workflow and return only the next semantic Turn.",
+            description=(
+                "Start or continue one Runtime workflow and return only the next semantic "
+                "Turn. Copy next_action bindings exactly; response_required with "
+                "progress.status=no_progress means respond to the unchanged Gate instead "
+                "of retrying resume."
+            ),
             input_schema=execute_schema,
             exposure="agent",
             audience="agent",

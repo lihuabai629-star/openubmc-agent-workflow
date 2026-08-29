@@ -9,6 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = (ROOT / "SKILL.md").read_text(encoding="utf-8")
 
 
+def json_examples(markdown: str) -> list[object]:
+    return [
+        json.loads(block.split("```", 1)[0])
+        for block in markdown.split("```json")[1:]
+    ]
+
+
 class SkillProgressiveDisclosureTests(unittest.TestCase):
     def test_entrypoint_is_small_and_keeps_the_core_decisions(self) -> None:
         self.assertLessEqual(len(SKILL.encode("utf-8")), 10 * 1024)
@@ -89,6 +96,24 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
         self.assertNotIn("Compatibility `debug_collect`", content)
         for retired in ("phase_record", "workflow.advance", "workflow.next"):
             self.assertNotIn(retired, content)
+
+    def test_agent_gateway_reference_matches_actionable_preflight_contract(self) -> None:
+        content = (ROOT / "references" / "agent-gateway.md").read_text(
+            encoding="utf-8"
+        )
+        examples = json_examples(content)
+        observe, resume, no_progress, reconcile, artifact = examples[:5]
+
+        self.assertEqual(
+            observe["selectors"][0]["names"],
+            ["ssh", "mdbctl"],
+        )
+        self.assertEqual(resume["deadline"], 120)
+        self.assertTrue(no_progress["response_required"])
+        self.assertEqual(no_progress["progress"]["status"], "no_progress")
+        self.assertEqual(reconcile["command"], "reconcile")
+        self.assertEqual(reconcile["run_id"], "<current Run ID>")
+        self.assertIn("artifact_ref", artifact["response"]["payload"])
 
 
 if __name__ == "__main__":

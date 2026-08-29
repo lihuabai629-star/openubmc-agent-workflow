@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import time
 from typing import Protocol
 
 from .artifact_store import LocalArtifactStore
 from .semantic_runtime import (
+    AgentPreflightError,
     ArtifactRef,
     AssuranceUnavailable,
     CancelIncident,
@@ -18,11 +19,13 @@ from .semantic_runtime import (
     CommandConflict,
     Gate,
     GateConflict,
+    GatePreflightError,
     Incident,
     ObservationQuery,
     ObservationRef,
     ObservationResult,
     Outcome,
+    PreflightReason,
     ReferenceViolation,
     ReconcileRun,
     ResumeRun,
@@ -87,6 +90,23 @@ class RunTransitionKind(str, Enum):
     INCIDENT_RESOLVED = "incident_resolved"
     VERIFICATION_DEFERRED = "verification_deferred"
     OUTCOME_RECORDED = "outcome_recorded"
+
+
+class GateSchemaViolation(GateConflict):
+    """Typed schema failure used by RunEngine without parsing error prose."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: str,
+        rule: str,
+        fields: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.path = path
+        self.rule = rule
+        self.fields = fields
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -829,35 +849,61 @@ class RunEngine:
             "integer": isinstance(value, int) and not isinstance(value, bool),
         }.get(str(expected_type), True)
         if not valid_type:
-            raise GateConflict(f"{path} has the wrong type")
+            raise GateSchemaViolation(
+                f"{path} has the wrong type",
+                path=path,
+                rule="wrong_type",
+            )
         enum = schema.get("enum")
         if isinstance(enum, list) and value not in enum:
-            raise GateConflict(f"{path} is not an allowed value")
+            raise GateSchemaViolation(
+                f"{path} is not an allowed value",
+                path=path,
+                rule="enum",
+            )
         if isinstance(value, str):
             minimum = schema.get("minLength")
             maximum = schema.get("maxLength")
             if isinstance(minimum, int) and len(value) < minimum:
-                raise GateConflict(f"{path} must not be empty")
+                raise GateSchemaViolation(
+                    f"{path} must not be empty",
+                    path=path,
+                    rule="min_length",
+                )
             if isinstance(maximum, int) and len(value) > maximum:
-                raise GateConflict(f"{path} exceeds its length limit")
+                raise GateSchemaViolation(
+                    f"{path} exceeds its length limit",
+                    path=path,
+                    rule="max_length",
+                )
         if isinstance(value, int) and not isinstance(value, bool):
             minimum = schema.get("minimum")
             if isinstance(minimum, int) and value < minimum:
-                raise GateConflict(f"{path} is below its minimum")
+                raise GateSchemaViolation(
+                    f"{path} is below its minimum",
+                    path=path,
+                    rule="minimum",
+                )
         if isinstance(value, Mapping):
             properties = _mapping(schema.get("properties"))
             required = schema.get("required", [])
             if isinstance(required, list):
                 missing = [name for name in required if name not in value]
                 if missing:
-                    raise GateConflict(
-                        f"{path} omits required fields: {', '.join(missing)}"
+                    raise GateSchemaViolation(
+                        f"{path} omits required fields: {', '.join(missing)}",
+                        path=path,
+                        rule="required",
+                        fields=tuple(str(name) for name in missing),
                     )
             if schema.get("additionalProperties") is False:
                 unexpected = sorted(set(value) - set(properties))
                 if unexpected:
-                    raise GateConflict(
-                        f"{path} contains undeclared fields: {', '.join(unexpected)}"
+                    raise GateSchemaViolation(
+                        f"{path} contains undeclared fields: {', '.join(unexpected)}",
+                        path=path,
+                        rule="additional_properties",
+                        fields=tuple(str(name) for name in unexpected),
                     )
             for name, item in value.items():
                 child_schema = properties.get(name)
@@ -868,7 +914,11 @@ class RunEngine:
         if isinstance(value, list):
             minimum = schema.get("minItems")
             if isinstance(minimum, int) and len(value) < minimum:
-                raise GateConflict(f"{path} requires at least {minimum} item(s)")
+                raise GateSchemaViolation(
+                    f"{path} requires at least {minimum} item(s)",
+                    path=path,
+                    rule="min_items",
+                )
             item_schema = schema.get("items")
             if isinstance(item_schema, Mapping):
                 for index, item in enumerate(value):
@@ -888,6 +938,39 @@ class RunEngine:
         required = payload.get("required", [])
         return [str(name) for name in required] if isinstance(required, list) else []
 
+    @staticmethod
+    def _artifact_preflight_context(
+        *,
+        command: SubmitGate,
+        gate: Gate,
+        projection: Mapping[str, object],
+    ) -> dict[str, object]:
+        payload_schema = _mapping(
+            _mapping(gate.input_schema.get("properties")).get("payload")
+        )
+        artifact_schema = _mapping(
+            _mapping(payload_schema.get("properties")).get("artifact_ref")
+        )
+        artifact_properties = _mapping(artifact_schema.get("properties"))
+        expected_kinds = _mapping(artifact_properties.get("kind")).get("enum", [])
+        targets = projection.get("targets", [])
+        target = ""
+        if isinstance(targets, list) and targets and isinstance(targets[0], Mapping):
+            target = _text(targets[0].get("address"))
+        return {
+            "run_id": command.run_id,
+            "gate_id": gate.gate_id,
+            "gate_version": gate.version,
+            "schema_digest": f"sha256:{gate.schema_digest}",
+            "target": target,
+            "artifact_kind": (
+                str(expected_kinds[0])
+                if isinstance(expected_kinds, list) and expected_kinds
+                else ""
+            ),
+            "version_required": "version" in artifact_properties,
+        }
+
     def _normalized_response(
         self,
         command: SubmitGate,
@@ -896,7 +979,27 @@ class RunEngine:
         projection: Mapping[str, object],
     ) -> dict[str, object]:
         response = _mapping(command.response)
-        self._validate_schema_value(response, gate.input_schema, path="response")
+        try:
+            self._validate_schema_value(response, gate.input_schema, path="response")
+        except GateSchemaViolation as exc:
+            artifact_path = "response.payload.artifact_ref"
+            if not (
+                exc.path == artifact_path
+                and exc.rule == "required"
+                and "run_id" in exc.fields
+            ):
+                raise
+            raise GatePreflightError(
+                str(exc),
+                reason=PreflightReason.ARTIFACT_BINDING,
+                field=f"{artifact_path}.run_id",
+                limit={"binding": "current Run and target"},
+                context=self._artifact_preflight_context(
+                    command=command,
+                    gate=gate,
+                    projection=projection,
+                ),
+            ) from exc
         status = _text(response.get("status")).lower()
         summary = _text(response.get("summary"))
         raw_payload = response.get("payload", {})
@@ -909,6 +1012,19 @@ class RunEngine:
                 if name not in raw_payload
             ]
             if missing:
+                if "artifact_ref" in missing:
+                    raise GatePreflightError(
+                        "Gate response payload omits required fields: "
+                        + ", ".join(missing),
+                        reason=PreflightReason.ARTIFACT_REQUIRED,
+                        field="response.payload.artifact_ref",
+                        limit={"binding": "current Run and target"},
+                        context=self._artifact_preflight_context(
+                            command=command,
+                            gate=gate,
+                            projection=projection,
+                        ),
+                    )
                 raise GateConflict(
                     "Gate response payload omits required fields: "
                     + ", ".join(missing)
@@ -936,13 +1052,29 @@ class RunEngine:
             ):
                 expected_target = _text(targets[0].get("address"))
             if expected_target and artifact_ref.target != expected_target:
-                raise ReferenceViolation(
-                    "ArtifactRef target does not match the Run target"
+                raise GatePreflightError(
+                    "ArtifactRef target does not match the Run target",
+                    reason=PreflightReason.ARTIFACT_BINDING,
+                    field="response.payload.artifact_ref.target",
+                    limit={"binding": "current Run and target"},
+                    context=self._artifact_preflight_context(
+                        command=command,
+                        gate=gate,
+                        projection=projection,
+                    ),
                 )
             expected_run_id = _text(projection.get("case_id"))
             if expected_run_id and artifact_ref.run_id != expected_run_id:
-                raise ReferenceViolation(
-                    "ArtifactRef run_id does not match the current Run"
+                raise GatePreflightError(
+                    "ArtifactRef run_id does not match the current Run",
+                    reason=PreflightReason.ARTIFACT_BINDING,
+                    field="response.payload.artifact_ref.run_id",
+                    limit={"binding": "current Run and target"},
+                    context=self._artifact_preflight_context(
+                        command=command,
+                        gate=gate,
+                        projection=projection,
+                    ),
                 )
             if not artifact_ref.handle.startswith("artifact://"):
                 self.artifact_store.register(
@@ -1330,7 +1462,16 @@ class RunEngine:
         projection = _projection(snapshot)
         unknown = self._unknown_mutation(projection)
         if unknown is None:
-            raise ValueError("run has no unknown mutation to reconcile")
+            run_id = self._run_id(snapshot)
+            raise AgentPreflightError(
+                "run has no unknown mutation to reconcile",
+                reason=PreflightReason.RECONCILE_PRECONDITION,
+                field="command",
+                limit={
+                    "precondition": "same Run has an unknown mutation outcome"
+                },
+                context={"run_id": run_id},
+            )
         effect_id = _text(unknown.get("operation_id"))
         intent = self._effect_intent_for_operation(
             projection,
@@ -1805,11 +1946,34 @@ class RunEngine:
                 operation_id=operation_id,
             )
         if isinstance(command, ResumeRun):
-            return self._advance(
-                self.driver.run_snapshot(command.run_id),
+            snapshot = self.driver.run_snapshot(command.run_id)
+            prior_gate = _mapping(_projection(snapshot).get("current_gate"))
+            turn = self._advance(
+                snapshot,
                 task_id=task_id,
                 operation_id=operation_id,
             )
+            current_gate = (
+                turn.gate.to_public_dict()
+                if isinstance(turn.gate, Gate)
+                else dict(turn.gate)
+                if isinstance(turn.gate, Mapping)
+                else {}
+            )
+            same_gate = bool(prior_gate) and all(
+                _text(prior_gate.get(name)) == _text(current_gate.get(name))
+                for name in ("gate_id", "gate_version", "schema_digest")
+            )
+            if same_gate and turn.state == "waiting_response":
+                return replace(
+                    turn,
+                    response_required=True,
+                    progress={
+                        "status": "no_progress",
+                        "reason": "response_required",
+                    },
+                )
+            return turn
         raise TypeError(f"unsupported RunCommand: {type(command).__name__}")
 
     @staticmethod
