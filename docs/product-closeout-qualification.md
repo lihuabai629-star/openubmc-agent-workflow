@@ -12,9 +12,12 @@ python3 scripts/product_closeout_qualification.py evidence.json \
 
 The manifest separates nine dimensions: Runtime continuity, diagnosis, source identity, official
 UT, compiled build, artifact identity, upgrade, freshness, and hardware coverage. Every referenced
-file is verified by SHA-256. Fresh Runtime evidence uses the structured proof schema. Historical
-manifests select one repository-owned `evidence_type`; they cannot supply executable or declarative
-content claims. The built-in historical types are:
+file is verified by SHA-256. Fresh Runtime evidence uses the structured proof schema, but a proof
+is accepted only when its digest and its fixed-format supporting evidence were attached to the
+same persisted Runtime Run before `RunOutcomeRecorded`. The qualifier replays that SQLite ledger,
+checks the target and completed Outcome, and verifies an immutable digest of the Run events.
+Historical manifests select one repository-owned `evidence_type`; they cannot supply executable or
+declarative content claims. The built-in evidence types are:
 
 | Evidence type | Dimension | Fixed verification |
 | --- | --- | --- |
@@ -28,7 +31,8 @@ content claims. The built-in historical types are:
 
 Every source repository must be clean at the exact recorded commit; the firmware artifact must
 match its path, digest, size, and version. Hardware coverage is exact, so SATA or SAS evidence
-cannot satisfy an NVMe case. Fresh evidence also binds upgrade completion, target observation,
+cannot satisfy an NVMe case; the protocol is parsed from the drive evidence rather than accepted
+from manifest device labels. Fresh evidence also binds upgrade completion, target observation,
 hardware acceptance, and terminal Runtime Outcome into one ordered, timezone-aware timeline with a
 declared maximum post-upgrade evidence age.
 
@@ -55,7 +59,8 @@ unattributed as designed.
 The resulting evidence digest is
 `sha256:6c7a1389d5114a1f119a0b1c0549e12d9ed3e19df8cd48e16cc70d2df0b13733`.
 Its claim is `historical-product-validated` and `promotable=false` because the case predates the
-current Runtime and therefore has no current Run ID or terminal Outcome.
+current Runtime and therefore has no current Run ID or terminal Outcome. The retained machine
+report is [630-nvme-product-closeout.json](qualification/630-nvme-product-closeout.json).
 
 ## Fresh product checkpoint
 

@@ -25,6 +25,7 @@ from scripts.evidence_report import (  # noqa: E402
 from scripts.product_closeout_qualification import (  # noqa: E402
     qualify as qualify_product_closeout,
 )
+from scripts.mcp_process_lifecycle import summarize as summarize_mcp_records  # noqa: E402
 from scripts.runtime_stability import qualify_dual_projection  # noqa: E402
 from openubmc_target_runtime import inspect_mcp_process_records  # noqa: E402
 
@@ -39,12 +40,15 @@ PRODUCT_CONTRACT_TESTS = (
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_source_commit_mismatch_is_rejected",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_artifact_identity_mismatch_is_rejected",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_hash_valid_self_attested_empty_evidence",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_proofs_without_fixed_source_evidence",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_proofs_without_a_runtime_ledger",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_upgrade_proof_for_another_artifact",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_stale_or_misordered_target_evidence",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_any_contradictory_additional_timeline_proof",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_historical_evidence_rejects_manifest_authored_claims",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_historical_evidence_rejects_unknown_evidence_type",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_historical_evidence_type_must_match_its_dimension",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_sata_evidence_cannot_satisfy_nvme_scope",
     "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_managed_immutable_identity_validation_error_is_top_level_unhealthy",
     "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_legacy_managed_release_without_lock_is_top_level_unhealthy",
 )
@@ -71,6 +75,7 @@ PROJECTION_TESTS = (
     "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_references_an_unchanged_previously_presented_receipt",
     "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_does_not_reference_receipt_across_task_ownership",
     "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_preserves_a_changed_diagnostic_receipt",
+    "tests.test_agent_gateway.AgentGatewayTests.test_retried_one_shot_terminal_turn_keeps_the_complete_receipt",
     "tests.test_runtime_stability.RuntimeStabilityTests.test_dual_projection_qualification_measures_gate_and_terminal_seams",
 )
 
@@ -181,20 +186,7 @@ def _mcp_closeout_snapshot() -> dict[str, object]:
             check=False,
         )
         records = inspect_mcp_process_records(lifecycle_root)
-    live = [record for record in records if record.get("process_running") is True]
-    summary = {
-        "record_count": len(records),
-        "live_processes": len(live),
-        "active_requests": sum(
-            int(record.get("active_requests", 0)) for record in live
-        ),
-        "confirmed_live_orphans": sum(
-            1
-            for record in live
-            if record.get("lifecycle_state") == "orphaned"
-            and record.get("identity_verified") is True
-        ),
-    }
+    summary = summarize_mcp_records(records)
     return {
         "status": (
             "passed"

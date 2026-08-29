@@ -11,16 +11,116 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "product_closeout_qualification.py"
+RUNTIME_ROOT = ROOT / "openubmc-target-runtime"
+sys.path.insert(0, str(RUNTIME_ROOT))
+
+from openubmc_target_runtime import SQLiteRuntimeRepository  # noqa: E402
+from openubmc_target_runtime.context_runtime import PendingCaseEvent  # noqa: E402
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def structured_proof(root: Path, name: str, payload: dict[str, object]) -> tuple[dict[str, str], Path]:
+def structured_proof(
+    root: Path, name: str, payload: dict[str, object]
+) -> tuple[dict[str, object], Path]:
     path = root / f"{name}.json"
     path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     return {"path": str(path), "sha256": sha256(path)}, path
+
+
+def all_manifest_evidence(manifest: dict[str, object]) -> list[dict[str, object]]:
+    validation = manifest["validation"]
+    dimensions = (
+        manifest["runtime"],
+        manifest["diagnosis"],
+        validation["official_ut"],
+        validation["build"],
+        manifest["upgrade"],
+        manifest["freshness"],
+        manifest["hardware"],
+    )
+    refs: list[dict[str, object]] = []
+    for dimension in dimensions:
+        for item in dimension.get("evidence", []):
+            refs.append(item)
+            support = item.get("supporting_evidence")
+            if isinstance(support, dict):
+                refs.append(support)
+    return refs
+
+
+def rebuild_runtime_ledger(manifest: dict[str, object]) -> None:
+    runtime = manifest["runtime"]
+    repository_ref = runtime["repository"]
+    database = Path(repository_ref["path"])
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(str(database) + suffix)
+        if candidate.exists():
+            candidate.unlink()
+    run_id = runtime["run_id"]
+    target = manifest["case"]["target"]
+    events = [
+        PendingCaseEvent(
+            "CaseOpened",
+            {
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+                "targets": [
+                    {"target_id": target, "address": target, "role": "candidate"}
+                ],
+            },
+            "product-closeout-start",
+        )
+    ]
+    for index, item in enumerate(all_manifest_evidence(manifest), start=1):
+        digest = item["sha256"]
+        events.append(
+            PendingCaseEvent(
+                "EvidenceAttached",
+                {
+                    "evidence": {
+                        "evidence_id": f"product-closeout-{index}",
+                        "blob_id": digest,
+                        "media_type": "application/octet-stream",
+                        "byte_count": Path(item["path"]).stat().st_size,
+                        "target_id": target,
+                        "generation": "fresh-product-closeout",
+                        "provenance": "product-closeout-qualification",
+                        "observed_at": 1.0 + index,
+                        "case_id": run_id,
+                        "producer": "runtime-core",
+                    }
+                },
+                f"product-closeout-evidence-{index}",
+            )
+        )
+    events.append(
+        PendingCaseEvent(
+            "RunOutcomeRecorded",
+            {
+                "outcome": {
+                    "status": "completed",
+                    "summary": "fresh product closeout completed",
+                    "acceptance": [],
+                }
+            },
+            "product-closeout-outcome",
+        )
+    )
+    repository = SQLiteRuntimeRepository(database)
+    repository.commit(
+        run_id, expected_revision=0, events=tuple(events)
+    )
+    repository_ref["sha256"] = hashlib.sha256(
+        json.dumps(
+            repository.events(run_id),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def complete_manifest(
@@ -84,7 +184,7 @@ def complete_manifest(
             "evidence_ids": ["observation-1"],
         },
     )
-    official_ut_ref, _ = structured_proof(
+    official_ut_ref, official_ut_proof = structured_proof(
         root,
         "official-ut-proof",
         {
@@ -96,7 +196,7 @@ def complete_manifest(
             "tests_failed": 0,
         },
     )
-    build_ref, _ = structured_proof(
+    build_ref, build_proof = structured_proof(
         root,
         "build-proof",
         {
@@ -107,7 +207,7 @@ def complete_manifest(
             "compiled_units": 1,
         },
     )
-    upgrade_ref, _ = structured_proof(
+    upgrade_ref, upgrade_proof = structured_proof(
         root,
         "upgrade-proof",
         {
@@ -119,7 +219,7 @@ def complete_manifest(
             "completed_at": "2026-08-29T11:00:00Z",
         },
     )
-    freshness_ref, _ = structured_proof(
+    freshness_ref, freshness_proof = structured_proof(
         root,
         "freshness-proof",
         {
@@ -130,7 +230,7 @@ def complete_manifest(
             "observed_at": "2026-08-29T12:00:00Z",
         },
     )
-    hardware_ref, _ = structured_proof(
+    hardware_ref, hardware_proof = structured_proof(
         root,
         "hardware-proof",
         {
@@ -142,6 +242,118 @@ def complete_manifest(
             "observed_at": "2026-08-29T12:00:00Z",
         },
     )
+    diagnosis_support = root / "diagnosis-record.md"
+    diagnosis_support.write_text(
+        "根因：目标盘资源关联键错误。\n修复：使用全局盘位映射。\n",
+        encoding="utf-8",
+    )
+    official_ut_support = root / "official-ut.log"
+    official_ut_support.write_text("1/1 passed\n", encoding="utf-8")
+    build_support = root / "component-build.log"
+    build_support.write_text(
+        "component/1.0.0@openubmc/stable: Created package revision "
+        "0123456789abcdef0123456789abcdef\n"
+        "component/1.0.0@openubmc/stable: Full package reference: "
+        "component/1.0.0@openubmc/stable#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#"
+        "0123456789abcdef0123456789abcdef\n"
+        "构建成功\n",
+        encoding="utf-8",
+    )
+    upgrade_support = root / "upgrade-record.md"
+    upgrade_support.write_text(
+        "上传与激活 | 完成\n安装版本确认 | `1.0.0`\n", encoding="utf-8"
+    )
+    freshness_support = root / "reboot-timeline.log"
+    freshness_support.write_text(
+        "elapsed=1s manager_ready\n"
+        "elapsed=2s drives=1 direct=1 direct_attributed=1 raid=0 raid_zero=0 "
+        "health_ok=1 presence_ok=1 serial_ok=1\n"
+        "accepted_elapsed=2s\n",
+        encoding="utf-8",
+    )
+    hardware_support = root / "drive-summary.json"
+    hardware_support.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "drives": 1,
+                    "direct": 1,
+                    "direct_attributed": 1,
+                    "raid": 0,
+                    "raid_zero": 0,
+                    "health_ok": 1,
+                    "presence_ok": 1,
+                    "serial_ok": 1,
+                },
+                "drives": [
+                    {
+                        "id": 1,
+                        "protocol": 6,
+                        "controller": 255,
+                        "resource": 1,
+                        "health": 0,
+                        "presence": 1,
+                        "serial_present": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def support(path: Path, evidence_type: str) -> dict[str, str]:
+        return {
+            "path": str(path),
+            "sha256": sha256(path),
+            "evidence_type": evidence_type,
+        }
+
+    def bind_support(
+        proof_ref: dict[str, object],
+        proof_path: Path,
+        source_ref: dict[str, str],
+    ) -> None:
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+        proof["supporting_evidence"] = {
+            "evidence_type": source_ref["evidence_type"],
+            "sha256": source_ref["sha256"],
+        }
+        proof_path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
+        proof_ref["sha256"] = sha256(proof_path)
+        proof_ref["supporting_evidence"] = source_ref
+
+    bind_support(
+        diagnosis_ref,
+        diagnosis_proof,
+        support(diagnosis_support, "workflow-diagnosis-record"),
+    )
+    bind_support(
+        official_ut_ref,
+        official_ut_proof,
+        support(official_ut_support, "workflow-official-ut-record"),
+    )
+    bind_support(
+        build_ref,
+        build_proof,
+        support(build_support, "component-build-log"),
+    )
+    bind_support(
+        upgrade_ref,
+        upgrade_proof,
+        support(upgrade_support, "workflow-upgrade-record"),
+    )
+    bind_support(
+        freshness_ref,
+        freshness_proof,
+        support(freshness_support, "reboot-acceptance-timeline"),
+    )
+    bind_support(
+        hardware_ref,
+        hardware_proof,
+        support(hardware_support, "drive-summary-json"),
+    )
+    runtime_database = root / "runtime.sqlite3"
     manifest: dict[str, object] = {
         "schema": "openubmc-agent-workflow.product-closeout-evidence.v1",
         "mode": mode,
@@ -153,6 +365,7 @@ def complete_manifest(
         "runtime": {
             "run_id": "run-product-closeout-1",
             "terminal_outcome": "completed",
+            "repository": {"path": str(runtime_database), "sha256": ""},
             "evidence": [runtime_ref],
         },
         "diagnosis": {"status": "passed", "evidence": [diagnosis_ref]},
@@ -186,6 +399,7 @@ def complete_manifest(
             "evidence": [hardware_ref],
         },
     }
+    rebuild_runtime_ledger(manifest)
     del runtime_proof
     return manifest, source, diagnosis_proof, artifact
 
@@ -246,6 +460,40 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertFalse(report["qualified"])
         self.assertTrue(
             any("diagnosis" in item and "structured proof" in item for item in report["violations"])
+        )
+
+    def test_fresh_closeout_rejects_proofs_without_fixed_source_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            for item in all_manifest_evidence(manifest):
+                item.pop("supporting_evidence", None)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any(
+                "fixed supporting evidence" in item
+                for item in report["violations"]
+            ),
+            report["violations"],
+        )
+
+    def test_fresh_closeout_rejects_proofs_without_a_runtime_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            manifest["runtime"]["repository"] = {}
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("runtime.repository" in item for item in report["violations"]),
+            report["violations"],
         )
 
     def test_fresh_closeout_rejects_upgrade_proof_for_another_artifact(self) -> None:
@@ -312,8 +560,21 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                     json.dumps(original, sort_keys=True), encoding="utf-8"
                 )
                 manifest[dimension]["evidence"].append(
-                    {"path": str(contradictory), "sha256": sha256(contradictory)}
+                    {
+                        "path": str(contradictory),
+                        "sha256": sha256(contradictory),
+                        **(
+                            {
+                                "supporting_evidence": original_ref[
+                                    "supporting_evidence"
+                                ]
+                            }
+                            if "supporting_evidence" in original_ref
+                            else {}
+                        ),
+                    }
                 )
+            rebuild_runtime_ledger(manifest)
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 1, completed.stderr)
@@ -521,6 +782,7 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                         "drives": [
                             {
                                 "id": 23,
+                                "protocol": 6,
                                 "controller": 255,
                                 "resource": 1,
                                 "health": 0,
@@ -717,7 +979,34 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             proof = root / "hardware.json"
-            proof.write_text("{}", encoding="utf-8")
+            proof.write_text(
+                json.dumps(
+                    {
+                        "summary": {
+                            "drives": 1,
+                            "direct": 1,
+                            "direct_attributed": 1,
+                            "raid": 0,
+                            "raid_zero": 0,
+                            "health_ok": 1,
+                            "presence_ok": 1,
+                            "serial_ok": 1,
+                        },
+                        "drives": [
+                            {
+                                "id": 1,
+                                "protocol": 3,
+                                "controller": 255,
+                                "resource": 1,
+                                "health": 0,
+                                "presence": 1,
+                                "serial_present": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
             manifest = {
                 "schema": "openubmc-agent-workflow.product-closeout-evidence.v1",
                 "mode": "historical-reconstruction",
@@ -729,8 +1018,14 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                 "hardware": {
                     "status": "covered",
                     "required_protocols": ["NVMe"],
-                    "devices": [{"device_id": "Drive1", "protocol": "SATA"}],
-                    "evidence": [{"path": str(proof), "sha256": sha256(proof)}],
+                    "devices": [{"device_id": "Drive1", "protocol": "NVMe"}],
+                    "evidence": [
+                        {
+                            "path": str(proof),
+                            "sha256": sha256(proof),
+                            "evidence_type": "drive-summary-json",
+                        }
+                    ],
                 },
             }
             manifest_path = root / "manifest.json"
@@ -746,7 +1041,10 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 1)
         report = json.loads(completed.stdout)
         self.assertFalse(report["dimensions"]["hardware"]["accepted"])
-        self.assertIn("hardware_protocols_missing=NVMe", report["gaps"])
+        self.assertTrue(
+            any("protocol" in item for item in report["violations"]),
+            report["violations"],
+        )
 
 
 if __name__ == "__main__":

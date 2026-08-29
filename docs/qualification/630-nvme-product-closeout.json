@@ -1,0 +1,85 @@
+{
+  "case": {
+    "name": "630 NVMe CPU resource attribution",
+    "required_protocols": [
+      "NVMe"
+    ],
+    "target": "historical-630-target"
+  },
+  "claim_level": "historical-product-validated",
+  "dimensions": {
+    "artifact": {
+      "accepted": true,
+      "size": 93563247,
+      "status": "verified",
+      "version": "12.08.21.10"
+    },
+    "build": {
+      "accepted": true,
+      "evidence_count": 4,
+      "status": "compiled",
+      "verified_evidence_count": 4
+    },
+    "diagnosis": {
+      "accepted": true,
+      "evidence_count": 1,
+      "status": "passed",
+      "verified_evidence_count": 1
+    },
+    "freshness": {
+      "accepted": true,
+      "evidence_count": 1,
+      "status": "fresh",
+      "verified_evidence_count": 1
+    },
+    "hardware": {
+      "accepted": true,
+      "device_count": 8,
+      "evidence_count": 1,
+      "observed_protocols": [
+        "NVMe"
+      ],
+      "required_protocols": [
+        "NVMe"
+      ],
+      "status": "covered",
+      "verified_evidence_count": 1
+    },
+    "official_ut": {
+      "accepted": true,
+      "evidence_count": 1,
+      "status": "passed",
+      "verified_evidence_count": 1
+    },
+    "runtime": {
+      "accepted": false,
+      "evidence_count": 0,
+      "ledger_verified": false,
+      "run_id": "",
+      "terminal_outcome": "unavailable",
+      "verified_evidence_count": 0
+    },
+    "source": {
+      "accepted": true,
+      "repository_count": 4,
+      "status": "completed",
+      "verified_repository_count": 4
+    },
+    "upgrade": {
+      "accepted": true,
+      "evidence_count": 1,
+      "status": "completed",
+      "verified_evidence_count": 1
+    }
+  },
+  "evidence_digest": "sha256:6c7a1389d5114a1f119a0b1c0549e12d9ed3e19df8cd48e16cc70d2df0b13733",
+  "gaps": [
+    "fresh_runtime_identity_unavailable"
+  ],
+  "manifest_digest": "sha256:2bc3f2cf986c7ba41471124ffadfff38ccfbc3faca20861c2da806e1dd95ee3f",
+  "mode": "historical-reconstruction",
+  "promotable": false,
+  "qualified": true,
+  "schema": "openubmc-agent-workflow.product-closeout-qualification.v1",
+  "violations": []
+}
