@@ -85,7 +85,7 @@ QUALIFICATIONS = (
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_target_preserves_runtime_incident_semantics",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_budget_never_rewrites_terminal_outcome",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_budget_preserves_diagnostic_receipt_semantics",
-            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_compaction_preserves_an_evaluable_result_summary",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_target_preserves_evaluable_result_values",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_exceeds_the_soft_target_instead_of_rewriting_completion",
             "tests.test_agent_gateway.AgentGatewayTests.test_gate_construction_preserves_schema_above_the_projection_target",
             "tests.test_agent_gateway.AgentGatewayTests.test_adapter_cannot_expand_diagnostic_scope_beyond_the_durable_contract",

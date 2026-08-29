@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -29,6 +30,52 @@ SPEC.loader.exec_module(qualification)
 
 
 class RuntimeQualificationTests(unittest.TestCase):
+    def assert_test_names_resolve(
+        self,
+        test_names: tuple[str, ...],
+        *,
+        cwd: Path,
+    ) -> None:
+        probe = (
+            "import sys, unittest; "
+            "loader = unittest.TestLoader(); "
+            "suite = loader.loadTestsFromNames(sys.argv[1:]); "
+            "errors = '\\n'.join(loader.errors); "
+            "expected = len(sys.argv) - 1; "
+            "actual = suite.countTestCases(); "
+            "print(errors or f'resolved={actual}/{expected}'); "
+            "raise SystemExit(1 if errors or actual != expected else 0)"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", probe, *test_names],
+            cwd=cwd,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            completed.stderr or completed.stdout,
+        )
+
+    def test_registered_qualification_tests_are_resolvable(self) -> None:
+        runtime_test_names = tuple(
+            test_name
+            for _group_name, test_names in qualification.QUALIFICATIONS
+            for test_name in test_names
+        ) + qualification.PARTIAL_RESULT_TESTS
+        self.assert_test_names_resolve(
+            runtime_test_names,
+            cwd=WORKSPACE / "openubmc-target-runtime",
+        )
+        self.assert_test_names_resolve(
+            qualification.LIVE_PATCH_CRASH_TESTS,
+            cwd=WORKSPACE / "openubmc-live-patch",
+        )
+
     @staticmethod
     def stability_report(source_commit: str) -> str:
         report = {
