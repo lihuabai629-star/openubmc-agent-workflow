@@ -3324,9 +3324,21 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(upgraded["rollback_commit"], "a" * 40)
 
         output = io.StringIO()
+        verified_identity = {
+            "schema": "openubmc-agent-workflow.release-lock.v1",
+            "release_version": "1.2.4",
+            "source_commit": "b" * 40,
+            "lock_digest": "sha256:" + "c" * 64,
+            "immutable": True,
+        }
         with (
             mock.patch.object(installer, "git_commit", return_value="b" * 40),
             mock.patch.object(installer, "git_dirty", return_value=False),
+            mock.patch.object(
+                installer,
+                "release_identity",
+                return_value=verified_identity,
+            ),
             redirect_stdout(output),
         ):
             result = installer.main(["check", "--home", str(self.home), "--json"])
@@ -3335,6 +3347,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(document["source"]["requested_ref"], "v1.2.4")
         self.assertEqual(document["source"]["ref_kind"], "tag")
         self.assertEqual(document["source"]["resolved_commit"], "b" * 40)
+        self.assertTrue(document["release_identity_verified"])
 
     def test_rollback_toggles_between_the_last_two_managed_revisions(self) -> None:
         self.prepare_credentials()
