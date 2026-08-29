@@ -13,6 +13,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -601,9 +602,21 @@ def _runtime_ledger(
         violations.append(f"runtime.repository: file is unavailable: {path}")
         return False, set()
     try:
-        repository = SQLiteRuntimeRepository(path)
-        projection = repository.load(run_id)
-        events = repository.events(run_id)
+        with tempfile.TemporaryDirectory() as raw:
+            snapshot = Path(raw) / "runtime-snapshot.sqlite3"
+            source_wal = Path(str(path) + "-wal")
+            database_raw = path.read_bytes()
+            wal_raw = source_wal.read_bytes() if source_wal.is_file() else None
+            if path.read_bytes() != database_raw or (
+                (source_wal.read_bytes() if source_wal.is_file() else None) != wal_raw
+            ):
+                raise ValueError("Runtime ledger changed while snapshotting")
+            snapshot.write_bytes(database_raw)
+            if wal_raw is not None:
+                Path(str(snapshot) + "-wal").write_bytes(wal_raw)
+            repository = SQLiteRuntimeRepository(snapshot)
+            projection = repository.load(run_id)
+            events = repository.events(run_id)
     except (OSError, ValueError, sqlite3.DatabaseError) as error:
         violations.append(f"runtime.repository: cannot replay Run ledger: {error}")
         return False, set()
@@ -867,7 +880,12 @@ def _artifact_dimension(
                 raw = path.read_bytes()
             except OSError as error:
                 violations.append(f"artifact: cannot read content: {error}")
-                raw = b""
+                return {
+                    "status": status,
+                    "accepted": False,
+                    "version": version,
+                    "size": 0,
+                }
             actual_size = len(raw)
             actual = _digest_bytes(raw)
             if actual != expected:

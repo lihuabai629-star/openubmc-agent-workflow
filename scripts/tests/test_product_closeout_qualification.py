@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -544,6 +545,116 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertFalse(report["promotable"])
         self.assertTrue(
             any("cannot replay Run ledger" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_qualification_does_not_migrate_the_trusted_runtime_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            repository = Path(manifest["runtime"]["repository"]["path"])
+            with sqlite3.connect(repository) as connection:
+                connection.execute("DROP INDEX evidence_index_blob")
+                connection.execute("DROP TABLE evidence_index")
+                connection.commit()
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            before = repository.read_bytes()
+            sidecars_before = {
+                suffix: Path(str(repository) + suffix).read_bytes()
+                for suffix in ("-wal", "-shm")
+                if Path(str(repository) + suffix).exists()
+            }
+            completed = run_qualification(root, manifest)
+            sidecars_after = {
+                suffix: Path(str(repository) + suffix).read_bytes()
+                for suffix in ("-wal", "-shm")
+                if Path(str(repository) + suffix).exists()
+            }
+            after = repository.read_bytes()
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(after, before)
+        self.assertEqual(sidecars_after, sidecars_before)
+
+    def test_read_only_snapshot_replays_committed_wal_events(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            repository = Path(manifest["runtime"]["repository"]["path"])
+            run_id = manifest["runtime"]["run_id"]
+            with sqlite3.connect(repository) as connection:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA wal_autocheckpoint=0")
+                connection.execute(
+                    "UPDATE case_events SET operation_id = ? "
+                    "WHERE case_id = ? AND revision = 1",
+                    ("wal-only-product-closeout-start", run_id),
+                )
+                connection.commit()
+                rows = connection.execute(
+                    "SELECT revision, kind, operation_id, payload_json, created_at "
+                    "FROM case_events WHERE case_id = ? ORDER BY revision",
+                    (run_id,),
+                ).fetchall()
+                events = tuple(
+                    {
+                        "revision": int(row["revision"]),
+                        "kind": str(row["kind"]),
+                        "operation_id": str(row["operation_id"]),
+                        "payload": json.loads(row["payload_json"]),
+                        "created_at": float(row["created_at"]),
+                    }
+                    for row in rows
+                )
+                manifest["runtime"]["repository"]["sha256"] = hashlib.sha256(
+                    json.dumps(
+                        events,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                before = {
+                    suffix: Path(str(repository) + suffix).read_bytes()
+                    for suffix in ("", "-wal", "-shm")
+                    if Path(str(repository) + suffix).exists()
+                }
+                completed = run_qualification(root, manifest)
+                after = {
+                    suffix: Path(str(repository) + suffix).read_bytes()
+                    for suffix in ("", "-wal", "-shm")
+                    if Path(str(repository) + suffix).exists()
+                }
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(after, before)
+
+    def test_artifact_read_failure_cannot_accept_the_artifact_dimension(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, artifact = complete_manifest(root)
+            manifest["artifact"]["sha256"] = hashlib.sha256(b"").hexdigest()
+            manifest["artifact"]["size"] = 0
+            trusted_repository = Path(manifest["runtime"]["repository"]["path"])
+            original_read_bytes = Path.read_bytes
+
+            def failing_read_bytes(path: Path) -> bytes:
+                if path == artifact:
+                    raise OSError("artifact became unreadable")
+                return original_read_bytes(path)
+
+            sys.path.insert(0, str(ROOT))
+            from scripts import product_closeout_qualification as qualification
+
+            with mock.patch.object(Path, "read_bytes", failing_read_bytes):
+                report = qualification.qualify(
+                    manifest,
+                    runtime_repository=trusted_repository,
+                )
+
+        self.assertFalse(report["dimensions"]["artifact"]["accepted"])
+        self.assertTrue(
+            any("cannot read content" in item for item in report["violations"]),
             report["violations"],
         )
 

@@ -24,7 +24,9 @@ UT, compiled build, artifact identity, upgrade, freshness, and hardware coverage
 file is verified by SHA-256. Fresh Runtime evidence uses the structured proof schema, but a proof
 is accepted only when its digest and its fixed-format supporting evidence were attached to the
 same persisted Runtime Run before `RunOutcomeRecorded`. The qualifier replays that SQLite ledger,
-checks the target and completed Outcome, and verifies an immutable digest of the Run events.
+checks the target and completed Outcome, and verifies an immutable digest of the Run events. The
+Operator-selected database and WAL are copied into a stable snapshot before replay, so
+qualification never runs migrations or index backfills against the trusted ledger.
 Historical manifests select one repository-owned `evidence_type`; they cannot supply executable or
 declarative content claims. The built-in evidence types are:
 
