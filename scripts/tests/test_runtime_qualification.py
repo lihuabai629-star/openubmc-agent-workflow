@@ -599,13 +599,14 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "wrong_target_or_artifact_mutations": 0,
                 "unknown_new_identity_retries": 0,
                 "semantic_projection_completion": 0,
+                "task_scoped_mcp_lifecycle": 0,
                 "persisted_run_compatibility": 0,
                 "real_backend_crash_cuts": 0,
                 "runtime_stability": 0,
             },
         )
         self.assertTrue(report["ordinary_partial_result_accepted"])
-        self.assertEqual(len(calls), 9)
+        self.assertEqual(len(calls), 10)
         self.assertEqual(report["source_commit"], SOURCE_COMMIT)
         self.assertEqual(
             report["environment"],
@@ -703,7 +704,7 @@ class RuntimeQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["promotable"])
         self.assertGreater(report["violations"]["false_successes"], 0)
-        self.assertEqual(call_count, 9)
+        self.assertEqual(call_count, 10)
 
     def test_artifact_lifecycle_without_shared_content_safety_blocks_promotion(
         self,
