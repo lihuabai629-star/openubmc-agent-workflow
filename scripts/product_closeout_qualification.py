@@ -250,7 +250,6 @@ def _verify_structured_proof(
 def _verify_fresh_timeline(
     manifest: Mapping[str, object],
     *,
-    dimensions: Mapping[str, object],
     violations: list[str],
 ) -> None:
     freshness = _mapping(manifest.get("freshness"))
@@ -273,35 +272,45 @@ def _verify_fresh_timeline(
     }
     if not all(proofs.values()):
         return
-    runtime_completed = _timestamp(proofs["runtime"][0].get("completed_at"))
-    upgrade_completed = _timestamp(proofs["upgrade"][0].get("completed_at"))
-    freshness_observed = _timestamp(proofs["freshness"][0].get("observed_at"))
-    hardware_observed = _timestamp(proofs["hardware"][0].get("observed_at"))
-    if None in {
-        runtime_completed,
-        upgrade_completed,
-        freshness_observed,
-        hardware_observed,
-    }:
-        return
-    assert runtime_completed is not None
-    assert upgrade_completed is not None
-    assert freshness_observed is not None
-    assert hardware_observed is not None
-    if freshness_observed < upgrade_completed:
-        violations.append("freshness evidence predates upgrade completion")
-    elif (freshness_observed - upgrade_completed).total_seconds() > max_age:
-        violations.append("freshness evidence exceeds max_age_seconds after upgrade")
-    if hardware_observed < upgrade_completed:
-        violations.append("hardware evidence predates upgrade completion")
-    if runtime_completed < freshness_observed or runtime_completed < hardware_observed:
-        violations.append("Runtime terminal Outcome predates target acceptance evidence")
-    freshness_dimension = _mapping(dimensions.get("freshness"))
-    if isinstance(freshness_dimension, dict):
-        freshness_dimension["max_age_seconds"] = max_age
-        freshness_dimension["observed_at"] = freshness_observed.isoformat().replace(
-            "+00:00", "Z"
+    runtime_completed = [
+        _timestamp(proof.get("completed_at")) for proof in proofs["runtime"]
+    ]
+    upgrade_completed = [
+        _timestamp(proof.get("completed_at")) for proof in proofs["upgrade"]
+    ]
+    freshness_observed = [
+        _timestamp(proof.get("observed_at")) for proof in proofs["freshness"]
+    ]
+    hardware_observed = [
+        _timestamp(proof.get("observed_at")) for proof in proofs["hardware"]
+    ]
+    if any(
+        timestamp is None
+        for timestamps in (
+            runtime_completed,
+            upgrade_completed,
+            freshness_observed,
+            hardware_observed,
         )
+        for timestamp in timestamps
+    ):
+        return
+    runtime_times = [timestamp for timestamp in runtime_completed if timestamp]
+    upgrade_times = [timestamp for timestamp in upgrade_completed if timestamp]
+    freshness_times = [timestamp for timestamp in freshness_observed if timestamp]
+    hardware_times = [timestamp for timestamp in hardware_observed if timestamp]
+    latest_target = max(*freshness_times, *hardware_times)
+    earliest_upgrade = min(upgrade_times)
+    latest_upgrade = max(upgrade_times)
+    earliest_runtime = min(runtime_times)
+    if min(freshness_times) < latest_upgrade:
+        violations.append("freshness evidence predates upgrade completion")
+    if min(hardware_times) < latest_upgrade:
+        violations.append("hardware evidence predates upgrade completion")
+    if (latest_target - earliest_upgrade).total_seconds() > max_age:
+        violations.append("freshness evidence exceeds max_age_seconds after upgrade")
+    if earliest_runtime < latest_target:
+        violations.append("Runtime terminal Outcome predates target acceptance evidence")
 
 
 def _file_identity(
@@ -761,7 +770,6 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
     if mode == "fresh-runtime":
         _verify_fresh_timeline(
             manifest,
-            dimensions=dimensions,
             violations=violations,
         )
 

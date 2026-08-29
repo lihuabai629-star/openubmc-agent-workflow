@@ -289,6 +289,41 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
             any("freshness evidence predates upgrade" in item for item in report["violations"])
         )
 
+    def test_fresh_closeout_rejects_any_contradictory_additional_timeline_proof(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            contradictions = {
+                "runtime": ("completed_at", "2026-08-29T10:00:00Z"),
+                "upgrade": ("completed_at", "2026-08-29T11:45:00Z"),
+                "freshness": ("observed_at", "2000-01-01T00:00:00Z"),
+                "hardware": ("observed_at", "2000-01-01T00:00:00Z"),
+            }
+            for dimension, (field, value) in contradictions.items():
+                original_ref = manifest[dimension]["evidence"][0]
+                original = json.loads(
+                    Path(original_ref["path"]).read_text(encoding="utf-8")
+                )
+                original[field] = value
+                contradictory = root / f"{dimension}-contradictory.json"
+                contradictory.write_text(
+                    json.dumps(original, sort_keys=True), encoding="utf-8"
+                )
+                manifest[dimension]["evidence"].append(
+                    {"path": str(contradictory), "sha256": sha256(contradictory)}
+                )
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertEqual(report["dimensions"]["runtime"]["verified_evidence_count"], 2)
+        self.assertTrue(
+            any("timeline" in item or "predates" in item for item in report["violations"])
+        )
+
     def test_source_commit_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
