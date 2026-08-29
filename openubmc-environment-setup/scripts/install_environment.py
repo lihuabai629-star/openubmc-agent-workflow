@@ -4662,17 +4662,13 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
             )
         identity_valid = not actual_release.get("validation_error")
         immutable = bool(actual_release.get("immutable")) and identity_valid
-        legacy_managed = (
-            source_mode == "managed"
-            and actual_release.get("schema") == "legacy-release-without-lock"
-        )
         release_detail = (
             f"{actual_release.get('release_version', '')} "
             f"{actual_release.get('lock_digest', actual_release.get('schema', ''))}"
         ).strip()
         record(
             "release_identity",
-            immutable or legacy_managed,
+            immutable,
             release_detail,
             "release identity: " + release_detail,
             blocking=source_mode == "managed",

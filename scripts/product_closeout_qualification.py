@@ -15,6 +15,7 @@ import sys
 
 EVIDENCE_SCHEMA = "openubmc-agent-workflow.product-closeout-evidence.v1"
 REPORT_SCHEMA = "openubmc-agent-workflow.product-closeout-qualification.v1"
+PROOF_SCHEMA = "openubmc-agent-workflow.product-closeout-proof.v1"
 MODES = {"fresh-runtime", "historical-reconstruction"}
 PROTOCOLS = {"NVMe", "SATA", "SAS"}
 SHA256 = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
@@ -52,12 +53,172 @@ def _expected_sha256(value: object) -> str:
     return match.group(1) if match is not None else ""
 
 
+def _nested_value(document: object, path: str) -> object:
+    current = document
+    for segment in path.split("."):
+        if not isinstance(current, Mapping) or segment not in current:
+            return None
+        current = current[segment]
+    return current
+
+
+def _verify_claims(
+    item: Mapping[str, object],
+    *,
+    path: Path,
+    label: str,
+    violations: list[str],
+) -> bool:
+    claims = _sequence(item.get("claims"))
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        violations.append(f"{label}: cannot read evidence content: {error}")
+        return False
+    parsed: object | None = None
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, Mapping) and parsed.get("schema") == PROOF_SCHEMA:
+        return True
+    if not claims:
+        violations.append(
+            f"{label}: structured proof or explicit content claims are required"
+        )
+        return False
+    text: str | None = None
+    accepted = True
+    for index, raw_claim in enumerate(claims):
+        claim_label = f"{label}.claims[{index}]"
+        if not isinstance(raw_claim, Mapping):
+            violations.append(f"{claim_label} must be an object")
+            accepted = False
+            continue
+        claim = dict(raw_claim)
+        kind = _text(claim.get("kind"))
+        if kind == "text_contains":
+            expected = _text(claim.get("value"))
+            if not expected:
+                violations.append(f"{claim_label}: value is required")
+                accepted = False
+                continue
+            if text is None:
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    violations.append(f"{claim_label}: evidence is not UTF-8 text")
+                    accepted = False
+                    continue
+            if expected not in text:
+                violations.append(f"{claim_label}: expected text is absent")
+                accepted = False
+        elif kind in {"json_equals", "json_number_at_least"}:
+            json_path = _text(claim.get("path"))
+            if parsed is None or not json_path:
+                violations.append(
+                    f"{claim_label}: JSON evidence and a dotted path are required"
+                )
+                accepted = False
+                continue
+            actual = _nested_value(parsed, json_path)
+            expected = claim.get("value")
+            if kind == "json_equals" and actual != expected:
+                violations.append(
+                    f"{claim_label}: expected {json_path}={expected!r}, actual {actual!r}"
+                )
+                accepted = False
+            elif kind == "json_number_at_least":
+                if (
+                    isinstance(actual, bool)
+                    or not isinstance(actual, (int, float))
+                    or isinstance(expected, bool)
+                    or not isinstance(expected, (int, float))
+                    or actual < expected
+                ):
+                    violations.append(
+                        f"{claim_label}: expected {json_path}>={expected!r}, actual {actual!r}"
+                    )
+                    accepted = False
+        else:
+            violations.append(f"{claim_label}: unsupported claim kind {kind or 'missing'}")
+            accepted = False
+    return accepted
+
+
+def _verify_structured_proof(
+    item: Mapping[str, object],
+    *,
+    path: Path,
+    label: str,
+    requirements: Mapping[str, object],
+    violations: list[str],
+    required: bool,
+) -> bool:
+    try:
+        proof = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        proof = None
+    if not isinstance(proof, Mapping) or proof.get("schema") != PROOF_SCHEMA:
+        if required:
+            violations.append(f"{label}: Runtime evidence requires a structured proof")
+            return False
+        return _verify_claims(item, path=path, label=label, violations=violations)
+    accepted = True
+    for field, expected in requirements.items():
+        actual = _nested_value(proof, field)
+        if actual != expected:
+            field_label = (
+                f"artifact identity {field.removeprefix('artifact.')}"
+                if field.startswith("artifact.")
+                else field
+            )
+            violations.append(
+                f"{label}: structured proof {field_label} mismatch: expected {expected!r}, actual {actual!r}"
+            )
+            accepted = False
+    dimension = _text(requirements.get("dimension"))
+    if dimension == "diagnosis" and not _sequence(proof.get("evidence_ids")):
+        violations.append(f"{label}: diagnosis proof requires evidence_ids")
+        accepted = False
+    elif dimension == "official_ut":
+        tests_run = proof.get("tests_run")
+        tests_failed = proof.get("tests_failed")
+        if (
+            isinstance(tests_run, bool)
+            or not isinstance(tests_run, int)
+            or tests_run <= 0
+            or tests_failed != 0
+        ):
+            violations.append(
+                f"{label}: official UT proof requires tests_run>0 and tests_failed=0"
+            )
+            accepted = False
+    elif dimension == "build":
+        compiled_units = proof.get("compiled_units")
+        if (
+            isinstance(compiled_units, bool)
+            or not isinstance(compiled_units, int)
+            or compiled_units <= 0
+        ):
+            violations.append(f"{label}: build proof requires compiled_units>0")
+            accepted = False
+    elif dimension in {"freshness", "hardware"} and not _text(
+        proof.get("observed_at")
+    ):
+        violations.append(f"{label}: {dimension} proof requires observed_at")
+        accepted = False
+    return accepted
+
+
 def _file_identity(
     item: Mapping[str, object],
     *,
     label: str,
     violations: list[str],
     identities: list[str],
+    proof_requirements: Mapping[str, object] | None = None,
+    structured_proof_required: bool = False,
 ) -> bool:
     path_text = _text(item.get("path"))
     expected = _expected_sha256(item.get("sha256"))
@@ -77,8 +238,17 @@ def _file_identity(
             f"{label}: evidence digest mismatch: expected {expected}, actual {actual}"
         )
         return False
-    identities.append(f"file:{label}:{actual}:{path.stat().st_size}")
-    return True
+    content_valid = _verify_structured_proof(
+        item,
+        path=path,
+        label=label,
+        requirements=proof_requirements or {},
+        violations=violations,
+        required=structured_proof_required,
+    )
+    if content_valid:
+        identities.append(f"file:{label}:{actual}:{path.stat().st_size}")
+    return content_valid
 
 
 def _evidence_dimension(
@@ -89,6 +259,8 @@ def _evidence_dimension(
     violations: list[str],
     gaps: list[str],
     identities: list[str],
+    proof_requirements: Mapping[str, object],
+    structured_proof_required: bool,
 ) -> dict[str, object]:
     document = _mapping(value)
     status = _text(document.get("status")) or "not_reported"
@@ -103,6 +275,8 @@ def _evidence_dimension(
             label=f"{label}.evidence[{index}]",
             violations=violations,
             identities=identities,
+            proof_requirements=proof_requirements,
+            structured_proof_required=structured_proof_required,
         ):
             valid_evidence += 1
     accepted = status in accepted_statuses and valid_evidence == len(evidence) and bool(evidence)
@@ -235,6 +409,9 @@ def _hardware_dimension(
     violations: list[str],
     gaps: list[str],
     identities: list[str],
+    target: str,
+    run_id: str,
+    structured_proof_required: bool,
 ) -> dict[str, object]:
     document = _mapping(value)
     status = _text(document.get("status")) or "not_reported"
@@ -249,6 +426,15 @@ def _hardware_dimension(
         violations=violations,
         gaps=gaps,
         identities=identities,
+        proof_requirements={
+            "dimension": "hardware",
+            "status": "covered",
+            "target": target,
+            "run_id": run_id,
+            "required_protocols": list(case_required_protocols),
+            "devices": devices,
+        },
+        structured_proof_required=structured_proof_required,
     )
     invalid_protocols = sorted(
         protocol
@@ -288,6 +474,7 @@ def _runtime_dimension(
     violations: list[str],
     gaps: list[str],
     identities: list[str],
+    target: str,
 ) -> dict[str, object]:
     document = _mapping(value)
     run_id = _text(document.get("run_id"))
@@ -303,6 +490,14 @@ def _runtime_dimension(
             label=f"runtime.evidence[{index}]",
             violations=violations,
             identities=identities,
+            proof_requirements={
+                "dimension": "runtime",
+                "status": "completed",
+                "target": target,
+                "run_id": run_id,
+                "terminal_outcome": "completed",
+            },
+            structured_proof_required=mode == "fresh-runtime",
         ):
             verified += 1
     accepted = bool(run_id) and outcome == "completed" and bool(evidence) and verified == len(evidence)
@@ -336,12 +531,27 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         violations.append("mode must be fresh-runtime or historical-reconstruction")
 
     case = _mapping(manifest.get("case"))
+    case_target = _text(case.get("target"))
     case_required = tuple(_text(item) for item in _sequence(case.get("required_protocols")))
-    if not _text(case.get("name")) or not _text(case.get("target")):
+    if not _text(case.get("name")) or not case_target:
         violations.append("case name and target are required")
     if not case_required:
         violations.append("case required_protocols must be non-empty")
 
+    runtime_document = _mapping(manifest.get("runtime"))
+    run_id = _text(runtime_document.get("run_id"))
+    artifact_document = _mapping(manifest.get("artifact"))
+    artifact_sha256 = _expected_sha256(artifact_document.get("sha256"))
+    artifact_requirements = {
+        "artifact.sha256": artifact_sha256,
+        "artifact.size": artifact_document.get("size"),
+        "artifact.version": _text(artifact_document.get("version")),
+    }
+    source_commits = [
+        _text(_mapping(item).get("commit")).lower()
+        for item in _sequence(_mapping(manifest.get("source")).get("repositories"))
+        if isinstance(item, Mapping)
+    ]
     dimensions = {
         "runtime": _runtime_dimension(
             manifest.get("runtime"),
@@ -349,6 +559,7 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
             violations=violations,
             gaps=gaps,
             identities=identities,
+            target=case_target,
         ),
         "diagnosis": _evidence_dimension(
             manifest.get("diagnosis"),
@@ -357,6 +568,13 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
             violations=violations,
             gaps=gaps,
             identities=identities,
+            proof_requirements={
+                "dimension": "diagnosis",
+                "status": "passed",
+                "target": case_target,
+                "run_id": run_id,
+            },
+            structured_proof_required=mode == "fresh-runtime",
         ),
         "source": _source_dimension(
             manifest.get("source"),
@@ -373,6 +591,14 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         violations=violations,
         gaps=gaps,
         identities=identities,
+        proof_requirements={
+            "dimension": "official_ut",
+            "status": "passed",
+            "target": case_target,
+            "run_id": run_id,
+            "source_commits": source_commits,
+        },
+        structured_proof_required=mode == "fresh-runtime",
     )
     dimensions["build"] = _evidence_dimension(
         validation.get("build"),
@@ -381,6 +607,14 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         violations=violations,
         gaps=gaps,
         identities=identities,
+        proof_requirements={
+            "dimension": "build",
+            "status": "compiled",
+            "target": case_target,
+            "run_id": run_id,
+            "source_commits": source_commits,
+        },
+        structured_proof_required=mode == "fresh-runtime",
     )
     dimensions["artifact"] = _artifact_dimension(
         manifest.get("artifact"),
@@ -395,6 +629,15 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         violations=violations,
         gaps=gaps,
         identities=identities,
+        proof_requirements={
+            "dimension": "upgrade",
+            "status": "completed",
+            "target": case_target,
+            "run_id": run_id,
+            **artifact_requirements,
+            "installed_version": _text(artifact_document.get("version")),
+        },
+        structured_proof_required=mode == "fresh-runtime",
     )
     dimensions["freshness"] = _evidence_dimension(
         manifest.get("freshness"),
@@ -403,6 +646,14 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         violations=violations,
         gaps=gaps,
         identities=identities,
+        proof_requirements={
+            "dimension": "freshness",
+            "status": "fresh",
+            "target": case_target,
+            "run_id": run_id,
+            "artifact_sha256": artifact_sha256,
+        },
+        structured_proof_required=mode == "fresh-runtime",
     )
     dimensions["hardware"] = _hardware_dimension(
         manifest.get("hardware"),
@@ -410,6 +661,9 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         violations=violations,
         gaps=gaps,
         identities=identities,
+        target=case_target,
+        run_id=run_id,
+        structured_proof_required=mode == "fresh-runtime",
     )
 
     product_dimensions = tuple(name for name in dimensions if name != "runtime")
@@ -437,7 +691,7 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         "mode": mode,
         "case": {
             "name": _text(case.get("name")),
-            "target": _text(case.get("target")),
+            "target": case_target,
             "required_protocols": list(case_required),
         },
         "manifest_digest": "sha256:" + _digest_bytes(_json_bytes(manifest)),

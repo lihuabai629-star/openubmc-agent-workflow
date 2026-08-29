@@ -65,6 +65,8 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Evaluation readiness** | An Operator / CI Plane projection requiring installation consistency, Operational readiness, and Release identity verification before formal qualification evidence is accepted. |
 | **Product Closeout Qualification** | An Operator / CI Plane verification of Runtime continuity, diagnosis, source, official UT, build, artifact, upgrade, freshness, and exact hardware coverage. It does not write Run state. |
 | **Historical product validation** | A verified reconstruction of original product evidence that predates the current Runtime identity. It remains non-promotable as a fresh Runtime closeout. |
+| **Fresh Runtime product closeout** | A Product Closeout Qualification bound to a fresh Run, terminal Outcome, exact source and artifact identity, successful upgrade, freshness, and required Hardware Coverage. |
+| **Maintenance checkpoint** | A repository-level qualification decision covering Runtime correctness, supported clients, evaluation isolation, and MCP lifecycle closeout. It does not imply a Fresh Runtime product closeout. |
 | **DiagnosticReceiptRef** | A digest-bound terminal projection for an unchanged complete DiagnosticReceipt already shown within the same task. The durable full receipt remains Runtime-owned and reconstructable. |
 
 ## Ownership rules

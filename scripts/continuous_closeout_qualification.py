@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ from scripts.product_closeout_qualification import (  # noqa: E402
     qualify as qualify_product_closeout,
 )
 from scripts.runtime_stability import qualify_dual_projection  # noqa: E402
+from openubmc_target_runtime import inspect_mcp_process_records  # noqa: E402
 
 
 SCHEMA = "openubmc-agent-workflow.continuous-closeout-qualification.v1"
@@ -36,7 +38,10 @@ PRODUCT_CONTRACT_TESTS = (
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_evidence_digest_tamper_is_rejected",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_source_commit_mismatch_is_rejected",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_artifact_identity_mismatch_is_rejected",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_hash_valid_self_attested_empty_evidence",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_upgrade_proof_for_another_artifact",
     "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_managed_immutable_identity_validation_error_is_top_level_unhealthy",
+    "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_legacy_managed_release_without_lock_is_top_level_unhealthy",
 )
 EVALUATION_ISOLATION_TESTS = (
     "scripts.tests.test_evaluation_harness.EvaluationHarnessMetadataTests.test_dsh_is_managed_as_an_evaluation_harness_not_a_product_client",
@@ -137,6 +142,85 @@ def _product_evidence(path: Path | None) -> dict[str, object]:
     }
 
 
+def _mcp_closeout_snapshot() -> dict[str, object]:
+    with tempfile.TemporaryDirectory() as raw:
+        lifecycle_root = Path(raw) / "mcp-processes"
+        child_source = "\n".join(
+            (
+                "import os",
+                "import sys",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(RUNTIME_ROOT)!r})",
+                "from openubmc_target_runtime.mcp_lifecycle import McpProcessLifecycle",
+                f"root = Path({str(lifecycle_root)!r})",
+                "lifecycle = McpProcessLifecycle(",
+                "    component='continuous-closeout-mcp',",
+                "    version='1',",
+                "    client='qualification',",
+                "    task_id='continuous-closeout-qualification',",
+                "    session_id='continuous-closeout-session',",
+                "    parent_pid=os.getppid(),",
+                "    state_path=root / 'state',",
+                "    lifecycle_root=root,",
+                "    idle_timeout_seconds=300,",
+                ")",
+                "lifecycle.record_exit('qualification-complete')",
+            )
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", child_source],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        records = inspect_mcp_process_records(lifecycle_root)
+    live = [record for record in records if record.get("process_running") is True]
+    summary = {
+        "record_count": len(records),
+        "live_processes": len(live),
+        "active_requests": sum(
+            int(record.get("active_requests", 0)) for record in live
+        ),
+        "confirmed_live_orphans": sum(
+            1
+            for record in live
+            if record.get("lifecycle_state") == "orphaned"
+            and record.get("identity_verified") is True
+        ),
+    }
+    return {
+        "status": (
+            "passed"
+            if completed.returncode == 0
+            and summary["live_processes"] == 0
+            and summary["active_requests"] == 0
+            else "failed"
+        ),
+        "returncode": completed.returncode,
+        "failure_tail": completed.stderr.strip()[-2000:],
+        "task_closeout_ready": (
+            summary["live_processes"] == 0 and summary["active_requests"] == 0
+        ),
+        "task_ids": sorted(
+            {
+                str(record.get("task_id", ""))
+                for record in records
+                if record.get("task_id")
+            }
+        ),
+        "session_ids": sorted(
+            {
+                str(record.get("session_id", ""))
+                for record in records
+                if record.get("session_id")
+            }
+        ),
+        "summary": summary,
+    }
+
+
 def qualify(product_manifest: Path | None = None) -> dict[str, object]:
     workflow = _workflow_metadata()
     raw_clients = workflow.get("clients", {})
@@ -163,6 +247,7 @@ def qualify(product_manifest: Path | None = None) -> dict[str, object]:
         name: _run_tests(tests, cwd=RUNTIME_ROOT)
         for name, tests in MCP_LIFECYCLE_TESTS.items()
     }
+    lifecycle_closeout = _mcp_closeout_snapshot()
     projection_tests = _run_tests(PROJECTION_TESTS, cwd=RUNTIME_ROOT)
     projection = qualify_dual_projection()
     repeated = projection.get("representative_receipt", {}).get(
@@ -181,7 +266,7 @@ def qualify(product_manifest: Path | None = None) -> dict[str, object]:
     )
     lifecycle_passed = all(
         result.get("status") == "passed" for result in lifecycle_results.values()
-    )
+    ) and lifecycle_closeout.get("status") == "passed"
     correctness_primary = (
         projection.get("status") == "passed"
         and projection.get("correctness", {}).get("passed") is True
@@ -211,7 +296,7 @@ def qualify(product_manifest: Path | None = None) -> dict[str, object]:
         "source_commit": resolve_source_commit(ROOT),
         "source_clean": source_clean,
         "qualified": qualified,
-        "maintenance_candidate_ready": qualified,
+        "maintenance_checkpoint_ready": qualified,
         "fresh_product_promotable": product_evidence.get("promotable") is True,
         "product_contract": product_contract,
         "product_evidence": product_evidence,
@@ -240,6 +325,7 @@ def qualify(product_manifest: Path | None = None) -> dict[str, object]:
             ]
             == "passed",
             "groups": lifecycle_results,
+            "closeout": lifecycle_closeout,
         },
         "execute_projection": {
             "status": "passed" if correctness_primary else "failed",

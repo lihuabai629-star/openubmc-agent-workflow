@@ -31,6 +31,7 @@ from .semantic_runtime import (
     ScopeViolation,
     SelectorContract,
     SemanticRuntimePort,
+    SubmitGate,
     decode_run_command,
     fingerprint,
     is_safe_runtime_id,
@@ -1332,6 +1333,7 @@ class AgentGateway:
         document: Mapping[str, object],
         *,
         task_id: str,
+        previous_turn_acknowledged: bool,
     ) -> dict[str, object]:
         result = dict(document)
         receipt = _mapping(result.get("diagnostic_receipt"))
@@ -1340,20 +1342,26 @@ class AgentGateway:
             return result
         digest = _diagnostic_receipt_digest(receipt)
         key = (task_id, run_id)
-        with self._projection_lock:
-            previously_presented = self._presented_diagnostic_receipts.get(key)
-            self._presented_diagnostic_receipts[key] = digest
-            while len(self._presented_diagnostic_receipts) > 1024:
-                self._presented_diagnostic_receipts.pop(
-                    next(iter(self._presented_diagnostic_receipts))
-                )
         terminal = _text(result.get("state")) in {
             "cancelled",
             "completed",
             "failed",
         }
+        with self._projection_lock:
+            previously_presented = self._presented_diagnostic_receipts.get(key)
+            if not terminal:
+                self._presented_diagnostic_receipts[key] = digest
+                while len(self._presented_diagnostic_receipts) > 1024:
+                    self._presented_diagnostic_receipts.pop(
+                        next(iter(self._presented_diagnostic_receipts))
+                    )
         accepted = _diagnostic_agent_acceptance(receipt) == "complete"
-        if terminal and accepted and previously_presented == digest:
+        if (
+            terminal
+            and accepted
+            and previous_turn_acknowledged
+            and previously_presented == digest
+        ):
             reference = _diagnostic_receipt_reference(receipt, run_id=run_id)
             full_bytes = len(_json_bytes(receipt))
             reference_bytes = len(_json_bytes(reference))
@@ -1416,6 +1424,7 @@ class AgentGateway:
         return self._project_repeated_diagnostic_receipt(
             self.projector.turn(turn),
             task_id=task_id,
+            previous_turn_acknowledged=isinstance(command, SubmitGate),
         )
 
     @staticmethod

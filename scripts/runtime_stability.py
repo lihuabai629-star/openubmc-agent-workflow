@@ -80,6 +80,8 @@ from openubmc_target_runtime.semantic_runtime import (  # noqa: E402
     Outcome,
     ReferenceViolation,
     RunTurn,
+    StartRun,
+    SubmitGate,
     fingerprint,
 )
 
@@ -259,9 +261,9 @@ class _DualProjectionRuntime:
 
     def execute(self, command, *, task_id: str, operation_id: str) -> RunTurn:
         del task_id, operation_id
-        fixture = str(getattr(command, "purpose", "")).removeprefix(
-            "dual-projection-"
-        )
+        fixture = "gate" if isinstance(command, StartRun) else "terminal"
+        if not isinstance(command, (StartRun, SubmitGate)):
+            raise ValueError("dual-projection command must start or respond")
         if fixture not in self.turns:
             raise ValueError("dual-projection purpose must select gate or terminal")
         return self.turns[fixture]
@@ -325,7 +327,34 @@ def qualify_dual_projection(
         session_task_id="dual-projection-qualification",
     )
     results: dict[str, Mapping[str, object]] = {}
-    for request_id, fixture in enumerate(("gate", "terminal"), start=1):
+    requests = (
+        {
+            "kind": "start",
+            "target": "192.0.2.90",
+            "intent": "diagnosis-only",
+            "purpose": "dual-projection-gate",
+        },
+        {
+            "kind": "respond",
+            "run_id": "run-dual-projection-qualification",
+            "gate_id": "developer.change",
+            "gate_version": 1,
+            "schema_digest": fingerprint({
+                "type": "object",
+                "required": ["status", "summary", "payload"],
+            }),
+            "submission_id": "dual-projection-terminal",
+            "response": {
+                "status": "completed",
+                "summary": "developer change completed",
+                "payload": {},
+            },
+        },
+    )
+    for request_id, (fixture, arguments) in enumerate(
+        zip(("gate", "terminal"), requests, strict=True),
+        start=1,
+    ):
         response = endpoint.handle(
             {
                 "jsonrpc": "2.0",
@@ -333,12 +362,7 @@ def qualify_dual_projection(
                 "method": "tools/call",
                 "params": {
                     "name": "execute",
-                    "arguments": {
-                        "kind": "start",
-                        "target": "192.0.2.90",
-                        "intent": "diagnosis-only",
-                        "purpose": f"dual-projection-{fixture}",
-                    },
+                    "arguments": arguments,
                 },
             }
         )

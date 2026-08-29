@@ -1,7 +1,7 @@
 # Continuous closeout qualification
 
-The continuous closeout checkpoint combines the repository-level evidence needed for the next
-maintenance candidate without weakening product promotion semantics:
+The continuous closeout checkpoint combines the repository-level evidence needed to pass a
+Maintenance checkpoint without weakening product promotion semantics:
 
 ```bash
 python3 scripts/continuous_closeout_qualification.py \
@@ -30,6 +30,6 @@ digest-bound terminal reference, saving 14,481 bytes. Initial actionable Turns, 
 Turns, cross-task resumes, and changed receipts retain the complete evaluable receipt. Projection
 size remains a soft display target and never becomes a 4 KiB or 8 KiB control-flow gate.
 
-`maintenance_candidate_ready` concerns repository correctness and qualification coverage.
+`maintenance_checkpoint_ready` concerns repository correctness and qualification coverage.
 `fresh_product_promotable` remains false until fresh Runtime-bound product evidence is supplied.
 These are separate decisions.

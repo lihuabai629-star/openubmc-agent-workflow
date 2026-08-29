@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest import mock
+
+from scripts import continuous_closeout_qualification as qualification
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +48,12 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(report["mcp_lifecycle"]["active_request_drain_covered"])
         self.assertTrue(report["mcp_lifecycle"]["cleanup_covered"])
         self.assertTrue(report["mcp_lifecycle"]["zero_live_orphans_covered"])
+        closeout = report["mcp_lifecycle"]["closeout"]
+        self.assertTrue(closeout["task_closeout_ready"])
+        self.assertEqual(closeout["summary"]["live_processes"], 0)
+        self.assertEqual(closeout["summary"]["active_requests"], 0)
+        self.assertEqual(closeout["task_ids"], ["continuous-closeout-qualification"])
+        self.assertEqual(closeout["session_ids"], ["continuous-closeout-session"])
         projection = report["execute_projection"]
         self.assertTrue(projection["correctness_primary"])
         self.assertTrue(projection["repeated_reference"])
@@ -55,12 +65,71 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         )
         self.assertTrue(report["qualification_digest"].startswith("sha256:"))
 
-    def test_qualification_does_not_require_a_target_or_credentials(self) -> None:
-        source = SCRIPT.read_text(encoding="utf-8")
+    def test_qualification_ignores_target_and_credential_environment(self) -> None:
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                "OPENUBMC_TARGET": "198.51.100.99",
+                "OPENUBMC_SSH_PASSWORD": "must-not-be-used",
+                "OPENUBMC_REDFISH_PASSWORD": "must-not-be-used",
+                },
+            ),
+            mock.patch.object(
+                qualification,
+                "_workflow_metadata",
+                return_value={
+                    "clients": {
+                        name: {"role": "supported-product-client"}
+                        for name in ("claude", "codex", "openclaw")
+                    },
+                    "evaluation_harnesses": {
+                        "dsh": {"role": "evaluation-harness"}
+                    },
+                },
+            ),
+            mock.patch.object(
+                qualification,
+                "_run_tests",
+                return_value={"status": "passed", "tests": [], "returncode": 0},
+            ),
+            mock.patch.object(
+                qualification,
+                "_mcp_closeout_snapshot",
+                return_value={
+                    "status": "passed",
+                    "task_closeout_ready": True,
+                    "summary": {"live_processes": 0, "active_requests": 0},
+                },
+            ),
+            mock.patch.object(
+                qualification,
+                "qualify_dual_projection",
+                return_value={
+                    "status": "passed",
+                    "correctness": {"passed": True},
+                    "representative_receipt": {
+                        "repeated_projection": {
+                            "repeated_reference": True,
+                            "full_bytes": 2,
+                            "reference_bytes": 1,
+                            "saved_bytes": 1,
+                        }
+                    },
+                },
+            ),
+            mock.patch.object(qualification, "_source_clean", return_value=True),
+            mock.patch.object(
+                qualification,
+                "resolve_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualification.qualify()
 
-        self.assertNotIn("10.121.", source)
-        self.assertNotIn("ssh_password", source)
-        self.assertNotIn("redfish_password", source)
+        self.assertTrue(report["qualified"])
+        self.assertNotIn("198.51.100.99", json.dumps(report))
+        self.assertNotIn("must-not-be-used", json.dumps(report))
 
 
 if __name__ == "__main__":

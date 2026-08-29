@@ -1900,6 +1900,24 @@ class RepeatedAcceptedDiagnosticTurnRuntime(OversizedDiagnosticTurnRuntime):
         )
 
 
+class OneShotAcceptedDiagnosticTurnRuntime(OversizedDiagnosticTurnRuntime):
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        receipt = super().execute(None, task_id="", operation_id="").diagnostic_receipt
+        assert receipt is not None
+        return RunTurn(
+            run_id="case-one-shot-accepted-diagnostic",
+            state="completed",
+            outcome=Outcome(
+                status="completed",
+                summary="diagnosis-only completed",
+                acceptance=[{"requirement_id": "diagnosis", "status": "passed"}],
+            ),
+            outcome_recorded=True,
+            diagnostic_receipt=receipt,
+        )
+
+
 class DeeplyNestedDiagnosticTurnRuntime:
     def execute(self, command, *, task_id, operation_id):
         del command, task_id, operation_id
@@ -7968,8 +7986,17 @@ class AgentGatewayTests(unittest.TestCase):
         )
         terminal = gateway.execute(
             {
-                "kind": "resume",
+                "kind": "respond",
                 "run_id": "case-repeated-accepted-diagnostic",
+                "gate_id": "gate-developer-change",
+                "gate_version": 1,
+                "schema_digest": "sha256:" + "a" * 64,
+                "submission_id": "accepted-diagnostic",
+                "response": {
+                    "status": "completed",
+                    "summary": "developer change completed",
+                    "payload": {},
+                },
             },
             task_id="repeated-accepted-diagnostic",
             operation_id="repeated-accepted-diagnostic-resume",
@@ -8016,6 +8043,29 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIn(reference["digest"], rendered)
         self.assertIn("Outcome status=completed", rendered)
 
+    def test_retried_one_shot_terminal_turn_keeps_the_complete_receipt(self) -> None:
+        gateway = AgentGateway(OneShotAcceptedDiagnosticTurnRuntime())
+        action = {
+            "kind": "start",
+            "target": "192.0.2.20",
+            "intent": "diagnosis-only",
+        }
+        first = gateway.execute(
+            action,
+            task_id="one-shot-diagnostic",
+            operation_id="one-shot-diagnostic-start",
+        )
+        retry = gateway.execute(
+            action,
+            task_id="one-shot-diagnostic",
+            operation_id="one-shot-diagnostic-start",
+        )
+
+        self.assertIn("diagnostic_receipt", first)
+        self.assertIn("diagnostic_receipt", retry)
+        self.assertNotIn("diagnostic_receipt_ref", first)
+        self.assertNotIn("diagnostic_receipt_ref", retry)
+
     def test_terminal_turn_does_not_reference_receipt_across_task_ownership(self) -> None:
         gateway = AgentGateway(RepeatedAcceptedDiagnosticTurnRuntime())
         gateway.execute(
@@ -8060,6 +8110,48 @@ class AgentGatewayTests(unittest.TestCase):
             "diagnostic-oversized-new-cycle",
         )
         self.assertNotIn("diagnostic_receipt_ref", terminal)
+
+    def test_retried_changed_terminal_turn_keeps_the_complete_receipt(self) -> None:
+        gateway = AgentGateway(
+            RepeatedAcceptedDiagnosticTurnRuntime(change_receipt=True)
+        )
+        gateway.execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnose-and-fix",
+            },
+            task_id="changed-terminal-retry",
+            operation_id="changed-terminal-retry-start",
+        )
+        action = {
+            "kind": "respond",
+            "run_id": "case-repeated-accepted-diagnostic",
+            "gate_id": "gate-developer-change",
+            "gate_version": 1,
+            "schema_digest": "sha256:" + "a" * 64,
+            "submission_id": "changed-terminal-retry",
+            "response": {
+                "status": "completed",
+                "summary": "developer change completed",
+                "payload": {},
+            },
+        }
+        first = gateway.execute(
+            action,
+            task_id="changed-terminal-retry",
+            operation_id="changed-terminal-retry-respond",
+        )
+        retry = gateway.execute(
+            action,
+            task_id="changed-terminal-retry",
+            operation_id="changed-terminal-retry-respond",
+        )
+
+        self.assertIn("diagnostic_receipt", first)
+        self.assertIn("diagnostic_receipt", retry)
+        self.assertNotIn("diagnostic_receipt_ref", first)
+        self.assertNotIn("diagnostic_receipt_ref", retry)
 
     def test_adapter_cannot_expand_diagnostic_scope_beyond_the_durable_contract(
         self,

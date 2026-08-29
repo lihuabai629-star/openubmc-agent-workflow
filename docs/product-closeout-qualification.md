@@ -12,9 +12,10 @@ python3 scripts/product_closeout_qualification.py evidence.json \
 
 The manifest separates nine dimensions: Runtime continuity, diagnosis, source identity, official
 UT, compiled build, artifact identity, upgrade, freshness, and hardware coverage. Every referenced
-file is verified by SHA-256; every source repository must be clean at the exact recorded commit;
-the firmware artifact must match its path, digest, size, and version. Hardware coverage is exact,
-so SATA or SAS evidence cannot satisfy an NVMe case.
+file is verified by SHA-256 and by structured proof fields or explicit content claims; every source
+repository must be clean at the exact recorded commit; the firmware artifact must match its path,
+digest, size, and version. Hardware coverage is exact, so SATA or SAS evidence cannot satisfy an
+NVMe case.
 
 Two claim levels are intentionally different:
 

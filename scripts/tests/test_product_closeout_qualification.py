@@ -17,6 +17,12 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def structured_proof(root: Path, name: str, payload: dict[str, object]) -> tuple[dict[str, str], Path]:
+    path = root / f"{name}.json"
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return {"path": str(path), "sha256": sha256(path)}, path
+
+
 def complete_manifest(
     root: Path,
     *,
@@ -45,11 +51,95 @@ def complete_manifest(
         capture_output=True,
         check=True,
     ).stdout.strip()
-    proof = root / "proof.json"
-    proof.write_text("{}", encoding="utf-8")
-    proof_ref = {"path": str(proof), "sha256": sha256(proof)}
     artifact = root / "firmware.hpm"
     artifact.write_bytes(b"firmware")
+    artifact_identity = {
+        "sha256": sha256(artifact),
+        "size": artifact.stat().st_size,
+        "version": "1.0.0",
+    }
+    proof_base = {
+        "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
+        "target": "target-1",
+        "run_id": "run-product-closeout-1",
+    }
+    runtime_ref, runtime_proof = structured_proof(
+        root,
+        "runtime-proof",
+        {
+            **proof_base,
+            "dimension": "runtime",
+            "status": "completed",
+            "terminal_outcome": "completed",
+        },
+    )
+    diagnosis_ref, diagnosis_proof = structured_proof(
+        root,
+        "diagnosis-proof",
+        {
+            **proof_base,
+            "dimension": "diagnosis",
+            "status": "passed",
+            "evidence_ids": ["observation-1"],
+        },
+    )
+    official_ut_ref, _ = structured_proof(
+        root,
+        "official-ut-proof",
+        {
+            **proof_base,
+            "dimension": "official_ut",
+            "status": "passed",
+            "source_commits": [source_commit],
+            "tests_run": 1,
+            "tests_failed": 0,
+        },
+    )
+    build_ref, _ = structured_proof(
+        root,
+        "build-proof",
+        {
+            **proof_base,
+            "dimension": "build",
+            "status": "compiled",
+            "source_commits": [source_commit],
+            "compiled_units": 1,
+        },
+    )
+    upgrade_ref, _ = structured_proof(
+        root,
+        "upgrade-proof",
+        {
+            **proof_base,
+            "dimension": "upgrade",
+            "status": "completed",
+            "artifact": artifact_identity,
+            "installed_version": "1.0.0",
+        },
+    )
+    freshness_ref, _ = structured_proof(
+        root,
+        "freshness-proof",
+        {
+            **proof_base,
+            "dimension": "freshness",
+            "status": "fresh",
+            "artifact_sha256": artifact_identity["sha256"],
+            "observed_at": "2026-08-29T12:00:00Z",
+        },
+    )
+    hardware_ref, _ = structured_proof(
+        root,
+        "hardware-proof",
+        {
+            **proof_base,
+            "dimension": "hardware",
+            "status": "covered",
+            "required_protocols": ["NVMe"],
+            "devices": [{"device_id": "Drive1", "protocol": "NVMe"}],
+            "observed_at": "2026-08-29T12:00:00Z",
+        },
+    )
     manifest: dict[str, object] = {
         "schema": "openubmc-agent-workflow.product-closeout-evidence.v1",
         "mode": mode,
@@ -61,9 +151,9 @@ def complete_manifest(
         "runtime": {
             "run_id": "run-product-closeout-1",
             "terminal_outcome": "completed",
-            "evidence": [proof_ref],
+            "evidence": [runtime_ref],
         },
-        "diagnosis": {"status": "passed", "evidence": [proof_ref]},
+        "diagnosis": {"status": "passed", "evidence": [diagnosis_ref]},
         "source": {
             "status": "completed",
             "repositories": [
@@ -71,26 +161,27 @@ def complete_manifest(
             ],
         },
         "validation": {
-            "official_ut": {"status": "passed", "evidence": [proof_ref]},
-            "build": {"status": "compiled", "evidence": [proof_ref]},
+            "official_ut": {"status": "passed", "evidence": [official_ut_ref]},
+            "build": {"status": "compiled", "evidence": [build_ref]},
         },
         "artifact": {
             "status": "verified",
             "path": str(artifact),
-            "sha256": sha256(artifact),
+            "sha256": artifact_identity["sha256"],
             "size": artifact.stat().st_size,
             "version": "1.0.0",
         },
-        "upgrade": {"status": "completed", "evidence": [proof_ref]},
-        "freshness": {"status": "fresh", "evidence": [proof_ref]},
+        "upgrade": {"status": "completed", "evidence": [upgrade_ref]},
+        "freshness": {"status": "fresh", "evidence": [freshness_ref]},
         "hardware": {
             "status": "covered",
             "required_protocols": ["NVMe"],
             "devices": [{"device_id": "Drive1", "protocol": "NVMe"}],
-            "evidence": [proof_ref],
+            "evidence": [hardware_ref],
         },
     }
-    return manifest, source, proof, artifact
+    del runtime_proof
+    return manifest, source, diagnosis_proof, artifact
 
 
 def run_qualification(root: Path, manifest: dict[str, object]) -> subprocess.CompletedProcess[str]:
@@ -131,6 +222,43 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertFalse(report["qualified"])
         self.assertTrue(
             any("evidence digest mismatch" in item for item in report["violations"])
+        )
+
+    def test_fresh_closeout_rejects_hash_valid_self_attested_empty_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            empty = root / "empty-proof.json"
+            empty.write_text("{}", encoding="utf-8")
+            manifest["diagnosis"]["evidence"] = [
+                {"path": str(empty), "sha256": sha256(empty)}
+            ]
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["qualified"])
+        self.assertTrue(
+            any("diagnosis" in item and "structured proof" in item for item in report["violations"])
+        )
+
+    def test_fresh_closeout_rejects_upgrade_proof_for_another_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            upgrade_ref = manifest["upgrade"]["evidence"][0]
+            upgrade_path = Path(upgrade_ref["path"])
+            proof = json.loads(upgrade_path.read_text(encoding="utf-8"))
+            proof["artifact"]["sha256"] = "0" * 64
+            upgrade_path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
+            upgrade_ref["sha256"] = sha256(upgrade_path)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("upgrade" in item and "artifact identity" in item for item in report["violations"])
         )
 
     def test_source_commit_mismatch_is_rejected(self) -> None:
@@ -201,7 +329,13 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
             ):
                 path = root / f"{name}.json"
                 path.write_text(json.dumps({"name": name}), encoding="utf-8")
-                evidence[name] = {"path": str(path), "sha256": sha256(path)}
+                evidence[name] = {
+                    "path": str(path),
+                    "sha256": sha256(path),
+                    "claims": [
+                        {"kind": "json_equals", "path": "name", "value": name}
+                    ],
+                }
             artifact = root / "openubmc.hpm"
             artifact.write_bytes(b"verified-historical-firmware")
 
