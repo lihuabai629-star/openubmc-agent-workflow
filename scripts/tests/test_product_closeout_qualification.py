@@ -548,6 +548,42 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
             report["violations"],
         )
 
+    def test_missing_runtime_run_produces_a_json_report(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            manifest["runtime"]["run_id"] = "run-that-does-not-exist"
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("cannot replay Run ledger" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_unsupported_runtime_storage_version_produces_a_json_report(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            repository = Path(manifest["runtime"]["repository"]["path"])
+            with sqlite3.connect(repository) as connection:
+                connection.execute(
+                    "UPDATE runtime_meta SET value = '999' WHERE key = 'storage_version'"
+                )
+                connection.commit()
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("cannot replay Run ledger" in item for item in report["violations"]),
+            report["violations"],
+        )
+
     def test_qualification_does_not_migrate_the_trusted_runtime_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

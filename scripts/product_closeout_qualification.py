@@ -21,7 +21,10 @@ RUNTIME_ROOT = ROOT / "openubmc-target-runtime"
 if str(RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(RUNTIME_ROOT))
 
-from openubmc_target_runtime import SQLiteRuntimeRepository  # noqa: E402
+from openubmc_target_runtime import (  # noqa: E402
+    ContextRuntimeError,
+    SQLiteRuntimeRepository,
+)
 
 
 EVIDENCE_SCHEMA = "openubmc-agent-workflow.product-closeout-evidence.v1"
@@ -617,7 +620,7 @@ def _runtime_ledger(
             repository = SQLiteRuntimeRepository(snapshot)
             projection = repository.load(run_id)
             events = repository.events(run_id)
-    except (OSError, ValueError, sqlite3.DatabaseError) as error:
+    except (OSError, ValueError, sqlite3.DatabaseError, ContextRuntimeError) as error:
         violations.append(f"runtime.repository: cannot replay Run ledger: {error}")
         return False, set()
     actual = _digest_bytes(_json_bytes(events))
