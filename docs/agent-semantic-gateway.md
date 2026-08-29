@@ -215,6 +215,13 @@ Gate, or a stale version is a conflict. The internal developer Runtime does not 
 secret Gate token. A Runtime Adapter that bypasses Gate construction and returns an oversized phase
 schema is rejected at the Agent boundary; projection never replaces it with a synthetic Gate.
 
+An actionable preflight rejection returns one canonical retry Action. The retry preserves the
+caller's valid Action semantics, Gate response, submission identity, ArtifactRef, and required
+payload fields while replacing only the reported invalid binding or field. The Gateway does not
+truncate those retry semantics to meet the 8 KiB display target. A larger retry example reports
+soft projection telemetry and remains subject to the 256 KiB request boundary; it does not persist
+caller payload bytes in Run state or authorize raw Evidence, logs, or artifact content there.
+
 Patch and firmware inputs use `ArtifactRef`. The Runtime requires kind, content digest, byte size,
 provenance, retention hint, target, and Run binding, then streams the local content to verify its
 digest before any mutation begins. Versioned build artifacts also bind provenance and product

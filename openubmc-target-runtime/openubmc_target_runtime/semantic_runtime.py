@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 import hashlib
 import json
+import math
 import re
 from typing import Protocol, TypeAlias
 
@@ -100,6 +101,15 @@ _RUNTIME_OWNED_ENTRY_ARGUMENTS = frozenset(
         "submitted_at",
     }
 )
+
+
+def is_safe_runtime_id(value: object) -> bool:
+    return _SAFE_ID.fullmatch(_text(value)) is not None
+
+
+def is_sha256_digest(value: object) -> bool:
+    selected = _text(value).removeprefix("sha256:").lower()
+    return _SHA256.fullmatch(selected) is not None
 
 EXECUTE_ACTION_FIELD_TYPES = {
     "start": {
@@ -209,8 +219,35 @@ class PreflightReason(str, Enum):
     RUNTIME_OWNED_FIELD = "runtime_owned_field"
     RUN_ID_REQUIRED = "run_id_required"
     RECONCILE_PRECONDITION = "reconcile_precondition"
+    GATE_BINDING = "gate_binding"
     ARTIFACT_REQUIRED = "artifact_required"
     ARTIFACT_BINDING = "artifact_binding"
+
+
+@dataclass(frozen=True)
+class PreflightContext:
+    """Typed facts needed to project a transport-neutral correction."""
+
+    action_kind: str = ""
+    run_id: str = ""
+    target: str = ""
+    targets: tuple[Mapping[str, object], ...] = ()
+    intent: str = ""
+    purpose: str = ""
+    delivery_strategy: str = ""
+    observation_ref: Mapping[str, object] = field(default_factory=dict)
+    command: str = ""
+    incident_id: str = ""
+    entry_operation: str = ""
+    entry_arguments: Mapping[str, object] = field(default_factory=dict)
+    gate_id: str = ""
+    gate_version: int = 0
+    schema_digest: str = ""
+    submission_id: str = ""
+    response: Mapping[str, object] = field(default_factory=dict)
+    artifact_kind: str = ""
+    version_required: bool = False
+    required_payload_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -221,7 +258,7 @@ class PreflightDetail:
     field: str
     supported: tuple[str, ...] = ()
     limit: object | None = None
-    context: Mapping[str, object] = field(default_factory=dict)
+    context: PreflightContext = field(default_factory=PreflightContext)
 
 
 class AgentPreflightError(ScopeViolation):
@@ -235,7 +272,7 @@ class AgentPreflightError(ScopeViolation):
         field: str,
         supported: Sequence[str] = (),
         limit: object | None = None,
-        context: Mapping[str, object] | None = None,
+        context: PreflightContext | None = None,
     ) -> None:
         super().__init__(message)
         self.detail = PreflightDetail(
@@ -243,7 +280,7 @@ class AgentPreflightError(ScopeViolation):
             field=field,
             supported=tuple(str(item) for item in supported),
             limit=limit,
-            context=dict(context or {}),
+            context=context or PreflightContext(),
         )
 
 
@@ -265,14 +302,14 @@ class GatePreflightError(GateConflict, ReferenceViolation):
         reason: PreflightReason,
         field: str,
         limit: object | None = None,
-        context: Mapping[str, object] | None = None,
+        context: PreflightContext | None = None,
     ) -> None:
         super().__init__(message)
         self.detail = PreflightDetail(
             reason=reason,
             field=field,
             limit=limit,
-            context=dict(context or {}),
+            context=context or PreflightContext(),
         )
 
 
@@ -713,7 +750,7 @@ class ObservationQuery:
                 field="freshness.mode",
                 limit={"type": "string"},
             )
-        freshness_mode = _text(raw_freshness_mode or "live").lower()
+        freshness_mode = _text(raw_freshness_mode).lower()
         max_age = freshness.get("max_age_seconds", 0)
         if freshness_mode != "live":
             raise AgentPreflightError(
@@ -738,7 +775,18 @@ class ObservationQuery:
                 field="deadline",
                 limit={"type": "positive number"},
             )
-        if float(deadline) <= 0:
+        try:
+            numeric_deadline = float(deadline)
+        except OverflowError:
+            numeric_deadline = math.inf
+        if not math.isfinite(numeric_deadline):
+            raise AgentPreflightError(
+                "deadline must be a positive finite number",
+                reason=PreflightReason.DEADLINE,
+                field="deadline",
+                limit={"type": "positive finite number"},
+            )
+        if numeric_deadline <= 0:
             raise AgentPreflightError(
                 "deadline must be a positive number",
                 reason=PreflightReason.DEADLINE,
@@ -750,7 +798,7 @@ class ObservationQuery:
             selectors=selectors,
             freshness_mode=freshness_mode,
             max_age_seconds=max_age,
-            deadline=float(deadline),
+            deadline=numeric_deadline,
         )
         return contract
 
@@ -1294,18 +1342,116 @@ def _submission_id(value: object, *, binding: Mapping[str, object]) -> str:
     return selected
 
 
+def _action_preflight_context(action: Mapping[str, object]) -> PreflightContext:
+    raw_gate_version = action.get("gate_version", 0)
+    gate_version = (
+        raw_gate_version
+        if isinstance(raw_gate_version, int) and not isinstance(raw_gate_version, bool)
+        else 0
+    )
+    return PreflightContext(
+        action_kind=_text(action.get("kind")) or "resume",
+        run_id=_text(action.get("run_id")),
+        target=_text(action.get("target")),
+        targets=tuple(
+            dict(item)
+            for item in (
+                action.get("targets", [])
+                if isinstance(action.get("targets"), list)
+                else []
+            )
+            if isinstance(item, Mapping)
+        ),
+        intent=_text(action.get("intent")),
+        purpose=_text(action.get("purpose")),
+        delivery_strategy=_text(action.get("delivery_strategy")),
+        observation_ref=dict(_mapping(action.get("observation_ref"))),
+        command=_text(action.get("command")).lower(),
+        incident_id=_text(action.get("incident_id")),
+        entry_operation=_text(action.get("entry_operation")),
+        entry_arguments=dict(_mapping(action.get("entry_arguments"))),
+        gate_id=_text(action.get("gate_id")),
+        gate_version=gate_version,
+        schema_digest=_text(action.get("schema_digest")),
+        submission_id=_text(action.get("submission_id")),
+        response=dict(_mapping(action.get("response"))),
+    )
+
+
+def _gate_binding_preflight_error(
+    action: Mapping[str, object],
+    *,
+    field: str,
+    message: str,
+) -> AgentPreflightError:
+    context = _action_preflight_context(action)
+    replacement: dict[str, object] = {
+        "gate_id": "",
+        "gate_version": 0,
+        "schema_digest": "",
+        "submission_id": "",
+    }
+    return AgentPreflightError(
+        message,
+        reason=PreflightReason.GATE_BINDING,
+        field=field,
+        limit={"binding": "current Gate"},
+        context=replace(context, **{field: replacement[field]}),
+    )
+
+
+def _decode_gate_binding(
+    action: Mapping[str, object],
+    *,
+    run_id: str,
+) -> tuple[str, int, str, str]:
+    decoders = (
+        ("gate_id", _gate_id),
+        ("gate_version", _gate_version),
+        ("schema_digest", _schema_digest),
+    )
+    decoded: dict[str, object] = {}
+    for field_name, decoder in decoders:
+        try:
+            decoded[field_name] = decoder(action.get(field_name))
+        except AgentGatewayError as exc:
+            raise _gate_binding_preflight_error(
+                action,
+                field=field_name,
+                message=str(exc),
+            ) from exc
+    binding = {
+        "run_id": run_id,
+        "gate_id": decoded["gate_id"],
+        "gate_version": decoded["gate_version"],
+        "schema_digest": decoded["schema_digest"],
+    }
+    try:
+        submission_id = _submission_id(
+            action.get("submission_id"),
+            binding=binding,
+        )
+    except AgentGatewayError as exc:
+        raise _gate_binding_preflight_error(
+            action,
+            field="submission_id",
+            message=str(exc),
+        ) from exc
+    return (
+        str(decoded["gate_id"]),
+        int(decoded["gate_version"]),
+        str(decoded["schema_digest"]),
+        submission_id,
+    )
+
+
 def _execute_deadline_error(action: Mapping[str, object]) -> AgentPreflightError:
     return AgentPreflightError(
         "execute deadline must be greater than 0 and at most 120 seconds",
         reason=PreflightReason.DEADLINE,
         field="deadline",
         limit={"exclusive_minimum": 0, "maximum_seconds": 120},
-        context={
-            "action_kind": _text(action.get("kind")) or "resume",
-            "target": _text(action.get("target")),
-            "intent": _text(action.get("intent")),
-            "command": _text(action.get("command")),
-        },
+        context=_action_preflight_context(action),
     )
 
 
@@ -1325,14 +1471,7 @@ def _validate_action_shape(action: Mapping[str, object]) -> str:
             reason=PreflightReason.RUNTIME_OWNED_FIELD,
             field=field,
             limit={"ownership": "Runtime"},
-            context={
-                "action_kind": kind,
-                "target": _text(action.get("target")),
-                "intent": _text(action.get("intent")),
-                "command": _text(action.get("command")),
-                "recovery_requested": field
-                in {"recovery_mode", "recovery_decision"},
-            },
+            context=_action_preflight_context(action),
         )
     unexpected = sorted(set(action) - EXECUTE_ACTION_FIELDS[kind])
     if unexpected:
@@ -1348,10 +1487,7 @@ def _validate_action_shape(action: Mapping[str, object]) -> str:
                 reason=PreflightReason.RUN_ID_REQUIRED,
                 field="run_id",
                 limit={"required": True},
-                context={
-                    "action_kind": kind,
-                    "command": _text(action.get("command")),
-                },
+                context=_action_preflight_context(action),
             )
         raise AgentGatewayError(
             f"{kind} Action requires fields: " + ", ".join(missing)
@@ -1414,8 +1550,11 @@ def _caller_deadline(action: Mapping[str, object]) -> float:
     value = action.get("deadline", 120)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise _execute_deadline_error(action)
-    deadline = float(value)
-    if deadline <= 0 or deadline > 120:
+    try:
+        deadline = float(value)
+    except OverflowError:
+        raise _execute_deadline_error(action) from None
+    if not math.isfinite(deadline) or deadline <= 0 or deadline > 120:
         raise _execute_deadline_error(action)
     return deadline
 
@@ -1551,15 +1690,17 @@ def decode_run_command(
                 reason=PreflightReason.RUNTIME_OWNED_FIELD,
                 field=f"entry_arguments.{field}",
                 limit={"ownership": "Runtime"},
-                context={
-                    "action_kind": "start",
-                    "target": target,
-                    "intent": intent,
-                    "entry_operation": entry_operation,
-                    "entry_arguments": {},
-                    "recovery_requested": field
-                    in {"recovery_mode", "recovery_decision"},
-                },
+                context=replace(
+                    _action_preflight_context(action),
+                    target=target,
+                    intent=intent,
+                    entry_operation=entry_operation,
+                    entry_arguments={
+                        name: value
+                        for name, value in entry_arguments.items()
+                        if name not in runtime_owned_entry_fields
+                    },
+                ),
             )
         if entry_arguments and not entry_operation:
             raise AgentGatewayError(
@@ -1617,17 +1758,8 @@ def decode_run_command(
         if not isinstance(response, Mapping):
             raise AgentGatewayError("respond requires a response object")
         _validate_gate_response_shape(response)
-        gate_id = _gate_id(action.get("gate_id"))
-        gate_version = _gate_version(action.get("gate_version"))
-        schema_digest = _schema_digest(action.get("schema_digest"))
-        submission_id = _submission_id(
-            action.get("submission_id"),
-            binding={
-                "run_id": run_id,
-                "gate_id": gate_id,
-                "gate_version": gate_version,
-                "schema_digest": schema_digest,
-            },
+        gate_id, gate_version, schema_digest, submission_id = (
+            _decode_gate_binding(action, run_id=run_id)
         )
         command = SubmitGate(
             run_id=run_id,
@@ -1685,17 +1817,8 @@ def decode_run_command(
                     caller_deadline=caller_deadline,
                 )
             else:
-                gate_id = _gate_id(action.get("gate_id"))
-                gate_version = _gate_version(action.get("gate_version"))
-                schema_digest = _schema_digest(action.get("schema_digest"))
-                submission_id = _submission_id(
-                    action.get("submission_id"),
-                    binding={
-                        "run_id": run_id,
-                        "gate_id": gate_id,
-                        "gate_version": gate_version,
-                        "schema_digest": schema_digest,
-                    },
+                gate_id, gate_version, schema_digest, submission_id = (
+                    _decode_gate_binding(action, run_id=run_id)
                 )
             command = CancelRun(
                 run_id=run_id,

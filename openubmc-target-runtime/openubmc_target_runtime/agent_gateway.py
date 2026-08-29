@@ -32,6 +32,8 @@ from .semantic_runtime import (
     SemanticRuntimePort,
     decode_run_command,
     fingerprint,
+    is_safe_runtime_id,
+    is_sha256_digest,
 )
 from .observation import observation_consistency
 
@@ -110,61 +112,82 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
         PreflightReason.ARTIFACT_REQUIRED,
         PreflightReason.ARTIFACT_BINDING,
     }:
-        artifact_ref: dict[str, object] = {
+        canonical_artifact_ref: dict[str, object] = {
             "handle": "<absolute artifact path>",
             "digest": "sha256:" + "0" * 64,
-            "kind": str(context.get("artifact_kind") or "<Gate artifact kind>"),
+            "kind": context.artifact_kind or "<Gate artifact kind>",
             "size": 0,
             "provenance": "openubmc-build",
             "retention_hint": "run-lifetime",
-            "target": str(context.get("target") or "<Run target>"),
-            "run_id": str(context.get("run_id") or "<structuredContent.run_id>"),
+            "target": context.target or "<current Run target>",
+            "run_id": context.run_id or "<current Run ID>",
         }
-        if bool(context.get("version_required")):
-            artifact_ref["version"] = "<artifact version>"
-        return {
+        if context.version_required:
+            canonical_artifact_ref["version"] = "<artifact version>"
+        response = dict(context.response)
+        payload = dict(_mapping(response.get("payload")))
+        original_ref = payload.get("artifact_ref")
+        artifact_ref = (
+            dict(original_ref)
+            if isinstance(original_ref, Mapping)
+            else dict(canonical_artifact_ref)
+        )
+        for binding_field in ("target", "run_id"):
+            binding_value = artifact_ref.get(binding_field)
+            if (
+                detail.field.endswith(f".{binding_field}")
+                or not isinstance(binding_value, str)
+                or not binding_value.strip()
+            ):
+                artifact_ref[binding_field] = canonical_artifact_ref[binding_field]
+        payload["artifact_ref"] = artifact_ref
+        payload_examples: dict[str, object] = {
+            "source_revision": "<built source revision>",
+            "authored_files": [],
+            "verification_plan": [],
+            "remote_path": "<remote path>",
+            "restart_scope": "<restart scope>",
+        }
+        for field in context.required_payload_fields:
+            if field != "artifact_ref" and field not in payload:
+                payload[field] = payload_examples.get(
+                    field, f"<Gate-required {field}>"
+                )
+        response["status"] = response.get("status") or "completed"
+        response["summary"] = response.get("summary") or "artifact produced"
+        response["payload"] = payload
+        example = {
             "kind": "respond",
-            "run_id": artifact_ref["run_id"],
-            "gate_id": str(context.get("gate_id") or "<next_action.gate_id>"),
-            "gate_version": int(context.get("gate_version") or 1),
-            "schema_digest": str(
-                context.get("schema_digest") or "<next_action.schema_digest>"
-            ),
-            "response": {
-                "status": "completed",
-                "summary": "artifact produced",
-                "payload": {
-                    "source_revision": "<built source revision>",
-                    "artifact_ref": artifact_ref,
-                },
-            },
+            "run_id": context.run_id or "<current Run ID>",
+            "gate_id": context.gate_id or "<current Gate ID>",
+            "gate_version": context.gate_version or 1,
+            "schema_digest": context.schema_digest or "<current Gate schema digest>",
+            "response": response,
         }
+        if context.submission_id:
+            example["submission_id"] = context.submission_id
+        return example
 
-    kind = str(context.get("action_kind") or "resume")
-    run_id = str(context.get("run_id") or "<structuredContent.run_id>")
+    kind = context.action_kind or "resume"
+    run_id = context.run_id or "<current Run ID>"
     if detail.reason == PreflightReason.RECONCILE_PRECONDITION:
-        return {"kind": "control", "run_id": run_id, "command": "reconcile"}
-    if (
-        detail.reason == PreflightReason.RUNTIME_OWNED_FIELD
-        and bool(context.get("recovery_requested"))
-        and kind != "start"
-    ):
-        return {
-            "kind": "control",
-            "run_id": run_id,
-            "command": "reconcile",
-        }
+        return {"kind": "resume", "run_id": run_id}
     if kind == "start":
-        example: dict[str, object] = {
-            "kind": "start",
-            "target": str(context.get("target") or "<BMC IP>"),
-            "intent": str(context.get("intent") or "diagnosis-only"),
-        }
-        if context.get("entry_operation"):
-            example["entry_operation"] = str(context["entry_operation"])
-            example["entry_arguments"] = dict(
-                _mapping(context.get("entry_arguments"))
-            )
+        example: dict[str, object] = {"kind": "start"}
+        if context.target or not context.targets:
+            example["target"] = context.target or "<BMC IP>"
+        if context.targets:
+            example["targets"] = [dict(item) for item in context.targets]
+        example["intent"] = context.intent or "diagnosis-only"
+        if context.purpose:
+            example["purpose"] = context.purpose
+        if context.delivery_strategy:
+            example["delivery_strategy"] = context.delivery_strategy
+        if context.observation_ref:
+            example["observation_ref"] = dict(context.observation_ref)
+        if context.entry_operation:
+            example["entry_operation"] = context.entry_operation
+            example["entry_arguments"] = dict(context.entry_arguments)
         if detail.reason == PreflightReason.DEADLINE:
             example["deadline"] = 120
         return example
@@ -172,21 +195,37 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
         example = {
             "kind": "respond",
             "run_id": run_id,
-            "gate_id": "<next_action.gate_id>",
-            "gate_version": 1,
-            "schema_digest": "<next_action.schema_digest>",
-            "response": {
+            "gate_id": context.gate_id or "<current Gate ID>",
+            "gate_version": context.gate_version or 1,
+            "schema_digest": context.schema_digest
+            or "<current Gate schema digest>",
+            "response": dict(context.response)
+            if context.response
+            else {
                 "status": "completed",
                 "summary": "<bounded summary>",
                 "payload": {},
             },
         }
+        if context.submission_id or detail.field == "submission_id":
+            example["submission_id"] = (
+                context.submission_id or "<new submission identity>"
+            )
     elif kind == "control":
         example = {
             "kind": "control",
             "run_id": run_id,
-            "command": str(context.get("command") or "reconcile"),
+            "command": context.command or "reconcile",
         }
+        if context.command == "cancel":
+            if context.incident_id:
+                example["incident_id"] = context.incident_id
+            elif context.gate_id:
+                example["gate_id"] = context.gate_id
+                example["gate_version"] = context.gate_version or 1
+                example["schema_digest"] = context.schema_digest
+                if context.submission_id:
+                    example["submission_id"] = context.submission_id
     else:
         example = {"kind": "resume", "run_id": run_id}
     if detail.reason == PreflightReason.DEADLINE:
@@ -228,13 +267,16 @@ def _preflight_guidance(
         )
     actions = {
         PreflightReason.RUN_ID_REQUIRED: (
-            "copy run_id from the current execute structuredContent and retry"
+            "copy run_id from the current Turn and retry execute"
         ),
         PreflightReason.DEADLINE: (
             "retry execute with deadline at or below 120 seconds"
         ),
         PreflightReason.RECONCILE_PRECONDITION: (
             "use the current Turn next_action; reconcile only after mutation_outcome_unknown"
+        ),
+        PreflightReason.GATE_BINDING: (
+            "retry execute with the projected GateBinding, response, and submission identity"
         ),
         PreflightReason.ARTIFACT_REQUIRED: (
             "supply the Gate-required ArtifactRef bound to this Run and target, then retry respond"
@@ -244,16 +286,7 @@ def _preflight_guidance(
         ),
     }
     if detail.reason == PreflightReason.RUNTIME_OWNED_FIELD:
-        if (
-            bool(detail.context.get("recovery_requested"))
-            and detail.context.get("action_kind") != "start"
-        ):
-            next_action = (
-                "omit Runtime-owned recovery fields; use control/reconcile only after "
-                "the current Run reports mutation_outcome_unknown"
-            )
-        else:
-            next_action = "remove Runtime-owned fields and retry execute"
+        next_action = "remove Runtime-owned fields and retry execute"
     else:
         next_action = actions.get(
             detail.reason,
@@ -474,6 +507,86 @@ def _compact_value(
     return str(value)
 
 
+def _project_preflight_binding(field: str, value: object) -> object:
+    if field == "gate_version":
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else 1
+        )
+    if not isinstance(value, str):
+        return value
+    placeholders = {
+        "run_id": "<current Run ID>",
+        "gate_id": "<current Gate ID>",
+        "schema_digest": "<current Gate schema digest>",
+        "submission_id": "<new submission identity>",
+        "incident_id": "<current Incident ID>",
+    }
+    if field in placeholders:
+        if field == "schema_digest":
+            valid = is_sha256_digest(value)
+        else:
+            valid = is_safe_runtime_id(value)
+        return value if valid else placeholders[field]
+    if len(value.encode("utf-8")) <= 128:
+        return value
+    expandable_placeholders = {
+        "command": "<control command>",
+        "kind": "<Action kind>",
+    }
+    return expandable_placeholders.get(field, _bounded_text(value, 128))
+
+
+def _project_preflight_example(
+    example: Mapping[str, object],
+) -> dict[str, object]:
+    binding_fields = frozenset(
+        {
+            "kind",
+            "run_id",
+            "gate_id",
+            "gate_version",
+            "schema_digest",
+            "submission_id",
+            "incident_id",
+            "command",
+            "deadline",
+        }
+    )
+    projected = dict(example)
+    for field, value in tuple(projected.items()):
+        if field in binding_fields:
+            projected[field] = _project_preflight_binding(field, value)
+        elif field == "target":
+            projected[field] = (
+                value
+                if isinstance(value, str)
+                and len(value.encode("utf-8")) <= 512
+                else "<BMC IP>"
+            )
+        elif field in {
+            "targets",
+            "intent",
+            "purpose",
+            "delivery_strategy",
+            "observation_ref",
+            "entry_operation",
+            "entry_arguments",
+        }:
+            projected[field] = value
+        elif field == "response":
+            projected[field] = dict(_mapping(value))
+        else:
+            projected[field] = _compact_value(
+                value,
+                max_depth=3,
+                max_items=8,
+                max_string=128,
+            )
+    return projected
+
+
 def _compact_observation_results(value: object) -> dict[str, object]:
     projected: dict[str, object] = {}
     for selector_id, raw_result in _mapping(value).items():
@@ -634,6 +747,10 @@ class CostGovernor:
             fallback["observation_ref"] = document.get("observation_ref")
         if "outcome_recorded" in result:
             fallback["outcome_recorded"] = bool(result.get("outcome_recorded"))
+        if "response_required" in result:
+            fallback["response_required"] = bool(result.get("response_required"))
+        if "progress" in result:
+            fallback["progress"] = dict(_mapping(result.get("progress")))
         if "diagnostic_receipt" in result:
             fallback["diagnostic_receipt"] = (
                 CostGovernor._turn_diagnostic_receipt(
@@ -1070,13 +1187,32 @@ class AgentGateway:
             error = result["error"]
             assert isinstance(error, dict)
             example, next_action = _preflight_guidance(operation, detail)
+            projected_example = _project_preflight_example(example)
             error["field"] = detail.field
-            error["example"] = example
+            error["example"] = projected_example
             if detail.supported:
                 error["supported"] = list(detail.supported)
             if detail.limit is not None:
                 error["limit"] = detail.limit
             result["next_action"] = next_action
+            if len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES:
+                result.update(
+                    _projection_telemetry(
+                        compacted=False,
+                        target_exceeded=False,
+                    )
+                )
+                result["projection_target_exceeded"] = True
+                result["projection_target_overage_bytes"] = 0
+                for _attempt in range(3):
+                    overage = max(
+                        1,
+                        len(_json_bytes(result))
+                        - TURN_PROJECTION_TARGET_BYTES,
+                    )
+                    if result["projection_target_overage_bytes"] == overage:
+                        break
+                    result["projection_target_overage_bytes"] = overage
         return result
 
 

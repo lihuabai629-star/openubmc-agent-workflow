@@ -25,6 +25,7 @@ from .semantic_runtime import (
     ObservationRef,
     ObservationResult,
     Outcome,
+    PreflightContext,
     PreflightReason,
     ReferenceViolation,
     ReconcileRun,
@@ -811,13 +812,53 @@ class RunEngine:
         return Gate.from_public_dict(current)
 
     @staticmethod
-    def _validate_gate(command: SubmitGate | CancelRun, gate: Gate) -> None:
-        if command.gate_id != gate.gate_id:
-            raise GateConflict("Gate submission targets a different gate_id")
-        if command.gate_version != gate.version:
-            raise GateConflict("Gate submission targets a stale gate_version")
-        if command.schema_digest != gate.schema_digest:
-            raise GateConflict("Gate submission targets a different schema digest")
+    def _gate_preflight_context(
+        command: SubmitGate | CancelRun,
+        gate: Gate,
+    ) -> PreflightContext:
+        return PreflightContext(
+            action_kind=("respond" if isinstance(command, SubmitGate) else "control"),
+            run_id=command.run_id,
+            command=("" if isinstance(command, SubmitGate) else "cancel"),
+            gate_id=gate.gate_id,
+            gate_version=gate.version,
+            schema_digest=f"sha256:{gate.schema_digest}",
+            submission_id=command.submission_id,
+            response=(
+                dict(command.response)
+                if isinstance(command, SubmitGate)
+                else {}
+            ),
+        )
+
+    @classmethod
+    def _validate_gate(cls, command: SubmitGate | CancelRun, gate: Gate) -> None:
+        mismatches = (
+            (
+                "gate_id",
+                command.gate_id != gate.gate_id,
+                "Gate submission targets a different gate_id",
+            ),
+            (
+                "gate_version",
+                command.gate_version != gate.version,
+                "Gate submission targets a stale gate_version",
+            ),
+            (
+                "schema_digest",
+                command.schema_digest != gate.schema_digest,
+                "Gate submission targets a different schema digest",
+            ),
+        )
+        for field_name, mismatched, message in mismatches:
+            if mismatched:
+                raise GatePreflightError(
+                    message,
+                    reason=PreflightReason.GATE_BINDING,
+                    field=field_name,
+                    limit={"binding": "current Gate"},
+                    context=cls._gate_preflight_context(command, gate),
+                )
 
     @staticmethod
     def _validate_duplicate_gate(
@@ -944,7 +985,7 @@ class RunEngine:
         command: SubmitGate,
         gate: Gate,
         projection: Mapping[str, object],
-    ) -> dict[str, object]:
+    ) -> PreflightContext:
         payload_schema = _mapping(
             _mapping(gate.input_schema.get("properties")).get("payload")
         )
@@ -957,19 +998,19 @@ class RunEngine:
         target = ""
         if isinstance(targets, list) and targets and isinstance(targets[0], Mapping):
             target = _text(targets[0].get("address"))
-        return {
-            "run_id": command.run_id,
-            "gate_id": gate.gate_id,
-            "gate_version": gate.version,
-            "schema_digest": f"sha256:{gate.schema_digest}",
-            "target": target,
-            "artifact_kind": (
+        return replace(
+            RunEngine._gate_preflight_context(command, gate),
+            target=target,
+            artifact_kind=(
                 str(expected_kinds[0])
                 if isinstance(expected_kinds, list) and expected_kinds
                 else ""
             ),
-            "version_required": "version" in artifact_properties,
-        }
+            version_required="version" in artifact_properties,
+            required_payload_fields=tuple(
+                RunEngine._completed_payload_required(gate)
+            ),
+        )
 
     def _normalized_response(
         self,
@@ -983,16 +1024,27 @@ class RunEngine:
             self._validate_schema_value(response, gate.input_schema, path="response")
         except GateSchemaViolation as exc:
             artifact_path = "response.payload.artifact_ref"
-            if not (
-                exc.path == artifact_path
-                and exc.rule == "required"
-                and "run_id" in exc.fields
-            ):
+            artifact_field = ""
+            if exc.path == artifact_path and exc.rule == "required":
+                artifact_field = next(
+                    (
+                        name
+                        for name in ("target", "run_id")
+                        if name in exc.fields
+                    ),
+                    "",
+                )
+            elif exc.path in {
+                f"{artifact_path}.target",
+                f"{artifact_path}.run_id",
+            }:
+                artifact_field = exc.path.rsplit(".", 1)[-1]
+            if not artifact_field:
                 raise
             raise GatePreflightError(
                 str(exc),
                 reason=PreflightReason.ARTIFACT_BINDING,
-                field=f"{artifact_path}.run_id",
+                field=f"{artifact_path}.{artifact_field}",
                 limit={"binding": "current Run and target"},
                 context=self._artifact_preflight_context(
                     command=command,
@@ -1032,6 +1084,21 @@ class RunEngine:
         payload = dict(raw_payload)
         raw_artifact_ref = payload.get("artifact_ref")
         if isinstance(raw_artifact_ref, Mapping):
+            artifact_path = "response.payload.artifact_ref"
+            for binding_field in ("target", "run_id"):
+                binding_value = raw_artifact_ref.get(binding_field)
+                if not isinstance(binding_value, str) or not binding_value.strip():
+                    raise GatePreflightError(
+                        f"ArtifactRef {binding_field} is required",
+                        reason=PreflightReason.ARTIFACT_BINDING,
+                        field=f"{artifact_path}.{binding_field}",
+                        limit={"binding": "current Run and target"},
+                        context=self._artifact_preflight_context(
+                            command=command,
+                            gate=gate,
+                            projection=projection,
+                        ),
+                    )
             artifact_ref = ArtifactRef.from_public_dict(raw_artifact_ref)
             payload_schema = _mapping(
                 _mapping(gate.input_schema.get("properties")).get("payload")
@@ -1470,7 +1537,7 @@ class RunEngine:
                 limit={
                     "precondition": "same Run has an unknown mutation outcome"
                 },
-                context={"run_id": run_id},
+                context=PreflightContext(run_id=run_id),
             )
         effect_id = _text(unknown.get("operation_id"))
         intent = self._effect_intent_for_operation(
