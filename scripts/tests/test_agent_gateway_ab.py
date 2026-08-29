@@ -40,6 +40,49 @@ SKILL_DISCLOSURE_QUERIES = [
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive ResourceId",
     "getprop Drive_1_010102 bmc.kepler.Systems.Storage.Drive Presence",
 ]
+LEGACY_V201_EXECUTE_PROMPT_DIGEST = (
+    "sha256:b506e4f7e609c15edfef1720cb17dc6aaafcc1071d00f47efc668ca93ea9e41f"
+)
+LEGACY_V201_CANDIDATE_COMMIT = "c34c894fe8486eae8b2154721091f1bffd5d38cf"
+
+
+def legacy_v201_execute_prompt(arm: str) -> str:
+    if arm == "A":
+        return "\n".join(
+            (
+                "这是一次真实 BMC 环境下的 Runtime compatibility execute 配对资格基准。",
+                "使用已安装的 <skill-path> 所定义的原生 Case Continuation 路径。",
+                "只允许使用 openubmc-debug 与 Gate 指定的 openubmc-developer；不得使用其他 Skill、知识库、网络搜索或 shell。",
+                "不要列出 MCP resources/templates，不要做工具发现。",
+                "openubmc-target-runtime MCP 调用入口已在当前基准会话注册。只有实际发出的 MCP tool call 才计入调用次数；如果尚未发出 MCP 调用，就等待对应入口完成解析后发出它，这不算失败或重试。不得在实际调用前把入口尚未解析报告为工具不可用或调用失败。",
+                "目标 BMC：10.121.136.200。凭据位于标准私有配置中，不得显示凭据值。",
+                "第一次调用 openubmc-target-runtime.workflow.advance：ip 为目标，intent=diagnose-and-fix，delivery_strategy=source-only，final_purpose=qualify Runtime source-only execution。",
+                "标准 content 的“尚未完成”只表示 Case 正在等待 phase_record，不是调用失败。case_id、顶层 revision 与 handoff_arguments.phase_record_contract 都必须从同一次 structured_content 记录为非空原值；不得在读取 structured_content 前报告这些字段缺失，不得重新开始 Case。",
+                "第二次调用 phase_record：参数必须是扁平 JSON 对象。展开 phase_record_contract，但 expected_revision 必须替换为 workflow.advance 结果的当前顶层 revision；再把 status=completed、source_revision=qualification-source、summary=qualification source-only receipt completed、authored_files=[src/qualification.lua]、verification_plan=[run qualification tests] 全部放在同一顶层。严禁创建 receipt 或 payload 嵌套字段。",
+                "第三次调用 workflow.next，且只携带同一 case_id，直接推进到终态。",
+                "不得读写源码、不得调用 mutation 工具、不得修改目标。",
+                "最终中文回答必须包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
+            )
+        ) + "\n"
+    if arm != "B":
+        raise ValueError("legacy v2.0.1 execute prompt arm must be A or B")
+    return "\n".join(
+        (
+            "这是一次真实 BMC 环境下的 Runtime execute 配对资格基准。",
+            "使用已安装的 <skill-path> 所定义的 Agent Gateway 路径。",
+            "只允许使用 openubmc-debug 与 Gate 指定的 openubmc-developer；不得使用其他 Skill、知识库、网络搜索或 shell。",
+            "不要列出 MCP resources/templates，不要做工具发现；直接调用 openubmc-target-runtime.execute。",
+            "openubmc-target-runtime MCP 调用入口已在当前基准会话注册。只有实际发出的 MCP tool call 才计入调用次数；如果尚未发出 MCP 调用，就等待对应入口完成解析后发出它，这不算失败或重试。不得在实际调用前把入口尚未解析报告为工具不可用或 start 失败。",
+            "目标 BMC：10.121.136.200。凭据位于标准私有配置中，不得显示凭据值。",
+            "第一次且仅第一次调用：kind=start，intent=diagnose-and-fix，delivery_strategy=source-only。",
+            "读取 start 工具结果的 structured_content，保存 run_id、gate.gate_id、gate.gate_version 与 gate.schema_digest；标准 content 首部的同值 GateBinding 行可用于核对。四项都必须是非空原值；如尚未取得就继续读取当前工具结果，不得再次 start，不得提交空字符串或尖括号占位符。",
+            "Runtime 返回 developer.change Gate 后，不读写任何源码，提交固定基准 receipt。第二次且仅第二次调用 execute，参数必须严格采用下面的完整 JSON 模板，并把尖括号占位符替换为 structured_content 中对应的原值：",
+            '{"kind":"respond","run_id":"<structured_content.run_id>","gate_id":"<structured_content.gate.gate_id>","gate_version":<structured_content.gate.gate_version>,"schema_digest":"<structured_content.gate.schema_digest>","response":{"status":"completed","summary":"qualification source-only receipt completed","payload":{"source_revision":"qualification-source","authored_files":["src/qualification.lua"],"verification_plan":["run qualification tests"]}}}',
+            "kind、run_id、gate_id、gate_version、schema_digest、response 都是 respond 参数的顶层字段；response 内只含 status、summary、payload，不得把任何 Gate binding 放入 response 或 payload。",
+            "同一 Gate 只能响应一次；不得省略 Gate binding，不得 poll、不得调用 resume、不得修改目标。",
+            "必须推进到终态，并在最终中文回答中包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
+        )
+    ) + "\n"
 
 
 def signing_keys(root: Path) -> tuple[Path, Path]:
@@ -3442,6 +3485,115 @@ class AgentGatewayAbTests(unittest.TestCase):
         )
 
         self.assertTrue(verified["promotable"], verified)
+
+    def test_verify_summary_accepts_signed_v201_execute_prompt_contract(self) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        run_evidence = passing_execute_run_evidence(
+            schedule,
+            candidate_commit=LEGACY_V201_CANDIDATE_COMMIT,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+        normalized_prompts = {
+            arm: legacy_v201_execute_prompt(arm) for arm in ("A", "B")
+        }
+        contract_digest = "sha256:" + hashlib.sha256(
+            json.dumps(
+                normalized_prompts,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(contract_digest, LEGACY_V201_EXECUTE_PROMPT_DIGEST)
+        for run in run_evidence["runs"]:
+            prompt = normalized_prompts[run["arm"]]
+            run["prompt"] = prompt
+            run["prompt_sha256"] = (
+                "sha256:" + hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            )
+
+        def select_legacy_contract(evidence):
+            evidence["benchmark"]["prompt_digest"] = (
+                LEGACY_V201_EXECUTE_PROMPT_DIGEST
+            )
+            evidence.pop("evidence_digest")
+            evidence["evidence_digest"] = module._fingerprint(evidence)
+
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=run_evidence,
+            candidate_commit=LEGACY_V201_CANDIDATE_COMMIT,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            release_evidence_mutator=select_legacy_contract,
+        )
+
+        self.assertTrue(verified["promotable"], verified)
+
+    def test_verify_summary_rejects_legacy_prompt_for_a_nonhistorical_source(
+        self,
+    ) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        candidate_commit = "a" * 40
+        run_evidence = passing_execute_run_evidence(
+            schedule,
+            candidate_commit=candidate_commit,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+        normalized_prompts = {
+            arm: legacy_v201_execute_prompt(arm) for arm in ("A", "B")
+        }
+        for run in run_evidence["runs"]:
+            prompt = normalized_prompts[run["arm"]]
+            run["prompt"] = prompt
+            run["prompt_sha256"] = (
+                "sha256:" + hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            )
+
+        def select_legacy_contract(evidence):
+            evidence["benchmark"]["prompt_digest"] = (
+                LEGACY_V201_EXECUTE_PROMPT_DIGEST
+            )
+            evidence.pop("evidence_digest")
+            evidence["evidence_digest"] = module._fingerprint(evidence)
+
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=run_evidence,
+            candidate_commit=candidate_commit,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            release_evidence_mutator=select_legacy_contract,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertIn(
+            "AB benchmark prompt does not match the qualification contract",
+            verified["errors"],
+        )
+
+    def test_verify_summary_rejects_unregistered_signed_prompt_contract(self) -> None:
+        def select_unregistered_contract(evidence):
+            evidence["benchmark"]["prompt_digest"] = "sha256:" + "f" * 64
+            evidence.pop("evidence_digest")
+            evidence["evidence_digest"] = module._fingerprint(evidence)
+
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=module.balanced_schedule(10, seed=7),
+            run_evidence=passing_execute_run_evidence(
+                module.balanced_schedule(10, seed=7)
+            ),
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+            release_evidence_mutator=select_unregistered_contract,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("prompt" in error for error in verified["errors"]),
+            verified,
+        )
 
     def test_verify_summary_rejects_run_evidence_rebound_to_another_candidate(self) -> None:
         verified = verify_passing_summary(

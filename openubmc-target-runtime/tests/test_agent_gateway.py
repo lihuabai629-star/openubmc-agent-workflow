@@ -7780,7 +7780,7 @@ class AgentGatewayTests(unittest.TestCase):
             },
         )
         self.assertEqual(turn["next"], "next-" + "n" * 20_000)
-        self.assertTrue(turn["content_compacted"])
+        self.assertFalse(turn["content_compacted"])
         self.assertTrue(turn["projection_target_exceeded"])
 
     def test_execute_turn_soft_gate_target_preserves_runtime_gate_semantics(self) -> None:
@@ -7872,10 +7872,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "complete")
         self.assertEqual(receipt["coverage"]["requested"], 20)
         self.assertEqual(receipt["coverage"]["evaluable"], 20)
-        self.assertEqual(receipt["coverage"]["visible_evaluable"], 20)
-        self.assertEqual(receipt["coverage"]["visible_not_checked"], 0)
         self.assertEqual(receipt["coverage"]["not_checked"], 0)
-        self.assertEqual(receipt["coverage"]["compacted"], 20)
         self.assertFalse(receipt["truncated"])
         self.assertTrue(receipt["content_complete"])
         self.assertEqual(
@@ -7884,9 +7881,18 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertTrue(all(item["status"] == "available" for item in receipt["results"]))
         self.assertTrue(
-            all(item["projection_truncated"] for item in receipt["results"])
+            all(
+                item.get("projection_truncated") is not True
+                for item in receipt["results"]
+            )
         )
         self.assertTrue(all("value" in item for item in receipt["results"]))
+        self.assertTrue(
+            all(
+                len(item["value"]["field-0"]) == 20_000
+                for item in receipt["results"]
+            )
+        )
         self.assertEqual(len(receipt["evidence"]), 8)
         self.assertTrue(
             all(
@@ -7894,9 +7900,9 @@ class AgentGatewayTests(unittest.TestCase):
                 for item in receipt["evidence"]
             )
         )
-        self.assertIn("diagnostic_receipt_compacted", receipt["gaps"])
+        self.assertNotIn("diagnostic_receipt_compacted", receipt["gaps"])
         self.assertNotIn("content_truncated", receipt["gaps"])
-        self.assertTrue(turn["content_compacted"])
+        self.assertFalse(turn["content_compacted"])
         self.assertTrue(turn["projection_target_exceeded"])
 
     def test_adapter_cannot_expand_diagnostic_scope_beyond_the_durable_contract(
@@ -8003,7 +8009,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(result_ids, ["version", "version-2"])
         self.assertNotIn("diagnostic_result_identity_invalid", receipt["gaps"])
 
-    def test_execute_turn_compaction_preserves_an_evaluable_result_summary(self) -> None:
+    def test_execute_turn_soft_target_preserves_evaluable_result_values(self) -> None:
         turn = AgentGateway(DeeplyNestedDiagnosticTurnRuntime()).execute(
             {
                 "kind": "start",
@@ -8016,7 +8022,8 @@ class AgentGatewayTests(unittest.TestCase):
 
         receipt = turn["diagnostic_receipt"]
         encoded_results = json.dumps(receipt["results"])
-        self.assertEqual(receipt["coverage"]["visible_evaluable"], 4)
+        self.assertEqual(receipt["coverage"]["evaluable"], 4)
+        self.assertNotIn("visible_evaluable", receipt["coverage"])
         self.assertIn("12.08.21.06", encoded_results)
         self.assertIn("mctpd request timeout", encoded_results)
         self.assertIn("bmc.kepler.mctpd service visible", encoded_results)
@@ -8055,8 +8062,8 @@ class AgentGatewayTests(unittest.TestCase):
         receipt = turn["diagnostic_receipt"]
         self.assertEqual(receipt["status"], "blocked")
         self.assertFalse(receipt["coverage"]["complete"])
-        self.assertEqual(receipt["coverage"]["visible_evaluable"], 0)
-        self.assertEqual(receipt["coverage"]["visible_not_checked"], 1)
+        self.assertEqual(receipt["coverage"]["evaluable"], 0)
+        self.assertEqual(receipt["coverage"]["not_checked"], 1)
         self.assertEqual(receipt["results"][0]["status"], "not_checked")
         self.assertIn("diagnostic_receipt_invalid", receipt["gaps"])
 
@@ -8083,7 +8090,7 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertTrue(turn["projection_target_exceeded"])
 
-    def test_execute_turn_compacts_large_diagnostic_previews_to_the_target(self) -> None:
+    def test_execute_turn_soft_target_preserves_large_diagnostic_previews(self) -> None:
         turn = AgentGateway(OversizedDiagnosticTurnRuntime(128)).execute(
             {
                 "kind": "start",
@@ -8098,8 +8105,14 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertGreater(encoded_size(turn), TURN_MAX_BYTES)
         self.assertEqual(turn["state"], "completed")
         self.assertEqual(turn["diagnostic_receipt"]["status"], "complete")
-        self.assertTrue(turn["diagnostic_receipt"]["content_compacted"])
+        self.assertNotIn("content_compacted", turn["diagnostic_receipt"])
         self.assertEqual(len(turn["diagnostic_receipt"]["results"]), 128)
+        self.assertEqual(
+            len(
+                turn["diagnostic_receipt"]["results"][0]["value"]["field-0"]
+            ),
+            20_000,
+        )
         self.assertTrue(turn["projection_target_exceeded"])
 
     def test_gate_construction_preserves_schema_above_the_projection_target(self) -> None:

@@ -7,6 +7,11 @@ import subprocess
 import tempfile
 import unittest
 
+from scripts import runtime_stability
+from scripts.runtime_stability_contract import (
+    verify_legacy_runtime_stability_report,
+)
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "runtime_qualification.py"
 WORKSPACE = SCRIPT.parents[1]
@@ -27,7 +32,7 @@ class RuntimeQualificationTests(unittest.TestCase):
     @staticmethod
     def stability_report(source_commit: str) -> str:
         report = {
-            "schema": "openubmc-agent-workflow.runtime-stability.v1",
+            "schema": "openubmc-agent-workflow.runtime-stability.v2",
             "source_commit": source_commit,
             "environment": {
                 "python": "3.11.0",
@@ -153,6 +158,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "storage_bytes": 6000,
                     "elapsed_seconds": 1.0,
                 },
+                "dual_projection": runtime_stability.qualify_dual_projection(),
             },
             "promotable": True,
         }
@@ -161,6 +167,316 @@ class RuntimeQualificationTests(unittest.TestCase):
         )
         report["evidence_digest"] = qualification.evidence_fingerprint(report)
         return json.dumps(report)
+
+    def test_legacy_v1_stability_evidence_remains_verifiable(self) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        report["schema"] = "openubmc-agent-workflow.runtime-stability.v1"
+        report["scenarios"].pop("dual_projection")
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "legacy"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+                require_promotable=True,
+            )
+        verify_legacy_runtime_stability_report(
+            report,
+            expected_source_commit=SOURCE_COMMIT,
+            require_promotable=True,
+        )
+
+    def test_dual_projection_verifier_recomputes_reported_bytes(self) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        report["scenarios"]["dual_projection"]["measurements"]["gate"] = {
+            "standard_text_bytes": 1,
+            "structured_content_bytes": 1,
+            "combined_mcp_result_bytes": 3,
+        }
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "measurement"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_requires_long_complete_previews(self) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        for turn_name in ("gate", "terminal"):
+            result = projection["canonical_results"][turn_name]
+            receipt = result["structuredContent"]["diagnostic_receipt"]
+            for item in receipt["results"]:
+                sentinel = item["value"]["qualification_sentinel"]
+                item["value"]["preview"] = sentinel + "::short"
+                item["value"]["unrelated_padding"] = "x" * (4 * 1024)
+            projection["measurements"][turn_name] = (
+                runtime_stability.projection_measurement(result)
+            )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "long"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_failed_structured_outcome(self) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        terminal = projection["canonical_results"]["terminal"]
+        terminal["structuredContent"]["outcome"]["status"] = "failed"
+        projection["measurements"]["terminal"] = (
+            runtime_stability.projection_measurement(terminal)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|semantics"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_mcp_error_result(self) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        terminal = projection["canonical_results"]["terminal"]
+        terminal["isError"] = True
+        projection["measurements"]["terminal"] = (
+            runtime_stability.projection_measurement(terminal)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "MCP|error"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_unavailable_complete_results(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        for turn_name in ("gate", "terminal"):
+            result = projection["canonical_results"][turn_name]
+            result["structuredContent"]["diagnostic_receipt"]["results"][0][
+                "status"
+            ] = "unavailable"
+            projection["measurements"][turn_name] = (
+                runtime_stability.projection_measurement(result)
+            )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|semantics"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_failed_outcome_acceptance(self) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        terminal = projection["canonical_results"]["terminal"]
+        terminal["structuredContent"]["outcome"]["acceptance"][0][
+            "status"
+        ] = "failed"
+        projection["measurements"]["terminal"] = (
+            runtime_stability.projection_measurement(terminal)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|semantics"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_replaced_long_preview_content(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        for turn_name in ("gate", "terminal"):
+            result = projection["canonical_results"][turn_name]
+            item = result["structuredContent"]["diagnostic_receipt"]["results"][0]
+            sentinel = item["value"]["qualification_sentinel"] + "::"
+            original = item["value"]["preview"]
+            item["value"]["preview"] = sentinel + "z" * (
+                len(original) - len(sentinel)
+            )
+            projection["measurements"][turn_name] = (
+                runtime_stability.projection_measurement(result)
+            )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|semantics"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_missing_standard_text_identities(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        for turn_name in ("gate", "terminal"):
+            result = projection["canonical_results"][turn_name]
+            text = result["content"][0]["text"]
+            kept_lines = []
+            for line in text.splitlines():
+                if line.startswith((
+                    "capabilities_shown=",
+                    "capabilities:",
+                    "evidence_ids_shown=",
+                    "evidence_ids:",
+                    "results_shown=",
+                    "result_ids:",
+                )):
+                    continue
+                if line.startswith("DiagnosticReceipt "):
+                    line = (
+                        "DiagnosticReceipt status=complete "
+                        "agent_acceptance=complete."
+                    )
+                kept_lines.append(line)
+            result["content"][0]["text"] = "\n".join(kept_lines)
+            projection["measurements"][turn_name] = (
+                runtime_stability.projection_measurement(result)
+            )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|semantics|text"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_allows_extra_text_as_efficiency_warning(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        terminal = projection["canonical_results"]["terminal"]
+        terminal["content"][0]["text"] += "\noperator note: " + "x" * (5 * 1024)
+        projection["measurements"]["terminal"] = (
+            runtime_stability.projection_measurement(terminal)
+        )
+        projection["efficiency"]["decision"] = "warning"
+        projection["efficiency"]["warnings"] = [
+            "terminal_standard_text_target_exceeded"
+        ]
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        qualification.verify_runtime_stability_report(
+            report,
+            expected_source_commit=SOURCE_COMMIT,
+            require_promotable=True,
+        )
+
+    def test_dual_projection_verifier_rejects_conflicting_semantic_text_lines(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        additions = {
+            "gate": "GateBinding run_id=wrong gate_id=wrong gate_version=9 schema_digest=sha256:wrong.\n",
+            "terminal": "Outcome status=failed summary=conflicting acceptance_shown=0/0.\n",
+        }
+        for turn_name, addition in additions.items():
+            result = projection["canonical_results"][turn_name]
+            result["content"][0]["text"] = addition + result["content"][0]["text"]
+            projection["measurements"][turn_name] = (
+                runtime_stability.projection_measurement(result)
+            )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "semantic|text"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_wrapped_semantic_text_lines(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        terminal = projection["canonical_results"]["terminal"]
+        terminal["content"][0]["text"] += (
+            "\noperator note: Outcome status=failed summary=conflicting."
+        )
+        projection["measurements"]["terminal"] = (
+            runtime_stability.projection_measurement(terminal)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "semantic|text"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_preview_payload_in_text(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        terminal = projection["canonical_results"]["terminal"]
+        receipt = terminal["structuredContent"]["diagnostic_receipt"]
+        value = receipt["results"][0]["value"]
+        preview_payload = value["preview"].removeprefix(
+            value["qualification_sentinel"] + "::"
+        )
+        terminal["content"][0]["text"] += "\noperator note: " + preview_payload
+        projection["measurements"]["terminal"] = (
+            runtime_stability.projection_measurement(terminal)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|preview|text"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_gate_binding_after_identities(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        gate = projection["canonical_results"]["gate"]
+        lines = gate["content"][0]["text"].splitlines()
+        binding = next(line for line in lines if line.startswith("GateBinding "))
+        gate["content"][0]["text"] = "\n".join(
+            [line for line in lines if line != binding] + [binding]
+        )
+        projection["measurements"]["gate"] = (
+            runtime_stability.projection_measurement(gate)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "semantic|text"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
 
     def test_all_safety_qualifications_must_pass_with_zero_violations(self) -> None:
         calls: list[tuple[str, ...]] = []

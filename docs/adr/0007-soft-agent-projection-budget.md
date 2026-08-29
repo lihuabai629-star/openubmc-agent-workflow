@@ -22,11 +22,15 @@ is projecting.
 ## Decision
 
 Keep 4 KiB as the target size for an Agent-visible `ObservationReceipt` and Gate schema, and 8 KiB
-as the target size for an Agent-visible Turn. None is a control-flow maximum. `AgentGateway`
-compacts observation values, facts, and diagnostic previews first. If authoritative Observation,
-Gate, Incident, Outcome, or `DiagnosticReceipt` semantics still do not fit, it returns the larger
+as the target size for an Agent-visible Turn. None is a control-flow maximum. `AgentGateway` may
+compact Observation values at the Observation projection seam, but it does not compact or rewrite
+the typed execute Turn merely to meet the 8 KiB display target. The MCP Adapter removes repeated
+preview values from fallback text while preserving the complete typed Turn in
+`structuredContent`. If authoritative Observation, Gate, Incident, Outcome, or
+`DiagnosticReceipt` semantics still exceed a display target, the Gateway returns the larger
 projection and records projection telemetry rather than changing Runtime completion, removing a
-reusable `ObservationRef`, or creating a budget blocker.
+reusable `ObservationRef`, or creating a budget blocker. Durable `DiagnosticReceipt` compaction is
+governed separately by the 32 KiB Run-history boundary below, not by the 8 KiB display target.
 
 The following remain hard anti-runaway bounds:
 
@@ -44,8 +48,8 @@ completion semantics.
 
 ## Consequences
 
-- Projection pressure cannot rewrite a complete Runtime source result; Agent acceptance still
-  fails closed when durable compaction cannot retain complete visible evaluability.
+- Display pressure cannot rewrite a complete Runtime source result. Agent acceptance still fails
+  closed when the separate durable-receipt compaction cannot retain complete visible evaluability.
 - Ordinary ObservationReceipts and Gate schemas still target 4 KiB, and Turns target 8 KiB; all
   report compaction or target-exceeded telemetry separately from workflow state.
 - A rare oversized semantic Turn is visible and measurable instead of becoming a retry loop that

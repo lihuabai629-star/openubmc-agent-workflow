@@ -79,6 +79,17 @@ QUALIFICATION_CODEX_CONFIG = (
     'model_providers.cliproxy.wire_api="responses"',
     "model_providers.cliproxy.supports_websockets=false",
 )
+LEGACY_V201_EXECUTE_PROMPT_DIGEST = (
+    "sha256:b506e4f7e609c15edfef1720cb17dc6aaafcc1071d00f47efc668ca93ea9e41f"
+)
+LEGACY_V201_EXECUTE_SOURCE_COMMITS = frozenset(
+    {
+        "8a83cf221068bb563880736b6de232a8db17bac8",
+        "c34c894fe8486eae8b2154721091f1bffd5d38cf",
+        "ca06513d4a6ce7ef3c18a0ad592dcdcc99da44d9",
+        "d1c12c37beef29dc59192266145b78c7154052bc",
+    }
+)
 MCP_STARTUP_TIMEOUT_SECONDS = 120
 MCP_TOOL_TIMEOUT_SECONDS = 900
 BENCHMARK_CAPABILITIES = ("ssh", "telnet", "mdbctl", "busctl")
@@ -1223,11 +1234,21 @@ def _run_prompt_binding_errors(
     value: object,
     *,
     expected_scenario: str,
+    expected_prompt_digest: object,
 ) -> list[str]:
     document = _json_object(value)
     runs = document.get("runs")
     if not isinstance(runs, list):
         return []
+    prompt_contract = (
+        qualification_prompt_contracts(expected_scenario).get(
+            expected_prompt_digest
+        )
+        if isinstance(expected_prompt_digest, str)
+        else None
+    )
+    if prompt_contract is None:
+        return ["AB run prompt contract is not registered"]
     errors: list[str] = []
     for index, value in enumerate(runs, 1):
         run = _json_object(value)
@@ -1242,11 +1263,7 @@ def _run_prompt_binding_errors(
         if arm in {"A", "B"} and _normalize_prompt_skill_path(
             prompt,
             scenario=expected_scenario,
-        ) != _prompt(
-                Path("<skill-path>"),
-                scenario=expected_scenario,
-                arm=str(arm),
-        ):
+        ) != prompt_contract[str(arm)]:
             errors.append(
                 f"AB run prompt does not match the qualification prompt contract at item {index}"
             )
@@ -2272,6 +2289,45 @@ def _prompt(
     ) + "\n"
 
 
+def _legacy_v201_execute_prompt(arm: str) -> str:
+    if arm == "A":
+        return "\n".join(
+            (
+                "这是一次真实 BMC 环境下的 Runtime compatibility execute 配对资格基准。",
+                "使用已安装的 <skill-path> 所定义的原生 Case Continuation 路径。",
+                "只允许使用 openubmc-debug 与 Gate 指定的 openubmc-developer；不得使用其他 Skill、知识库、网络搜索或 shell。",
+                "不要列出 MCP resources/templates，不要做工具发现。",
+                "openubmc-target-runtime MCP 调用入口已在当前基准会话注册。只有实际发出的 MCP tool call 才计入调用次数；如果尚未发出 MCP 调用，就等待对应入口完成解析后发出它，这不算失败或重试。不得在实际调用前把入口尚未解析报告为工具不可用或调用失败。",
+                f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
+                "第一次调用 openubmc-target-runtime.workflow.advance：ip 为目标，intent=diagnose-and-fix，delivery_strategy=source-only，final_purpose=qualify Runtime source-only execution。",
+                "标准 content 的“尚未完成”只表示 Case 正在等待 phase_record，不是调用失败。case_id、顶层 revision 与 handoff_arguments.phase_record_contract 都必须从同一次 structured_content 记录为非空原值；不得在读取 structured_content 前报告这些字段缺失，不得重新开始 Case。",
+                "第二次调用 phase_record：参数必须是扁平 JSON 对象。展开 phase_record_contract，但 expected_revision 必须替换为 workflow.advance 结果的当前顶层 revision；再把 status=completed、source_revision=qualification-source、summary=qualification source-only receipt completed、authored_files=[src/qualification.lua]、verification_plan=[run qualification tests] 全部放在同一顶层。严禁创建 receipt 或 payload 嵌套字段。",
+                "第三次调用 workflow.next，且只携带同一 case_id，直接推进到终态。",
+                "不得读写源码、不得调用 mutation 工具、不得修改目标。",
+                "最终中文回答必须包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
+            )
+        ) + "\n"
+    if arm != "B":
+        raise ValueError("legacy v2.0.1 execute prompt arm must be A or B")
+    return "\n".join(
+        (
+            "这是一次真实 BMC 环境下的 Runtime execute 配对资格基准。",
+            "使用已安装的 <skill-path> 所定义的 Agent Gateway 路径。",
+            "只允许使用 openubmc-debug 与 Gate 指定的 openubmc-developer；不得使用其他 Skill、知识库、网络搜索或 shell。",
+            "不要列出 MCP resources/templates，不要做工具发现；直接调用 openubmc-target-runtime.execute。",
+            "openubmc-target-runtime MCP 调用入口已在当前基准会话注册。只有实际发出的 MCP tool call 才计入调用次数；如果尚未发出 MCP 调用，就等待对应入口完成解析后发出它，这不算失败或重试。不得在实际调用前把入口尚未解析报告为工具不可用或 start 失败。",
+            f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
+            "第一次且仅第一次调用：kind=start，intent=diagnose-and-fix，delivery_strategy=source-only。",
+            "读取 start 工具结果的 structured_content，保存 run_id、gate.gate_id、gate.gate_version 与 gate.schema_digest；标准 content 首部的同值 GateBinding 行可用于核对。四项都必须是非空原值；如尚未取得就继续读取当前工具结果，不得再次 start，不得提交空字符串或尖括号占位符。",
+            "Runtime 返回 developer.change Gate 后，不读写任何源码，提交固定基准 receipt。第二次且仅第二次调用 execute，参数必须严格采用下面的完整 JSON 模板，并把尖括号占位符替换为 structured_content 中对应的原值：",
+            '{"kind":"respond","run_id":"<structured_content.run_id>","gate_id":"<structured_content.gate.gate_id>","gate_version":<structured_content.gate.gate_version>,"schema_digest":"<structured_content.gate.schema_digest>","response":{"status":"completed","summary":"qualification source-only receipt completed","payload":{"source_revision":"qualification-source","authored_files":["src/qualification.lua"],"verification_plan":["run qualification tests"]}}}',
+            "kind、run_id、gate_id、gate_version、schema_digest、response 都是 respond 参数的顶层字段；response 内只含 status、summary、payload，不得把任何 Gate binding 放入 response 或 payload。",
+            "同一 Gate 只能响应一次；不得省略 Gate binding，不得 poll、不得调用 resume、不得修改目标。",
+            "必须推进到终态，并在最终中文回答中包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
+        )
+    ) + "\n"
+
+
 SCENARIOS = ("observation", "skill-disclosure", "execute-source-only")
 
 
@@ -2290,6 +2346,51 @@ def prompt_digest(scenario: str) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+
+
+def qualification_prompt_contracts(
+    scenario: str,
+) -> dict[str, dict[str, str]]:
+    current = {
+        arm: _prompt(Path("<skill-path>"), scenario=scenario, arm=arm)
+        for arm in ("A", "B")
+    }
+    contracts = {prompt_digest(scenario): current}
+    if scenario == "execute-source-only":
+        legacy = {
+            arm: _legacy_v201_execute_prompt(arm) for arm in ("A", "B")
+        }
+        legacy_digest = "sha256:" + hashlib.sha256(
+            json.dumps(
+                legacy,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if legacy_digest != LEGACY_V201_EXECUTE_PROMPT_DIGEST:
+            raise RuntimeError("legacy v2.0.1 execute prompt contract drifted")
+        contracts[LEGACY_V201_EXECUTE_PROMPT_DIGEST] = legacy
+    return contracts
+
+
+def _prompt_contract_allowed_for_source(
+    prompt_contract_digest: object,
+    *,
+    scenario: str,
+    candidate_commit: str,
+    baseline_commit: str,
+) -> bool:
+    if not isinstance(prompt_contract_digest, str):
+        return False
+    if prompt_contract_digest == prompt_digest(scenario):
+        return True
+    return bool(
+        scenario == "execute-source-only"
+        and prompt_contract_digest == LEGACY_V201_EXECUTE_PROMPT_DIGEST
+        and candidate_commit in LEGACY_V201_EXECUTE_SOURCE_COMMITS
+        and baseline_commit == DEFAULT_BASELINE_REF
+    )
 
 
 QUALIFICATION_PROMPT_DIGEST = prompt_digest("execute-source-only")
@@ -2770,7 +2871,13 @@ def verify_summary(
     benchmark = _json_object(evidence.get("benchmark"))
     if benchmark.get("target") != BENCHMARK_TARGET:
         errors.append("AB benchmark target does not match the qualification contract")
-    if benchmark.get("prompt_digest") != prompt_digest(expected_scenario):
+    benchmark_prompt_digest = benchmark.get("prompt_digest")
+    if not _prompt_contract_allowed_for_source(
+        benchmark_prompt_digest,
+        scenario=expected_scenario,
+        candidate_commit=expected_source_commit,
+        baseline_commit=expected_baseline_commit,
+    ):
         errors.append("AB benchmark prompt does not match the qualification contract")
     if benchmark.get("codex_version") != QUALIFICATION_CODEX_VERSION:
         errors.append("AB Codex version does not match the qualification contract")
@@ -2842,6 +2949,7 @@ def verify_summary(
                 _run_prompt_binding_errors(
                     run_evidence_value,
                     expected_scenario=expected_scenario,
+                    expected_prompt_digest=benchmark_prompt_digest,
                 )
             )
             errors.extend(
