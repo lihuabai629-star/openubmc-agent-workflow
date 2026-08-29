@@ -130,11 +130,11 @@ references. Raw Evidence remains in the Operator / CI Plane; the Agent does not 
 Evidence-read operation to evaluate the current Turn.
 
 The Runtime Core sanitizes, forms, and persists the typed `DiagnosticReceipt` because its status
-participates in Closeout and Replay. `AgentGateway` targets an 8 KiB Turn projection;
-projection-time compaction may reduce facts and diagnostic previews, but it never rewrites the
-Runtime-owned Gate, Incident, terminal Outcome, or diagnostic completion semantics. If the
-preserved semantics still do not fit, the Turn may exceed the projection target and reports that
-condition as telemetry rather than a blocker.
+participates in Closeout and Replay. `AgentGateway` targets an 8 KiB Turn projection but does not
+compact facts, diagnostic previews, or other typed Turn fields merely to meet that display target.
+If the typed semantics exceed the target, the Turn remains complete and reports that condition as
+telemetry rather than a blocker. The separate 32 KiB durable-receipt boundary may compact persisted
+diagnostic detail before Turn projection, while preserving the completeness rules described below.
 The MCP Adapter also renders a bounded textual receipt summary in standard `content`, including
 source status, `agent_acceptance=complete|partial|blocked`, coverage, freshness, source
 completeness, capabilities, gaps, DiagnosticReceipt/result/Evidence identities, terminal Outcome
@@ -205,23 +205,29 @@ keeps readiness keyed by official UT and build, so a later Build result cannot e
 earlier official-UT or hardware-coverage result.
 
 A Turn targets 8 KiB and a Gate schema targets 4 KiB; neither target can reject or replace a Gate.
-`gate_projection_target_exceeded` reports a Gate schema above its display target. If a diagnostic
-result exceeds the Turn target, structured result previews are compacted while source coverage counts, freshness, truncation,
-`content_complete`, gaps, capability states, and Evidence references remain visible. Compacted
-structured results retain a bounded substantive summary; a result that cannot retain evaluable content becomes
-`not_checked` instead of remaining `available`. Coverage also reports `visible_evaluable` and
-`compacted` counts. Projection-only fields such as `projection_truncated`, `lines_truncated`, and
-`stdout_truncated` do not claim that the source Evidence was truncated; explicit source truncation
-and `content_complete=false` still fail completion closed. The internal
+`gate_projection_target_exceeded` reports a Gate schema above its display target. A Turn above its
+8 KiB target remains an unchanged typed Turn and sets soft projection telemetry; the display target
+does not compact structured result previews. The MCP fallback text keeps control bindings,
+coverage, result and Evidence identities, terminal semantics, and next-action guidance without
+duplicating preview values. Separately, durable-receipt compaction may retain a bounded substantive
+summary; a result that cannot retain evaluable content becomes `not_checked` instead of remaining
+`available`. Coverage also reports `visible_evaluable` and `compacted` counts. Projection-only
+fields such as `projection_truncated`, `lines_truncated`, and `stdout_truncated` do not claim that
+the source Evidence was truncated; explicit source truncation and `content_complete=false` still
+fail completion closed. The internal
 advancement limit is fixed at 64 steps and is not part of the Agent Interface. Exhaustion appears as an
 `internal_step_limit` blocker rather than a caller-controlled continuation budget.
 
 Projection telemetry distinguishes display pressure from workflow state:
-`projection_compacted` reports summary compaction, `projection_target_exceeded` reports a final
-Turn above the 8 KiB target, `manual_narrowing_required` remains false for execute Turns, and
-`budget_blocker` remains false. These fields never participate in Closeout or Outcome formation.
-Gate-only pressure is reported independently as `gate_projection_target_exceeded`; it does not set
-the Turn-wide target-exceeded flag unless the final Turn itself exceeds 8 KiB.
+for execute Turns, `projection_compacted` and root `content_compacted` are never set true because
+the typed Turn is not display-compacted, while `projection_target_exceeded` reports a final Turn
+above the 8 KiB target. `text_projection_compacted` and
+`text_projection_target_exceeded` describe only the MCP fallback text. Durable receipt compaction
+uses the receipt-level `content_compacted` and `compacted_results` fields described below.
+`manual_narrowing_required` and `budget_blocker` remain false for execute Turns. None of these
+fields participates in Closeout or Outcome formation. Gate-only pressure is reported independently
+as `gate_projection_target_exceeded`; it does not set the Turn-wide target-exceeded flag unless the
+final Turn itself exceeds 8 KiB.
 
 The durable Receipt is separately limited to 32 KiB before it enters event history. If detailed
 previews do not fit, the Runtime retains bounded result identities, source coverage counts, gaps,
@@ -305,7 +311,10 @@ Replay:
 - unsupported scope and stale freshness models are rejected before collection;
 - capability and claim coverage remain explicit;
 - diagnostic completion is fail-closed when requested results are not Agent-evaluable;
-- Turn compaction preserves diagnostic coverage, truncation, completeness, gaps, and Evidence refs;
+- Turn display pressure preserves the complete typed Turn; fallback-text compaction preserves
+  control bindings, coverage, result/Evidence identities, terminal semantics, and next action;
+- durable Receipt compaction preserves diagnostic coverage, truncation, completeness, gaps, and
+  Evidence refs or fails diagnostic acceptance closed;
 - Agent results do not expose Runtime sequencing mechanics;
 - duplicate Gate delivery is idempotent and stale or conflicting delivery is rejected;
 - unknown Mutation is automatically reconciled or returned as an Incident with a bounded recovery
@@ -316,10 +325,19 @@ Replay:
 The hermetic [diagnosis-chain qualification](diagnosis-chain-qualification.md) continuously checks
 the blocked and recoverable `ObservationRef → diagnosis.acceptance → developer.change → Outcome`
 path through the public Agent seam. It runs before the broader test roots in repository validation.
+Runtime stability qualification also records representative Gate and terminal `execute` standard
+text, structured-content, and combined MCP result bytes. The receipt includes long alarm, log, MDB,
+service-tree, clock, and version results so the measurement proves that structured semantics remain
+complete while preview values are not repeated in standard text. Correctness remains promotable;
+byte-target regressions are secondary warnings only.
 
 Live qualification remains a separate paired AB/BA experiment with a correctness-first release
 contract. Historical execute qualification may check out a pinned pre-retirement source for the
 baseline arm; the candidate and all current installations use the Agent profile.
+The verifier retains the immutable v2.0.1 execute prompt contract by its recorded digest, so its
+signed v3 evidence remains independently verifiable without rewriting the evidence schema or Run
+records. New runs always use the current prompt contract; unknown digests and any signed-Run prompt
+mismatch remain verification failures.
 
 Use `scripts/agent_gateway_ab.py` to run or re-evaluate the qualification. The runner creates a
 balanced AB/BA schedule, isolates every Codex home, applies semantic and scope acceptance, and

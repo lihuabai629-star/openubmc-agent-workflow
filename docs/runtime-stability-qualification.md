@@ -27,6 +27,7 @@ change Runtime-owned completion semantics.
 | Gate concurrency | eight SQLite-backed Runtime instances submit the same Gate receipt, followed by a fresh-instance terminal reattach | one Gate submission, one Outcome, and every caller matches the canonical persisted terminal Turn without another backend call |
 | capacity | 128 hermetic diagnosis Runs measured in four batches | bounded linear event/storage growth, no failed call, duplicate Outcome, open Incident, or incomplete operation |
 | Artifact lifecycle | 64 shared-content records across four persistent repository lifecycles, one redacted derivative, one expiring record, partial and final Run release | restart resolution succeeds, redaction has a distinct digest, GC preserves shared content until its final retained reference, and only audit records remain |
+| dual projection | representative Gate and terminal `execute` Turns with six long diagnostic result kinds through MCP `tools/call` | complete structured semantics, concise identity-only standard text, and reproducible text/structured/combined byte measurements; efficiency warnings never change promotability |
 | restart soak | 64 terminal diagnosis Runs across four SQLite process lifecycles, each replayed only after reopening the Runtime | every cross-restart replay returns the terminal Turn without another backend call; one Outcome per Run; no open Incident or unsettled operation |
 | crash-cut matrix | journal and real Live Patch backend durable cuts | stable Effect identity and no repeated dangerous mutation |
 
@@ -45,9 +46,19 @@ The CI profile blocks promotion when any of these limits is exceeded:
 
 The report records the source commit, Python and platform fingerprint, all workload parameters,
 Agent execute calls, failures, completions, per-cycle and cumulative event growth, storage growth,
+dual-projection standard-text bytes, structured-content bytes, combined MCP result bytes,
 total process RSS, Python allocations, thresholds, pass/fail status, and a SHA-256 digest over the complete report. The aggregate Runtime
 qualification validates the child schema, source binding, canonical parameters, digest, raw metrics,
 and every hard threshold before accepting it.
+Runtime stability v2 retains the canonical Gate and terminal MCP results so verification recomputes
+all three byte measurements and semantic checks rather than trusting reported counters. The v1
+reader remains available only through the explicit historical compatibility verifier; current
+Runtime qualification and promotion require v2, so a current report cannot drop dual-projection
+evidence by relabelling itself as v1.
+Dual-projection correctness participates in promotion. Its byte target is diagnostic telemetry:
+exceeding it produces `efficiency.decision=warning` with
+`blocks_promotability=false` and cannot rewrite Run status, source completeness, Agent acceptance,
+or the aggregate promotion result.
 An explicit source commit must equal the tested workspace HEAD. The only exception is an immutable
 release-lock child, where it must equal that commit's sole parent and the lock's recorded source.
 The index and worktree must be clean, including untracked files, before evidence can bind to either

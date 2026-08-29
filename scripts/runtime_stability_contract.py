@@ -3,11 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
+import json
+from pathlib import Path
+import sys
 
-from scripts.evidence_report import evidence_fingerprint
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = ROOT / "openubmc-target-runtime"
+sys.path.insert(0, str(RUNTIME_ROOT))
+
+from openubmc_target_runtime.diagnostic_receipt import (
+    DiagnosticItemStatus,
+    DiagnosticStatus,
+)  # noqa: E402
+from openubmc_target_runtime.semantic_runtime import RunTurn  # noqa: E402
+
+from scripts.evidence_report import evidence_fingerprint  # noqa: E402
 
 
-SCHEMA = "openubmc-agent-workflow.runtime-stability.v1"
+SCHEMA_V1 = "openubmc-agent-workflow.runtime-stability.v1"
+SCHEMA = "openubmc-agent-workflow.runtime-stability.v2"
 STORM_WORKERS = 16
 GATE_WORKERS = 8
 CAPACITY_RUNS = 128
@@ -27,6 +43,47 @@ MAX_SOAK_PEAK_RSS_BYTES = 512 * 1024 * 1024
 MAX_SOAK_PEAK_BYTES = 128 * 1024 * 1024
 MAX_SOAK_STORAGE_BYTES = 32 * 1024 * 1024
 MAX_EVENTS_PER_RUN = 16
+DUAL_PROJECTION_TEXT_TARGET_BYTES = 4 * 1024
+DUAL_PROJECTION_MIN_PREVIEW_BYTES = 2 * 1024
+DUAL_PROJECTION_STRUCTURED_TURN_DIGESTS = {
+    "gate": "sha256:91feaa88abdd857e285f403cc3247502e73c8eb0f9fa4e61a6783b7f30e78b08",
+    "terminal": "sha256:cf429c4adc570e65b302b9cd434117e8ee8170033cdbd12e7b6703f93f09d511",
+}
+DUAL_PROJECTION_SEMANTIC_TEXT_MARKERS = (
+    "openUBMC 工作流",
+    "GateBinding ",
+    "Outcome ",
+    "DiagnosticReceipt ",
+    "capabilities_shown=",
+    "next_action: ",
+    "evidence_ids_shown=",
+    "evidence_ids: ",
+    "results_shown=",
+    "result_ids: ",
+)
+DUAL_PROJECTION_REQUIRED_TEXT_LINE_DIGESTS = {
+    "gate": (
+        "sha256:d960111f36c771d581999ed83227f973284229d9f43972082a16d01f94e0cd21",
+        "sha256:855549720180dbd524fe731d565e76e810e9cf813910e2e97a4afa7fd29138c4",
+        "sha256:53e77c7e177b22753ee4574245edb0bfd59c537f955e96b27b3cb4cac0ecc71c",
+        "sha256:5af18c5d13c6bea731ef8aed7df686d2a9eadd1e78f1814e779cce432cac1ba1",
+        "sha256:b92b1bf0df36042761c23811b141b81f8e6b2ff26ea829a1623a27a18bd103bf",
+        "sha256:95a9ddbf8f7d562c0e848d2a193278e9d4f07764d7da347a7b9e463f3889262e",
+        "sha256:bd30b82d8d069cd0877ee94b283573806407cc65d9117c8cc01d49b34f63c28d",
+        "sha256:46457a95085ffe22678335a62f9bc6b8ab1e70929ab9b778a70d6972d44ec42c",
+        "sha256:d939816350e72da5ab898848848690ceaee627b384bba0777edfc5d75204cecf",
+    ),
+    "terminal": (
+        "sha256:88e8d03f71fb04aa8dae6469701d467e219043f76756a48f404a8df2b9deb725",
+        "sha256:8847a347f031f52955f041ec307b467177e624897d46382edbf613ec0d19411c",
+        "sha256:53e77c7e177b22753ee4574245edb0bfd59c537f955e96b27b3cb4cac0ecc71c",
+        "sha256:5af18c5d13c6bea731ef8aed7df686d2a9eadd1e78f1814e779cce432cac1ba1",
+        "sha256:95a9ddbf8f7d562c0e848d2a193278e9d4f07764d7da347a7b9e463f3889262e",
+        "sha256:bd30b82d8d069cd0877ee94b283573806407cc65d9117c8cc01d49b34f63c28d",
+        "sha256:46457a95085ffe22678335a62f9bc6b8ab1e70929ab9b778a70d6972d44ec42c",
+        "sha256:d939816350e72da5ab898848848690ceaee627b384bba0777edfc5d75204cecf",
+    ),
+}
 
 
 def ci_parameters() -> dict[str, int | float]:
@@ -79,14 +136,71 @@ def _scenario(report: Mapping[str, object], name: str) -> Mapping[str, object]:
     return value
 
 
-def verify_runtime_stability_report(
+def json_size_bytes(value: object) -> int:
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def standard_text(result: Mapping[str, object]) -> str:
+    content = result.get("content", [])
+    return "".join(
+        str(item.get("text", ""))
+        for item in content
+        if isinstance(item, Mapping) and item.get("type") == "text"
+    ) if isinstance(content, list) else ""
+
+
+def projection_measurement(result: Mapping[str, object]) -> dict[str, int]:
+    structured = result.get("structuredContent", {})
+    return {
+        "standard_text_bytes": len(standard_text(result).encode("utf-8")),
+        "structured_content_bytes": json_size_bytes(structured),
+        "combined_mcp_result_bytes": json_size_bytes(result),
+    }
+
+
+def _sha256_digest(encoded: bytes) -> str:
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_json_digest(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return _sha256_digest(encoded)
+
+
+def _schema_digest(schema: Mapping[str, object]) -> str:
+    return _canonical_json_digest(schema)
+
+
+def _structured_turn_digest(turn: Mapping[str, object]) -> str:
+    return _canonical_json_digest(turn)
+
+
+def _verify_runtime_stability_report(
     report: Mapping[str, object],
     *,
     expected_source_commit: str,
     require_promotable: bool = False,
+    allow_legacy_v1: bool,
 ) -> None:
-    if report.get("schema") != SCHEMA:
+    schema = report.get("schema")
+    if schema not in {SCHEMA_V1, SCHEMA}:
         raise ValueError("Runtime stability schema is unsupported")
+    if schema == SCHEMA_V1 and not allow_legacy_v1:
+        raise ValueError(
+            "Runtime stability legacy v1 evidence requires explicit compatibility mode"
+        )
     unsigned = dict(report)
     expected_digest = unsigned.pop("evidence_digest", None)
     if expected_digest != evidence_fingerprint(unsigned):
@@ -390,6 +504,336 @@ def verify_runtime_stability_report(
     ):
         raise ValueError("Runtime stability Artifact lifecycle contract failed")
 
+    if schema == SCHEMA:
+        projection = _scenario(report, "dual_projection")
+        correctness = projection.get("correctness")
+        efficiency = projection.get("efficiency")
+        measurements = projection.get("measurements")
+        representative = projection.get("representative_receipt")
+        canonical_results = projection.get("canonical_results")
+        if (
+            not isinstance(correctness, Mapping)
+            or not isinstance(efficiency, Mapping)
+            or not isinstance(measurements, Mapping)
+            or not isinstance(representative, Mapping)
+            or not isinstance(canonical_results, Mapping)
+        ):
+            raise ValueError(
+                "Runtime stability dual-projection evidence is incomplete"
+            )
+        target_bytes = _integer(
+            efficiency.get("standard_text_target_bytes"),
+            "dual-projection text target",
+            minimum=1,
+        )
+        if target_bytes != DUAL_PROJECTION_TEXT_TARGET_BYTES:
+            raise ValueError(
+                "Runtime stability dual-projection text target is invalid"
+            )
+        turns: dict[str, Mapping[str, object]] = {}
+        turn_text: dict[str, str] = {}
+        expected_warnings: list[str] = []
+        for turn_name in ("gate", "terminal"):
+            raw_result = canonical_results.get(turn_name)
+            reported_measurement = measurements.get(turn_name)
+            if (
+                not isinstance(raw_result, Mapping)
+                or not isinstance(reported_measurement, Mapping)
+            ):
+                raise ValueError(
+                    "Runtime stability dual-projection measurements are incomplete"
+                )
+            if (
+                "isError" in raw_result
+                and raw_result.get("isError") is not False
+            ):
+                raise ValueError(
+                    "Runtime stability dual-projection MCP result is an error"
+                )
+            recomputed = projection_measurement(raw_result)
+            if reported_measurement != recomputed:
+                raise ValueError(
+                    "Runtime stability dual-projection measurement does not "
+                    "match canonical MCP output"
+                )
+            if any(value <= 0 for value in recomputed.values()):
+                raise ValueError(
+                    "Runtime stability dual-projection measurement is invalid"
+                )
+            if (
+                recomputed["combined_mcp_result_bytes"]
+                <= recomputed["standard_text_bytes"]
+                + recomputed["structured_content_bytes"]
+            ):
+                raise ValueError(
+                    "Runtime stability dual-projection combined measurement is invalid"
+                )
+            if recomputed["standard_text_bytes"] > target_bytes:
+                expected_warnings.append(
+                    f"{turn_name}_standard_text_target_exceeded"
+                )
+            structured = raw_result.get("structuredContent")
+            if not isinstance(structured, Mapping):
+                raise ValueError(
+                    "Runtime stability dual-projection structured Turn is unavailable"
+                )
+            turns[turn_name] = structured
+            turn_text[turn_name] = standard_text(raw_result)
+            semantic_line_digests = tuple(
+                _sha256_digest(line.encode("utf-8"))
+                for line in turn_text[turn_name].splitlines()
+                if any(
+                    marker in line
+                    for marker in DUAL_PROJECTION_SEMANTIC_TEXT_MARKERS
+                )
+            )
+            if (
+                semantic_line_digests
+                != DUAL_PROJECTION_REQUIRED_TEXT_LINE_DIGESTS[turn_name]
+            ):
+                raise ValueError(
+                    "Runtime stability dual-projection standard text semantic "
+                    "lines are missing, conflicting, or out of order"
+                )
+
+        gate_turn = turns["gate"]
+        terminal_turn = turns["terminal"]
+        try:
+            typed_gate_turn = RunTurn.from_public_dict(gate_turn)
+            typed_terminal_turn = RunTurn.from_public_dict(terminal_turn)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Runtime stability dual-projection structured semantics are invalid"
+            ) from exc
+        gate_receipt = gate_turn.get("diagnostic_receipt")
+        terminal_receipt = terminal_turn.get("diagnostic_receipt")
+        if (
+            gate_turn.get("schema")
+            != "openubmc.target-runtime.v1/agent-gateway-v1/turn"
+            or terminal_turn.get("schema")
+            != "openubmc.target-runtime.v1/agent-gateway-v1/turn"
+            or not isinstance(gate_receipt, Mapping)
+            or not isinstance(terminal_receipt, Mapping)
+            or gate_receipt != terminal_receipt
+            or gate_receipt.get("schema")
+            != "openubmc.target-runtime.v1/diagnostic-receipt-v1"
+        ):
+            raise ValueError(
+                "Runtime stability dual-projection structured semantics differ"
+            )
+        raw_results = terminal_receipt.get("results", [])
+        receipt_results = raw_results if isinstance(raw_results, list) else []
+        result_kinds = sorted(
+            str(item.get("kind", ""))
+            for item in receipt_results
+            if isinstance(item, Mapping) and item.get("kind")
+        )
+        sentinels = [
+            str(value.get("qualification_sentinel", ""))
+            for item in receipt_results
+            if isinstance(item, Mapping)
+            and isinstance((value := item.get("value")), Mapping)
+            and value.get("qualification_sentinel")
+        ]
+        preview_payloads = [
+            preview[len(marker) :]
+            for item in receipt_results
+            if isinstance(item, Mapping)
+            and isinstance((value := item.get("value")), Mapping)
+            and isinstance((preview := value.get("preview")), str)
+            and (sentinel := str(value.get("qualification_sentinel", "")))
+            and preview.startswith((marker := sentinel + "::"))
+        ]
+        result_values_complete = all(
+            isinstance((value := item.get("value")), Mapping)
+            and value.get("content_complete") is True
+            and isinstance((preview := value.get("preview")), str)
+            and preview.startswith(
+                str(value.get("qualification_sentinel", "")) + "::"
+            )
+            for item in receipt_results
+            if isinstance(item, Mapping)
+        )
+        preview_bytes = {
+            str(item.get("result_id", "")): len(preview.encode("utf-8"))
+            for item in receipt_results
+            if isinstance(item, Mapping)
+            and item.get("result_id")
+            and isinstance((value := item.get("value")), Mapping)
+            and isinstance((preview := value.get("preview")), str)
+        }
+        if (
+            len(preview_bytes) != 6
+            or any(
+                value < DUAL_PROJECTION_MIN_PREVIEW_BYTES
+                for value in preview_bytes.values()
+            )
+        ):
+            raise ValueError(
+                "Runtime stability dual-projection long diagnostic results are incomplete"
+            )
+        combined_text = "\n".join(turn_text.values())
+        preview_duplicated = any(
+            value and value in combined_text
+            for value in (*sentinels, *preview_payloads)
+        )
+        evidence = terminal_receipt.get("evidence", [])
+        gate = gate_turn.get("gate")
+        gate_schema = gate.get("input_schema") if isinstance(gate, Mapping) else None
+        gate_semantics_complete = all(
+            (
+                typed_gate_turn.state == "waiting_response",
+                typed_gate_turn.gate is not None,
+                isinstance(gate_schema, Mapping),
+                (
+                    gate.get("schema_digest") == _schema_digest(gate_schema)
+                    if isinstance(gate, Mapping)
+                    and isinstance(gate_schema, Mapping)
+                    else False
+                ),
+                "GateBinding" in turn_text["gate"],
+                '"kind":"respond"' in turn_text["gate"],
+            )
+        )
+        terminal_semantics_complete = all(
+            (
+                typed_terminal_turn.state == "completed",
+                typed_terminal_turn.outcome is not None,
+                (
+                    typed_terminal_turn.outcome.status == "completed"
+                    if typed_terminal_turn.outcome is not None
+                    else False
+                ),
+                typed_terminal_turn.outcome_recorded,
+                "Outcome status=completed" in turn_text["terminal"],
+            )
+        )
+        typed_gate_receipt = typed_gate_turn.diagnostic_receipt
+        typed_terminal_receipt = typed_terminal_turn.diagnostic_receipt
+        receipt_semantics_complete = all(
+            (
+                typed_gate_receipt is not None,
+                typed_terminal_receipt is not None,
+                typed_gate_receipt == typed_terminal_receipt,
+                (
+                    typed_gate_receipt.status is DiagnosticStatus.COMPLETE
+                    if typed_gate_receipt is not None
+                    else False
+                ),
+                (
+                    typed_gate_receipt.coverage.complete
+                    and typed_gate_receipt.coverage.evaluable
+                    == typed_gate_receipt.coverage.requested
+                    and typed_gate_receipt.coverage.unavailable == 0
+                    and typed_gate_receipt.coverage.not_checked == 0
+                    and len(typed_gate_receipt.results)
+                    == typed_gate_receipt.coverage.requested
+                    and all(
+                        item.status is DiagnosticItemStatus.AVAILABLE
+                        for item in typed_gate_receipt.results
+                    )
+                    if typed_gate_receipt is not None
+                    else False
+                ),
+            )
+        )
+        source_completeness_preserved = all(
+            (
+                gate_receipt.get("status") == "complete",
+                gate_receipt.get("content_complete") is True,
+                isinstance(gate_receipt.get("coverage"), Mapping),
+                gate_receipt.get("coverage", {}).get("complete") is True,
+            )
+        )
+        agent_acceptance_preserved = all(
+            (
+                gate_receipt.get("agent_acceptance") == "complete",
+                "agent_acceptance=complete" in turn_text["gate"],
+                "agent_acceptance=complete" in turn_text["terminal"],
+            )
+        )
+        expected_correctness = {
+            "mcp_results_successful": True,
+            "gate_semantics_complete": gate_semantics_complete,
+            "terminal_semantics_complete": terminal_semantics_complete,
+            "source_completeness_preserved": source_completeness_preserved,
+            "agent_acceptance_preserved": agent_acceptance_preserved,
+            "passed": all(
+                (
+                    gate_semantics_complete,
+                    terminal_semantics_complete,
+                    source_completeness_preserved,
+                    agent_acceptance_preserved,
+                    receipt_semantics_complete,
+                    result_kinds
+                    == [
+                        "active-alarms",
+                        "bounded-logs",
+                        "mdb",
+                        "service-tree",
+                        "target-clock",
+                        "version-file",
+                    ],
+                    len(sentinels) == 6,
+                    len(set(sentinels)) == 6,
+                    result_values_complete,
+                    all(
+                        item.get("projection_truncated") is not True
+                        for item in receipt_results
+                        if isinstance(item, Mapping)
+                    ),
+                    gate_receipt.get("content_compacted") is not True,
+                    not preview_duplicated,
+                )
+            ),
+        }
+        expected_representative = {
+            "result_count": len(receipt_results),
+            "result_kinds": result_kinds,
+            "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+            "structured_semantics_complete": all(
+                (
+                    gate_receipt == terminal_receipt,
+                    gate_receipt.get("content_compacted") is not True,
+                    all(
+                        item.get("projection_truncated") is not True
+                        for item in receipt_results
+                        if isinstance(item, Mapping)
+                    ),
+                )
+            ),
+            "gate_structured_semantics_complete": (
+                gate_receipt.get("content_compacted") is not True
+            ),
+            "terminal_structured_semantics_complete": (
+                terminal_receipt.get("content_compacted") is not True
+            ),
+            "preview_sentinel_count": len(sentinels),
+            "preview_values_duplicated": preview_duplicated,
+            "minimum_preview_bytes": DUAL_PROJECTION_MIN_PREVIEW_BYTES,
+            "preview_bytes": preview_bytes,
+        }
+        for turn_name, structured in turns.items():
+            if (
+                _structured_turn_digest(structured)
+                != DUAL_PROJECTION_STRUCTURED_TURN_DIGESTS[turn_name]
+            ):
+                raise ValueError(
+                    "Runtime stability dual-projection structured semantics "
+                    "do not match the canonical fixture"
+                )
+        expected_decision = "warning" if expected_warnings else "passed"
+        if (
+            projection.get("status")
+            != ("passed" if expected_correctness["passed"] else "failed")
+            or correctness != expected_correctness
+            or representative != expected_representative
+            or efficiency.get("blocks_promotability") is not False
+            or efficiency.get("decision") != expected_decision
+            or efficiency.get("warnings") != expected_warnings
+        ):
+            raise ValueError("Runtime stability dual-projection contract failed")
+
     soak = _scenario(report, "restart_soak")
     expected_runs = SOAK_RESTART_CYCLES * SOAK_RUNS_PER_CYCLE
     expected_calls = expected_runs * 2
@@ -488,18 +932,55 @@ def verify_runtime_stability_report(
     ):
         raise ValueError("Runtime stability restart soak exceeded a hard threshold")
 
+    scenario_names = [
+        "duplicate_storm",
+        "gate_concurrency",
+        "capacity",
+        "artifact_lifecycle",
+        "restart_soak",
+    ]
+    if schema == SCHEMA:
+        scenario_names.append("dual_projection")
     scenario_statuses = {
         str(_scenario(report, name).get("status", ""))
-        for name in (
-            "duplicate_storm",
-            "gate_concurrency",
-            "capacity",
-            "artifact_lifecycle",
-            "restart_soak",
-        )
+        for name in scenario_names
     }
     calculated_promotable = scenario_statuses == {"passed"}
     if report.get("promotable") is not calculated_promotable:
         raise ValueError("Runtime stability promotion status is inconsistent")
     if require_promotable and not calculated_promotable:
         raise ValueError("Runtime stability evidence is not promotable")
+
+
+def verify_runtime_stability_report(
+    report: Mapping[str, object],
+    *,
+    expected_source_commit: str,
+    require_promotable: bool = False,
+) -> None:
+    """Verify current evidence; promotion paths require the v2 contract."""
+
+    _verify_runtime_stability_report(
+        report,
+        expected_source_commit=expected_source_commit,
+        require_promotable=require_promotable,
+        allow_legacy_v1=False,
+    )
+
+
+def verify_legacy_runtime_stability_report(
+    report: Mapping[str, object],
+    *,
+    expected_source_commit: str,
+    require_promotable: bool = False,
+) -> None:
+    """Read immutable v1 evidence without permitting it in current promotion."""
+
+    if report.get("schema") != SCHEMA_V1:
+        raise ValueError("Runtime stability evidence is not legacy v1")
+    _verify_runtime_stability_report(
+        report,
+        expected_source_commit=expected_source_commit,
+        require_promotable=require_promotable,
+        allow_legacy_v1=True,
+    )

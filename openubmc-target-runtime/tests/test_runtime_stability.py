@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -9,6 +10,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "runtime_stability.py"
+SPEC = importlib.util.spec_from_file_location("runtime_stability", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+stability = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(stability)
 
 
 class RuntimeStabilityTests(unittest.TestCase):
@@ -43,7 +48,7 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertTrue(report["promotable"])
         self.assertEqual(
             report["schema"],
-            "openubmc-agent-workflow.runtime-stability.v1",
+            "openubmc-agent-workflow.runtime-stability.v2",
         )
         self.assertTrue(report["evidence_digest"].startswith("sha256:"))
         self.assertTrue(report["environment_fingerprint"].startswith("sha256:"))
@@ -99,6 +104,132 @@ class RuntimeStabilityTests(unittest.TestCase):
             soak["completed_runs"],
             report["parameters"]["soak_restart_cycles"]
             * report["parameters"]["soak_runs_per_cycle"],
+        )
+        projection = report["scenarios"]["dual_projection"]
+        self.assertEqual(projection["status"], "passed")
+        self.assertTrue(projection["correctness"]["passed"])
+        self.assertTrue(projection["correctness"]["mcp_results_successful"])
+        self.assertFalse(projection["efficiency"]["blocks_promotability"])
+
+    def test_dual_projection_qualification_measures_gate_and_terminal_seams(
+        self,
+    ) -> None:
+        report = stability.qualify_dual_projection()
+
+        self.assertEqual(report["status"], "passed")
+        self.assertTrue(report["correctness"]["passed"])
+        self.assertEqual(
+            report["representative_receipt"]["result_kinds"],
+            [
+                "active-alarms",
+                "bounded-logs",
+                "mdb",
+                "service-tree",
+                "target-clock",
+                "version-file",
+            ],
+        )
+        self.assertTrue(
+            report["representative_receipt"]["structured_semantics_complete"]
+        )
+        self.assertTrue(
+            report["representative_receipt"]
+            ["gate_structured_semantics_complete"]
+        )
+        self.assertTrue(
+            report["representative_receipt"]
+            ["terminal_structured_semantics_complete"]
+        )
+        self.assertFalse(
+            report["representative_receipt"]["preview_values_duplicated"]
+        )
+        expected_receipt = stability._representative_diagnostic_receipt()
+        self.assertEqual(
+            report["canonical_results"]["gate"]["structuredContent"]["schema"],
+            "openubmc.target-runtime.v1/agent-gateway-v1/turn",
+        )
+        stability.Gate.from_public_dict(
+            report["canonical_results"]["gate"]["structuredContent"]["gate"]
+        )
+        for turn_name in ("gate", "terminal"):
+            receipt = report["canonical_results"][turn_name]["structuredContent"][
+                "diagnostic_receipt"
+            ]
+            self.assertEqual(
+                receipt["schema"],
+                "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+            )
+            self.assertEqual(receipt["results"], expected_receipt["results"])
+            self.assertFalse(receipt.get("content_compacted", False))
+            self.assertTrue(
+                all(
+                    not item.get("projection_truncated", False)
+                    for item in receipt["results"]
+                )
+            )
+            preview_bytes = report["representative_receipt"]["preview_bytes"]
+            self.assertEqual(set(preview_bytes), {
+                item["result_id"] for item in receipt["results"]
+            })
+            self.assertTrue(
+                all(
+                    preview_bytes[item["result_id"]]
+                    == len(item["value"]["preview"].encode("utf-8"))
+                    for item in receipt["results"]
+                )
+            )
+            measurements = report["measurements"][turn_name]
+            self.assertGreater(measurements["standard_text_bytes"], 0)
+            self.assertGreater(measurements["structured_content_bytes"], 0)
+            self.assertGreater(measurements["combined_mcp_result_bytes"], 0)
+            self.assertGreater(
+                measurements["combined_mcp_result_bytes"],
+                measurements["standard_text_bytes"]
+                + measurements["structured_content_bytes"],
+            )
+            self.assertEqual(
+                measurements,
+                stability.projection_measurement(
+                    report["canonical_results"][turn_name]
+                ),
+            )
+
+    def test_dual_projection_efficiency_warning_never_blocks_correctness(
+        self,
+    ) -> None:
+        report = stability.qualify_dual_projection(text_target_bytes=1)
+
+        self.assertEqual(report["status"], "passed")
+        self.assertTrue(report["correctness"]["passed"])
+        self.assertEqual(report["efficiency"]["decision"], "warning")
+        self.assertTrue(report["efficiency"]["warnings"])
+        self.assertFalse(report["efficiency"]["blocks_promotability"])
+
+    def test_dual_projection_detects_a_compacted_preview_prefix(self) -> None:
+        receipt = stability._representative_diagnostic_receipt()
+        sentinel = receipt["results"][0]["value"]["qualification_sentinel"]
+
+        self.assertTrue(
+            stability._preview_value_duplicated(
+                f"fallback leaked {sentinel}truncated...",
+                receipt,
+            )
+        )
+
+    def test_dual_projection_detects_preview_payload_without_sentinel(
+        self,
+    ) -> None:
+        receipt = stability._representative_diagnostic_receipt()
+        value = receipt["results"][0]["value"]
+        payload = value["preview"].removeprefix(
+            value["qualification_sentinel"] + "::"
+        )
+
+        self.assertTrue(
+            stability._preview_value_duplicated(
+                f"fallback leaked {payload}",
+                receipt,
+            )
         )
 
 

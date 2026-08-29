@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import tracemalloc
+from collections.abc import Mapping
 from typing import NamedTuple
 
 
@@ -32,6 +33,7 @@ from scripts.runtime_stability_contract import (  # noqa: E402
     ARTIFACT_CAPACITY_RECORDS,
     CAPACITY_BATCH_SIZE,
     CAPACITY_RUNS,
+    DUAL_PROJECTION_MIN_PREVIEW_BYTES,
     GATE_WORKERS,
     MAX_CAPACITY_PEAK_PYTHON_BYTES,
     MAX_CAPACITY_PEAK_RSS_BYTES,
@@ -49,6 +51,8 @@ from scripts.runtime_stability_contract import (  # noqa: E402
     SOAK_RUNS_PER_CYCLE,
     STORM_WORKERS,
     ci_parameters,
+    json_size_bytes,
+    projection_measurement,
 )
 
 from openubmc_target_runtime.context_runtime import (  # noqa: E402
@@ -59,10 +63,24 @@ from openubmc_target_runtime.artifact_store import (  # noqa: E402
     LocalArtifactStore,
     SQLiteArtifactRepository,
 )
-from openubmc_target_runtime.mcp import RuntimeMcpService  # noqa: E402
+from openubmc_target_runtime.agent_gateway import (  # noqa: E402
+    AgentGateway,
+    EXECUTE_TEXT_PROJECTION_TARGET_BYTES,
+)
+from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
+    DiagnosticReceipt,
+)
+from openubmc_target_runtime.mcp import (  # noqa: E402
+    JsonRpcMcpEndpoint,
+    RuntimeMcpService,
+)
 from openubmc_target_runtime.semantic_runtime import (  # noqa: E402
     CommandConflict,
+    Gate,
+    Outcome,
     ReferenceViolation,
+    RunTurn,
+    fingerprint,
 )
 
 
@@ -108,6 +126,393 @@ class _HermeticBackend:
             "observed_at": "2026-08-25T00:00:00Z",
             "freshness": {"status": "fresh"},
         }
+
+
+DUAL_PROJECTION_TEXT_TARGET_BYTES = EXECUTE_TEXT_PROJECTION_TARGET_BYTES
+DUAL_PROJECTION_RESULT_KINDS = (
+    "active-alarms",
+    "bounded-logs",
+    "mdb",
+    "service-tree",
+    "target-clock",
+    "version-file",
+)
+
+
+def _representative_diagnostic_receipt() -> dict[str, object]:
+    observed_at = "2026-08-25T04:42:55Z"
+    preview_values = {
+        "active-alarms": "DiskTimeout alarm " + "a" * 2048,
+        "bounded-logs": "mctpd request timeout " + "l" * 2048,
+        "mdb": "Drive_1_010102 Health=OK " + "m" * 2048,
+        "service-tree": "/bmc/kepler/devmon " + "s" * 2048,
+        "target-clock": "2026-08-25 04:42:55 +0000 " + "t" * 2048,
+        "version-file": '{"version":"12.08.21.06"}' + "v" * 2048,
+    }
+    results = []
+    evidence = []
+    for index, kind in enumerate(DUAL_PROJECTION_RESULT_KINDS):
+        result_id = f"projection-{kind}"
+        evidence_id = f"evidence-{index}"
+        sentinel = f"QUALIFICATION-PREVIEW-{index}-{kind}"
+        results.append(
+            {
+                "result_id": result_id,
+                "status": "available",
+                "kind": kind,
+                "request": f"qualification request for {kind}",
+                "observed_at": observed_at,
+                "evidence_ids": [evidence_id],
+                "value": {
+                    "qualification_sentinel": sentinel,
+                    "preview": f"{sentinel}::{preview_values[kind]}",
+                    "content_complete": True,
+                },
+            }
+        )
+        evidence.append(
+            {
+                "evidence_id": evidence_id,
+                "uri": f"qualification://dual-projection/{kind}",
+                "kind": kind,
+                "observed_at": observed_at,
+            }
+        )
+    return {
+        "receipt_id": "diagnostic-dual-projection-qualification",
+        "operation": "debug_run",
+        "status": "complete",
+        "agent_acceptance": "complete",
+        "coverage": {
+            "requested": len(results),
+            "evaluable": len(results),
+            "unavailable": 0,
+            "not_checked": 0,
+            "complete": True,
+            "visible_evaluable": len(results),
+            "visible_unavailable": 0,
+            "visible_not_checked": 0,
+        },
+        "results": results,
+        "freshness": {"status": "fresh", "observed_at": observed_at},
+        "capabilities": {
+            "ssh": "available",
+            "telnet": "available",
+            "mdbctl": "available",
+            "busctl": "available",
+            "dbus": "available",
+            "alarms": "available",
+        },
+        "truncated": False,
+        "content_complete": True,
+        "evidence": evidence,
+        "gaps": [],
+    }
+
+
+class _DualProjectionRuntime:
+    def __init__(self) -> None:
+        receipt = DiagnosticReceipt.from_public_dict(
+            _representative_diagnostic_receipt()
+        )
+        gate_schema = {
+            "type": "object",
+            "required": ["status", "summary", "payload"],
+        }
+        self.turns = {
+            "gate": RunTurn(
+                run_id="run-dual-projection-qualification",
+                state="waiting_response",
+                gate=Gate(
+                    kind="phase",
+                    gate_id="developer.change",
+                    version=1,
+                    schema_digest=fingerprint(gate_schema),
+                    name="Developer change",
+                    owner="developer",
+                    input_schema=gate_schema,
+                ),
+                diagnostic_receipt=receipt,
+                response_required=True,
+            ),
+            "terminal": RunTurn(
+                run_id="run-dual-projection-qualification",
+                state="completed",
+                diagnostic_receipt=receipt,
+                outcome=Outcome(
+                    status="completed",
+                    summary="representative source delivery completed",
+                    acceptance=[
+                        {
+                            "requirement_id": "source-delivery",
+                            "status": "passed",
+                        },
+                        {
+                            "requirement_id": "diagnostic-evidence",
+                            "status": "passed",
+                        },
+                    ],
+                ),
+                outcome_recorded=True,
+            ),
+        }
+
+    def execute(self, command, *, task_id: str, operation_id: str) -> RunTurn:
+        del task_id, operation_id
+        fixture = str(getattr(command, "purpose", "")).removeprefix(
+            "dual-projection-"
+        )
+        if fixture not in self.turns:
+            raise ValueError("dual-projection purpose must select gate or terminal")
+        return self.turns[fixture]
+
+
+class _DualProjectionService:
+    def __init__(self) -> None:
+        self.runtime = _DualProjectionRuntime()
+        self.gateway = AgentGateway(self.runtime)
+
+    def call_exposed_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, object],
+        *,
+        task_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        if name != "execute":
+            raise ValueError("dual-projection qualification exposes execute only")
+        return self.gateway.execute(
+            arguments,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+
+
+def _preview_value_duplicated(
+    standard_text: str,
+    receipt: Mapping[str, object],
+) -> bool:
+    raw_results = receipt.get("results", [])
+    results = raw_results if isinstance(raw_results, list) else []
+    for item in results:
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get("value")
+        if not isinstance(value, Mapping):
+            continue
+        sentinel = str(value.get("qualification_sentinel", ""))
+        preview = value.get("preview")
+        if sentinel and sentinel in standard_text:
+            return True
+        if isinstance(preview, str):
+            marker = sentinel + "::"
+            payload = (
+                preview[len(marker) :] if preview.startswith(marker) else preview
+            )
+            if payload and payload in standard_text:
+                return True
+    return False
+
+
+def qualify_dual_projection(
+    *,
+    text_target_bytes: int = DUAL_PROJECTION_TEXT_TARGET_BYTES,
+) -> dict[str, object]:
+    service = _DualProjectionService()
+    endpoint = JsonRpcMcpEndpoint(
+        service,
+        session_task_id="dual-projection-qualification",
+    )
+    results: dict[str, Mapping[str, object]] = {}
+    for request_id, fixture in enumerate(("gate", "terminal"), start=1):
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "192.0.2.90",
+                        "intent": "diagnosis-only",
+                        "purpose": f"dual-projection-{fixture}",
+                    },
+                },
+            }
+        )
+        result = response.get("result", {})
+        results[fixture] = result if isinstance(result, Mapping) else {}
+
+    gate_result = results["gate"]
+    terminal_result = results["terminal"]
+    gate_structured = gate_result.get("structuredContent", {})
+    terminal_structured = terminal_result.get("structuredContent", {})
+    gate_turn = gate_structured if isinstance(gate_structured, Mapping) else {}
+    terminal_turn = (
+        terminal_structured if isinstance(terminal_structured, Mapping) else {}
+    )
+    gate_receipt = gate_turn.get("diagnostic_receipt", {})
+    gate_structured_receipt = (
+        gate_receipt if isinstance(gate_receipt, Mapping) else {}
+    )
+    terminal_receipt = terminal_turn.get("diagnostic_receipt", {})
+    terminal_structured_receipt = (
+        terminal_receipt if isinstance(terminal_receipt, Mapping) else {}
+    )
+    raw_results = terminal_structured_receipt.get("results", [])
+    receipt_results = raw_results if isinstance(raw_results, list) else []
+    result_kinds = sorted(
+        str(item.get("kind", ""))
+        for item in receipt_results
+        if isinstance(item, Mapping) and item.get("kind")
+    )
+    preview_sentinels = [
+        str(value.get("qualification_sentinel", ""))
+        for item in receipt_results
+        if isinstance(item, Mapping)
+        and isinstance((value := item.get("value")), Mapping)
+        and value.get("qualification_sentinel")
+    ]
+    standard_texts = []
+    for result in results.values():
+        content = result.get("content", [])
+        if isinstance(content, list):
+            standard_texts.extend(
+                str(item.get("text", ""))
+                for item in content
+                if isinstance(item, Mapping) and item.get("type") == "text"
+            )
+    combined_text = "\n".join(standard_texts)
+    gate_text = standard_texts[0] if standard_texts else ""
+    terminal_text = standard_texts[1] if len(standard_texts) > 1 else ""
+    measurements = {
+        name: projection_measurement(result)
+        for name, result in results.items()
+    }
+    correctness = {
+        "mcp_results_successful": all(
+            "isError" not in result or result.get("isError") is False
+            for result in results.values()
+        ),
+        "gate_semantics_complete": all(
+            (
+                gate_turn.get("state") == "waiting_response",
+                isinstance(gate_turn.get("gate"), Mapping),
+                "GateBinding" in gate_text,
+                '"kind":"respond"' in gate_text,
+            )
+        ),
+        "terminal_semantics_complete": all(
+            (
+                terminal_turn.get("state") == "completed",
+                isinstance(terminal_turn.get("outcome"), Mapping),
+                "Outcome status=completed" in terminal_text,
+            )
+        ),
+        "source_completeness_preserved": all(
+            (
+                gate_structured_receipt.get("status") == "complete",
+                gate_structured_receipt.get("content_complete") is True,
+                isinstance(gate_structured_receipt.get("coverage"), Mapping),
+                gate_structured_receipt.get("coverage", {}).get("complete")
+                is True,
+                terminal_structured_receipt.get("status") == "complete",
+                terminal_structured_receipt.get("content_complete") is True,
+                isinstance(
+                    terminal_structured_receipt.get("coverage"), Mapping
+                ),
+                terminal_structured_receipt.get("coverage", {}).get("complete")
+                is True,
+            )
+        ),
+        "agent_acceptance_preserved": all(
+            (
+                gate_structured_receipt.get("agent_acceptance") == "complete",
+                terminal_structured_receipt.get("agent_acceptance")
+                == "complete",
+                "agent_acceptance=complete" in gate_text,
+                "agent_acceptance=complete" in terminal_text,
+            )
+        ),
+    }
+    correctness["passed"] = all(correctness.values())
+    warnings = [
+        f"{name}_standard_text_target_exceeded"
+        for name, measurement in measurements.items()
+        if measurement["standard_text_bytes"] > text_target_bytes
+    ]
+    evidence = terminal_structured_receipt.get("evidence", [])
+    preview_bytes = {
+        str(item.get("result_id", "")): len(preview.encode("utf-8"))
+        for item in receipt_results
+        if isinstance(item, Mapping)
+        and item.get("result_id")
+        and isinstance((value := item.get("value")), Mapping)
+        and isinstance((preview := value.get("preview")), str)
+    }
+    typed_receipt = service.runtime.turns["terminal"].diagnostic_receipt
+    if typed_receipt is None:
+        raise RuntimeError("dual-projection fixture lacks a typed receipt")
+    expected_receipt = typed_receipt.to_public_dict()
+    expected_receipt["agent_acceptance"] = "complete"
+    gate_structured_semantics_complete = (
+        gate_structured_receipt == expected_receipt
+    )
+    terminal_structured_semantics_complete = (
+        terminal_structured_receipt == expected_receipt
+    )
+    representative_receipt = {
+        "result_count": len(receipt_results),
+        "result_kinds": result_kinds,
+        "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+        "structured_semantics_complete": (
+            result_kinds == list(DUAL_PROJECTION_RESULT_KINDS)
+            and len(preview_sentinels) == len(DUAL_PROJECTION_RESULT_KINDS)
+            and len(preview_bytes) == len(DUAL_PROJECTION_RESULT_KINDS)
+            and all(
+                value >= DUAL_PROJECTION_MIN_PREVIEW_BYTES
+                for value in preview_bytes.values()
+            )
+            and gate_structured_semantics_complete
+            and terminal_structured_semantics_complete
+        ),
+        "gate_structured_semantics_complete": (
+            gate_structured_semantics_complete
+        ),
+        "terminal_structured_semantics_complete": (
+            terminal_structured_semantics_complete
+        ),
+        "preview_sentinel_count": len(preview_sentinels),
+        "preview_values_duplicated": _preview_value_duplicated(
+            combined_text,
+            terminal_structured_receipt,
+        ),
+        "minimum_preview_bytes": DUAL_PROJECTION_MIN_PREVIEW_BYTES,
+        "preview_bytes": preview_bytes,
+    }
+    correctness["passed"] = bool(
+        correctness["passed"]
+        and representative_receipt["structured_semantics_complete"]
+        and not representative_receipt["preview_values_duplicated"]
+    )
+    return {
+        "status": "passed" if correctness["passed"] else "failed",
+        "correctness": correctness,
+        "efficiency": {
+            "decision": "warning" if warnings else "passed",
+            "warnings": warnings,
+            "blocks_promotability": False,
+            "standard_text_target_bytes": text_target_bytes,
+        },
+        "measurements": measurements,
+        "representative_receipt": representative_receipt,
+        "canonical_results": {
+            name: json.loads(json.dumps(result))
+            for name, result in results.items()
+        },
+    }
 
 
 class _RuntimeStorage(NamedTuple):
@@ -873,6 +1278,7 @@ def qualify_runtime_stability(
         for name, scenario in (
             ("artifact_lifecycle", _artifact_lifecycle),
             ("capacity", _capacity),
+            ("dual_projection", lambda _root: qualify_dual_projection()),
             ("duplicate_storm", _duplicate_storm),
             ("gate_concurrency", _gate_concurrency),
             ("restart_soak", _restart_soak),

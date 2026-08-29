@@ -780,7 +780,7 @@ def _projection_telemetry(
 
 
 class CostGovernor:
-    """Enforce model-visible result budgets without exposing raw Evidence."""
+    """Annotate soft display targets without rewriting Runtime semantics."""
 
     @staticmethod
     def _turn_gate(value: object) -> dict[str, object] | None:
@@ -797,19 +797,6 @@ class CostGovernor:
             and len(_json_bytes(_mapping(gate.get("input_schema"))))
             > GATE_SCHEMA_PROJECTION_TARGET_BYTES
         )
-
-    @staticmethod
-    def _turn_diagnostic_receipt(value: object) -> dict[str, object] | None:
-        receipt = _mapping(value)
-        if not receipt:
-            return None
-        projected = (
-            DiagnosticReceipt.from_public_dict(receipt)
-            .compacted_for_agent()
-            .to_public_dict()
-        )
-        projected["agent_acceptance"] = _diagnostic_agent_acceptance(projected)
-        return projected
 
     @staticmethod
     def observation(document: Mapping[str, object]) -> dict[str, object]:
@@ -849,64 +836,14 @@ class CostGovernor:
             result["gate_projection_target_exceeded"] = True
             result["manual_narrowing_required"] = False
             result["budget_blocker"] = False
-        if len(_json_bytes(result)) <= TURN_MAX_BYTES:
-            return result
-        result.update(
-            _projection_telemetry(compacted=True, target_exceeded=False)
-        )
-        result["facts"] = _compact_value(
-            result.get("facts", []), max_depth=3, max_items=16, max_string=256
-        )
-        if "diagnostic_receipt" in result:
-            result["diagnostic_receipt"] = (
-                CostGovernor._turn_diagnostic_receipt(
-                    result.get("diagnostic_receipt")
+        if len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES:
+            result.update(
+                _projection_telemetry(
+                    compacted=False,
+                    target_exceeded=True,
                 )
             )
-        if len(_json_bytes(result)) <= TURN_MAX_BYTES:
-            return result
-        runtime_incident = document.get("incident")
-        runtime_outcome = document.get("outcome")
-        fallback: dict[str, object] = {
-            "schema": TURN_SCHEMA,
-            "run_id": _bounded_text(result.get("run_id"), 512),
-            "state": _bounded_text(result.get("state") or "blocked", 64),
-            "gate": runtime_gate,
-            "incident": runtime_incident,
-            "facts": [],
-            "gaps": [
-                _bounded_text(item, 256)
-                for item in (
-                    result.get("gaps", [])
-                    if isinstance(result.get("gaps"), list)
-                    else []
-                )[:8]
-            ],
-            "outcome": runtime_outcome,
-            "next": result.get("next"),
-            "next_action": document.get("next_action"),
-            **_projection_telemetry(compacted=True, target_exceeded=False),
-        }
-        if gate_projection_target_exceeded:
-            fallback["gate_projection_target_exceeded"] = True
-        if "observation_ref" in result:
-            fallback["observation_ref"] = document.get("observation_ref")
-        if "outcome_recorded" in result:
-            fallback["outcome_recorded"] = bool(result.get("outcome_recorded"))
-        if "response_required" in result:
-            fallback["response_required"] = bool(result.get("response_required"))
-        if "progress" in result:
-            fallback["progress"] = dict(_mapping(result.get("progress")))
-        if "diagnostic_receipt" in result:
-            fallback["diagnostic_receipt"] = (
-                CostGovernor._turn_diagnostic_receipt(
-                    result.get("diagnostic_receipt")
-                )
-            )
-        if len(_json_bytes(fallback)) <= TURN_MAX_BYTES:
-            return fallback
-        fallback["projection_target_exceeded"] = True
-        return fallback
+        return result
 
 
 class ResultProjector:
