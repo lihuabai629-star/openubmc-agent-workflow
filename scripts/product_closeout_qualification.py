@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 
@@ -115,21 +116,6 @@ def _timestamp(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return None
     return parsed.astimezone(UTC)
-
-
-def _proof_documents(value: object) -> list[Mapping[str, object]]:
-    documents: list[Mapping[str, object]] = []
-    for item in _sequence(_mapping(value).get("evidence")):
-        if not isinstance(item, Mapping):
-            continue
-        path = Path(_text(item.get("path"))).expanduser().absolute()
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        if isinstance(document, Mapping) and document.get("schema") == PROOF_SCHEMA:
-            documents.append(document)
-    return documents
 
 
 def _decoded_text(raw: bytes) -> str | None:
@@ -325,7 +311,7 @@ def _historical_drive_summary(
 def _verify_historical_evidence(
     item: Mapping[str, object],
     *,
-    path: Path,
+    raw: bytes,
     label: str,
     requirements: Mapping[str, object],
     violations: list[str],
@@ -349,11 +335,6 @@ def _verify_historical_evidence(
             f"{_text(requirements.get('dimension'))} dimension"
         )
     else:
-        try:
-            raw = path.read_bytes()
-        except OSError as error:
-            violations.append(f"{label}: cannot read evidence content: {error}")
-            return False
         verifier = {
             "workflow-diagnosis-record": lambda: _historical_diagnosis_record(raw),
             "workflow-official-ut-record": lambda: _historical_official_ut_record(raw),
@@ -417,7 +398,14 @@ def _verify_fixed_supporting_evidence(
             f"{label}.supporting_evidence: file is unavailable: {path}"
         )
         return False
-    actual = _digest_bytes(path.read_bytes())
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        violations.append(
+            f"{label}.supporting_evidence: cannot read evidence content: {error}"
+        )
+        return False
+    actual = _digest_bytes(raw)
     if actual != expected:
         violations.append(
             f"{label}.supporting_evidence: digest mismatch: expected {expected}, actual {actual}"
@@ -430,14 +418,14 @@ def _verify_fixed_supporting_evidence(
         return False
     accepted = _verify_historical_evidence(
         source,
-        path=path,
+        raw=raw,
         label=f"{label}.supporting_evidence",
         requirements=requirements,
         violations=violations,
     )
     if accepted:
         identities.append(
-            f"file:{label}.supporting_evidence:{actual}:{path.stat().st_size}"
+            f"file:{label}.supporting_evidence:{actual}:{len(raw)}"
         )
     return accepted
 
@@ -445,29 +433,31 @@ def _verify_fixed_supporting_evidence(
 def _verify_structured_proof(
     item: Mapping[str, object],
     *,
-    path: Path,
+    raw: bytes,
     label: str,
     requirements: Mapping[str, object],
     violations: list[str],
     identities: list[str],
     runtime_evidence_digests: set[str],
+    parsed_proofs: list[Mapping[str, object]],
     required: bool,
 ) -> bool:
     if not required:
         return _verify_historical_evidence(
             item,
-            path=path,
+            raw=raw,
             label=label,
             requirements=requirements,
             violations=violations,
         )
     try:
-        proof = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        proof = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
         proof = None
     if not isinstance(proof, Mapping) or proof.get("schema") != PROOF_SCHEMA:
         violations.append(f"{label}: Runtime evidence requires a structured proof")
         return False
+    parsed_proofs.append(proof)
     accepted = _verify_fixed_supporting_evidence(
         item,
         proof,
@@ -531,12 +521,11 @@ def _verify_structured_proof(
 
 
 def _verify_fresh_timeline(
-    manifest: Mapping[str, object],
+    proofs: Mapping[str, list[Mapping[str, object]]],
     *,
+    max_age: object,
     violations: list[str],
 ) -> None:
-    freshness = _mapping(manifest.get("freshness"))
-    max_age = freshness.get("max_age_seconds")
     if (
         isinstance(max_age, bool)
         or not isinstance(max_age, int)
@@ -547,12 +536,6 @@ def _verify_fresh_timeline(
             "freshness: max_age_seconds must be an integer from 1 through 86400"
         )
         return
-    proofs = {
-        "runtime": _proof_documents(manifest.get("runtime")),
-        "upgrade": _proof_documents(manifest.get("upgrade")),
-        "freshness": _proof_documents(manifest.get("freshness")),
-        "hardware": _proof_documents(manifest.get("hardware")),
-    }
     if not all(proofs.values()):
         return
     runtime_completed = [
@@ -599,20 +582,21 @@ def _verify_fresh_timeline(
 def _runtime_ledger(
     value: object,
     *,
+    repository_path: Path | None,
     target: str,
     run_id: str,
     violations: list[str],
     identities: list[str],
 ) -> tuple[bool, set[str]]:
     repository_ref = _mapping(_mapping(value).get("repository"))
-    path_text = _text(repository_ref.get("path"))
     expected = _expected_sha256(repository_ref.get("sha256"))
-    if not path_text or not expected:
+    if repository_path is None or not expected:
         violations.append(
-            "runtime.repository: fresh Runtime evidence requires path and sha256"
+            "runtime.repository: fresh Runtime evidence requires an operator-selected "
+            "repository and sha256"
         )
         return False, set()
-    path = Path(path_text).expanduser().absolute()
+    path = repository_path.expanduser().absolute()
     if not path.is_file():
         violations.append(f"runtime.repository: file is unavailable: {path}")
         return False, set()
@@ -620,7 +604,7 @@ def _runtime_ledger(
         repository = SQLiteRuntimeRepository(path)
         projection = repository.load(run_id)
         events = repository.events(run_id)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, sqlite3.DatabaseError) as error:
         violations.append(f"runtime.repository: cannot replay Run ledger: {error}")
         return False, set()
     actual = _digest_bytes(_json_bytes(events))
@@ -637,11 +621,18 @@ def _runtime_ledger(
         for item in _sequence(projection.get("targets"))
         if isinstance(item, Mapping)
     ]
-    if not any(
-        target in {_text(item.get("target_id")), _text(item.get("address"))}
+    matched_targets = [
+        item
         for item in targets
-    ):
+        if target in {_text(item.get("target_id")), _text(item.get("address"))}
+    ]
+    if not matched_targets:
         violations.append("runtime.repository: target does not match the Run ledger")
+    matched_target_ids = {
+        _text(item.get("target_id")) or _text(item.get("address"))
+        for item in matched_targets
+    }
+    matched_target_ids.discard("")
     outcome = _mapping(projection.get("run_outcome"))
     if _text(outcome.get("status")) != "completed":
         violations.append("runtime.repository: terminal Outcome is not completed")
@@ -659,6 +650,12 @@ def _runtime_ledger(
         for event in events
         if event.get("kind") == "EvidenceAttached"
         and int(event.get("revision", 0)) < outcome_revision
+        and _text(
+            _mapping(_mapping(event.get("payload")).get("evidence")).get(
+                "target_id"
+            )
+        )
+        in matched_target_ids
     }
     evidence_digests.discard("")
     accepted = not any(item.startswith("runtime.repository:") for item in violations)
@@ -678,6 +675,7 @@ def _file_identity(
     proof_requirements: Mapping[str, object] | None = None,
     structured_proof_required: bool = False,
     runtime_evidence_digests: set[str] | None = None,
+    parsed_proofs: list[Mapping[str, object]] | None = None,
 ) -> bool:
     path_text = _text(item.get("path"))
     expected = _expected_sha256(item.get("sha256"))
@@ -691,7 +689,12 @@ def _file_identity(
     if not path.is_file():
         violations.append(f"{label}: evidence file is unavailable: {path}")
         return False
-    actual = _digest_bytes(path.read_bytes())
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        violations.append(f"{label}: cannot read evidence content: {error}")
+        return False
+    actual = _digest_bytes(raw)
     if actual != expected:
         violations.append(
             f"{label}: evidence digest mismatch: expected {expected}, actual {actual}"
@@ -699,12 +702,13 @@ def _file_identity(
         return False
     content_valid = _verify_structured_proof(
         item,
-        path=path,
+        raw=raw,
         label=label,
         requirements=proof_requirements or {},
         violations=violations,
         identities=identities,
         runtime_evidence_digests=runtime_evidence_digests or set(),
+        parsed_proofs=parsed_proofs if parsed_proofs is not None else [],
         required=structured_proof_required,
     )
     if (
@@ -715,7 +719,7 @@ def _file_identity(
         violations.append(f"{label}: evidence is not attached to the Runtime Run")
         content_valid = False
     if content_valid:
-        identities.append(f"file:{label}:{actual}:{path.stat().st_size}")
+        identities.append(f"file:{label}:{actual}:{len(raw)}")
     return content_valid
 
 
@@ -730,6 +734,7 @@ def _evidence_dimension(
     proof_requirements: Mapping[str, object],
     structured_proof_required: bool,
     runtime_evidence_digests: set[str] | None = None,
+    parsed_proofs: list[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     document = _mapping(value)
     status = _text(document.get("status")) or "not_reported"
@@ -747,6 +752,7 @@ def _evidence_dimension(
             proof_requirements=proof_requirements,
             structured_proof_required=structured_proof_required,
             runtime_evidence_digests=runtime_evidence_digests,
+            parsed_proofs=parsed_proofs,
         ):
             valid_evidence += 1
     accepted = status in accepted_statuses and valid_evidence == len(evidence) and bool(evidence)
@@ -842,7 +848,13 @@ def _artifact_dimension(
     actual_size = 0
     if status != "verified":
         gaps.append(f"artifact={status}")
-    elif not path_text or not expected or not isinstance(expected_size, int) or not version:
+    elif (
+        not path_text
+        or not expected
+        or isinstance(expected_size, bool)
+        or not isinstance(expected_size, int)
+        or not version
+    ):
         violations.append(
             "artifact: verified identity requires path, sha256, integer size, and version"
         )
@@ -851,8 +863,13 @@ def _artifact_dimension(
         if not path.is_file():
             violations.append(f"artifact: file is unavailable: {path}")
         else:
-            actual_size = path.stat().st_size
-            actual = _digest_bytes(path.read_bytes())
+            try:
+                raw = path.read_bytes()
+            except OSError as error:
+                violations.append(f"artifact: cannot read content: {error}")
+                raw = b""
+            actual_size = len(raw)
+            actual = _digest_bytes(raw)
             if actual != expected:
                 violations.append(
                     f"artifact: digest mismatch: expected {expected}, actual {actual}"
@@ -883,6 +900,7 @@ def _hardware_dimension(
     run_id: str,
     structured_proof_required: bool,
     runtime_evidence_digests: set[str] | None = None,
+    parsed_proofs: list[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     document = _mapping(value)
     status = _text(document.get("status")) or "not_reported"
@@ -907,6 +925,7 @@ def _hardware_dimension(
         },
         structured_proof_required=structured_proof_required,
         runtime_evidence_digests=runtime_evidence_digests,
+        parsed_proofs=parsed_proofs,
     )
     invalid_protocols = sorted(
         protocol
@@ -947,6 +966,8 @@ def _runtime_dimension(
     gaps: list[str],
     identities: list[str],
     target: str,
+    runtime_repository: Path | None,
+    parsed_proofs: list[Mapping[str, object]],
 ) -> tuple[dict[str, object], set[str]]:
     document = _mapping(value)
     run_id = _text(document.get("run_id"))
@@ -957,6 +978,7 @@ def _runtime_dimension(
     if mode == "fresh-runtime":
         ledger_accepted, runtime_evidence_digests = _runtime_ledger(
             document,
+            repository_path=runtime_repository,
             target=target,
             run_id=run_id,
             violations=violations,
@@ -981,6 +1003,7 @@ def _runtime_dimension(
             },
             structured_proof_required=mode == "fresh-runtime",
             runtime_evidence_digests=runtime_evidence_digests,
+            parsed_proofs=parsed_proofs,
         ):
             verified += 1
     accepted = (
@@ -1012,11 +1035,24 @@ def _runtime_dimension(
     )
 
 
-def qualify(document: Mapping[str, object]) -> dict[str, object]:
+def qualify(
+    document: Mapping[str, object],
+    *,
+    runtime_repository: Path | None = None,
+) -> dict[str, object]:
     manifest = dict(document)
     violations: list[str] = []
     gaps: list[str] = []
     identities: list[str] = []
+    parsed_proofs: dict[str, list[Mapping[str, object]]] = {
+        "runtime": [],
+        "diagnosis": [],
+        "official_ut": [],
+        "build": [],
+        "upgrade": [],
+        "freshness": [],
+        "hardware": [],
+    }
     if manifest.get("schema") != EVIDENCE_SCHEMA:
         violations.append(f"schema must be {EVIDENCE_SCHEMA}")
     mode = _text(manifest.get("mode"))
@@ -1052,6 +1088,8 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         gaps=gaps,
         identities=identities,
         target=case_target,
+        runtime_repository=runtime_repository,
+        parsed_proofs=parsed_proofs["runtime"],
     )
     dimensions = {
         "runtime": runtime_result,
@@ -1070,6 +1108,7 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
             },
             structured_proof_required=mode == "fresh-runtime",
             runtime_evidence_digests=runtime_evidence_digests,
+            parsed_proofs=parsed_proofs["diagnosis"],
         ),
         "source": _source_dimension(
             manifest.get("source"),
@@ -1095,6 +1134,7 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         },
         structured_proof_required=mode == "fresh-runtime",
         runtime_evidence_digests=runtime_evidence_digests,
+        parsed_proofs=parsed_proofs["official_ut"],
     )
     dimensions["build"] = _evidence_dimension(
         validation.get("build"),
@@ -1112,6 +1152,7 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         },
         structured_proof_required=mode == "fresh-runtime",
         runtime_evidence_digests=runtime_evidence_digests,
+        parsed_proofs=parsed_proofs["build"],
     )
     dimensions["artifact"] = _artifact_dimension(
         manifest.get("artifact"),
@@ -1136,6 +1177,7 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         },
         structured_proof_required=mode == "fresh-runtime",
         runtime_evidence_digests=runtime_evidence_digests,
+        parsed_proofs=parsed_proofs["upgrade"],
     )
     dimensions["freshness"] = _evidence_dimension(
         manifest.get("freshness"),
@@ -1153,6 +1195,7 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         },
         structured_proof_required=mode == "fresh-runtime",
         runtime_evidence_digests=runtime_evidence_digests,
+        parsed_proofs=parsed_proofs["freshness"],
     )
     dimensions["hardware"] = _hardware_dimension(
         manifest.get("hardware"),
@@ -1164,10 +1207,15 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         run_id=run_id,
         structured_proof_required=mode == "fresh-runtime",
         runtime_evidence_digests=runtime_evidence_digests,
+        parsed_proofs=parsed_proofs["hardware"],
     )
     if mode == "fresh-runtime":
         _verify_fresh_timeline(
-            manifest,
+            {
+                dimension: parsed_proofs[dimension]
+                for dimension in ("runtime", "upgrade", "freshness", "hardware")
+            },
+            max_age=_mapping(manifest.get("freshness")).get("max_age_seconds"),
             violations=violations,
         )
 
@@ -1217,13 +1265,21 @@ def main(argv: list[str] | None = None) -> int:
         description="Qualify immutable product-closeout evidence."
     )
     parser.add_argument("manifest", type=Path)
+    parser.add_argument(
+        "--runtime-repository",
+        type=Path,
+        help=(
+            "Operator-selected Runtime SQLite ledger. Required for fresh-runtime "
+            "qualification; manifest repository paths are not trusted as authority."
+        ),
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         document = json.loads(args.manifest.expanduser().read_text(encoding="utf-8"))
         if not isinstance(document, Mapping):
             raise ValueError("manifest must be a JSON object")
-        report = qualify(document)
+        report = qualify(document, runtime_repository=args.runtime_repository)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

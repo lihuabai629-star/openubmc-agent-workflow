@@ -10,6 +10,15 @@ python3 scripts/product_closeout_qualification.py evidence.json \
   --output product-closeout-report.json
 ```
 
+Fresh Runtime qualification additionally requires the Operator / CI Plane to select the trusted
+Runtime ledger independently of the evidence manifest:
+
+```bash
+python3 scripts/product_closeout_qualification.py fresh-evidence.json \
+  --runtime-repository /trusted/runtime-state/runtime.sqlite3 \
+  --output product-closeout-report.json
+```
+
 The manifest separates nine dimensions: Runtime continuity, diagnosis, source identity, official
 UT, compiled build, artifact identity, upgrade, freshness, and hardware coverage. Every referenced
 file is verified by SHA-256. Fresh Runtime evidence uses the structured proof schema, but a proof
@@ -60,7 +69,11 @@ The resulting evidence digest is
 `sha256:6c7a1389d5114a1f119a0b1c0549e12d9ed3e19df8cd48e16cc70d2df0b13733`.
 Its claim is `historical-product-validated` and `promotable=false` because the case predates the
 current Runtime and therefore has no current Run ID or terminal Outcome. The retained machine
-report is [630-nvme-product-closeout.json](qualification/630-nvme-product-closeout.json).
+inputs are [630-nvme-product-closeout-manifest.json](qualification/630-nvme-product-closeout-manifest.json),
+and the retained machine report is
+[630-nvme-product-closeout.json](qualification/630-nvme-product-closeout.json). The external replay
+bundle remains immutable at the paths and digests recorded in the manifest; it is not replaced by
+synthetic repository fixtures.
 
 ## Fresh product checkpoint
 

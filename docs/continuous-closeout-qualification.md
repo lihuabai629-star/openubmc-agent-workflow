@@ -6,12 +6,15 @@ Maintenance checkpoint without weakening product promotion semantics:
 ```bash
 python3 scripts/continuous_closeout_qualification.py \
   --product-manifest /path/to/product-evidence.json \
+  --runtime-repository /trusted/runtime-state/runtime.sqlite3 \
   --output continuous-closeout-report.json
 ```
 
 Without `--product-manifest`, the hermetic repository checkpoint still runs and reports the fresh
 product evidence as an external blocker. When a manifest is supplied, the product evidence is
 re-read and re-hashed rather than trusting a previously rendered report.
+`--runtime-repository` is required only for a fresh Runtime product manifest and is selected by
+the Operator / CI Plane independently of manifest-authored paths.
 
 The checkpoint verifies:
 

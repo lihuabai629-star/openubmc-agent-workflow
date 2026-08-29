@@ -1,0 +1,161 @@
+{
+  "artifact": {
+    "path": "/home/workspace/openubmc-nvme-replay-20260812/manifest/output/rootfs_openUBMC.hpm",
+    "sha256": "2fc339ddadc4fb4b1d550257f7f07986f290f562a964c50a535030f6b9ace987",
+    "size": 93563247,
+    "status": "verified",
+    "version": "12.08.21.10"
+  },
+  "case": {
+    "name": "630 NVMe CPU resource attribution",
+    "required_protocols": [
+      "NVMe"
+    ],
+    "target": "historical-630-target"
+  },
+  "diagnosis": {
+    "evidence": [
+      {
+        "evidence_type": "workflow-diagnosis-record",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/records/630-nvme-resource-attribution-replay-full.md",
+        "sha256": "f8e0f9a39c608564f4a52dd324de5e456e857d7638e1a2684fa9ada9a0e92c67"
+      }
+    ],
+    "status": "passed"
+  },
+  "freshness": {
+    "evidence": [
+      {
+        "evidence_type": "reboot-acceptance-timeline",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/evidence/reboot-acceptance-20260812/timeline.log",
+        "sha256": "ff5ca5d6de7e1fb53c486ffa074f18be13811f8b2c6155e208878fe9e013e274"
+      }
+    ],
+    "status": "fresh"
+  },
+  "hardware": {
+    "devices": [
+      {
+        "device_id": "Drive8",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive9",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive10",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive11",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive20",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive21",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive22",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive23",
+        "protocol": "NVMe"
+      }
+    ],
+    "evidence": [
+      {
+        "evidence_type": "drive-summary-json",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/evidence/reboot-acceptance-20260812/final-drive-summary.json",
+        "sha256": "b5319e6f538f909d48e505b067d7e07a354b8e573147540d765838403f5e84c6"
+      }
+    ],
+    "required_protocols": [
+      "NVMe"
+    ],
+    "status": "covered"
+  },
+  "mode": "historical-reconstruction",
+  "runtime": {
+    "run_id": "",
+    "terminal_outcome": "unavailable"
+  },
+  "schema": "openubmc-agent-workflow.product-closeout-evidence.v1",
+  "source": {
+    "repositories": [
+      {
+        "commit": "bacde32dbfb7ea41ebee81e7f87524b46f6e759b",
+        "name": "manifest",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/manifest"
+      },
+      {
+        "commit": "93a7cff7ef1f9c970325795f5e072e2d0eb4362c",
+        "name": "mdb_interface",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/mdb_interface"
+      },
+      {
+        "commit": "0839004bb4d24e4efbd3a9d5c26bd6ba6d53378c",
+        "name": "storage",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/storage"
+      },
+      {
+        "commit": "a3eb9b97056a79b29b60d61a7c558ae8f194df41",
+        "name": "pcie_device",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/pcie_device"
+      }
+    ],
+    "status": "completed"
+  },
+  "upgrade": {
+    "evidence": [
+      {
+        "evidence_type": "workflow-upgrade-record",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/records/630-nvme-resource-attribution-replay-full.md",
+        "sha256": "f8e0f9a39c608564f4a52dd324de5e456e857d7638e1a2684fa9ada9a0e92c67"
+      }
+    ],
+    "status": "completed"
+  },
+  "validation": {
+    "build": {
+      "evidence": [
+        {
+          "evidence_type": "component-build-log",
+          "path": "/home/workspace/openubmc-nvme-replay-20260812/build-runs/final-12.08.21.10/mdb_interface-build.log",
+          "sha256": "049404940fdd536915f2d8bb6c17da1dc78c8bced31bbbe9cd6496232865c55f"
+        },
+        {
+          "evidence_type": "component-build-log",
+          "path": "/home/workspace/openubmc-nvme-replay-20260812/build-runs/final-12.08.21.10/pcie_device-build.log",
+          "sha256": "a8697816b4e0e6f50a096d0717685f52deae290de0b4c8459a7b23c91c13ac97"
+        },
+        {
+          "evidence_type": "component-build-log",
+          "path": "/home/workspace/openubmc-nvme-replay-20260812/build-runs/final-12.08.21.10/storage-build.log",
+          "sha256": "ccf4f4b552bd8c0962892bf196897a128f9447886849d2ca8f3a7585d0ce2eac"
+        },
+        {
+          "evidence_type": "product-build-log",
+          "path": "/home/workspace/openubmc-nvme-replay-20260812/build-runs/final-12.08.21.10/product-12.08.21.10-active.log",
+          "sha256": "ce92ff0ba4d14c80b5e6411178aa81a9c2916c7637a44f63c2ac449eb9118422"
+        }
+      ],
+      "status": "compiled"
+    },
+    "official_ut": {
+      "evidence": [
+        {
+          "evidence_type": "workflow-official-ut-record",
+          "path": "/home/workspace/openubmc-nvme-replay-20260812/records/630-nvme-resource-attribution-replay-full.md",
+          "sha256": "f8e0f9a39c608564f4a52dd324de5e456e857d7638e1a2684fa9ada9a0e92c67"
+        }
+      ],
+      "status": "passed"
+    }
+  }
+}

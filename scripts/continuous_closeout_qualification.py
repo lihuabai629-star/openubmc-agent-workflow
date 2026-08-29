@@ -45,6 +45,13 @@ PRODUCT_CONTRACT_TESTS = (
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_upgrade_proof_for_another_artifact",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_stale_or_misordered_target_evidence",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_any_contradictory_additional_timeline_proof",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_manifest_cannot_select_the_runtime_authority",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_runtime_evidence_must_be_bound_to_the_qualified_target",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_digest_bound_evidence_is_parsed_from_the_same_bytes",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_malformed_runtime_repository_produces_a_json_report",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_boolean_artifact_size_is_rejected",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_retained_630_manifest_matches_the_machine_report",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_retained_630_evidence_replays_when_bundle_is_available",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_historical_evidence_rejects_manifest_authored_claims",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_historical_evidence_rejects_unknown_evidence_type",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_historical_evidence_type_must_match_its_dimension",
@@ -124,7 +131,11 @@ def _run_tests(
     }
 
 
-def _product_evidence(path: Path | None) -> dict[str, object]:
+def _product_evidence(
+    path: Path | None,
+    *,
+    runtime_repository: Path | None,
+) -> dict[str, object]:
     if path is None:
         return {
             "status": "not-supplied",
@@ -135,7 +146,10 @@ def _product_evidence(path: Path | None) -> dict[str, object]:
     value = json.loads(path.expanduser().read_text(encoding="utf-8"))
     if not isinstance(value, Mapping):
         raise ValueError("product manifest must contain an object")
-    report = qualify_product_closeout(value)
+    report = qualify_product_closeout(
+        value,
+        runtime_repository=runtime_repository,
+    )
     return {
         "status": "verified-manifest",
         "qualified": report.get("qualified") is True,
@@ -218,7 +232,11 @@ def _mcp_closeout_snapshot() -> dict[str, object]:
     }
 
 
-def qualify(product_manifest: Path | None = None) -> dict[str, object]:
+def qualify(
+    product_manifest: Path | None = None,
+    *,
+    runtime_repository: Path | None = None,
+) -> dict[str, object]:
     workflow = _workflow_metadata()
     raw_clients = workflow.get("clients", {})
     clients = raw_clients if isinstance(raw_clients, Mapping) else {}
@@ -251,7 +269,10 @@ def qualify(product_manifest: Path | None = None) -> dict[str, object]:
         "repeated_projection", {}
     )
     repeated_projection = repeated if isinstance(repeated, Mapping) else {}
-    product_evidence = _product_evidence(product_manifest)
+    product_evidence = _product_evidence(
+        product_manifest,
+        runtime_repository=runtime_repository,
+    )
     source_clean = _source_clean()
 
     client_matrix_passed = all(
@@ -344,10 +365,14 @@ def qualify(product_manifest: Path | None = None) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--product-manifest", type=Path)
+    parser.add_argument("--runtime-repository", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = qualify(args.product_manifest)
+        report = qualify(
+            args.product_manifest,
+            runtime_repository=args.runtime_repository,
+        )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

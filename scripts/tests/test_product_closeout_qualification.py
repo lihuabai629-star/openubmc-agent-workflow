@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,6 +17,9 @@ sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import SQLiteRuntimeRepository  # noqa: E402
 from openubmc_target_runtime.context_runtime import PendingCaseEvent  # noqa: E402
+
+
+AUTO_RUNTIME_REPOSITORY = object()
 
 
 def sha256(path: Path) -> str:
@@ -51,7 +55,12 @@ def all_manifest_evidence(manifest: dict[str, object]) -> list[dict[str, object]
     return refs
 
 
-def rebuild_runtime_ledger(manifest: dict[str, object]) -> None:
+def rebuild_runtime_ledger(
+    manifest: dict[str, object],
+    *,
+    evidence_target: str | None = None,
+    additional_targets: tuple[str, ...] = (),
+) -> None:
     runtime = manifest["runtime"]
     repository_ref = runtime["repository"]
     database = Path(repository_ref["path"])
@@ -61,15 +70,24 @@ def rebuild_runtime_ledger(manifest: dict[str, object]) -> None:
             candidate.unlink()
     run_id = runtime["run_id"]
     target = manifest["case"]["target"]
+    targets = [
+        {"target_id": target, "address": target, "role": "candidate"},
+        *(
+            {
+                "target_id": additional_target,
+                "address": additional_target,
+                "role": "comparison",
+            }
+            for additional_target in additional_targets
+        ),
+    ]
     events = [
         PendingCaseEvent(
             "CaseOpened",
             {
                 "intent": "diagnose-and-fix",
                 "delivery_strategy": "build-upgrade",
-                "targets": [
-                    {"target_id": target, "address": target, "role": "candidate"}
-                ],
+                "targets": targets,
             },
             "product-closeout-start",
         )
@@ -85,7 +103,7 @@ def rebuild_runtime_ledger(manifest: dict[str, object]) -> None:
                         "blob_id": digest,
                         "media_type": "application/octet-stream",
                         "byte_count": Path(item["path"]).stat().st_size,
-                        "target_id": target,
+                        "target_id": evidence_target or target,
                         "generation": "fresh-product-closeout",
                         "provenance": "product-closeout-qualification",
                         "observed_at": 1.0 + index,
@@ -404,11 +422,27 @@ def complete_manifest(
     return manifest, source, diagnosis_proof, artifact
 
 
-def run_qualification(root: Path, manifest: dict[str, object]) -> subprocess.CompletedProcess[str]:
+def run_qualification(
+    root: Path,
+    manifest: dict[str, object],
+    *,
+    runtime_repository: Path | None | object = AUTO_RUNTIME_REPOSITORY,
+) -> subprocess.CompletedProcess[str]:
     manifest_path = root / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    command = [sys.executable, str(SCRIPT), str(manifest_path)]
+    selected_repository = runtime_repository
+    if selected_repository is AUTO_RUNTIME_REPOSITORY:
+        repository_ref = manifest.get("runtime", {}).get("repository", {})
+        selected_repository = (
+            Path(repository_ref["path"])
+            if isinstance(repository_ref, dict) and repository_ref.get("path")
+            else None
+        )
+    if isinstance(selected_repository, Path):
+        command.extend(["--runtime-repository", str(selected_repository)])
     return subprocess.run(
-        [sys.executable, str(SCRIPT), str(manifest_path)],
+        command,
         text=True,
         capture_output=True,
         check=False,
@@ -429,6 +463,150 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(report["claim_level"], "fresh-runtime-product-closed")
         self.assertEqual(report["gaps"], [])
         self.assertEqual(report["violations"], [])
+
+    def test_manifest_cannot_select_the_runtime_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            trusted_repository = Path(manifest["runtime"]["repository"]["path"])
+            manifest["runtime"]["repository"]["path"] = str(
+                root / "manifest-selected-forgery.sqlite3"
+            )
+            completed = run_qualification(
+                root,
+                manifest,
+                runtime_repository=trusted_repository,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertTrue(report["dimensions"]["runtime"]["ledger_verified"])
+
+    def test_runtime_evidence_must_be_bound_to_the_qualified_target(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            rebuild_runtime_ledger(
+                manifest,
+                evidence_target="target-2",
+                additional_targets=("target-2",),
+            )
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any(
+                "not attached to the Runtime Run" in item
+                for item in report["violations"]
+            ),
+            report["violations"],
+        )
+
+    def test_digest_bound_evidence_is_parsed_from_the_same_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, diagnosis_proof, _ = complete_manifest(root)
+            trusted_repository = Path(manifest["runtime"]["repository"]["path"])
+            original_read_text = Path.read_text
+
+            def replacing_read_text(path: Path, *args: object, **kwargs: object) -> str:
+                if path == diagnosis_proof:
+                    return '{"schema":"replaced-after-digest"}'
+                return original_read_text(path, *args, **kwargs)
+
+            sys.path.insert(0, str(ROOT))
+            from scripts import product_closeout_qualification as qualification
+
+            with mock.patch.object(Path, "read_text", replacing_read_text):
+                report = qualification.qualify(
+                    manifest,
+                    runtime_repository=trusted_repository,
+                )
+
+        self.assertTrue(report["promotable"], report["violations"])
+
+    def test_malformed_runtime_repository_produces_a_json_report(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            repository = Path(manifest["runtime"]["repository"]["path"])
+            for suffix in ("-wal", "-shm"):
+                companion = Path(str(repository) + suffix)
+                if companion.exists():
+                    companion.unlink()
+            repository.write_bytes(b"not-a-sqlite-database")
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("cannot replay Run ledger" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_boolean_artifact_size_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            manifest["artifact"]["size"] = True
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["dimensions"]["artifact"]["accepted"])
+        self.assertTrue(
+            any("integer size" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_retained_630_manifest_matches_the_machine_report(self) -> None:
+        manifest_path = (
+            ROOT / "docs" / "qualification" / "630-nvme-product-closeout-manifest.json"
+        )
+        report_path = ROOT / "docs" / "qualification" / "630-nvme-product-closeout.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        manifest_digest = hashlib.sha256(
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+        self.assertEqual(report["manifest_digest"], f"sha256:{manifest_digest}")
+        self.assertEqual(manifest["case"]["name"], report["case"]["name"])
+        self.assertEqual(
+            manifest["artifact"]["sha256"],
+            "2fc339ddadc4fb4b1d550257f7f07986f290f562a964c50a535030f6b9ace987",
+        )
+
+    @unittest.skipUnless(
+        Path("/home/workspace/openubmc-nvme-replay-20260812").is_dir(),
+        "original 630 replay bundle is not installed",
+    )
+    def test_retained_630_evidence_replays_when_bundle_is_available(self) -> None:
+        manifest_path = (
+            ROOT / "docs" / "qualification" / "630-nvme-product-closeout-manifest.json"
+        )
+        report_path = ROOT / "docs" / "qualification" / "630-nvme-product-closeout.json"
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT), str(manifest_path)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout),
+            json.loads(report_path.read_text(encoding="utf-8")),
+        )
 
     def test_evidence_digest_tamper_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
