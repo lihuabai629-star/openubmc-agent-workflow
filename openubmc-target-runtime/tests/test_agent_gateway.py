@@ -2148,6 +2148,39 @@ class OversizedTerminalTurnRuntime(OversizedDiagnosticTurnRuntime):
         )
 
 
+class RequiredIdentityPressureTurnRuntime(OversizedTerminalTurnRuntime):
+    def execute(self, command, *, task_id, operation_id):
+        turn = super().execute(
+            command,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+        return RunTurn(
+            run_id=turn.run_id,
+            state=turn.state,
+            gaps=tuple(
+                f"required-gap-{index}-" + "g" * 2_000
+                for index in range(16)
+            ),
+            outcome=Outcome(
+                status="completed",
+                summary="terminal outcome remains Runtime-owned" + "s" * 20_000,
+                acceptance=[
+                    {
+                        "requirement_id": f"requirement-{index}-" + "a" * 2_000,
+                        "status": "passed",
+                    }
+                    for index in range(8)
+                ],
+            ),
+            next_action=(
+                "retain the Runtime-owned terminal instruction exactly "
+                + "n" * 20_000
+            ),
+            diagnostic_receipt=turn.diagnostic_receipt,
+        )
+
+
 class PersistentUnknownRunDriver:
     def __init__(self, repository=None) -> None:
         self.repository = repository
@@ -5544,6 +5577,376 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIn("content_truncated", receipt["gaps"])
         self.assertIn("content_truncated", turn["gaps"])
         self.assertLessEqual(encoded_size(turn), TURN_MAX_BYTES)
+
+    def test_execute_mcp_text_keeps_diagnostic_identities_without_preview_values(
+        self,
+    ) -> None:
+        service = RuntimeMcpService(BoundedDiagnosticBackend())
+        try:
+            response = JsonRpcMcpEndpoint(
+                service,
+                session_task_id="deduplicated-diagnostic-text",
+            ).handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "execute",
+                        "arguments": {
+                            "kind": "start",
+                            "target": "192.0.2.20",
+                            "intent": "diagnosis-only",
+                            "purpose": "build a bounded diagnostic timeline",
+                            "entry_operation": "debug_run",
+                            "entry_arguments": {
+                                "logs": "app.log",
+                                "tree_service": "bmc.kepler.devmon",
+                                "mdb_queries": ["lsmc"],
+                            },
+                        },
+                    },
+                }
+            )
+        finally:
+            service.close()
+
+        result = response["result"]
+        structured = result["structuredContent"]
+        receipt = structured["diagnostic_receipt"]
+        text = result["content"][0]["text"]
+        self.assertEqual(
+            receipt["results"][1]["value"]["entries"][0]["lines_preview"][0],
+            "mctpd request timeout",
+        )
+        self.assertIn(f"receipt_id={receipt['receipt_id']}", text)
+        self.assertIn("Outcome status=failed", text)
+        self.assertIn("result_ids:", text)
+        for result_id in ("target-clock", "logs", "service", "mdb-1"):
+            self.assertIn(result_id, text)
+        self.assertIn(
+            "result[logs] status=available kind=bounded-logs request=app.log",
+            text,
+        )
+        self.assertIn("evidence_ids:", text)
+        self.assertIn("gaps:", text)
+        self.assertEqual(text.count("content_truncated"), 1)
+        for duplicated_value in (
+            "mctpd request timeout",
+            "storage PluginRequestEx timeout",
+            "/bmc/kepler/devmon",
+            "Drive_1_010102",
+            "2026-08-25 04:42:55 +0000",
+        ):
+            self.assertNotIn(duplicated_value, text)
+
+    def test_execute_mcp_text_preserves_oversized_terminal_semantics_and_guidance(
+        self,
+    ) -> None:
+        class ExecuteOnlyService:
+            def __init__(self) -> None:
+                self.gateway = AgentGateway(RequiredIdentityPressureTurnRuntime())
+
+            def call_exposed_tool(
+                self,
+                name,
+                arguments,
+                *,
+                task_id,
+                operation_id,
+            ):
+                self.assert_execute(name)
+                return self.gateway.execute(
+                    arguments,
+                    task_id=task_id,
+                    operation_id=operation_id,
+                )
+
+            @staticmethod
+            def assert_execute(name) -> None:
+                if name != "execute":
+                    raise ValueError("only execute is supported")
+
+        response = JsonRpcMcpEndpoint(
+            ExecuteOnlyService(),
+            session_task_id="oversized-terminal-text",
+        ).handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "192.0.2.20",
+                        "intent": "diagnosis-only",
+                    },
+                },
+            }
+        )
+
+        result = response["result"]
+        structured = result["structuredContent"]
+        text = result["content"][0]["text"]
+        self.assertEqual(structured["outcome"]["status"], "completed")
+        self.assertEqual(
+            structured["next"],
+            "retain the Runtime-owned terminal instruction exactly "
+            + "n" * 20_000,
+        )
+        self.assertTrue(structured["projection_target_exceeded"])
+        self.assertEqual(
+            structured["diagnostic_receipt"]["results"][0]["result_id"],
+            "result-0",
+        )
+        self.assertLessEqual(
+            len(text.encode("utf-8")),
+            4 * 1024,
+        )
+        self.assertIn("Outcome status=completed", text)
+        self.assertIn("terminal outcome remains Runtime-owned", text)
+        self.assertIn(
+            "next_guidance: retain the Runtime-owned terminal instruction exactly",
+            text,
+        )
+        self.assertIn("gaps: required-gap-0-", text)
+        self.assertIn("receipt_id=diagnostic-oversized", text)
+        self.assertIn("result-0", text)
+        shown_line = next(
+            line for line in text.splitlines() if line.startswith("results_shown=")
+        )
+        shown = int(shown_line.split("=", 1)[1].split("/", 1)[0])
+        self.assertEqual(shown, text.count("result["))
+        self.assertIn("text_projection_compacted=true", text)
+        self.assertNotIn("x" * 256, text)
+
+    def test_execute_mcp_text_includes_persisted_compacted_result_identities(
+        self,
+    ) -> None:
+        class CompactedReceiptService:
+            @staticmethod
+            def call_exposed_tool(
+                name,
+                arguments,
+                *,
+                task_id,
+                operation_id,
+            ):
+                del arguments, task_id, operation_id
+                if name != "execute":
+                    raise ValueError("only execute is supported")
+                return {
+                    "state": "completed",
+                    "diagnostic_receipt": {
+                        "receipt_id": "diagnostic-compacted-identities",
+                        "operation": "debug_run",
+                        "status": "partial",
+                        "coverage": {
+                            "requested": 3,
+                            "evaluable": 1,
+                            "unavailable": 0,
+                            "not_checked": 2,
+                            "complete": False,
+                            "visible_evaluable": 1,
+                            "visible_unavailable": 0,
+                            "visible_not_checked": 2,
+                        },
+                        "results": [
+                            {
+                                "result_id": "visible-result",
+                                "status": "available",
+                                "kind": "mdb",
+                                "request": "lsmc",
+                                "value": {"stdout_lines": ["hidden-value"]},
+                            }
+                        ],
+                        "compacted_results": {
+                            "result_ids": ["compacted-a", "compacted-b"],
+                            "status": "not_checked",
+                            "gap": "result_preview_compacted",
+                        },
+                        "freshness": {"status": "fresh"},
+                        "capabilities": {"mdbctl": "available"},
+                        "truncated": False,
+                        "content_complete": True,
+                        "evidence": [],
+                        "gaps": ["result_preview_compacted"],
+                    },
+                }
+
+        response = JsonRpcMcpEndpoint(
+            CompactedReceiptService(),
+            session_task_id="compacted-result-identities",
+        ).handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "execute", "arguments": {}},
+            }
+        )
+
+        result = response["result"]
+        text = result["content"][0]["text"]
+        self.assertEqual(
+            result["structuredContent"]["diagnostic_receipt"]
+            ["compacted_results"]["result_ids"],
+            ["compacted-a", "compacted-b"],
+        )
+        self.assertIn("results_shown=3/3", text)
+        self.assertIn("result[visible-result] status=available", text)
+        self.assertIn("result[compacted-a] status=not_checked", text)
+        self.assertIn("result[compacted-b] status=not_checked", text)
+        self.assertNotIn("hidden-value", text)
+
+    def test_execute_mcp_text_preserves_maximum_length_control_identities(
+        self,
+    ) -> None:
+        run_id = "r" * 128
+        gate_id = "g" * 128
+        incident_id = "i" * 128
+        receipt_id = "d" * 128
+        next_action = {
+            "kind": "control",
+            "run_id": run_id,
+            "command": "cancel",
+            "incident_id": incident_id,
+        }
+
+        class MaximumIdentityService:
+            @staticmethod
+            def call_exposed_tool(
+                name,
+                arguments,
+                *,
+                task_id,
+                operation_id,
+            ):
+                del arguments, task_id, operation_id
+                if name != "execute":
+                    raise ValueError("only execute is supported")
+                return {
+                    "run_id": run_id,
+                    "state": "incident",
+                    "gate": {
+                        "gate_id": gate_id,
+                        "gate_version": 1,
+                        "schema_digest": "sha256:" + "a" * 64,
+                    },
+                    "incident": {
+                        "incident_id": incident_id,
+                        "code": "operator_cancel_required",
+                        "message": "cancel the same Run",
+                    },
+                    "next_action": next_action,
+                    "diagnostic_receipt": {
+                        "receipt_id": receipt_id,
+                        "status": "blocked",
+                        "coverage": {
+                            "requested": 1,
+                            "evaluable": 0,
+                            "unavailable": 0,
+                            "not_checked": 1,
+                            "complete": False,
+                        },
+                        "results": [],
+                        "freshness": {"status": "unknown"},
+                        "capabilities": {
+                            "ssh": "available",
+                            "telnet": "available",
+                            "mdbctl": "available",
+                            "busctl": "available",
+                            "dbus": "not_checked",
+                            "alarms": "unavailable",
+                        },
+                        "truncated": False,
+                        "content_complete": False,
+                        "evidence": [],
+                        "gaps": ["diagnostic_result_not_visible"],
+                    },
+                }
+
+        response = JsonRpcMcpEndpoint(
+            MaximumIdentityService(),
+            session_task_id="maximum-control-identities",
+        ).handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "execute", "arguments": {}},
+            }
+        )
+
+        result = response["result"]
+        text = result["content"][0]["text"]
+        self.assertEqual(result["structuredContent"]["run_id"], run_id)
+        self.assertIn(f"run_id={run_id} ", text)
+        self.assertIn(f"gate_id={gate_id} ", text)
+        self.assertIn(f"incident_id={incident_id} ", text)
+        self.assertIn(f"receipt_id={receipt_id} ", text)
+        self.assertIn("capabilities_shown=6/6", text)
+        self.assertIn("dbus=not_checked", text)
+        self.assertIn("alarms=unavailable", text)
+        action_line = next(
+            line for line in text.splitlines() if line.startswith("next_action: ")
+        )
+        self.assertEqual(
+            json.loads(action_line.removeprefix("next_action: ")),
+            next_action,
+        )
+
+    def test_execute_mcp_text_handles_structured_gaps_without_changing_turn(
+        self,
+    ) -> None:
+        structured_gaps = [
+            {"code": "dependency_blocked", "detail": ["conan"]},
+            ["nvme", "missing"],
+            "plain-gap",
+        ]
+
+        class StructuredGapService:
+            @staticmethod
+            def call_exposed_tool(
+                name,
+                arguments,
+                *,
+                task_id,
+                operation_id,
+            ):
+                del arguments, task_id, operation_id
+                if name != "execute":
+                    raise ValueError("only execute is supported")
+                return {
+                    "run_id": "run-structured-gaps",
+                    "state": "completed",
+                    "gaps": structured_gaps,
+                    "outcome": {
+                        "status": "completed",
+                        "summary": "source delivery complete with external gaps",
+                        "acceptance": [],
+                    },
+                }
+
+        response = JsonRpcMcpEndpoint(
+            StructuredGapService(),
+            session_task_id="structured-gaps",
+        ).handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "execute", "arguments": {}},
+            }
+        )
+
+        result = response["result"]
+        self.assertEqual(result["structuredContent"]["gaps"], structured_gaps)
+        text = result["content"][0]["text"]
+        self.assertIn('"code":"dependency_blocked"', text)
+        self.assertIn('["nvme","missing"]', text)
+        self.assertIn("plain-gap", text)
 
     def test_execute_completes_when_all_bounded_result_kinds_are_evaluable(self) -> None:
         service = RuntimeMcpService(CompleteBoundedDiagnosticBackend())
@@ -12779,6 +13182,20 @@ class AgentGatewayTests(unittest.TestCase):
             replayed["result"]["structuredContent"]["run_id"],
             first["result"]["structuredContent"]["run_id"],
         )
+        first_structured = first["result"]["structuredContent"]
+        first_text = first["result"]["content"][0]["text"]
+        replayed_text = replayed["result"]["content"][0]["text"]
+        gate = first_structured["gate"]
+        self.assertEqual(replayed_text, first_text)
+        self.assertEqual(first_structured["next_action"]["kind"], "respond")
+        self.assertEqual(
+            first_structured["next_action"]["gate_id"],
+            gate["gate_id"],
+        )
+        self.assertIn(f"gate_id={gate['gate_id']}", first_text)
+        self.assertIn(f"gate_version={gate['gate_version']}", first_text)
+        self.assertIn(f"schema_digest={gate['schema_digest']}", first_text)
+        self.assertIn('"kind":"respond"', first_text)
 
     def test_agent_endpoint_renders_observation_values_in_bounded_text_content(self) -> None:
         endpoint = JsonRpcMcpEndpoint(self.service, session_task_id="observe-session")
