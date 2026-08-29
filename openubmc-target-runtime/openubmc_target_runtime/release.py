@@ -26,6 +26,12 @@ class ReleaseLockError(ValueError):
     """Raised when immutable release facts do not match the repository."""
 
 
+def is_full_commit(value: object) -> bool:
+    """Return whether value is a complete Git commit identity."""
+
+    return _FULL_COMMIT.fullmatch(str(value).lower()) is not None
+
+
 def _json_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -282,7 +288,7 @@ def repository_commit(root: Path) -> str:
 
 def build_release_lock(root: Path, *, source_commit: str) -> dict[str, object]:
     root = root.resolve()
-    if _FULL_COMMIT.fullmatch(source_commit) is None:
+    if not is_full_commit(source_commit):
         raise ReleaseLockError("source_commit must be a full Git commit")
     workflow = _json_object(root / "workflow.json")
     skills = _skill_records(root, workflow)

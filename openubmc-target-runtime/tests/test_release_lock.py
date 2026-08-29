@@ -120,8 +120,10 @@ class ReleaseLockTests(unittest.TestCase):
             )
 
     def test_source_commit_must_be_a_full_immutable_commit(self) -> None:
-        with self.assertRaisesRegex(ReleaseLockError, "full Git commit"):
-            build_release_lock(REPO_ROOT, source_commit="main")
+        for source_commit in ("main", f" {'a' * 40}", f"{'a' * 40} "):
+            with self.subTest(source_commit=source_commit):
+                with self.assertRaisesRegex(ReleaseLockError, "full Git commit"):
+                    build_release_lock(REPO_ROOT, source_commit=source_commit)
 
     def test_release_lock_child_must_have_exactly_one_parent(self) -> None:
         source = "a" * 40
