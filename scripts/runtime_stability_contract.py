@@ -47,13 +47,14 @@ DUAL_PROJECTION_TEXT_TARGET_BYTES = 4 * 1024
 DUAL_PROJECTION_MIN_PREVIEW_BYTES = 2 * 1024
 DUAL_PROJECTION_STRUCTURED_TURN_DIGESTS = {
     "gate": "sha256:91feaa88abdd857e285f403cc3247502e73c8eb0f9fa4e61a6783b7f30e78b08",
-    "terminal": "sha256:cf429c4adc570e65b302b9cd434117e8ee8170033cdbd12e7b6703f93f09d511",
+    "terminal": "sha256:603f068c46a5ce41d55c60800fc2e9706b9fe36c3f9be0983e5061ba6b2bda8d",
 }
 DUAL_PROJECTION_SEMANTIC_TEXT_MARKERS = (
     "openUBMC 工作流",
     "GateBinding ",
     "Outcome ",
     "DiagnosticReceipt ",
+    "DiagnosticReceiptRef ",
     "capabilities_shown=",
     "next_action: ",
     "evidence_ids_shown=",
@@ -76,12 +77,11 @@ DUAL_PROJECTION_REQUIRED_TEXT_LINE_DIGESTS = {
     "terminal": (
         "sha256:88e8d03f71fb04aa8dae6469701d467e219043f76756a48f404a8df2b9deb725",
         "sha256:8847a347f031f52955f041ec307b467177e624897d46382edbf613ec0d19411c",
-        "sha256:53e77c7e177b22753ee4574245edb0bfd59c537f955e96b27b3cb4cac0ecc71c",
-        "sha256:5af18c5d13c6bea731ef8aed7df686d2a9eadd1e78f1814e779cce432cac1ba1",
+        "sha256:72eb13d62fc10eeaf64346cbf53cc7b91dfdb62c9945ece88548da892d78983d",
         "sha256:95a9ddbf8f7d562c0e848d2a193278e9d4f07764d7da347a7b9e463f3889262e",
         "sha256:bd30b82d8d069cd0877ee94b283573806407cc65d9117c8cc01d49b34f63c28d",
         "sha256:46457a95085ffe22678335a62f9bc6b8ab1e70929ab9b778a70d6972d44ec42c",
-        "sha256:d939816350e72da5ab898848848690ceaee627b384bba0777edfc5d75204cecf",
+        "sha256:ed5cab1036cdccc6d83a388f2b0aa59de6b36a7463001a6bae92b72a200f54bd",
     ),
 }
 
@@ -606,22 +606,26 @@ def _verify_runtime_stability_report(
                 "Runtime stability dual-projection structured semantics are invalid"
             ) from exc
         gate_receipt = gate_turn.get("diagnostic_receipt")
-        terminal_receipt = terminal_turn.get("diagnostic_receipt")
+        terminal_receipt_ref = terminal_turn.get("diagnostic_receipt_ref")
         if (
             gate_turn.get("schema")
             != "openubmc.target-runtime.v1/agent-gateway-v1/turn"
             or terminal_turn.get("schema")
             != "openubmc.target-runtime.v1/agent-gateway-v1/turn"
             or not isinstance(gate_receipt, Mapping)
-            or not isinstance(terminal_receipt, Mapping)
-            or gate_receipt != terminal_receipt
+            or not isinstance(terminal_receipt_ref, Mapping)
             or gate_receipt.get("schema")
             != "openubmc.target-runtime.v1/diagnostic-receipt-v1"
+            or terminal_receipt_ref.get("schema")
+            != (
+                "openubmc.target-runtime.v1/agent-gateway-v1/"
+                "diagnostic-receipt-ref-v1"
+            )
         ):
             raise ValueError(
                 "Runtime stability dual-projection structured semantics differ"
             )
-        raw_results = terminal_receipt.get("results", [])
+        raw_results = gate_receipt.get("results", [])
         receipt_results = raw_results if isinstance(raw_results, list) else []
         result_kinds = sorted(
             str(item.get("kind", ""))
@@ -677,7 +681,7 @@ def _verify_runtime_stability_report(
             value and value in combined_text
             for value in (*sentinels, *preview_payloads)
         )
-        evidence = terminal_receipt.get("evidence", [])
+        evidence = gate_receipt.get("evidence", [])
         gate = gate_turn.get("gate")
         gate_schema = gate.get("input_schema") if isinstance(gate, Mapping) else None
         gate_semantics_complete = all(
@@ -710,11 +714,57 @@ def _verify_runtime_stability_report(
         )
         typed_gate_receipt = typed_gate_turn.diagnostic_receipt
         typed_terminal_receipt = typed_terminal_turn.diagnostic_receipt
+        durable_gate_receipt = dict(gate_receipt)
+        durable_gate_receipt.pop("agent_acceptance", None)
+        gate_receipt_digest = _canonical_json_digest(durable_gate_receipt)
+        expected_evidence_ids = [
+            str(item.get("evidence_id", ""))
+            for item in gate_receipt.get("evidence", [])
+            if isinstance(item, Mapping) and item.get("evidence_id")
+        ]
+        expected_result_ids = [
+            str(item.get("result_id", ""))
+            for item in receipt_results
+            if isinstance(item, Mapping) and item.get("result_id")
+        ]
+        expected_reference = {
+            "schema": (
+                "openubmc.target-runtime.v1/agent-gateway-v1/"
+                "diagnostic-receipt-ref-v1"
+            ),
+            "receipt_id": gate_receipt.get("receipt_id"),
+            "operation": gate_receipt.get("operation"),
+            "status": gate_receipt.get("status"),
+            "agent_acceptance": "complete",
+            "digest": gate_receipt_digest,
+            "coverage": gate_receipt.get("coverage"),
+            "freshness": gate_receipt.get("freshness"),
+            "content_complete": True,
+            "truncated": False,
+            "gaps": [],
+            "evidence_ids": expected_evidence_ids,
+            "result_ids": expected_result_ids,
+            "reconstruction": {
+                "authority": "runtime-core",
+                "run_id": "run-dual-projection-qualification",
+                "field": "diagnostic_receipt",
+                "digest": gate_receipt_digest,
+            },
+        }
+        expected_repeated_projection = {
+            "repeated_reference": True,
+            "full_bytes": json_size_bytes(gate_receipt),
+            "reference_bytes": json_size_bytes(expected_reference),
+            "saved_bytes": (
+                json_size_bytes(gate_receipt)
+                - json_size_bytes(expected_reference)
+            ),
+        }
         receipt_semantics_complete = all(
             (
                 typed_gate_receipt is not None,
-                typed_terminal_receipt is not None,
-                typed_gate_receipt == typed_terminal_receipt,
+                typed_terminal_receipt is None,
+                terminal_receipt_ref == expected_reference,
                 (
                     typed_gate_receipt.status is DiagnosticStatus.COMPLETE
                     if typed_gate_receipt is not None
@@ -743,11 +793,16 @@ def _verify_runtime_stability_report(
                 gate_receipt.get("content_complete") is True,
                 isinstance(gate_receipt.get("coverage"), Mapping),
                 gate_receipt.get("coverage", {}).get("complete") is True,
+                terminal_receipt_ref.get("status") == "complete",
+                terminal_receipt_ref.get("content_complete") is True,
+                isinstance(terminal_receipt_ref.get("coverage"), Mapping),
+                terminal_receipt_ref.get("coverage", {}).get("complete") is True,
             )
         )
         agent_acceptance_preserved = all(
             (
                 gate_receipt.get("agent_acceptance") == "complete",
+                terminal_receipt_ref.get("agent_acceptance") == "complete",
                 "agent_acceptance=complete" in turn_text["gate"],
                 "agent_acceptance=complete" in turn_text["terminal"],
             )
@@ -793,7 +848,7 @@ def _verify_runtime_stability_report(
             "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
             "structured_semantics_complete": all(
                 (
-                    gate_receipt == terminal_receipt,
+                    terminal_receipt_ref == expected_reference,
                     gate_receipt.get("content_compacted") is not True,
                     all(
                         item.get("projection_truncated") is not True
@@ -806,12 +861,13 @@ def _verify_runtime_stability_report(
                 gate_receipt.get("content_compacted") is not True
             ),
             "terminal_structured_semantics_complete": (
-                terminal_receipt.get("content_compacted") is not True
+                terminal_receipt_ref == expected_reference
             ),
             "preview_sentinel_count": len(sentinels),
             "preview_values_duplicated": preview_duplicated,
             "minimum_preview_bytes": DUAL_PROJECTION_MIN_PREVIEW_BYTES,
             "preview_bytes": preview_bytes,
+            "repeated_projection": expected_repeated_projection,
         }
         for turn_name, structured in turns.items():
             if (

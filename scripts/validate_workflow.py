@@ -18,8 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLES = (
     ROOT / "bootstrap.py",
     ROOT / "scripts" / "compatibility_retirement.py",
+    ROOT / "scripts" / "continuous_closeout_qualification.py",
     ROOT / "scripts" / "evaluation_harness.py",
     ROOT / "scripts" / "model_planning_evaluation.py",
+    ROOT / "scripts" / "product_closeout_qualification.py",
     ROOT / "scripts" / "diagnosis_chain_qualification.py",
     ROOT / "scripts" / "validate_workflow.py",
     ROOT / "scripts" / "live_smoke.py",
@@ -269,6 +271,20 @@ def validate_installer_manifest(document: dict[str, object]) -> None:
         raise SystemExit("full profile must contain every workflow Skill in manifest order")
     if set(profiles.get("target-runtime", [])) != target_names:
         raise SystemExit("workflow.json and installer target-runtime profile differ")
+    clients = tuple(dict(document.get("clients", {})))
+    installer_clients = tuple(ast.literal_eval(assigned_expression(tree, "CLIENTS")))
+    if installer_clients != clients:
+        raise SystemExit("workflow.json and installer product clients differ")
+    expected_mcp_clients = tuple(
+        name
+        for name, contract in dict(document.get("clients", {})).items()
+        if isinstance(contract, dict) and contract.get("mcp") is True
+    )
+    installer_mcp_clients = tuple(
+        ast.literal_eval(assigned_expression(tree, "SUPPORTED_MCP_CLIENTS"))
+    )
+    if installer_mcp_clients != expected_mcp_clients:
+        raise SystemExit("workflow.json and installer MCP clients differ")
 
 
 def validate_client_and_harness_metadata(document: dict[str, object]) -> None:
@@ -921,6 +937,13 @@ def main(argv: list[str] | None = None) -> int:
     run(
         [sys.executable, str(ROOT / "scripts" / "diagnosis_chain_qualification.py")],
         stage="Runtime diagnosis chain qualification",
+    )
+    run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "continuous_closeout_qualification.py"),
+        ],
+        stage="Continuous closeout qualification",
     )
     test_roots = sorted(
         path.parent

@@ -92,7 +92,9 @@ class WorkflowManifestValidationTests(unittest.TestCase):
         installer.mkdir(parents=True)
         (installer / "install_environment.py").write_text(
             "SKILL_BUNDLE = ((\"example-skill\", \"example\"),)\n"
-            "TARGET_RUNTIME_SKILL_NAMES = frozenset({\"example-skill\"})\n",
+            "TARGET_RUNTIME_SKILL_NAMES = frozenset({\"example-skill\"})\n"
+            "CLIENTS = (\"codex\",)\n"
+            "SUPPORTED_MCP_CLIENTS = (\"codex\",)\n",
             encoding="utf-8",
         )
 
@@ -209,6 +211,7 @@ class WorkflowStageReportingTests(unittest.TestCase):
                 "Python compile",
                 "Node dependencies: openubmc-kb-mcp",
                 "Runtime diagnosis chain qualification",
+                "Continuous closeout qualification",
                 "Python tests: alpha/tests",
                 "Python tests: beta/tests",
                 "Node tests: openubmc-kb-mcp",

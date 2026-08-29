@@ -253,7 +253,7 @@ class RuntimeQualificationTests(unittest.TestCase):
     def test_dual_projection_verifier_requires_long_complete_previews(self) -> None:
         report = json.loads(self.stability_report(SOURCE_COMMIT))
         projection = report["scenarios"]["dual_projection"]
-        for turn_name in ("gate", "terminal"):
+        for turn_name in ("gate",):
             result = projection["canonical_results"][turn_name]
             receipt = result["structuredContent"]["diagnostic_receipt"]
             for item in receipt["results"]:
@@ -311,7 +311,7 @@ class RuntimeQualificationTests(unittest.TestCase):
     ) -> None:
         report = json.loads(self.stability_report(SOURCE_COMMIT))
         projection = report["scenarios"]["dual_projection"]
-        for turn_name in ("gate", "terminal"):
+        for turn_name in ("gate",):
             result = projection["canonical_results"][turn_name]
             result["structuredContent"]["diagnostic_receipt"]["results"][0][
                 "status"
@@ -352,7 +352,7 @@ class RuntimeQualificationTests(unittest.TestCase):
     ) -> None:
         report = json.loads(self.stability_report(SOURCE_COMMIT))
         projection = report["scenarios"]["dual_projection"]
-        for turn_name in ("gate", "terminal"):
+        for turn_name in ("gate",):
             result = projection["canonical_results"][turn_name]
             item = result["structuredContent"]["diagnostic_receipt"]["results"][0]
             sentinel = item["value"]["qualification_sentinel"] + "::"
@@ -484,7 +484,9 @@ class RuntimeQualificationTests(unittest.TestCase):
         report = json.loads(self.stability_report(SOURCE_COMMIT))
         projection = report["scenarios"]["dual_projection"]
         terminal = projection["canonical_results"]["terminal"]
-        receipt = terminal["structuredContent"]["diagnostic_receipt"]
+        receipt = projection["canonical_results"]["gate"]["structuredContent"][
+            "diagnostic_receipt"
+        ]
         value = receipt["results"][0]["value"]
         preview_payload = value["preview"].removeprefix(
             value["qualification_sentinel"] + "::"
@@ -497,6 +499,50 @@ class RuntimeQualificationTests(unittest.TestCase):
         report["evidence_digest"] = qualification.evidence_fingerprint(report)
 
         with self.assertRaisesRegex(ValueError, "contract|preview|text"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_rejects_a_tampered_receipt_reference(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        terminal = projection["canonical_results"]["terminal"]
+        terminal["structuredContent"]["diagnostic_receipt_ref"]["digest"] = (
+            "sha256:" + "0" * 64
+        )
+        projection["measurements"]["terminal"] = (
+            runtime_stability.projection_measurement(terminal)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|semantics|canonical"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_recomputes_reference_savings(self) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        terminal = projection["canonical_results"]["terminal"]
+        metrics = terminal["structuredContent"]["projection_metrics"][
+            "diagnostic_receipt"
+        ]
+        metrics["saved_bytes"] += 1
+        projection["representative_receipt"]["repeated_projection"] = dict(
+            metrics
+        )
+        projection["measurements"]["terminal"] = (
+            runtime_stability.projection_measurement(terminal)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|canonical"):
             qualification.verify_runtime_stability_report(
                 report,
                 expected_source_commit=SOURCE_COMMIT,
@@ -553,13 +599,14 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "wrong_target_or_artifact_mutations": 0,
                 "unknown_new_identity_retries": 0,
                 "semantic_projection_completion": 0,
+                "task_scoped_mcp_lifecycle": 0,
                 "persisted_run_compatibility": 0,
                 "real_backend_crash_cuts": 0,
                 "runtime_stability": 0,
             },
         )
         self.assertTrue(report["ordinary_partial_result_accepted"])
-        self.assertEqual(len(calls), 9)
+        self.assertEqual(len(calls), 10)
         self.assertEqual(report["source_commit"], SOURCE_COMMIT)
         self.assertEqual(
             report["environment"],
@@ -657,7 +704,7 @@ class RuntimeQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["promotable"])
         self.assertGreater(report["violations"]["false_successes"], 0)
-        self.assertEqual(call_count, 9)
+        self.assertEqual(call_count, 10)
 
     def test_artifact_lifecycle_without_shared_content_safety_blocks_promotion(
         self,

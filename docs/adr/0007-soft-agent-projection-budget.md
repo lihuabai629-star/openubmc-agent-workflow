@@ -58,6 +58,11 @@ completion semantics.
   event history.
 - Capacity qualification prioritizes substantive workflow completion and correctness before token
   or byte reduction.
+- A terminal Turn may use a digest-bound `DiagnosticReceiptRef` only when the same task has already
+  received the unchanged complete receipt. Initial actionable, one-shot terminal, cross-task, and
+  changed-receipt projections remain complete.
+- Reference savings are qualification telemetry. They do not restore a fixed byte ceiling or alter
+  Gate, Incident, Outcome, acceptance, or durable receipt semantics.
 
 ## Rejected alternatives
 

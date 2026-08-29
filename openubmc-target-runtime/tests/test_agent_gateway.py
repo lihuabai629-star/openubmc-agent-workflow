@@ -62,6 +62,9 @@ from openubmc_target_runtime import (  # noqa: E402
 from openubmc_target_runtime.context_runtime import (  # noqa: E402
     BufferedRuntimeRepository,
 )
+from openubmc_target_runtime.agent_gateway import (  # noqa: E402
+    render_execute_turn_text,
+)
 from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
     build_diagnostic_receipt,
     latest_diagnostic_receipt,
@@ -1849,6 +1852,69 @@ class OversizedDiagnosticTurnRuntime:
                 ],
                 "gaps": [],
             }),
+        )
+
+
+class RepeatedAcceptedDiagnosticTurnRuntime(OversizedDiagnosticTurnRuntime):
+    def __init__(self, *, change_receipt: bool = False) -> None:
+        super().__init__()
+        self.calls = 0
+        self.change_receipt = change_receipt
+
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        self.calls += 1
+        receipt = super().execute(None, task_id="", operation_id="").diagnostic_receipt
+        assert receipt is not None
+        if self.calls > 1 and self.change_receipt:
+            changed = receipt.to_public_dict()
+            changed["receipt_id"] = "diagnostic-oversized-new-cycle"
+            receipt = DiagnosticReceipt.from_public_dict(changed)
+        if self.calls == 1:
+            return RunTurn(
+                run_id="case-repeated-accepted-diagnostic",
+                state="waiting_response",
+                gate={
+                    "kind": "phase",
+                    "gate_id": "gate-developer-change",
+                    "gate_version": 1,
+                    "schema_digest": "sha256:" + "a" * 64,
+                    "name": "developer.change",
+                    "owner": "openubmc-developer",
+                    "input_schema": {"type": "object"},
+                },
+                diagnostic_receipt=receipt,
+            )
+        return RunTurn(
+            run_id="case-repeated-accepted-diagnostic",
+            state="completed",
+            outcome=Outcome(
+                status="completed",
+                summary="product closeout completed",
+                acceptance=[
+                    {"requirement_id": "runtime", "status": "passed"}
+                ],
+            ),
+            outcome_recorded=True,
+            diagnostic_receipt=receipt,
+        )
+
+
+class OneShotAcceptedDiagnosticTurnRuntime(OversizedDiagnosticTurnRuntime):
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        receipt = super().execute(None, task_id="", operation_id="").diagnostic_receipt
+        assert receipt is not None
+        return RunTurn(
+            run_id="case-one-shot-accepted-diagnostic",
+            state="completed",
+            outcome=Outcome(
+                status="completed",
+                summary="diagnosis-only completed",
+                acceptance=[{"requirement_id": "diagnosis", "status": "passed"}],
+            ),
+            outcome_recorded=True,
+            diagnostic_receipt=receipt,
         )
 
 
@@ -7905,6 +7971,188 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(turn["content_compacted"])
         self.assertTrue(turn["projection_target_exceeded"])
 
+    def test_terminal_turn_references_an_unchanged_previously_presented_receipt(
+        self,
+    ) -> None:
+        gateway = AgentGateway(RepeatedAcceptedDiagnosticTurnRuntime())
+        initial = gateway.execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnose-and-fix",
+            },
+            task_id="repeated-accepted-diagnostic",
+            operation_id="repeated-accepted-diagnostic-start",
+        )
+        terminal = gateway.execute(
+            {
+                "kind": "respond",
+                "run_id": "case-repeated-accepted-diagnostic",
+                "gate_id": "gate-developer-change",
+                "gate_version": 1,
+                "schema_digest": "sha256:" + "a" * 64,
+                "submission_id": "accepted-diagnostic",
+                "response": {
+                    "status": "completed",
+                    "summary": "developer change completed",
+                    "payload": {},
+                },
+            },
+            task_id="repeated-accepted-diagnostic",
+            operation_id="repeated-accepted-diagnostic-resume",
+        )
+
+        self.assertIn("diagnostic_receipt", initial)
+        self.assertNotIn("diagnostic_receipt_ref", initial)
+        self.assertNotIn("diagnostic_receipt", terminal)
+        reference = terminal["diagnostic_receipt_ref"]
+        self.assertEqual(reference["receipt_id"], "diagnostic-oversized")
+        self.assertTrue(reference["digest"].startswith("sha256:"))
+        self.assertEqual(reference["agent_acceptance"], "complete")
+        self.assertEqual(reference["coverage"]["requested"], 20)
+        self.assertEqual(reference["coverage"]["evaluable"], 20)
+        self.assertEqual(reference["result_ids"], [f"result-{index}" for index in range(20)])
+        self.assertEqual(len(reference["evidence_ids"]), 8)
+        self.assertEqual(
+            reference["reconstruction"],
+            {
+                "authority": "runtime-core",
+                "run_id": "case-repeated-accepted-diagnostic",
+                "field": "diagnostic_receipt",
+                "digest": reference["digest"],
+            },
+        )
+        self.assertEqual(terminal["outcome"]["status"], "completed")
+        self.assertEqual(
+            terminal["outcome"]["acceptance"],
+            [{"requirement_id": "runtime", "status": "passed"}],
+        )
+        metrics = terminal["projection_metrics"]["diagnostic_receipt"]
+        self.assertTrue(metrics["repeated_reference"])
+        self.assertGreater(metrics["full_bytes"], metrics["reference_bytes"])
+        self.assertEqual(
+            metrics["saved_bytes"],
+            metrics["full_bytes"] - metrics["reference_bytes"],
+        )
+        self.assertTrue(terminal["projection_compacted"])
+        self.assertFalse(terminal["manual_narrowing_required"])
+        self.assertFalse(terminal["budget_blocker"])
+        rendered = render_execute_turn_text(terminal)
+        self.assertIn("DiagnosticReceiptRef", rendered)
+        self.assertIn("receipt_id=diagnostic-oversized", rendered)
+        self.assertIn(reference["digest"], rendered)
+        self.assertIn("Outcome status=completed", rendered)
+
+    def test_retried_one_shot_terminal_turn_keeps_the_complete_receipt(self) -> None:
+        gateway = AgentGateway(OneShotAcceptedDiagnosticTurnRuntime())
+        action = {
+            "kind": "start",
+            "target": "192.0.2.20",
+            "intent": "diagnosis-only",
+        }
+        first = gateway.execute(
+            action,
+            task_id="one-shot-diagnostic",
+            operation_id="one-shot-diagnostic-start",
+        )
+        retry = gateway.execute(
+            action,
+            task_id="one-shot-diagnostic",
+            operation_id="one-shot-diagnostic-start",
+        )
+
+        self.assertIn("diagnostic_receipt", first)
+        self.assertIn("diagnostic_receipt", retry)
+        self.assertNotIn("diagnostic_receipt_ref", first)
+        self.assertNotIn("diagnostic_receipt_ref", retry)
+
+    def test_terminal_turn_does_not_reference_receipt_across_task_ownership(self) -> None:
+        gateway = AgentGateway(RepeatedAcceptedDiagnosticTurnRuntime())
+        gateway.execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnose-and-fix",
+            },
+            task_id="task-a",
+            operation_id="task-a-start",
+        )
+        terminal = gateway.execute(
+            {"kind": "resume", "run_id": "case-repeated-accepted-diagnostic"},
+            task_id="task-b",
+            operation_id="task-b-resume",
+        )
+
+        self.assertIn("diagnostic_receipt", terminal)
+        self.assertNotIn("diagnostic_receipt_ref", terminal)
+
+    def test_terminal_turn_preserves_a_changed_diagnostic_receipt(self) -> None:
+        gateway = AgentGateway(
+            RepeatedAcceptedDiagnosticTurnRuntime(change_receipt=True)
+        )
+        gateway.execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnose-and-fix",
+            },
+            task_id="changed-diagnostic",
+            operation_id="changed-diagnostic-start",
+        )
+        terminal = gateway.execute(
+            {"kind": "resume", "run_id": "case-repeated-accepted-diagnostic"},
+            task_id="changed-diagnostic",
+            operation_id="changed-diagnostic-resume",
+        )
+
+        self.assertEqual(
+            terminal["diagnostic_receipt"]["receipt_id"],
+            "diagnostic-oversized-new-cycle",
+        )
+        self.assertNotIn("diagnostic_receipt_ref", terminal)
+
+    def test_retried_changed_terminal_turn_keeps_the_complete_receipt(self) -> None:
+        gateway = AgentGateway(
+            RepeatedAcceptedDiagnosticTurnRuntime(change_receipt=True)
+        )
+        gateway.execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnose-and-fix",
+            },
+            task_id="changed-terminal-retry",
+            operation_id="changed-terminal-retry-start",
+        )
+        action = {
+            "kind": "respond",
+            "run_id": "case-repeated-accepted-diagnostic",
+            "gate_id": "gate-developer-change",
+            "gate_version": 1,
+            "schema_digest": "sha256:" + "a" * 64,
+            "submission_id": "changed-terminal-retry",
+            "response": {
+                "status": "completed",
+                "summary": "developer change completed",
+                "payload": {},
+            },
+        }
+        first = gateway.execute(
+            action,
+            task_id="changed-terminal-retry",
+            operation_id="changed-terminal-retry-respond",
+        )
+        retry = gateway.execute(
+            action,
+            task_id="changed-terminal-retry",
+            operation_id="changed-terminal-retry-respond",
+        )
+
+        self.assertIn("diagnostic_receipt", first)
+        self.assertIn("diagnostic_receipt", retry)
+        self.assertNotIn("diagnostic_receipt_ref", first)
+        self.assertNotIn("diagnostic_receipt_ref", retry)
+
     def test_adapter_cannot_expand_diagnostic_scope_beyond_the_durable_contract(
         self,
     ) -> None:
@@ -9433,7 +9681,32 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(cancelled["state"], "cancelled")
         self.assertEqual(cancelled["outcome"]["status"], "cancelled")
-        self.assertEqual(replayed, cancelled)
+        self.assertIn("diagnostic_receipt_ref", cancelled)
+        self.assertIn("diagnostic_receipt", replayed)
+        cancelled_semantics = {
+            key: value
+            for key, value in cancelled.items()
+            if key
+            not in {
+                "budget_blocker",
+                "content_compacted",
+                "diagnostic_receipt_ref",
+                "manual_narrowing_required",
+                "projection_compacted",
+                "projection_metrics",
+                "projection_target_exceeded",
+            }
+        }
+        replayed_semantics = {
+            key: value
+            for key, value in replayed.items()
+            if key not in {"diagnostic_receipt", "projection_target_exceeded"}
+        }
+        self.assertEqual(replayed_semantics, cancelled_semantics)
+        self.assertEqual(
+            replayed["diagnostic_receipt"]["receipt_id"],
+            cancelled["diagnostic_receipt_ref"]["receipt_id"],
+        )
         self.assertEqual(projection["current_incident"], {})
         self.assertEqual(projection["incidents"][-1]["status"], "cancelled")
         self.assertEqual(projection["incidents"][-1]["resolution"], "cancelled")

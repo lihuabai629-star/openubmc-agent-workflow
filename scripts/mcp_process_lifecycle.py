@@ -43,10 +43,36 @@ def parser() -> argparse.ArgumentParser:
     return command
 
 
+def summarize(records: list[dict[str, object]]) -> dict[str, int]:
+    live = [record for record in records if record.get("process_running") is True]
+    return {
+        "record_count": len(records),
+        "live_processes": len(live),
+        "active_requests": sum(
+            int(record.get("active_requests", 0)) for record in live
+        ),
+        "confirmed_live_orphans": sum(
+            1
+            for record in live
+            if record.get("lifecycle_state") == "orphaned"
+            and record.get("identity_verified") is True
+        ),
+        "unattributed_live_processes": sum(
+            1
+            for record in live
+            if record.get("lifecycle_state") == "unknown-owner"
+        ),
+        "stopped_processes": sum(
+            1 for record in records if record.get("lifecycle_state") == "stopped"
+        ),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     root = args.root.expanduser().absolute()
     records = inspect_mcp_process_records(root)
+    records_before_cleanup = list(records)
     confirmed = sorted(
         int(record["process_id"])
         for record in records
@@ -57,6 +83,8 @@ def main(argv: list[str] | None = None) -> int:
     cleaned: list[int] = []
     if args.operation == "cleanup" and not args.dry_run:
         cleaned = cleanup_confirmed_orphaned_mcp_processes(root)
+        records = inspect_mcp_process_records(root)
+    summary = summarize(records)
     print(
         json.dumps(
             {
@@ -64,9 +92,17 @@ def main(argv: list[str] | None = None) -> int:
                 "operation": args.operation,
                 "root": str(root),
                 "records": records,
+                "records_before_cleanup": (
+                    records_before_cleanup if args.operation == "cleanup" else []
+                ),
                 "confirmed_orphaned_processes": confirmed,
                 "cleaned_processes": cleaned,
                 "dry_run": bool(args.dry_run),
+                "summary": summary,
+                "task_closeout_ready": (
+                    summary["live_processes"] == 0
+                    and summary["active_requests"] == 0
+                ),
             },
             ensure_ascii=False,
             indent=2,

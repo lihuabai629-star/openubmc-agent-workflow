@@ -33,6 +33,18 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
         self.assertEqual(payload["records"], [])
         self.assertEqual(payload["confirmed_orphaned_processes"], [])
         self.assertEqual(payload["cleaned_processes"], [])
+        self.assertEqual(
+            payload["summary"],
+            {
+                "record_count": 0,
+                "live_processes": 0,
+                "active_requests": 0,
+                "confirmed_live_orphans": 0,
+                "unattributed_live_processes": 0,
+                "stopped_processes": 0,
+            },
+        )
+        self.assertTrue(payload["task_closeout_ready"])
 
     def test_cleanup_dry_run_then_retires_one_confirmed_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -108,6 +120,22 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                 )
                 child.wait(timeout=5)
                 self.assertEqual(child.returncode, -signal.SIGTERM)
+                cleanup_payload = json.loads(cleanup.stdout)
+                self.assertEqual(
+                    cleanup_payload["summary"]["confirmed_live_orphans"], 0
+                )
+                self.assertEqual(cleanup_payload["summary"]["live_processes"], 0)
+                self.assertTrue(cleanup_payload["task_closeout_ready"])
+                self.assertEqual(
+                    cleanup_payload["records_before_cleanup"][0][
+                        "lifecycle_state"
+                    ],
+                    "orphaned",
+                )
+                self.assertEqual(
+                    cleanup_payload["records"][0]["lifecycle_state"],
+                    "stopped",
+                )
             finally:
                 if child.poll() is None:
                     child.terminate()
