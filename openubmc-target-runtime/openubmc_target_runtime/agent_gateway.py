@@ -113,23 +113,21 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
         artifact_ref: dict[str, object] = {
             "handle": "<absolute artifact path>",
             "digest": "sha256:" + "0" * 64,
-            "kind": str(context.get("artifact_kind") or "<Gate artifact kind>"),
+            "kind": context.artifact_kind or "<Gate artifact kind>",
             "size": 0,
             "provenance": "openubmc-build",
             "retention_hint": "run-lifetime",
-            "target": str(context.get("target") or "<Run target>"),
-            "run_id": str(context.get("run_id") or "<structuredContent.run_id>"),
+            "target": context.target or "<current Run target>",
+            "run_id": context.run_id or "<current Run ID>",
         }
-        if bool(context.get("version_required")):
+        if context.version_required:
             artifact_ref["version"] = "<artifact version>"
         return {
             "kind": "respond",
             "run_id": artifact_ref["run_id"],
-            "gate_id": str(context.get("gate_id") or "<next_action.gate_id>"),
-            "gate_version": int(context.get("gate_version") or 1),
-            "schema_digest": str(
-                context.get("schema_digest") or "<next_action.schema_digest>"
-            ),
+            "gate_id": context.gate_id or "<current Gate ID>",
+            "gate_version": context.gate_version or 1,
+            "schema_digest": context.schema_digest or "<current Gate schema digest>",
             "response": {
                 "status": "completed",
                 "summary": "artifact produced",
@@ -140,31 +138,19 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
             },
         }
 
-    kind = str(context.get("action_kind") or "resume")
-    run_id = str(context.get("run_id") or "<structuredContent.run_id>")
+    kind = context.action_kind or "resume"
+    run_id = context.run_id or "<current Run ID>"
     if detail.reason == PreflightReason.RECONCILE_PRECONDITION:
-        return {"kind": "control", "run_id": run_id, "command": "reconcile"}
-    if (
-        detail.reason == PreflightReason.RUNTIME_OWNED_FIELD
-        and bool(context.get("recovery_requested"))
-        and kind != "start"
-    ):
-        return {
-            "kind": "control",
-            "run_id": run_id,
-            "command": "reconcile",
-        }
+        return {"kind": "resume", "run_id": run_id}
     if kind == "start":
         example: dict[str, object] = {
             "kind": "start",
-            "target": str(context.get("target") or "<BMC IP>"),
-            "intent": str(context.get("intent") or "diagnosis-only"),
+            "target": context.target or "<BMC IP>",
+            "intent": context.intent or "diagnosis-only",
         }
-        if context.get("entry_operation"):
-            example["entry_operation"] = str(context["entry_operation"])
-            example["entry_arguments"] = dict(
-                _mapping(context.get("entry_arguments"))
-            )
+        if context.entry_operation:
+            example["entry_operation"] = context.entry_operation
+            example["entry_arguments"] = dict(context.entry_arguments)
         if detail.reason == PreflightReason.DEADLINE:
             example["deadline"] = 120
         return example
@@ -172,21 +158,35 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
         example = {
             "kind": "respond",
             "run_id": run_id,
-            "gate_id": "<next_action.gate_id>",
-            "gate_version": 1,
-            "schema_digest": "<next_action.schema_digest>",
-            "response": {
+            "gate_id": context.gate_id or "<current Gate ID>",
+            "gate_version": context.gate_version or 1,
+            "schema_digest": context.schema_digest
+            or "<current Gate schema digest>",
+            "response": dict(context.response)
+            if context.response
+            else {
                 "status": "completed",
                 "summary": "<bounded summary>",
                 "payload": {},
             },
         }
+        if context.submission_id:
+            example["submission_id"] = context.submission_id
     elif kind == "control":
         example = {
             "kind": "control",
             "run_id": run_id,
-            "command": str(context.get("command") or "reconcile"),
+            "command": context.command or "reconcile",
         }
+        if context.command == "cancel":
+            if context.incident_id:
+                example["incident_id"] = context.incident_id
+            elif context.gate_id:
+                example["gate_id"] = context.gate_id
+                example["gate_version"] = context.gate_version or 1
+                example["schema_digest"] = context.schema_digest
+                if context.submission_id:
+                    example["submission_id"] = context.submission_id
     else:
         example = {"kind": "resume", "run_id": run_id}
     if detail.reason == PreflightReason.DEADLINE:
@@ -228,7 +228,7 @@ def _preflight_guidance(
         )
     actions = {
         PreflightReason.RUN_ID_REQUIRED: (
-            "copy run_id from the current execute structuredContent and retry"
+            "copy run_id from the current Turn and retry execute"
         ),
         PreflightReason.DEADLINE: (
             "retry execute with deadline at or below 120 seconds"
@@ -244,16 +244,7 @@ def _preflight_guidance(
         ),
     }
     if detail.reason == PreflightReason.RUNTIME_OWNED_FIELD:
-        if (
-            bool(detail.context.get("recovery_requested"))
-            and detail.context.get("action_kind") != "start"
-        ):
-            next_action = (
-                "omit Runtime-owned recovery fields; use control/reconcile only after "
-                "the current Run reports mutation_outcome_unknown"
-            )
-        else:
-            next_action = "remove Runtime-owned fields and retry execute"
+        next_action = "remove Runtime-owned fields and retry execute"
     else:
         next_action = actions.get(
             detail.reason,
@@ -634,6 +625,10 @@ class CostGovernor:
             fallback["observation_ref"] = document.get("observation_ref")
         if "outcome_recorded" in result:
             fallback["outcome_recorded"] = bool(result.get("outcome_recorded"))
+        if "response_required" in result:
+            fallback["response_required"] = bool(result.get("response_required"))
+        if "progress" in result:
+            fallback["progress"] = dict(_mapping(result.get("progress")))
         if "diagnostic_receipt" in result:
             fallback["diagnostic_receipt"] = (
                 CostGovernor._turn_diagnostic_receipt(

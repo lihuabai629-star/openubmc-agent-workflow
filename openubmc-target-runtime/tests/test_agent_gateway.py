@@ -1676,6 +1676,29 @@ class OversizedGateTurnRuntime:
         )
 
 
+class OversizedNoProgressGateTurnRuntime:
+    def execute(self, command, *, task_id, operation_id):
+        del command, task_id, operation_id
+        return RunTurn(
+            run_id="case-oversized-no-progress-gate",
+            state="waiting_response",
+            gate={
+                "kind": "phase",
+                "gate_id": "gate-oversized-no-progress",
+                "gate_version": 1,
+                "schema_digest": "sha256:" + "b" * 64,
+                "name": "diagnosis.acceptance",
+                "owner": "openubmc-debug",
+                "input_schema": {
+                    "type": "object",
+                    "description": "x" * 12_000,
+                },
+            },
+            response_required=True,
+            progress={"status": "no_progress", "reason": "response_required"},
+        )
+
+
 class OversizedIncidentTurnRuntime:
     def execute(self, command, *, task_id, operation_id):
         del command, task_id, operation_id
@@ -2474,7 +2497,14 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(runtime.execute_calls, 0)
 
     def test_execute_deadline_error_reports_the_accepted_range(self) -> None:
-        for deadline in (0, 120.1, "later"):
+        for deadline in (
+            0,
+            120.1,
+            "later",
+            float("nan"),
+            float("inf"),
+            10**400,
+        ):
             with self.subTest(deadline=deadline):
                 with self.assertRaisesRegex(
                     AgentGatewayError,
@@ -2501,7 +2531,7 @@ class AgentGatewayTests(unittest.TestCase):
                 {"kind": "resume"},
                 "run_id",
                 {"required": True},
-                {"kind": "resume", "run_id": "<structuredContent.run_id>"},
+                {"kind": "resume", "run_id": "<current Run ID>"},
             ),
             (
                 {
@@ -2512,9 +2542,8 @@ class AgentGatewayTests(unittest.TestCase):
                 "recovery_mode",
                 {"ownership": "Runtime"},
                 {
-                    "kind": "control",
-                    "run_id": "<structuredContent.run_id>",
-                    "command": "reconcile",
+                    "kind": "resume",
+                    "run_id": "run-one",
                 },
             ),
             (
@@ -2557,7 +2586,7 @@ class AgentGatewayTests(unittest.TestCase):
                 {"exclusive_minimum": 0, "maximum_seconds": 120},
                 {
                     "kind": "resume",
-                    "run_id": "<structuredContent.run_id>",
+                    "run_id": "run-one",
                     "deadline": 120,
                 },
             ),
@@ -2567,7 +2596,67 @@ class AgentGatewayTests(unittest.TestCase):
                 {"exclusive_minimum": 0, "maximum_seconds": 120},
                 {
                     "kind": "resume",
-                    "run_id": "<structuredContent.run_id>",
+                    "run_id": "run-one",
+                    "deadline": 120,
+                },
+            ),
+            (
+                {"kind": "resume", "run_id": "run-one", "deadline": float("nan")},
+                "deadline",
+                {"exclusive_minimum": 0, "maximum_seconds": 120},
+                {
+                    "kind": "resume",
+                    "run_id": "run-one",
+                    "deadline": 120,
+                },
+            ),
+            (
+                {"kind": "resume", "run_id": "run-one", "deadline": 10**400},
+                "deadline",
+                {"exclusive_minimum": 0, "maximum_seconds": 120},
+                {
+                    "kind": "resume",
+                    "run_id": "run-one",
+                    "deadline": 120,
+                },
+            ),
+            (
+                {
+                    "kind": "control",
+                    "run_id": "run-one",
+                    "command": "Cancel",
+                    "incident_id": "incident-one",
+                    "deadline": float("inf"),
+                },
+                "deadline",
+                {"exclusive_minimum": 0, "maximum_seconds": 120},
+                {
+                    "kind": "control",
+                    "run_id": "run-one",
+                    "command": "cancel",
+                    "incident_id": "incident-one",
+                    "deadline": 120,
+                },
+            ),
+            (
+                {
+                    "kind": "control",
+                    "run_id": "run-one",
+                    "command": "cancel",
+                    "gate_id": "gate-one",
+                    "gate_version": 3,
+                    "schema_digest": "sha256:" + "a" * 64,
+                    "deadline": float("nan"),
+                },
+                "deadline",
+                {"exclusive_minimum": 0, "maximum_seconds": 120},
+                {
+                    "kind": "control",
+                    "run_id": "run-one",
+                    "command": "cancel",
+                    "gate_id": "gate-one",
+                    "gate_version": 3,
+                    "schema_digest": "sha256:" + "a" * 64,
                     "deadline": 120,
                 },
             ),
@@ -2592,6 +2681,7 @@ class AgentGatewayTests(unittest.TestCase):
                 self.assertEqual(structured["error"]["limit"], limit)
                 self.assertEqual(structured["error"]["example"], example)
                 self.assertTrue(structured["next_action"])
+                self.assertNotIn("structuredContent", json.dumps(structured))
 
         self.assertEqual(self.backend.calls, [])
 
@@ -2676,6 +2766,15 @@ class AgentGatewayTests(unittest.TestCase):
                 {
                     "target": "192.0.2.10",
                     "selectors": [{"kind": "mdb", "queries": ["lsprop Object0"]}],
+                    "freshness": {"mode": "", "max_age_seconds": 0},
+                },
+                "freshness.mode",
+                {"allowed": ["live"]},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [{"kind": "mdb", "queries": ["lsprop Object0"]}],
                     "deadline": "later",
                 },
                 "deadline",
@@ -2689,6 +2788,24 @@ class AgentGatewayTests(unittest.TestCase):
                 },
                 "deadline",
                 {"exclusive_minimum": 0},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [{"kind": "mdb", "queries": ["lsprop Object0"]}],
+                    "deadline": float("nan"),
+                },
+                "deadline",
+                {"type": "positive finite number"},
+            ),
+            (
+                {
+                    "target": "192.0.2.10",
+                    "selectors": [{"kind": "mdb", "queries": ["lsprop Object0"]}],
+                    "deadline": 10**400,
+                },
+                "deadline",
+                {"type": "positive finite number"},
             ),
         )
 
@@ -2757,11 +2874,11 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             structured["error"]["example"],
             {
-                "kind": "control",
+                "kind": "resume",
                 "run_id": terminal["run_id"],
-                "command": "reconcile",
             },
         )
+        self.assertNotIn("reconcile", json.dumps(structured["error"]["example"]))
         self.assertEqual(len(self.backend.calls), call_count)
         self.assertEqual(
             self.service._test.context_runtime.read_case(terminal["run_id"])[
@@ -2865,8 +2982,40 @@ class AgentGatewayTests(unittest.TestCase):
                 },
             }
         )
+        missing_target = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 302,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "respond",
+                        "run_id": build_gate["run_id"],
+                        **gate_binding(build_gate),
+                        "response": {
+                            "status": "completed",
+                            "summary": "build completed",
+                            "payload": {
+                                "source_revision": "artifact-preflight-source",
+                                "artifact_ref": {
+                                    "handle": "/tmp/product.hpm",
+                                    "digest": "sha256:" + "a" * 64,
+                                    "kind": "openubmc-hpm",
+                                    "size": 1,
+                                    "provenance": "openubmc-build",
+                                    "retention_hint": "run-lifetime",
+                                    "version": "1.0.0",
+                                    "run_id": build_gate["run_id"],
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+        )
 
-        def artifact_response(*, target: str, run_id: str, request_id: int):
+        def artifact_response(*, target: object, run_id: str, request_id: int):
             return endpoint.handle(
                 {
                     "jsonrpc": "2.0",
@@ -2904,19 +3053,26 @@ class AgentGatewayTests(unittest.TestCase):
         wrong_target = artifact_response(
             target="192.0.2.99",
             run_id=build_gate["run_id"],
-            request_id=302,
+            request_id=303,
         )
         wrong_run = artifact_response(
             target="192.0.2.10",
             run_id="run-other",
-            request_id=303,
+            request_id=304,
+        )
+        invalid_target_type = artifact_response(
+            target=1234,
+            run_id=build_gate["run_id"],
+            request_id=305,
         )
 
         for response, field in (
             (missing_ref, "response.payload.artifact_ref"),
             (missing_binding, "response.payload.artifact_ref.run_id"),
+            (missing_target, "response.payload.artifact_ref.target"),
             (wrong_target, "response.payload.artifact_ref.target"),
             (wrong_run, "response.payload.artifact_ref.run_id"),
+            (invalid_target_type, "response.payload.artifact_ref.target"),
         ):
             structured = response["result"]["structuredContent"]
             self.assertTrue(response["result"]["isError"])
@@ -6547,6 +6703,21 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(turn.get("projection_target_exceeded", False))
         self.assertFalse(turn["manual_narrowing_required"])
         self.assertFalse(turn["budget_blocker"])
+
+    def test_large_gate_compaction_preserves_no_progress_semantics(self) -> None:
+        turn = AgentGateway(OversizedNoProgressGateTurnRuntime()).execute(
+            {"kind": "resume", "run_id": "case-oversized-no-progress-gate"},
+            task_id="oversized-no-progress-gate",
+            operation_id="oversized-no-progress-gate-1",
+        )
+
+        self.assertTrue(turn["response_required"])
+        self.assertEqual(
+            turn["progress"],
+            {"status": "no_progress", "reason": "response_required"},
+        )
+        self.assertEqual(turn["gate"]["gate_id"], "gate-oversized-no-progress")
+        self.assertTrue(turn["projection_target_exceeded"])
 
     def test_execute_turn_soft_target_preserves_runtime_incident_semantics(self) -> None:
         turn = AgentGateway(OversizedIncidentTurnRuntime()).execute(
