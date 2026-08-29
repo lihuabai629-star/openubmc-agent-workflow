@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import NamedTuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,7 @@ from scripts.release_gate_contract import (  # noqa: E402
 
 from openubmc_target_runtime.release import (  # noqa: E402
     ReleaseLockError,
+    is_full_commit,
     verify_release_lock,
 )
 
@@ -120,28 +122,89 @@ def _resolve_commit(workspace: Path, ref: str) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    return completed.stdout.strip() if completed.returncode == 0 else ref
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"unable to resolve release candidate ref {ref}{suffix}")
+    return completed.stdout.strip().lower()
 
 
-def _resolve_release_source_commit(workspace: Path, ref: str) -> str:
-    """Resolve the source parent recorded by an immutable lock-only ref."""
+class ReleaseCandidate(NamedTuple):
+    requested_ref: str
+    release_commit: str
+    source_commit: str
+
+
+def require_published_candidate(
+    release_commit: str,
+    github_repository: str,
+) -> None:
+    """Fail fast when GitHub cannot serve the immutable candidate commit."""
+
+    repository = github_repository.strip()
+    if not repository:
+        raise ValueError("GitHub repository is required for candidate reachability")
+    try:
+        completed = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repository}/commits/{release_commit}",
+                "--silent",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise ValueError(
+            f"unable to verify release candidate reachability on GitHub: {exc}"
+        ) from exc
+    if completed.returncode == 0:
+        return
+    detail = completed.stderr.strip() or completed.stdout.strip()
+    lowered_detail = detail.lower()
+    if (
+        "404" in detail
+        or "422" in detail
+        or "not found" in lowered_detail
+        or "no commit found" in lowered_detail
+    ):
+        raise ValueError(
+            f"release candidate {release_commit} is not published or reachable "
+            f"from GitHub repository {github_repository}; push the lock-only "
+            "commit or tag before running Release Gate"
+        )
+    suffix = f": {_tail(detail)}" if detail else ""
+    raise ValueError(
+        f"unable to verify release candidate reachability on GitHub{suffix}"
+    )
+
+
+def _resolve_release_candidate(workspace: Path, ref: str) -> ReleaseCandidate:
+    """Resolve one requested ref to the immutable lock-only candidate identity."""
 
     release_commit = _resolve_commit(workspace, ref)
     workspace_commit = _resolve_commit(workspace, "HEAD")
-    if release_commit.lower() != workspace_commit.lower():
-        raise ValueError(
-            "release gate workspace HEAD must match --current-ref"
-        )
+    if release_commit != workspace_commit:
+        raise ValueError("release gate workspace HEAD must match --current-ref")
     try:
         identity = verify_release_lock(workspace)
     except ReleaseLockError as exc:
         raise ValueError(f"invalid immutable release ref: {exc}") from exc
     source_commit = str(identity.get("source_commit", "")).strip().lower()
-    if source_commit == release_commit.lower():
+    if not is_full_commit(source_commit):
+        raise ValueError("immutable release ref records an invalid source_commit")
+    if source_commit == release_commit:
         raise ValueError(
             "immutable release ref must be a lock-only child of source_commit"
         )
-    return source_commit
+    return ReleaseCandidate(
+        requested_ref=ref,
+        release_commit=release_commit,
+        source_commit=source_commit,
+    )
 
 
 def gate_commands(
@@ -283,7 +346,6 @@ def execute_release_gate(
     workspace: Path,
     work_root: Path,
     executor: Callable[..., subprocess.CompletedProcess[str]] = run_process,
-    source_commit: str | None = None,
     ab_evidence: Path | None = None,
     github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
     ab_attestation_public_key: Path | None = None,
@@ -292,12 +354,12 @@ def execute_release_gate(
     lifecycle_home = work_root / "lifecycle-home"
     results: list[dict[str, object]] = []
     blocked = False
-    resolved_source_commit = source_commit or _resolve_release_source_commit(
-        workspace,
-        current_ref,
-    )
+    candidate = _resolve_release_candidate(workspace, current_ref)
+    resolved_source_commit = candidate.source_commit
+    resolved_release_commit = candidate.release_commit
+    require_published_candidate(resolved_release_commit, github_repository)
     for name, commands in gate_commands(
-        current_ref=current_ref,
+        current_ref=resolved_release_commit,
         previous_ref=previous_ref,
         clean_home=clean_home,
         lifecycle_home=lifecycle_home,
@@ -356,6 +418,8 @@ def execute_release_gate(
     report = {
         "schema": RELEASE_GATE_SCHEMA,
         "current_ref": current_ref,
+        "requested_ref": candidate.requested_ref,
+        "release_commit": candidate.release_commit,
         "previous_ref": previous_ref,
         "source_commit": resolved_source_commit,
         "environment": environment,
@@ -398,17 +462,21 @@ def main(argv: list[str] | None = None) -> int:
         work_root = args.work_root.expanduser().absolute()
         work_root.mkdir(parents=True, exist_ok=True)
     try:
-        report = execute_release_gate(
-            current_ref=args.current_ref,
-            previous_ref=args.previous_ref,
-            workspace=args.workspace.expanduser().absolute(),
-            work_root=work_root,
-            ab_evidence=args.ab_evidence.expanduser().absolute(),
-            github_repository=args.github_repository,
-            ab_attestation_public_key=(
-                args.ab_attestation_public_key.expanduser().absolute()
-            ),
-        )
+        try:
+            report = execute_release_gate(
+                current_ref=args.current_ref,
+                previous_ref=args.previous_ref,
+                workspace=args.workspace.expanduser().absolute(),
+                work_root=work_root,
+                ab_evidence=args.ab_evidence.expanduser().absolute(),
+                github_repository=args.github_repository,
+                ab_attestation_public_key=(
+                    args.ab_attestation_public_key.expanduser().absolute()
+                ),
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         encoded = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         if args.output is not None:
             output = args.output.expanduser().absolute()

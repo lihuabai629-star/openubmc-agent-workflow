@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       current_ref:
-        description: Immutable release tag to validate and publish
+        description: Checked-out immutable release candidate ref
         required: true
         type: string
       previous_ref:
@@ -33,6 +33,8 @@ permissions:
 jobs:
   release-gate:
     runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.candidate.outputs.release_tag }}
     permissions:
       actions: read
       checks: read
@@ -40,22 +42,51 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.current_ref }}
+          ref: ${{ inputs.current_ref == 'HEAD' && github.sha || inputs.current_ref }}
           fetch-depth: 0
 
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12.13"
 
+      - name: Resolve release candidate identity
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_REF: ${{ inputs.current_ref }}
+        run: |
+          RELEASE_COMMIT=$(git rev-parse "${REQUESTED_REF}^{commit}")
+          test "$RELEASE_COMMIT" = "$(git rev-parse HEAD^{commit})"
+          release_tags=()
+          while IFS= read -r tag; do
+            if gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null | grep -qx true; then
+              release_tags+=("$tag")
+            fi
+          done < <(git tag --points-at "$RELEASE_COMMIT")
+          RELEASE_TAG=""
+          for tag in "${release_tags[@]}"; do
+            if test "$tag" = "$REQUESTED_REF"; then
+              RELEASE_TAG="$tag"
+            fi
+          done
+          if test -z "$RELEASE_TAG" && test "${#release_tags[@]}" -eq 1; then
+            RELEASE_TAG="${release_tags[0]}"
+          fi
+          if test -z "$RELEASE_TAG"; then
+            echo "candidate $RELEASE_COMMIT must have exactly one GitHub Release tag" >&2
+            exit 2
+          fi
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
       - name: Restore execute AB qualification evidence
         env:
           GH_TOKEN: ${{ github.token }}
-          CURRENT_REF: ${{ inputs.current_ref }}
+          RELEASE_TAG: ${{ steps.candidate.outputs.release_tag }}
           AB_BUNDLE_ASSET: ${{ inputs.ab_bundle_asset }}
           AB_BUNDLE_SHA256: ${{ inputs.ab_bundle_sha256 }}
         run: |
           test -n "$AB_BUNDLE_ASSET"
-          gh release download "$CURRENT_REF" \
+          gh release download "$RELEASE_TAG" \
             --pattern "$AB_BUNDLE_ASSET" \
             --output "$RUNNER_TEMP/agent-gateway-ab-evidence.tar.xz"
           printf '%s  %s\n' "$AB_BUNDLE_SHA256" "$RUNNER_TEMP/agent-gateway-ab-evidence.tar.xz" | sha256sum --check --strict
@@ -86,7 +117,7 @@ jobs:
 
       - name: Upload release evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-gate-${{ inputs.current_ref }}
           path: |
@@ -109,13 +140,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.current_ref }}
+          ref: ${{ needs.release-gate.outputs.release_tag }}
           fetch-depth: 0
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          CURRENT_REF: ${{ inputs.current_ref }}
+          RELEASE_TAG: ${{ needs.release-gate.outputs.release_tag }}
         run: |
-          gh release view "$CURRENT_REF" --json isDraft --jq .isDraft | grep -qx true
-          gh release edit "$CURRENT_REF" --draft=false --latest
+          gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -qx true
+          gh release edit "$RELEASE_TAG" --draft=false --latest

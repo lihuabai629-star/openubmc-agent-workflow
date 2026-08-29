@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager, redirect_stderr
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -18,6 +20,29 @@ release_gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release_gate)
 
 
+SOURCE_COMMIT = "a" * 40
+RELEASE_COMMIT = "b" * 40
+
+
+@contextmanager
+def resolved_candidate(
+    requested_ref: str,
+    *,
+    release_commit: str = RELEASE_COMMIT,
+    source_commit: str = SOURCE_COMMIT,
+):
+    with patch.object(
+        release_gate,
+        "_resolve_release_candidate",
+        return_value=release_gate.ReleaseCandidate(
+            requested_ref=requested_ref,
+            release_commit=release_commit,
+            source_commit=source_commit,
+        ),
+    ), patch.object(release_gate, "require_published_candidate"):
+        yield
+
+
 class ReleaseGateTests(unittest.TestCase):
     def test_all_release_gates_are_required_for_promotion(self) -> None:
         calls: list[tuple[str, ...]] = []
@@ -27,7 +52,9 @@ class ReleaseGateTests(unittest.TestCase):
             calls.append(tuple(command))
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "v1.2.0"
+        ):
             root = Path(directory)
             report = release_gate.execute_release_gate(
                 current_ref="v1.2.0",
@@ -35,7 +62,6 @@ class ReleaseGateTests(unittest.TestCase):
                 workspace=Path.cwd(),
                 work_root=root,
                 executor=succeed,
-                source_commit="source-commit-test",
             )
 
         self.assertTrue(report["promotable"])
@@ -63,9 +89,9 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("github_ci_evidence.py", github_ci[1])
         self.assertEqual(
             github_ci[github_ci.index("--commit") + 1],
-            "source-commit-test",
+            SOURCE_COMMIT,
         )
-        self.assertEqual(report["source_commit"], "source-commit-test")
+        self.assertEqual(report["source_commit"], SOURCE_COMMIT)
         self.assertRegex(report["environment_fingerprint"], r"^sha256:[0-9a-f]{64}$")
 
     def test_failure_blocks_later_gates_and_promotion(self) -> None:
@@ -81,14 +107,15 @@ class ReleaseGateTests(unittest.TestCase):
                 "upgrade failed" if call_count == 4 else "",
             )
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "v1.2.0"
+        ):
             report = release_gate.execute_release_gate(
                 current_ref="v1.2.0",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
                 work_root=Path(directory),
                 executor=fail_upgrade,
-                source_commit="source-commit-test",
             )
 
         self.assertFalse(report["promotable"])
@@ -136,7 +163,7 @@ class ReleaseGateTests(unittest.TestCase):
             root / "agent-gateway-ab-attestation.pub",
         )
 
-    def test_release_source_commit_is_read_from_the_lock_only_ref(self) -> None:
+    def test_symbolic_commit_and_tag_resolve_one_release_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
@@ -176,18 +203,51 @@ class ReleaseGateTests(unittest.TestCase):
                 text=True,
                 stdout=subprocess.PIPE,
             ).stdout.strip()
+            subprocess.run(
+                ["git", "tag", "v-test-candidate", lock_commit],
+                cwd=root,
+                check=True,
+            )
 
             with patch.object(
                 release_gate,
                 "verify_release_lock",
                 return_value={"source_commit": source_commit},
+            ), patch.object(
+                release_gate,
+                "require_published_candidate",
             ):
-                resolved = release_gate._resolve_release_source_commit(
-                    root,
-                    lock_commit,
-                )
+                reports = []
+                for index, requested_ref in enumerate(
+                    ("HEAD", lock_commit, "v-test-candidate")
+                ):
+                    reports.append(
+                        release_gate.execute_release_gate(
+                            current_ref=requested_ref,
+                            previous_ref="v-previous",
+                            workspace=root,
+                            work_root=root / f"gate-{index}",
+                            executor=lambda command, *, cwd: subprocess.CompletedProcess(
+                                command,
+                                0,
+                                "ok",
+                                "",
+                            ),
+                        )
+                    )
 
-        self.assertEqual(resolved, source_commit)
+        self.assertEqual(
+            {report["release_commit"] for report in reports},
+            {lock_commit},
+        )
+        self.assertEqual(
+            {report["source_commit"] for report in reports},
+            {source_commit},
+        )
+        self.assertEqual(
+            [report["requested_ref"] for report in reports],
+            ["HEAD", lock_commit, "v-test-candidate"],
+        )
 
     def test_invalid_release_lock_fails_instead_of_falling_back(self) -> None:
         with patch.object(
@@ -200,10 +260,141 @@ class ReleaseGateTests(unittest.TestCase):
             side_effect=release_gate.ReleaseLockError("bad lock"),
         ):
             with self.assertRaisesRegex(ValueError, "invalid immutable release ref"):
-                release_gate._resolve_release_source_commit(
+                release_gate._resolve_release_candidate(
                     Path.cwd(),
                     "release-ref",
                 )
+
+    def test_managed_checks_install_the_resolved_release_commit(self) -> None:
+        release_commit = "b" * 40
+        source_commit = "a" * 40
+        calls: list[tuple[str, ...]] = []
+
+        def succeed(command, *, cwd):
+            calls.append(tuple(command))
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "HEAD",
+            release_commit=release_commit,
+            source_commit=source_commit,
+        ):
+            report = release_gate.execute_release_gate(
+                current_ref="HEAD",
+                previous_ref="v2.0.0",
+                workspace=Path.cwd(),
+                work_root=Path(directory),
+                executor=succeed,
+            )
+
+        install_refs = [
+            command[command.index("--ref") + 1]
+            for command in calls
+            if "bootstrap.py" in " ".join(command)
+        ]
+        self.assertEqual(install_refs, [release_commit, "v2.0.0", release_commit])
+        self.assertEqual(report["requested_ref"], "HEAD")
+        self.assertEqual(report["release_commit"], release_commit)
+        self.assertEqual(report["source_commit"], source_commit)
+
+    def test_unpublished_candidate_fails_before_expensive_gates(self) -> None:
+        calls = 0
+
+        def should_not_run(command, *, cwd):
+            nonlocal calls
+            calls += 1
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            release_gate,
+            "_resolve_release_candidate",
+            return_value=release_gate.ReleaseCandidate(
+                requested_ref="HEAD",
+                release_commit="b" * 40,
+                source_commit="a" * 40,
+            ),
+        ), patch.object(
+            release_gate,
+            "require_published_candidate",
+            side_effect=ValueError(
+                "release candidate is not published or reachable from GitHub; "
+                "push the lock-only commit or tag before running Release Gate"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "not published or reachable.*push the lock-only commit or tag",
+            ):
+                release_gate.execute_release_gate(
+                    current_ref="HEAD",
+                    previous_ref="v2.0.0",
+                    workspace=Path.cwd(),
+                    work_root=Path(directory),
+                    executor=should_not_run,
+                )
+
+        self.assertEqual(calls, 0)
+
+    def test_cli_reports_unpublished_candidate_without_a_traceback(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            release_gate,
+            "execute_release_gate",
+            side_effect=ValueError(
+                "release candidate is not published or reachable from GitHub; "
+                "push the lock-only commit or tag before running Release Gate"
+            ),
+        ), redirect_stderr(stderr):
+            returncode = release_gate.main(
+                [
+                    "--current-ref",
+                    "HEAD",
+                    "--previous-ref",
+                    "v2.0.0",
+                    "--work-root",
+                    directory,
+                    "--ab-evidence",
+                    str(Path(directory) / "summary.json"),
+                    "--ab-attestation-public-key",
+                    str(Path(directory) / "attestation.pub"),
+                ]
+            )
+
+        self.assertEqual(returncode, 2)
+        self.assertIn("not published or reachable", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertNotIn("HTTP Error 404", stderr.getvalue())
+
+    def test_github_missing_commit_errors_become_publication_guidance(self) -> None:
+        for detail in (
+            "gh: Not Found (HTTP 404)",
+            "gh: No commit found for SHA (HTTP 422)",
+        ):
+            with self.subTest(detail=detail), patch.object(
+                release_gate.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    ["gh", "api"],
+                    1,
+                    "",
+                    detail,
+                ),
+            ) as run:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "not published or reachable.*push the lock-only commit or tag",
+                ) as raised:
+                    release_gate.require_published_candidate(
+                        "b" * 40,
+                        "owner/repository",
+                    )
+
+            run.assert_called_once()
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[:2], ["gh", "api"])
+            self.assertIn("repos/owner/repository/commits/" + "b" * 40, argv)
+            self.assertNotIn("HTTP Error 404", str(raised.exception))
+            self.assertNotIn("HTTP 422", str(raised.exception))
 
     def test_self_referencing_release_lock_is_rejected(self) -> None:
         release_commit = "c" * 40
@@ -217,7 +408,7 @@ class ReleaseGateTests(unittest.TestCase):
             return_value={"source_commit": release_commit},
         ):
             with self.assertRaisesRegex(ValueError, "lock-only child"):
-                release_gate._resolve_release_source_commit(
+                release_gate._resolve_release_candidate(
                     Path.cwd(),
                     "release-ref",
                 )
@@ -233,19 +424,70 @@ class ReleaseGateTests(unittest.TestCase):
                 )
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "candidate"
+        ):
             report = release_gate.execute_release_gate(
                 current_ref="candidate",
                 previous_ref="previous",
                 workspace=Path.cwd(),
                 work_root=Path(directory),
                 executor=succeed,
-                source_commit="source-commit-test",
             )
 
         artifact = report["artifacts"]["runtime_qualification"]
         self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
         self.assertGreater(artifact["size_bytes"], 0)
+
+    def test_new_reports_require_identity_while_v2_evidence_remains_readable(
+        self,
+    ) -> None:
+        def succeed(command, *, cwd):
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "candidate"
+        ):
+            report = release_gate.execute_release_gate(
+                current_ref="candidate",
+                previous_ref="previous",
+                workspace=Path.cwd(),
+                work_root=Path(directory),
+                executor=succeed,
+            )
+
+        self.assertEqual(
+            report["schema"],
+            "openubmc-agent-workflow.release-gate.v3",
+        )
+        for field in ("requested_ref", "release_commit", "source_commit"):
+            with self.subTest(field=field):
+                invalid = dict(report)
+                invalid.pop(field)
+                invalid["evidence_digest"] = release_gate.evidence_fingerprint(
+                    {key: value for key, value in invalid.items() if key != "evidence_digest"}
+                )
+                with self.assertRaisesRegex(ValueError, "candidate identity"):
+                    release_gate.verify_release_gate_report(invalid)
+
+        for field in ("release_commit", "source_commit"):
+            with self.subTest(padded_field=field):
+                invalid = dict(report)
+                invalid[field] = f" {invalid[field]} "
+                invalid["evidence_digest"] = release_gate.evidence_fingerprint(
+                    {key: value for key, value in invalid.items() if key != "evidence_digest"}
+                )
+                with self.assertRaisesRegex(ValueError, "candidate identity"):
+                    release_gate.verify_release_gate_report(invalid)
+
+        legacy = dict(report)
+        legacy["schema"] = "openubmc-agent-workflow.release-gate.v2"
+        legacy.pop("requested_ref")
+        legacy.pop("release_commit")
+        legacy["evidence_digest"] = release_gate.evidence_fingerprint(
+            {key: value for key, value in legacy.items() if key != "evidence_digest"}
+        )
+        release_gate.verify_release_gate_report(legacy)
 
     def test_release_workflow_restores_and_requires_execute_ab_evidence(self) -> None:
         workflow = yaml.load(
@@ -283,12 +525,35 @@ class ReleaseGateTests(unittest.TestCase):
         }
         self.assertIn("actions/checkout@v7", steps)
         self.assertEqual(
+            steps["actions/checkout@v7"]["with"]["ref"],
+            "${{ inputs.current_ref == 'HEAD' && github.sha || inputs.current_ref }}",
+        )
+        self.assertEqual(
             steps["actions/setup-python@v7"]["with"]["python-version"],
             "3.12.13",
         )
+        self.assertEqual(
+            steps["Upload release evidence"]["uses"],
+            "actions/upload-artifact@v7",
+        )
+        resolve = steps["Resolve release candidate identity"]
+        self.assertEqual(resolve["id"], "candidate")
+        self.assertIn('git rev-parse "${REQUESTED_REF}^{commit}"', resolve["run"])
+        self.assertIn('git tag --points-at "$RELEASE_COMMIT"', resolve["run"])
+        self.assertIn(
+            'gh release view "$tag" --json isDraft --jq .isDraft',
+            resolve["run"],
+        )
+        self.assertIn("grep -qx true", resolve["run"])
+        self.assertIn("release_tag=", resolve["run"])
+        self.assertEqual(
+            workflow["jobs"]["release-gate"]["outputs"]["release_tag"],
+            "${{ steps.candidate.outputs.release_tag }}",
+        )
         restore = steps["Restore execute AB qualification evidence"]["run"]
         self.assertIn("gh release download", restore)
-        self.assertIn('"$CURRENT_REF"', restore)
+        self.assertIn('"$RELEASE_TAG"', restore)
+        self.assertNotIn('"$CURRENT_REF"', restore)
         self.assertIn('"$AB_BUNDLE_ASSET"', restore)
         self.assertIn("sha256sum --check --strict", restore)
         self.assertIn("scripts/restore_ab_bundle.py", restore)
@@ -332,11 +597,22 @@ class ReleaseGateTests(unittest.TestCase):
             "lihuabai629-star/openubmc-agent-workflow",
         )
 
-        promote = workflow["jobs"]["promote"]["steps"][-1]["run"]
-        self.assertIn('gh release view "$CURRENT_REF" --json isDraft', promote)
+        promote_job = workflow["jobs"]["promote"]
+        promote_checkout = promote_job["steps"][0]
+        self.assertEqual(
+            promote_checkout["with"]["ref"],
+            "${{ needs.release-gate.outputs.release_tag }}",
+        )
+        promote_step = promote_job["steps"][-1]
+        self.assertEqual(
+            promote_step["env"]["RELEASE_TAG"],
+            "${{ needs.release-gate.outputs.release_tag }}",
+        )
+        promote = promote_step["run"]
+        self.assertIn('gh release view "$RELEASE_TAG" --json isDraft', promote)
         self.assertIn("grep -qx true", promote)
-        self.assertIn('gh release edit "$CURRENT_REF" --draft=false', promote)
-        self.assertNotIn('gh release create "$CURRENT_REF"', promote)
+        self.assertIn('gh release edit "$RELEASE_TAG" --draft=false', promote)
+        self.assertNotIn('gh release create "$RELEASE_TAG"', promote)
 
 
 if __name__ == "__main__":

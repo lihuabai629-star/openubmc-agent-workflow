@@ -175,6 +175,13 @@ python3 scripts/release_gate.py \
   --output release-gate.json
 ```
 
+`--current-ref` may be the checked-out symbolic `HEAD`, the full lock-only commit, or a tag that
+resolves to that commit. The gate records the requested ref, resolves it once, verifies the
+lock-only topology, checks that GitHub can retrieve the candidate, and then passes the immutable
+release commit to managed clean-install and upgrade checks. Unpublished local candidates stop
+before the ordered gate sequence with publication guidance. The JSON report retains
+`requested_ref`, `release_commit`, and the lock-recorded `source_commit` for audit replay.
+
 The gate requires clean installation, previous-to-current upgrade, rollback, Agent Interface
 contracts, and deterministic Case Replay smoke in that order. A failed gate skips all later gates
 and prevents promotion. The GitHub Release workflow applies the same ordering and publishes the

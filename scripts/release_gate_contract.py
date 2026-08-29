@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
+import sys
 
 from scripts.evidence_report import evidence_fingerprint
 
 
-RELEASE_GATE_SCHEMA = "openubmc-agent-workflow.release-gate.v2"
+ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = ROOT / "openubmc-target-runtime"
+if str(RUNTIME_ROOT) not in sys.path:
+    sys.path.insert(0, str(RUNTIME_ROOT))
+
+from openubmc_target_runtime.release import is_full_commit  # noqa: E402
+
+
+LEGACY_RELEASE_GATE_SCHEMA = "openubmc-agent-workflow.release-gate.v2"
+RELEASE_GATE_SCHEMA = "openubmc-agent-workflow.release-gate.v3"
 REQUIRED_RELEASE_GATES = (
     "github_ci",
     "clean_install",
@@ -72,7 +83,8 @@ def verify_release_gate_report(
     required_gates: Sequence[str] = REQUIRED_RELEASE_GATES,
     required_artifacts: Sequence[str] = (),
 ) -> None:
-    if report.get("schema") != RELEASE_GATE_SCHEMA:
+    schema = report.get("schema")
+    if schema not in {LEGACY_RELEASE_GATE_SCHEMA, RELEASE_GATE_SCHEMA}:
         raise ValueError("Release Gate schema is unsupported")
     expected_digest = report.get("evidence_digest")
     unsigned = dict(report)
@@ -91,6 +103,17 @@ def verify_release_gate_report(
     previous_ref = str(report.get("previous_ref", "")).strip()
     if not current_ref or not previous_ref or current_ref == previous_ref:
         raise ValueError("Release Gate refs are incomplete")
+    requested_ref = str(report.get("requested_ref", "")).strip()
+    release_commit = str(report.get("release_commit", "")).lower()
+    source_commit = str(report.get("source_commit", "")).lower()
+    if schema == RELEASE_GATE_SCHEMA:
+        if (
+            requested_ref != current_ref
+            or not is_full_commit(release_commit)
+            or not is_full_commit(source_commit)
+            or release_commit == source_commit
+        ):
+            raise ValueError("Release Gate candidate identity is invalid")
     environment = report.get("environment")
     if not isinstance(environment, Mapping) or not environment:
         raise ValueError("Release Gate lacks complete environment evidence")
