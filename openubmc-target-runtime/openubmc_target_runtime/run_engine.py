@@ -971,6 +971,9 @@ class RunEngine:
                 else ""
             ),
             version_required="version" in artifact_properties,
+            required_payload_fields=tuple(
+                RunEngine._completed_payload_required(gate)
+            ),
         )
 
     def _normalized_response(

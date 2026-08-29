@@ -102,6 +102,15 @@ _RUNTIME_OWNED_ENTRY_ARGUMENTS = frozenset(
     }
 )
 
+
+def is_safe_runtime_id(value: object) -> bool:
+    return _SAFE_ID.fullmatch(_text(value)) is not None
+
+
+def is_sha256_digest(value: object) -> bool:
+    selected = _text(value).removeprefix("sha256:").lower()
+    return _SHA256.fullmatch(selected) is not None
+
 EXECUTE_ACTION_FIELD_TYPES = {
     "start": {
         "kind": "string",
@@ -221,7 +230,11 @@ class PreflightContext:
     action_kind: str = ""
     run_id: str = ""
     target: str = ""
+    targets: tuple[Mapping[str, object], ...] = ()
     intent: str = ""
+    purpose: str = ""
+    delivery_strategy: str = ""
+    observation_ref: Mapping[str, object] = field(default_factory=dict)
     command: str = ""
     incident_id: str = ""
     entry_operation: str = ""
@@ -233,6 +246,7 @@ class PreflightContext:
     response: Mapping[str, object] = field(default_factory=dict)
     artifact_kind: str = ""
     version_required: bool = False
+    required_payload_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1338,9 +1352,23 @@ def _action_preflight_context(action: Mapping[str, object]) -> PreflightContext:
         action_kind=_text(action.get("kind")) or "resume",
         run_id=_text(action.get("run_id")),
         target=_text(action.get("target")),
+        targets=tuple(
+            dict(item)
+            for item in (
+                action.get("targets", [])
+                if isinstance(action.get("targets"), list)
+                else []
+            )
+            if isinstance(item, Mapping)
+        ),
         intent=_text(action.get("intent")),
+        purpose=_text(action.get("purpose")),
+        delivery_strategy=_text(action.get("delivery_strategy")),
+        observation_ref=dict(_mapping(action.get("observation_ref"))),
         command=_text(action.get("command")).lower(),
         incident_id=_text(action.get("incident_id")),
+        entry_operation=_text(action.get("entry_operation")),
+        entry_arguments=dict(_mapping(action.get("entry_arguments"))),
         gate_id=_text(action.get("gate_id")),
         gate_version=gate_version,
         schema_digest=_text(action.get("schema_digest")),
@@ -1599,7 +1627,11 @@ def decode_run_command(
                     target=target,
                     intent=intent,
                     entry_operation=entry_operation,
-                    entry_arguments={},
+                    entry_arguments={
+                        name: value
+                        for name, value in entry_arguments.items()
+                        if name not in runtime_owned_entry_fields
+                    },
                 ),
             )
         if entry_arguments and not entry_operation:

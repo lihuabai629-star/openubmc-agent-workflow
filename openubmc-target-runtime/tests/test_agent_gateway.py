@@ -2412,7 +2412,10 @@ class AgentGatewayTests(unittest.TestCase):
                     "target": "192.0.2.10",
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"recovery_mode": "reconcile"},
+                    "entry_arguments": {
+                        "disk_id": "Disk23",
+                        "recovery_mode": "reconcile",
+                    },
                 },
                 "Runtime-owned",
             ),
@@ -2552,7 +2555,10 @@ class AgentGatewayTests(unittest.TestCase):
                     "target": "192.0.2.10",
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"recovery_mode": "reconcile"},
+                    "entry_arguments": {
+                        "disk_id": "Disk23",
+                        "recovery_mode": "reconcile",
+                    },
                 },
                 "entry_arguments.recovery_mode",
                 {"ownership": "Runtime"},
@@ -2561,7 +2567,7 @@ class AgentGatewayTests(unittest.TestCase):
                     "target": "192.0.2.10",
                     "intent": "diagnosis-only",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {},
+                    "entry_arguments": {"disk_id": "Disk23"},
                 },
             ),
             (
@@ -2569,6 +2575,8 @@ class AgentGatewayTests(unittest.TestCase):
                     "kind": "start",
                     "target": "192.0.2.10",
                     "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"disk_id": "Disk23"},
                     "deadline": 121,
                 },
                 "deadline",
@@ -2577,6 +2585,8 @@ class AgentGatewayTests(unittest.TestCase):
                     "kind": "start",
                     "target": "192.0.2.10",
                     "intent": "diagnosis-only",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"disk_id": "Disk23"},
                     "deadline": 120,
                 },
             ),
@@ -2587,6 +2597,34 @@ class AgentGatewayTests(unittest.TestCase):
                 {
                     "kind": "resume",
                     "run_id": "run-one",
+                    "deadline": 120,
+                },
+            ),
+            (
+                {
+                    "kind": "start",
+                    "targets": [
+                        {"ip": "192.0.2.10", "role": "reference"},
+                        {"ip": "192.0.2.11", "role": "candidate"},
+                    ],
+                    "intent": "diagnose-and-fix",
+                    "purpose": "compare Disk23 behavior",
+                    "delivery_strategy": "source-only",
+                    "observation_ref": {"handle": "observation-one"},
+                    "deadline": 121,
+                },
+                "deadline",
+                {"exclusive_minimum": 0, "maximum_seconds": 120},
+                {
+                    "kind": "start",
+                    "targets": [
+                        {"ip": "192.0.2.10", "role": "reference"},
+                        {"ip": "192.0.2.11", "role": "candidate"},
+                    ],
+                    "intent": "diagnose-and-fix",
+                    "purpose": "compare Disk23 behavior",
+                    "delivery_strategy": "source-only",
+                    "observation_ref": {"handle": "observation-one"},
                     "deadline": 120,
                 },
             ),
@@ -2617,6 +2655,38 @@ class AgentGatewayTests(unittest.TestCase):
                 {
                     "kind": "resume",
                     "run_id": "run-one",
+                    "deadline": 120,
+                },
+            ),
+            (
+                {
+                    "kind": "respond",
+                    "run_id": "bad run id",
+                    "gate_id": "bad gate id",
+                    "gate_version": 0,
+                    "schema_digest": "not-a-digest",
+                    "submission_id": "bad submission id",
+                    "response": {
+                        "status": "completed",
+                        "summary": "source delivery completed",
+                        "payload": {},
+                    },
+                    "deadline": 121,
+                },
+                "deadline",
+                {"exclusive_minimum": 0, "maximum_seconds": 120},
+                {
+                    "kind": "respond",
+                    "run_id": "<current Run ID>",
+                    "gate_id": "<current Gate ID>",
+                    "gate_version": 1,
+                    "schema_digest": "<current Gate schema digest>",
+                    "response": {
+                        "status": "completed",
+                        "summary": "source delivery completed",
+                        "payload": {},
+                    },
+                    "submission_id": "<new submission identity>",
                     "deadline": 120,
                 },
             ),
@@ -2682,6 +2752,325 @@ class AgentGatewayTests(unittest.TestCase):
                 self.assertEqual(structured["error"]["example"], example)
                 self.assertTrue(structured["next_action"])
                 self.assertNotIn("structuredContent", json.dumps(structured))
+
+    def test_execute_preflight_preserves_large_response_in_canonical_example(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="execute-preflight-large-response",
+        )
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 110,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "respond",
+                        "run_id": "run-one",
+                        "gate_id": "gate-one",
+                        "gate_version": 1,
+                        "schema_digest": "sha256:" + "a" * 64,
+                        "response": {
+                            "status": "completed",
+                            "summary": "source delivery completed",
+                            "payload": {"build_log": "x" * (128 * 1024)},
+                        },
+                        "deadline": 121,
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        example_response = structured["error"]["example"]["response"]
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(example_response["status"], "completed")
+        self.assertEqual(example_response["summary"], "source delivery completed")
+        self.assertEqual(
+            example_response["payload"]["build_log"],
+            "x" * (128 * 1024),
+        )
+        self.assertFalse(structured["projection_compacted"])
+        self.assertTrue(structured["projection_target_exceeded"])
+        self.assertFalse(structured["manual_narrowing_required"])
+        self.assertFalse(structured["budget_blocker"])
+
+    def test_execute_preflight_preserves_wide_canonical_example_semantics(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="execute-preflight-wide-response",
+        )
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 111,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "respond",
+                        "run_id": "run-one",
+                        "gate_id": "gate-one",
+                        "gate_version": 1,
+                        "schema_digest": "sha256:" + "a" * 64,
+                        "submission_id": "submission-one",
+                        "response": {
+                            "status": "completed",
+                            "summary": "source delivery completed",
+                            "payload": {
+                                ("log_" + str(index) + "_" + "k" * 110): "x" * 1000
+                                for index in range(16)
+                            },
+                        },
+                        "deadline": 121,
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        example = structured["error"]["example"]
+        self.assertGreater(
+            len(json.dumps(structured, ensure_ascii=False).encode("utf-8")),
+            TURN_MAX_BYTES,
+        )
+        self.assertEqual(example["run_id"], "run-one")
+        self.assertEqual(example["gate_id"], "gate-one")
+        self.assertEqual(example["schema_digest"], "sha256:" + "a" * 64)
+        self.assertEqual(example["submission_id"], "submission-one")
+        self.assertEqual(example["deadline"], 120)
+        self.assertEqual(
+            example["response"]["payload"]["log_0_" + "k" * 110],
+            "x" * 1000,
+        )
+        self.assertFalse(structured["projection_compacted"])
+        self.assertTrue(structured["projection_target_exceeded"])
+
+    def test_execute_preflight_preserves_large_valid_start_fields(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="execute-preflight-large-start",
+        )
+        target = "t" * 300
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 112,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": target,
+                        "intent": "x" * (128 * 1024),
+                        "deadline": 121,
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        example = structured["error"]["example"]
+        self.assertGreater(
+            len(json.dumps(structured, ensure_ascii=False).encode("utf-8")),
+            TURN_MAX_BYTES,
+        )
+        self.assertEqual(example["target"], target)
+        self.assertEqual(example["intent"], "x" * (128 * 1024))
+        self.assertEqual(example["deadline"], 120)
+        self.assertFalse(structured["projection_compacted"])
+        self.assertTrue(structured["projection_target_exceeded"])
+
+    def test_execute_preflight_replaces_invalid_oversized_binding_in_example(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="execute-preflight-large-binding",
+        )
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 113,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "resume",
+                        "run_id": "x" * (128 * 1024),
+                        "deadline": 121,
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        example = structured["error"]["example"]
+        self.assertLessEqual(
+            len(json.dumps(structured, ensure_ascii=False).encode("utf-8")),
+            TURN_MAX_BYTES,
+        )
+        self.assertEqual(example["run_id"], "<current Run ID>")
+        self.assertEqual(example["deadline"], 120)
+        self.assertNotIn("projection_compacted", structured)
+
+    def test_execute_preflight_preserves_artifact_and_payload_identity(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="execute-preflight-artifact-identity",
+        )
+        artifact_ref = {
+            "handle": "/tmp/" + "h" * 5000,
+            "digest": "sha256:" + "b" * 64,
+            "kind": "openubmc-hpm",
+            "size": 1024,
+            "provenance": "openubmc-build",
+            "retention_hint": "run-lifetime",
+            "version": "1.2.3",
+            "target": "t" * 300,
+            "run_id": "run-one",
+        }
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 114,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "respond",
+                        "run_id": "run-one",
+                        "gate_id": "gate-one",
+                        "gate_version": 1,
+                        "schema_digest": "sha256:" + "a" * 64,
+                        "response": {
+                            "status": "completed",
+                            "summary": "artifact produced",
+                            "payload": {
+                                "artifact_ref": artifact_ref,
+                                **{
+                                    f"log_{index}": "x" * 1000
+                                    for index in range(15)
+                                },
+                                "source_revision": "s" * 5004,
+                            },
+                        },
+                        "deadline": 121,
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        projected_ref = structured["error"]["example"]["response"]["payload"][
+            "artifact_ref"
+        ]
+        self.assertEqual(projected_ref["handle"], artifact_ref["handle"])
+        self.assertEqual(projected_ref["digest"], artifact_ref["digest"])
+        self.assertEqual(projected_ref["target"], artifact_ref["target"])
+        self.assertEqual(projected_ref["run_id"], artifact_ref["run_id"])
+        self.assertEqual(
+            structured["error"]["example"]["response"]["payload"][
+                "source_revision"
+            ],
+            "s" * 5004,
+        )
+        self.assertFalse(structured["projection_compacted"])
+        self.assertTrue(structured["projection_target_exceeded"])
+        self.assertFalse(structured["budget_blocker"])
+
+    def test_execute_preflight_reports_final_projection_target_exceeded(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="execute-preflight-final-size",
+        )
+
+        def projected(handle_size: int) -> dict[str, object]:
+            response = endpoint.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 115,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "execute",
+                        "arguments": {
+                            "kind": "respond",
+                            "run_id": "run-one",
+                            "gate_id": "gate-one",
+                            "gate_version": 1,
+                            "schema_digest": "sha256:" + "a" * 64,
+                            "response": {
+                                "status": "completed",
+                                "summary": "artifact produced",
+                                "payload": {
+                                    "artifact_ref": {
+                                        "schema": (
+                                            "openubmc.target-runtime.v1/"
+                                            "semantic-runtime-v1/artifact-ref"
+                                        ),
+                                        "handle": "/tmp/" + "h" * handle_size,
+                                        "digest": "sha256:" + "b" * 64,
+                                        "kind": "openubmc-hpm",
+                                        "size": 1024,
+                                        "provenance": "openubmc-build",
+                                        "retention_hint": "run-lifetime",
+                                        "version": "1.2.3",
+                                        "target": "192.0.2.10",
+                                        "run_id": "run-one",
+                                    }
+                                },
+                            },
+                            "deadline": 121,
+                        },
+                    },
+                }
+            )
+            return response["result"]["structuredContent"]
+
+        def projected_bytes(value: object) -> int:
+            return len(
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+
+        low = 1
+        high = TURN_MAX_BYTES * 2
+        while low < high:
+            midpoint = (low + high) // 2
+            size = projected_bytes(projected(midpoint))
+            if size > TURN_MAX_BYTES:
+                high = midpoint
+            else:
+                low = midpoint + 1
+
+        structured = projected(low)
+        self.assertGreater(projected_bytes(structured), TURN_MAX_BYTES)
+        self.assertTrue(structured["projection_target_exceeded"])
+        self.assertEqual(
+            structured["projection_target_overage_bytes"],
+            projected_bytes(structured) - TURN_MAX_BYTES,
+        )
+        self.assertFalse(structured["budget_blocker"])
 
         self.assertEqual(self.backend.calls, [])
 
@@ -3095,6 +3484,67 @@ class AgentGatewayTests(unittest.TestCase):
         after = self.service._test.context_runtime.read_case(build_gate["run_id"])
         self.assertEqual(after["revision"], before["revision"])
         self.assertEqual(len(self.backend.calls), call_count)
+
+    def test_live_patch_artifact_preflight_example_covers_required_payload(
+        self,
+    ) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.73",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "live-patch",
+            },
+            task_id="live-patch-artifact-preflight",
+            operation_id="live-patch-artifact-start",
+        )
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="live-patch-artifact-preflight",
+        )
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 306,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "live patch source is ready",
+                            "payload": {
+                                "source_revision": "source-one",
+                                "authored_files": ["src/fix.lua"],
+                                "verification_plan": ["verify on target"],
+                                "remote_path": "/opt/bmc/apps/fix.lua",
+                                "restart_scope": "skynet",
+                            },
+                        },
+                    },
+                },
+            }
+        )
+
+        payload = response["result"]["structuredContent"]["error"]["example"][
+            "response"
+        ]["payload"]
+        self.assertEqual(
+            set(payload),
+            {
+                "source_revision",
+                "authored_files",
+                "verification_plan",
+                "artifact_ref",
+                "remote_path",
+                "restart_scope",
+            },
+        )
 
     def test_public_preflight_error_identifies_field_and_canonical_retry(self) -> None:
         endpoint = JsonRpcMcpEndpoint(

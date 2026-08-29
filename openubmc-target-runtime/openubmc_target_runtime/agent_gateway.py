@@ -32,6 +32,8 @@ from .semantic_runtime import (
     SemanticRuntimePort,
     decode_run_command,
     fingerprint,
+    is_safe_runtime_id,
+    is_sha256_digest,
 )
 from .observation import observation_consistency
 
@@ -122,6 +124,19 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
         }
         if context.version_required:
             artifact_ref["version"] = "<artifact version>"
+        payload: dict[str, object] = {"artifact_ref": artifact_ref}
+        payload_examples: dict[str, object] = {
+            "source_revision": "<built source revision>",
+            "authored_files": [],
+            "verification_plan": [],
+            "remote_path": "<remote path>",
+            "restart_scope": "<restart scope>",
+        }
+        for field in context.required_payload_fields:
+            if field != "artifact_ref":
+                payload[field] = payload_examples.get(
+                    field, f"<Gate-required {field}>"
+                )
         return {
             "kind": "respond",
             "run_id": artifact_ref["run_id"],
@@ -131,10 +146,7 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
             "response": {
                 "status": "completed",
                 "summary": "artifact produced",
-                "payload": {
-                    "source_revision": "<built source revision>",
-                    "artifact_ref": artifact_ref,
-                },
+                "payload": payload,
             },
         }
 
@@ -143,11 +155,18 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
     if detail.reason == PreflightReason.RECONCILE_PRECONDITION:
         return {"kind": "resume", "run_id": run_id}
     if kind == "start":
-        example: dict[str, object] = {
-            "kind": "start",
-            "target": context.target or "<BMC IP>",
-            "intent": context.intent or "diagnosis-only",
-        }
+        example: dict[str, object] = {"kind": "start"}
+        if context.target or not context.targets:
+            example["target"] = context.target or "<BMC IP>"
+        if context.targets:
+            example["targets"] = [dict(item) for item in context.targets]
+        example["intent"] = context.intent or "diagnosis-only"
+        if context.purpose:
+            example["purpose"] = context.purpose
+        if context.delivery_strategy:
+            example["delivery_strategy"] = context.delivery_strategy
+        if context.observation_ref:
+            example["observation_ref"] = dict(context.observation_ref)
         if context.entry_operation:
             example["entry_operation"] = context.entry_operation
             example["entry_arguments"] = dict(context.entry_arguments)
@@ -463,6 +482,86 @@ def _compact_value(
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _project_preflight_binding(field: str, value: object) -> object:
+    if field == "gate_version":
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else 1
+        )
+    if not isinstance(value, str):
+        return value
+    placeholders = {
+        "run_id": "<current Run ID>",
+        "gate_id": "<current Gate ID>",
+        "schema_digest": "<current Gate schema digest>",
+        "submission_id": "<new submission identity>",
+        "incident_id": "<current Incident ID>",
+    }
+    if field in placeholders:
+        if field == "schema_digest":
+            valid = is_sha256_digest(value)
+        else:
+            valid = is_safe_runtime_id(value)
+        return value if valid else placeholders[field]
+    if len(value.encode("utf-8")) <= 128:
+        return value
+    expandable_placeholders = {
+        "command": "<control command>",
+        "kind": "<Action kind>",
+    }
+    return expandable_placeholders.get(field, _bounded_text(value, 128))
+
+
+def _project_preflight_example(
+    example: Mapping[str, object],
+) -> tuple[dict[str, object], bool]:
+    binding_fields = frozenset(
+        {
+            "kind",
+            "run_id",
+            "gate_id",
+            "gate_version",
+            "schema_digest",
+            "submission_id",
+            "incident_id",
+            "command",
+            "deadline",
+        }
+    )
+    projected = dict(example)
+    for field, value in tuple(projected.items()):
+        if field in binding_fields:
+            projected[field] = _project_preflight_binding(field, value)
+        elif field == "target":
+            projected[field] = (
+                value
+                if isinstance(value, str)
+                and len(value.encode("utf-8")) <= 512
+                else "<BMC IP>"
+            )
+        elif field in {
+            "targets",
+            "intent",
+            "purpose",
+            "delivery_strategy",
+            "observation_ref",
+            "entry_operation",
+            "entry_arguments",
+        }:
+            projected[field] = value
+        elif field == "response":
+            projected[field] = dict(_mapping(value))
+        else:
+            projected[field] = _compact_value(
+                value,
+                max_depth=3,
+                max_items=8,
+                max_string=128,
+            )
+    return projected, False
 
 
 def _compact_observation_results(value: object) -> dict[str, object]:
@@ -1065,13 +1164,42 @@ class AgentGateway:
             error = result["error"]
             assert isinstance(error, dict)
             example, next_action = _preflight_guidance(operation, detail)
+            projected_example, example_compacted = _project_preflight_example(
+                example
+            )
             error["field"] = detail.field
-            error["example"] = example
+            error["example"] = projected_example
             if detail.supported:
                 error["supported"] = list(detail.supported)
             if detail.limit is not None:
                 error["limit"] = detail.limit
             result["next_action"] = next_action
+            if example_compacted:
+                result.update(
+                    _projection_telemetry(
+                        compacted=True,
+                        target_exceeded=False,
+                    )
+                )
+            if len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES:
+                if not example_compacted:
+                    result.update(
+                        _projection_telemetry(
+                            compacted=False,
+                            target_exceeded=False,
+                        )
+                    )
+                result["projection_target_exceeded"] = True
+                result["projection_target_overage_bytes"] = 0
+                for _attempt in range(3):
+                    overage = max(
+                        1,
+                        len(_json_bytes(result))
+                        - TURN_PROJECTION_TARGET_BYTES,
+                    )
+                    if result["projection_target_overage_bytes"] == overage:
+                        break
+                    result["projection_target_overage_bytes"] = overage
         return result
 
 
