@@ -36,6 +36,7 @@ Important validation rule: `bmcgo` can return exit code 0 even when the log cont
 
 2. **For each changed component**
    - When component upload or dependency resolution needs remotes, verify Conan auth first. See `references/conan-auth.md`.
+   - Before official UT or compilation, check dependency readiness once and reuse that evidence. Report an unavailable external dependency as `blocked_external`; Do not fabricate or vendor it to force a green result.
    - Increment `mds/service.json` `version` every time before building.
    - Prefer the version helper for dry-run and write:
 
@@ -104,6 +105,7 @@ RUN_DIR=/tmp/openubmc-build PREFIX=product \
 ```
 
    - Verify output package path and package metadata include the new component versions.
+   - Classify the actual build boundary as `compiled`, `compile_failed`, or `dependency_graph_blocked`; dependency-graph failure before compiler execution is not a compile result.
 
 6. **Return artifact identity and route delivery**
    - After the final HPM hash and product version are known, run `scripts/write_artifact_metadata.py --path <hpm> --product-version <version> --provenance openubmc-build` so Runtime can bind the declared version and producer provenance to those exact bytes before Upgrade.
@@ -138,10 +140,26 @@ response:
     component_versions: [<component and Conan package identities>]
     build_commands: [<exact commands executed>]
     build_logs: [<absolute log paths or build evidence IDs>]
+    dependency_readiness:
+      readiness_id: <stable preflight identity>
+      status: ready
+      resolution: available
+      summary: <dependency result>
+      check_commands: [<single preflight command>]
+      evidence_ids: [<dependency evidence ID>]
+      attempt_count: 1
+      reused_by: [build]
+    validation_results:
+      - kind: build
+        status: compiled
+        summary: <compiler result>
+        commands: [<exact build command>]
+        evidence_ids: [<build evidence ID>]
+        dependency_readiness_id: <same readiness identity>
     known_gaps: [<remaining validation gaps>]
 ```
 
-   - Return only terminal Gate responses. Preserve logs and known gaps for failed or cancelled attempts instead of publishing a stale artifact. A running build remains local work until it can return a terminal response or the caller deadline yields control.
+   - `status=completed` requires `validation_results.build.status=compiled`. Return `status=failed` for `compile_failed` or `dependency_graph_blocked`, retaining `dependency_readiness` and the classified Build result; preserve logs and known gaps instead of publishing a stale artifact. A running build remains local work until it can return a terminal response or the caller deadline yields control.
    - `openubmc-upgrade` owns any selected `build-upgrade` next step; do not upload from Build or acquire a target lease.
    - After Upgrade, route acceptance checks to `openubmc-debug` for fresh evidence from the new target epoch.
    - With a bound Run, bare “继续” or “continue” means call `execute(kind=resume)` before rebuilding anything. After returning a terminal `build.artifact` Gate response, use the returned Turn directly; do not issue an extra polling call. Target Runtime owns downstream routing and authorization, so Build must not re-evaluate or reconfirm them.

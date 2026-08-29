@@ -835,6 +835,19 @@ class ResultProjector:
                     value = _text(phase.get(name))
                     if value:
                         fact[name] = value
+                for name in (
+                    "validation_summary",
+                    "hardware_coverage",
+                ):
+                    value = phase.get(name)
+                    if isinstance(value, Mapping):
+                        fact[name] = dict(value)
+                validation_gaps = phase.get("validation_gaps")
+                if isinstance(validation_gaps, list) and validation_gaps:
+                    fact["validation_gaps"] = [
+                        _bounded_text(item, 256)
+                        for item in validation_gaps[:8]
+                    ]
                 facts.append(fact)
         return tuple(facts[-8:])
 
@@ -1111,6 +1124,22 @@ class ResultProjector:
                 document["gaps"] = list(
                     dict.fromkeys((*gaps, *receipt_gaps))
                 )[:16]
+        validation_gaps = [
+            _bounded_text(gap, 256)
+            for fact in document.get("facts", [])
+            if isinstance(fact, Mapping)
+            for gap in (
+                fact.get("validation_gaps", [])
+                if isinstance(fact.get("validation_gaps"), list)
+                else []
+            )
+        ]
+        if validation_gaps:
+            current_gaps = document.get("gaps", [])
+            gaps = list(current_gaps) if isinstance(current_gaps, list) else []
+            document["gaps"] = list(
+                dict.fromkeys((*gaps, *validation_gaps))
+            )[:16]
         return CostGovernor.turn(document)
 
 

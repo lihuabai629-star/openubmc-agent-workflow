@@ -156,6 +156,24 @@ class BuildSkillContractTests(unittest.TestCase):
         for retired in ("phase_record", "workflow.next", "workflow.advance"):
             self.assertNotIn(retired, skill)
 
+    def test_build_contract_classifies_dependency_and_compile_boundaries(self) -> None:
+        skill = (BUILD_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        handoff = (BUILD_ROOT / "references" / "handoff-contract.md").read_text(
+            encoding="utf-8"
+        )
+        for concept in (
+            "check dependency readiness once",
+            "dependency_graph_blocked",
+            "compile_failed",
+            "compiled",
+            "blocked_external",
+            "Do not fabricate or vendor",
+        ):
+            self.assertIn(concept, skill + handoff)
+        self.assertIn("dependency_readiness", handoff)
+        self.assertIn("validation_results", handoff)
+        self.assertIn("counts_as_official_ut=false", handoff)
+
     def test_documented_build_gate_payload_matches_runtime_execute_schema(self) -> None:
         backend = BuildWorkflowBackend()
         service = RuntimeMcpService(backend)
@@ -238,6 +256,28 @@ class BuildSkillContractTests(unittest.TestCase):
                                 "component_versions": ["component/2.0.0"],
                                 "build_commands": ["bmcgo build"],
                                 "build_logs": ["build-log"],
+                                "dependency_readiness": {
+                                    "readiness_id": "build-contract-readiness",
+                                    "status": "ready",
+                                    "resolution": "available",
+                                    "summary": "build dependencies resolved",
+                                    "check_commands": ["conan graph info ."],
+                                    "evidence_ids": ["dependency-log"],
+                                    "attempt_count": 1,
+                                    "reused_by": ["build"],
+                                },
+                                "validation_results": [
+                                    {
+                                        "kind": "build",
+                                        "status": "compiled",
+                                        "summary": "product compilation completed",
+                                        "commands": ["bmcgo build"],
+                                        "evidence_ids": ["build-log"],
+                                        "dependency_readiness_id": (
+                                            "build-contract-readiness"
+                                        ),
+                                    }
+                                ],
                                 "known_gaps": [],
                             },
                         },

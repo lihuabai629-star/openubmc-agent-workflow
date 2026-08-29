@@ -152,6 +152,25 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("Prefer executing changed behavior", SKILL)
         self.assertIn("product or\npackage build", SKILL)
 
+    def test_source_handoff_separates_official_and_supplementary_validation(self) -> None:
+        handoff = (ROOT / "references" / "downstream-handoffs.md").read_text(
+            encoding="utf-8"
+        )
+        for concept in (
+            "dependency_blocked_before_start",
+            "failed_after_start",
+            "dependency_graph_blocked",
+            "compile_failed",
+            "counts_as_official_ut=false",
+            "check once and reuse",
+            "SATA/SAS evidence cannot validate NVMe",
+            "source_changed",
+        ):
+            self.assertIn(concept, handoff)
+        self.assertIn("official UT", SKILL)
+        self.assertIn("supplementary", SKILL)
+        self.assertIn("never promoted", SKILL)
+
     def test_references_do_not_create_second_hop_reference_routing(self) -> None:
         pointer = re.compile(r"references/[a-z0-9-]+\.md")
         for path in (ROOT / "references").glob("*.md"):

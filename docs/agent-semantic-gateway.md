@@ -179,6 +179,29 @@ derives observation time and freshness from the persisted ObservationRef and Dia
 repair missing diagnosis input or advance the workflow. A failed or cancelled diagnosis becomes a
 terminal Run before any development phase.
 
+Development and Build Gate responses classify validation at the boundary actually reached.
+Official UT is `passed`, `failed_after_start`, or `dependency_blocked_before_start`; build is
+`compiled`, `compile_failed`, or `dependency_graph_blocked`. Supplementary pure-logic or stub
+checks remain separately labeled and never satisfy official UT acceptance. A shared dependency
+readiness result is checked once and reused; a blocked external package cannot be fabricated or
+vendored into success. Hardware Coverage records required protocols, observed devices, Evidence
+identities, and gaps. Submitted identities must belong to the current Runtime DiagnosticReceipt,
+and each declared device/protocol pair must be present in the referenced Evidence content. Unknown
+or unrelated target evidence is rejected, so SATA/SAS-only observations cannot validate an NVMe
+repair. If a Developer response omits validation fields, the Runtime records official UT and build
+as `not_run` and hardware coverage as `not_reported`; those become visible gaps rather than an
+implicit success.
+
+A `source-only` Run can reach a completed in-scope Outcome while official validation or hardware
+coverage remains blocked. Its Turn and Closeout retain those gaps and its claim level remains
+`source_changed`; no package, firmware, upgrade, or hardware-repair claim is formed. A completed
+Build Gate requires a verified ArtifactRef and a `compiled` classification before package or
+firmware claims can be projected. `compile_failed` and `dependency_graph_blocked` cannot be sent as
+a completed Build response and never advance to Upgrade. A failed Build response must retain one
+of those classifications and its dependency readiness. Closeout merges validation dimensions and
+keeps readiness keyed by official UT and build, so a later Build result cannot erase or relabel an
+earlier official-UT or hardware-coverage result.
+
 A Turn targets 8 KiB and a Gate schema targets 4 KiB; neither target can reject or replace a Gate.
 `gate_projection_target_exceeded` reports a Gate schema above its display target. If a diagnostic
 result exceeds the Turn target, result previews are compacted while source coverage counts, freshness, truncation,

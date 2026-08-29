@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import Enum
+import json
 import time
 from typing import Protocol
 
@@ -78,6 +79,17 @@ from .workflow import (
     DEFAULT_WORKFLOW_DEFINITIONS,
     WorkflowDefinitions,
 )
+from .validation_readiness import (
+    BUILD_STATUSES,
+    DEPENDENCY_RESOLUTIONS,
+    DEPENDENCY_STATUSES,
+    HARDWARE_COVERAGE_STATUSES,
+    OFFICIAL_UT_STATUSES,
+    SUPPLEMENTARY_STATUSES,
+    ValidationReadinessError,
+    assess_validation_payload,
+    normalize_hardware_protocol,
+)
 
 
 WORKFLOW_INTERNAL_MAX_STEPS = 64
@@ -116,6 +128,61 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 def _text(value: object) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _evidence_contains_protocol(value: object, protocol: str) -> bool:
+    if isinstance(value, Mapping):
+        for name, item in value.items():
+            if _text(name).lower() in {"protocol", "interface"} and (
+                normalize_hardware_protocol(item) == protocol
+            ):
+                return True
+            if _evidence_contains_protocol(item, protocol):
+                return True
+        return False
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return any(_evidence_contains_protocol(item, protocol) for item in value)
+    return False
+
+
+def _evidence_supports_device(
+    value: object,
+    device_id: str,
+    protocol: str,
+) -> bool:
+    if isinstance(value, Mapping):
+        normalized_protocol = normalize_hardware_protocol(protocol)
+        identifiers = {
+            _text(value.get(name))
+            for name in ("device_id", "id", "name", "object_id")
+            if _text(value.get(name))
+        }
+        protocols = {
+            normalize_hardware_protocol(value.get(name))
+            for name in ("protocol", "Protocol", "interface", "Interface")
+            if _text(value.get(name))
+        }
+        if device_id in identifiers and normalized_protocol in protocols:
+            return True
+        for name, item in value.items():
+            if _text(name) == device_id and _evidence_contains_protocol(
+                item,
+                normalized_protocol,
+            ):
+                return True
+            if _evidence_supports_device(item, device_id, normalized_protocol):
+                return True
+        return False
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return any(
+            _evidence_supports_device(item, device_id, protocol)
+            for item in value
+        )
+    return False
 
 
 def _projection(snapshot: Mapping[str, object]) -> Mapping[str, object]:
@@ -172,6 +239,120 @@ def _artifact_ref_schema(kind: str, *, require_version: bool) -> dict[str, objec
     }
 
 
+def _validation_result_schema() -> dict[str, object]:
+    return {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "required": ["kind", "status", "summary", "commands", "evidence_ids"],
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["official_ut", "build", "supplementary"],
+                },
+                "status": {
+                    "type": "string",
+                    "enum": sorted(
+                        OFFICIAL_UT_STATUSES
+                        | BUILD_STATUSES
+                        | SUPPLEMENTARY_STATUSES
+                    ),
+                },
+                "summary": _string_schema(),
+                "commands": _string_array_schema(),
+                "evidence_ids": _string_array_schema(),
+                "dependency_readiness_id": _string_schema(),
+            },
+            "additionalProperties": False,
+        },
+    }
+
+
+def _dependency_readiness_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "required": [
+            "readiness_id",
+            "status",
+            "resolution",
+            "summary",
+            "check_commands",
+            "evidence_ids",
+            "attempt_count",
+            "reused_by",
+        ],
+        "properties": {
+            "readiness_id": _string_schema(),
+            "status": {"type": "string", "enum": sorted(DEPENDENCY_STATUSES)},
+            "resolution": {
+                "type": "string",
+                "enum": sorted(DEPENDENCY_RESOLUTIONS),
+            },
+            "summary": _string_schema(),
+            "check_commands": _string_array_schema(),
+            "evidence_ids": _string_array_schema(),
+            "attempt_count": {"type": "integer", "minimum": 1, "maximum": 1},
+            "reused_by": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["official_ut", "build"],
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+def _hardware_coverage_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "required": [
+            "status",
+            "required_protocols",
+            "devices",
+            "evidence_ids",
+            "gaps",
+        ],
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": sorted(HARDWARE_COVERAGE_STATUSES - {"not_reported"}),
+            },
+            "required_protocols": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["NVMe", "SATA", "SAS"]},
+            },
+            "devices": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["device_id", "protocol"],
+                    "properties": {
+                        "device_id": _string_schema(),
+                        "protocol": {
+                            "type": "string",
+                            "enum": ["NVMe", "SATA", "SAS"],
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "evidence_ids": _string_array_schema(),
+            "gaps": _string_array_schema(),
+        },
+        "additionalProperties": False,
+    }
+
+
+def _validation_payload_properties() -> dict[str, object]:
+    return {
+        "dependency_readiness": _dependency_readiness_schema(),
+        "validation_results": _validation_result_schema(),
+        "hardware_coverage": _hardware_coverage_schema(),
+    }
+
+
 def gate_input_schema(
     phase_type: str,
     *,
@@ -196,7 +377,7 @@ def gate_input_schema(
             "authored_files": _string_array_schema(),
             "verification_plan": _string_array_schema(),
             "design": {"type": "object", "additionalProperties": True},
-            "validation_results": {"type": "array"},
+            **_validation_payload_properties(),
             "source_delivery": {
                 "type": "string",
                 "enum": ["local_only", "committed", "pushed", "pull_request"],
@@ -238,6 +419,7 @@ def gate_input_schema(
             "build_commands": _string_array_schema(),
             "build_logs": _string_array_schema(),
             "known_gaps": _string_array_schema(),
+            **_validation_payload_properties(),
         }
         if artifact_schema is None:
             raise GateConflict(
@@ -321,6 +503,14 @@ class RunDriver(Protocol):
         run_id: str,
         *,
         terminal_status: str,
+    ) -> Mapping[str, object]: ...
+
+    def read_evidence(
+        self,
+        run_id: str,
+        evidence_id: str,
+        *,
+        target_id: str,
     ) -> Mapping[str, object]: ...
 
     def prepare_step(
@@ -925,6 +1115,13 @@ class RunEngine:
                     path=path,
                     rule="minimum",
                 )
+            maximum = schema.get("maximum")
+            if isinstance(maximum, int) and value > maximum:
+                raise GateSchemaViolation(
+                    f"{path} exceeds its maximum",
+                    path=path,
+                    rule="maximum",
+                )
         if isinstance(value, Mapping):
             properties = _mapping(schema.get("properties"))
             required = schema.get("required", [])
@@ -1164,7 +1361,113 @@ class RunEngine:
             payload["artifact_sha256"] = artifact_ref.digest
             if artifact_ref.version:
                 payload["product_version"] = artifact_ref.version
+        if gate.name in {"developer.change", "build.artifact"}:
+            assessment_payload = dict(payload)
+            diagnostic_receipt = latest_diagnostic_receipt(projection)
+            allowed_hardware_evidence_ids = (
+                tuple(item.evidence_id for item in diagnostic_receipt.evidence)
+                if diagnostic_receipt is not None
+                else ()
+            )
+            try:
+                assessment = assess_validation_payload(
+                    assessment_payload,
+                    allowed_hardware_evidence_ids=(
+                        allowed_hardware_evidence_ids
+                    ),
+                )
+            except ValidationReadinessError as exc:
+                raise GateConflict(str(exc)) from exc
+            self._validate_hardware_coverage_evidence(
+                projection=projection,
+                diagnostic_receipt=diagnostic_receipt,
+                hardware_coverage=assessment.hardware_coverage,
+            )
+            assessment_fields = assessment.payload_fields(
+                phase_type=gate.name,
+                phase_status=status,
+                has_artifact=isinstance(raw_artifact_ref, Mapping),
+            )
+            build_summary = _mapping(
+                _mapping(assessment_fields.get("validation_summary")).get("build")
+            )
+            if (
+                gate.name == "build.artifact"
+                and status == "completed"
+                and build_summary.get("acceptance") != "passed"
+            ):
+                raise GateConflict(
+                    "completed build.artifact requires build status compiled; "
+                    "return failed for compile or dependency-graph failure"
+                )
+            if gate.name == "build.artifact" and status == "failed":
+                raw_results = assessment_fields.get("validation_results", [])
+                build_results = [
+                    item
+                    for item in raw_results
+                    if isinstance(item, Mapping) and item.get("kind") == "build"
+                ] if isinstance(raw_results, list) else []
+                if (
+                    not assessment.dependency_readiness
+                    or len(build_results) != 1
+                    or build_results[0].get("status")
+                    not in {"compile_failed", "dependency_graph_blocked"}
+                ):
+                    raise GateConflict(
+                        "failed build.artifact requires dependency_readiness and "
+                        "validation_results classified as compile_failed or "
+                        "dependency_graph_blocked"
+                    )
+            payload.update(assessment_fields)
         return {"status": status, "summary": summary, "payload": payload}
+
+    def _validate_hardware_coverage_evidence(
+        self,
+        *,
+        projection: Mapping[str, object],
+        diagnostic_receipt: object,
+        hardware_coverage: Mapping[str, object],
+    ) -> None:
+        devices = hardware_coverage.get("devices", [])
+        if not isinstance(devices, Sequence) or isinstance(
+            devices, (str, bytes, bytearray)
+        ) or not devices:
+            return
+        evidence_ids = hardware_coverage.get("evidence_ids", [])
+        references = {
+            item.evidence_id: item
+            for item in getattr(diagnostic_receipt, "evidence", ())
+        }
+        bodies: list[object] = []
+        for evidence_id in evidence_ids if isinstance(evidence_ids, list) else []:
+            reference = references.get(str(evidence_id))
+            if reference is None:
+                continue
+            try:
+                evidence = self.driver.read_evidence(
+                    _text(projection.get("case_id")),
+                    reference.evidence_id,
+                    target_id=reference.target_id,
+                )
+                bodies.append(json.loads(_text(evidence.get("body"))))
+            except Exception as exc:
+                raise GateConflict(
+                    "hardware coverage Evidence could not be evaluated: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+        for device in devices:
+            if not isinstance(device, Mapping):
+                continue
+            device_id = _text(device.get("device_id"))
+            protocol = _text(device.get("protocol"))
+            if not any(
+                _evidence_supports_device(body, device_id, protocol)
+                for body in bodies
+            ):
+                raise GateConflict(
+                    "hardware coverage Evidence does not support device "
+                    f"{device_id} protocol {protocol}"
+                )
 
     def _phase_fact(
         self,

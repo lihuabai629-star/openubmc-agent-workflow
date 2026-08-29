@@ -511,6 +511,8 @@ class CaseCloseout:
     identity_status: str
     freshness_status: str
     source_delivery: str
+    validation_summary: Mapping[str, object]
+    hardware_coverage: Mapping[str, object]
     summary: str
     acceptance_plan: AcceptancePlan
     targets: tuple[Mapping[str, object], ...]
@@ -533,6 +535,8 @@ class CaseCloseout:
             "identity_status": self.identity_status,
             "freshness_status": self.freshness_status,
             "source_delivery": self.source_delivery,
+            "validation_summary": dict(self.validation_summary),
+            "hardware_coverage": dict(self.hardware_coverage),
             "summary": self.summary,
             "acceptance_plan": self.acceptance_plan.to_public_dict(),
             "targets": [dict(item) for item in self.targets],
@@ -974,6 +978,10 @@ def _phase_receipt(
             "verification_plan",
             "design",
             "validation_results",
+            "dependency_readiness",
+            "validation_summary",
+            "validation_gaps",
+            "hardware_coverage",
             "source_delivery",
             "artifact_ref",
             "artifact_path",
@@ -1356,6 +1364,82 @@ def _source_delivery(receipts: Sequence[StageReceipt]) -> str:
     return "local_only"
 
 
+def _merged_validation_evidence(
+    receipts: Sequence[StageReceipt],
+) -> tuple[dict[str, object], dict[str, object], list[str]]:
+    summary: dict[str, object] = {}
+    hardware: dict[str, object] = {}
+    merged_claims: dict[str, bool] = {}
+    readiness_by_kind: dict[str, object] = {}
+    for receipt in receipts:
+        candidate_summary = receipt.facts.get("validation_summary")
+        if isinstance(candidate_summary, Mapping):
+            readiness = candidate_summary.get("dependency_readiness")
+            if isinstance(readiness, Mapping) and readiness:
+                consumers = readiness.get("reused_by", [])
+                if isinstance(consumers, Sequence) and not isinstance(
+                    consumers, (str, bytes, bytearray)
+                ):
+                    for consumer in consumers:
+                        name = str(consumer).strip()
+                        if name in {"official_ut", "build"}:
+                            readiness_by_kind[name] = dict(readiness)
+            for name in ("official_ut", "build"):
+                candidate = candidate_summary.get(name)
+                if not isinstance(candidate, Mapping):
+                    continue
+                status = str(candidate.get("status", "")).strip()
+                if status and status != "not_run":
+                    summary[name] = dict(candidate)
+                elif name not in summary:
+                    summary[name] = dict(candidate)
+            supplementary = candidate_summary.get("supplementary")
+            if isinstance(supplementary, Mapping):
+                status = str(supplementary.get("status", "")).strip()
+                count = supplementary.get("count", 0)
+                if status != "not_run" or count or "supplementary" not in summary:
+                    summary["supplementary"] = dict(supplementary)
+            claims = candidate_summary.get("claims")
+            if isinstance(claims, Mapping):
+                for name, value in claims.items():
+                    merged_claims[str(name)] = (
+                        merged_claims.get(str(name), False) or value is True
+                    )
+        candidate_hardware = receipt.facts.get("hardware_coverage")
+        if not isinstance(candidate_hardware, Mapping):
+            continue
+        candidate_status = str(candidate_hardware.get("status", "")).strip()
+        current_status = str(hardware.get("status", "")).strip()
+        if candidate_status in {"covered", "blocked"} or current_status not in {
+            "covered",
+            "blocked",
+        }:
+            hardware = dict(candidate_hardware)
+    if merged_claims:
+        summary["claims"] = merged_claims
+    if readiness_by_kind:
+        summary["dependency_readiness"] = readiness_by_kind
+
+    gaps: list[str] = []
+    official = _mapping(summary.get("official_ut"))
+    official_status = str(official.get("status", "")).strip()
+    if official_status and official_status != "passed":
+        gaps.append(f"official_ut={official_status}")
+    build = _mapping(summary.get("build"))
+    build_status = str(build.get("status", "")).strip()
+    if build_status and build_status != "compiled":
+        gaps.append(f"build={build_status}")
+    supplementary = _mapping(summary.get("supplementary"))
+    if supplementary.get("count") and official_status != "passed":
+        gaps.append("supplementary tests do not satisfy official UT acceptance")
+    raw_hardware_gaps = hardware.get("gaps", [])
+    if isinstance(raw_hardware_gaps, Sequence) and not isinstance(
+        raw_hardware_gaps, (str, bytes, bytearray)
+    ):
+        gaps.extend(str(item) for item in raw_hardware_gaps if str(item).strip())
+    return summary, hardware, list(dict.fromkeys(gaps))
+
+
 def _identity_status(
     plan: AcceptancePlan,
     receipts: Sequence[StageReceipt],
@@ -1717,6 +1801,11 @@ def aggregate_case_closeout(
     receipts.sort(key=lambda item: (_STAGE_ORDER.get(item.stage, 999), item.receipt_id))
     stage_receipts = _receipts_by_stage(receipts)
     by_stage = _representative_receipts(receipts)
+    (
+        validation_summary,
+        hardware_coverage,
+        validation_gaps,
+    ) = _merged_validation_evidence(receipts)
     checks: list[CloseoutCheck] = []
     reasons: list[str] = []
     for requirement in plan.requirements:
@@ -1828,6 +1917,7 @@ def aggregate_case_closeout(
     freshness, freshness_reasons = _freshness_status(plan, receipts)
     reasons.extend(identity_reasons)
     reasons.extend(freshness_reasons)
+    reasons.extend(_safe_text(item, limit=2048) for item in validation_gaps)
     policy: TaskAuthorizationPolicy | None = None
     raw_policy = projection.get("authorization")
     try:
@@ -1960,6 +2050,8 @@ def aggregate_case_closeout(
         identity_status=identity,
         freshness_status=freshness,
         source_delivery=source_delivery,
+        validation_summary=validation_summary,
+        hardware_coverage=hardware_coverage,
         summary=summary,
         acceptance_plan=plan,
         targets=targets,
