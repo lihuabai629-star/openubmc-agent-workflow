@@ -47,4 +47,3 @@ A fresh product promotion additionally needs an independently authorized target,
 package, a new Runtime Run, official validation and build evidence, a digest-bound HPM, successful
 upgrade, and fresh protocol-specific target acceptance. Repository CI deliberately requires no
 BMC, credentials, private network, or upgrade authority.
-

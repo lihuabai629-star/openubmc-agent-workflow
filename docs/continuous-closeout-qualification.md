@@ -33,4 +33,3 @@ size remains a soft display target and never becomes a 4 KiB or 8 KiB control-fl
 `maintenance_candidate_ready` concerns repository correctness and qualification coverage.
 `fresh_product_promotable` remains false until fresh Runtime-bound product evidence is supplied.
 These are separate decisions.
-
