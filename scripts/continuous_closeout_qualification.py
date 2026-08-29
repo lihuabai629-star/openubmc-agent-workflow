@@ -40,6 +40,7 @@ PRODUCT_CONTRACT_TESTS = (
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_artifact_identity_mismatch_is_rejected",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_hash_valid_self_attested_empty_evidence",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_upgrade_proof_for_another_artifact",
+    "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_fresh_closeout_rejects_stale_or_misordered_target_evidence",
     "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_managed_immutable_identity_validation_error_is_top_level_unhealthy",
     "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_legacy_managed_release_without_lock_is_top_level_unhealthy",
 )

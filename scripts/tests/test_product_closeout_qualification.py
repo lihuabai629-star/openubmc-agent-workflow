@@ -71,6 +71,7 @@ def complete_manifest(
             "dimension": "runtime",
             "status": "completed",
             "terminal_outcome": "completed",
+            "completed_at": "2026-08-29T12:00:00Z",
         },
     )
     diagnosis_ref, diagnosis_proof = structured_proof(
@@ -115,6 +116,7 @@ def complete_manifest(
             "status": "completed",
             "artifact": artifact_identity,
             "installed_version": "1.0.0",
+            "completed_at": "2026-08-29T11:00:00Z",
         },
     )
     freshness_ref, _ = structured_proof(
@@ -172,7 +174,11 @@ def complete_manifest(
             "version": "1.0.0",
         },
         "upgrade": {"status": "completed", "evidence": [upgrade_ref]},
-        "freshness": {"status": "fresh", "evidence": [freshness_ref]},
+        "freshness": {
+            "status": "fresh",
+            "max_age_seconds": 3600,
+            "evidence": [freshness_ref],
+        },
         "hardware": {
             "status": "covered",
             "required_protocols": ["NVMe"],
@@ -259,6 +265,28 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertFalse(report["promotable"])
         self.assertTrue(
             any("upgrade" in item and "artifact identity" in item for item in report["violations"])
+        )
+
+    def test_fresh_closeout_rejects_stale_or_misordered_target_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            for dimension in ("freshness", "hardware"):
+                evidence_ref = manifest[dimension]["evidence"][0]
+                evidence_path = Path(evidence_ref["path"])
+                proof = json.loads(evidence_path.read_text(encoding="utf-8"))
+                proof["observed_at"] = "2000-01-01T00:00:00Z"
+                evidence_path.write_text(
+                    json.dumps(proof, sort_keys=True), encoding="utf-8"
+                )
+                evidence_ref["sha256"] = sha256(evidence_path)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("freshness evidence predates upgrade" in item for item in report["violations"])
         )
 
     def test_source_commit_mismatch_is_rejected(self) -> None:

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 import re
 import subprocess
@@ -60,6 +61,34 @@ def _nested_value(document: object, path: str) -> object:
             return None
         current = current[segment]
     return current
+
+
+def _timestamp(value: object) -> datetime | None:
+    text = _text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _proof_documents(value: object) -> list[Mapping[str, object]]:
+    documents: list[Mapping[str, object]] = []
+    for item in _sequence(_mapping(value).get("evidence")):
+        if not isinstance(item, Mapping):
+            continue
+        path = Path(_text(item.get("path"))).expanduser().absolute()
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if isinstance(document, Mapping) and document.get("schema") == PROOF_SCHEMA:
+            documents.append(document)
+    return documents
 
 
 def _verify_claims(
@@ -203,12 +232,76 @@ def _verify_structured_proof(
         ):
             violations.append(f"{label}: build proof requires compiled_units>0")
             accepted = False
-    elif dimension in {"freshness", "hardware"} and not _text(
-        proof.get("observed_at")
-    ):
-        violations.append(f"{label}: {dimension} proof requires observed_at")
-        accepted = False
+    elif dimension in {"freshness", "hardware"}:
+        if _timestamp(proof.get("observed_at")) is None:
+            violations.append(
+                f"{label}: {dimension} proof requires a timezone-aware observed_at"
+            )
+            accepted = False
+    elif dimension in {"runtime", "upgrade"}:
+        if _timestamp(proof.get("completed_at")) is None:
+            violations.append(
+                f"{label}: {dimension} proof requires a timezone-aware completed_at"
+            )
+            accepted = False
     return accepted
+
+
+def _verify_fresh_timeline(
+    manifest: Mapping[str, object],
+    *,
+    dimensions: Mapping[str, object],
+    violations: list[str],
+) -> None:
+    freshness = _mapping(manifest.get("freshness"))
+    max_age = freshness.get("max_age_seconds")
+    if (
+        isinstance(max_age, bool)
+        or not isinstance(max_age, int)
+        or max_age <= 0
+        or max_age > 86_400
+    ):
+        violations.append(
+            "freshness: max_age_seconds must be an integer from 1 through 86400"
+        )
+        return
+    proofs = {
+        "runtime": _proof_documents(manifest.get("runtime")),
+        "upgrade": _proof_documents(manifest.get("upgrade")),
+        "freshness": _proof_documents(manifest.get("freshness")),
+        "hardware": _proof_documents(manifest.get("hardware")),
+    }
+    if not all(proofs.values()):
+        return
+    runtime_completed = _timestamp(proofs["runtime"][0].get("completed_at"))
+    upgrade_completed = _timestamp(proofs["upgrade"][0].get("completed_at"))
+    freshness_observed = _timestamp(proofs["freshness"][0].get("observed_at"))
+    hardware_observed = _timestamp(proofs["hardware"][0].get("observed_at"))
+    if None in {
+        runtime_completed,
+        upgrade_completed,
+        freshness_observed,
+        hardware_observed,
+    }:
+        return
+    assert runtime_completed is not None
+    assert upgrade_completed is not None
+    assert freshness_observed is not None
+    assert hardware_observed is not None
+    if freshness_observed < upgrade_completed:
+        violations.append("freshness evidence predates upgrade completion")
+    elif (freshness_observed - upgrade_completed).total_seconds() > max_age:
+        violations.append("freshness evidence exceeds max_age_seconds after upgrade")
+    if hardware_observed < upgrade_completed:
+        violations.append("hardware evidence predates upgrade completion")
+    if runtime_completed < freshness_observed or runtime_completed < hardware_observed:
+        violations.append("Runtime terminal Outcome predates target acceptance evidence")
+    freshness_dimension = _mapping(dimensions.get("freshness"))
+    if isinstance(freshness_dimension, dict):
+        freshness_dimension["max_age_seconds"] = max_age
+        freshness_dimension["observed_at"] = freshness_observed.isoformat().replace(
+            "+00:00", "Z"
+        )
 
 
 def _file_identity(
@@ -665,6 +758,12 @@ def qualify(document: Mapping[str, object]) -> dict[str, object]:
         run_id=run_id,
         structured_proof_required=mode == "fresh-runtime",
     )
+    if mode == "fresh-runtime":
+        _verify_fresh_timeline(
+            manifest,
+            dimensions=dimensions,
+            violations=violations,
+        )
 
     product_dimensions = tuple(name for name in dimensions if name != "runtime")
     product_qualified = not violations and all(

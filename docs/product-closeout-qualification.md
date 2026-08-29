@@ -15,7 +15,9 @@ UT, compiled build, artifact identity, upgrade, freshness, and hardware coverage
 file is verified by SHA-256 and by structured proof fields or explicit content claims; every source
 repository must be clean at the exact recorded commit; the firmware artifact must match its path,
 digest, size, and version. Hardware coverage is exact, so SATA or SAS evidence cannot satisfy an
-NVMe case.
+NVMe case. Fresh evidence also binds upgrade completion, target observation, hardware acceptance,
+and terminal Runtime Outcome into one ordered, timezone-aware timeline with a declared maximum
+post-upgrade evidence age.
 
 Two claim levels are intentionally different:
 
