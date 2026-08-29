@@ -357,11 +357,13 @@ def qualify_dual_projection(
     gate_structured_receipt = (
         gate_receipt if isinstance(gate_receipt, Mapping) else {}
     )
-    terminal_receipt = terminal_turn.get("diagnostic_receipt", {})
-    terminal_structured_receipt = (
-        terminal_receipt if isinstance(terminal_receipt, Mapping) else {}
+    terminal_receipt_ref = terminal_turn.get("diagnostic_receipt_ref", {})
+    terminal_structured_receipt_ref = (
+        terminal_receipt_ref
+        if isinstance(terminal_receipt_ref, Mapping)
+        else {}
     )
-    raw_results = terminal_structured_receipt.get("results", [])
+    raw_results = gate_structured_receipt.get("results", [])
     receipt_results = raw_results if isinstance(raw_results, list) else []
     result_kinds = sorted(
         str(item.get("kind", ""))
@@ -418,19 +420,19 @@ def qualify_dual_projection(
                 isinstance(gate_structured_receipt.get("coverage"), Mapping),
                 gate_structured_receipt.get("coverage", {}).get("complete")
                 is True,
-                terminal_structured_receipt.get("status") == "complete",
-                terminal_structured_receipt.get("content_complete") is True,
+                terminal_structured_receipt_ref.get("status") == "complete",
+                terminal_structured_receipt_ref.get("content_complete") is True,
                 isinstance(
-                    terminal_structured_receipt.get("coverage"), Mapping
+                    terminal_structured_receipt_ref.get("coverage"), Mapping
                 ),
-                terminal_structured_receipt.get("coverage", {}).get("complete")
+                terminal_structured_receipt_ref.get("coverage", {}).get("complete")
                 is True,
             )
         ),
         "agent_acceptance_preserved": all(
             (
                 gate_structured_receipt.get("agent_acceptance") == "complete",
-                terminal_structured_receipt.get("agent_acceptance")
+                terminal_structured_receipt_ref.get("agent_acceptance")
                 == "complete",
                 "agent_acceptance=complete" in gate_text,
                 "agent_acceptance=complete" in terminal_text,
@@ -443,7 +445,7 @@ def qualify_dual_projection(
         for name, measurement in measurements.items()
         if measurement["standard_text_bytes"] > text_target_bytes
     ]
-    evidence = terminal_structured_receipt.get("evidence", [])
+    evidence = gate_structured_receipt.get("evidence", [])
     preview_bytes = {
         str(item.get("result_id", "")): len(preview.encode("utf-8"))
         for item in receipt_results
@@ -456,12 +458,58 @@ def qualify_dual_projection(
     if typed_receipt is None:
         raise RuntimeError("dual-projection fixture lacks a typed receipt")
     expected_receipt = typed_receipt.to_public_dict()
+    expected_receipt_digest = "sha256:" + fingerprint(expected_receipt)
     expected_receipt["agent_acceptance"] = "complete"
     gate_structured_semantics_complete = (
         gate_structured_receipt == expected_receipt
     )
-    terminal_structured_semantics_complete = (
-        terminal_structured_receipt == expected_receipt
+    expected_evidence_ids = [
+        str(item.get("evidence_id", ""))
+        for item in expected_receipt.get("evidence", [])
+        if isinstance(item, Mapping) and item.get("evidence_id")
+    ]
+    expected_result_ids = [
+        str(item.get("result_id", ""))
+        for item in expected_receipt.get("results", [])
+        if isinstance(item, Mapping) and item.get("result_id")
+    ]
+    terminal_structured_semantics_complete = all(
+        (
+            terminal_structured_receipt_ref.get("receipt_id")
+            == expected_receipt.get("receipt_id"),
+            terminal_structured_receipt_ref.get("operation")
+            == expected_receipt.get("operation"),
+            terminal_structured_receipt_ref.get("status")
+            == expected_receipt.get("status"),
+            terminal_structured_receipt_ref.get("agent_acceptance") == "complete",
+            terminal_structured_receipt_ref.get("digest")
+            == expected_receipt_digest,
+            terminal_structured_receipt_ref.get("coverage")
+            == expected_receipt.get("coverage"),
+            terminal_structured_receipt_ref.get("freshness")
+            == expected_receipt.get("freshness"),
+            terminal_structured_receipt_ref.get("content_complete") is True,
+            terminal_structured_receipt_ref.get("truncated") is False,
+            terminal_structured_receipt_ref.get("gaps") == [],
+            terminal_structured_receipt_ref.get("evidence_ids")
+            == expected_evidence_ids,
+            terminal_structured_receipt_ref.get("result_ids")
+            == expected_result_ids,
+            terminal_structured_receipt_ref.get("reconstruction")
+            == {
+                "authority": "runtime-core",
+                "run_id": "run-dual-projection-qualification",
+                "field": "diagnostic_receipt",
+                "digest": expected_receipt_digest,
+            },
+        )
+    )
+    projection_metrics = terminal_turn.get("projection_metrics", {})
+    repeated_projection = (
+        projection_metrics.get("diagnostic_receipt", {})
+        if isinstance(projection_metrics, Mapping)
+        and isinstance(projection_metrics.get("diagnostic_receipt"), Mapping)
+        else {}
     )
     representative_receipt = {
         "result_count": len(receipt_results),
@@ -487,10 +535,11 @@ def qualify_dual_projection(
         "preview_sentinel_count": len(preview_sentinels),
         "preview_values_duplicated": _preview_value_duplicated(
             combined_text,
-            terminal_structured_receipt,
+            gate_structured_receipt,
         ),
         "minimum_preview_bytes": DUAL_PROJECTION_MIN_PREVIEW_BYTES,
         "preview_bytes": preview_bytes,
+        "repeated_projection": dict(repeated_projection),
     }
     correctness["passed"] = bool(
         correctness["passed"]

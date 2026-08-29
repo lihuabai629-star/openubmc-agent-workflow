@@ -151,33 +151,59 @@ class RuntimeStabilityTests(unittest.TestCase):
         stability.Gate.from_public_dict(
             report["canonical_results"]["gate"]["structuredContent"]["gate"]
         )
+        gate_receipt = report["canonical_results"]["gate"]["structuredContent"][
+            "diagnostic_receipt"
+        ]
+        self.assertEqual(
+            gate_receipt["schema"],
+            "openubmc.target-runtime.v1/diagnostic-receipt-v1",
+        )
+        self.assertEqual(gate_receipt["results"], expected_receipt["results"])
+        self.assertFalse(gate_receipt.get("content_compacted", False))
+        self.assertTrue(
+            all(
+                not item.get("projection_truncated", False)
+                for item in gate_receipt["results"]
+            )
+        )
+        preview_bytes = report["representative_receipt"]["preview_bytes"]
+        self.assertEqual(
+            set(preview_bytes),
+            {item["result_id"] for item in gate_receipt["results"]},
+        )
+        self.assertTrue(
+            all(
+                preview_bytes[item["result_id"]]
+                == len(item["value"]["preview"].encode("utf-8"))
+                for item in gate_receipt["results"]
+            )
+        )
+        terminal_turn = report["canonical_results"]["terminal"][
+            "structuredContent"
+        ]
+        self.assertNotIn("diagnostic_receipt", terminal_turn)
+        reference = terminal_turn["diagnostic_receipt_ref"]
+        self.assertEqual(
+            reference["schema"],
+            "openubmc.target-runtime.v1/agent-gateway-v1/diagnostic-receipt-ref-v1",
+        )
+        self.assertEqual(reference["receipt_id"], expected_receipt["receipt_id"])
+        self.assertEqual(
+            reference["result_ids"],
+            [item["result_id"] for item in expected_receipt["results"]],
+        )
+        self.assertEqual(
+            reference["evidence_ids"],
+            [item["evidence_id"] for item in expected_receipt["evidence"]],
+        )
+        repeated = report["representative_receipt"]["repeated_projection"]
+        self.assertTrue(repeated["repeated_reference"])
+        self.assertGreater(repeated["saved_bytes"], 0)
+        self.assertEqual(
+            repeated["saved_bytes"],
+            repeated["full_bytes"] - repeated["reference_bytes"],
+        )
         for turn_name in ("gate", "terminal"):
-            receipt = report["canonical_results"][turn_name]["structuredContent"][
-                "diagnostic_receipt"
-            ]
-            self.assertEqual(
-                receipt["schema"],
-                "openubmc.target-runtime.v1/diagnostic-receipt-v1",
-            )
-            self.assertEqual(receipt["results"], expected_receipt["results"])
-            self.assertFalse(receipt.get("content_compacted", False))
-            self.assertTrue(
-                all(
-                    not item.get("projection_truncated", False)
-                    for item in receipt["results"]
-                )
-            )
-            preview_bytes = report["representative_receipt"]["preview_bytes"]
-            self.assertEqual(set(preview_bytes), {
-                item["result_id"] for item in receipt["results"]
-            })
-            self.assertTrue(
-                all(
-                    preview_bytes[item["result_id"]]
-                    == len(item["value"]["preview"].encode("utf-8"))
-                    for item in receipt["results"]
-                )
-            )
             measurements = report["measurements"][turn_name]
             self.assertGreater(measurements["standard_text_bytes"], 0)
             self.assertGreater(measurements["structured_content_bytes"], 0)

@@ -63,6 +63,9 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Release identity verification** | Verification that a managed immutable source matches its recorded commit, release lock, Runtime, Skills, and source-tree identity. It proves source identity, not by itself that a tag was published. |
 | **Release trust mode** | The installer classification of a source as linked development, unverified managed source, or verified immutable source. |
 | **Evaluation readiness** | An Operator / CI Plane projection requiring installation consistency, Operational readiness, and Release identity verification before formal qualification evidence is accepted. |
+| **Product Closeout Qualification** | An Operator / CI Plane verification of Runtime continuity, diagnosis, source, official UT, build, artifact, upgrade, freshness, and exact hardware coverage. It does not write Run state. |
+| **Historical product validation** | A verified reconstruction of original product evidence that predates the current Runtime identity. It remains non-promotable as a fresh Runtime closeout. |
+| **DiagnosticReceiptRef** | A digest-bound terminal projection for an unchanged complete DiagnosticReceipt already shown within the same task. The durable full receipt remains Runtime-owned and reconstructable. |
 
 ## Ownership rules
 
@@ -81,6 +84,7 @@ historical event upcasters are read paths and cannot commit new Run transitions.
 | Diagnostic result identity planning and accepted-scope counting | `DiagnosticRequestPlan` |
 | Validation Readiness and Hardware Coverage normalization | `RunEngine` |
 | Final Agent projection and soft display-budget compaction | `AgentGateway` |
+| Product-closeout evidence verification and maintenance checkpoint aggregation | Operator / CI Plane |
 | Review, approval, promotion, and lifecycle governance | Operator / CI Plane |
 | Experimental model invocation, proposal validation, and inert revision persistence | `PlanResolver` |
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import json
+import threading
 
 from .catalog import OperationDescriptor
 from .capabilities import CAPABILITY_ALIASES, CAPABILITY_STATES
@@ -341,6 +342,65 @@ def _diagnostic_agent_acceptance(receipt: Mapping[str, object]) -> str:
     ).value
 
 
+def _diagnostic_receipt_runtime_payload(
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    payload = dict(receipt)
+    payload.pop("agent_acceptance", None)
+    return payload
+
+
+def _diagnostic_receipt_digest(receipt: Mapping[str, object]) -> str:
+    return "sha256:" + _fingerprint(_diagnostic_receipt_runtime_payload(receipt))
+
+
+def _diagnostic_receipt_reference(
+    receipt: Mapping[str, object],
+    *,
+    run_id: str,
+) -> dict[str, object]:
+    digest = _diagnostic_receipt_digest(receipt)
+    raw_evidence = receipt.get("evidence", [])
+    evidence_ids = [
+        _text(item.get("evidence_id"))
+        for item in raw_evidence
+        if isinstance(raw_evidence, list)
+        and isinstance(item, Mapping)
+        and _text(item.get("evidence_id"))
+    ]
+    raw_results = receipt.get("results", [])
+    result_ids = [
+        _text(item.get("result_id"))
+        for item in raw_results
+        if isinstance(raw_results, list)
+        and isinstance(item, Mapping)
+        and _text(item.get("result_id"))
+    ]
+    return {
+        "schema": f"{AGENT_GATEWAY_SCHEMA}/diagnostic-receipt-ref-v1",
+        "receipt_id": _text(receipt.get("receipt_id")),
+        "operation": _text(receipt.get("operation")),
+        "status": _text(receipt.get("status")),
+        "agent_acceptance": _diagnostic_agent_acceptance(receipt),
+        "digest": digest,
+        "coverage": dict(_mapping(receipt.get("coverage"))),
+        "freshness": dict(_mapping(receipt.get("freshness"))),
+        "content_complete": bool(receipt.get("content_complete")),
+        "truncated": bool(receipt.get("truncated")),
+        "gaps": list(receipt.get("gaps", []))
+        if isinstance(receipt.get("gaps"), list)
+        else [],
+        "evidence_ids": list(dict.fromkeys(evidence_ids)),
+        "result_ids": list(dict.fromkeys(result_ids)),
+        "reconstruction": {
+            "authority": "runtime-core",
+            "run_id": run_id,
+            "field": "diagnostic_receipt",
+            "digest": digest,
+        },
+    }
+
+
 def _gap_text(value: object) -> str:
     if isinstance(value, (Mapping, list, tuple)):
         try:
@@ -519,6 +579,33 @@ def render_execute_turn_text(
                 for result_id in compacted_result_ids
                 if _text(result_id) and _text(result_id) not in known_result_ids
             )
+    receipt_ref = _mapping(value.get("diagnostic_receipt_ref"))
+    if receipt_ref:
+        coverage = _mapping(receipt_ref.get("coverage"))
+        fixed_lines.append(
+            "DiagnosticReceiptRef "
+            f"status={_bounded_text(receipt_ref.get('status', 'blocked'), 32)} "
+            f"receipt_id={_bounded_text(receipt_ref.get('receipt_id'), 128)} "
+            f"agent_acceptance={_bounded_text(receipt_ref.get('agent_acceptance'), 32)} "
+            f"coverage={_bounded_text(coverage.get('evaluable', 0), 24)}/"
+            f"{_bounded_text(coverage.get('requested', 0), 24)} "
+            f"digest={_bounded_text(receipt_ref.get('digest'), 80)}."
+        )
+        raw_reference_evidence = receipt_ref.get("evidence_ids", [])
+        if isinstance(raw_reference_evidence, list):
+            unique_evidence_ids = [
+                _text(item) for item in raw_reference_evidence if _text(item)
+            ]
+        raw_reference_gaps = receipt_ref.get("gaps", [])
+        if isinstance(raw_reference_gaps, list):
+            receipt_gaps = list(raw_reference_gaps)
+        raw_reference_results = receipt_ref.get("result_ids", [])
+        if isinstance(raw_reference_results, list):
+            result_identities = [
+                _bounded_text(f"result[{item}] referenced", 224)
+                for item in raw_reference_results
+                if _text(item)
+            ]
     raw_turn_gaps = value.get("gaps", [])
     turn_gaps = list(raw_turn_gaps) if isinstance(raw_turn_gaps, list) else []
     combined_gaps = list(
@@ -1237,6 +1324,58 @@ class AgentGateway:
     ) -> None:
         self.runtime = runtime
         self.projector = projector or ResultProjector()
+        self._presented_diagnostic_receipts: dict[tuple[str, str], str] = {}
+        self._projection_lock = threading.Lock()
+
+    def _project_repeated_diagnostic_receipt(
+        self,
+        document: Mapping[str, object],
+        *,
+        task_id: str,
+    ) -> dict[str, object]:
+        result = dict(document)
+        receipt = _mapping(result.get("diagnostic_receipt"))
+        run_id = _text(result.get("run_id"))
+        if not receipt or not run_id:
+            return result
+        digest = _diagnostic_receipt_digest(receipt)
+        key = (task_id, run_id)
+        with self._projection_lock:
+            previously_presented = self._presented_diagnostic_receipts.get(key)
+            self._presented_diagnostic_receipts[key] = digest
+            while len(self._presented_diagnostic_receipts) > 1024:
+                self._presented_diagnostic_receipts.pop(
+                    next(iter(self._presented_diagnostic_receipts))
+                )
+        terminal = _text(result.get("state")) in {
+            "cancelled",
+            "completed",
+            "failed",
+        }
+        accepted = _diagnostic_agent_acceptance(receipt) == "complete"
+        if terminal and accepted and previously_presented == digest:
+            reference = _diagnostic_receipt_reference(receipt, run_id=run_id)
+            full_bytes = len(_json_bytes(receipt))
+            reference_bytes = len(_json_bytes(reference))
+            result.pop("diagnostic_receipt", None)
+            result["diagnostic_receipt_ref"] = reference
+            result["projection_metrics"] = {
+                **dict(_mapping(result.get("projection_metrics"))),
+                "diagnostic_receipt": {
+                    "repeated_reference": True,
+                    "full_bytes": full_bytes,
+                    "reference_bytes": reference_bytes,
+                    "saved_bytes": max(0, full_bytes - reference_bytes),
+                },
+            }
+            result["content_compacted"] = True
+            result["projection_compacted"] = True
+            result["projection_target_exceeded"] = (
+                len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES
+            )
+            result["manual_narrowing_required"] = False
+            result["budget_blocker"] = False
+        return result
 
     def observe(
         self,
@@ -1274,7 +1413,10 @@ class AgentGateway:
             task_id=task_id,
             operation_id=operation_id,
         )
-        return self.projector.turn(turn)
+        return self._project_repeated_diagnostic_receipt(
+            self.projector.turn(turn),
+            task_id=task_id,
+        )
 
     @staticmethod
     def error(operation: str, exc: Exception) -> dict[str, object]:

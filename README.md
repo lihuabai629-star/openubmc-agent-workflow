@@ -62,6 +62,8 @@ are maintained in the following records:
 - [Roadmap completion evidence](docs/roadmap-completion.json)
 - [Domain Pack authoring contract](docs/domain-pack-authoring.md)
 - [Runtime-internal model planning prototype](docs/model-planning-prototype.md)
+- [Product closeout qualification](docs/product-closeout-qualification.md)
+- [Continuous closeout qualification](docs/continuous-closeout-qualification.md)
 
 ## Credentials
 
@@ -161,6 +163,11 @@ For managed installations of workflow version 1.2 or newer, installation fails b
 links are changed when the lock is missing, invalid, or incompatible. `check --json` reports the
 resolved immutable release identity. Linked development checkouts remain mutable by design and are
 reported as `linked-development-source` rather than being treated as a release.
+
+For managed tag or full-commit installations, an unverified Release identity makes top-level
+installation health fail even when the Runtime remains operational. The JSON report keeps
+`operational_ready`, `release_identity_verified`, and `evaluation_ready` separate so development
+usability cannot be mistaken for verified Release health.
 
 Before promotion, run the execute A/B qualification described in
 `docs/agent-semantic-gateway.md`, then pass its digest-bound `summary.json` (with the adjacent

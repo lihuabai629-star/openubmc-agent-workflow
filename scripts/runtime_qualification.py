@@ -85,6 +85,9 @@ QUALIFICATIONS = (
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_target_preserves_runtime_incident_semantics",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_budget_never_rewrites_terminal_outcome",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_budget_preserves_diagnostic_receipt_semantics",
+            "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_references_an_unchanged_previously_presented_receipt",
+            "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_does_not_reference_receipt_across_task_ownership",
+            "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_preserves_a_changed_diagnostic_receipt",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_target_preserves_evaluable_result_values",
             "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_exceeds_the_soft_target_instead_of_rewriting_completion",
             "tests.test_agent_gateway.AgentGatewayTests.test_gate_construction_preserves_schema_above_the_projection_target",
@@ -92,6 +95,16 @@ QUALIFICATIONS = (
             "tests.test_agent_gateway.AgentGatewayTests.test_multi_target_adapter_defaults_cannot_expand_the_durable_scope",
             "tests.test_agent_gateway.AgentGatewayTests.test_duplicate_special_file_requests_receive_unique_result_identities",
             "tests.test_mcp_contracts.JsonRpcEndpointTests.test_execute_text_does_not_treat_projection_compaction_as_incomplete_source",
+        ),
+    ),
+    (
+        "task_scoped_mcp_lifecycle",
+        (
+            "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_unknown_owner_still_exits_after_confirmed_parent_loss",
+            "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_requested_shutdown_waits_for_the_active_request_to_finish",
+            "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_terminates_only_confirmed_orphaned_processes",
+            "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_signals_the_identity_bound_process_handle",
+            "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_stdio_sigterm_drains_the_active_response_before_exit",
         ),
     ),
     (

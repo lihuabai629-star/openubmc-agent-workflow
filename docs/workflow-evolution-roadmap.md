@@ -388,6 +388,18 @@ submission identity 由 Adapter 从持久 Run/Gate binding 派生。详见 ADR-0
 必须选择新的最终 source，重跑完整 execute A/B、Runtime qualification、Release Gate 与
 GitHub CI，再生成只修改 `release-lock.json` 的新 lock-only commit。
 
+### 8.7 产品闭环与维护候选资格
+
+仓库级维护候选资格与产品级 fresh closeout 分开判定。持续资格会检查产品证据契约、正式
+客户端矩阵、DSH 评测隔离、MCP 任务归属与退出清理，以及重复终态诊断投影；这些检查不需要
+真实 BMC 或凭据。630 NVMe 历史材料已机器验真为 `historical-product-validated`，但因为发生
+在当前 Runtime 之前，不能追认为新的 Run/Outcome。
+
+fresh 产品晋级仍必须重新取得：当前 Runtime Run ID、终态 Outcome、独立升级授权、目标与
+回滚包、官方 UT/编译、HPM 身份和协议精确的实机验收。详见
+[产品闭环资格](product-closeout-qualification.md)与
+[持续收口资格](continuous-closeout-qualification.md)。
+
 ## 9. 需要持续验证的假设
 
 1. ObservationRef 会显著降低完整 execute 的 cached-input；

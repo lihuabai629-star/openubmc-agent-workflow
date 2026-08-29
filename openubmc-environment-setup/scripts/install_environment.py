@@ -4660,7 +4660,8 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
                 "installed release lock identity changed: "
                 f"expected={expected_lock}, actual={actual_lock or 'missing'}"
             )
-        immutable = bool(actual_release.get("immutable"))
+        identity_valid = not actual_release.get("validation_error")
+        immutable = bool(actual_release.get("immutable")) and identity_valid
         legacy_managed = (
             source_mode == "managed"
             and actual_release.get("schema") == "legacy-release-without-lock"
@@ -5200,7 +5201,7 @@ def collect_check_report(args: argparse.Namespace) -> dict[str, Any]:
         else [
             {
                 "code": "install_immutable_release",
-                "required": False,
+                "required": source_mode == "managed",
                 "detail": (
                     "Use a managed installation pinned to an immutable tag or full "
                     "commit before Release qualification."

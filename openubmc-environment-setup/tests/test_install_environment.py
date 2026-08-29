@@ -3898,6 +3898,79 @@ class EnvironmentSetupTests(unittest.TestCase):
                 self.assertFalse(document["evaluation_ready"])
                 self.assertIn(mismatch, document["release"]["validation_error"])
 
+    def test_managed_immutable_identity_validation_error_is_top_level_unhealthy(
+        self,
+    ) -> None:
+        self.prepare_credentials()
+        self.assertEqual(
+            self.install(
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+            )[0],
+            0,
+        )
+        state = installer.load_state(self.home)
+        state.update(
+            {
+                "source_mode": "managed",
+                "managed_checkout": True,
+                "ref": "v2.0.0",
+                "requested_ref": "v2.0.0",
+                "ref_kind": "tag",
+                "source_commit": "a" * 40,
+                "resolved_commit": "a" * 40,
+            }
+        )
+        installer.save_state(self.home, state, False)
+        output = io.StringIO()
+        identity = {
+            "schema": "openubmc-agent-workflow.release-lock.v1",
+            "release_version": "2.0.0",
+            "source_commit": "a" * 40,
+            "lock_digest": "sha256:" + "b" * 64,
+            "immutable": True,
+            "validation_error": (
+                "release lock does not match repository: runtime, skills, "
+                "source_tree_digest"
+            ),
+        }
+
+        with (
+            mock.patch.object(installer, "git_commit", return_value="a" * 40),
+            mock.patch.object(installer, "git_dirty", return_value=False),
+            mock.patch.object(installer, "release_identity", return_value=identity),
+            mock.patch.object(
+                installer, "knowledge_http_health", return_value=(False, "offline")
+            ),
+            redirect_stdout(output),
+        ):
+            result = installer.main(["check", "--home", str(self.home), "--json"])
+
+        self.assertEqual(result, 1, output.getvalue())
+        document = json.loads(output.getvalue())
+        self.assertFalse(document["ok"])
+        self.assertTrue(document["operational_ready"])
+        self.assertFalse(document["release_identity_verified"])
+        self.assertFalse(document["evaluation_ready"])
+        self.assertEqual(
+            document["release"]["trust_mode"], "unverified-managed-source"
+        )
+        release_check = next(
+            check
+            for check in document["checks"]
+            if check["name"] == "release_identity"
+        )
+        self.assertFalse(release_check["ok"])
+        self.assertTrue(release_check["blocking"])
+        self.assertTrue(
+            any(
+                action.get("code") == "install_immutable_release"
+                for action in document["next_actions"]
+            )
+        )
+
     def test_noninteractive_dry_run_does_not_plan_tty_credentials(self) -> None:
         args = self.args("--install", "--dry-run")
         plan = installer.prepare_credentials(args)
