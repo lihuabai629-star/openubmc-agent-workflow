@@ -112,7 +112,7 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
         PreflightReason.ARTIFACT_REQUIRED,
         PreflightReason.ARTIFACT_BINDING,
     }:
-        artifact_ref: dict[str, object] = {
+        canonical_artifact_ref: dict[str, object] = {
             "handle": "<absolute artifact path>",
             "digest": "sha256:" + "0" * 64,
             "kind": context.artifact_kind or "<Gate artifact kind>",
@@ -123,8 +123,24 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
             "run_id": context.run_id or "<current Run ID>",
         }
         if context.version_required:
-            artifact_ref["version"] = "<artifact version>"
-        payload: dict[str, object] = {"artifact_ref": artifact_ref}
+            canonical_artifact_ref["version"] = "<artifact version>"
+        response = dict(context.response)
+        payload = dict(_mapping(response.get("payload")))
+        original_ref = payload.get("artifact_ref")
+        artifact_ref = (
+            dict(original_ref)
+            if isinstance(original_ref, Mapping)
+            else dict(canonical_artifact_ref)
+        )
+        for binding_field in ("target", "run_id"):
+            binding_value = artifact_ref.get(binding_field)
+            if (
+                detail.field.endswith(f".{binding_field}")
+                or not isinstance(binding_value, str)
+                or not binding_value.strip()
+            ):
+                artifact_ref[binding_field] = canonical_artifact_ref[binding_field]
+        payload["artifact_ref"] = artifact_ref
         payload_examples: dict[str, object] = {
             "source_revision": "<built source revision>",
             "authored_files": [],
@@ -133,22 +149,24 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
             "restart_scope": "<restart scope>",
         }
         for field in context.required_payload_fields:
-            if field != "artifact_ref":
+            if field != "artifact_ref" and field not in payload:
                 payload[field] = payload_examples.get(
                     field, f"<Gate-required {field}>"
                 )
-        return {
+        response["status"] = response.get("status") or "completed"
+        response["summary"] = response.get("summary") or "artifact produced"
+        response["payload"] = payload
+        example = {
             "kind": "respond",
-            "run_id": artifact_ref["run_id"],
+            "run_id": context.run_id or "<current Run ID>",
             "gate_id": context.gate_id or "<current Gate ID>",
             "gate_version": context.gate_version or 1,
             "schema_digest": context.schema_digest or "<current Gate schema digest>",
-            "response": {
-                "status": "completed",
-                "summary": "artifact produced",
-                "payload": payload,
-            },
+            "response": response,
         }
+        if context.submission_id:
+            example["submission_id"] = context.submission_id
+        return example
 
     kind = context.action_kind or "resume"
     run_id = context.run_id or "<current Run ID>"
@@ -189,8 +207,10 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
                 "payload": {},
             },
         }
-        if context.submission_id:
-            example["submission_id"] = context.submission_id
+        if context.submission_id or detail.field == "submission_id":
+            example["submission_id"] = (
+                context.submission_id or "<new submission identity>"
+            )
     elif kind == "control":
         example = {
             "kind": "control",
@@ -254,6 +274,9 @@ def _preflight_guidance(
         ),
         PreflightReason.RECONCILE_PRECONDITION: (
             "use the current Turn next_action; reconcile only after mutation_outcome_unknown"
+        ),
+        PreflightReason.GATE_BINDING: (
+            "retry execute with the projected GateBinding, response, and submission identity"
         ),
         PreflightReason.ARTIFACT_REQUIRED: (
             "supply the Gate-required ArtifactRef bound to this Run and target, then retry respond"
@@ -517,7 +540,7 @@ def _project_preflight_binding(field: str, value: object) -> object:
 
 def _project_preflight_example(
     example: Mapping[str, object],
-) -> tuple[dict[str, object], bool]:
+) -> dict[str, object]:
     binding_fields = frozenset(
         {
             "kind",
@@ -561,7 +584,7 @@ def _project_preflight_example(
                 max_items=8,
                 max_string=128,
             )
-    return projected, False
+    return projected
 
 
 def _compact_observation_results(value: object) -> dict[str, object]:
@@ -1164,9 +1187,7 @@ class AgentGateway:
             error = result["error"]
             assert isinstance(error, dict)
             example, next_action = _preflight_guidance(operation, detail)
-            projected_example, example_compacted = _project_preflight_example(
-                example
-            )
+            projected_example = _project_preflight_example(example)
             error["field"] = detail.field
             error["example"] = projected_example
             if detail.supported:
@@ -1174,21 +1195,13 @@ class AgentGateway:
             if detail.limit is not None:
                 error["limit"] = detail.limit
             result["next_action"] = next_action
-            if example_compacted:
+            if len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES:
                 result.update(
                     _projection_telemetry(
-                        compacted=True,
+                        compacted=False,
                         target_exceeded=False,
                     )
                 )
-            if len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES:
-                if not example_compacted:
-                    result.update(
-                        _projection_telemetry(
-                            compacted=False,
-                            target_exceeded=False,
-                        )
-                    )
                 result["projection_target_exceeded"] = True
                 result["projection_target_overage_bytes"] = 0
                 for _attempt in range(3):

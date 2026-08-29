@@ -812,13 +812,53 @@ class RunEngine:
         return Gate.from_public_dict(current)
 
     @staticmethod
-    def _validate_gate(command: SubmitGate | CancelRun, gate: Gate) -> None:
-        if command.gate_id != gate.gate_id:
-            raise GateConflict("Gate submission targets a different gate_id")
-        if command.gate_version != gate.version:
-            raise GateConflict("Gate submission targets a stale gate_version")
-        if command.schema_digest != gate.schema_digest:
-            raise GateConflict("Gate submission targets a different schema digest")
+    def _gate_preflight_context(
+        command: SubmitGate | CancelRun,
+        gate: Gate,
+    ) -> PreflightContext:
+        return PreflightContext(
+            action_kind=("respond" if isinstance(command, SubmitGate) else "control"),
+            run_id=command.run_id,
+            command=("" if isinstance(command, SubmitGate) else "cancel"),
+            gate_id=gate.gate_id,
+            gate_version=gate.version,
+            schema_digest=f"sha256:{gate.schema_digest}",
+            submission_id=command.submission_id,
+            response=(
+                dict(command.response)
+                if isinstance(command, SubmitGate)
+                else {}
+            ),
+        )
+
+    @classmethod
+    def _validate_gate(cls, command: SubmitGate | CancelRun, gate: Gate) -> None:
+        mismatches = (
+            (
+                "gate_id",
+                command.gate_id != gate.gate_id,
+                "Gate submission targets a different gate_id",
+            ),
+            (
+                "gate_version",
+                command.gate_version != gate.version,
+                "Gate submission targets a stale gate_version",
+            ),
+            (
+                "schema_digest",
+                command.schema_digest != gate.schema_digest,
+                "Gate submission targets a different schema digest",
+            ),
+        )
+        for field_name, mismatched, message in mismatches:
+            if mismatched:
+                raise GatePreflightError(
+                    message,
+                    reason=PreflightReason.GATE_BINDING,
+                    field=field_name,
+                    limit={"binding": "current Gate"},
+                    context=cls._gate_preflight_context(command, gate),
+                )
 
     @staticmethod
     def _validate_duplicate_gate(
@@ -958,12 +998,8 @@ class RunEngine:
         target = ""
         if isinstance(targets, list) and targets and isinstance(targets[0], Mapping):
             target = _text(targets[0].get("address"))
-        return PreflightContext(
-            action_kind="respond",
-            run_id=command.run_id,
-            gate_id=gate.gate_id,
-            gate_version=gate.version,
-            schema_digest=f"sha256:{gate.schema_digest}",
+        return replace(
+            RunEngine._gate_preflight_context(command, gate),
             target=target,
             artifact_kind=(
                 str(expected_kinds[0])

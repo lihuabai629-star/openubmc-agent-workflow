@@ -219,6 +219,7 @@ class PreflightReason(str, Enum):
     RUNTIME_OWNED_FIELD = "runtime_owned_field"
     RUN_ID_REQUIRED = "run_id_required"
     RECONCILE_PRECONDITION = "reconcile_precondition"
+    GATE_BINDING = "gate_binding"
     ARTIFACT_REQUIRED = "artifact_required"
     ARTIFACT_BINDING = "artifact_binding"
 
@@ -1377,6 +1378,73 @@ def _action_preflight_context(action: Mapping[str, object]) -> PreflightContext:
     )
 
 
+def _gate_binding_preflight_error(
+    action: Mapping[str, object],
+    *,
+    field: str,
+    message: str,
+) -> AgentPreflightError:
+    context = _action_preflight_context(action)
+    replacement: dict[str, object] = {
+        "gate_id": "",
+        "gate_version": 0,
+        "schema_digest": "",
+        "submission_id": "",
+    }
+    return AgentPreflightError(
+        message,
+        reason=PreflightReason.GATE_BINDING,
+        field=field,
+        limit={"binding": "current Gate"},
+        context=replace(context, **{field: replacement[field]}),
+    )
+
+
+def _decode_gate_binding(
+    action: Mapping[str, object],
+    *,
+    run_id: str,
+) -> tuple[str, int, str, str]:
+    decoders = (
+        ("gate_id", _gate_id),
+        ("gate_version", _gate_version),
+        ("schema_digest", _schema_digest),
+    )
+    decoded: dict[str, object] = {}
+    for field_name, decoder in decoders:
+        try:
+            decoded[field_name] = decoder(action.get(field_name))
+        except AgentGatewayError as exc:
+            raise _gate_binding_preflight_error(
+                action,
+                field=field_name,
+                message=str(exc),
+            ) from exc
+    binding = {
+        "run_id": run_id,
+        "gate_id": decoded["gate_id"],
+        "gate_version": decoded["gate_version"],
+        "schema_digest": decoded["schema_digest"],
+    }
+    try:
+        submission_id = _submission_id(
+            action.get("submission_id"),
+            binding=binding,
+        )
+    except AgentGatewayError as exc:
+        raise _gate_binding_preflight_error(
+            action,
+            field="submission_id",
+            message=str(exc),
+        ) from exc
+    return (
+        str(decoded["gate_id"]),
+        int(decoded["gate_version"]),
+        str(decoded["schema_digest"]),
+        submission_id,
+    )
+
+
 def _execute_deadline_error(action: Mapping[str, object]) -> AgentPreflightError:
     return AgentPreflightError(
         "execute deadline must be greater than 0 and at most 120 seconds",
@@ -1690,17 +1758,8 @@ def decode_run_command(
         if not isinstance(response, Mapping):
             raise AgentGatewayError("respond requires a response object")
         _validate_gate_response_shape(response)
-        gate_id = _gate_id(action.get("gate_id"))
-        gate_version = _gate_version(action.get("gate_version"))
-        schema_digest = _schema_digest(action.get("schema_digest"))
-        submission_id = _submission_id(
-            action.get("submission_id"),
-            binding={
-                "run_id": run_id,
-                "gate_id": gate_id,
-                "gate_version": gate_version,
-                "schema_digest": schema_digest,
-            },
+        gate_id, gate_version, schema_digest, submission_id = (
+            _decode_gate_binding(action, run_id=run_id)
         )
         command = SubmitGate(
             run_id=run_id,
@@ -1758,17 +1817,8 @@ def decode_run_command(
                     caller_deadline=caller_deadline,
                 )
             else:
-                gate_id = _gate_id(action.get("gate_id"))
-                gate_version = _gate_version(action.get("gate_version"))
-                schema_digest = _schema_digest(action.get("schema_digest"))
-                submission_id = _submission_id(
-                    action.get("submission_id"),
-                    binding={
-                        "run_id": run_id,
-                        "gate_id": gate_id,
-                        "gate_version": gate_version,
-                        "schema_digest": schema_digest,
-                    },
+                gate_id, gate_version, schema_digest, submission_id = (
+                    _decode_gate_binding(action, run_id=run_id)
                 )
             command = CancelRun(
                 run_id=run_id,

@@ -2799,6 +2799,156 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(structured["manual_narrowing_required"])
         self.assertFalse(structured["budget_blocker"])
 
+    def test_execute_preflight_makes_malformed_gate_bindings_actionable(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="execute-preflight-malformed-gate-binding",
+        )
+        original_response = {
+            "status": "completed",
+            "summary": "source delivery completed",
+            "payload": {
+                "source_revision": "revision-one",
+                "authored_files": ["src/fix.lua"],
+                "verification_plan": ["run focused tests"],
+            },
+        }
+        cases = (
+            ("gate_id", "bad gate id", "<current Gate ID>"),
+            ("gate_version", 0, 1),
+            (
+                "schema_digest",
+                "not-a-digest",
+                "<current Gate schema digest>",
+            ),
+            (
+                "submission_id",
+                "bad submission id",
+                "<new submission identity>",
+            ),
+        )
+
+        for request_id, (field, invalid, corrected) in enumerate(cases, start=116):
+            with self.subTest(field=field):
+                arguments = {
+                    "kind": "respond",
+                    "run_id": "run-one",
+                    "gate_id": "gate-one",
+                    "gate_version": 1,
+                    "schema_digest": "sha256:" + "a" * 64,
+                    "submission_id": "submission-one",
+                    "response": original_response,
+                }
+                arguments[field] = invalid
+                response = endpoint.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": "execute", "arguments": arguments},
+                    }
+                )
+
+                structured = response["result"]["structuredContent"]
+                self.assertTrue(response["result"]["isError"])
+                self.assertEqual(structured["error"]["field"], field)
+                self.assertEqual(
+                    structured["error"]["limit"],
+                    {"binding": "current Gate"},
+                )
+                example = structured["error"]["example"]
+                self.assertEqual(example[field], corrected)
+                self.assertEqual(example["response"], original_response)
+                for preserved in {
+                    "run_id",
+                    "gate_id",
+                    "gate_version",
+                    "schema_digest",
+                    "submission_id",
+                } - {field}:
+                    self.assertEqual(example[preserved], arguments[preserved])
+                self.assertEqual(
+                    structured["next_action"],
+                    "retry execute with the projected GateBinding, response, and submission identity",
+                )
+
+    def test_execute_preflight_corrects_stale_gate_binding_only(
+        self,
+    ) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.88",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="stale-gate-binding",
+            operation_id="stale-gate-binding-start",
+        )
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="stale-gate-binding",
+        )
+        current = gate_binding(waiting)
+        original_response = {
+            "status": "completed",
+            "summary": "source delivery completed",
+            "payload": {
+                "source_revision": "revision-one",
+                "authored_files": ["src/fix.lua"],
+                "verification_plan": ["run focused tests"],
+            },
+        }
+        stale_bindings = (
+            ("gate_id", "gate-stale"),
+            ("gate_version", current["gate_version"] + 1),
+            ("schema_digest", "sha256:" + "f" * 64),
+        )
+        before = self.service._test.context_runtime.read_case(waiting["run_id"])
+
+        for request_id, (field, stale_value) in enumerate(
+            stale_bindings,
+            start=120,
+        ):
+            with self.subTest(field=field):
+                arguments = {
+                    "kind": "respond",
+                    "run_id": waiting["run_id"],
+                    **current,
+                    "submission_id": f"stale-{field}-submission",
+                    "response": original_response,
+                }
+                arguments[field] = stale_value
+                response = endpoint.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": "execute", "arguments": arguments},
+                    }
+                )
+
+                structured = response["result"]["structuredContent"]
+                self.assertTrue(response["result"]["isError"])
+                self.assertEqual(structured["error"]["field"], field)
+                example = structured["error"]["example"]
+                self.assertEqual(example[field], current[field])
+                self.assertEqual(example["response"], original_response)
+                self.assertEqual(
+                    example["submission_id"],
+                    arguments["submission_id"],
+                )
+                self.assertEqual(
+                    structured["next_action"],
+                    "retry execute with the projected GateBinding, response, and submission identity",
+                )
+
+        after = self.service._test.context_runtime.read_case(waiting["run_id"])
+        self.assertEqual(after["revision"], before["revision"])
+
     def test_execute_preflight_preserves_wide_canonical_example_semantics(
         self,
     ) -> None:
@@ -3416,11 +3566,16 @@ class AgentGatewayTests(unittest.TestCase):
                             "kind": "respond",
                             "run_id": build_gate["run_id"],
                             **gate_binding(build_gate),
+                            "submission_id": f"artifact-binding-{request_id}",
                             "response": {
                                 "status": "completed",
                                 "summary": "build completed",
                                 "payload": {
                                     "source_revision": "artifact-preflight-source",
+                                    "component_versions": ["storage=1.2.3"],
+                                    "build_commands": ["bmcgo build"],
+                                    "build_logs": ["build.log"],
+                                    "known_gaps": ["official repository unavailable"],
                                     "artifact_ref": {
                                         "handle": "/tmp/product.hpm",
                                         "digest": "sha256:" + "a" * 64,
@@ -3454,6 +3609,38 @@ class AgentGatewayTests(unittest.TestCase):
             run_id=build_gate["run_id"],
             request_id=305,
         )
+
+        for projected, request_id, corrected_field, corrected_value in (
+            (wrong_target, 303, "target", "192.0.2.10"),
+            (wrong_run, 304, "run_id", build_gate["run_id"]),
+        ):
+            example = projected["result"]["structuredContent"]["error"]["example"]
+            self.assertEqual(
+                example["submission_id"],
+                f"artifact-binding-{request_id}",
+            )
+            self.assertEqual(example["response"]["summary"], "build completed")
+            example_payload = example["response"]["payload"]
+            self.assertEqual(
+                example_payload["source_revision"],
+                "artifact-preflight-source",
+            )
+            self.assertEqual(
+                example_payload["component_versions"],
+                ["storage=1.2.3"],
+            )
+            self.assertEqual(example_payload["build_commands"], ["bmcgo build"])
+            self.assertEqual(example_payload["build_logs"], ["build.log"])
+            self.assertEqual(
+                example_payload["known_gaps"],
+                ["official repository unavailable"],
+            )
+            projected_ref = example_payload["artifact_ref"]
+            self.assertEqual(projected_ref["handle"], "/tmp/product.hpm")
+            self.assertEqual(projected_ref["digest"], "sha256:" + "a" * 64)
+            self.assertEqual(projected_ref["size"], 1)
+            self.assertEqual(projected_ref["version"], "1.0.0")
+            self.assertEqual(projected_ref[corrected_field], corrected_value)
 
         for response, field in (
             (missing_ref, "response.payload.artifact_ref"),
@@ -3515,6 +3702,7 @@ class AgentGatewayTests(unittest.TestCase):
                         "kind": "respond",
                         "run_id": waiting["run_id"],
                         **gate_binding(waiting),
+                        "submission_id": "live-patch-artifact-submission",
                         "response": {
                             "status": "completed",
                             "summary": "live patch source is ready",
@@ -3534,6 +3722,15 @@ class AgentGatewayTests(unittest.TestCase):
         payload = response["result"]["structuredContent"]["error"]["example"][
             "response"
         ]["payload"]
+        example = response["result"]["structuredContent"]["error"]["example"]
+        self.assertEqual(
+            example["submission_id"],
+            "live-patch-artifact-submission",
+        )
+        self.assertEqual(
+            example["response"]["summary"],
+            "live patch source is ready",
+        )
         self.assertEqual(
             set(payload),
             {
@@ -3545,6 +3742,11 @@ class AgentGatewayTests(unittest.TestCase):
                 "restart_scope",
             },
         )
+        self.assertEqual(payload["source_revision"], "source-one")
+        self.assertEqual(payload["authored_files"], ["src/fix.lua"])
+        self.assertEqual(payload["verification_plan"], ["verify on target"])
+        self.assertEqual(payload["remote_path"], "/opt/bmc/apps/fix.lua")
+        self.assertEqual(payload["restart_scope"], "skynet")
 
     def test_public_preflight_error_identifies_field_and_canonical_retry(self) -> None:
         endpoint = JsonRpcMcpEndpoint(
