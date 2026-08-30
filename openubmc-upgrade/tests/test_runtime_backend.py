@@ -307,10 +307,21 @@ class UncertainUpgradeSession(FakeRedfishSession):
             self.transport.manager_reads += 1
             versions = self.transport.manager_versions
             version = versions[min(self.transport.manager_reads - 1, len(versions) - 1)]
+            reset_times = self.transport.manager_reset_times
+            reset_time = (
+                reset_times[
+                    min(self.transport.manager_reads - 1, len(reset_times) - 1)
+                ]
+                if reset_times
+                else ""
+            )
             return RedfishResponse(
                 status=200,
                 headers={},
-                payload={"FirmwareVersion": version},
+                payload={
+                    "FirmwareVersion": version,
+                    **({"LastResetTime": reset_time} if reset_time else {}),
+                },
             )
         if path == "/redfish/v1/UpdateService" and self.transport.upload_attempts:
             self.calls.append((method, path))
@@ -378,6 +389,7 @@ class UncertainUpgradeTransport(FakeRedfishTransport):
         active_version: str,
         available_version: str = "",
         pending: bool = False,
+        manager_reset_times: tuple[str, ...] = (),
         faulted: threading.Event | None = None,
     ) -> None:
         super().__init__()
@@ -385,6 +397,7 @@ class UncertainUpgradeTransport(FakeRedfishTransport):
         self.active_version = active_version
         self.available_version = available_version
         self.pending = pending
+        self.manager_reset_times = manager_reset_times
         self.manager_reads = 0
         self.upload_attempts = 0
         self.faulted = faulted
@@ -1788,6 +1801,124 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
             finally:
                 service.close()
 
+    def test_reset_mode_rejects_missing_pre_upgrade_manager_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+            class MissingBaselineSession(FakeRedfishSession):
+                def request_json(self, method: str, path: str, **kwargs) -> RedfishResponse:
+                    if self.number == 1 and path == "/redfish/v1/Managers/1":
+                        self.calls.append((method, path))
+                        raise OSError("manager baseline temporarily unavailable")
+                    return super().request_json(method, path, **kwargs)
+
+            class MissingBaselineTransport(FakeRedfishTransport):
+                def open_session(self, *, target, credentials) -> FakeRedfishSession:
+                    self.opens += 1
+                    session = MissingBaselineSession(self.opens)
+                    self.sessions.append(session)
+                    return session
+
+            transport = MissingBaselineTransport()
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                with self.assertRaisesRegex(ValueError, "Manager baseline"):
+                    service.call_tool(
+                        "upgrade_run",
+                        self.arguments(artifact, digest),
+                        task_id="missing-manager-baseline",
+                        operation_id="missing-manager-baseline",
+                    )
+            finally:
+                service.close()
+
+        uploads = [
+            call
+            for session in transport.sessions
+            for call in session.calls
+            if call[1] == "/redfish/v1/UpdateService/upload"
+        ]
+        self.assertEqual(uploads, [])
+
+    def test_same_version_uncertain_recovery_requires_a_reset_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            journals = MutationJournalStore(root / "journals")
+            transport = UncertainUpgradeTransport(
+                manager_versions=("2.0.0", "2.0.0"),
+                active_version="2.0.0",
+                pending=False,
+            )
+            arguments = self.arguments(artifact, digest)
+            first = RuntimeMcpService(
+                UpgradeMcpBackend(
+                    journal_store=journals,
+                    credential_loader=lambda _arguments: {
+                        "redfish": {
+                            "user": "Administrator",
+                            "password": "redfish-secret",
+                        }
+                    },
+                    redfish_transport_factory=lambda _arguments: transport,
+                )
+            )
+            try:
+                with self.assertRaises(OSError):
+                    first.call_tool(
+                        "upgrade_run",
+                        arguments,
+                        task_id="same-version-uncertain",
+                        operation_id="same-version-uncertain",
+                    )
+            finally:
+                first.close()
+
+            second_backend = UpgradeMcpBackend(
+                journal_store=journals,
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
+            )
+            task = second_backend.open_task("same-version-uncertain")
+            try:
+                recovered = second_backend.upgrade_run(
+                    task,
+                    {
+                        **arguments,
+                        RUNTIME_EFFECT_RECOVERY_ARGUMENT: EffectRecoveryMode.RECONCILE,
+                    },
+                    recovery_context(
+                        "same-version-uncertain",
+                        "same-version-uncertain",
+                    ),
+                )
+            finally:
+                second_backend.close_task(task)
+
+        self.assertIsNone(recovered["verification"])
+        self.assertEqual(recovered["journal"]["stage"], "recovery_blocked")
+        self.assertEqual(transport.upload_attempts, 1)
+
     def test_same_version_upgrade_requests_manager_reset_after_task_completion(
         self,
     ) -> None:
@@ -2268,7 +2399,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         self.assertTrue(journal.blocks_target)
         self.assertEqual(transport.upload_attempts, 1)
 
-    def test_uncertain_upgrade_already_installed_verifies_without_artifact(self) -> None:
+    def test_uncertain_same_version_upgrade_verifies_with_reset_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             artifact = root / "openubmc.hpm"
@@ -2277,6 +2408,10 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
             transport = UncertainUpgradeTransport(
                 manager_versions=("2.0.0",),
                 active_version="2.0.0",
+                manager_reset_times=(
+                    "2026-08-30T07:00:00+00:00",
+                    "2026-08-30T08:00:00+00:00",
+                ),
             )
 
             result, store = self.run_uncertain_then_recover(

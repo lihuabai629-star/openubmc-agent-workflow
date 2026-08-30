@@ -6958,8 +6958,6 @@ class ContextRuntime:
         if not source_path.is_absolute():
             raise ValueError("evidence path must be absolute")
         source_path = source_path.absolute()
-        if not source_path.is_file():
-            raise EvidenceUnavailable(f"evidence file is unavailable: {source_path}")
         normalized_sha256 = expected_sha256.removeprefix("sha256:")
         if len(normalized_sha256) != 64 or any(
             character not in "0123456789abcdef" for character in normalized_sha256
@@ -6969,19 +6967,12 @@ class ContextRuntime:
             evidence_type, fallback=""
         ) != evidence_type:
             raise ValueError("evidence_type must be a safe identifier")
-        body = source_path.read_bytes()
-        actual_sha256 = hashlib.sha256(body).hexdigest()
-        if actual_sha256 != normalized_sha256:
-            raise ValueError(
-                "evidence digest mismatch: "
-                f"expected {normalized_sha256}, actual {actual_sha256}"
-            )
         evidence_id = "evidence-" + _fingerprint(
             {
                 "run_id": run_id,
                 "target_id": target_id,
                 "evidence_type": evidence_type,
-                "blob_id": actual_sha256,
+                "blob_id": normalized_sha256,
             }
         )[:32]
         existing = self.repository.evidence_reference(run_id, evidence_id)
@@ -6992,6 +6983,15 @@ class ContextRuntime:
                 "evidence": dict(existing),
                 "already_attached": True,
             }
+        if not source_path.is_file():
+            raise EvidenceUnavailable(f"evidence file is unavailable: {source_path}")
+        body = source_path.read_bytes()
+        actual_sha256 = hashlib.sha256(body).hexdigest()
+        if actual_sha256 != normalized_sha256:
+            raise ValueError(
+                "evidence digest mismatch: "
+                f"expected {normalized_sha256}, actual {actual_sha256}"
+            )
         blob_id = self.blob_repository.put(body)
         if blob_id != actual_sha256:
             raise EvidenceUnavailable("evidence blob identity does not match source bytes")

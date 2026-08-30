@@ -20,6 +20,36 @@ from openubmc_target_runtime import (  # noqa: E402
 
 
 class ArtifactLifecycleTests(unittest.TestCase):
+    def test_expected_digest_is_rechecked_at_the_persisted_copy_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "firmware.hpm"
+            expected_body = b"expected firmware"
+            source.write_bytes(expected_body)
+            expected_digest = hashlib.sha256(expected_body).hexdigest()
+
+            class RacingArtifactStore(LocalArtifactStore):
+                def _put(self, path: Path, **kwargs):
+                    Path(path).write_bytes(b"replacement firmware")
+                    return super()._put(path, **kwargs)
+
+            store = RacingArtifactStore(content_root=root / "content")
+
+            with self.assertRaisesRegex(
+                ReferenceViolation,
+                "expected SHA-256",
+            ):
+                store.put(
+                    source,
+                    kind="openubmc-hpm",
+                    provenance="build",
+                    retention_hint="run-lifetime",
+                    target="192.0.2.4",
+                    run_id="run-racing-artifact",
+                    created_by_effect="effect-racing-artifact",
+                    expected_sha256=expected_digest,
+                )
+
     def test_external_registration_is_idempotent_but_resolution_never_auto_registers(self) -> None:
         for persistent in (False, True):
             with self.subTest(persistent=persistent), tempfile.TemporaryDirectory() as raw:

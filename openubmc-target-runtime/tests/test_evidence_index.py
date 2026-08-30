@@ -14,6 +14,7 @@ sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
     EVIDENCE_QUERY_MAX_BYTES,
+    FilesystemBlobRepository,
     InMemoryBlobRepository,
     JsonRpcMcpEndpoint,
     LocalArtifactStore,
@@ -267,6 +268,60 @@ class EvidenceIndexTests(unittest.TestCase):
             ["EvidenceAttached", "RunDecisionCommitted"],
         )
         self.assertEqual(first_revision, second_revision)
+
+    def test_operator_file_evidence_retry_survives_source_removal_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence_path = root / "build.log"
+            evidence_path.write_bytes(b"build completed\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            blobs = FilesystemBlobRepository(root / "blobs")
+            run_id = _create_public_run(repository, target="192.0.2.85")
+            arguments = {
+                "run_id": run_id,
+                "target": "target-1",
+                "path": str(evidence_path),
+                "sha256": digest,
+                "evidence_type": "component-build-log",
+            }
+
+            first_service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                interface_profile="operator",
+            )
+            try:
+                first = first_service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="operator-evidence-restart",
+                    operation_id="attach-build-after-restart",
+                )
+            finally:
+                first_service.close()
+
+            evidence_path.unlink()
+            second_service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                interface_profile="operator",
+            )
+            try:
+                replayed = second_service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="operator-evidence-restart",
+                    operation_id="attach-build-after-restart",
+                )
+            finally:
+                second_service.close()
+
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(first["evidence"], replayed["evidence"])
 
     def test_operator_file_evidence_attach_rejects_invalid_run_binding(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
