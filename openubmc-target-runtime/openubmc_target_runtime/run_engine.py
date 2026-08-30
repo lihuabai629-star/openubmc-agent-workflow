@@ -2855,11 +2855,26 @@ class RunEngine:
                     self._validate_duplicate_gate(command, prior)
             raise CommandConflict(str(exc)) from exc
         if replayed is not None:
-            return self._settle_effect(
+            initial_revision = int(replayed.projection.get("revision", -1))
+            turn = self._settle_effect(
                 replayed,
                 task_id=task_id,
                 deadline_at=deadline_at,
             )
+            if isinstance(
+                command,
+                (SubmitGate, CancelRun, CancelIncident, ReconcileRun),
+            ):
+                current = _projection(self.driver.run_snapshot(run_id))
+                if int(current.get("revision", -1)) == initial_revision:
+                    return replace(
+                        turn,
+                        progress={
+                            "status": "no_progress",
+                            "reason": "unchanged_command_replayed",
+                        },
+                    )
+            return turn
 
         def build(transaction: RunDecisionDraft) -> RunDecision:
             turn = self._execute_uncommitted(

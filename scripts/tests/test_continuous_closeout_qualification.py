@@ -42,6 +42,16 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             report["client_matrix"]["evaluation_harnesses"], ["dsh"]
         )
         self.assertEqual(report["client_matrix"]["overlap"], [])
+        self.assertEqual(
+            sorted(report["client_matrix"]["runs"]),
+            ["claude", "codex", "openclaw"],
+        )
+        self.assertTrue(
+            all(
+                run["status"] == "passed"
+                for run in report["client_matrix"]["runs"].values()
+            )
+        )
         self.assertTrue(report["evaluation_isolation"]["global_state_blocked"])
         self.assertTrue(report["evaluation_isolation"]["task_owned"])
         self.assertTrue(report["mcp_lifecycle"]["parent_loss_covered"])
@@ -146,6 +156,14 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 group["status"] == "passed"
                 for group in report["task_matrix"]["groups"].values()
             )
+        )
+        self.assertIn(
+            "test_source_only_keeps_dependency_and_nvme_coverage_gaps_visible",
+            " ".join(report["task_matrix"]["groups"]["hardware_blocked"]["tests"]),
+        )
+        self.assertNotIn(
+            "test_completed_failed_build_does_not_advance_to_upgrade",
+            " ".join(report["task_matrix"]["groups"]["hardware_blocked"]["tests"]),
         )
         self.assertNotIn("198.51.100.99", json.dumps(report))
         self.assertNotIn("must-not-be-used", json.dumps(report))

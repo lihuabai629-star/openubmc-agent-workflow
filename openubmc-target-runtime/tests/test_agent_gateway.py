@@ -3951,6 +3951,8 @@ class AgentGatewayTests(unittest.TestCase):
                 "preflight_failure": True,
                 "no_progress_retry": False,
                 "manual_action_required": False,
+                "projection_target_exceeded": False,
+                "budget_blocker": False,
             },
         )
 
@@ -4420,6 +4422,17 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(receipt["projection_truncated"])
         self.assertTrue(receipt["projection_target_exceeded"])
         self.assertIn("observation_ref", receipt)
+        self.assertEqual(
+            receipt["interaction_telemetry"],
+            {
+                "classification": "projection_target_exceeded",
+                "preflight_failure": False,
+                "no_progress_retry": False,
+                "manual_action_required": False,
+                "projection_target_exceeded": True,
+                "budget_blocker": False,
+            },
+        )
 
     def test_observe_soft_target_survives_maximum_legal_scope_and_large_result(self) -> None:
         service = RuntimeMcpService(LargeObservationBackend())
@@ -7124,7 +7137,12 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertIsInstance(first, RunTurn)
         self.assertEqual(first.state, "completed")
-        self.assertEqual(replayed.to_public_dict(), first.to_public_dict())
+        replayed_public = replayed.to_public_dict()
+        self.assertEqual(
+            replayed_public.pop("progress"),
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
+        self.assertEqual(replayed_public, first.to_public_dict())
         projection = self.service._test.context_runtime.read_case(waiting.run_id)
         self.assertEqual(
             sum(
@@ -7132,6 +7150,61 @@ class AgentGatewayTests(unittest.TestCase):
                 for item in projection["run_decisions"]
             ),
             1,
+        )
+
+    def test_duplicate_respond_reports_no_progress_without_a_new_transition(
+        self,
+    ) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.79",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="duplicate-respond",
+            operation_id="duplicate-respond-start",
+        )
+        response = {
+            "kind": "respond",
+            "run_id": waiting["run_id"],
+            **gate_binding(waiting),
+            "submission_id": "duplicate-respond-submission",
+            "response": {
+                "status": "completed",
+                "summary": "source repair completed",
+                "payload": {
+                    "source_revision": "duplicate-respond-source",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["run regression tests"],
+                },
+            },
+        }
+        completed = self.service.call_exposed_tool(
+            "execute",
+            response,
+            task_id="duplicate-respond",
+            operation_id="duplicate-respond-first",
+        )
+        before = self.service._test.context_runtime.read_case(waiting["run_id"])
+
+        replayed = self.service.call_exposed_tool(
+            "execute",
+            response,
+            task_id="duplicate-respond-replay",
+            operation_id="duplicate-respond-second",
+        )
+        after = self.service._test.context_runtime.read_case(waiting["run_id"])
+
+        self.assertEqual(completed["state"], "completed")
+        self.assertEqual(after["revision"], before["revision"])
+        self.assertEqual(
+            replayed["progress"],
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
+        self.assertTrue(
+            replayed["interaction_telemetry"]["no_progress_retry"]
         )
 
     def test_replaying_an_old_start_command_returns_the_current_turn(self) -> None:
@@ -7903,6 +7976,8 @@ class AgentGatewayTests(unittest.TestCase):
                 "preflight_failure": False,
                 "no_progress_retry": True,
                 "manual_action_required": False,
+                "projection_target_exceeded": True,
+                "budget_blocker": False,
             },
         )
 
@@ -7943,6 +8018,8 @@ class AgentGatewayTests(unittest.TestCase):
                 "preflight_failure": False,
                 "no_progress_retry": False,
                 "manual_action_required": True,
+                "projection_target_exceeded": True,
+                "budget_blocker": False,
             },
         )
 
@@ -9727,9 +9804,22 @@ class AgentGatewayTests(unittest.TestCase):
         replayed_semantics = {
             key: value
             for key, value in replayed.items()
-            if key not in {"diagnostic_receipt", "projection_target_exceeded"}
+            if key
+            not in {
+                "diagnostic_receipt",
+                "interaction_telemetry",
+                "progress",
+                "projection_target_exceeded",
+            }
         }
         self.assertEqual(replayed_semantics, cancelled_semantics)
+        self.assertEqual(
+            replayed["progress"],
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
+        self.assertTrue(
+            replayed["interaction_telemetry"]["no_progress_retry"]
+        )
         self.assertEqual(
             replayed["diagnostic_receipt"]["receipt_id"],
             cancelled["diagnostic_receipt_ref"]["receipt_id"],
@@ -11381,6 +11471,53 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             sum(event["kind"] == "RunCancelled" for event in events),
             1,
+        )
+
+    def test_duplicate_control_cancel_reports_no_progress_without_a_new_transition(
+        self,
+    ) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.69",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="duplicate-control",
+            operation_id="duplicate-control-start",
+        )
+        cancellation = {
+            "kind": "control",
+            "run_id": waiting["run_id"],
+            "command": "cancel",
+            "submission_id": "duplicate-control-submission",
+            **gate_binding(waiting),
+        }
+        cancelled = self.service.call_exposed_tool(
+            "execute",
+            cancellation,
+            task_id="duplicate-control",
+            operation_id="duplicate-control-first",
+        )
+        before = self.service._test.context_runtime.read_case(waiting["run_id"])
+
+        replayed = self.service.call_exposed_tool(
+            "execute",
+            cancellation,
+            task_id="duplicate-control-replay",
+            operation_id="duplicate-control-second",
+        )
+        after = self.service._test.context_runtime.read_case(waiting["run_id"])
+
+        self.assertEqual(cancelled["state"], "cancelled")
+        self.assertEqual(after["revision"], before["revision"])
+        self.assertEqual(
+            replayed["progress"],
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
+        self.assertTrue(
+            replayed["interaction_telemetry"]["no_progress_retry"]
         )
 
     def test_execute_live_patch_runs_diagnosis_mutation_and_fresh_verification(self) -> None:

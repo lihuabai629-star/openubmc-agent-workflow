@@ -1284,14 +1284,15 @@ class ResultProjector:
         }
         if observation_ref is not None:
             document["observation_ref"] = observation_ref
-        return CostGovernor.observation(document)
+        projected = CostGovernor.observation(document)
+        telemetry = interaction_telemetry(projected)
+        if telemetry is not None:
+            projected["interaction_telemetry"] = telemetry
+        return projected
 
     def turn(self, turn: RunTurn) -> dict[str, object]:
         document = {"schema": TURN_SCHEMA, **turn.to_public_dict()}
         document["next_action"] = self._suggested_action(document)
-        telemetry = interaction_telemetry(document)
-        if telemetry is not None:
-            document["interaction_telemetry"] = telemetry
         diagnostic_receipt = document.get("diagnostic_receipt")
         if isinstance(diagnostic_receipt, Mapping):
             receipt_gaps = diagnostic_receipt.get("gaps", [])
@@ -1317,7 +1318,11 @@ class ResultProjector:
             document["gaps"] = list(
                 dict.fromkeys((*gaps, *validation_gaps))
             )[:16]
-        return CostGovernor.turn(document)
+        projected = CostGovernor.turn(document)
+        telemetry = interaction_telemetry(projected)
+        if telemetry is not None:
+            projected["interaction_telemetry"] = telemetry
+        return CostGovernor.turn(projected)
 
 
 class AgentGateway:
@@ -1480,6 +1485,20 @@ class AgentGateway:
                 )
                 result["projection_target_exceeded"] = True
                 result["projection_target_overage_bytes"] = 0
+                for _attempt in range(3):
+                    overage = max(
+                        1,
+                        len(_json_bytes(result))
+                        - TURN_PROJECTION_TARGET_BYTES,
+                    )
+                    if result["projection_target_overage_bytes"] == overage:
+                        break
+                    result["projection_target_overage_bytes"] = overage
+            result["interaction_telemetry"] = interaction_telemetry(
+                result,
+                preflight_failure=True,
+            )
+            if result.get("projection_target_exceeded") is True:
                 for _attempt in range(3):
                     overage = max(
                         1,

@@ -26,6 +26,7 @@ from scripts.product_closeout_qualification import (  # noqa: E402
     PROOF_SCHEMA,
     qualify,
 )
+from scripts.runtime_ledger_snapshot import stable_runtime_ledger_copy  # noqa: E402
 
 
 INGESTION_SCHEMA = "openubmc-agent-workflow.product-closeout-ingestion.v1"
@@ -86,9 +87,10 @@ def _runtime_snapshot(
     run_id: str,
     selected_target: str,
 ) -> tuple[str, str, str]:
-    repository = SQLiteRuntimeRepository(repository_path.expanduser().absolute())
-    projection = repository.load(run_id)
-    events = repository.events(run_id)
+    with stable_runtime_ledger_copy(repository_path) as snapshot:
+        repository = SQLiteRuntimeRepository(snapshot)
+        projection = repository.load(run_id)
+        events = repository.events(run_id)
     if not isinstance(projection, Mapping):
         raise ValueError("Runtime run_id is unavailable")
     targets = [

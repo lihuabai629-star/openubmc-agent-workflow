@@ -36,6 +36,13 @@ from openubmc_target_runtime import inspect_mcp_process_records  # noqa: E402
 SCHEMA = "openubmc-agent-workflow.continuous-closeout-qualification.v1"
 PRODUCT_CLIENTS = ("claude", "codex", "openclaw")
 EVALUATION_HARNESSES = ("dsh",)
+SUPPORTED_CLIENT_TESTS = {
+    client: (
+        "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_deploys_runtime_launcher_and_registers_stdio_mcp",
+        "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_is_idempotent_for_all_clients_and_shell_hook",
+    )
+    for client in PRODUCT_CLIENTS
+}
 PRODUCT_CONTRACT_TESTS = (
     "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_assembles_a_promotable_manifest_from_runtime_and_fixed_evidence",
     "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_cli_writes_deterministic_manifest_and_qualification_report",
@@ -123,7 +130,7 @@ TASK_MATRIX_TESTS = {
     ),
     "hardware_blocked": (
         "tests.test_agent_gateway.AgentGatewayTests.test_hardware_coverage_rejects_unrelated_current_evidence",
-        "tests.test_agent_gateway.AgentGatewayTests.test_completed_failed_build_does_not_advance_to_upgrade",
+        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_keeps_dependency_and_nvme_coverage_gaps_visible",
     ),
 }
 
@@ -173,9 +180,13 @@ def _run_tests(
 
 
 def load_product_ingestion(path: Path) -> dict[str, object]:
+    return _load_json_object(path, "product ingestion input")
+
+
+def _load_json_object(path: Path, label: str) -> dict[str, object]:
     value = json.loads(path.expanduser().read_text(encoding="utf-8"))
     if not isinstance(value, Mapping):
-        raise ValueError("product ingestion input must contain an object")
+        raise ValueError(f"{label} must contain an object")
     return dict(value)
 
 
@@ -206,9 +217,7 @@ def _product_evidence(
         status = "verified-ingestion"
     else:
         assert path is not None
-        value = json.loads(path.expanduser().read_text(encoding="utf-8"))
-        if not isinstance(value, Mapping):
-            raise ValueError("product manifest must contain an object")
+        value = _load_json_object(path, "product manifest")
         status = "verified-manifest"
     report = qualify_product_closeout(
         value,
@@ -322,6 +331,10 @@ def qualify(
     overlap = sorted(set(product_clients) & set(evaluation_harnesses))
 
     product_contract = _run_tests(PRODUCT_CONTRACT_TESTS, cwd=ROOT)
+    client_runs = {
+        name: {**_run_tests(tests, cwd=ROOT), "tests": list(tests)}
+        for name, tests in SUPPORTED_CLIENT_TESTS.items()
+    }
     evaluation_isolation = _run_tests(EVALUATION_ISOLATION_TESTS, cwd=ROOT)
     lifecycle_results = {
         name: _run_tests(tests, cwd=RUNTIME_ROOT)
@@ -330,7 +343,7 @@ def qualify(
     lifecycle_closeout = _mcp_closeout_snapshot()
     projection_tests = _run_tests(PROJECTION_TESTS, cwd=RUNTIME_ROOT)
     task_matrix = {
-        name: _run_tests(tests, cwd=RUNTIME_ROOT)
+        name: {**_run_tests(tests, cwd=RUNTIME_ROOT), "tests": list(tests)}
         for name, tests in TASK_MATRIX_TESTS.items()
     }
     projection = qualify_dual_projection()
@@ -350,6 +363,7 @@ def qualify(
             product_clients == list(PRODUCT_CLIENTS),
             evaluation_harnesses == list(EVALUATION_HARNESSES),
             not overlap,
+            all(result.get("status") == "passed" for result in client_runs.values()),
         )
     )
     lifecycle_passed = all(
@@ -397,6 +411,7 @@ def qualify(
             "product_clients": product_clients,
             "evaluation_harnesses": evaluation_harnesses,
             "overlap": overlap,
+            "runs": client_runs,
         },
         "evaluation_isolation": {
             **evaluation_isolation,

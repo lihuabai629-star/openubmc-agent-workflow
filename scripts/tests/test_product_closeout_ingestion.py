@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -189,6 +190,41 @@ class ProductCloseoutIngestionTests(unittest.TestCase):
                         original["runtime"]["repository"]["path"]
                     ),
                 )
+
+    def test_ingestion_does_not_migrate_the_operator_selected_runtime_ledger(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            original, _, _, artifact = complete_manifest(root)
+            _write_artifact_metadata(artifact, original)
+            repository = Path(original["runtime"]["repository"]["path"])
+            with sqlite3.connect(repository) as connection:
+                connection.execute("DROP INDEX evidence_index_blob")
+                connection.execute("DROP TABLE evidence_index")
+                connection.commit()
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            before = repository.read_bytes()
+            sidecars_before = {
+                suffix: Path(str(repository) + suffix).read_bytes()
+                for suffix in ("-wal", "-shm")
+                if Path(str(repository) + suffix).exists()
+            }
+
+            ingestion.assemble_manifest(
+                _ingestion_input(original),
+                runtime_repository=repository,
+            )
+
+            sidecars_after = {
+                suffix: Path(str(repository) + suffix).read_bytes()
+                for suffix in ("-wal", "-shm")
+                if Path(str(repository) + suffix).exists()
+            }
+            after = repository.read_bytes()
+
+        self.assertEqual(after, before)
+        self.assertEqual(sidecars_after, sidecars_before)
 
 
 if __name__ == "__main__":
