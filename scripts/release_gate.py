@@ -386,6 +386,7 @@ def execute_release_gate(
     ab_evidence: Path | None = None,
     github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
     ab_attestation_public_key: Path | None = None,
+    release_tag: str | None = None,
 ) -> dict[str, object]:
     clean_home = work_root / "clean-install-home"
     lifecycle_home = work_root / "lifecycle-home"
@@ -402,12 +403,17 @@ def execute_release_gate(
         previous_ref,
         label="previous release ref",
     )
-    if candidate.requested_ref != "HEAD" and not is_full_commit(
-        candidate.requested_ref
+    selected_release_tag = str(release_tag or "").strip()
+    if (
+        not selected_release_tag
+        and candidate.requested_ref != "HEAD"
+        and not is_full_commit(candidate.requested_ref)
     ):
+        selected_release_tag = candidate.requested_ref
+    if selected_release_tag:
         requested_version = _parsed_release_tag(
-            candidate.requested_ref,
-            label="current release ref",
+            selected_release_tag,
+            label="current release tag",
         )
         if requested_version != current_version:
             raise ValueError(
@@ -485,6 +491,7 @@ def execute_release_gate(
         "schema": RELEASE_GATE_SCHEMA,
         "current_ref": current_ref,
         "requested_ref": candidate.requested_ref,
+        "release_tag": selected_release_tag,
         "release_commit": candidate.release_commit,
         "previous_ref": previous_ref,
         "source_commit": resolved_source_commit,
@@ -503,6 +510,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--current-ref", required=True)
     parser.add_argument("--previous-ref", required=True)
+    parser.add_argument("--release-tag")
     parser.add_argument("--workspace", type=Path, default=ROOT)
     parser.add_argument("--work-root", type=Path)
     parser.add_argument("--output", type=Path)
@@ -536,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
                 work_root=work_root,
                 ab_evidence=args.ab_evidence.expanduser().absolute(),
                 github_repository=args.github_repository,
+                release_tag=args.release_tag,
                 ab_attestation_public_key=(
                     args.ab_attestation_public_key.expanduser().absolute()
                 ),

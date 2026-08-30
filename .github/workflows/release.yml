@@ -107,7 +107,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           python3 scripts/release_gate.py
-          --current-ref "${{ steps.candidate.outputs.release_tag }}"
+          --current-ref "${{ inputs.current_ref }}"
+          --release-tag "${{ steps.candidate.outputs.release_tag }}"
           --previous-ref "${{ inputs.previous_ref }}"
           --github-repository "${{ github.repository }}"
           --work-root "$RUNNER_TEMP/release-gate-work"

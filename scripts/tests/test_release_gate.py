@@ -125,6 +125,26 @@ class ReleaseGateTests(unittest.TestCase):
             pattern="strict vMAJOR.MINOR.PATCH tag",
         )
 
+    def test_release_tag_is_validated_without_replacing_requested_ref(self) -> None:
+        def succeed(command, *, cwd):
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "HEAD",
+            release_version="2.0.2",
+        ):
+            report = release_gate.execute_release_gate(
+                current_ref="HEAD",
+                release_tag="v2.0.2",
+                previous_ref="v2.0.1",
+                workspace=Path.cwd(),
+                work_root=Path(directory),
+                executor=succeed,
+            )
+
+        self.assertEqual(report["requested_ref"], "HEAD")
+        self.assertEqual(report["release_tag"], "v2.0.2")
+
     def test_all_release_gates_are_required_for_promotion(self) -> None:
         calls: list[tuple[str, ...]] = []
 
@@ -653,10 +673,13 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("$RUNNER_TEMP/agent-gateway-ab-attestation.pub", trust_root["run"])
         gate = steps["Run immutable release gates"]["run"]
         self.assertIn(
-            '--current-ref "${{ steps.candidate.outputs.release_tag }}"',
+            '--current-ref "${{ inputs.current_ref }}"',
             gate,
         )
-        self.assertNotIn('--current-ref "${{ inputs.current_ref }}"', gate)
+        self.assertIn(
+            '--release-tag "${{ steps.candidate.outputs.release_tag }}"',
+            gate,
+        )
         self.assertIn(
             '--ab-evidence "$RUNNER_TEMP/agent-gateway-ab-evidence/summary.json"',
             gate,
