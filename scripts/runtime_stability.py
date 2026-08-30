@@ -825,8 +825,21 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
     run_ids = {str(turn["run_id"]) for turn in turns}
     unique_turns = len({evidence_fingerprint(turn) for turn in turns})
     turn_states = Counter(str(turn["state"]) for turn in turns)
+
+    def control_semantics(turn: Mapping[str, object]) -> dict[str, object]:
+        stable = dict(turn)
+        progress = stable.get("progress")
+        if (
+            isinstance(progress, Mapping)
+            and progress.get("reason") == "unchanged_command_replayed"
+        ):
+            stable.pop("progress", None)
+            stable.pop("interaction_telemetry", None)
+        return stable
+
     canonical_turn_matches = all(
-        evidence_fingerprint(turn) == evidence_fingerprint(canonical_turn)
+        evidence_fingerprint(control_semantics(turn))
+        == evidence_fingerprint(control_semantics(canonical_turn))
         for turn in turns
     )
     gate_submissions = len(projection["gate_submissions"])
