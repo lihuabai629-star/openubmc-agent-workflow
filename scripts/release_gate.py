@@ -9,6 +9,7 @@ import hashlib
 import json
 import platform
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -133,6 +134,23 @@ class ReleaseCandidate(NamedTuple):
     requested_ref: str
     release_commit: str
     source_commit: str
+    release_version: str = ""
+
+
+_RELEASE_VERSION = re.compile(
+    r"(?P<major>0|[1-9][0-9]*)\."
+    r"(?P<minor>0|[1-9][0-9]*)\."
+    r"(?P<patch>0|[1-9][0-9]*)"
+)
+
+
+def _release_version(value: str, *, label: str, tag: bool) -> tuple[int, int, int]:
+    normalized = value.removeprefix("v") if tag else value
+    matched = _RELEASE_VERSION.fullmatch(normalized)
+    if matched is None or (tag and not value.startswith("v")):
+        expected = "vMAJOR.MINOR.PATCH tag" if tag else "MAJOR.MINOR.PATCH version"
+        raise ValueError(f"{label} must be a strict {expected}")
+    return tuple(int(matched.group(name)) for name in ("major", "minor", "patch"))
 
 
 def require_published_candidate(
@@ -194,6 +212,7 @@ def _resolve_release_candidate(workspace: Path, ref: str) -> ReleaseCandidate:
     except ReleaseLockError as exc:
         raise ValueError(f"invalid immutable release ref: {exc}") from exc
     source_commit = str(identity.get("source_commit", "")).strip().lower()
+    release_version = str(identity.get("release_version", "")).strip()
     if not is_full_commit(source_commit):
         raise ValueError("immutable release ref records an invalid source_commit")
     if source_commit == release_commit:
@@ -204,6 +223,7 @@ def _resolve_release_candidate(workspace: Path, ref: str) -> ReleaseCandidate:
         requested_ref=ref,
         release_commit=release_commit,
         source_commit=source_commit,
+        release_version=release_version,
     )
 
 
@@ -358,6 +378,28 @@ def execute_release_gate(
     resolved_source_commit = candidate.source_commit
     resolved_release_commit = candidate.release_commit
     require_published_candidate(resolved_release_commit, github_repository)
+    current_version = _release_version(
+        candidate.release_version,
+        label="release lock version",
+        tag=False,
+    )
+    previous_version = _release_version(
+        previous_ref,
+        label="previous release ref",
+        tag=True,
+    )
+    if candidate.requested_ref.startswith("v"):
+        requested_version = _release_version(
+            candidate.requested_ref,
+            label="current release ref",
+            tag=True,
+        )
+        if requested_version != current_version:
+            raise ValueError(
+                "current release tag does not match release-lock.json version"
+            )
+    if current_version <= previous_version:
+        raise ValueError("current release version must be newer than previous release")
     for name, commands in gate_commands(
         current_ref=resolved_release_commit,
         previous_ref=previous_ref,
