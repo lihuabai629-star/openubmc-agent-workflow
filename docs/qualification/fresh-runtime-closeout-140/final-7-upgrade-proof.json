@@ -1,0 +1,23 @@
+{
+  "artifact": {
+    "path": "/home/workspace/openubmc-nvme-replay-20260812/manifest/output/rootfs_openUBMC.hpm",
+    "provenance": "openubmc-build",
+    "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+    "sha256": "2fc339ddadc4fb4b1d550257f7f07986f290f562a964c50a535030f6b9ace987",
+    "size": 93563247,
+    "source_revision": "manifest:bacde32dbfb7ea41ebee81e7f87524b46f6e759b;mdb_interface:93a7cff7ef1f9c970325795f5e072e2d0eb4362c;pcie_device:a3eb9b97056a79b29b60d61a7c558ae8f194df41;storage:0839004bb4d24e4efbd3a9d5c26bd6ba6d53378c",
+    "target": "10.121.136.200",
+    "version": "12.08.21.10"
+  },
+  "completed_at": "2026-08-30T13:11:23.508827Z",
+  "dimension": "upgrade",
+  "installed_version": "12.08.21.10",
+  "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+  "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
+  "status": "completed",
+  "supporting_evidence": {
+    "evidence_type": "runtime-upgrade-evidence",
+    "sha256": "3a578a416199dde558ebfab60f50e5ece4b153f3131e7898a5b789a10dad6e6a"
+  },
+  "target": "10.121.136.200"
+}

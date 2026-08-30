@@ -1,0 +1,18 @@
+{
+  "artifact": {
+    "path": "/home/workspace/.codex-runs/nvme-temp-na-20260806/rollback/rootfs_openUBMC-12.08.21.04.hpm",
+    "sha256": "3040fe54afd6ea2ec9cfc302062cfd0a2d350db70b7adb51ad8cf64ab044fd22",
+    "size": 93562495,
+    "version": "12.08.21.04"
+  },
+  "completed_at": "2026-08-30T13:06:43.575989Z",
+  "dimension": "recovery",
+  "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+  "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
+  "status": "verified",
+  "supporting_evidence": {
+    "evidence_type": "firmware-recovery-artifact-record",
+    "sha256": "ed895bc09643bce661ba7aefdd47994a9062e0fd21513f6bc5a988031f888905"
+  },
+  "target": "10.121.136.200"
+}

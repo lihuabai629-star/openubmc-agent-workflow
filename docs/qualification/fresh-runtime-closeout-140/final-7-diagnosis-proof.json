@@ -1,0 +1,15 @@
+{
+  "dimension": "diagnosis",
+  "evidence_ids": [
+    "d0edbb787e6a6d4be178b2ef222d31a0b32d4d092a63394ab2f77e1af9d20511",
+    "evidence-e89d42f3147ec5c9751e575e240d3f38"
+  ],
+  "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+  "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
+  "status": "passed",
+  "supporting_evidence": {
+    "evidence_type": "workflow-diagnosis-record",
+    "sha256": "f8e0f9a39c608564f4a52dd324de5e456e857d7638e1a2684fa9ada9a0e92c67"
+  },
+  "target": "10.121.136.200"
+}

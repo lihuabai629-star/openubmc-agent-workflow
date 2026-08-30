@@ -1,0 +1,18 @@
+{
+  "compiled_units": 1,
+  "dimension": "build",
+  "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+  "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
+  "source_commits": [
+    "bacde32dbfb7ea41ebee81e7f87524b46f6e759b",
+    "93a7cff7ef1f9c970325795f5e072e2d0eb4362c",
+    "a3eb9b97056a79b29b60d61a7c558ae8f194df41",
+    "0839004bb4d24e4efbd3a9d5c26bd6ba6d53378c"
+  ],
+  "status": "compiled",
+  "supporting_evidence": {
+    "evidence_type": "product-build-log",
+    "sha256": "ce92ff0ba4d14c80b5e6411178aa81a9c2916c7637a44f63c2ac449eb9118422"
+  },
+  "target": "10.121.136.200"
+}

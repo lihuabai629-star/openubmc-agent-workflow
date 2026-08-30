@@ -1,0 +1,13 @@
+{
+  "artifact_sha256": "2fc339ddadc4fb4b1d550257f7f07986f290f562a964c50a535030f6b9ace987",
+  "dimension": "freshness",
+  "observed_at": "2026-08-30T13:13:21.973285Z",
+  "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+  "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
+  "status": "fresh",
+  "supporting_evidence": {
+    "evidence_type": "runtime-debug-evidence",
+    "sha256": "604b26dc95f4b66d444018cfb69fb97e11f3a539e9e035b50fd704c72fa9b847"
+  },
+  "target": "10.121.136.200"
+}
