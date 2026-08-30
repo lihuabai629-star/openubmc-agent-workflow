@@ -67,6 +67,9 @@ from openubmc_target_runtime.context_runtime import (  # noqa: E402
 from openubmc_target_runtime.agent_gateway import (  # noqa: E402
     render_execute_turn_text,
 )
+from openubmc_target_runtime.agent_interaction import (  # noqa: E402
+    interaction_telemetry,
+)
 from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
     build_diagnostic_receipt,
     latest_diagnostic_receipt,
@@ -2302,6 +2305,16 @@ class PersistentUnknownRunDriver:
 
 
 class AgentGatewayTests(unittest.TestCase):
+    def test_incident_always_requires_operator_attention(self) -> None:
+        telemetry = interaction_telemetry(
+            {"state": "incident", "incident": {"code": "incomplete"}}
+        )
+
+        assert telemetry is not None
+        self.assertEqual(telemetry["classification"], "incident")
+        self.assertTrue(telemetry["incident_present"])
+        self.assertTrue(telemetry["operator_attention_required"])
+
     def test_unscoped_legacy_diagnostic_receipt_is_cycle_one_only(self) -> None:
         legacy = {
             "operation": "debug_run",
