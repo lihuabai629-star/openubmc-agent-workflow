@@ -704,8 +704,19 @@ class LocalArtifactStore:
         run_id: str,
         created_by_effect: str,
         version: str = "",
+        expected_sha256: str = "",
     ) -> ArtifactRef:
         """Persist raw content and return a content-addressed ArtifactRef."""
+
+        if expected_sha256:
+            normalized_expected = expected_sha256.removeprefix("sha256:").lower()
+            if len(normalized_expected) != 64:
+                raise ReferenceViolation("expected Artifact SHA-256 is invalid")
+            actual_digest, _actual_size = self._digest(Path(path))
+            if actual_digest != normalized_expected:
+                raise ReferenceViolation(
+                    "Artifact content does not match the expected SHA-256"
+                )
 
         return self._put(
             path,

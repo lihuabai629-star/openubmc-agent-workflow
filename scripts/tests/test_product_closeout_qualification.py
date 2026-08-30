@@ -525,6 +525,7 @@ def forge_runtime_ledger_for_negative_test(
     native_operations_in_order: bool = True,
     recovery_after_upgrade: bool = False,
     attach_recovery_package: bool = True,
+    recovery_after_earlier_upgrade_attempt: bool = False,
 ) -> None:
     """Construct a deliberately forged ledger for qualification rejection tests.
 
@@ -724,7 +725,7 @@ def forge_runtime_ledger_for_negative_test(
     immediate_operator_items: list[dict[str, object]] = []
     for item in operator_items:
         if (
-            recovery_after_upgrade
+            (recovery_after_upgrade or recovery_after_earlier_upgrade_attempt)
             and item.get("evidence_type") == "firmware-recovery-artifact-record"
         ):
             deferred_recovery_items.append(item)
@@ -757,7 +758,7 @@ def forge_runtime_ledger_for_negative_test(
 
     for index, item in enumerate(immediate_operator_items, start=1):
         append_operator_evidence(item, index)
-    if attach_recovery_package:
+    if attach_recovery_package and not recovery_after_earlier_upgrade_attempt:
         recovery = manifest["recovery"]
         events.append(
             PendingCaseEvent(
@@ -777,11 +778,83 @@ def forge_runtime_ledger_for_negative_test(
                         "observed_at": 19.0,
                         "case_id": run_id,
                         "producer": "operator-evidence-attach",
+                        "artifact_ref": {
+                            "handle": (
+                                "artifact://sha256/" + recovery["sha256"]
+                            ),
+                            "digest": "sha256:" + recovery["sha256"],
+                            "kind": "openubmc-hpm",
+                            "size": recovery["size"],
+                            "provenance": "operator-evidence-attach",
+                            "retention_hint": "run-lifetime",
+                            "version": recovery["version"],
+                            "target": target,
+                            "run_id": run_id,
+                        },
                     }
                 },
                 "attach-firmware-recovery-artifact",
             )
         )
+    if recovery_after_earlier_upgrade_attempt:
+        events.extend(
+            (
+                PendingCaseEvent(
+                    "OperationAccepted",
+                    {"operation": "upgrade_run", "target_id": target},
+                    "earlier-upgrade-attempt",
+                ),
+                PendingCaseEvent(
+                    "OperationStarted", {}, "earlier-upgrade-attempt"
+                ),
+                PendingCaseEvent(
+                    "OperationTerminal",
+                    {"status": "failed", "target_epoch": 3},
+                    "earlier-upgrade-attempt",
+                ),
+            )
+        )
+        first_deferred_index = len(immediate_operator_items) + 1
+        for offset, item in enumerate(deferred_recovery_items):
+            append_operator_evidence(item, first_deferred_index + offset)
+        if attach_recovery_package:
+            recovery = manifest["recovery"]
+            events.append(
+                PendingCaseEvent(
+                    "EvidenceAttached",
+                    {
+                        "evidence": {
+                            "evidence_id": "firmware-recovery-artifact",
+                            "blob_id": recovery["sha256"],
+                            "media_type": "application/octet-stream",
+                            "byte_count": recovery["size"],
+                            "target_id": evidence_target or target,
+                            "generation": "fresh-product-closeout",
+                            "provenance": (
+                                "operator-evidence-attach:firmware-recovery-artifact"
+                            ),
+                            "evidence_type": "firmware-recovery-artifact",
+                            "observed_at": 19.0,
+                            "case_id": run_id,
+                            "producer": "operator-evidence-attach",
+                            "artifact_ref": {
+                                "handle": (
+                                    "artifact://sha256/" + recovery["sha256"]
+                                ),
+                                "digest": "sha256:" + recovery["sha256"],
+                                "kind": "openubmc-hpm",
+                                "size": recovery["size"],
+                                "provenance": "operator-evidence-attach",
+                                "retention_hint": "run-lifetime",
+                                "version": recovery["version"],
+                                "target": target,
+                                "run_id": run_id,
+                            },
+                        }
+                    },
+                    "attach-firmware-recovery-artifact",
+                )
+            )
     if include_native_operations:
         operations = (
             ("upgrade_run", "upgrade-effect-1", 4),
@@ -835,7 +908,7 @@ def forge_runtime_ledger_for_negative_test(
                     operation_id,
                 )
             )
-            if operation == "upgrade_run":
+            if operation == "upgrade_run" and recovery_after_upgrade:
                 first_deferred_index = len(immediate_operator_items) + 1
                 for offset, item in enumerate(deferred_recovery_items):
                     append_operator_evidence(item, first_deferred_index + offset)
@@ -1512,6 +1585,24 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                 "recovery package bytes" in item
                 for item in report["violations"]
             ),
+            report["violations"],
+        )
+
+    def test_recovery_cannot_be_attached_after_any_earlier_upgrade_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            forge_runtime_ledger_for_negative_test(
+                manifest,
+                recovery_after_earlier_upgrade_attempt=True,
+            )
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("before upgrade_run" in item for item in report["violations"]),
             report["violations"],
         )
 

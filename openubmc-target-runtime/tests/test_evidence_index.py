@@ -16,8 +16,10 @@ from openubmc_target_runtime import (  # noqa: E402
     EVIDENCE_QUERY_MAX_BYTES,
     InMemoryBlobRepository,
     JsonRpcMcpEndpoint,
+    LocalArtifactStore,
     PendingCaseEvent,
     RuntimeMcpService,
+    SQLiteArtifactRepository,
     SQLiteRuntimeRepository,
 )
 
@@ -153,6 +155,66 @@ class EvidenceIndexTests(unittest.TestCase):
         self.assertEqual(attached["evidence"]["blob_id"], digest)
         self.assertEqual(attached["evidence"]["target_id"], "target-1")
         self.assertEqual(loaded["body"], "3/3 passed\n")
+
+    def test_recovery_package_is_managed_by_artifact_store_not_evidence_blob(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            recovery = root / "recovery.hpm"
+            recovery_body = b"firmware recovery package" * 4096
+            recovery.write_bytes(recovery_body)
+            digest = hashlib.sha256(recovery_body).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            blobs = InMemoryBlobRepository()
+            artifacts = LocalArtifactStore(
+                content_root=root / "artifacts",
+                repository=SQLiteArtifactRepository(root / "artifacts.sqlite3"),
+            )
+            run_id = _create_public_run(repository, target="192.0.2.84")
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                artifact_store=artifacts,
+                interface_profile="operator",
+            )
+            try:
+                attached = service.call_exposed_tool(
+                    "evidence_attach",
+                    {
+                        "run_id": run_id,
+                        "target": "192.0.2.84",
+                        "path": str(recovery),
+                        "sha256": digest,
+                        "evidence_type": "firmware-recovery-artifact",
+                    },
+                    task_id="operator-recovery-artifact",
+                    operation_id="attach-recovery-artifact",
+                )
+                loaded = service.call_exposed_tool(
+                    "evidence_read",
+                    {
+                        "case_id": run_id,
+                        "evidence_id": attached["evidence"]["evidence_id"],
+                    },
+                    task_id="operator-recovery-artifact",
+                    operation_id="read-recovery-artifact",
+                )
+            finally:
+                service.close()
+            artifact_ref = attached["evidence"]["artifact_ref"]
+            managed_body = artifacts.resolve(
+                artifacts.reference(artifact_ref)
+            ).read_bytes()
+
+        self.assertNotEqual(attached["evidence"]["blob_id"], digest)
+        self.assertLess(blobs.size_bytes(), len(recovery_body))
+        self.assertEqual(artifact_ref["handle"], f"artifact://sha256/{digest}")
+        self.assertEqual(artifact_ref["digest"], f"sha256:{digest}")
+        self.assertEqual(artifact_ref["kind"], "openubmc-hpm")
+        self.assertEqual(artifact_ref["run_id"], run_id)
+        self.assertEqual(artifact_ref["target"], "192.0.2.84")
+        self.assertEqual(managed_body, recovery_body)
+        self.assertEqual(json.loads(loaded["body"])["artifact_ref"], artifact_ref)
 
     def test_operator_file_evidence_attach_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

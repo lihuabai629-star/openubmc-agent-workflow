@@ -112,6 +112,7 @@ class RuntimeEvidenceFact:
     target_epoch: int | None
     observed_at: datetime
     revision: int
+    artifact_ref: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -1021,6 +1022,12 @@ def _runtime_ledger(
         for item in matched_targets
     }
     matched_target_ids.discard("")
+    matched_target_bindings = {
+        binding
+        for item in matched_targets
+        for binding in (_text(item.get("target_id")), _text(item.get("address")))
+        if binding
+    }
     opened = next((event for event in events if event.get("kind") == "CaseOpened"), None)
     opened_payload = _mapping(_mapping(opened).get("payload"))
     authorization = _mapping(opened_payload.get("authorization"))
@@ -1182,7 +1189,16 @@ def _runtime_ledger(
     upgrade_operation_id, upgrade_state = selected_operation(
         "upgrade_run", after_revision=build_revision
     )
-    upgrade_started_revision = int(upgrade_state.get("started_revision", 0) or 0)
+    upgrade_started_revisions = [
+        int(_mapping(state).get("started_revision", 0) or 0)
+        for state in operation_events.values()
+        if _text(_mapping(state).get("operation")) == "upgrade_run"
+        and _text(_mapping(state).get("target_id")) in matched_target_ids
+        and int(_mapping(state).get("started_revision", 0) or 0) > 0
+    ]
+    upgrade_started_revision = (
+        min(upgrade_started_revisions) if upgrade_started_revisions else 0
+    )
     upgrade_terminal_revision = int(upgrade_state.get("terminal_revision", 0) or 0)
     debug_operation_id, debug_state = selected_operation(
         "debug_collect", after_revision=upgrade_terminal_revision
@@ -1223,7 +1239,31 @@ def _runtime_ledger(
         target_id = _text(reference.get("target_id"))
         if target_id not in matched_target_ids:
             continue
+        artifact_ref = _mapping(reference.get("artifact_ref"))
         digest = _text(reference.get("blob_id"))
+        byte_count = reference.get("byte_count")
+        if _text(reference.get("evidence_type")) == "firmware-recovery-artifact":
+            artifact_digest = _expected_sha256(artifact_ref.get("digest"))
+            artifact_size = artifact_ref.get("size")
+            if (
+                not artifact_digest
+                or isinstance(artifact_size, bool)
+                or not isinstance(artifact_size, int)
+                or artifact_size <= 0
+                or _text(artifact_ref.get("kind")) != "openubmc-hpm"
+                or _text(artifact_ref.get("provenance"))
+                != "operator-evidence-attach"
+                or _text(artifact_ref.get("retention_hint")) != "run-lifetime"
+                or _text(artifact_ref.get("run_id")) != run_id
+                or _text(artifact_ref.get("target")) not in matched_target_bindings
+                or not _text(artifact_ref.get("handle")).startswith(
+                    "artifact://sha256/"
+                )
+            ):
+                reject("Recovery ArtifactRef is not Runtime-bound and lifecycle-managed")
+                continue
+            digest = artifact_digest
+            byte_count = artifact_size
         observed_at = _unix_timestamp(reference.get("observed_at"))
         if not digest or observed_at is None:
             continue
@@ -1235,9 +1275,9 @@ def _runtime_ledger(
                 producer=_text(reference.get("producer")),
                 evidence_type=_text(reference.get("evidence_type")),
                 byte_count=(
-                    reference.get("byte_count")
-                    if isinstance(reference.get("byte_count"), int)
-                    and not isinstance(reference.get("byte_count"), bool)
+                    byte_count
+                    if isinstance(byte_count, int)
+                    and not isinstance(byte_count, bool)
                     else 0
                 ),
                 target_id=target_id,
@@ -1248,6 +1288,7 @@ def _runtime_ledger(
                 ),
                 observed_at=observed_at,
                 revision=revision,
+                artifact_ref=artifact_ref,
             )
         )
     for name, operation_id in (

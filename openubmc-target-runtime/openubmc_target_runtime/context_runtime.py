@@ -7021,6 +7021,130 @@ class ContextRuntime:
             "already_attached": False,
         }
 
+    def prepare_artifact_evidence(
+        self,
+        run_id: str,
+        *,
+        target: str,
+        artifact_ref: Mapping[str, object],
+        evidence_type: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Bind one ArtifactStore-owned package to an open Run Evidence fact."""
+
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        if (
+            projection.get("status") in {"terminal", "cancelled"}
+            or isinstance(projection.get("run_outcome"), Mapping)
+            and bool(projection.get("run_outcome"))
+        ):
+            raise CaseClosed(f"run {run_id} no longer accepts evidence")
+        if evidence_type != "firmware-recovery-artifact":
+            raise ValueError("Artifact evidence type is unsupported")
+        targets = [
+            dict(item)
+            for item in projection.get("targets", [])
+            if isinstance(item, Mapping)
+            and target
+            in {
+                str(item.get("target_id", "")).strip(),
+                str(item.get("address", "")).strip(),
+            }
+        ]
+        if len(targets) != 1:
+            raise ValueError("target must select exactly one Runtime Run target")
+        selected_target = targets[0]
+        target_id = str(
+            selected_target.get("target_id") or selected_target.get("address")
+        ).strip()
+        target_bindings = {
+            target_id,
+            str(selected_target.get("address", "")).strip(),
+        }
+        target_bindings.discard("")
+        reference_value = dict(artifact_ref)
+        digest = str(reference_value.get("digest", "")).removeprefix("sha256:")
+        size = reference_value.get("size")
+        if (
+            len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size <= 0
+            or str(reference_value.get("kind", "")) != "openubmc-hpm"
+            or str(reference_value.get("run_id", "")) != run_id
+            or str(reference_value.get("target", "")) not in target_bindings
+        ):
+            raise ValueError("recovery ArtifactRef is not bound to the selected Run target")
+        evidence_id = "evidence-" + _fingerprint(
+            {
+                "run_id": run_id,
+                "target_id": target_id,
+                "evidence_type": evidence_type,
+                "artifact_digest": digest,
+            }
+        )[:32]
+        existing = self.repository.evidence_reference(run_id, evidence_id)
+        if isinstance(existing, Mapping):
+            return {
+                "run_id": run_id,
+                "evidence_type": evidence_type,
+                "evidence": dict(existing),
+                "already_attached": True,
+            }
+        definition = projection.get("workflow_definition", {})
+        definition = definition if isinstance(definition, Mapping) else {}
+        epochs = selected_target.get("epochs", {})
+        epochs = epochs if isinstance(epochs, Mapping) else {}
+        target_epoch_value = epochs.get("target_epoch")
+        target_epoch = (
+            int(target_epoch_value)
+            if isinstance(target_epoch_value, int)
+            and not isinstance(target_epoch_value, bool)
+            and target_epoch_value >= 0
+            else None
+        )
+        descriptor = _json_bytes(
+            {
+                "schema": f"{CONTEXT_RUNTIME_SCHEMA}/artifact-evidence-v1",
+                "artifact_ref": reference_value,
+            }
+        )
+        descriptor_blob_id = self.blob_repository.put(descriptor)
+        self._metrics["evidence_bytes_written"] += len(descriptor)
+        reference = {
+            "evidence_id": evidence_id,
+            "blob_id": descriptor_blob_id,
+            "media_type": "application/vnd.openubmc.artifact-ref+json",
+            "byte_count": len(descriptor),
+            "target_id": target_id,
+            "generation": str(target_epoch if target_epoch is not None else "operator"),
+            "provenance": f"operator-evidence-attach:{evidence_type}",
+            "observed_at": self.clock(),
+            "case_id": run_id,
+            "producer": "operator-evidence-attach",
+            "evidence_type": evidence_type,
+            "artifact_ref": reference_value,
+            "target_epoch": target_epoch,
+            "workflow_definition_id": str(definition.get("definition_id", "")),
+            "workflow_definition_version": int(definition.get("version", 0) or 0),
+            "workflow_definition_fingerprint": str(
+                definition.get("fingerprint", "")
+            ),
+            "workflow_cycle_id": str(projection.get("workflow_cycle_id", "")),
+            "workflow_step_id": "",
+            "workflow_attempt": 0,
+            "parent_evidence_ids": [],
+        }
+        return {
+            "run_id": run_id,
+            "evidence_type": evidence_type,
+            "evidence": reference,
+            "already_attached": False,
+        }
+
     def close_case(self, case_id: str, *, expected_revision: int) -> dict[str, object]:
         projection = self._load(case_id)
         if projection is None:

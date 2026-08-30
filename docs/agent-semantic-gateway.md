@@ -292,6 +292,12 @@ Run-bound target, verifies the expected digest, stores the bytes content-address
 idempotent `EvidenceAttached` fact. The operation cannot answer a Gate or change phase, Incident,
 Effect, or Outcome state, and it is absent from the Agent profile.
 
+Firmware recovery packages use the same Operator operation but keep large bytes under
+`ArtifactStore`. Evidence contains a bounded ArtifactRef descriptor, preserving one authority for
+digest verification, retention, access, and garbage collection. Product qualification requires
+that binding before the earliest target Mutation attempt, not merely before a later successful
+retry.
+
 ## Descriptor direction
 
 Operation descriptors carry transport-independent metadata:

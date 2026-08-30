@@ -86,11 +86,16 @@ Observation provenance. Structured proof timestamps remain presentation fields a
 the ledger timeline.
 
 The Recovery Artifact is qualified independently from the upgrade HPM. Reusing the same path or
-digest fails promotion. Before the target Mutation begins, the Operator / CI Plane attaches both
-the identity record and the Recovery Artifact package bytes as `firmware-recovery-artifact`.
-Qualification requires the package digest and size in that pre-mutation Runtime Evidence to match
-the independently verified file. The Recovery Artifact is not applied automatically; it proves
-that an explicit, separately identified recovery option exists before the target Mutation begins.
+digest fails promotion. Before the target Mutation begins, the Operator / CI Plane attaches the
+identity record and binds the package as `firmware-recovery-artifact`. Runtime Core persists the
+package through the sole `ArtifactStore` authority and stores only a lifecycle-bearing,
+Run/target-bound ArtifactRef descriptor in Evidence; the HPM bytes are not duplicated into the
+Evidence Blob store. Qualification requires the package digest and size in that pre-mutation
+Runtime binding to match the independently verified file. Ordering is checked against the earliest
+recorded `upgrade_run` `OperationStarted`, including failed or retried attempts, so evidence added
+after any mutation attempt cannot promote a later success. The Recovery Artifact is not applied
+automatically; it proves that an explicit, separately identified recovery option exists before the
+target Mutation begins.
 
 Fresh upgrade evidence must also prove a real BMC reboot boundary. A target-epoch increment or
 `after_last_reboot_or_change=true` alone is insufficient: the native Upgrade result must retain

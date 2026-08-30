@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from .agent_gateway import AgentGateway, ResultProjector
 from .artifact_store import LocalArtifactStore, SQLiteArtifactRepository
@@ -242,14 +243,37 @@ class _RuntimeOperatorPort:
             )
         if name == "evidence_attach":
             run_id = str(arguments.get("run_id", "")).strip()
-            prepared = self._context_runtime.prepare_file_evidence(
-                run_id,
-                target=str(arguments.get("target", "")).strip(),
-                path=str(arguments.get("path", "")).strip(),
-                expected_sha256=str(arguments.get("sha256", "")).strip(),
-                evidence_type=str(arguments.get("evidence_type", "")).strip(),
-                operation_id=operation_id,
-            )
+            target = str(arguments.get("target", "")).strip()
+            path = str(arguments.get("path", "")).strip()
+            expected_sha256 = str(arguments.get("sha256", "")).strip()
+            evidence_type = str(arguments.get("evidence_type", "")).strip()
+            if evidence_type == "firmware-recovery-artifact":
+                artifact_ref = self._artifact_store.put(
+                    Path(path).expanduser().absolute(),
+                    kind="openubmc-hpm",
+                    provenance="operator-evidence-attach",
+                    retention_hint="run-lifetime",
+                    target=target,
+                    run_id=run_id,
+                    created_by_effect=operation_id,
+                    expected_sha256=expected_sha256,
+                )
+                prepared = self._context_runtime.prepare_artifact_evidence(
+                    run_id,
+                    target=target,
+                    artifact_ref=artifact_ref.to_public_dict(),
+                    evidence_type=evidence_type,
+                    operation_id=operation_id,
+                )
+            else:
+                prepared = self._context_runtime.prepare_file_evidence(
+                    run_id,
+                    target=target,
+                    path=path,
+                    expected_sha256=expected_sha256,
+                    evidence_type=evidence_type,
+                    operation_id=operation_id,
+                )
             reference, replayed = self._run_engine.attach_operator_evidence(
                 run_id,
                 prepared["evidence"],
