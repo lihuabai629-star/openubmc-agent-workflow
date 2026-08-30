@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import sqlite3
 import sys
@@ -49,6 +50,248 @@ class _Backend:
 
 
 class EvidenceIndexTests(unittest.TestCase):
+    def test_operator_can_attach_digest_bound_file_evidence_to_an_open_run(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "runtime.sqlite3"
+            evidence_path = root / "official-ut.log"
+            evidence_path.write_bytes(b"3/3 passed\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(database)
+            repository.commit(
+                "run-operator-evidence",
+                expected_revision=0,
+                events=(
+                    PendingCaseEvent(
+                        "CaseOpened",
+                        {
+                            "intent": "diagnose-and-fix",
+                            "delivery_strategy": "build-upgrade",
+                            "targets": [
+                                {
+                                    "target_id": "target-1",
+                                    "address": "192.0.2.80",
+                                    "role": "candidate",
+                                }
+                            ],
+                        },
+                        "start-run",
+                    ),
+                ),
+            )
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                interface_profile="operator",
+            )
+            try:
+                attached = service.call_exposed_tool(
+                    "evidence_attach",
+                    {
+                        "run_id": "run-operator-evidence",
+                        "target": "192.0.2.80",
+                        "path": str(evidence_path),
+                        "sha256": digest,
+                        "evidence_type": "workflow-official-ut-record",
+                    },
+                    task_id="operator-evidence",
+                    operation_id="attach-official-ut",
+                )
+                loaded = service.call_exposed_tool(
+                    "evidence_read",
+                    {
+                        "case_id": "run-operator-evidence",
+                        "evidence_id": attached["evidence"]["evidence_id"],
+                    },
+                    task_id="operator-evidence",
+                    operation_id="read-official-ut",
+                )
+            finally:
+                service.close()
+
+        self.assertTrue(attached["attached"])
+        self.assertFalse(attached["idempotent_replay"])
+        self.assertEqual(attached["evidence"]["blob_id"], digest)
+        self.assertEqual(attached["evidence"]["target_id"], "target-1")
+        self.assertEqual(loaded["body"], "3/3 passed\n")
+
+    def test_operator_file_evidence_attach_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence_path = root / "build.log"
+            evidence_path.write_bytes(b"build completed\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            repository.commit(
+                "run-idempotent-evidence",
+                expected_revision=0,
+                events=(
+                    PendingCaseEvent(
+                        "CaseOpened",
+                        {
+                            "intent": "diagnose-and-fix",
+                            "targets": [
+                                {
+                                    "target_id": "target-1",
+                                    "address": "192.0.2.81",
+                                    "role": "candidate",
+                                }
+                            ],
+                        },
+                        "start-run",
+                    ),
+                ),
+            )
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                interface_profile="operator",
+            )
+            arguments = {
+                "run_id": "run-idempotent-evidence",
+                "target": "target-1",
+                "path": str(evidence_path),
+                "sha256": digest,
+                "evidence_type": "component-build-log",
+            }
+            try:
+                first = service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="operator-evidence",
+                    operation_id="attach-build-first",
+                )
+                first_revision = repository.current_revision(
+                    "run-idempotent-evidence"
+                )
+                second = service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="operator-evidence",
+                    operation_id="attach-build-second",
+                )
+                second_revision = repository.current_revision(
+                    "run-idempotent-evidence"
+                )
+            finally:
+                service.close()
+
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(second["idempotent_replay"])
+        self.assertEqual(first["evidence"], second["evidence"])
+        self.assertEqual(first_revision, second_revision)
+
+    def test_operator_file_evidence_attach_rejects_invalid_run_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence_path = root / "diagnosis.md"
+            evidence_path.write_bytes(b"root cause and fix\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            repository.commit(
+                "run-terminal-evidence",
+                expected_revision=0,
+                events=(
+                    PendingCaseEvent(
+                        "CaseOpened",
+                        {
+                            "intent": "diagnose-and-fix",
+                            "targets": [
+                                {
+                                    "target_id": "target-1",
+                                    "address": "192.0.2.82",
+                                    "role": "candidate",
+                                }
+                            ],
+                        },
+                        "start-run",
+                    ),
+                    PendingCaseEvent(
+                        "RunOutcomeRecorded",
+                        {"outcome": {"status": "completed", "summary": "done"}},
+                        "finish-run",
+                    ),
+                ),
+            )
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                interface_profile="operator",
+            )
+            try:
+                with self.assertRaisesRegex(Exception, "no longer accepts evidence"):
+                    service.call_exposed_tool(
+                        "evidence_attach",
+                        {
+                            "run_id": "run-terminal-evidence",
+                            "target": "target-1",
+                            "path": str(evidence_path),
+                            "sha256": digest,
+                            "evidence_type": "workflow-diagnosis-record",
+                        },
+                        task_id="operator-evidence",
+                        operation_id="attach-terminal",
+                    )
+            finally:
+                service.close()
+
+    def test_operator_file_evidence_attach_rejects_digest_and_target_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence_path = root / "diagnosis.md"
+            evidence_path.write_bytes(b"root cause and fix\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            repository.commit(
+                "run-bound-evidence",
+                expected_revision=0,
+                events=(
+                    PendingCaseEvent(
+                        "CaseOpened",
+                        {
+                            "intent": "diagnose-and-fix",
+                            "targets": [
+                                {
+                                    "target_id": "target-1",
+                                    "address": "192.0.2.83",
+                                    "role": "candidate",
+                                }
+                            ],
+                        },
+                        "start-run",
+                    ),
+                ),
+            )
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                interface_profile="operator",
+            )
+            base = {
+                "run_id": "run-bound-evidence",
+                "target": "target-1",
+                "path": str(evidence_path),
+                "sha256": digest,
+                "evidence_type": "workflow-diagnosis-record",
+            }
+            try:
+                with self.assertRaisesRegex(ValueError, "exactly one Runtime Run target"):
+                    service.call_exposed_tool(
+                        "evidence_attach",
+                        {**base, "target": "192.0.2.200"},
+                        task_id="operator-evidence",
+                        operation_id="attach-wrong-target",
+                    )
+                with self.assertRaisesRegex(ValueError, "digest mismatch"):
+                    service.call_exposed_tool(
+                        "evidence_attach",
+                        {**base, "sha256": "0" * 64},
+                        task_id="operator-evidence",
+                        operation_id="attach-wrong-digest",
+                    )
+            finally:
+                service.close()
+
     def test_operator_query_rejects_non_finite_observation_times(self) -> None:
         service = RuntimeMcpService(_Backend(), interface_profile="operator")
         try:

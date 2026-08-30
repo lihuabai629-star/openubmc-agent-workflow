@@ -221,6 +221,22 @@ class _RuntimeOperatorPort:
                 operation_id=operation_id,
                 case_id=case_id,
             )
+        if name == "evidence_attach":
+            run_id = str(arguments.get("run_id", "")).strip()
+            value = self._context_runtime.attach_file_evidence(
+                run_id,
+                target=str(arguments.get("target", "")).strip(),
+                path=str(arguments.get("path", "")).strip(),
+                expected_sha256=str(arguments.get("sha256", "")).strip(),
+                evidence_type=str(arguments.get("evidence_type", "")).strip(),
+                operation_id=operation_id,
+            )
+            return self.wrap_read(
+                value,
+                operation=name,
+                operation_id=operation_id,
+                case_id=run_id,
+            )
         if name == "evidence_query":
             return self.wrap_read(
                 self._evidence_query.query(arguments),

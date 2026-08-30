@@ -61,6 +61,8 @@ def rebuild_runtime_ledger(
     *,
     evidence_target: str | None = None,
     additional_targets: tuple[str, ...] = (),
+    attach_proofs: bool = True,
+    attach_supporting: bool = True,
 ) -> None:
     runtime = manifest["runtime"]
     repository_ref = runtime["repository"]
@@ -93,7 +95,24 @@ def rebuild_runtime_ledger(
             "product-closeout-start",
         )
     ]
-    for index, item in enumerate(all_manifest_evidence(manifest), start=1):
+    selected_evidence: list[dict[str, object]] = []
+    validation = manifest["validation"]
+    for dimension in (
+        manifest["runtime"],
+        manifest["diagnosis"],
+        validation["official_ut"],
+        validation["build"],
+        manifest["upgrade"],
+        manifest["freshness"],
+        manifest["hardware"],
+    ):
+        for item in dimension.get("evidence", []):
+            if attach_proofs:
+                selected_evidence.append(item)
+            support = item.get("supporting_evidence")
+            if attach_supporting and isinstance(support, dict):
+                selected_evidence.append(support)
+    for index, item in enumerate(selected_evidence, start=1):
         digest = item["sha256"]
         events.append(
             PendingCaseEvent(
@@ -451,6 +470,170 @@ def run_qualification(
 
 
 class ProductCloseoutQualificationTests(unittest.TestCase):
+    def test_structured_proofs_may_be_projected_after_the_terminal_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            rebuild_runtime_ledger(manifest, attach_proofs=False)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertTrue(report["qualified"], report["violations"])
+        self.assertTrue(report["promotable"], report["gaps"])
+
+    def test_raw_supporting_evidence_must_be_attached_before_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            rebuild_runtime_ledger(
+                manifest,
+                attach_proofs=False,
+                attach_supporting=False,
+            )
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any(
+                "supporting_evidence: evidence is not attached" in item
+                for item in report["violations"]
+            ),
+            report["violations"],
+        )
+
+    def test_native_runtime_upgrade_evidence_verifies_artifact_version_and_epoch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, artifact = complete_manifest(root)
+            native_upgrade = root / "runtime-upgrade.json"
+            native_upgrade.write_text(
+                json.dumps(
+                    {
+                        "operation_id": "upgrade-effect-1",
+                        "action": "upgrade",
+                        "epoch_before": 3,
+                        "epoch_after": 4,
+                        "mutation": {
+                            "method": "MultipartHttpPushUri",
+                            "task_uri": "/redfish/v1/TaskService/Tasks/1",
+                        },
+                        "verification": {
+                            "installed_version": "1.0.0",
+                            "target_epoch": 4,
+                        },
+                        "journal": {
+                            "operation_id": "upgrade-effect-1",
+                            "action": "upgrade",
+                            "stage": "verified",
+                            "effects_started": True,
+                            "expected_checksum": sha256(artifact),
+                            "epoch_before": 3,
+                            "epoch_after": 4,
+                        },
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            upgrade_ref = manifest["upgrade"]["evidence"][0]
+            upgrade_proof = Path(upgrade_ref["path"])
+            proof = json.loads(upgrade_proof.read_text(encoding="utf-8"))
+            proof["supporting_evidence"] = {
+                "evidence_type": "runtime-upgrade-evidence",
+                "sha256": sha256(native_upgrade),
+            }
+            upgrade_proof.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
+            upgrade_ref["sha256"] = sha256(upgrade_proof)
+            upgrade_ref["supporting_evidence"] = {
+                "path": str(native_upgrade),
+                "sha256": sha256(native_upgrade),
+                "evidence_type": "runtime-upgrade-evidence",
+            }
+            rebuild_runtime_ledger(manifest, attach_proofs=False)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertTrue(report["dimensions"]["upgrade"]["accepted"], report["violations"])
+        self.assertTrue(report["promotable"], report["gaps"])
+
+    def test_native_runtime_debug_evidence_verifies_fresh_nvme_drive_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            native_debug = root / "runtime-debug.json"
+            native_debug.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "observed_at": "2026-08-29T12:00:00Z",
+                        "result": {
+                            "freshness": {
+                                "status": "complete",
+                                "complete": True,
+                                "after_last_reboot_or_change": True,
+                                "stale_evidence": [],
+                                "lost_dimensions": [],
+                                "unavailable_dimensions": [],
+                            },
+                            "lanes": {
+                                "ssh": {
+                                    "mdbctl_expand_1_object_drive1": {
+                                        "ok": True,
+                                        "result": {
+                                            "properties": {
+                                                "bmc.kepler.Systems.Storage.Drive": {
+                                                    "Id": "1",
+                                                    "Name": "\"Drive1\"",
+                                                    "Protocol": "6",
+                                                    "RefControllerId": "255",
+                                                    "ResourceId": "7",
+                                                    "Presence": "1",
+                                                },
+                                                "bmc.kepler.Systems.Storage.Drive.DriveStatus": {
+                                                    "Health": "0"
+                                                },
+                                                "bmc.kepler.Inventory.Hardware": {
+                                                    "SerialNumber": "\"NVME-SERIAL-1\""
+                                                },
+                                            }
+                                        },
+                                    }
+                                }
+                            },
+                        },
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            for dimension in ("freshness", "hardware"):
+                evidence_ref = manifest[dimension]["evidence"][0]
+                proof_path = Path(evidence_ref["path"])
+                proof = json.loads(proof_path.read_text(encoding="utf-8"))
+                proof["supporting_evidence"] = {
+                    "evidence_type": "runtime-debug-evidence",
+                    "sha256": sha256(native_debug),
+                }
+                proof_path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
+                evidence_ref["sha256"] = sha256(proof_path)
+                evidence_ref["supporting_evidence"] = {
+                    "path": str(native_debug),
+                    "sha256": sha256(native_debug),
+                    "evidence_type": "runtime-debug-evidence",
+                }
+            rebuild_runtime_ledger(manifest, attach_proofs=False)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertTrue(report["dimensions"]["freshness"]["accepted"], report["violations"])
+        self.assertTrue(report["dimensions"]["hardware"]["accepted"], report["violations"])
+        self.assertTrue(report["promotable"], report["gaps"])
+
     def test_complete_fresh_runtime_closeout_is_promotable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

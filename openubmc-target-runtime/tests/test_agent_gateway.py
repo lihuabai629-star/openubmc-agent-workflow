@@ -13537,6 +13537,7 @@ class AgentGatewayTests(unittest.TestCase):
         operator = RuntimeMcpService(SemanticBackend(), interface_profile="operator")
         try:
             self.assertEqual(agent.interface_catalog.names(), ("observe", "execute"))
+            self.assertIn("evidence_attach", operator.interface_catalog.names())
             self.assertIn("evidence_query", operator.interface_catalog.names())
             self.assertIn("evidence_read", operator.interface_catalog.names())
             self.assertNotIn("debug_run", operator.interface_catalog.names())

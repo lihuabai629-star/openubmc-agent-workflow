@@ -6871,6 +6871,152 @@ class ContextRuntime:
             "body": body.decode("utf-8", errors="replace"),
         }
 
+    def attach_file_evidence(
+        self,
+        run_id: str,
+        *,
+        target: str,
+        path: str,
+        expected_sha256: str,
+        evidence_type: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Attach exact Operator/CI file bytes to one open Runtime Run."""
+
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        if (
+            projection.get("status") in {"terminal", "cancelled"}
+            or isinstance(projection.get("run_outcome"), Mapping)
+            and bool(projection.get("run_outcome"))
+        ):
+            raise CaseClosed(f"run {run_id} no longer accepts evidence")
+        source_path = Path(path).expanduser()
+        if not source_path.is_absolute():
+            raise ValueError("evidence path must be absolute")
+        source_path = source_path.absolute()
+        if not source_path.is_file():
+            raise EvidenceUnavailable(f"evidence file is unavailable: {source_path}")
+        normalized_sha256 = expected_sha256.removeprefix("sha256:")
+        if len(normalized_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in normalized_sha256
+        ):
+            raise ValueError("evidence sha256 must be 64 lowercase hex characters")
+        if not evidence_type or _safe_identifier(
+            evidence_type, fallback=""
+        ) != evidence_type:
+            raise ValueError("evidence_type must be a safe identifier")
+        targets = [
+            dict(item)
+            for item in projection.get("targets", [])
+            if isinstance(item, Mapping)
+            and target
+            in {
+                str(item.get("target_id", "")).strip(),
+                str(item.get("address", "")).strip(),
+            }
+        ]
+        if len(targets) != 1:
+            raise ValueError("target must select exactly one Runtime Run target")
+        selected_target = targets[0]
+        target_id = str(
+            selected_target.get("target_id") or selected_target.get("address")
+        ).strip()
+        body = source_path.read_bytes()
+        actual_sha256 = hashlib.sha256(body).hexdigest()
+        if actual_sha256 != normalized_sha256:
+            raise ValueError(
+                "evidence digest mismatch: "
+                f"expected {normalized_sha256}, actual {actual_sha256}"
+            )
+        evidence_id = "evidence-" + _fingerprint(
+            {
+                "run_id": run_id,
+                "target_id": target_id,
+                "evidence_type": evidence_type,
+                "blob_id": actual_sha256,
+            }
+        )[:32]
+        existing = self.repository.evidence_reference(run_id, evidence_id)
+        if isinstance(existing, Mapping):
+            return {
+                "schema": f"{CONTEXT_RUNTIME_SCHEMA}/operator-evidence-attach-v1",
+                "run_id": run_id,
+                "attached": True,
+                "idempotent_replay": True,
+                "evidence_type": evidence_type,
+                "evidence": dict(existing),
+            }
+        blob_id = self.blob_repository.put(body)
+        if blob_id != actual_sha256:
+            raise EvidenceUnavailable("evidence blob identity does not match source bytes")
+        self._metrics["evidence_bytes_written"] += len(body)
+        definition = projection.get("workflow_definition", {})
+        definition = definition if isinstance(definition, Mapping) else {}
+        epochs = selected_target.get("epochs", {})
+        epochs = epochs if isinstance(epochs, Mapping) else {}
+        target_epoch_value = epochs.get("target_epoch")
+        target_epoch = (
+            int(target_epoch_value)
+            if isinstance(target_epoch_value, int)
+            and not isinstance(target_epoch_value, bool)
+            and target_epoch_value >= 0
+            else None
+        )
+        reference = {
+            "evidence_id": evidence_id,
+            "blob_id": blob_id,
+            "media_type": "application/octet-stream",
+            "byte_count": len(body),
+            "target_id": target_id,
+            "generation": str(target_epoch if target_epoch is not None else "operator"),
+            "provenance": f"operator-evidence-attach:{evidence_type}",
+            "observed_at": self.clock(),
+            "case_id": run_id,
+            "producer": "operator-evidence-attach",
+            "evidence_type": evidence_type,
+            "target_epoch": target_epoch,
+            "workflow_definition_id": str(definition.get("definition_id", "")),
+            "workflow_definition_version": int(definition.get("version", 0) or 0),
+            "workflow_definition_fingerprint": str(
+                definition.get("fingerprint", "")
+            ),
+            "workflow_cycle_id": str(projection.get("workflow_cycle_id", "")),
+            "workflow_step_id": "",
+            "workflow_attempt": 0,
+            "parent_evidence_ids": [],
+        }
+        try:
+            updated = self.repository.commit(
+                run_id,
+                expected_revision=int(projection["revision"]),
+                events=(
+                    PendingCaseEvent(
+                        "EvidenceAttached",
+                        {"evidence": reference},
+                        _safe_identifier(operation_id, fallback=evidence_id),
+                    ),
+                ),
+            )
+        except RevisionConflict:
+            existing = self.repository.evidence_reference(run_id, evidence_id)
+            if not isinstance(existing, Mapping):
+                raise
+            reference = dict(existing)
+            idempotent_replay = True
+        else:
+            self._cache(updated)
+            idempotent_replay = False
+        return {
+            "schema": f"{CONTEXT_RUNTIME_SCHEMA}/operator-evidence-attach-v1",
+            "run_id": run_id,
+            "attached": True,
+            "idempotent_replay": idempotent_replay,
+            "evidence_type": evidence_type,
+            "evidence": reference,
+        }
+
     def close_case(self, case_id: str, *, expected_revision: int) -> dict[str, object]:
         projection = self._load(case_id)
         if projection is None:

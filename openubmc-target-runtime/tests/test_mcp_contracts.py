@@ -226,6 +226,7 @@ class RuntimeMcpServiceTests(unittest.TestCase):
                 "debug_run",
                 "debug_collect",
                 "case_read",
+                "evidence_attach",
                 "evidence_query",
                 "evidence_read",
                 "case_replay_export",

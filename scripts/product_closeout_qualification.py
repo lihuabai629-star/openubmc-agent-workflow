@@ -64,9 +64,9 @@ FRESH_SUPPORT_TYPES = {
     "diagnosis": {"workflow-diagnosis-record"},
     "official_ut": {"workflow-official-ut-record"},
     "build": {"component-build-log", "product-build-log"},
-    "upgrade": {"workflow-upgrade-record"},
-    "freshness": {"reboot-acceptance-timeline"},
-    "hardware": {"drive-summary-json"},
+    "upgrade": {"workflow-upgrade-record", "runtime-upgrade-evidence"},
+    "freshness": {"reboot-acceptance-timeline", "runtime-debug-evidence"},
+    "hardware": {"drive-summary-json", "runtime-debug-evidence"},
 }
 
 
@@ -208,6 +208,151 @@ def _historical_upgrade_record(
     expected_version = _text(requirements.get("installed_version"))
     if expected_version and version_match.group(1) != expected_version:
         return "upgrade record installed version does not match the artifact"
+    return None
+
+
+def _runtime_upgrade_evidence(
+    raw: bytes, requirements: Mapping[str, object]
+) -> str | None:
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "Runtime Upgrade evidence must be UTF-8 JSON"
+    if not isinstance(document, Mapping):
+        return "Runtime Upgrade evidence must be a JSON object"
+    journal = _mapping(document.get("journal"))
+    verification = _mapping(document.get("verification"))
+    mutation = _mapping(document.get("mutation"))
+    operation_id = _text(document.get("operation_id"))
+    if (
+        not operation_id
+        or _text(document.get("action")) != "upgrade"
+        or _text(journal.get("operation_id")) != operation_id
+        or _text(journal.get("action")) != "upgrade"
+        or _text(journal.get("stage")) != "verified"
+        or journal.get("effects_started") is not True
+    ):
+        return "Runtime Upgrade evidence does not contain one verified upgrade journal"
+    if not mutation:
+        return "Runtime Upgrade evidence is missing its mutation result"
+    expected_artifact = _text(requirements.get("artifact.sha256"))
+    if _expected_sha256(journal.get("expected_checksum")) != expected_artifact:
+        return "Runtime Upgrade evidence artifact digest does not match the qualified HPM"
+    if _text(verification.get("installed_version")) != _text(
+        requirements.get("installed_version")
+    ):
+        return "Runtime Upgrade evidence installed version does not match the artifact"
+    epoch_before = document.get("epoch_before")
+    epoch_after = document.get("epoch_after")
+    if (
+        isinstance(epoch_before, bool)
+        or not isinstance(epoch_before, int)
+        or epoch_before < 0
+        or isinstance(epoch_after, bool)
+        or not isinstance(epoch_after, int)
+        or epoch_after <= epoch_before
+        or journal.get("epoch_before") != epoch_before
+        or journal.get("epoch_after") != epoch_after
+        or verification.get("target_epoch") != epoch_after
+    ):
+        return "Runtime Upgrade evidence does not prove one monotonic verified target epoch"
+    return None
+
+
+def _runtime_property(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value.strip()
+
+
+def _runtime_debug_evidence(
+    raw: bytes, requirements: Mapping[str, object]
+) -> str | None:
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "Runtime Debug evidence must be UTF-8 JSON"
+    if not isinstance(document, Mapping) or document.get("ok") is not True:
+        return "Runtime Debug evidence is not a successful native result"
+    result = _mapping(document.get("result"))
+    freshness = _mapping(result.get("freshness"))
+    if (
+        _text(freshness.get("status")) != "complete"
+        or freshness.get("complete") is not True
+        or freshness.get("after_last_reboot_or_change") is not True
+        or _sequence(freshness.get("stale_evidence"))
+        or _sequence(freshness.get("lost_dimensions"))
+        or _sequence(freshness.get("unavailable_dimensions"))
+    ):
+        return "Runtime Debug evidence is incomplete, stale, or predates the last change"
+    if _text(requirements.get("dimension")) == "freshness":
+        return None
+    ssh = _mapping(_mapping(result.get("lanes")).get("ssh"))
+    drives: dict[int, dict[str, object]] = {}
+    for name, raw_lane in ssh.items():
+        if not name.startswith("mdbctl_expand_") or not isinstance(raw_lane, Mapping):
+            continue
+        lane = _mapping(raw_lane)
+        if lane.get("ok") is not True:
+            continue
+        properties = _mapping(_mapping(lane.get("result")).get("properties"))
+        drive = _mapping(properties.get("bmc.kepler.Systems.Storage.Drive"))
+        status = _mapping(
+            properties.get("bmc.kepler.Systems.Storage.Drive.DriveStatus")
+        )
+        inventory = _mapping(properties.get("bmc.kepler.Inventory.Hardware"))
+        drive_id = _runtime_property(drive.get("Id"))
+        if isinstance(drive_id, bool) or not isinstance(drive_id, int):
+            continue
+        protocol = _runtime_property(drive.get("Protocol"))
+        controller = _runtime_property(drive.get("RefControllerId"))
+        resource = _runtime_property(drive.get("ResourceId"))
+        presence = _runtime_property(drive.get("Presence"))
+        health = _runtime_property(status.get("Health"))
+        serial = _text(_runtime_property(inventory.get("SerialNumber")))
+        if protocol not in DRIVE_PROTOCOL_BY_CODE:
+            return f"Runtime Debug Drive{drive_id} has an unsupported protocol"
+        if presence != 1 or health != 0 or not serial:
+            return f"Runtime Debug Drive{drive_id} is not healthy, present, and identified"
+        if protocol == 6 and (controller != 255 or not isinstance(resource, int) or resource <= 0):
+            return f"Runtime Debug Drive{drive_id} NVMe resource attribution is invalid"
+        if protocol in {3, 4} and resource != 0:
+            return f"Runtime Debug Drive{drive_id} SATA/SAS ResourceId must be zero"
+        drives[drive_id] = {
+            "protocol": DRIVE_PROTOCOL_BY_CODE[protocol],
+            "controller": controller,
+            "resource": resource,
+        }
+    expected_devices: dict[int, str] = {}
+    for device in _sequence(requirements.get("devices")):
+        if not isinstance(device, Mapping):
+            continue
+        match = re.fullmatch(r"(?:Drive|Disk)(\d+)", _text(device.get("device_id")))
+        if match is not None:
+            expected_devices[int(match.group(1))] = _text(device.get("protocol"))
+    if not expected_devices:
+        return "Runtime Debug hardware proof has no scoped devices"
+    missing = sorted(set(expected_devices) - set(drives))
+    if missing:
+        return "Runtime Debug evidence is missing scoped drives: " + ", ".join(
+            f"Drive{drive_id}" for drive_id in missing
+        )
+    mismatched = sorted(
+        drive_id
+        for drive_id, protocol in expected_devices.items()
+        if drives[drive_id]["protocol"] != protocol
+    )
+    if mismatched:
+        return "Runtime Debug evidence protocol does not match scoped drives: " + ", ".join(
+            f"Drive{drive_id}" for drive_id in mismatched
+        )
+    required_protocols = {_text(item) for item in _sequence(requirements.get("required_protocols"))}
+    observed_protocols = {drives[drive_id]["protocol"] for drive_id in expected_devices}
+    if not required_protocols.issubset(observed_protocols):
+        return "Runtime Debug evidence does not cover every required protocol"
     return None
 
 
@@ -422,13 +567,24 @@ def _verify_fixed_supporting_evidence(
             f"{label}.supporting_evidence: evidence is not attached to the Runtime Run"
         )
         return False
-    accepted = _verify_historical_evidence(
-        source,
-        raw=raw,
-        label=f"{label}.supporting_evidence",
-        requirements=requirements,
-        violations=violations,
-    )
+    if evidence_type == "runtime-upgrade-evidence":
+        reason = _runtime_upgrade_evidence(raw, requirements)
+        accepted = reason is None
+        if reason is not None:
+            violations.append(f"{label}.supporting_evidence: {reason}")
+    elif evidence_type == "runtime-debug-evidence":
+        reason = _runtime_debug_evidence(raw, requirements)
+        accepted = reason is None
+        if reason is not None:
+            violations.append(f"{label}.supporting_evidence: {reason}")
+    else:
+        accepted = _verify_historical_evidence(
+            source,
+            raw=raw,
+            label=f"{label}.supporting_evidence",
+            requirements=requirements,
+            violations=violations,
+        )
     if accepted:
         identities.append(
             f"file:{label}.supporting_evidence:{actual}:{len(raw)}"
@@ -718,13 +874,6 @@ def _file_identity(
         parsed_proofs=parsed_proofs if parsed_proofs is not None else [],
         required=structured_proof_required,
     )
-    if (
-        content_valid
-        and structured_proof_required
-        and actual not in (runtime_evidence_digests or set())
-    ):
-        violations.append(f"{label}: evidence is not attached to the Runtime Run")
-        content_valid = False
     if content_valid:
         identities.append(f"file:{label}:{actual}:{len(raw)}")
     return content_valid

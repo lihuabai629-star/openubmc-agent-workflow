@@ -43,8 +43,9 @@ The default profile is `agent` and exposes only:
 
 One explicit non-Agent profile preserves governance access:
 
-- `operator`: only operations marked `exposure=operator`, including Case inspection, raw Evidence,
-  Replay, Session Outcome governance, lifecycle, and Runtime status.
+- `operator`: only operations marked `exposure=operator`, including Case inspection, digest-bound
+  local Evidence attachment and readback, Replay, Session Outcome governance, lifecycle, and
+  Runtime status.
 
 The projections are disjoint. `operator` does not expose Agent or internal Domain execution
 operations. The retired `compatibility` value is rejected during Runtime construction.
@@ -284,6 +285,12 @@ Terminal Runs persist one authoritative Run Outcome. The Agent path does not wri
 Outcome. An operator may explicitly project the redacted governance record from the persisted Run
 Outcome; retries cannot create another Run Outcome or alter the Run ledger. Review, approval,
 rejection, and promotion remain operator-only operations.
+
+`evidence_attach` is an Operator / CI write to the Evidence seam, not a Run transition command. It
+can attach verified local file bytes only while the selected Run is open. Runtime Core resolves the
+Run-bound target, verifies the expected digest, stores the bytes content-addressably, and appends an
+idempotent `EvidenceAttached` fact. The operation cannot answer a Gate or change phase, Incident,
+Effect, or Outcome state, and it is absent from the Agent profile.
 
 ## Descriptor direction
 

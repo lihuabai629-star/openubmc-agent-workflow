@@ -32,17 +32,28 @@ python3 scripts/product_closeout_ingestion.py fresh-ingestion.json \
 Continuous qualification accepts the same descriptor through `--product-ingestion`. Ingestion
 derives the selected target and terminal Outcome from the Run ledger, source commits from clean Git
 repositories, artifact identity from the adjacent build metadata, and status/digests from fixed
-proof and support files. It does not write Runtime state: every proof and support digest must
-already be attached before `RunOutcomeRecorded`.
+proof and support files. Ingestion does not write Runtime state. Raw diagnosis, official UT,
+build, upgrade, and target-observation evidence must already be attached before
+`RunOutcomeRecorded`; structured proofs are deterministic Operator / CI projections and may be
+created after the terminal Outcome.
 
 The manifest separates nine dimensions: Runtime continuity, diagnosis, source identity, official
 UT, compiled build, artifact identity, upgrade, freshness, and hardware coverage. Every referenced
 file is verified by SHA-256. Fresh Runtime evidence uses the structured proof schema, but a proof
-is accepted only when its digest and its fixed-format supporting evidence were attached to the
-same persisted Runtime Run before `RunOutcomeRecorded`. The qualifier replays that SQLite ledger,
-checks the target and completed Outcome, and verifies an immutable digest of the Run events. The
-Operator-selected database and WAL are copied into a stable snapshot before replay, so
-qualification never runs migrations or index backfills against the trusted ledger.
+is accepted only when its fields match independently verified Runtime and product facts. Its raw
+supporting evidence must be attached to the same persisted Runtime Run before
+`RunOutcomeRecorded`; the proof file itself is not required to predate the Outcome. Runtime
+continuity is verified directly from the trusted ledger rather than from a circular pre-attached
+Runtime proof. The qualifier replays that SQLite ledger, checks the target and completed Outcome,
+and verifies an immutable digest of the Run events. The Operator-selected database and WAL are
+copied into a stable snapshot before replay, so qualification never runs migrations or index
+backfills against the trusted ledger.
+
+The Operator profile exposes `evidence_attach` for local CI and operator evidence. It accepts one
+absolute file path, expected SHA-256, Run ID, target, and evidence type; persists the exact bytes
+content-addressably; and appends only `EvidenceAttached` to an open Run. It is idempotent and
+rejects terminal Runs, target mismatches, and digest mismatches. It cannot submit a Gate or write a
+phase, Incident, or Outcome.
 Historical manifests select one repository-owned `evidence_type`; they cannot supply executable or
 declarative content claims. The built-in evidence types are:
 
@@ -53,7 +64,9 @@ declarative content claims. The built-in evidence types are:
 | `component-build-log` | build | package revision, matching full package reference, successful terminal state |
 | `product-build-log` | build | HPM build, signing, and successful final task |
 | `workflow-upgrade-record` | upgrade | upload/activation completion and installed artifact version |
+| `runtime-upgrade-evidence` | upgrade | native verified mutation journal, HPM digest, installed version, and monotonic target epoch |
 | `reboot-acceptance-timeline` | freshness | manager readiness, final direct/RAID convergence, accepted elapsed time |
+| `runtime-debug-evidence` | freshness, hardware | native complete freshness record plus Drive MDB properties, protocol-specific attribution, health, presence, and serial identity |
 | `drive-summary-json` | hardware | direct attribution, RAID zero attribution, health, presence, serial, and scoped drive identities |
 
 Every source repository must be clean at the exact recorded commit; the firmware artifact must

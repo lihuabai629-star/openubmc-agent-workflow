@@ -352,6 +352,7 @@ DEFAULT_OPERATION_CONTRACTS = RuntimeOperationContractRegistry(
             closeout_stage="upgrade",
         ),
         _operator_contract("case_read", lifecycle="read"),
+        _operator_contract("evidence_attach"),
         _operator_contract("evidence_query", lifecycle="read"),
         _operator_contract("evidence_read", lifecycle="read"),
         _operator_contract("case_replay_export", lifecycle="read"),

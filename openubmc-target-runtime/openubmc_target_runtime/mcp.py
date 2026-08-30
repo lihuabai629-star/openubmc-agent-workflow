@@ -2727,6 +2727,37 @@ class RuntimeMcpService:
                     },
                 },
                 {
+                    "name": "evidence_attach",
+                    "description": (
+                        "Attach digest-verified local file bytes to one open Runtime "
+                        "Run without changing its Gate, phase, or Outcome."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "required": [
+                            "run_id",
+                            "target",
+                            "path",
+                            "sha256",
+                            "evidence_type",
+                        ],
+                        "properties": {
+                            "run_id": {"type": "string", "minLength": 1},
+                            "target": {"type": "string", "minLength": 1},
+                            "path": {"type": "string", "minLength": 1},
+                            "sha256": {
+                                "type": "string",
+                                "pattern": "^(?:sha256:)?[0-9a-f]{64}$",
+                            },
+                            "evidence_type": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                {
                     "name": "evidence_query",
                     "description": (
                         "Find bounded Evidence metadata for operator review without "
