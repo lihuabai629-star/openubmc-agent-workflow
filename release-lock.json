@@ -1,59 +1,59 @@
 {
   "schema": "openubmc-agent-workflow.release-lock.v1",
   "lock_version": 1,
-  "release_version": "2.0.0",
-  "source_commit": "89511ae1ff0972388818f0a11a73a17f8f1489b5",
+  "release_version": "2.0.2",
+  "source_commit": "4ec9f392b93793db2ff0c0d97dd53be3da0bf037",
   "source_commit_policy": "lock-finalization-parent-v1",
-  "workflow_digest": "sha256:7636ddabbec78788e7b670c2c37ec0b821269c8f8fdb216c80bff932efa7c29b",
+  "workflow_digest": "sha256:171179d0e7dbcd2c83cc7f409b0631a0752ce8c435c09e7194053a29ede20e9d",
   "skills": [
     {
       "name": "openubmc-environment-setup",
       "path": "openubmc-environment-setup",
       "version": "2.6.0",
       "manifest_version": 1,
-      "digest": "sha256:29e8e7dd3c378d99d5a9d729ca2e5de52ef8aaf5967a5427e4bb727afaef3e70"
+      "digest": "sha256:c6d1cb1306a87c04eecde066defedf4f6015f08799b7a5454e022504e97c82f7"
     },
     {
       "name": "openubmc-debug",
       "path": "openubmc-debug",
       "version": "1.0.0",
       "manifest_version": 1,
-      "digest": "sha256:d643b2174edfb4243a74d771594b6d9e3253b5297d6ed2802e19076b5358482e"
+      "digest": "sha256:6a3cb0b210d39ceb31f5932acf3b6df528c7af5067ae9d2ba8485b00402d25ff"
     },
     {
       "name": "openubmc-log-analyzer",
       "path": "openubmc-log-analyzer",
       "version": "1.0.0",
       "manifest_version": 1,
-      "digest": "sha256:7237cfce278dd3ca184bfd62c3716b57d49a01e5fc78bd58b21de8b41e6dbb96"
+      "digest": "sha256:e04c746aaca13ce88f128162fa746128c08aaa1d22fb2c3db11e326eadc04726"
     },
     {
       "name": "openubmc-developer",
       "path": "openubmc-developer",
       "version": "5.5.0",
       "manifest_version": 1,
-      "digest": "sha256:1619e4e7bccf9ef6a63fc61750a45e0b8bdf92182308cba705b9ed3dab95b3ef"
+      "digest": "sha256:6419cb68d9ab5e29da55088b8f3ef61fe0bfd25c6e617415b9804017080cf569"
     },
     {
       "name": "openubmc-build",
       "path": "openubmc-build",
       "version": "1.0.0",
       "manifest_version": 1,
-      "digest": "sha256:357de5a61626a343371692d0fa062cbd98fbdbb370574309c2d19e227c3bb7ad"
+      "digest": "sha256:0459feb5425ad77304f42a5a02d3bcb028439f53944c93dd0411c7a93d46fa64"
     },
     {
       "name": "openubmc-upgrade",
       "path": "openubmc-upgrade",
       "version": "1.0.0",
       "manifest_version": 1,
-      "digest": "sha256:24366e2d8990cbecf2e7a8d349a3870c094e24f1cae9349cc6603849ea061169"
+      "digest": "sha256:74fadd50195578f9c83f3aba8092a58a843c88a047ccdc2a3060d9655d347414"
     },
     {
       "name": "openubmc-live-patch",
       "path": "openubmc-live-patch",
       "version": "2.0.0",
       "manifest_version": 1,
-      "digest": "sha256:13ceb929b84b4d1036ae41774b4d035db5596a6fe8119271b994d9874d5ce34b"
+      "digest": "sha256:e945429defd2cd8efa3d166a776d8f95c830f80e3c90f2776068d7c9e99a6061"
     },
     {
       "name": "openubmc-dt-testing",
@@ -86,18 +86,70 @@
   ],
   "runtime": {
     "api_version": "openubmc.target-runtime.v1",
-    "content_digest": "sha256:df2f2755b2096c086eebd57de0df110b4cd596ecd80810146f51910883c57dd4"
+    "content_digest": "sha256:23ef5188002c82d3b65f54682a19f3e2cf1eb6b8a6f73677cf1c3a5b39f0cfde"
   },
   "schemas": {
     "workflow_schema": "openubmc-agent-workflow.v1",
     "workflow_definition_schema": "openubmc.target-runtime.v1/workflow-definition-v1",
-    "workflow_definition_version": 1,
+    "workflow_definition_version": 2,
     "case_replay_bundle_schema": "openubmc.target-runtime.v1/case-replay-bundle-v1",
     "case_replay_bundle_version": 1,
     "operation_contract_schema": "openubmc.target-runtime.v1/operation-contract-v1",
     "session_outcome_schema": "openubmc.target-runtime.v1/session-outcome-v1",
     "session_outcome_artifact_schema": "openubmc.target-runtime.v1/session-outcome-artifact-v1",
     "context_storage_version": 1
+  },
+  "dependencies": {
+    "python_validation": {
+      "path": "requirements-ci.lock",
+      "digest": "sha256:ebafd373d798d72aeffc8ab41642629d958556ef5892fdb6a2611e011ff82808"
+    },
+    "knowledge_mcp": {
+      "path": "openubmc-kb-mcp/package-lock.json",
+      "digest": "sha256:6880dc5c9d4d8400a91dd0ebf1478fab90bf30f78eb0d5c2d25872b3382a887b"
+    }
+  },
+  "evaluation_harnesses": {
+    "dsh": {
+      "role": "evaluation-harness",
+      "display_name": "DeepSeek Harness",
+      "adapter": "dsh-headless-cli-v1",
+      "profile": "headless",
+      "executable": {
+        "command": "dsh",
+        "package": "@deepseek-ai/dsh",
+        "version_args": [
+          "--version"
+        ],
+        "minimum_version": "0.1.0-rc.7",
+        "maximum_version_exclusive": "0.2.0"
+      },
+      "runtime_requirements": {
+        "node": "^22.19.0 || >=24.0.0"
+      },
+      "model_identity_fields": [
+        "provider",
+        "model",
+        "reasoning_effort"
+      ],
+      "scenarios": [
+        {
+          "name": "mcp-structured-content",
+          "version": "v1",
+          "acceptance": "scenario-receipt-v1"
+        },
+        {
+          "name": "agent-interface-readonly",
+          "version": "v1",
+          "acceptance": "scenario-receipt-v1"
+        },
+        {
+          "name": "execute-source-only",
+          "version": "v1",
+          "acceptance": "terminal-outcome-v1"
+        }
+      ]
+    }
   },
   "compatibility": {
     "runtime_api": "openubmc.target-runtime.v1",
@@ -127,14 +179,17 @@
     },
     "clients": {
       "codex": {
+        "role": "supported-product-client",
         "skills": true,
         "mcp": true
       },
       "claude": {
+        "role": "supported-product-client",
         "skills": true,
         "mcp": true
       },
       "openclaw": {
+        "role": "supported-product-client",
         "skills": true,
         "mcp": false
       }
@@ -149,6 +204,6 @@
       "openubmc-live-patch"
     ]
   },
-  "source_tree_digest": "sha256:4f0004a18d4125077bed69131fbecff063e289f7c6545f4d674b52cca8101d9e",
-  "lock_digest": "sha256:ff5ff6f983a3a35eeff1d39c5bc450e77de4e0613ea5419b429073da6d537af8"
+  "source_tree_digest": "sha256:1a9d229f2b1f3c30726ca023b6ef8288d35948c52a95fc54dfb2675b475943d9",
+  "lock_digest": "sha256:0ec8326c01d97231d3767586d43b70f55c982f8dea91383a429826ab2b715cbd"
 }
