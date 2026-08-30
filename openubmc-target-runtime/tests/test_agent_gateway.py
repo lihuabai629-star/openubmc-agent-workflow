@@ -12079,7 +12079,7 @@ class AgentGatewayTests(unittest.TestCase):
             ["Drive"],
         )
 
-    def test_execute_build_upgrade_completes_with_requested_drive_expansion(self) -> None:
+    def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
         backend = CompleteDriveVerificationSemanticBackend()
         service = RuntimeMcpService(backend)
         product = self.artifact_root / "complete-drive-verification-product.hpm"
