@@ -37,11 +37,15 @@ SCHEMA = "openubmc-agent-workflow.continuous-closeout-qualification.v1"
 PRODUCT_CLIENTS = ("claude", "codex", "openclaw")
 EVALUATION_HARNESSES = ("dsh",)
 SUPPORTED_CLIENT_TESTS = {
-    client: (
-        "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_deploys_runtime_launcher_and_registers_stdio_mcp",
-        "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_is_idempotent_for_all_clients_and_shell_hook",
-    )
-    for client in PRODUCT_CLIENTS
+    "codex": (
+        "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_qualifies_codex_product_client",
+    ),
+    "claude": (
+        "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_qualifies_claude_product_client",
+    ),
+    "openclaw": (
+        "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_qualifies_openclaw_product_client",
+    ),
 }
 PRODUCT_CONTRACT_TESTS = (
     "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_assembles_a_promotable_manifest_from_runtime_and_fixed_evidence",
@@ -104,34 +108,83 @@ PROJECTION_TESTS = (
     "tests.test_runtime_stability.RuntimeStabilityTests.test_dual_projection_qualification_measures_gate_and_terminal_seams",
 )
 TASK_MATRIX_TESTS = {
-    "source_only": (
-        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_terminal_response_is_one_complete_run_decision",
-        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_failed_phase_never_produces_a_success_outcome",
-    ),
-    "live_patch": (
-        "tests.test_agent_gateway.AgentGatewayTests.test_execute_live_patch_runs_diagnosis_mutation_and_fresh_verification",
-        "tests.test_agent_gateway.AgentGatewayTests.test_incomplete_live_patch_acceptance_cannot_report_completed_success",
-    ),
-    "build_upgrade": (
-        "tests.test_agent_gateway.AgentGatewayTests.test_execute_build_upgrade_runs_both_gates_and_fresh_verification",
-        "tests.test_agent_gateway.AgentGatewayTests.test_build_upgrade_closes_from_runtime_adapter_receipts",
-    ),
-    "wide_observe": (
-        "tests.test_agent_gateway.AgentGatewayTests.test_wide_observation_query_is_partitioned_without_becoming_a_blocker",
-        "tests.test_agent_gateway.AgentGatewayTests.test_wide_observation_assurance_cannot_mask_fast_target_epoch_drift",
-    ),
-    "restart_crash": (
-        "tests.test_agent_gateway.AgentGatewayTests.test_execute_workflows_resume_after_process_restart",
-        "tests.test_mutation_recovery.MutationRecoveryTests.test_sigkill_crash_cuts_preserve_identity_and_never_repeat_the_mutation",
-    ),
-    "dependency_blocked": (
-        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_reports_official_validation_and_build_classifications",
-        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_keeps_dependency_and_nvme_coverage_gaps_visible",
-    ),
-    "hardware_blocked": (
-        "tests.test_agent_gateway.AgentGatewayTests.test_hardware_coverage_rejects_unrelated_current_evidence",
-        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_keeps_dependency_and_nvme_coverage_gaps_visible",
-    ),
+    "source_only": {
+        "completion": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_source_only_terminal_response_is_one_complete_run_decision",
+        ),
+        "correctness": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_source_only_failed_phase_never_produces_a_success_outcome",
+        ),
+        "terminal_contract": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_hides_runtime_mechanics_and_records_terminal_outcome",
+        ),
+    },
+    "live_patch": {
+        "completion": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_live_patch_runs_diagnosis_mutation_and_fresh_verification",
+        ),
+        "correctness": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_incomplete_live_patch_acceptance_cannot_report_completed_success",
+        ),
+        "terminal_contract": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_conflicting_acceptance_evidence_fails_closed",
+        ),
+    },
+    "build_upgrade": {
+        "completion": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_build_upgrade_runs_both_gates_and_fresh_verification",
+        ),
+        "correctness": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_build_upgrade_closes_from_runtime_adapter_receipts",
+        ),
+        "terminal_contract": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_completed_failed_build_does_not_advance_to_upgrade",
+        ),
+    },
+    "wide_observe": {
+        "completion": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_wide_observation_query_is_partitioned_without_becoming_a_blocker",
+        ),
+        "correctness": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_wide_observation_assurance_cannot_mask_fast_target_epoch_drift",
+        ),
+        "terminal_contract": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_wide_observation_rejects_cross_partition_target_epoch_drift",
+        ),
+    },
+    "restart_crash": {
+        "completion": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_workflows_resume_after_process_restart",
+        ),
+        "correctness": (
+            "tests.test_mutation_recovery.MutationRecoveryTests.test_sigkill_crash_cuts_preserve_identity_and_never_repeat_the_mutation",
+        ),
+        "terminal_contract": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_deferred_build_upgrade_verification_resumes_after_restart",
+        ),
+    },
+    "dependency_blocked": {
+        "completion": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_source_only_reports_official_validation_and_build_classifications",
+        ),
+        "correctness": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_source_only_keeps_dependency_and_nvme_coverage_gaps_visible",
+        ),
+        "terminal_contract": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_source_only_without_validation_fields_reports_not_run_gaps",
+        ),
+    },
+    "hardware_blocked": {
+        "completion": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_source_only_keeps_dependency_and_nvme_coverage_gaps_visible",
+        ),
+        "correctness": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_hardware_coverage_rejects_unrelated_current_evidence",
+        ),
+        "terminal_contract": (
+            "tests.test_agent_gateway.AgentGatewayTests.test_validation_evidence_rejects_false_success_and_repeated_preflight",
+        ),
+    },
 }
 
 
@@ -176,6 +229,32 @@ def _run_tests(
             if completed.returncode != 0
             else ""
         ),
+    }
+
+
+def _run_task_group(
+    dimensions: Mapping[str, Sequence[str]],
+) -> dict[str, object]:
+    results = {
+        dimension: {
+            **_run_tests(tests, cwd=RUNTIME_ROOT),
+            "tests": list(tests),
+        }
+        for dimension, tests in dimensions.items()
+    }
+    tests = [
+        test
+        for dimension in ("completion", "correctness", "terminal_contract")
+        for test in dimensions[dimension]
+    ]
+    return {
+        "status": (
+            "passed"
+            if all(result.get("status") == "passed" for result in results.values())
+            else "failed"
+        ),
+        "tests": tests,
+        **results,
     }
 
 
@@ -343,8 +422,8 @@ def qualify(
     lifecycle_closeout = _mcp_closeout_snapshot()
     projection_tests = _run_tests(PROJECTION_TESTS, cwd=RUNTIME_ROOT)
     task_matrix = {
-        name: {**_run_tests(tests, cwd=RUNTIME_ROOT), "tests": list(tests)}
-        for name, tests in TASK_MATRIX_TESTS.items()
+        name: _run_task_group(dimensions)
+        for name, dimensions in TASK_MATRIX_TESTS.items()
     }
     projection = qualify_dual_projection()
     repeated = projection.get("representative_receipt", {}).get(
@@ -374,8 +453,20 @@ def qualify(
         and projection.get("correctness", {}).get("passed") is True
         and projection_tests.get("status") == "passed"
     )
+    task_matrix_completion = all(
+        result["completion"].get("status") == "passed"
+        for result in task_matrix.values()
+    )
+    task_matrix_correctness = all(
+        result["correctness"].get("status") == "passed"
+        for result in task_matrix.values()
+    )
+    task_matrix_terminal = all(
+        result["terminal_contract"].get("status") == "passed"
+        for result in task_matrix.values()
+    )
     task_matrix_passed = all(
-        result.get("status") == "passed" for result in task_matrix.values()
+        (task_matrix_completion, task_matrix_correctness, task_matrix_terminal)
     )
     qualified = all(
         (
@@ -447,8 +538,9 @@ def qualify(
         },
         "task_matrix": {
             "status": "passed" if task_matrix_passed else "failed",
-            "correctness_primary": task_matrix_passed,
-            "completion_primary": task_matrix_passed,
+            "correctness_primary": task_matrix_correctness,
+            "completion_primary": task_matrix_completion,
+            "terminal_contract_primary": task_matrix_terminal,
             "token_bytes_secondary": True,
             "groups": task_matrix,
             "product_clients": product_clients,

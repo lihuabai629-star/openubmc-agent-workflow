@@ -52,6 +52,14 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 for run in report["client_matrix"]["runs"].values()
             )
         )
+        client_tests = {
+            name: tuple(run["tests"])
+            for name, run in report["client_matrix"]["runs"].items()
+        }
+        self.assertEqual(len(set(client_tests.values())), 3)
+        self.assertTrue(
+            any("openclaw_product_client" in item for item in client_tests["openclaw"])
+        )
         self.assertTrue(report["evaluation_isolation"]["global_state_blocked"])
         self.assertTrue(report["evaluation_isolation"]["task_owned"])
         self.assertTrue(report["mcp_lifecycle"]["parent_loss_covered"])
@@ -157,6 +165,16 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 for group in report["task_matrix"]["groups"].values()
             )
         )
+        self.assertTrue(report["task_matrix"]["completion_primary"])
+        for group in report["task_matrix"]["groups"].values():
+            self.assertEqual(group["completion"]["status"], "passed")
+            self.assertEqual(group["correctness"]["status"], "passed")
+            self.assertEqual(group["terminal_contract"]["status"], "passed")
+            dimension_tests = {
+                tuple(group[dimension]["tests"])
+                for dimension in ("completion", "correctness", "terminal_contract")
+            }
+            self.assertEqual(len(dimension_tests), 3)
         self.assertIn(
             "test_source_only_keeps_dependency_and_nvme_coverage_gaps_visible",
             " ".join(report["task_matrix"]["groups"]["hardware_blocked"]["tests"]),

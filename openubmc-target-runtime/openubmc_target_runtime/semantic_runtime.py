@@ -197,6 +197,10 @@ class AgentGatewayError(SemanticRuntimeError):
     """Raised when an Agent request cannot be decoded safely."""
 
 
+class AgentBudgetError(AgentGatewayError):
+    """Raised when an Agent request exceeds a hard transport input budget."""
+
+
 class ScopeViolation(AgentGatewayError):
     """Raised when an observation requests an undeclared evidence surface."""
 
@@ -341,43 +345,43 @@ def bounded_request(value: Mapping[str, object]) -> None:
         current, depth = pending.pop()
         nodes += 1
         if nodes > AGENT_REQUEST_MAX_NODES:
-            raise AgentGatewayError("Agent request exceeds the 8192-node input budget")
+            raise AgentBudgetError("Agent request exceeds the 8192-node input budget")
         if isinstance(current, str):
             if len(current.encode("utf-8")) > AGENT_REQUEST_MAX_STRING_BYTES:
-                raise AgentGatewayError(
+                raise AgentBudgetError(
                     "Agent request string exceeds the 128 KiB input budget"
                 )
             continue
         if isinstance(current, Mapping):
             if depth > AGENT_REQUEST_MAX_DEPTH:
-                raise AgentGatewayError(
+                raise AgentBudgetError(
                     "Agent request exceeds the 32-level nesting budget"
                 )
             if len(current) > AGENT_REQUEST_MAX_CONTAINER_ITEMS:
-                raise AgentGatewayError(
+                raise AgentBudgetError(
                     "Agent request object exceeds the 1024-field input budget"
                 )
             for key, item in current.items():
                 if not isinstance(key, str):
                     raise AgentGatewayError("Agent request object keys must be strings")
                 if len(key.encode("utf-8")) > AGENT_REQUEST_MAX_KEY_BYTES:
-                    raise AgentGatewayError(
+                    raise AgentBudgetError(
                         "Agent request object key exceeds the 256-byte input budget"
                     )
                 pending.append((item, depth + 1))
             continue
         if isinstance(current, (list, tuple)):
             if depth > AGENT_REQUEST_MAX_DEPTH:
-                raise AgentGatewayError(
+                raise AgentBudgetError(
                     "Agent request exceeds the 32-level nesting budget"
                 )
             if len(current) > AGENT_REQUEST_MAX_CONTAINER_ITEMS:
-                raise AgentGatewayError(
+                raise AgentBudgetError(
                     "Agent request array exceeds the 1024-item input budget"
                 )
             pending.extend((item, depth + 1) for item in current)
     if len(json_bytes(value)) > AGENT_REQUEST_MAX_BYTES:
-        raise AgentGatewayError("Agent request exceeds the 256 KiB input budget")
+        raise AgentBudgetError("Agent request exceeds the 256 KiB input budget")
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -1843,10 +1847,11 @@ def decode_run_command(
                 caller_deadline=caller_deadline,
             )
         if command == "reconcile":
+            command_id = "reconcile-" + fingerprint({"run_id": run_id})[:32]
             identity, digest = run_command_identity(
                 ReconcileRun(
                     run_id,
-                    command_id=_text(operation_id),
+                    command_id=command_id,
                     caller_deadline=caller_deadline,
                 ),
                 operation_id=operation_id,

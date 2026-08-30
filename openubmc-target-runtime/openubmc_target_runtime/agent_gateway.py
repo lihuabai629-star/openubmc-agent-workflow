@@ -16,6 +16,7 @@ from .diagnostic_receipt import (
     DiagnosticStatus,
 )
 from .semantic_runtime import (
+    AgentBudgetError,
     AgentPreflightError,
     AgentGatewayError,
     CancelIncident,
@@ -899,13 +900,20 @@ class CostGovernor:
             result.get("results", {})
         )
         results_compacted = projected_results != result.get("results", {})
+        content_compacted = (
+            results_compacted
+            or result.get("projection_compacted") is True
+            or result.get("content_compacted") is True
+        )
         compacted.update(
             _projection_telemetry(
-                compacted=results_compacted,
+                compacted=content_compacted,
                 target_exceeded=False,
             )
         )
-        compacted["projection_truncated"] = results_compacted
+        compacted["projection_truncated"] = (
+            results_compacted or result.get("projection_truncated") is True
+        )
         compacted["results"] = projected_results
         compacted["projection_target_exceeded"] = (
             len(_json_bytes(compacted)) > OBSERVATION_PROJECTION_TARGET_BYTES
@@ -930,11 +938,62 @@ class CostGovernor:
         if len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES:
             result.update(
                 _projection_telemetry(
-                    compacted=False,
+                    compacted=(
+                        result.get("projection_compacted") is True
+                        or result.get("content_compacted") is True
+                    ),
                     target_exceeded=True,
                 )
             )
         return result
+
+
+def _finalize_turn_projection(
+    document: Mapping[str, object],
+    *,
+    preflight_failure: bool = False,
+    include_overage: bool = False,
+) -> dict[str, object]:
+    """Reach a fixed point between soft-budget and interaction telemetry."""
+
+    result = dict(document)
+    for _attempt in range(8):
+        before = dict(result)
+        result = CostGovernor.turn(result)
+        telemetry = interaction_telemetry(
+            result,
+            preflight_failure=preflight_failure,
+        )
+        if telemetry is None:
+            result.pop("interaction_telemetry", None)
+        else:
+            result["interaction_telemetry"] = telemetry
+        if include_overage and result.get("projection_target_exceeded") is True:
+            result.setdefault("projection_target_overage_bytes", 0)
+            result["projection_target_overage_bytes"] = max(
+                1,
+                len(_json_bytes(result)) - TURN_PROJECTION_TARGET_BYTES,
+            )
+        if result == before:
+            break
+    return result
+
+
+def _finalize_observation_projection(
+    document: Mapping[str, object],
+) -> dict[str, object]:
+    result = dict(document)
+    for _attempt in range(4):
+        before = dict(result)
+        result = CostGovernor.observation(result)
+        telemetry = interaction_telemetry(result)
+        if telemetry is None:
+            result.pop("interaction_telemetry", None)
+        else:
+            result["interaction_telemetry"] = telemetry
+        if result == before:
+            break
+    return result
 
 
 class ResultProjector:
@@ -1284,11 +1343,7 @@ class ResultProjector:
         }
         if observation_ref is not None:
             document["observation_ref"] = observation_ref
-        projected = CostGovernor.observation(document)
-        telemetry = interaction_telemetry(projected)
-        if telemetry is not None:
-            projected["interaction_telemetry"] = telemetry
-        return projected
+        return _finalize_observation_projection(document)
 
     def turn(self, turn: RunTurn) -> dict[str, object]:
         document = {"schema": TURN_SCHEMA, **turn.to_public_dict()}
@@ -1318,11 +1373,7 @@ class ResultProjector:
             document["gaps"] = list(
                 dict.fromkeys((*gaps, *validation_gaps))
             )[:16]
-        projected = CostGovernor.turn(document)
-        telemetry = interaction_telemetry(projected)
-        if telemetry is not None:
-            projected["interaction_telemetry"] = telemetry
-        return CostGovernor.turn(projected)
+        return _finalize_turn_projection(document)
 
 
 class AgentGateway:
@@ -1432,7 +1483,7 @@ class AgentGateway:
             task_id=task_id,
             operation_id=operation_id,
         )
-        return self._project_repeated_diagnostic_receipt(
+        projected = self._project_repeated_diagnostic_receipt(
             self.projector.turn(turn),
             task_id=task_id,
             previous_turn_acknowledged=isinstance(
@@ -1440,6 +1491,7 @@ class AgentGateway:
                 (SubmitGate, CancelRun, CancelIncident),
             ),
         )
+        return _finalize_turn_projection(projected)
 
     @staticmethod
     def error(operation: str, exc: Exception) -> dict[str, object]:
@@ -1459,6 +1511,19 @@ class AgentGateway:
             },
             "gaps": ["operation_failed"],
         }
+        if isinstance(exc, AgentBudgetError):
+            result.update(
+                _projection_telemetry(
+                    compacted=False,
+                    target_exceeded=False,
+                )
+            )
+            result["budget_blocker"] = True
+            result["next_action"] = (
+                "reduce the request structure or move large content behind an "
+                "ArtifactRef, then retry the same operation"
+            )
+            return _finalize_turn_projection(result)
         if isinstance(exc, (AgentPreflightError, GatePreflightError)):
             detail = exc.detail
             error = result["error"]
@@ -1472,42 +1537,11 @@ class AgentGateway:
             if detail.limit is not None:
                 error["limit"] = detail.limit
             result["next_action"] = next_action
-            result["interaction_telemetry"] = interaction_telemetry(
+            return _finalize_turn_projection(
                 result,
                 preflight_failure=True,
+                include_overage=True,
             )
-            if len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES:
-                result.update(
-                    _projection_telemetry(
-                        compacted=False,
-                        target_exceeded=False,
-                    )
-                )
-                result["projection_target_exceeded"] = True
-                result["projection_target_overage_bytes"] = 0
-                for _attempt in range(3):
-                    overage = max(
-                        1,
-                        len(_json_bytes(result))
-                        - TURN_PROJECTION_TARGET_BYTES,
-                    )
-                    if result["projection_target_overage_bytes"] == overage:
-                        break
-                    result["projection_target_overage_bytes"] = overage
-            result["interaction_telemetry"] = interaction_telemetry(
-                result,
-                preflight_failure=True,
-            )
-            if result.get("projection_target_exceeded") is True:
-                for _attempt in range(3):
-                    overage = max(
-                        1,
-                        len(_json_bytes(result))
-                        - TURN_PROJECTION_TARGET_BYTES,
-                    )
-                    if result["projection_target_overage_bytes"] == overage:
-                        break
-                    result["projection_target_overage_bytes"] = overage
         return result
 
 

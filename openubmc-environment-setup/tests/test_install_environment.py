@@ -2052,6 +2052,93 @@ class EnvironmentSetupTests(unittest.TestCase):
             {"type": "stdio", "command": str(launcher), "args": []},
         )
 
+    def test_install_qualifies_codex_product_client(self) -> None:
+        self.prepare_credentials()
+
+        result, _ = self.install("--clients", "codex")
+
+        self.assertEqual(result, 0)
+        skills_dir = installer.client_skills_dir(self.home, "codex")
+        for canonical, relative in EXPECTED_BUNDLE:
+            self.assertTrue(
+                installer.same_target(
+                    skills_dir / canonical,
+                    self.source / relative,
+                )
+            )
+        state = installer.load_state(self.home)
+        launcher = Path(state["runtime"]["launcher_path"])
+        self.assertEqual(state["clients"], ["codex"])
+        self.assertTrue(
+            installer.check_toml_mcp(
+                self.home / ".codex" / "config.toml",
+                "",
+                state["mcp"]["codex"],
+            )
+        )
+        self.assertTrue(
+            installer.check_toml_runtime_mcp(
+                self.home / ".codex" / "config.toml",
+                launcher,
+            )
+        )
+
+    def test_install_qualifies_claude_product_client(self) -> None:
+        self.prepare_credentials()
+
+        result, _ = self.install("--clients", "claude")
+
+        self.assertEqual(result, 0)
+        skills_dir = installer.client_skills_dir(self.home, "claude")
+        for canonical, relative in EXPECTED_BUNDLE:
+            self.assertTrue(
+                installer.same_target(
+                    skills_dir / canonical,
+                    self.source / relative,
+                )
+            )
+        state = installer.load_state(self.home)
+        launcher = Path(state["runtime"]["launcher_path"])
+        self.assertEqual(state["clients"], ["codex", "claude"])
+        self.assertTrue(
+            installer.check_json_mcp(
+                self.home / ".claude.json",
+                "",
+                state["mcp"]["claude"],
+            )
+        )
+        self.assertTrue(
+            installer.check_json_runtime_mcp(
+                self.home / ".claude.json",
+                launcher,
+            )
+        )
+
+    def test_install_qualifies_openclaw_product_client(self) -> None:
+        self.prepare_credentials()
+
+        result, _ = self.install("--clients", "openclaw")
+
+        self.assertEqual(result, 0)
+        skills_dir = installer.client_skills_dir(self.home, "openclaw")
+        for canonical, relative in EXPECTED_BUNDLE:
+            self.assertTrue(
+                installer.same_target(
+                    skills_dir / canonical,
+                    self.source / relative,
+                )
+            )
+        state = installer.load_state(self.home)
+        self.assertEqual(state["clients"], ["codex", "openclaw"])
+        self.assertIs(
+            state["mcp"]["openclaw"]["adapter_available"],
+            False,
+        )
+        self.assertIs(
+            state["runtime_mcp"]["openclaw"]["adapter_available"],
+            False,
+        )
+
     def test_install_migrates_owned_codex_runtime_entry_without_args(self) -> None:
         self.prepare_credentials()
         self.assertEqual(self.install("--clients", "codex")[0], 0)

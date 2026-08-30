@@ -38,6 +38,7 @@ from openubmc_target_runtime import (  # noqa: E402
     ResumeRun,
     RunDecision,
     RunEngine,
+    ResultProjector,
     RunTarget,
     STDIO_FRAME_MAX_BYTES,
     TOOLS_LIST_MAX_BYTES,
@@ -4588,6 +4589,49 @@ class AgentGatewayTests(unittest.TestCase):
                 operation_id="shape-budget-string",
             )
 
+    def test_agent_request_budget_failure_has_explicit_budget_telemetry(self) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="shape-budget-telemetry",
+        )
+        nested: dict[str, object] = {}
+        cursor = nested
+        for _index in range(40):
+            child: dict[str, object] = {}
+            cursor["nested"] = child
+            cursor = child
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "192.0.2.10",
+                        "purpose": nested,
+                    },
+                },
+            }
+        )
+        structured = response["result"]["structuredContent"]
+
+        self.assertTrue(response["result"]["isError"])
+        self.assertTrue(structured["budget_blocker"])
+        self.assertEqual(
+            structured["interaction_telemetry"],
+            {
+                "classification": "budget_blocker",
+                "preflight_failure": False,
+                "no_progress_retry": False,
+                "manual_action_required": False,
+                "projection_target_exceeded": False,
+                "budget_blocker": True,
+            },
+        )
+
     def test_observe_rejects_the_retired_assurance_input(self) -> None:
         with self.assertRaisesRegex(ValueError, "assurance.*unexpected"):
             self.service.call_exposed_tool(
@@ -7693,13 +7737,17 @@ class AgentGatewayTests(unittest.TestCase):
                 "execute",
                 action,
                 task_id="atomic-reconcile-replay",
-                operation_id="atomic-reconcile-command",
+                operation_id="atomic-reconcile-retry-after-disconnect",
             )
         finally:
             service.close()
 
         self.assertEqual(reconciled["state"], "completed")
         self.assertEqual(replayed["outcome"], reconciled["outcome"])
+        self.assertEqual(
+            replayed["progress"],
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
         self.assertEqual(
             [name for name, _arguments in backend.calls].count("live_patch_run"),
             effect_calls,
@@ -7979,6 +8027,35 @@ class AgentGatewayTests(unittest.TestCase):
                 "projection_target_exceeded": True,
                 "budget_blocker": False,
             },
+        )
+
+    def test_turn_telemetry_reaches_a_fixed_point_at_the_soft_target(self) -> None:
+        projector = ResultProjector()
+
+        def projected(padding: int) -> dict[str, object]:
+            return projector.turn(
+                RunTurn(
+                    run_id="run-telemetry-fixed-point",
+                    state="waiting_response",
+                    gate={"kind": "blocker", "message": "x" * padding},
+                    response_required=True,
+                    progress={"status": "no_progress", "reason": "response_required"},
+                )
+            )
+
+        low = 1
+        high = TURN_MAX_BYTES * 2
+        while low < high:
+            midpoint = (low + high) // 2
+            if encoded_size(projected(midpoint)) > TURN_MAX_BYTES:
+                high = midpoint
+            else:
+                low = midpoint + 1
+
+        turn = projected(low)
+        self.assertTrue(turn["projection_target_exceeded"])
+        self.assertTrue(
+            turn["interaction_telemetry"]["projection_target_exceeded"]
         )
 
     def test_execute_turn_soft_target_preserves_runtime_incident_semantics(self) -> None:
