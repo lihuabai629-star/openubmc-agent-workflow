@@ -21,6 +21,7 @@ EXECUTABLES = (
     ROOT / "scripts" / "continuous_closeout_qualification.py",
     ROOT / "scripts" / "evaluation_harness.py",
     ROOT / "scripts" / "model_planning_evaluation.py",
+    ROOT / "scripts" / "product_closeout_ingestion.py",
     ROOT / "scripts" / "product_closeout_qualification.py",
     ROOT / "scripts" / "diagnosis_chain_qualification.py",
     ROOT / "scripts" / "validate_workflow.py",

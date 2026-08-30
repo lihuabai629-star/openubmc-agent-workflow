@@ -19,6 +19,22 @@ python3 scripts/product_closeout_qualification.py fresh-evidence.json \
   --output product-closeout-report.json
 ```
 
+The Operator / CI Plane can also assemble that manifest from trusted workflow outputs instead of
+hand-authoring dimension status and identities:
+
+```bash
+python3 scripts/product_closeout_ingestion.py fresh-ingestion.json \
+  --runtime-repository /trusted/runtime-state/runtime.sqlite3 \
+  --output-manifest product-closeout-manifest.json \
+  --output-report product-closeout-report.json
+```
+
+Continuous qualification accepts the same descriptor through `--product-ingestion`. Ingestion
+derives the selected target and terminal Outcome from the Run ledger, source commits from clean Git
+repositories, artifact identity from the adjacent build metadata, and status/digests from fixed
+proof and support files. It does not write Runtime state: every proof and support digest must
+already be attached before `RunOutcomeRecorded`.
+
 The manifest separates nine dimensions: Runtime continuity, diagnosis, source identity, official
 UT, compiled build, artifact identity, upgrade, freshness, and hardware coverage. Every referenced
 file is verified by SHA-256. Fresh Runtime evidence uses the structured proof schema, but a proof

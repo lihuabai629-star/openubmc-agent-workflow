@@ -1,7 +1,7 @@
 # openUBMC Agent Workflow 后续演进档案
 
 日期：2026-08-26
-当前实现基线：GitHub `main` 已合入 v2.0.1 Runtime 资格修复
+当前实现基线：GitHub `main` 已发布 v2.0.1 并继续进入发布后维护演进
 P2 生命周期完成基线：`2564f3572fd82668dfd90ba3bd2e3439d021ec63`
 历史 v2 发布资格 source：`e7dc74c`
 历史 lock-only commit：`7dc350c`（`superseded-unpublished`，不得直接发布）
@@ -49,7 +49,8 @@ Release Gate 为 13/13 passed、`promotable=true`，证据 digest 为
 P2 PR CI run `32933867020` 与 main CI run `32934292608` 的 CI contract 和完整仓库验证均
 通过。`v2.0.0` 已于 2026-08-27 从 `f27db4f -> c0e095a` 的 source-plus-lock 拓扑正式发布。
 此前 `e7dc74c -> 7dc350c` 仍只作为历史资格证据保留，状态为
-`superseded-unpublished`。下一次发布为 `v2.0.1`，必须从新的最终 source 重新资格化并生成
+`superseded-unpublished`。下一维护版本必须高于已发布的 `v2.0.1`；当前计划版本为
+`v2.0.2`，但只有 fresh Runtime 产品闭环完成后才能选择新的最终 source、重新资格化并生成
 新的 lock-only commit。
 
 ### 1.2 产品北极星
@@ -385,8 +386,10 @@ submission identity 由 Adapter 从持久 Run/Gate binding 派生。详见 ADR-0
 `e7dc74c052f3874d3d9214ce0cfae8949a397765 -> 7dc350cd3ecf2ffab2d1d4db89d4bac81f1ccec4`
 仍是 `superseded-unpublished` 历史候选，不得用于发布。`main` 是持续前进的开发分支；它保留
 的 `release-lock.json` 是历史发布快照，不能证明当前 mutable `main` 的树身份。`v2.0.1`
-必须选择新的最终 source，重跑完整 execute A/B、Runtime qualification、Release Gate 与
-GitHub CI，再生成只修改 `release-lock.json` 的新 lock-only commit。
+已正式发布。后续维护版本当前计划为 `v2.0.2`，必须在 fresh Runtime 产品闭环成功后选择
+新的最终 source，重跑完整 execute A/B、Runtime qualification、Release Gate 与 GitHub CI，
+再生成只修改 `release-lock.json` 的新 lock-only commit；在此之前不得宣称新的产品闭环或
+发布候选已经完成。
 
 ### 8.7 产品闭环与维护候选资格
 

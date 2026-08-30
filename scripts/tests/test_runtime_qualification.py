@@ -76,6 +76,21 @@ class RuntimeQualificationTests(unittest.TestCase):
             cwd=WORKSPACE / "openubmc-live-patch",
         )
 
+    def test_agent_interaction_guidance_is_release_qualified(self) -> None:
+        registered = {
+            test_name
+            for _group_name, test_names in qualification.QUALIFICATIONS
+            for test_name in test_names
+        }
+
+        self.assertTrue(
+            {
+                "tests.test_agent_gateway.AgentGatewayTests.test_public_preflight_error_identifies_field_and_canonical_retry",
+                "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_gate_target_preserves_runtime_gate_semantics",
+                "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_target_preserves_runtime_incident_semantics",
+            }.issubset(registered)
+        )
+
     @staticmethod
     def stability_report(source_commit: str) -> str:
         report = {
@@ -599,6 +614,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "wrong_target_or_artifact_mutations": 0,
                 "unknown_new_identity_retries": 0,
                 "semantic_projection_completion": 0,
+                "agent_interaction_guidance": 0,
                 "task_scoped_mcp_lifecycle": 0,
                 "persisted_run_compatibility": 0,
                 "real_backend_crash_cuts": 0,
@@ -606,7 +622,7 @@ class RuntimeQualificationTests(unittest.TestCase):
             },
         )
         self.assertTrue(report["ordinary_partial_result_accepted"])
-        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(calls), 11)
         self.assertEqual(report["source_commit"], SOURCE_COMMIT)
         self.assertEqual(
             report["environment"],
@@ -704,7 +720,7 @@ class RuntimeQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["promotable"])
         self.assertGreater(report["violations"]["false_successes"], 0)
-        self.assertEqual(call_count, 10)
+        self.assertEqual(call_count, 11)
 
     def test_artifact_lifecycle_without_shared_content_safety_blocks_promotion(
         self,

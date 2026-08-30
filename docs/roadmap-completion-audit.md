@@ -56,6 +56,6 @@ rerun qualification, and create a new lock-only commit; it must not rewrite the 
 
 The earlier detached `e7dc74c -> 7dc350c` Release candidate remains historical
 `superseded-unpublished` evidence. `v2.0.0` was subsequently published on 2026-08-27 from source
-`f27db4f` and lock-only commit `c0e095a` after the complete Release Gate passed. The next planned
-release is `v2.0.1`; it becomes a Release candidate only after a Final source is qualified and its
-lock-only child is created.
+`f27db4f` and lock-only commit `c0e095a`; `v2.0.1` was published on 2026-08-28 after its complete
+Release Gate passed. The next planned maintenance release is `v2.0.2`; it becomes a Release
+candidate only after a Final source is qualified and its lock-only child is created.

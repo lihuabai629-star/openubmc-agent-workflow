@@ -35,9 +35,11 @@ from openubmc_target_runtime import (  # noqa: E402
     PendingCaseEvent,
     RevisionConflict,
     ReferenceViolation,
+    ReconcileRun,
     ResumeRun,
     RunDecision,
     RunEngine,
+    ResultProjector,
     RunTarget,
     STDIO_FRAME_MAX_BYTES,
     TOOLS_LIST_MAX_BYTES,
@@ -64,6 +66,9 @@ from openubmc_target_runtime.context_runtime import (  # noqa: E402
 )
 from openubmc_target_runtime.agent_gateway import (  # noqa: E402
     render_execute_turn_text,
+)
+from openubmc_target_runtime.agent_interaction import (  # noqa: E402
+    interaction_telemetry,
 )
 from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
     build_diagnostic_receipt,
@@ -2248,8 +2253,9 @@ class RequiredIdentityPressureTurnRuntime(OversizedTerminalTurnRuntime):
 
 
 class PersistentUnknownRunDriver:
-    def __init__(self, repository=None) -> None:
+    def __init__(self, repository=None, *, effect_id: str = "mutation-unknown-1") -> None:
         self.repository = repository
+        self.effect_id = effect_id
 
     def _snapshot(self) -> dict[str, object]:
         persisted = (
@@ -2268,7 +2274,7 @@ class PersistentUnknownRunDriver:
             "operations": [
                 {
                     "operation": "live_patch_run",
-                    "operation_id": "mutation-unknown-1",
+                    "operation_id": self.effect_id,
                     "status": "mutation_outcome_unknown",
                 }
             ],
@@ -2299,6 +2305,16 @@ class PersistentUnknownRunDriver:
 
 
 class AgentGatewayTests(unittest.TestCase):
+    def test_incident_always_requires_operator_attention(self) -> None:
+        telemetry = interaction_telemetry(
+            {"state": "incident", "incident": {"code": "incomplete"}}
+        )
+
+        assert telemetry is not None
+        self.assertEqual(telemetry["classification"], "incident")
+        self.assertTrue(telemetry["incident_present"])
+        self.assertTrue(telemetry["operator_attention_required"])
+
     def test_unscoped_legacy_diagnostic_receipt_is_cycle_one_only(self) -> None:
         legacy = {
             "operation": "debug_run",
@@ -3944,6 +3960,18 @@ class AgentGatewayTests(unittest.TestCase):
             result["structuredContent"]["next_action"],
             "retry observe with the corrected canonical capability name",
         )
+        self.assertEqual(
+            result["structuredContent"]["interaction_telemetry"],
+            {
+                "classification": "preflight_failure",
+                "preflight_failure": True,
+                "no_progress_retry": False,
+                "incident_present": False,
+                "operator_attention_required": False,
+                "projection_target_exceeded": False,
+                "budget_blocker": False,
+            },
+        )
 
     def test_mixed_case_canonical_capability_remains_compatible(self) -> None:
         receipt = self.service.call_exposed_tool(
@@ -4411,6 +4439,18 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(receipt["projection_truncated"])
         self.assertTrue(receipt["projection_target_exceeded"])
         self.assertIn("observation_ref", receipt)
+        self.assertEqual(
+            receipt["interaction_telemetry"],
+            {
+                "classification": "projection_target_exceeded",
+                "preflight_failure": False,
+                "no_progress_retry": False,
+                "incident_present": False,
+                "operator_attention_required": False,
+                "projection_target_exceeded": True,
+                "budget_blocker": False,
+            },
+        )
 
     def test_observe_soft_target_survives_maximum_legal_scope_and_large_result(self) -> None:
         service = RuntimeMcpService(LargeObservationBackend())
@@ -4565,6 +4605,50 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="shape-budget",
                 operation_id="shape-budget-string",
             )
+
+    def test_agent_request_budget_failure_has_explicit_budget_telemetry(self) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="shape-budget-telemetry",
+        )
+        nested: dict[str, object] = {}
+        cursor = nested
+        for _index in range(40):
+            child: dict[str, object] = {}
+            cursor["nested"] = child
+            cursor = child
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "192.0.2.10",
+                        "purpose": nested,
+                    },
+                },
+            }
+        )
+        structured = response["result"]["structuredContent"]
+
+        self.assertTrue(response["result"]["isError"])
+        self.assertTrue(structured["budget_blocker"])
+        self.assertEqual(
+            structured["interaction_telemetry"],
+            {
+                "classification": "budget_blocker",
+                "preflight_failure": False,
+                "no_progress_retry": False,
+                "incident_present": False,
+                "operator_attention_required": False,
+                "projection_target_exceeded": False,
+                "budget_blocker": True,
+            },
+        )
 
     def test_observe_rejects_the_retired_assurance_input(self) -> None:
         with self.assertRaisesRegex(ValueError, "assurance.*unexpected"):
@@ -7115,7 +7199,12 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertIsInstance(first, RunTurn)
         self.assertEqual(first.state, "completed")
-        self.assertEqual(replayed.to_public_dict(), first.to_public_dict())
+        replayed_public = replayed.to_public_dict()
+        self.assertEqual(
+            replayed_public.pop("progress"),
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
+        self.assertEqual(replayed_public, first.to_public_dict())
         projection = self.service._test.context_runtime.read_case(waiting.run_id)
         self.assertEqual(
             sum(
@@ -7123,6 +7212,61 @@ class AgentGatewayTests(unittest.TestCase):
                 for item in projection["run_decisions"]
             ),
             1,
+        )
+
+    def test_duplicate_respond_reports_no_progress_without_a_new_transition(
+        self,
+    ) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.79",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="duplicate-respond",
+            operation_id="duplicate-respond-start",
+        )
+        response = {
+            "kind": "respond",
+            "run_id": waiting["run_id"],
+            **gate_binding(waiting),
+            "submission_id": "duplicate-respond-submission",
+            "response": {
+                "status": "completed",
+                "summary": "source repair completed",
+                "payload": {
+                    "source_revision": "duplicate-respond-source",
+                    "authored_files": ["src/fix.lua"],
+                    "verification_plan": ["run regression tests"],
+                },
+            },
+        }
+        completed = self.service.call_exposed_tool(
+            "execute",
+            response,
+            task_id="duplicate-respond",
+            operation_id="duplicate-respond-first",
+        )
+        before = self.service._test.context_runtime.read_case(waiting["run_id"])
+
+        replayed = self.service.call_exposed_tool(
+            "execute",
+            response,
+            task_id="duplicate-respond-replay",
+            operation_id="duplicate-respond-second",
+        )
+        after = self.service._test.context_runtime.read_case(waiting["run_id"])
+
+        self.assertEqual(completed["state"], "completed")
+        self.assertEqual(after["revision"], before["revision"])
+        self.assertEqual(
+            replayed["progress"],
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
+        self.assertTrue(
+            replayed["interaction_telemetry"]["no_progress_retry"]
         )
 
     def test_replaying_an_old_start_command_returns_the_current_turn(self) -> None:
@@ -7499,7 +7643,7 @@ class AgentGatewayTests(unittest.TestCase):
             1,
         )
 
-    def test_resume_persists_and_replays_a_decision_by_operation_identity(self) -> None:
+    def test_repeated_resume_with_no_progress_never_records_a_decision(self) -> None:
         waiting = self.service.call_exposed_tool(
             "execute",
             {
@@ -7513,28 +7657,36 @@ class AgentGatewayTests(unittest.TestCase):
         )
         action = {"kind": "resume", "run_id": waiting["run_id"]}
 
+        before = self.service._test.context_runtime.read_case(waiting["run_id"])
         first = self.service.call_exposed_tool(
             "execute",
             action,
             task_id="atomic-resume-first",
-            operation_id="atomic-resume-command",
+            operation_id="atomic-resume-first-command",
         )
         replayed = self.service.call_exposed_tool(
             "execute",
             action,
             task_id="atomic-resume-replay",
-            operation_id="atomic-resume-command",
+            operation_id="atomic-resume-second-command",
         )
         projection = self.service._test.context_runtime.read_case(waiting["run_id"])
         decisions = [
             item
             for item in projection["run_decisions"]
-            if item.get("command_id") == "atomic-resume-command"
+            if item.get("command_id")
+            in {"atomic-resume-first-command", "atomic-resume-second-command"}
         ]
 
-        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions, [])
         self.assertEqual(first["gate"], waiting["gate"])
         self.assertEqual(replayed["gate"], first["gate"])
+        self.assertEqual(
+            first["progress"],
+            {"status": "no_progress", "reason": "response_required"},
+        )
+        self.assertEqual(replayed["progress"], first["progress"])
+        self.assertEqual(projection["revision"], before["revision"])
 
     def test_reconcile_command_replays_without_repeating_the_effect(self) -> None:
         class FailOnceLivePatchSemanticBackend(SemanticBackend):
@@ -7611,13 +7763,17 @@ class AgentGatewayTests(unittest.TestCase):
                 "execute",
                 action,
                 task_id="atomic-reconcile-replay",
-                operation_id="atomic-reconcile-command",
+                operation_id="atomic-reconcile-retry-after-disconnect",
             )
         finally:
             service.close()
 
         self.assertEqual(reconciled["state"], "completed")
         self.assertEqual(replayed["outcome"], reconciled["outcome"])
+        self.assertEqual(
+            replayed["progress"],
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
         self.assertEqual(
             [name for name, _arguments in backend.calls].count("live_patch_run"),
             effect_calls,
@@ -7887,6 +8043,47 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(turn["gate"]["gate_id"], "gate-oversized-no-progress")
         self.assertTrue(turn["projection_target_exceeded"])
+        self.assertEqual(
+            turn["interaction_telemetry"],
+            {
+                "classification": "no_progress_retry",
+                "preflight_failure": False,
+                "no_progress_retry": True,
+                "incident_present": False,
+                "operator_attention_required": False,
+                "projection_target_exceeded": True,
+                "budget_blocker": False,
+            },
+        )
+
+    def test_turn_telemetry_reaches_a_fixed_point_at_the_soft_target(self) -> None:
+        projector = ResultProjector()
+
+        def projected(padding: int) -> dict[str, object]:
+            return projector.turn(
+                RunTurn(
+                    run_id="run-telemetry-fixed-point",
+                    state="waiting_response",
+                    gate={"kind": "blocker", "message": "x" * padding},
+                    response_required=True,
+                    progress={"status": "no_progress", "reason": "response_required"},
+                )
+            )
+
+        low = 1
+        high = TURN_MAX_BYTES * 2
+        while low < high:
+            midpoint = (low + high) // 2
+            if encoded_size(projected(midpoint)) > TURN_MAX_BYTES:
+                high = midpoint
+            else:
+                low = midpoint + 1
+
+        turn = projected(low)
+        self.assertTrue(turn["projection_target_exceeded"])
+        self.assertTrue(
+            turn["interaction_telemetry"]["projection_target_exceeded"]
+        )
 
     def test_execute_turn_soft_target_preserves_runtime_incident_semantics(self) -> None:
         turn = AgentGateway(OversizedIncidentTurnRuntime()).execute(
@@ -7918,6 +8115,18 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(turn["projection_target_exceeded"])
         self.assertFalse(turn["manual_narrowing_required"])
         self.assertFalse(turn["budget_blocker"])
+        self.assertEqual(
+            turn["interaction_telemetry"],
+            {
+                "classification": "incident",
+                "preflight_failure": False,
+                "no_progress_retry": False,
+                "incident_present": True,
+                "operator_attention_required": True,
+                "projection_target_exceeded": True,
+                "budget_blocker": False,
+            },
+        )
 
     def test_execute_turn_budget_preserves_diagnostic_receipt_semantics(self) -> None:
         turn = AgentGateway(OversizedDiagnosticTurnRuntime()).execute(
@@ -9700,9 +9909,22 @@ class AgentGatewayTests(unittest.TestCase):
         replayed_semantics = {
             key: value
             for key, value in replayed.items()
-            if key not in {"diagnostic_receipt", "projection_target_exceeded"}
+            if key
+            not in {
+                "diagnostic_receipt",
+                "interaction_telemetry",
+                "progress",
+                "projection_target_exceeded",
+            }
         }
         self.assertEqual(replayed_semantics, cancelled_semantics)
+        self.assertEqual(
+            replayed["progress"],
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
+        self.assertTrue(
+            replayed["interaction_telemetry"]["no_progress_retry"]
+        )
         self.assertEqual(
             replayed["diagnostic_receipt"]["receipt_id"],
             cancelled["diagnostic_receipt_ref"]["receipt_id"],
@@ -11356,6 +11578,53 @@ class AgentGatewayTests(unittest.TestCase):
             1,
         )
 
+    def test_duplicate_control_cancel_reports_no_progress_without_a_new_transition(
+        self,
+    ) -> None:
+        waiting = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": "192.0.2.69",
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+            },
+            task_id="duplicate-control",
+            operation_id="duplicate-control-start",
+        )
+        cancellation = {
+            "kind": "control",
+            "run_id": waiting["run_id"],
+            "command": "cancel",
+            "submission_id": "duplicate-control-submission",
+            **gate_binding(waiting),
+        }
+        cancelled = self.service.call_exposed_tool(
+            "execute",
+            cancellation,
+            task_id="duplicate-control",
+            operation_id="duplicate-control-first",
+        )
+        before = self.service._test.context_runtime.read_case(waiting["run_id"])
+
+        replayed = self.service.call_exposed_tool(
+            "execute",
+            cancellation,
+            task_id="duplicate-control-replay",
+            operation_id="duplicate-control-second",
+        )
+        after = self.service._test.context_runtime.read_case(waiting["run_id"])
+
+        self.assertEqual(cancelled["state"], "cancelled")
+        self.assertEqual(after["revision"], before["revision"])
+        self.assertEqual(
+            replayed["progress"],
+            {"status": "no_progress", "reason": "unchanged_command_replayed"},
+        )
+        self.assertTrue(
+            replayed["interaction_telemetry"]["no_progress_retry"]
+        )
+
     def test_execute_live_patch_runs_diagnosis_mutation_and_fresh_verification(self) -> None:
         first = self.service.call_exposed_tool(
             "execute",
@@ -11980,6 +12249,45 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIsNotNone(turn.incident)
         self.assertEqual(turn.incident.code, "mutation_outcome_unknown")
         self.assertEqual(resumed.state, "incident")
+
+    def test_reconcile_identity_tracks_the_current_unknown_effect(self) -> None:
+        repository = InMemoryRuntimeRepository()
+        transactions = BufferedRuntimeRepository(repository)
+        driver = PersistentUnknownRunDriver(transactions)
+        engine = RunEngine(
+            driver,
+            run_store=EventRunStore(
+                repository,
+                draft_buffer=transactions,
+            ),
+        )
+
+        first = engine.execute(
+            ReconcileRun("run-persistent-unknown"),
+            task_id="reconcile-first-effect",
+            operation_id="reconcile-first-request",
+        )
+        driver.effect_id = "mutation-unknown-2"
+        second = engine.execute(
+            ReconcileRun("run-persistent-unknown"),
+            task_id="reconcile-second-effect",
+            operation_id="reconcile-second-request",
+        )
+        projection = repository.load("run-persistent-unknown")
+        assert projection is not None
+        reconcile_decisions = [
+            item
+            for item in projection["run_decisions"]
+            if str(item.get("command_id", "")).startswith("reconcile-")
+        ]
+
+        self.assertEqual(first.state, "incident")
+        self.assertEqual(second.state, "incident")
+        self.assertEqual(len(reconcile_decisions), 2)
+        self.assertNotEqual(
+            reconcile_decisions[0]["command_id"],
+            reconcile_decisions[1]["command_id"],
+        )
 
     def test_run_engine_requires_durable_command_dependencies(self) -> None:
         with self.assertRaisesRegex(

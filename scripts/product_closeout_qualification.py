@@ -13,11 +13,12 @@ import re
 import sqlite3
 import subprocess
 import sys
-import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = ROOT / "openubmc-target-runtime"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(RUNTIME_ROOT))
 
@@ -25,6 +26,7 @@ from openubmc_target_runtime import (  # noqa: E402
     ContextRuntimeError,
     SQLiteRuntimeRepository,
 )
+from scripts.runtime_ledger_snapshot import stable_runtime_ledger_copy  # noqa: E402
 
 
 EVIDENCE_SCHEMA = "openubmc-agent-workflow.product-closeout-evidence.v1"
@@ -605,18 +607,7 @@ def _runtime_ledger(
         violations.append(f"runtime.repository: file is unavailable: {path}")
         return False, set()
     try:
-        with tempfile.TemporaryDirectory() as raw:
-            snapshot = Path(raw) / "runtime-snapshot.sqlite3"
-            source_wal = Path(str(path) + "-wal")
-            database_raw = path.read_bytes()
-            wal_raw = source_wal.read_bytes() if source_wal.is_file() else None
-            if path.read_bytes() != database_raw or (
-                (source_wal.read_bytes() if source_wal.is_file() else None) != wal_raw
-            ):
-                raise ValueError("Runtime ledger changed while snapshotting")
-            snapshot.write_bytes(database_raw)
-            if wal_raw is not None:
-                Path(str(snapshot) + "-wal").write_bytes(wal_raw)
+        with stable_runtime_ledger_copy(path) as snapshot:
             repository = SQLiteRuntimeRepository(snapshot)
             projection = repository.load(run_id)
             events = repository.events(run_id)
