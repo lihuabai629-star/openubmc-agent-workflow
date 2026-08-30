@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -36,8 +37,19 @@ def structured_proof(
 
 
 def all_manifest_evidence(manifest: dict[str, object]) -> list[dict[str, object]]:
+    refs: list[dict[str, object]] = []
+    for dimension in manifest_dimensions(manifest):
+        for item in dimension.get("evidence", []):
+            refs.append(item)
+            support = item.get("supporting_evidence")
+            if isinstance(support, dict):
+                refs.append(support)
+    return refs
+
+
+def manifest_dimensions(manifest: dict[str, object]) -> tuple[dict[str, object], ...]:
     validation = manifest["validation"]
-    dimensions = (
+    return (
         manifest["runtime"],
         manifest["diagnosis"],
         validation["official_ut"],
@@ -46,14 +58,6 @@ def all_manifest_evidence(manifest: dict[str, object]) -> list[dict[str, object]
         manifest["freshness"],
         manifest["hardware"],
     )
-    refs: list[dict[str, object]] = []
-    for dimension in dimensions:
-        for item in dimension.get("evidence", []):
-            refs.append(item)
-            support = item.get("supporting_evidence")
-            if isinstance(support, dict):
-                refs.append(support)
-    return refs
 
 
 def rebuild_runtime_ledger(
@@ -63,6 +67,11 @@ def rebuild_runtime_ledger(
     additional_targets: tuple[str, ...] = (),
     attach_proofs: bool = True,
     attach_supporting: bool = True,
+    authorize_upgrade: bool = True,
+    include_diagnosis_gate: bool = True,
+    include_native_operations: bool = True,
+    include_native_evidence: bool = True,
+    native_operations_in_order: bool = True,
 ) -> None:
     runtime = manifest["runtime"]
     repository_ref = runtime["repository"]
@@ -84,6 +93,19 @@ def rebuild_runtime_ledger(
             for additional_target in additional_targets
         ),
     ]
+    artifact = manifest["artifact"]
+    source_revision = artifact["source_revision"]
+    artifact_ref = {
+        "handle": artifact["path"],
+        "digest": "sha256:" + artifact["sha256"],
+        "kind": "openubmc-hpm",
+        "size": artifact["size"],
+        "provenance": artifact["provenance"],
+        "retention_hint": "run-lifetime",
+        "version": artifact["version"],
+        "target": artifact["target"],
+        "run_id": artifact["run_id"],
+    }
     events = [
         PendingCaseEvent(
             "CaseOpened",
@@ -91,28 +113,149 @@ def rebuild_runtime_ledger(
                 "intent": "diagnose-and-fix",
                 "delivery_strategy": "build-upgrade",
                 "targets": targets,
+                "authorization": {
+                    "allowed_actions": ["upgrade"] if authorize_upgrade else [],
+                    "original_intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                    "parse_count": 1,
+                },
+                "workflow_definition": {
+                    "definition_id": "diagnose-and-fix.debug.build-upgrade",
+                    "version": 2,
+                    "intent": "diagnose-and-fix",
+                    "entry_domain": "debug",
+                    "entry_operation": "",
+                    "delivery_strategy": "build-upgrade",
+                    "steps": [
+                        {
+                            "step_id": "step-01-debug-run",
+                            "kind": "operation",
+                            "name": "debug_run",
+                            "owner": "openubmc-debug",
+                            "receipt_schema": "",
+                        },
+                        {
+                            "step_id": "step-02-diagnosis-acceptance",
+                            "kind": "phase",
+                            "name": "diagnosis.acceptance",
+                            "owner": "openubmc-debug",
+                            "receipt_schema": "diagnosis-receipt-v1",
+                        },
+                        {
+                            "step_id": "step-03-developer-change",
+                            "kind": "phase",
+                            "name": "developer.change",
+                            "owner": "openubmc-developer",
+                            "receipt_schema": "developer-receipt-v1",
+                        },
+                        {
+                            "step_id": "step-04-build-artifact",
+                            "kind": "phase",
+                            "name": "build.artifact",
+                            "owner": "openubmc-build",
+                            "receipt_schema": "build-receipt-v1",
+                        },
+                        {
+                            "step_id": "step-05-upgrade-run",
+                            "kind": "operation",
+                            "name": "upgrade_run",
+                            "owner": "openubmc-upgrade",
+                            "receipt_schema": "",
+                        },
+                        {
+                            "step_id": "step-06-debug-collect",
+                            "kind": "operation",
+                            "name": "debug_collect",
+                            "owner": "openubmc-debug",
+                            "receipt_schema": "",
+                        },
+                    ],
+                },
             },
             "product-closeout-start",
-        )
+        ),
+        PendingCaseEvent(
+            "OperationAccepted",
+            {"operation": "debug_run", "target_id": target},
+            "diagnosis-operation",
+        ),
+        PendingCaseEvent("OperationStarted", {}, "diagnosis-operation"),
+        PendingCaseEvent(
+            "OperationTerminal",
+            {"status": "completed", "target_epoch": 0},
+            "diagnosis-operation",
+        ),
     ]
+    if include_diagnosis_gate:
+        events.append(
+            PendingCaseEvent(
+                "RunGateSubmitted",
+                {
+                    "phase": {
+                        "phase_type": "diagnosis.acceptance",
+                        "status": "completed",
+                        "summary": "diagnosis accepted",
+                        "evidence_ids": ["observation-1"],
+                        "root_cause": "global and local slot identity mismatch",
+                    }
+                },
+                "diagnosis-gate",
+            )
+        )
+    events.extend(
+        (
+            PendingCaseEvent(
+                "RunGateSubmitted",
+                {
+                    "phase": {
+                        "phase_type": "developer.change",
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "source_revision": source_revision,
+                    }
+                },
+                "developer-gate",
+            ),
+            PendingCaseEvent(
+                "RunGateSubmitted",
+                {
+                    "phase": {
+                        "phase_type": "build.artifact",
+                        "status": "completed",
+                        "summary": "firmware compiled",
+                        "source_revision": source_revision,
+                        "artifact_ref": artifact_ref,
+                    }
+                },
+                "build-gate",
+            ),
+        )
+    )
     selected_evidence: list[dict[str, object]] = []
-    validation = manifest["validation"]
-    for dimension in (
-        manifest["runtime"],
-        manifest["diagnosis"],
-        validation["official_ut"],
-        validation["build"],
-        manifest["upgrade"],
-        manifest["freshness"],
-        manifest["hardware"],
-    ):
+    for dimension in manifest_dimensions(manifest):
         for item in dimension.get("evidence", []):
             if attach_proofs:
                 selected_evidence.append(item)
             support = item.get("supporting_evidence")
             if attach_supporting and isinstance(support, dict):
                 selected_evidence.append(support)
-    for index, item in enumerate(selected_evidence, start=1):
+    native_items: list[tuple[str, dict[str, object]]] = []
+    operator_items: list[dict[str, object]] = []
+    for item in selected_evidence:
+        evidence_type = item.get("evidence_type")
+        if evidence_type == "runtime-upgrade-evidence":
+            if include_native_evidence:
+                native_items.append(("upgrade_run", item))
+            else:
+                operator_items.append(item)
+        elif evidence_type == "runtime-debug-evidence":
+            if include_native_evidence:
+                native_items.append(("debug_collect", item))
+            else:
+                operator_items.append(item)
+        else:
+            operator_items.append(item)
+    for index, item in enumerate(operator_items, start=1):
         digest = item["sha256"]
         events.append(
             PendingCaseEvent(
@@ -128,20 +271,82 @@ def rebuild_runtime_ledger(
                         "provenance": "product-closeout-qualification",
                         "observed_at": 1.0 + index,
                         "case_id": run_id,
-                        "producer": "runtime-core",
+                        "producer": "operator-evidence-attach",
                     }
                 },
                 f"product-closeout-evidence-{index}",
             )
         )
+    if include_native_operations:
+        operations = (
+            ("upgrade_run", "upgrade-effect-1", 4),
+            ("debug_collect", "debug-effect-1", 4),
+        )
+        if not native_operations_in_order:
+            operations = tuple(reversed(operations))
+        for operation, operation_id, target_epoch in operations:
+            events.extend(
+                (
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {"operation": operation, "target_id": target},
+                        operation_id,
+                    ),
+                    PendingCaseEvent("OperationStarted", {}, operation_id),
+                )
+            )
+            operation_items = [item for name, item in native_items if name == operation]
+            seen: set[str] = set()
+            for item in operation_items:
+                digest = item["sha256"]
+                if digest in seen:
+                    continue
+                seen.add(digest)
+                events.append(
+                    PendingCaseEvent(
+                        "EvidenceAttached",
+                        {
+                            "evidence": {
+                                "evidence_id": f"{operation}-{digest[:12]}",
+                                "blob_id": digest,
+                                "media_type": "application/json",
+                                "byte_count": Path(item["path"]).stat().st_size,
+                                "target_id": target,
+                                "target_epoch": target_epoch,
+                                "generation": "fresh-product-closeout",
+                                "provenance": f"{operation}:{operation_id}",
+                                "observed_at": 20.0 if operation == "upgrade_run" else 30.0,
+                                "case_id": run_id,
+                                "producer": operation,
+                            }
+                        },
+                        operation_id,
+                    )
+                )
+            events.append(
+                PendingCaseEvent(
+                    "OperationTerminal",
+                    {"status": "completed", "target_epoch": target_epoch},
+                    operation_id,
+                )
+            )
     events.append(
         PendingCaseEvent(
             "RunOutcomeRecorded",
             {
                 "outcome": {
-                    "status": "completed",
-                    "summary": "fresh product closeout completed",
-                    "acceptance": [],
+                        "status": "completed",
+                        "summary": "fresh product closeout completed",
+                        "acceptance": [
+                            {"requirement_id": stage, "status": "passed"}
+                            for stage in (
+                                "stage.diagnosis",
+                                "stage.development",
+                                "stage.build",
+                                "stage.upgrade",
+                                "stage.verification",
+                            )
+                        ],
                 }
             },
             "product-closeout-outcome",
@@ -191,10 +396,16 @@ def complete_manifest(
     ).stdout.strip()
     artifact = root / "firmware.hpm"
     artifact.write_bytes(b"firmware")
+    source_revision = f"source:{source_commit}"
     artifact_identity = {
+        "path": str(artifact),
         "sha256": sha256(artifact),
         "size": artifact.stat().st_size,
         "version": "1.0.0",
+        "provenance": "openubmc-build",
+        "source_revision": source_revision,
+        "target": "target-1",
+        "run_id": "run-product-closeout-1",
     }
     proof_base = {
         "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
@@ -298,44 +509,76 @@ def complete_manifest(
         "构建成功\n",
         encoding="utf-8",
     )
-    upgrade_support = root / "upgrade-record.md"
+    upgrade_support = root / "runtime-upgrade.json"
     upgrade_support.write_text(
-        "上传与激活 | 完成\n安装版本确认 | `1.0.0`\n", encoding="utf-8"
-    )
-    freshness_support = root / "reboot-timeline.log"
-    freshness_support.write_text(
-        "elapsed=1s manager_ready\n"
-        "elapsed=2s drives=1 direct=1 direct_attributed=1 raid=0 raid_zero=0 "
-        "health_ok=1 presence_ok=1 serial_ok=1\n"
-        "accepted_elapsed=2s\n",
-        encoding="utf-8",
-    )
-    hardware_support = root / "drive-summary.json"
-    hardware_support.write_text(
         json.dumps(
             {
-                "summary": {
-                    "drives": 1,
-                    "direct": 1,
-                    "direct_attributed": 1,
-                    "raid": 0,
-                    "raid_zero": 0,
-                    "health_ok": 1,
-                    "presence_ok": 1,
-                    "serial_ok": 1,
+                "operation_id": "upgrade-effect-1",
+                "action": "upgrade",
+                "epoch_before": 3,
+                "epoch_after": 4,
+                "mutation": {
+                    "method": "MultipartHttpPushUri",
+                    "task_uri": "/redfish/v1/TaskService/Tasks/1",
                 },
-                "drives": [
-                    {
-                        "id": 1,
-                        "protocol": 6,
-                        "controller": 255,
-                        "resource": 1,
-                        "health": 0,
-                        "presence": 1,
-                        "serial_present": True,
-                    }
-                ],
+                "verification": {"installed_version": "1.0.0", "target_epoch": 4},
+                "journal": {
+                    "operation_id": "upgrade-effect-1",
+                    "action": "upgrade",
+                    "stage": "verified",
+                    "effects_started": True,
+                    "expected_checksum": artifact_identity["sha256"],
+                    "epoch_before": 3,
+                    "epoch_after": 4,
+                },
             }
+        , sort_keys=True),
+        encoding="utf-8",
+    )
+    debug_support = root / "runtime-debug.json"
+    debug_support.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "observed_at": (datetime.now(UTC) + timedelta(seconds=10)).isoformat(),
+                "target_epoch": 4,
+                "result": {
+                    "freshness": {
+                        "status": "complete",
+                        "complete": True,
+                        "after_last_reboot_or_change": True,
+                        "stale_evidence": [],
+                        "lost_dimensions": [],
+                        "unavailable_dimensions": [],
+                    },
+                    "lanes": {
+                        "ssh": {
+                            "mdbctl_expand_1_object_drive1": {
+                                "ok": True,
+                                "result": {
+                                    "properties": {
+                                        "bmc.kepler.Systems.Storage.Drive": {
+                                            "Id": "1",
+                                            "Name": "\"Drive1\"",
+                                            "Protocol": "6",
+                                            "RefControllerId": "255",
+                                            "ResourceId": "7",
+                                            "Presence": "1",
+                                        },
+                                        "bmc.kepler.Systems.Storage.Drive.DriveStatus": {
+                                            "Health": "0"
+                                        },
+                                        "bmc.kepler.Inventory.Hardware": {
+                                            "SerialNumber": "\"NVME-SERIAL-1\""
+                                        },
+                                    }
+                                },
+                            }
+                        }
+                    },
+                },
+            },
+            sort_keys=True,
         ),
         encoding="utf-8",
     )
@@ -379,17 +622,17 @@ def complete_manifest(
     bind_support(
         upgrade_ref,
         upgrade_proof,
-        support(upgrade_support, "workflow-upgrade-record"),
+        support(upgrade_support, "runtime-upgrade-evidence"),
     )
     bind_support(
         freshness_ref,
         freshness_proof,
-        support(freshness_support, "reboot-acceptance-timeline"),
+        support(debug_support, "runtime-debug-evidence"),
     )
     bind_support(
         hardware_ref,
         hardware_proof,
-        support(hardware_support, "drive-summary-json"),
+        support(debug_support, "runtime-debug-evidence"),
     )
     runtime_database = root / "runtime.sqlite3"
     manifest: dict[str, object] = {
@@ -419,10 +662,7 @@ def complete_manifest(
         },
         "artifact": {
             "status": "verified",
-            "path": str(artifact),
-            "sha256": artifact_identity["sha256"],
-            "size": artifact.stat().st_size,
-            "version": "1.0.0",
+            **artifact_identity,
         },
         "upgrade": {"status": "completed", "evidence": [upgrade_ref]},
         "freshness": {
@@ -569,7 +809,10 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                 json.dumps(
                     {
                         "ok": True,
-                        "observed_at": "2026-08-29T12:00:00Z",
+                        "observed_at": (
+                            datetime.now(UTC) + timedelta(seconds=10)
+                        ).isoformat(),
+                        "target_epoch": 4,
                         "result": {
                             "freshness": {
                                 "status": "complete",
@@ -647,6 +890,112 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(report["claim_level"], "fresh-runtime-product-closed")
         self.assertEqual(report["gaps"], [])
         self.assertEqual(report["violations"], [])
+
+    def test_fresh_runtime_requires_current_task_upgrade_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            rebuild_runtime_ledger(manifest, authorize_upgrade=False)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("upgrade authorization" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_fresh_runtime_requires_diagnosis_acceptance_before_development(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            rebuild_runtime_ledger(manifest, include_diagnosis_gate=False)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("diagnosis.acceptance" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_fresh_runtime_requires_upgrade_before_debug_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            rebuild_runtime_ledger(manifest, native_operations_in_order=False)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("ordered debug_collect" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_operator_attached_native_json_cannot_impersonate_runtime_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            rebuild_runtime_ledger(manifest, include_native_evidence=False)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("Runtime-owned native EvidenceAttached" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_fresh_runtime_requires_native_debug_observation_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            for dimension in (manifest["freshness"], manifest["hardware"]):
+                evidence_ref = dimension["evidence"][0]
+                support = evidence_ref["supporting_evidence"]
+                support_path = Path(support["path"])
+                document = json.loads(support_path.read_text(encoding="utf-8"))
+                document.pop("observed_at", None)
+                support_path.write_text(
+                    json.dumps(document, sort_keys=True), encoding="utf-8"
+                )
+                support["sha256"] = sha256(support_path)
+                proof_path = Path(evidence_ref["path"])
+                proof = json.loads(proof_path.read_text(encoding="utf-8"))
+                proof["supporting_evidence"]["sha256"] = support["sha256"]
+                proof_path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
+                evidence_ref["sha256"] = sha256(proof_path)
+            rebuild_runtime_ledger(manifest, attach_proofs=False)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("observed_at" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_fresh_runtime_requires_complete_artifact_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            for field in ("provenance", "source_revision", "target", "run_id"):
+                manifest["artifact"].pop(field)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("artifact" in item and "provenance" in item for item in report["violations"]),
+            report["violations"],
+        )
 
     def test_manifest_cannot_select_the_runtime_authority(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1027,25 +1376,35 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             manifest, _, _, _ = complete_manifest(root)
+            support_ref = manifest["freshness"]["evidence"][0][
+                "supporting_evidence"
+            ]
+            support_path = Path(support_ref["path"])
+            native = json.loads(support_path.read_text(encoding="utf-8"))
+            native["observed_at"] = "2000-01-01T00:00:00Z"
+            support_path.write_text(json.dumps(native, sort_keys=True), encoding="utf-8")
+            support_digest = sha256(support_path)
             for dimension in ("freshness", "hardware"):
                 evidence_ref = manifest[dimension]["evidence"][0]
+                evidence_ref["supporting_evidence"]["sha256"] = support_digest
                 evidence_path = Path(evidence_ref["path"])
                 proof = json.loads(evidence_path.read_text(encoding="utf-8"))
-                proof["observed_at"] = "2000-01-01T00:00:00Z"
+                proof["supporting_evidence"]["sha256"] = support_digest
                 evidence_path.write_text(
                     json.dumps(proof, sort_keys=True), encoding="utf-8"
                 )
                 evidence_ref["sha256"] = sha256(evidence_path)
+            rebuild_runtime_ledger(manifest, attach_proofs=False)
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 1, completed.stderr)
         report = json.loads(completed.stdout)
         self.assertFalse(report["promotable"])
         self.assertTrue(
-            any("freshness evidence predates upgrade" in item for item in report["violations"])
+            any("observed_at predates" in item for item in report["violations"])
         )
 
-    def test_fresh_closeout_rejects_any_contradictory_additional_timeline_proof(
+    def test_fresh_closeout_uses_ledger_timeline_over_projection_timestamps(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1085,13 +1444,11 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
             rebuild_runtime_ledger(manifest)
             completed = run_qualification(root, manifest)
 
-        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertFalse(report["promotable"])
+        self.assertTrue(report["promotable"], report["violations"])
         self.assertEqual(report["dimensions"]["runtime"]["verified_evidence_count"], 2)
-        self.assertTrue(
-            any("timeline" in item or "predates" in item for item in report["violations"])
-        )
+        self.assertEqual(report["violations"], [])
 
     def test_source_commit_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

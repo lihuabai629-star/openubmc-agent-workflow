@@ -44,8 +44,14 @@ is accepted only when its fields match independently verified Runtime and produc
 supporting evidence must be attached to the same persisted Runtime Run before
 `RunOutcomeRecorded`; the proof file itself is not required to predate the Outcome. Runtime
 continuity is verified directly from the trusted ledger rather than from a circular pre-attached
-Runtime proof. The qualifier replays that SQLite ledger, checks the target and completed Outcome,
-and verifies an immutable digest of the Run events. The Operator-selected database and WAL are
+Runtime proof. A fresh claim requires the current-task Upgrade authorization and the complete
+ordered chain: diagnostic operation, accepted diagnosis Gate, development Gate, build Artifact
+Gate, one completed Upgrade Effect, one post-upgrade Debug Observation, and only then the completed
+terminal Outcome. Native Upgrade and Debug JSON is accepted only when its exact digest was emitted
+by those corresponding Runtime operations; operator-attached or self-authored JSON cannot stand in
+for a MutationJournal or Observation provenance. The qualifier replays that SQLite ledger, checks
+the target and completed Outcome, and verifies an immutable digest of the Run events. The
+Operator-selected database and WAL are
 copied into a stable snapshot before replay, so qualification never runs migrations or index
 backfills against the trusted ledger.
 
@@ -69,12 +75,13 @@ declarative content claims. The built-in evidence types are:
 | `runtime-debug-evidence` | freshness, hardware | native complete freshness record plus Drive MDB properties, protocol-specific attribution, health, presence, and serial identity |
 | `drive-summary-json` | hardware | direct attribution, RAID zero attribution, health, presence, serial, and scoped drive identities |
 
-Every source repository must be clean at the exact recorded commit; the firmware artifact must
-match its path, digest, size, and version. Hardware coverage is exact, so SATA or SAS evidence
+Every source repository must be clean at the exact recorded commit; a fresh firmware artifact must
+match its absolute path, digest, size, version, provenance, source revision, target, and Run ID in
+both the manifest and the Runtime-owned `build.artifact` Gate. Hardware coverage is exact, so SATA or SAS evidence
 cannot satisfy an NVMe case; the protocol is parsed from the drive evidence rather than accepted
-from manifest device labels. Fresh evidence also binds upgrade completion, target observation,
-hardware acceptance, and terminal Runtime Outcome into one ordered, timezone-aware timeline with a
-declared maximum post-upgrade evidence age.
+from manifest device labels. Fresh ordering and age are derived from trusted Run events and native
+Observation provenance. Structured proof timestamps remain presentation fields and cannot override
+the ledger timeline.
 
 Two claim levels are intentionally different:
 

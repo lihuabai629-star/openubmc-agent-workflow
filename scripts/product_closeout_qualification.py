@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -64,10 +65,51 @@ FRESH_SUPPORT_TYPES = {
     "diagnosis": {"workflow-diagnosis-record"},
     "official_ut": {"workflow-official-ut-record"},
     "build": {"component-build-log", "product-build-log"},
-    "upgrade": {"workflow-upgrade-record", "runtime-upgrade-evidence"},
-    "freshness": {"reboot-acceptance-timeline", "runtime-debug-evidence"},
-    "hardware": {"drive-summary-json", "runtime-debug-evidence"},
+    "upgrade": {"runtime-upgrade-evidence"},
+    "freshness": {"runtime-debug-evidence"},
+    "hardware": {"runtime-debug-evidence"},
 }
+
+
+@dataclass(frozen=True)
+class RuntimeEvidenceFact:
+    digest: str
+    operation_id: str
+    producer: str
+    target_id: str
+    target_epoch: int | None
+    observed_at: datetime
+    revision: int
+
+
+@dataclass(frozen=True)
+class RuntimeLedgerFacts:
+    evidence_by_digest: Mapping[str, tuple[RuntimeEvidenceFact, ...]]
+    outcome_revision: int
+    outcome_at: datetime
+    build_artifact_ref: Mapping[str, object]
+    build_source_revision: str
+    upgrade_operation_id: str
+    upgrade_completed_at: datetime
+    upgrade_target_epoch: int
+    debug_operation_id: str
+    debug_observed_at: datetime
+    debug_target_epoch: int
+
+
+EMPTY_RUNTIME_FACTS = RuntimeLedgerFacts(
+    evidence_by_digest={},
+    outcome_revision=0,
+    outcome_at=datetime.fromtimestamp(0, tz=UTC),
+    build_artifact_ref={},
+    build_source_revision="",
+    upgrade_operation_id="",
+    upgrade_completed_at=datetime.fromtimestamp(0, tz=UTC),
+    upgrade_target_epoch=0,
+    debug_operation_id="",
+    debug_observed_at=datetime.fromtimestamp(0, tz=UTC),
+    debug_target_epoch=0,
+)
 
 
 def _mapping(value: object) -> dict[str, object]:
@@ -122,6 +164,15 @@ def _timestamp(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return None
     return parsed.astimezone(UTC)
+
+
+def _unix_timestamp(value: object) -> datetime | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(float(value), tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _decoded_text(raw: bytes) -> str | None:
@@ -224,8 +275,10 @@ def _runtime_upgrade_evidence(
     verification = _mapping(document.get("verification"))
     mutation = _mapping(document.get("mutation"))
     operation_id = _text(document.get("operation_id"))
+    trusted_operation_id = _text(requirements.get("runtime.operation_id"))
     if (
         not operation_id
+        or operation_id != trusted_operation_id
         or _text(document.get("action")) != "upgrade"
         or _text(journal.get("operation_id")) != operation_id
         or _text(journal.get("action")) != "upgrade"
@@ -254,6 +307,7 @@ def _runtime_upgrade_evidence(
         or journal.get("epoch_before") != epoch_before
         or journal.get("epoch_after") != epoch_after
         or verification.get("target_epoch") != epoch_after
+        or epoch_after != requirements.get("runtime.target_epoch")
     ):
         return "Runtime Upgrade evidence does not prove one monotonic verified target epoch"
     return None
@@ -277,6 +331,23 @@ def _runtime_debug_evidence(
         return "Runtime Debug evidence must be UTF-8 JSON"
     if not isinstance(document, Mapping) or document.get("ok") is not True:
         return "Runtime Debug evidence is not a successful native result"
+    observed_at = _timestamp(document.get("observed_at"))
+    if observed_at is None:
+        return "Runtime Debug evidence requires a timezone-aware observed_at"
+    upgrade_completed_at = _timestamp(requirements.get("runtime.upgrade_completed_at"))
+    if upgrade_completed_at is not None and observed_at < upgrade_completed_at:
+        return "Runtime Debug evidence observed_at predates the trusted upgrade completion"
+    target_epoch = document.get("target_epoch")
+    expected_target_epoch = requirements.get("runtime.target_epoch")
+    if (
+        expected_target_epoch is not None
+        and (
+            isinstance(target_epoch, bool)
+            or not isinstance(target_epoch, int)
+            or target_epoch != expected_target_epoch
+        )
+    ):
+        return "Runtime Debug evidence target epoch does not match Runtime provenance"
     result = _mapping(document.get("result"))
     freshness = _mapping(result.get("freshness"))
     if (
@@ -512,7 +583,7 @@ def _verify_fixed_supporting_evidence(
     requirements: Mapping[str, object],
     violations: list[str],
     identities: list[str],
-    runtime_evidence_digests: set[str],
+    runtime_facts: RuntimeLedgerFacts,
 ) -> bool:
     dimension = _text(requirements.get("dimension"))
     if dimension == "runtime":
@@ -562,18 +633,58 @@ def _verify_fixed_supporting_evidence(
             f"{label}.supporting_evidence: digest mismatch: expected {expected}, actual {actual}"
         )
         return False
-    if actual not in runtime_evidence_digests:
+    bindings = runtime_facts.evidence_by_digest.get(actual, ())
+    if not bindings:
         violations.append(
             f"{label}.supporting_evidence: evidence is not attached to the Runtime Run"
         )
         return False
     if evidence_type == "runtime-upgrade-evidence":
-        reason = _runtime_upgrade_evidence(raw, requirements)
+        native = [
+            fact
+            for fact in bindings
+            if fact.operation_id == runtime_facts.upgrade_operation_id
+            and fact.producer == "upgrade_run"
+        ]
+        if len(native) != 1:
+            violations.append(
+                f"{label}.supporting_evidence: native Upgrade evidence is not bound "
+                "to the trusted upgrade_run operation"
+            )
+            return False
+        reason = _runtime_upgrade_evidence(
+            raw,
+            {
+                **dict(requirements),
+                "runtime.operation_id": runtime_facts.upgrade_operation_id,
+                "runtime.target_epoch": runtime_facts.upgrade_target_epoch,
+            },
+        )
         accepted = reason is None
         if reason is not None:
             violations.append(f"{label}.supporting_evidence: {reason}")
     elif evidence_type == "runtime-debug-evidence":
-        reason = _runtime_debug_evidence(raw, requirements)
+        native = [
+            fact
+            for fact in bindings
+            if fact.operation_id == runtime_facts.debug_operation_id
+            and fact.producer == "debug_collect"
+            and fact.target_epoch == runtime_facts.debug_target_epoch
+        ]
+        if len(native) != 1:
+            violations.append(
+                f"{label}.supporting_evidence: native Debug evidence is not bound "
+                "to the trusted debug_collect Observation provenance"
+            )
+            return False
+        reason = _runtime_debug_evidence(
+            raw,
+            {
+                **dict(requirements),
+                "runtime.target_epoch": runtime_facts.debug_target_epoch,
+                "runtime.upgrade_completed_at": runtime_facts.upgrade_completed_at.isoformat(),
+            },
+        )
         accepted = reason is None
         if reason is not None:
             violations.append(f"{label}.supporting_evidence: {reason}")
@@ -600,7 +711,7 @@ def _verify_structured_proof(
     requirements: Mapping[str, object],
     violations: list[str],
     identities: list[str],
-    runtime_evidence_digests: set[str],
+    runtime_facts: RuntimeLedgerFacts,
     parsed_proofs: list[Mapping[str, object]],
     required: bool,
 ) -> bool:
@@ -627,7 +738,7 @@ def _verify_structured_proof(
         requirements=requirements,
         violations=violations,
         identities=identities,
-        runtime_evidence_digests=runtime_evidence_digests,
+        runtime_facts=runtime_facts,
     )
     for field, expected in requirements.items():
         actual = _nested_value(proof, field)
@@ -683,7 +794,7 @@ def _verify_structured_proof(
 
 
 def _verify_fresh_timeline(
-    proofs: Mapping[str, list[Mapping[str, object]]],
+    runtime_facts: RuntimeLedgerFacts,
     *,
     max_age: object,
     violations: list[str],
@@ -698,46 +809,15 @@ def _verify_fresh_timeline(
             "freshness: max_age_seconds must be an integer from 1 through 86400"
         )
         return
-    if not all(proofs.values()):
+    if not runtime_facts.upgrade_operation_id or not runtime_facts.debug_operation_id:
         return
-    runtime_completed = [
-        _timestamp(proof.get("completed_at")) for proof in proofs["runtime"]
-    ]
-    upgrade_completed = [
-        _timestamp(proof.get("completed_at")) for proof in proofs["upgrade"]
-    ]
-    freshness_observed = [
-        _timestamp(proof.get("observed_at")) for proof in proofs["freshness"]
-    ]
-    hardware_observed = [
-        _timestamp(proof.get("observed_at")) for proof in proofs["hardware"]
-    ]
-    if any(
-        timestamp is None
-        for timestamps in (
-            runtime_completed,
-            upgrade_completed,
-            freshness_observed,
-            hardware_observed,
-        )
-        for timestamp in timestamps
-    ):
-        return
-    runtime_times = [timestamp for timestamp in runtime_completed if timestamp]
-    upgrade_times = [timestamp for timestamp in upgrade_completed if timestamp]
-    freshness_times = [timestamp for timestamp in freshness_observed if timestamp]
-    hardware_times = [timestamp for timestamp in hardware_observed if timestamp]
-    latest_target = max(*freshness_times, *hardware_times)
-    earliest_upgrade = min(upgrade_times)
-    latest_upgrade = max(upgrade_times)
-    earliest_runtime = min(runtime_times)
-    if min(freshness_times) < latest_upgrade:
+    if runtime_facts.debug_observed_at < runtime_facts.upgrade_completed_at:
         violations.append("freshness evidence predates upgrade completion")
-    if min(hardware_times) < latest_upgrade:
-        violations.append("hardware evidence predates upgrade completion")
-    if (latest_target - earliest_upgrade).total_seconds() > max_age:
+    if (
+        runtime_facts.debug_observed_at - runtime_facts.upgrade_completed_at
+    ).total_seconds() > max_age:
         violations.append("freshness evidence exceeds max_age_seconds after upgrade")
-    if earliest_runtime < latest_target:
+    if runtime_facts.outcome_at < runtime_facts.debug_observed_at:
         violations.append("Runtime terminal Outcome predates target acceptance evidence")
 
 
@@ -749,36 +829,43 @@ def _runtime_ledger(
     run_id: str,
     violations: list[str],
     identities: list[str],
-) -> tuple[bool, set[str]]:
+) -> tuple[bool, RuntimeLedgerFacts]:
+    runtime_violations: list[str] = []
+
+    def reject(message: str) -> None:
+        runtime_violations.append(f"runtime.repository: {message}")
+
     repository_ref = _mapping(_mapping(value).get("repository"))
     expected = _expected_sha256(repository_ref.get("sha256"))
     if repository_path is None or not expected:
-        violations.append(
-            "runtime.repository: fresh Runtime evidence requires an operator-selected "
-            "repository and sha256"
+        reject(
+            "fresh Runtime evidence requires an operator-selected repository and sha256"
         )
-        return False, set()
+        violations.extend(runtime_violations)
+        return False, EMPTY_RUNTIME_FACTS
     path = repository_path.expanduser().absolute()
     if not path.is_file():
-        violations.append(f"runtime.repository: file is unavailable: {path}")
-        return False, set()
+        reject(f"file is unavailable: {path}")
+        violations.extend(runtime_violations)
+        return False, EMPTY_RUNTIME_FACTS
     try:
         with stable_runtime_ledger_copy(path) as snapshot:
             repository = SQLiteRuntimeRepository(snapshot)
             projection = repository.load(run_id)
             events = repository.events(run_id)
     except (OSError, ValueError, sqlite3.DatabaseError, ContextRuntimeError) as error:
-        violations.append(f"runtime.repository: cannot replay Run ledger: {error}")
-        return False, set()
+        reject(f"cannot replay Run ledger: {error}")
+        violations.extend(runtime_violations)
+        return False, EMPTY_RUNTIME_FACTS
     actual = _digest_bytes(_json_bytes(events))
     if actual != expected:
-        violations.append(
-            f"runtime.repository: ledger digest mismatch: expected {expected}, actual {actual}"
-        )
-        return False, set()
+        reject(f"ledger digest mismatch: expected {expected}, actual {actual}")
+        violations.extend(runtime_violations)
+        return False, EMPTY_RUNTIME_FACTS
     if not isinstance(projection, Mapping):
-        violations.append("runtime.repository: Run is unavailable")
-        return False, set()
+        reject("Run is unavailable")
+        violations.extend(runtime_violations)
+        return False, EMPTY_RUNTIME_FACTS
     targets = [
         _mapping(item)
         for item in _sequence(projection.get("targets"))
@@ -790,43 +877,251 @@ def _runtime_ledger(
         if target in {_text(item.get("target_id")), _text(item.get("address"))}
     ]
     if not matched_targets:
-        violations.append("runtime.repository: target does not match the Run ledger")
+        reject("target does not match the Run ledger")
     matched_target_ids = {
         _text(item.get("target_id")) or _text(item.get("address"))
         for item in matched_targets
     }
     matched_target_ids.discard("")
+    opened = next((event for event in events if event.get("kind") == "CaseOpened"), None)
+    opened_payload = _mapping(_mapping(opened).get("payload"))
+    authorization = _mapping(opened_payload.get("authorization"))
+    allowed_actions = {_text(item) for item in _sequence(authorization.get("allowed_actions"))}
+    if "upgrade" not in allowed_actions:
+        reject("current task upgrade authorization is missing")
+    if (
+        _text(opened_payload.get("intent")) != "diagnose-and-fix"
+        or _text(opened_payload.get("delivery_strategy")) != "build-upgrade"
+    ):
+        reject("Run is not the required diagnose-and-fix build-upgrade workflow")
+    workflow = _mapping(opened_payload.get("workflow_definition"))
+    workflow_steps = [
+        (_text(_mapping(item).get("kind")), _text(_mapping(item).get("name")))
+        for item in _sequence(workflow.get("steps"))
+        if isinstance(item, Mapping)
+    ]
+    required_steps = [
+        ("operation", "debug_run"),
+        ("phase", "diagnosis.acceptance"),
+        ("phase", "developer.change"),
+        ("phase", "build.artifact"),
+        ("operation", "upgrade_run"),
+        ("operation", "debug_collect"),
+    ]
+    if workflow_steps != required_steps:
+        reject("pinned workflow does not contain the required ordered closeout steps")
     outcome = _mapping(projection.get("run_outcome"))
     if _text(outcome.get("status")) != "completed":
-        violations.append("runtime.repository: terminal Outcome is not completed")
-    outcome_revisions = [
-        int(event.get("revision", 0))
+        reject("terminal Outcome is not completed")
+    outcome_events = [
+        event
         for event in events
         if event.get("kind") == "RunOutcomeRecorded"
     ]
-    if not outcome_revisions:
-        violations.append("runtime.repository: RunOutcomeRecorded is missing")
-        return False, set()
-    outcome_revision = min(outcome_revisions)
-    evidence_digests = {
-        _text(_mapping(_mapping(event.get("payload")).get("evidence")).get("blob_id"))
-        for event in events
-        if event.get("kind") == "EvidenceAttached"
-        and int(event.get("revision", 0)) < outcome_revision
-        and _text(
-            _mapping(_mapping(event.get("payload")).get("evidence")).get(
-                "target_id"
+    if len(outcome_events) != 1:
+        reject("exactly one RunOutcomeRecorded is required")
+        violations.extend(runtime_violations)
+        return False, EMPTY_RUNTIME_FACTS
+    outcome_event = outcome_events[0]
+    outcome_revision = int(outcome_event.get("revision", 0))
+    outcome_at = _unix_timestamp(outcome_event.get("created_at"))
+    if outcome_at is None:
+        reject("RunOutcomeRecorded has no trustworthy event timestamp")
+        outcome_at = EMPTY_RUNTIME_FACTS.outcome_at
+    acceptance = {
+        _text(_mapping(item).get("requirement_id")): _text(_mapping(item).get("status"))
+        for item in _sequence(outcome.get("acceptance"))
+        if isinstance(item, Mapping)
+    }
+    for requirement in (
+        "stage.diagnosis",
+        "stage.development",
+        "stage.build",
+        "stage.upgrade",
+        "stage.verification",
+    ):
+        if acceptance.get(requirement) != "passed":
+            reject(f"terminal Outcome does not pass {requirement}")
+
+    phase_events: dict[str, list[tuple[int, Mapping[str, object]]]] = {}
+    for event in events:
+        if event.get("kind") != "RunGateSubmitted":
+            continue
+        phase = _mapping(_mapping(event.get("payload")).get("phase"))
+        name = _text(phase.get("phase_type"))
+        if name:
+            phase_events.setdefault(name, []).append(
+                (int(event.get("revision", 0)), phase)
+            )
+    phase_order: list[int] = []
+    selected_phases: dict[str, Mapping[str, object]] = {}
+    for name in ("diagnosis.acceptance", "developer.change", "build.artifact"):
+        completed = [
+            (revision, phase)
+            for revision, phase in phase_events.get(name, [])
+            if _text(phase.get("status")) == "completed" and revision < outcome_revision
+        ]
+        if not completed:
+            reject(f"completed {name} Gate is missing")
+            phase_order.append(0)
+            selected_phases[name] = {}
+            continue
+        revision, phase = completed[-1]
+        phase_order.append(revision)
+        selected_phases[name] = phase
+    if phase_order and phase_order != sorted(phase_order):
+        reject("diagnosis.acceptance must precede developer.change and build.artifact")
+    build_phase = _mapping(selected_phases.get("build.artifact"))
+    build_artifact_ref = _mapping(build_phase.get("artifact_ref"))
+    build_source_revision = _text(build_phase.get("source_revision"))
+    if not build_artifact_ref or not build_source_revision:
+        reject("build.artifact does not contain its ArtifactRef and source revision")
+
+    operation_events: dict[str, dict[str, object]] = {}
+    for event in events:
+        operation_id = _text(event.get("operation_id"))
+        if not operation_id:
+            continue
+        kind = _text(event.get("kind"))
+        payload = _mapping(event.get("payload"))
+        state = operation_events.setdefault(operation_id, {"evidence": []})
+        if kind == "OperationAccepted":
+            state["operation"] = _text(payload.get("operation"))
+            state["target_id"] = _text(payload.get("target_id"))
+            state["accepted_revision"] = int(event.get("revision", 0))
+        elif kind == "OperationStarted":
+            state["started_revision"] = int(event.get("revision", 0))
+        elif kind in {"OperationTerminal", "OperationReconciled"}:
+            state["terminal_revision"] = int(event.get("revision", 0))
+            state["terminal_status"] = _text(payload.get("status"))
+            state["target_epoch"] = payload.get("target_epoch")
+            state["completed_at"] = event.get("created_at")
+        elif kind == "EvidenceAttached":
+            state["evidence"].append(event)
+
+    def selected_operation(
+        name: str, *, after_revision: int
+    ) -> tuple[str, Mapping[str, object]]:
+        candidates: list[tuple[int, str, Mapping[str, object]]] = []
+        for operation_id, raw_state in operation_events.items():
+            state = _mapping(raw_state)
+            accepted_revision = int(state.get("accepted_revision", 0) or 0)
+            started_revision = int(state.get("started_revision", 0) or 0)
+            terminal_revision = int(state.get("terminal_revision", 0) or 0)
+            if (
+                _text(state.get("operation")) == name
+                and _text(state.get("terminal_status")) == "completed"
+                and after_revision
+                < accepted_revision
+                < started_revision
+                < terminal_revision
+                < outcome_revision
+                and _text(state.get("target_id")) in matched_target_ids
+            ):
+                candidates.append((accepted_revision, operation_id, state))
+        if len(candidates) != 1:
+            reject(f"exactly one completed ordered {name} Runtime operation is required")
+            return "", {}
+        _revision, operation_id, state = candidates[0]
+        return operation_id, state
+
+    build_revision = phase_order[2] if len(phase_order) == 3 else 0
+    upgrade_operation_id, upgrade_state = selected_operation(
+        "upgrade_run", after_revision=build_revision
+    )
+    upgrade_terminal_revision = int(upgrade_state.get("terminal_revision", 0) or 0)
+    debug_operation_id, debug_state = selected_operation(
+        "debug_collect", after_revision=upgrade_terminal_revision
+    )
+    upgrade_epoch = upgrade_state.get("target_epoch")
+    debug_epoch = debug_state.get("target_epoch")
+    if (
+        isinstance(upgrade_epoch, bool)
+        or not isinstance(upgrade_epoch, int)
+        or upgrade_epoch <= 0
+    ):
+        reject("upgrade_run does not prove an advanced target epoch")
+        upgrade_epoch = 0
+    if (
+        isinstance(debug_epoch, bool)
+        or not isinstance(debug_epoch, int)
+        or debug_epoch < upgrade_epoch
+    ):
+        reject("debug_collect does not prove the post-upgrade target epoch")
+        debug_epoch = 0
+    upgrade_completed_at = _unix_timestamp(upgrade_state.get("completed_at"))
+    debug_observed_at = _unix_timestamp(debug_state.get("completed_at"))
+    if upgrade_completed_at is None or debug_observed_at is None:
+        reject("native Upgrade and Debug operation timestamps are unavailable")
+        upgrade_completed_at = EMPTY_RUNTIME_FACTS.upgrade_completed_at
+        debug_observed_at = EMPTY_RUNTIME_FACTS.debug_observed_at
+    elif debug_observed_at < upgrade_completed_at:
+        reject("debug_collect completed before upgrade_run")
+
+    evidence_by_digest: dict[str, list[RuntimeEvidenceFact]] = {}
+    for event in events:
+        if event.get("kind") != "EvidenceAttached":
+            continue
+        revision = int(event.get("revision", 0))
+        if revision >= outcome_revision:
+            continue
+        reference = _mapping(_mapping(event.get("payload")).get("evidence"))
+        target_id = _text(reference.get("target_id"))
+        if target_id not in matched_target_ids:
+            continue
+        digest = _text(reference.get("blob_id"))
+        observed_at = _unix_timestamp(reference.get("observed_at"))
+        if not digest or observed_at is None:
+            continue
+        target_epoch = reference.get("target_epoch")
+        evidence_by_digest.setdefault(digest, []).append(
+            RuntimeEvidenceFact(
+                digest=digest,
+                operation_id=_text(event.get("operation_id")),
+                producer=_text(reference.get("producer")),
+                target_id=target_id,
+                target_epoch=(
+                    target_epoch
+                    if isinstance(target_epoch, int) and not isinstance(target_epoch, bool)
+                    else None
+                ),
+                observed_at=observed_at,
+                revision=revision,
             )
         )
-        in matched_target_ids
-    }
-    evidence_digests.discard("")
-    accepted = not any(item.startswith("runtime.repository:") for item in violations)
+    for name, operation_id in (
+        ("upgrade_run", upgrade_operation_id),
+        ("debug_collect", debug_operation_id),
+    ):
+        if operation_id and not any(
+            fact.operation_id == operation_id and fact.producer == name
+            for facts in evidence_by_digest.values()
+            for fact in facts
+        ):
+            reject(f"{name} has no Runtime-owned native EvidenceAttached fact")
+
+    violations.extend(runtime_violations)
+    accepted = not runtime_violations
+    facts = RuntimeLedgerFacts(
+        evidence_by_digest={
+            digest: tuple(items) for digest, items in evidence_by_digest.items()
+        },
+        outcome_revision=outcome_revision,
+        outcome_at=outcome_at,
+        build_artifact_ref=build_artifact_ref,
+        build_source_revision=build_source_revision,
+        upgrade_operation_id=upgrade_operation_id,
+        upgrade_completed_at=upgrade_completed_at,
+        upgrade_target_epoch=int(upgrade_epoch),
+        debug_operation_id=debug_operation_id,
+        debug_observed_at=debug_observed_at,
+        debug_target_epoch=int(debug_epoch),
+    )
     if accepted:
         identities.append(
-            f"runtime-ledger:{run_id}:{actual}:{outcome_revision}:{len(evidence_digests)}"
+            f"runtime-ledger:{run_id}:{actual}:{outcome_revision}:{len(evidence_by_digest)}"
         )
-    return accepted, evidence_digests
+    return accepted, facts
 
 
 def _file_identity(
@@ -837,7 +1132,7 @@ def _file_identity(
     identities: list[str],
     proof_requirements: Mapping[str, object] | None = None,
     structured_proof_required: bool = False,
-    runtime_evidence_digests: set[str] | None = None,
+    runtime_facts: RuntimeLedgerFacts | None = None,
     parsed_proofs: list[Mapping[str, object]] | None = None,
 ) -> bool:
     path_text = _text(item.get("path"))
@@ -870,7 +1165,7 @@ def _file_identity(
         requirements=proof_requirements or {},
         violations=violations,
         identities=identities,
-        runtime_evidence_digests=runtime_evidence_digests or set(),
+        runtime_facts=runtime_facts or EMPTY_RUNTIME_FACTS,
         parsed_proofs=parsed_proofs if parsed_proofs is not None else [],
         required=structured_proof_required,
     )
@@ -889,7 +1184,7 @@ def _evidence_dimension(
     identities: list[str],
     proof_requirements: Mapping[str, object],
     structured_proof_required: bool,
-    runtime_evidence_digests: set[str] | None = None,
+    runtime_facts: RuntimeLedgerFacts | None = None,
     parsed_proofs: list[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     document = _mapping(value)
@@ -907,7 +1202,7 @@ def _evidence_dimension(
             identities=identities,
             proof_requirements=proof_requirements,
             structured_proof_required=structured_proof_required,
-            runtime_evidence_digests=runtime_evidence_digests,
+            runtime_facts=runtime_facts,
             parsed_proofs=parsed_proofs,
         ):
             valid_evidence += 1
@@ -993,6 +1288,11 @@ def _artifact_dimension(
     violations: list[str],
     gaps: list[str],
     identities: list[str],
+    target: str,
+    run_id: str,
+    expected_source_revision: str,
+    runtime_facts: RuntimeLedgerFacts,
+    fresh_runtime: bool,
 ) -> dict[str, object]:
     document = _mapping(value)
     status = _text(document.get("status")) or "not_reported"
@@ -1000,6 +1300,10 @@ def _artifact_dimension(
     expected = _expected_sha256(document.get("sha256"))
     expected_size = document.get("size")
     version = _text(document.get("version"))
+    provenance = _text(document.get("provenance"))
+    source_revision = _text(document.get("source_revision"))
+    artifact_target = _text(document.get("target"))
+    artifact_run_id = _text(document.get("run_id"))
     accepted = False
     actual_size = 0
     if status != "verified":
@@ -1010,12 +1314,49 @@ def _artifact_dimension(
         or isinstance(expected_size, bool)
         or not isinstance(expected_size, int)
         or not version
+        or (
+            fresh_runtime
+            and (
+                not provenance
+                or not source_revision
+                or not artifact_target
+                or not artifact_run_id
+            )
+        )
     ):
         violations.append(
-            "artifact: verified identity requires path, sha256, integer size, and version"
+            "artifact: verified identity requires absolute path, sha256, integer size, "
+            "version, provenance, source_revision, target, and run_id"
         )
     else:
-        path = Path(path_text).expanduser().absolute()
+        selected_path = Path(path_text).expanduser()
+        if not selected_path.is_absolute():
+            violations.append("artifact: path must be absolute")
+            path = selected_path.absolute()
+        else:
+            path = selected_path
+        if fresh_runtime and artifact_target != target:
+            violations.append("artifact: target does not match the qualified Runtime target")
+        if fresh_runtime and artifact_run_id != run_id:
+            violations.append("artifact: run_id does not match the qualified Runtime Run")
+        if fresh_runtime and source_revision != expected_source_revision:
+            violations.append("artifact: source_revision does not match the clean source set")
+        build_ref = _mapping(runtime_facts.build_artifact_ref)
+        build_handle = _text(build_ref.get("handle"))
+        build_digest = _expected_sha256(build_ref.get("digest"))
+        if fresh_runtime and (
+            build_handle != str(path)
+            or build_digest != expected
+            or build_ref.get("size") != expected_size
+            or _text(build_ref.get("version")) != version
+            or _text(build_ref.get("provenance")) != provenance
+            or _text(build_ref.get("target")) != artifact_target
+            or _text(build_ref.get("run_id")) != artifact_run_id
+            or runtime_facts.build_source_revision != source_revision
+        ):
+            violations.append(
+                "artifact: identity does not match the trusted build.artifact Gate"
+            )
         if not path.is_file():
             violations.append(f"artifact: file is unavailable: {path}")
         else:
@@ -1040,8 +1381,18 @@ def _artifact_dimension(
                     f"artifact: size mismatch: expected {expected_size}, actual {actual_size}"
                 )
             else:
-                identities.append(f"artifact:{version}:{actual}:{actual_size}")
-                accepted = True
+                artifact_violations = [
+                    item for item in violations if item.startswith("artifact:")
+                ]
+                if not artifact_violations:
+                    identity = f"artifact:{version}:{actual}:{actual_size}"
+                    if fresh_runtime:
+                        identity += (
+                            f":{provenance}:{source_revision}:{artifact_target}:"
+                            f"{artifact_run_id}"
+                        )
+                    identities.append(identity)
+                    accepted = True
     return {
         "status": status,
         "accepted": accepted,
@@ -1060,7 +1411,7 @@ def _hardware_dimension(
     target: str,
     run_id: str,
     structured_proof_required: bool,
-    runtime_evidence_digests: set[str] | None = None,
+    runtime_facts: RuntimeLedgerFacts | None = None,
     parsed_proofs: list[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     document = _mapping(value)
@@ -1085,7 +1436,7 @@ def _hardware_dimension(
             "devices": devices,
         },
         structured_proof_required=structured_proof_required,
-        runtime_evidence_digests=runtime_evidence_digests,
+        runtime_facts=runtime_facts,
         parsed_proofs=parsed_proofs,
     )
     invalid_protocols = sorted(
@@ -1129,15 +1480,15 @@ def _runtime_dimension(
     target: str,
     runtime_repository: Path | None,
     parsed_proofs: list[Mapping[str, object]],
-) -> tuple[dict[str, object], set[str]]:
+) -> tuple[dict[str, object], RuntimeLedgerFacts]:
     document = _mapping(value)
     run_id = _text(document.get("run_id"))
     outcome = _text(document.get("terminal_outcome")) or "unavailable"
     evidence = _sequence(document.get("evidence"))
     ledger_accepted = True
-    runtime_evidence_digests: set[str] = set()
+    runtime_facts = EMPTY_RUNTIME_FACTS
     if mode == "fresh-runtime":
-        ledger_accepted, runtime_evidence_digests = _runtime_ledger(
+        ledger_accepted, runtime_facts = _runtime_ledger(
             document,
             repository_path=runtime_repository,
             target=target,
@@ -1163,7 +1514,7 @@ def _runtime_dimension(
                 "terminal_outcome": "completed",
             },
             structured_proof_required=mode == "fresh-runtime",
-            runtime_evidence_digests=runtime_evidence_digests,
+            runtime_facts=runtime_facts,
             parsed_proofs=parsed_proofs,
         ):
             verified += 1
@@ -1192,7 +1543,7 @@ def _runtime_dimension(
             "verified_evidence_count": verified,
             "ledger_verified": ledger_accepted if mode == "fresh-runtime" else False,
         },
-        runtime_evidence_digests,
+        runtime_facts,
     )
 
 
@@ -1233,16 +1584,26 @@ def qualify(
     artifact_document = _mapping(manifest.get("artifact"))
     artifact_sha256 = _expected_sha256(artifact_document.get("sha256"))
     artifact_requirements = {
+        "artifact.path": _text(artifact_document.get("path")),
         "artifact.sha256": artifact_sha256,
         "artifact.size": artifact_document.get("size"),
         "artifact.version": _text(artifact_document.get("version")),
+        "artifact.provenance": _text(artifact_document.get("provenance")),
+        "artifact.source_revision": _text(artifact_document.get("source_revision")),
+        "artifact.target": _text(artifact_document.get("target")),
+        "artifact.run_id": _text(artifact_document.get("run_id")),
     }
-    source_commits = [
-        _text(_mapping(item).get("commit")).lower()
+    source_repositories = [
+        _mapping(item)
         for item in _sequence(_mapping(manifest.get("source")).get("repositories"))
         if isinstance(item, Mapping)
     ]
-    runtime_result, runtime_evidence_digests = _runtime_dimension(
+    source_commits = [_text(item.get("commit")).lower() for item in source_repositories]
+    source_revision = ";".join(
+        f"{_text(item.get('name'))}:{_text(item.get('commit')).lower()}"
+        for item in source_repositories
+    )
+    runtime_result, runtime_facts = _runtime_dimension(
         manifest.get("runtime"),
         mode=mode,
         violations=violations,
@@ -1268,7 +1629,7 @@ def qualify(
                 "run_id": run_id,
             },
             structured_proof_required=mode == "fresh-runtime",
-            runtime_evidence_digests=runtime_evidence_digests,
+            runtime_facts=runtime_facts,
             parsed_proofs=parsed_proofs["diagnosis"],
         ),
         "source": _source_dimension(
@@ -1294,7 +1655,7 @@ def qualify(
             "source_commits": source_commits,
         },
         structured_proof_required=mode == "fresh-runtime",
-        runtime_evidence_digests=runtime_evidence_digests,
+        runtime_facts=runtime_facts,
         parsed_proofs=parsed_proofs["official_ut"],
     )
     dimensions["build"] = _evidence_dimension(
@@ -1312,7 +1673,7 @@ def qualify(
             "source_commits": source_commits,
         },
         structured_proof_required=mode == "fresh-runtime",
-        runtime_evidence_digests=runtime_evidence_digests,
+        runtime_facts=runtime_facts,
         parsed_proofs=parsed_proofs["build"],
     )
     dimensions["artifact"] = _artifact_dimension(
@@ -1320,6 +1681,11 @@ def qualify(
         violations=violations,
         gaps=gaps,
         identities=identities,
+        target=case_target,
+        run_id=run_id,
+        expected_source_revision=source_revision,
+        runtime_facts=runtime_facts,
+        fresh_runtime=mode == "fresh-runtime",
     )
     dimensions["upgrade"] = _evidence_dimension(
         manifest.get("upgrade"),
@@ -1337,7 +1703,7 @@ def qualify(
             "installed_version": _text(artifact_document.get("version")),
         },
         structured_proof_required=mode == "fresh-runtime",
-        runtime_evidence_digests=runtime_evidence_digests,
+        runtime_facts=runtime_facts,
         parsed_proofs=parsed_proofs["upgrade"],
     )
     dimensions["freshness"] = _evidence_dimension(
@@ -1355,7 +1721,7 @@ def qualify(
             "artifact_sha256": artifact_sha256,
         },
         structured_proof_required=mode == "fresh-runtime",
-        runtime_evidence_digests=runtime_evidence_digests,
+        runtime_facts=runtime_facts,
         parsed_proofs=parsed_proofs["freshness"],
     )
     dimensions["hardware"] = _hardware_dimension(
@@ -1367,15 +1733,12 @@ def qualify(
         target=case_target,
         run_id=run_id,
         structured_proof_required=mode == "fresh-runtime",
-        runtime_evidence_digests=runtime_evidence_digests,
+        runtime_facts=runtime_facts,
         parsed_proofs=parsed_proofs["hardware"],
     )
     if mode == "fresh-runtime":
         _verify_fresh_timeline(
-            {
-                dimension: parsed_proofs[dimension]
-                for dimension in ("runtime", "upgrade", "freshness", "hardware")
-            },
+            runtime_facts,
             max_age=_mapping(manifest.get("freshness")).get("max_age_seconds"),
             violations=violations,
         )

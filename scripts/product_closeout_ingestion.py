@@ -132,7 +132,7 @@ def _runtime_snapshot(
         raise ValueError("multiple Runtime targets require case.target")
     else:
         raise ValueError("Runtime Run has no target binding")
-    target_identity = _text(target.get("target_id")) or _text(target.get("address"))
+    target_identity = _text(target.get("address")) or _text(target.get("target_id"))
     outcome = projection.get("run_outcome")
     outcome = dict(outcome) if isinstance(outcome, Mapping) else {}
     terminal_outcome = _text(outcome.get("status"))
@@ -234,7 +234,13 @@ def _source_repositories(value: object) -> list[dict[str, str]]:
     return repositories
 
 
-def _artifact(path_value: object) -> dict[str, object]:
+def _artifact(
+    path_value: object,
+    *,
+    source_revision: str,
+    target: str,
+    run_id: str,
+) -> dict[str, object]:
     path = Path(_text(path_value)).expanduser().absolute()
     metadata, _raw = _read_json(
         Path(str(path) + ".metadata.json"),
@@ -254,12 +260,19 @@ def _artifact(path_value: object) -> dict[str, object]:
     version = _text(metadata.get("product_version"))
     if not version:
         raise ValueError("artifact metadata product_version is required")
+    provenance = _text(metadata.get("provenance"))
+    if not provenance:
+        raise ValueError("artifact metadata provenance is required")
     return {
         "status": "verified",
         "path": str(path),
         "sha256": digest,
         "size": size,
         "version": version,
+        "provenance": provenance,
+        "source_revision": source_revision,
+        "target": target,
+        "run_id": run_id,
     }
 
 
@@ -307,6 +320,11 @@ def assemble_manifest(
     hardware_protocols = list(hardware_proof.get("required_protocols", []))
     if hardware_protocols != required_protocols:
         raise ValueError("hardware proof protocols do not match case.required_protocols")
+    source_repositories = _source_repositories(document.get("source_repositories"))
+    source_revision = ";".join(
+        f"{repository['name']}:{repository['commit']}"
+        for repository in source_repositories
+    )
     manifest: dict[str, object] = {
         "schema": EVIDENCE_SCHEMA,
         "mode": "fresh-runtime",
@@ -331,7 +349,7 @@ def assemble_manifest(
         },
         "source": {
             "status": "completed",
-            "repositories": _source_repositories(document.get("source_repositories")),
+            "repositories": source_repositories,
         },
         "validation": {
             "official_ut": {
@@ -345,7 +363,12 @@ def assemble_manifest(
                 "evidence": list(dimensions["build"].references),
             },
         },
-        "artifact": _artifact(document.get("artifact_path")),
+        "artifact": _artifact(
+            document.get("artifact_path"),
+            source_revision=source_revision,
+            target=target,
+            run_id=run_id,
+        ),
         "upgrade": {
             "status": _text(dimensions["upgrade"].primary_proof.get("status")),
             "evidence": list(dimensions["upgrade"].references),
