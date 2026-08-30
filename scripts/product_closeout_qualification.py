@@ -369,6 +369,54 @@ def _runtime_property(value: object) -> object:
         return value.strip()
 
 
+def _runtime_mdb_properties(
+    lane: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    result = _mapping(lane.get("result"))
+    properties = _mapping(result.get("properties"))
+    if properties:
+        return {
+            interface: dict(values)
+            for interface, values in properties.items()
+            if isinstance(interface, str) and isinstance(values, Mapping)
+        }
+    payload = _mapping(lane.get("payload"))
+    native_result = _mapping(payload.get("result"))
+    properties = _mapping(native_result.get("properties"))
+    if properties:
+        return {
+            interface: dict(values)
+            for interface, values in properties.items()
+            if isinstance(interface, str) and isinstance(values, Mapping)
+        }
+    lines = native_result.get("stdout_lines")
+    if not isinstance(lines, Sequence) or isinstance(
+        lines, (str, bytes, bytearray)
+    ):
+        return {}
+    parsed: dict[str, dict[str, object]] = {}
+    current_interface = ""
+    for raw_line in lines:
+        line = str(raw_line)
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not line[:1].isspace():
+            current_interface = stripped
+            parsed.setdefault(current_interface, {})
+            continue
+        if not current_interface or "=" not in stripped:
+            continue
+        name, value = stripped.split("=", 1)
+        if name:
+            parsed[current_interface][name] = value
+    return {
+        interface: values
+        for interface, values in parsed.items()
+        if values
+    }
+
+
 def _runtime_debug_evidence(
     raw: bytes, requirements: Mapping[str, object]
 ) -> str | None:
@@ -416,7 +464,7 @@ def _runtime_debug_evidence(
         lane = _mapping(raw_lane)
         if lane.get("ok") is not True:
             continue
-        properties = _mapping(_mapping(lane.get("result")).get("properties"))
+        properties = _runtime_mdb_properties(lane)
         drive = _mapping(properties.get("bmc.kepler.Systems.Storage.Drive"))
         status = _mapping(
             properties.get("bmc.kepler.Systems.Storage.Drive.DriveStatus")

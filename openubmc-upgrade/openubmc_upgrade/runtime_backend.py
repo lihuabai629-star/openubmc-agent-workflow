@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 import base64
 import hashlib
 import importlib.util
@@ -355,6 +356,18 @@ def _response_uri(response: RedfishResponse) -> str:
     return ""
 
 
+def _manager_reset_time(value: object) -> datetime | None:
+    reset_time = value.get("last_reset_time") if isinstance(value, Mapping) else None
+    if not isinstance(reset_time, str) or not reset_time.strip():
+        return None
+    normalized = reset_time.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def _multipart_body(
     artifact: UpgradeArtifact,
     artifact_bytes: bytes,
@@ -697,6 +710,70 @@ class UpgradeMcpBackend:
         raise ValueError("Redfish Managers did not report an installed firmware version")
 
     @staticmethod
+    def _request_manager_reset(
+        session,
+        *,
+        manager_path: str,
+    ) -> dict[str, object]:
+        response = session.request_json("GET", manager_path)
+        manager = response.payload if isinstance(response.payload, Mapping) else {}
+        actions = manager.get("Actions")
+        reset = (
+            actions.get("#Manager.Reset")
+            if isinstance(actions, Mapping)
+            else None
+        )
+        target = reset.get("target") if isinstance(reset, Mapping) else None
+        if not isinstance(target, str) or not target:
+            raise ValueError("Manager.Reset action is unavailable")
+        reset_type = "ForceRestart"
+        action_info = (
+            reset.get("@Redfish.ActionInfo")
+            if isinstance(reset, Mapping)
+            else None
+        )
+        if isinstance(action_info, str) and action_info:
+            info_response = session.request_json("GET", action_info)
+            info = (
+                info_response.payload
+                if isinstance(info_response.payload, Mapping)
+                else {}
+            )
+            parameters = info.get("Parameters")
+            allowable: list[str] = []
+            if isinstance(parameters, list):
+                for parameter in parameters:
+                    if not isinstance(parameter, Mapping):
+                        continue
+                    if parameter.get("Name") != "ResetType":
+                        continue
+                    values = parameter.get("AllowableValues")
+                    if isinstance(values, list):
+                        allowable = [
+                            str(value) for value in values if isinstance(value, str)
+                        ]
+                    break
+            if allowable and reset_type not in allowable:
+                raise ValueError(
+                    "Manager.Reset does not allow the required ForceRestart"
+                )
+        reset_response = session.request_json(
+            "POST",
+            target,
+            payload={"ResetType": reset_type},
+        )
+        if reset_response.status < 200 or reset_response.status >= 300:
+            raise RuntimeError(
+                f"Manager.Reset returned HTTP {reset_response.status}"
+            )
+        return {
+            "status": "requested",
+            "target": target,
+            "reset_type": reset_type,
+            "http_status": reset_response.status,
+        }
+
+    @staticmethod
     def _activation_state(
         session,
         *,
@@ -787,7 +864,24 @@ class UpgradeMcpBackend:
         monitor_state = (
             str(monitor.get("state", "")) if isinstance(monitor, Mapping) else ""
         )
+        parameters = _update_parameters(arguments)
+        manager_before = mutation_observation.get("manager_before")
+        reset_boundary_required = (
+            parameters.get("ActiveMode") == "ResetBMC"
+            and isinstance(manager_before, Mapping)
+            and manager_before.get("version") == expected
+        )
+        reset_before = _manager_reset_time(manager_before)
         while True:
+            if (
+                context.remaining() <= 0
+                and reset_boundary_required
+                and last_version == expected
+            ):
+                raise ValueError(
+                    "target did not prove a new manager reset boundary before "
+                    f"the reconnect deadline: {last_error}"
+                )
             context.raise_if_stopped()
             try:
                 value = verification.redfish_request(
@@ -804,9 +898,21 @@ class UpgradeMcpBackend:
             else:
                 version = str(value.get("version", ""))
                 if version == expected:
-                    return value
+                    reset_after = _manager_reset_time(value)
+                    if not reset_boundary_required or (
+                        reset_before is not None
+                        and reset_after is not None
+                        and reset_after > reset_before
+                    ):
+                        return value
+                    last_error = (
+                        "manager reset boundary was not observed"
+                        if reset_before is not None
+                        else "manager reset boundary baseline is unavailable"
+                    )
                 last_version = version
-                last_error = ""
+                if version != expected:
+                    last_error = ""
 
                 should_probe_activation = (
                     monitor_state == "connection_lost"
@@ -846,6 +952,11 @@ class UpgradeMcpBackend:
                             )
 
             if context.remaining() <= poll_interval:
+                if reset_boundary_required and last_version == expected:
+                    raise ValueError(
+                        "target did not prove a new manager reset boundary before "
+                        f"the reconnect deadline: {last_error}"
+                    )
                 detail = (
                     f"last version {last_version}"
                     if last_version
@@ -1242,10 +1353,48 @@ class UpgradeMcpBackend:
                 ) from exc
             raise
         monitor = self._monitor_task(session, str(upload["task_uri"]), context)
+        manager_reset: dict[str, object] = {}
+        parameters = _update_parameters(arguments)
+        if (
+            parameters.get("ActiveMode") == "ResetBMC"
+            and monitor.get("state") == "completed"
+            and manager_before.get("version") == artifact.product_version
+        ):
+            try:
+                manager_after_task = self._installed_version(session)
+            except (
+                OSError,
+                TimeoutError,
+                RedfishHttpError,
+                ValueError,
+                urlerror.URLError,
+            ):
+                manager_reset = {"status": "target-restarting"}
+            else:
+                reset_before = _manager_reset_time(manager_before)
+                reset_after = _manager_reset_time(manager_after_task)
+                if (
+                    reset_before is not None
+                    and reset_after is not None
+                    and reset_after > reset_before
+                ):
+                    manager_reset = {
+                        "status": "observed",
+                        "last_reset_time": manager_after_task["last_reset_time"],
+                    }
+                else:
+                    manager_reset = self._request_manager_reset(
+                        session,
+                        manager_path=str(
+                            manager_before.get("manager")
+                            or manager_after_task.get("manager")
+                        ),
+                    )
         return {
             **upload,
             "monitor": monitor,
             "manager_before": manager_before,
+            "manager_reset": manager_reset,
             "artifact_path": artifact.path,
             "artifact_sha256": artifact.sha256,
             "product_version": artifact.product_version,

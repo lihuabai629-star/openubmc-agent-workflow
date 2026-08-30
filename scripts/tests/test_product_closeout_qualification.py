@@ -1402,7 +1402,7 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
             manifest, _, _, _ = complete_manifest(root)
             completed = run_qualification(root, manifest)
 
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.returncode, 0, completed.stdout or completed.stderr)
         report = json.loads(completed.stdout)
         self.assertTrue(report["dimensions"]["upgrade"]["accepted"], report["violations"])
         self.assertTrue(report["promotable"], report["gaps"])
@@ -1418,6 +1418,67 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(report["dimensions"]["freshness"]["accepted"], report["violations"])
         self.assertTrue(report["dimensions"]["hardware"]["accepted"], report["violations"])
         self.assertTrue(report["promotable"], report["gaps"])
+
+    def test_native_runtime_debug_evidence_accepts_raw_mdb_lane_output(self) -> None:
+        from scripts import product_closeout_qualification as qualification
+
+        native = {
+            "ok": True,
+            "observed_at": "2026-08-30T12:03:11Z",
+            "target_epoch": 4,
+            "result": {
+                "freshness": {
+                    "status": "complete",
+                    "complete": True,
+                    "after_last_reboot_or_change": True,
+                    "stale_evidence": [],
+                    "lost_dimensions": [],
+                    "unavailable_dimensions": [],
+                },
+                "lanes": {
+                    "ssh": {
+                        "mdbctl_expand_1_object_drive1": {
+                            "ok": True,
+                            "payload": {
+                                "request": {
+                                    "command_parts": [
+                                        "lsprop",
+                                        "Drive_1_010102",
+                                    ]
+                                },
+                                "result": {
+                                    "stdout_lines": [
+                                        "bmc.kepler.Inventory.Hardware",
+                                        '  SerialNumber="NVME-SERIAL-1"',
+                                        "bmc.kepler.Systems.Storage.Drive",
+                                        "  Id=1",
+                                        "  Protocol=6",
+                                        "  RefControllerId=255",
+                                        "  ResourceId=7",
+                                        "  Presence=1",
+                                        "bmc.kepler.Systems.Storage.Drive.DriveStatus",
+                                        "  Health=0",
+                                    ]
+                                },
+                            },
+                        }
+                    }
+                },
+            },
+        }
+
+        reason = qualification._runtime_debug_evidence(
+            json.dumps(native).encode("utf-8"),
+            {
+                "dimension": "hardware",
+                "runtime.target_epoch": 4,
+                "runtime.upgrade_completed_at": "2026-08-30T12:02:41Z",
+                "devices": [{"device_id": "Drive1", "protocol": "NVMe"}],
+                "required_protocols": ["NVMe"],
+            },
+        )
+
+        self.assertIsNone(reason)
 
     def test_complete_fresh_runtime_closeout_is_promotable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

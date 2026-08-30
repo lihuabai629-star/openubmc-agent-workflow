@@ -239,8 +239,26 @@ class FakeRedfishSession:
             return RedfishResponse(
                 status=200,
                 headers={},
-                payload={"FirmwareVersion": "2.0.0"},
+                payload={
+                    "FirmwareVersion": (
+                        "1.0.0" if self.number == 1 else "2.0.0"
+                    ),
+                    "LastResetTime": (
+                        "2026-08-30T07:00:00+00:00"
+                        if self.number == 1
+                        else "2026-08-30T08:00:00+00:00"
+                    ),
+                    "Actions": {
+                        "#Manager.Reset": {
+                            "target": (
+                                "/redfish/v1/Managers/1/Actions/Manager.Reset"
+                            )
+                        }
+                    },
+                },
             )
+        if path == "/redfish/v1/Managers/1/Actions/Manager.Reset":
+            return RedfishResponse(status=204, headers={}, payload={})
         raise AssertionError(f"unexpected Redfish request: {method} {path}")
 
 
@@ -1660,6 +1678,13 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
                                     if self.number == 1
                                     else "2026-08-30T08:00:00+00:00"
                                 ),
+                                "Actions": {
+                                    "#Manager.Reset": {
+                                        "target": (
+                                            "/redfish/v1/Managers/1/Actions/Manager.Reset"
+                                        )
+                                    }
+                                },
                             },
                         )
                     return super().request_json(method, path, **kwargs)
@@ -1696,6 +1721,162 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         self.assertEqual(
             result["mutation"]["manager_before"]["last_reset_time"],
             "2026-08-30T07:00:00+00:00",
+        )
+        self.assertEqual(
+            result["verification"]["version"]["last_reset_time"],
+            "2026-08-30T08:00:00+00:00",
+        )
+
+    def test_same_version_reset_mode_requires_a_new_manager_reset_time(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+            class UnchangedResetSession(FakeRedfishSession):
+                def request_json(self, method: str, path: str, **kwargs) -> RedfishResponse:
+                    if path == "/redfish/v1/Managers/1":
+                        self.calls.append((method, path))
+                        return RedfishResponse(
+                            status=200,
+                            headers={},
+                            payload={
+                                "FirmwareVersion": "2.0.0",
+                                "LastResetTime": "2026-08-30T07:00:00+00:00",
+                                "Actions": {
+                                    "#Manager.Reset": {
+                                        "target": (
+                                            "/redfish/v1/Managers/1/Actions/Manager.Reset"
+                                        )
+                                    }
+                                },
+                            },
+                        )
+                    return super().request_json(method, path, **kwargs)
+
+            class UnchangedResetTransport(FakeRedfishTransport):
+                def open_session(self, *, target, credentials) -> FakeRedfishSession:
+                    self.opens += 1
+                    session = UnchangedResetSession(self.opens)
+                    self.sessions.append(session)
+                    return session
+
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: UnchangedResetTransport(),
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                with self.assertRaisesRegex(ValueError, "reset boundary"):
+                    service.call_tool(
+                        "upgrade_run",
+                        {
+                            **self.arguments(artifact, digest),
+                            "deadline": 0.1,
+                            "version_poll_interval": 0.01,
+                        },
+                        task_id="unchanged-reset-upgrade",
+                        operation_id="unchanged-reset-upgrade",
+                    )
+            finally:
+                service.close()
+
+    def test_same_version_upgrade_requests_manager_reset_after_task_completion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+            class ExplicitResetTransport(FakeRedfishTransport):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.reset_requests = 0
+
+                def open_session(self, *, target, credentials) -> FakeRedfishSession:
+                    transport = self
+
+                    class ExplicitResetSession(FakeRedfishSession):
+                        def request_json(
+                            self, method: str, path: str, **kwargs
+                        ) -> RedfishResponse:
+                            if path == "/redfish/v1/Managers/1":
+                                self.calls.append((method, path))
+                                return RedfishResponse(
+                                    status=200,
+                                    headers={},
+                                    payload={
+                                        "FirmwareVersion": "2.0.0",
+                                        "LastResetTime": (
+                                            "2026-08-30T08:00:00+00:00"
+                                            if transport.reset_requests
+                                            else "2026-08-30T07:00:00+00:00"
+                                        ),
+                                        "Actions": {
+                                            "#Manager.Reset": {
+                                                "target": (
+                                                    "/redfish/v1/Managers/1/Actions/"
+                                                    "Manager.Reset"
+                                                )
+                                            }
+                                        },
+                                    },
+                                )
+                            if path == (
+                                "/redfish/v1/Managers/1/Actions/Manager.Reset"
+                            ):
+                                self.calls.append((method, path))
+                                transport.reset_requests += 1
+                                return RedfishResponse(
+                                    status=204, headers={}, payload={}
+                                )
+                            return super().request_json(method, path, **kwargs)
+
+                    self.opens += 1
+                    session = ExplicitResetSession(self.opens)
+                    self.sessions.append(session)
+                    return session
+
+            transport = ExplicitResetTransport()
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                result = service.call_tool(
+                    "upgrade_run",
+                    self.arguments(artifact, digest),
+                    task_id="explicit-reset-upgrade",
+                    operation_id="explicit-reset-upgrade",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(transport.reset_requests, 1)
+        self.assertEqual(
+            result["mutation"]["manager_reset"],
+            {
+                "status": "requested",
+                "target": "/redfish/v1/Managers/1/Actions/Manager.Reset",
+                "reset_type": "ForceRestart",
+                "http_status": 204,
+            },
         )
         self.assertEqual(
             result["verification"]["version"]["last_reset_time"],
