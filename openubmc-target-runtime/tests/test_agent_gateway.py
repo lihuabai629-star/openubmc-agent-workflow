@@ -12249,7 +12249,18 @@ class AgentGatewayTests(unittest.TestCase):
                     "intent": "diagnose-and-fix",
                     "delivery_strategy": "build-upgrade",
                     "entry_operation": "debug_run",
-                    "entry_arguments": {"mdb_expand_classes": ["Drive"]},
+                    "entry_arguments": {
+                        "mdb_expand_classes": ["Drive"],
+                        "hardware_acceptance": {
+                            "devices": [
+                                {
+                                    "device_id": "Drive20",
+                                    "protocol": "NVMe",
+                                    "resource_id": "positive",
+                                }
+                            ]
+                        },
+                    },
                     "purpose": "build, deploy, and verify a Drive repair",
                 },
                 task_id="complete-drive-verification",
@@ -12357,6 +12368,18 @@ class AgentGatewayTests(unittest.TestCase):
         )
         verification_arguments = backend.calls[-1][1]
         self.assertEqual(verification_arguments["mdb_expand_classes"], ["Drive"])
+        self.assertEqual(
+            verification_arguments["hardware_acceptance"],
+            {
+                "devices": [
+                    {
+                        "device_id": "Drive20",
+                        "protocol": "NVMe",
+                        "resource_id": "positive",
+                    }
+                ]
+            },
+        )
         self.assertEqual(verification_arguments["_minimum_target_epoch"], 1)
         self.assertEqual(
             verification_operation["diagnostic_receipt"]["status"],

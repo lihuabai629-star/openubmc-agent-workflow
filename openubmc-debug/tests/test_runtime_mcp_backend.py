@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -67,6 +68,121 @@ class FakeLease:
 
 
 class RuntimeMcpBackendTests(unittest.TestCase):
+    def test_debug_collect_keeps_hardware_acceptance_partial_until_all_drives_converge(
+        self,
+    ) -> None:
+        module = load_script("target_runtime_mcp")
+        backend = module.DebugMcpBackend()
+        lease = FakeLease("hardware-acceptance")
+
+        class Task:
+            @staticmethod
+            def lease_scope(*_args, **_kwargs):
+                return contextlib.nullcontext(lease)
+
+        class Context:
+            @staticmethod
+            def raise_if_stopped() -> None:
+                return None
+
+            @staticmethod
+            def remaining() -> float:
+                return 120.0
+
+        def result(resource_id: int) -> dict[str, object]:
+            return {
+                "schema_version": "openubmc-debug.v1",
+                "tool": "workflow_remote",
+                "ip": "192.0.2.81",
+                "observed_at": "2026-08-30T12:00:00+00:00",
+                "ok": True,
+                "code": "ok",
+                "normalized_code": "ok",
+                "returncode": 0,
+                "warnings": [],
+                "error": "",
+                "request": {},
+                "result": {
+                    "lanes": {
+                        "ssh": {
+                            "mdbctl_expand_1_object_drive20": {
+                                "ok": True,
+                                "result": {
+                                    "properties": {
+                                        "bmc.kepler.Inventory.Hardware": {
+                                            "SerialNumber": '"serial-20"'
+                                        },
+                                        "bmc.kepler.Systems.Storage.Drive": {
+                                            "Id": "20",
+                                            "Protocol": "6",
+                                            "Presence": "1",
+                                            "RefControllerId": "255",
+                                            "ResourceId": str(resource_id),
+                                        },
+                                        "bmc.kepler.Systems.Storage.Drive.DriveStatus": {
+                                            "Health": "0"
+                                        },
+                                    }
+                                },
+                            }
+                        }
+                    }
+                },
+            }
+
+        captured = [result(0), result(1)]
+
+        def execute_workflow(*_args, output_handler, **_kwargs):
+            output_handler(captured.pop(0))
+            return 0
+
+        arguments = {
+            "ip": "192.0.2.81",
+            "skip_telnet": True,
+            "no_source_correlation": True,
+            "mdb_expand_classes": ["Drive"],
+            "hardware_acceptance": {
+                "devices": [
+                    {
+                        "device_id": "Drive20",
+                        "protocol": "NVMe",
+                        "resource_id": "positive",
+                    }
+                ]
+            },
+        }
+        with (
+            mock.patch.object(
+                module,
+                "resolve_debug_credentials",
+                return_value={
+                    "ssh": {"user": "root", "password": "secret", "port": 22},
+                    "telnet": {"user": "root", "password": "secret", "port": 23},
+                },
+            ),
+            mock.patch.object(
+                module.workflow_remote,
+                "build_typed_debug_tool_runner",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                module.workflow_remote,
+                "_execute_workflow",
+                side_effect=execute_workflow,
+            ),
+        ):
+            pending = backend.debug_collect(Task(), arguments, Context())
+            passed = backend.debug_collect(Task(), arguments, Context())
+
+        self.assertEqual(pending["status"], "partial")
+        self.assertEqual(pending["code"], "hardware_acceptance_pending")
+        self.assertEqual(
+            pending["hardware_acceptance"]["gaps"],
+            ["Drive20 ResourceId must be positive"],
+        )
+        self.assertNotIn("status", passed)
+        self.assertEqual(passed["hardware_acceptance"]["status"], "passed")
+
     def test_agent_observe_executes_wide_mdb_scope_in_runtime_partitions(
         self,
     ) -> None:

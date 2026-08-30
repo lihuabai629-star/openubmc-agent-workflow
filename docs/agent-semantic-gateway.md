@@ -198,6 +198,14 @@ repair. If a Developer response omits validation fields, the Runtime records off
 as `not_run` and hardware coverage as `not_reported`; those become visible gaps rather than an
 implicit success.
 
+Post-upgrade hardware convergence can be part of the executable verification contract rather than
+an after-the-fact qualification check. A bounded `hardware_acceptance.devices` declaration carried
+by the Debug entry arguments is validated before mutation and applied only to the fresh
+`debug_collect` step. Until every declared Drive has the expected protocol and ResourceId shape and
+is present, healthy, and identified, the operation remains `partial`; Runtime resume recollects it
+with the same workflow step instead of recording a successful Outcome. This avoids both a fixed
+settling delay and a terminal success formed from an early but internally complete snapshot.
+
 A `source-only` Run can reach a completed in-scope Outcome while official validation or hardware
 coverage remains blocked. Its Turn and Closeout retain those gaps and its claim level remains
 `source_changed`; no package, firmware, upgrade, or hardware-repair claim is formed. A completed

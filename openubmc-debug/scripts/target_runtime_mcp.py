@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 import hashlib
 import importlib
+import json
 import math
 import os
 from pathlib import Path
+import re
 import sys
 import threading
 
@@ -112,6 +114,8 @@ _TRANSPORT_STRING_OPTIONS = {
     "ssh_known_hosts_file",
 }
 _TRANSPORT_BOOLEAN_OPTIONS = {"allow_insecure_host_key"}
+_HARDWARE_ACCEPTANCE_OPTIONS = {"hardware_acceptance"}
+_DRIVE_PROTOCOL_CODES = {"SATA": 3, "SAS": 4, "NVMe": 6}
 
 
 def _boolean_argument(
@@ -137,6 +141,7 @@ def _workflow_argv(arguments: Mapping[str, object]) -> list[str]:
         | _ORCHESTRATION_OPTIONS
         | _TRANSPORT_STRING_OPTIONS
         | _TRANSPORT_BOOLEAN_OPTIONS
+        | _HARDWARE_ACCEPTANCE_OPTIONS
     )
     if unknown:
         raise ValueError(
@@ -199,6 +204,202 @@ def _workflow_argv(arguments: Mapping[str, object]) -> list[str]:
             raise TypeError(f"{name} must be a boolean")
     argv.append("--json")
     return argv
+
+
+def _normalize_hardware_acceptance(value: object) -> tuple[dict[str, str], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping) or set(value) != {"devices"}:
+        raise TypeError("hardware_acceptance must contain only a devices array")
+    devices = value.get("devices")
+    if (
+        not isinstance(devices, Sequence)
+        or isinstance(devices, (str, bytes, bytearray))
+        or not devices
+        or len(devices) > 64
+    ):
+        raise TypeError("hardware_acceptance.devices must contain 1 through 64 devices")
+    normalized: list[dict[str, str]] = []
+    identities: set[int] = set()
+    for index, raw_device in enumerate(devices):
+        if not isinstance(raw_device, Mapping) or set(raw_device) != {
+            "device_id",
+            "protocol",
+            "resource_id",
+        }:
+            raise TypeError(
+                f"hardware_acceptance.devices[{index}] must contain device_id, "
+                "protocol, and resource_id"
+            )
+        device_id = str(raw_device.get("device_id", "")).strip()
+        match = re.fullmatch(r"(?:Drive|Disk)(\d+)", device_id)
+        if match is None:
+            raise ValueError(
+                f"hardware_acceptance.devices[{index}].device_id must be Drive<N>"
+            )
+        numeric_id = int(match.group(1))
+        if numeric_id in identities:
+            raise ValueError("hardware_acceptance device identities must be unique")
+        identities.add(numeric_id)
+        protocol = str(raw_device.get("protocol", "")).strip()
+        if protocol not in _DRIVE_PROTOCOL_CODES:
+            raise ValueError(
+                f"hardware_acceptance.devices[{index}].protocol must be NVMe, SATA, or SAS"
+            )
+        resource_id = str(raw_device.get("resource_id", "")).strip()
+        if resource_id not in {"positive", "zero"}:
+            raise ValueError(
+                f"hardware_acceptance.devices[{index}].resource_id must be positive or zero"
+            )
+        normalized.append(
+            {
+                "device_id": f"Drive{numeric_id}",
+                "protocol": protocol,
+                "resource_id": resource_id,
+            }
+        )
+    return tuple(normalized)
+
+
+def _debug_property(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value.strip()
+
+
+def _mdb_properties(lane: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    result = lane.get("result")
+    result = dict(result) if isinstance(result, Mapping) else {}
+    properties = result.get("properties")
+    if isinstance(properties, Mapping) and properties:
+        return {
+            str(interface): dict(values)
+            for interface, values in properties.items()
+            if isinstance(values, Mapping)
+        }
+    payload = lane.get("payload")
+    payload = dict(payload) if isinstance(payload, Mapping) else {}
+    native = payload.get("result")
+    native = dict(native) if isinstance(native, Mapping) else {}
+    properties = native.get("properties")
+    if isinstance(properties, Mapping) and properties:
+        return {
+            str(interface): dict(values)
+            for interface, values in properties.items()
+            if isinstance(values, Mapping)
+        }
+    lines = native.get("stdout_lines")
+    if not isinstance(lines, Sequence) or isinstance(lines, (str, bytes, bytearray)):
+        return {}
+    parsed: dict[str, dict[str, object]] = {}
+    current_interface = ""
+    for raw_line in lines:
+        line = str(raw_line)
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not line[:1].isspace():
+            current_interface = stripped
+            parsed.setdefault(current_interface, {})
+            continue
+        if current_interface and "=" in stripped:
+            name, raw_value = stripped.split("=", 1)
+            if name:
+                parsed[current_interface][name] = raw_value
+    return {interface: values for interface, values in parsed.items() if values}
+
+
+def _apply_hardware_acceptance(
+    result: dict[str, object],
+    requirements: Sequence[Mapping[str, str]],
+) -> dict[str, object]:
+    if not requirements:
+        return result
+    raw_result = result.get("result")
+    raw_result = dict(raw_result) if isinstance(raw_result, Mapping) else {}
+    raw_lanes = raw_result.get("lanes")
+    raw_lanes = dict(raw_lanes) if isinstance(raw_lanes, Mapping) else {}
+    raw_ssh = raw_lanes.get("ssh")
+    raw_ssh = dict(raw_ssh) if isinstance(raw_ssh, Mapping) else {}
+    observed: dict[int, dict[str, object]] = {}
+    for name, raw_lane in raw_ssh.items():
+        if not str(name).startswith("mdbctl_expand_") or not isinstance(
+            raw_lane, Mapping
+        ):
+            continue
+        lane = dict(raw_lane)
+        if lane.get("ok") is not True:
+            continue
+        properties = _mdb_properties(lane)
+        drive = properties.get("bmc.kepler.Systems.Storage.Drive", {})
+        status = properties.get(
+            "bmc.kepler.Systems.Storage.Drive.DriveStatus", {}
+        )
+        inventory = properties.get("bmc.kepler.Inventory.Hardware", {})
+        device_id = _debug_property(drive.get("Id"))
+        if isinstance(device_id, bool) or not isinstance(device_id, int):
+            continue
+        observed[device_id] = {
+            "protocol": _debug_property(drive.get("Protocol")),
+            "presence": _debug_property(drive.get("Presence")),
+            "controller": _debug_property(drive.get("RefControllerId")),
+            "resource_id": _debug_property(drive.get("ResourceId")),
+            "health": _debug_property(status.get("Health")),
+            "serial": str(_debug_property(inventory.get("SerialNumber")) or "").strip(),
+        }
+    gaps: list[str] = []
+    accepted_devices: list[dict[str, object]] = []
+    for requirement in requirements:
+        device_id = int(str(requirement["device_id"]).removeprefix("Drive"))
+        label = f"Drive{device_id}"
+        actual = observed.get(device_id)
+        if actual is None:
+            gaps.append(f"{label} is missing from complete Drive evidence")
+            continue
+        protocol = str(requirement["protocol"])
+        if actual["protocol"] != _DRIVE_PROTOCOL_CODES[protocol]:
+            gaps.append(f"{label} protocol must be {protocol}")
+        if actual["presence"] != 1:
+            gaps.append(f"{label} Presence must be 1")
+        if actual["health"] != 0:
+            gaps.append(f"{label} Health must be 0")
+        if not actual["serial"]:
+            gaps.append(f"{label} SerialNumber must be non-empty")
+        if protocol == "NVMe" and actual["controller"] != 255:
+            gaps.append(f"{label} RefControllerId must identify a direct NVMe drive")
+        resource_id = actual["resource_id"]
+        if requirement["resource_id"] == "positive" and (
+            isinstance(resource_id, bool)
+            or not isinstance(resource_id, int)
+            or resource_id <= 0
+        ):
+            gaps.append(f"{label} ResourceId must be positive")
+        if requirement["resource_id"] == "zero" and resource_id != 0:
+            gaps.append(f"{label} ResourceId must be zero")
+        accepted_devices.append(
+            {
+                "device_id": label,
+                "protocol": protocol,
+                "resource_id": resource_id,
+            }
+        )
+    acceptance = {
+        "status": "pending" if gaps else "passed",
+        "devices": accepted_devices,
+        "gaps": gaps,
+    }
+    result["hardware_acceptance"] = acceptance
+    if gaps:
+        result["ok"] = False
+        result["status"] = "partial"
+        result["partial"] = True
+        result["code"] = "hardware_acceptance_pending"
+        result["normalized_code"] = "hardware_acceptance_pending"
+        result["error"] = "; ".join(gaps)
+    return result
 
 
 def workflow_arguments_from_namespace(args) -> dict[str, object]:
@@ -866,6 +1067,9 @@ class DebugMcpBackend:
     ) -> dict[str, object]:
         context.raise_if_stopped()
         bounded = dict(arguments)
+        hardware_acceptance = _normalize_hardware_acceptance(
+            bounded.pop("hardware_acceptance", None)
+        )
         credential_values = bounded.pop("_credential_values", None)
         if credential_values is not None and not isinstance(
             credential_values, Mapping
@@ -937,7 +1141,11 @@ class DebugMcpBackend:
         result = captured[0]
         if int(result.get("returncode", returncode)) != returncode:
             raise RuntimeError("Debug workflow return code disagrees with its result")
-        return result
+        return (
+            _apply_hardware_acceptance(result, hardware_acceptance)
+            if collect_only
+            else result
+        )
 
     def debug_run(self, task, arguments, context) -> dict[str, object]:
         targets = arguments.get("targets")

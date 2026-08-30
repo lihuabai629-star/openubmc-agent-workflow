@@ -220,6 +220,7 @@ _DEBUG_DOMAIN_ARGUMENTS = {
     "correlation_time_window",
     "deadline",
     "files",
+    "hardware_acceptance",
     "include_rotated",
     "ip",
     "keyword",
