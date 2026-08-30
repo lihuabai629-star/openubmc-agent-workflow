@@ -15,6 +15,12 @@ def interaction_telemetry(
         isinstance(progress, Mapping) and progress.get("status") == "no_progress"
     )
     incident_present = document.get("state") == "incident"
+    incident = document.get("incident")
+    operator_attention_required = (
+        incident_present
+        and isinstance(incident, Mapping)
+        and bool(str(incident.get("operator_action", "")).strip())
+    )
     projection_target_exceeded = (
         document.get("projection_target_exceeded") is True
         or document.get("gate_projection_target_exceeded") is True
@@ -37,6 +43,7 @@ def interaction_telemetry(
         "preflight_failure": preflight_failure,
         "no_progress_retry": no_progress_retry,
         "incident_present": incident_present,
+        "operator_attention_required": operator_attention_required,
         "projection_target_exceeded": projection_target_exceeded,
         "budget_blocker": budget_blocker,
     }
