@@ -175,9 +175,12 @@ diagnosis step automatically. A partial or blocked receipt instead yields a dura
 unanswered.
 
 A completed `diagnosis.acceptance` response is bound by `run_id`, `gate_id`, `gate_version`, and
-`schema_digest` and supplies `root_cause`, non-empty `evidence_ids` drawn from the current Runtime
-DiagnosticReceipt, and `known_gaps`. The Runtime rejects Evidence IDs from another receipt and
-derives observation time and freshness from the persisted ObservationRef and DiagnosticReceipt.
+`schema_digest` and supplies `root_cause`, non-empty `evidence_ids`, and `known_gaps`. Evidence may
+come from the current Runtime DiagnosticReceipt or from a `workflow-diagnosis-record` attached by
+the Operator plane to the same Run, target, and workflow cycle. The Runtime resolves attachments
+from its durable Evidence index, rejects unrelated types and Evidence IDs from another Run or
+cycle, and derives observation time and freshness from the persisted ObservationRef and
+DiagnosticReceipt.
 `execute(kind=resume)` only reattaches the same unanswered Gate, so repeated resume calls cannot
 repair missing diagnosis input or advance the workflow. A failed or cancelled diagnosis becomes a
 terminal Run before any development phase.
@@ -291,6 +294,11 @@ can attach verified local file bytes only while the selected Run is open. Runtim
 Run-bound target, verifies the expected digest, stores the bytes content-addressably, and appends an
 idempotent `EvidenceAttached` fact. The operation cannot answer a Gate or change phase, Incident,
 Effect, or Outcome state, and it is absent from the Agent profile.
+
+A `workflow-diagnosis-record` attachment may subsequently be cited by the same Run's current
+`diagnosis.acceptance` Gate. Citation does not let the Operator plane answer that Gate: the Agent
+must still submit the version-bound response, and Runtime Core verifies the attachment's Run,
+target, cycle, producer, and evidence type before accepting it.
 
 Firmware recovery packages use the same Operator operation but keep large bytes under
 `ArtifactStore`. Evidence contains a bounded ArtifactRef descriptor, preserving one authority for

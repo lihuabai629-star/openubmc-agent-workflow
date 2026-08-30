@@ -1659,6 +1659,38 @@ class RunEngine:
             available_evidence = {
                 item.evidence_id: item.to_public_dict() for item in prior.evidence
             }
+            run_target_ids = {
+                _text(item.get("target_id"))
+                for item in projection.get("targets", [])
+                if isinstance(item, Mapping) and _text(item.get("target_id"))
+            }
+            for evidence_id in requested_evidence_ids:
+                if evidence_id in available_evidence:
+                    continue
+                attached: Mapping[str, object] = {}
+                for target_id in run_target_ids:
+                    try:
+                        loaded = self.driver.read_evidence(
+                            command.run_id,
+                            evidence_id,
+                            target_id=target_id,
+                        )
+                    except Exception:
+                        continue
+                    candidate = loaded.get("evidence")
+                    if isinstance(candidate, Mapping):
+                        attached = candidate
+                        break
+                if (
+                    _text(attached.get("case_id")) == command.run_id
+                    and _text(attached.get("target_id")) in run_target_ids
+                    and _text(attached.get("workflow_cycle_id")) == cycle_id
+                    and _text(attached.get("producer"))
+                    == "operator-evidence-attach"
+                    and _text(attached.get("evidence_type"))
+                    == "workflow-diagnosis-record"
+                ):
+                    available_evidence[evidence_id] = dict(attached)
             unknown_evidence = sorted(
                 set(requested_evidence_ids) - set(available_evidence)
             )

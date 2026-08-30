@@ -11216,6 +11216,150 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(resumed["gate"]["gate_id"], waiting["gate"]["gate_id"])
         self.assertEqual(resumed["gate"]["name"], "diagnosis.acceptance")
 
+    def test_diagnosis_gate_accepts_run_bound_operator_diagnosis_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            blobs = InMemoryBlobRepository()
+            agent = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=repository,
+                blob_repository=blobs,
+            )
+            diagnosis_path = root / "diagnosis.md"
+            diagnosis_path.write_text(
+                "The component-global slot was compared with a local slot.\n",
+                encoding="utf-8",
+            )
+            try:
+                observation = agent.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.47",
+                        "selectors": [
+                            {
+                                "id": "drive-facts",
+                                "kind": "mdb",
+                                "queries": ["lsprop Drive_1_010102"],
+                            }
+                        ],
+                    },
+                    task_id="diagnosis-attachment-observe",
+                    operation_id="diagnosis-attachment-observe-1",
+                )
+                waiting = agent.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.47",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                        "observation_ref": observation["observation_ref"],
+                    },
+                    task_id="diagnosis-attachment-run",
+                    operation_id="diagnosis-attachment-start",
+                )
+                operator = RuntimeMcpService(
+                    SemanticBackend(),
+                    context_repository=repository,
+                    blob_repository=blobs,
+                    interface_profile="operator",
+                )
+                try:
+                    attached = operator.call_exposed_tool(
+                        "evidence_attach",
+                        {
+                            "run_id": waiting["run_id"],
+                            "target": "192.0.2.47",
+                            "path": str(diagnosis_path),
+                            "sha256": hashlib.sha256(
+                                diagnosis_path.read_bytes()
+                            ).hexdigest(),
+                            "evidence_type": "workflow-diagnosis-record",
+                        },
+                        task_id="diagnosis-attachment-operator",
+                        operation_id="diagnosis-attachment-attach",
+                    )
+                    unrelated = operator.call_exposed_tool(
+                        "evidence_attach",
+                        {
+                            "run_id": waiting["run_id"],
+                            "target": "192.0.2.47",
+                            "path": str(diagnosis_path),
+                            "sha256": hashlib.sha256(
+                                diagnosis_path.read_bytes()
+                            ).hexdigest(),
+                            "evidence_type": "workflow-official-ut-record",
+                        },
+                        task_id="diagnosis-attachment-operator",
+                        operation_id="diagnosis-attachment-unrelated",
+                    )
+                finally:
+                    operator.close()
+                evidence_ids = [
+                    item["evidence_id"]
+                    for item in waiting["diagnostic_receipt"]["evidence"]
+                ]
+                evidence_ids.append(attached["evidence"]["evidence_id"])
+
+                with self.assertRaisesRegex(GateConflict, "not bound"):
+                    agent.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "respond",
+                            "run_id": waiting["run_id"],
+                            **gate_binding(waiting),
+                            "response": {
+                                "status": "completed",
+                                "summary": "an unrelated record is not diagnosis proof",
+                                "payload": {
+                                    "root_cause": "wrong slot scope",
+                                    "evidence_ids": [
+                                        unrelated["evidence"]["evidence_id"]
+                                    ],
+                                    "known_gaps": [],
+                                },
+                            },
+                        },
+                        task_id="diagnosis-attachment-run",
+                        operation_id="diagnosis-attachment-reject-unrelated",
+                    )
+
+                development = agent.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "the drive identity mismatch is diagnosed",
+                            "payload": {
+                                "root_cause": (
+                                    "component-global slot was compared with a local slot"
+                                ),
+                                "evidence_ids": evidence_ids,
+                                "known_gaps": [],
+                            },
+                        },
+                    },
+                    task_id="diagnosis-attachment-run",
+                    operation_id="diagnosis-attachment-accept",
+                )
+            finally:
+                agent.close()
+
+        self.assertEqual(development["gate"]["name"], "developer.change")
+        self.assertEqual(
+            [
+                item["evidence_id"]
+                for item in development["diagnostic_receipt"]["evidence"]
+            ],
+            evidence_ids,
+        )
+
     def test_diagnosis_gate_cannot_reclassify_stale_runtime_evidence_as_fresh(
         self,
     ) -> None:

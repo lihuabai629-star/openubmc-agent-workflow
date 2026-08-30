@@ -77,6 +77,11 @@ declarative content claims. The built-in evidence types are:
 | `firmware-recovery-artifact-record` | recovery | independently identified Recovery Artifact path, SHA-256, size, and version |
 | `drive-summary-json` | hardware | direct attribution, RAID zero attribution, health, presence, serial, and scoped drive identities |
 
+For a fresh Runtime Run, a `workflow-diagnosis-record` attached before development may be cited by
+the current `diagnosis.acceptance` response only when Runtime Core verifies the same Run, target,
+workflow cycle, and Operator producer binding. Other attachment types cannot stand in for diagnosis
+Evidence.
+
 Every source repository must be clean at the exact recorded commit; a fresh firmware artifact must
 match its absolute path, digest, size, version, provenance, source revision, target, and Run ID in
 both the manifest and the Runtime-owned `build.artifact` Gate. Hardware coverage is exact, so SATA or SAS evidence
