@@ -2135,7 +2135,11 @@ def build_diagnostic_receipt(
 ) -> DiagnosticReceipt | None:
     """Form one durable typed diagnosis result without embedding raw Evidence."""
 
-    if closeout_stage != "diagnosis":
+    if closeout_stage not in {"diagnosis", "verification"}:
+        return None
+    if closeout_stage == "verification" and not any(
+        name in arguments for name in _DIAGNOSTIC_REQUEST_FIELDS
+    ):
         return None
     reference_ids = [
         _bounded_text(reference.get("evidence_id"), 128)

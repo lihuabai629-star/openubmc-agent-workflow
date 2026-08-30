@@ -706,7 +706,7 @@ def _operation_status(
         return "failed"
     if not evidence_loaded:
         return "partial"
-    if stage == "diagnosis":
+    if stage in {"diagnosis", "verification"}:
         raw_diagnostic_receipt = operation.get("diagnostic_receipt")
         if isinstance(raw_diagnostic_receipt, Mapping):
             diagnostic_receipt = DiagnosticReceipt.from_public_dict(
@@ -720,7 +720,7 @@ def _operation_status(
             evidence,
             _mapping(operation.get("inputs")),
             (),
-            closeout_stage="diagnosis",
+            closeout_stage=stage,
         )
         if projected is not None:
             return _DIAGNOSTIC_OPERATION_STATUS[

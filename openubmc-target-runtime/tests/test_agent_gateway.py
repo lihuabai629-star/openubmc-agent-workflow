@@ -431,6 +431,61 @@ class SemanticBackend:
         }
 
 
+class CompleteDriveVerificationSemanticBackend(SemanticBackend):
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        if arguments.get("mdb_expand_classes") != ["Drive"]:
+            return value
+        observed_at = "2026-08-19T00:00:00Z"
+        ssh = value["result"]["lanes"]["ssh"]
+        ssh.update(
+            {
+                "mdbctl_expand_1": {
+                    "ok": True,
+                    "observed_at": observed_at,
+                    "result": {"stdout_lines": ["Drive_1_010102"]},
+                },
+                "mdbctl_expand_1_object_drive23": {
+                    "ok": True,
+                    "observed_at": observed_at,
+                    "result": {
+                        "properties": {
+                            "Id": 23,
+                            "Protocol": 6,
+                            "Presence": 1,
+                            "Health": 0,
+                            "ResourceId": 1,
+                            "SerialNumber": "NVME-DRIVE-23",
+                        }
+                    },
+                },
+            }
+        )
+        value["result"]["freshness"] = {
+            "status": "fresh",
+            "complete": True,
+            "bmc_time_delta": {
+                "before": "2026-08-19 00:00:00 +0000",
+                "after": "2026-08-19 00:00:01 +0000",
+                "elapsed_seconds": 1.0,
+                "comparable": True,
+                "clock_moved_backwards": False,
+            },
+        }
+        value.pop("target_epoch", None)
+        value["result"]["runtime"] = {
+            "status": {
+                "targets": [
+                    {
+                        "target_id": str(arguments.get("target_id", "")),
+                        "epochs": {"target_epoch": 1},
+                    }
+                ]
+            }
+        }
+        return value
+
+
 class GenericCompletionBackend(SemanticBackend):
     def debug_run(self, task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
@@ -11916,7 +11971,7 @@ class AgentGatewayTests(unittest.TestCase):
             1,
         )
 
-    def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
+    def test_execute_build_upgrade_rejects_missing_requested_drive_expansion(self) -> None:
         first = self.service.call_exposed_tool(
             "execute",
             {
@@ -11924,10 +11979,39 @@ class AgentGatewayTests(unittest.TestCase):
                 "target": "192.0.2.22",
                 "intent": "diagnose-and-fix",
                 "delivery_strategy": "build-upgrade",
+                "entry_operation": "debug_run",
+                "entry_arguments": {
+                    "mdb_expand_classes": ["Drive"],
+                    "no_freshness": True,
+                },
                 "purpose": "build, deploy, and verify a firmware repair",
             },
             task_id="execute-build-upgrade",
             operation_id="build-upgrade-start",
+        )
+        self.assertEqual(first["gate"]["name"], "diagnosis.acceptance")
+        evidence_ids = [
+            item["evidence_id"]
+            for item in first["diagnostic_receipt"]["evidence"]
+        ]
+        first = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": first["run_id"],
+                **gate_binding(first),
+                "response": {
+                    "status": "completed",
+                    "summary": "Drive evidence defines the repair scope",
+                    "payload": {
+                        "root_cause": "Drive state requires a source repair",
+                        "evidence_ids": evidence_ids,
+                        "known_gaps": [],
+                    },
+                },
+            },
+            task_id="execute-build-upgrade",
+            operation_id="build-upgrade-diagnosis",
         )
         self.assertEqual(first["gate"]["name"], "developer.change")
 
@@ -11981,7 +12065,7 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="build-upgrade-build",
         )
 
-        self.assertEqual(final["state"], "completed")
+        self.assertEqual(final["state"], "failed")
         self.assertTrue(final["outcome_recorded"])
         self.assertEqual(
             [name for name, _arguments in self.backend.calls],
@@ -11990,6 +12074,133 @@ class AgentGatewayTests(unittest.TestCase):
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
+        self.assertEqual(
+            verification_arguments["mdb_expand_classes"],
+            ["Drive"],
+        )
+
+    def test_execute_build_upgrade_completes_with_requested_drive_expansion(self) -> None:
+        backend = CompleteDriveVerificationSemanticBackend()
+        service = RuntimeMcpService(backend)
+        product = self.artifact_root / "complete-drive-verification-product.hpm"
+        product.write_bytes(b"firmware-1.2.4")
+        try:
+            diagnosis = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.23",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {"mdb_expand_classes": ["Drive"]},
+                    "purpose": "build, deploy, and verify a Drive repair",
+                },
+                task_id="complete-drive-verification",
+                operation_id="complete-drive-verification-start",
+            )
+            evidence_ids = [
+                item["evidence_id"]
+                for item in diagnosis["diagnostic_receipt"]["evidence"]
+            ]
+            developer_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": diagnosis["run_id"],
+                    **gate_binding(diagnosis),
+                    "response": {
+                        "status": "completed",
+                        "summary": "Drive evidence defines the repair scope",
+                        "payload": {
+                            "root_cause": "Drive state requires a source repair",
+                            "evidence_ids": evidence_ids,
+                            "known_gaps": [],
+                        },
+                    },
+                },
+                task_id="complete-drive-verification",
+                operation_id="complete-drive-verification-diagnosis",
+            )
+            build_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": diagnosis["run_id"],
+                    **gate_binding(developer_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "upgrade-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["build and Drive verification"],
+                        },
+                    },
+                },
+                task_id="complete-drive-verification",
+                operation_id="complete-drive-verification-developer",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": diagnosis["run_id"],
+                    **gate_binding(build_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "firmware artifact completed",
+                        "payload": {
+                            "source_revision": "upgrade-source",
+                            "artifact_ref": artifact_ref(
+                                product,
+                                kind="openubmc-hpm",
+                                target="192.0.2.23",
+                                run_id=diagnosis["run_id"],
+                                version="1.2.4",
+                            ),
+                            **compiled_validation_payload(
+                                "complete-drive-verification"
+                            ),
+                        },
+                    },
+                },
+                task_id="complete-drive-verification",
+                operation_id="complete-drive-verification-build",
+            )
+            projection = service._test.context_runtime.read_case(
+                diagnosis["run_id"]
+            )
+            verification_operation = next(
+                operation
+                for operation in projection["operations"]
+                if operation.get("operation") == "debug_collect"
+            )
+            verification_evidence = service._test.context_runtime.read_evidence(
+                diagnosis["run_id"],
+                verification_operation["evidence_ids"][-1],
+                target_id="target-1",
+            )
+        finally:
+            service.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(final["outcome"]["status"], "completed")
+        self.assertEqual(
+            [name for name, _arguments in backend.calls],
+            ["debug_run", "upgrade_run", "debug_collect"],
+        )
+        verification_arguments = backend.calls[-1][1]
+        self.assertEqual(verification_arguments["mdb_expand_classes"], ["Drive"])
+        self.assertEqual(verification_arguments["_minimum_target_epoch"], 1)
+        self.assertEqual(
+            verification_operation["diagnostic_receipt"]["status"],
+            "complete",
+        )
+        self.assertEqual(
+            json.loads(verification_evidence["body"])["target_epoch"],
+            1,
+        )
 
     def test_build_upgrade_closes_from_runtime_adapter_receipts(self) -> None:
         backend = AdapterProjectionBuildUpgradeBackend()

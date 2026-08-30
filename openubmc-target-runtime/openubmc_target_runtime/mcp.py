@@ -1864,6 +1864,7 @@ class OrchestratedMcpBackend:
                 selected.setdefault("target_id", target_id.strip())
         if execution.phase == "fresh_verification":
             selected.setdefault("profile", "freshness")
+            selected["no_freshness"] = False
             if execution.minimum_target_epochs:
                 selected["_minimum_target_epoch"] = max(
                     int(epoch)

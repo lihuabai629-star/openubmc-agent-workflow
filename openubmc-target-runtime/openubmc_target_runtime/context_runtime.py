@@ -4687,11 +4687,12 @@ class ContextRuntime:
             value = dict(raw_value)
             minimum_epoch = arguments.get("_minimum_target_epoch")
             if minimum_epoch is not None:
-                self._require_minimum_target_epoch(
+                observed_epoch = self._require_minimum_target_epoch(
                     value,
                     minimum_epoch=minimum_epoch,
                     target_id=execution_target_id,
                 )
+                value.setdefault("target_epoch", observed_epoch)
             operation_status = self._domain_result_status(descriptor, value)
         except Exception as exc:
             current = self.repository.load(case_id)
@@ -6017,8 +6018,15 @@ class ContextRuntime:
         raw = projection.get("workflow_inputs", {})
         arguments = dict(raw) if isinstance(raw, Mapping) else {}
         raw_entry_arguments = arguments.pop("entry_arguments", {})
+        entry_operation = str(projection.get("entry_operation", ""))
         if (
-            operation == str(projection.get("entry_operation", ""))
+            (
+                operation == entry_operation
+                or (
+                    operation == "debug_collect"
+                    and entry_operation in {"debug_run", "debug_collect"}
+                )
+            )
             and isinstance(raw_entry_arguments, Mapping)
         ):
             arguments.update(raw_entry_arguments)
@@ -6142,7 +6150,7 @@ class ContextRuntime:
                     arguments.pop(name, None)
         if operation == "debug_collect":
             arguments.setdefault("profile", "standard")
-            arguments.setdefault("no_freshness", False)
+            arguments["no_freshness"] = False
         if operation == "live_patch_run":
             developer = completed_phases.get("developer.change", {})
             artifact_ref = developer.get("artifact_ref")
@@ -6563,11 +6571,12 @@ class ContextRuntime:
             minimum_epoch = arguments.get("_minimum_target_epoch")
             if minimum_epoch is not None:
                 try:
-                    self._require_minimum_target_epoch(
+                    observed_epoch = self._require_minimum_target_epoch(
                         value,
                         minimum_epoch=minimum_epoch,
                         target_id=target_id,
                     )
+                    value.setdefault("target_epoch", observed_epoch)
                 except (TypeError, ValueError) as exc:
                     error = exc
                     value = None
