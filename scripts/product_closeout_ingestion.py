@@ -40,6 +40,7 @@ DIMENSIONS = (
     "upgrade",
     "freshness",
     "hardware",
+    "recovery",
 )
 
 
@@ -132,7 +133,7 @@ def _runtime_snapshot(
         raise ValueError("multiple Runtime targets require case.target")
     else:
         raise ValueError("Runtime Run has no target binding")
-    target_identity = _text(target.get("target_id")) or _text(target.get("address"))
+    target_identity = _text(target.get("address")) or _text(target.get("target_id"))
     outcome = projection.get("run_outcome")
     outcome = dict(outcome) if isinstance(outcome, Mapping) else {}
     terminal_outcome = _text(outcome.get("status"))
@@ -234,7 +235,13 @@ def _source_repositories(value: object) -> list[dict[str, str]]:
     return repositories
 
 
-def _artifact(path_value: object) -> dict[str, object]:
+def _artifact(
+    path_value: object,
+    *,
+    source_revision: str,
+    target: str,
+    run_id: str,
+) -> dict[str, object]:
     path = Path(_text(path_value)).expanduser().absolute()
     metadata, _raw = _read_json(
         Path(str(path) + ".metadata.json"),
@@ -254,6 +261,56 @@ def _artifact(path_value: object) -> dict[str, object]:
     version = _text(metadata.get("product_version"))
     if not version:
         raise ValueError("artifact metadata product_version is required")
+    provenance = _text(metadata.get("provenance"))
+    if not provenance:
+        raise ValueError("artifact metadata provenance is required")
+    return {
+        "status": "verified",
+        "path": str(path),
+        "sha256": digest,
+        "size": size,
+        "version": version,
+        "provenance": provenance,
+        "source_revision": source_revision,
+        "target": target,
+        "run_id": run_id,
+    }
+
+
+def _recovery_artifact(
+    value: object,
+    *,
+    primary_artifact: Mapping[str, object],
+) -> dict[str, object]:
+    identity = _mapping(value, "recovery_artifact")
+    path = Path(_text(identity.get("path"))).expanduser().absolute()
+    expected = _text(identity.get("sha256")).removeprefix("sha256:")
+    expected_size = identity.get("size")
+    version = _text(identity.get("version"))
+    if (
+        len(expected) != 64
+        or any(character not in "0123456789abcdef" for character in expected)
+        or isinstance(expected_size, bool)
+        or not isinstance(expected_size, int)
+        or expected_size <= 0
+        or not version
+    ):
+        raise ValueError(
+            "recovery_artifact requires path, sha256, positive integer size, and version"
+        )
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"recovery artifact is unavailable: {error}") from error
+    digest = _sha256_bytes(raw)
+    size = len(raw)
+    if digest != expected or size != expected_size:
+        raise ValueError("recovery artifact content does not match its identity")
+    if (
+        str(path) == _text(primary_artifact.get("path"))
+        or digest == _text(primary_artifact.get("sha256"))
+    ):
+        raise ValueError("recovery artifact must be independent from the upgrade artifact")
     return {
         "status": "verified",
         "path": str(path),
@@ -307,6 +364,21 @@ def assemble_manifest(
     hardware_protocols = list(hardware_proof.get("required_protocols", []))
     if hardware_protocols != required_protocols:
         raise ValueError("hardware proof protocols do not match case.required_protocols")
+    source_repositories = _source_repositories(document.get("source_repositories"))
+    source_revision = ";".join(
+        f"{repository['name']}:{repository['commit']}"
+        for repository in source_repositories
+    )
+    artifact = _artifact(
+        document.get("artifact_path"),
+        source_revision=source_revision,
+        target=target,
+        run_id=run_id,
+    )
+    recovery = _recovery_artifact(
+        document.get("recovery_artifact"),
+        primary_artifact=artifact,
+    )
     manifest: dict[str, object] = {
         "schema": EVIDENCE_SCHEMA,
         "mode": "fresh-runtime",
@@ -331,7 +403,7 @@ def assemble_manifest(
         },
         "source": {
             "status": "completed",
-            "repositories": _source_repositories(document.get("source_repositories")),
+            "repositories": source_repositories,
         },
         "validation": {
             "official_ut": {
@@ -345,7 +417,11 @@ def assemble_manifest(
                 "evidence": list(dimensions["build"].references),
             },
         },
-        "artifact": _artifact(document.get("artifact_path")),
+        "artifact": artifact,
+        "recovery": {
+            **recovery,
+            "evidence": list(dimensions["recovery"].references),
+        },
         "upgrade": {
             "status": _text(dimensions["upgrade"].primary_proof.get("status")),
             "evidence": list(dimensions["upgrade"].references),

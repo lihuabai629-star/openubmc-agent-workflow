@@ -654,11 +654,16 @@ class LocalArtifactStore:
         created_by_effect: str,
         version: str = "",
         redacted: bool,
+        expected_sha256: str = "",
     ) -> ArtifactRef:
         source = Path(path)
         if not source.is_file():
             raise ReferenceViolation("ArtifactRef content is unavailable")
         digest, size = self._digest(source)
+        if expected_sha256 and digest != expected_sha256:
+            raise ReferenceViolation(
+                "Artifact content does not match the expected SHA-256"
+            )
         reference = ArtifactRef(
             handle=f"artifact://sha256/{digest}",
             digest=digest,
@@ -704,8 +709,19 @@ class LocalArtifactStore:
         run_id: str,
         created_by_effect: str,
         version: str = "",
+        expected_sha256: str = "",
     ) -> ArtifactRef:
         """Persist raw content and return a content-addressed ArtifactRef."""
+
+        if expected_sha256:
+            normalized_expected = expected_sha256.removeprefix("sha256:").lower()
+            if len(normalized_expected) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in normalized_expected
+            ):
+                raise ReferenceViolation("expected Artifact SHA-256 is invalid")
+        else:
+            normalized_expected = ""
 
         return self._put(
             path,
@@ -717,6 +733,7 @@ class LocalArtifactStore:
             created_by_effect=created_by_effect,
             version=version,
             redacted=False,
+            expected_sha256=normalized_expected,
         )
 
     def register(

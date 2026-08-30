@@ -1,0 +1,9 @@
+{
+  "completed_at": "2026-08-30T13:13:22.555516Z",
+  "dimension": "runtime",
+  "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+  "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
+  "status": "completed",
+  "target": "10.121.136.200",
+  "terminal_outcome": "completed"
+}

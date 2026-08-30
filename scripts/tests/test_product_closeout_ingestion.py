@@ -67,6 +67,12 @@ def _ingestion_input(manifest: dict[str, object]) -> dict[str, object]:
             for repository in manifest["source"]["repositories"]
         ],
         "artifact_path": manifest["artifact"]["path"],
+        "recovery_artifact": {
+            "path": manifest["recovery"]["path"],
+            "sha256": manifest["recovery"]["sha256"],
+            "size": manifest["recovery"]["size"],
+            "version": manifest["recovery"]["version"],
+        },
         "evidence": {
             "diagnosis": evidence(manifest["diagnosis"]),
             "official_ut": evidence(validation["official_ut"]),
@@ -74,6 +80,7 @@ def _ingestion_input(manifest: dict[str, object]) -> dict[str, object]:
             "upgrade": evidence(manifest["upgrade"]),
             "freshness": evidence(manifest["freshness"]),
             "hardware": evidence(manifest["hardware"]),
+            "recovery": evidence(manifest["recovery"]),
         },
         "freshness_max_age_seconds": manifest["freshness"]["max_age_seconds"],
     }
@@ -179,10 +186,12 @@ class ProductCloseoutIngestionTests(unittest.TestCase):
             original, _, _, artifact = complete_manifest(root)
             _write_artifact_metadata(artifact, original)
             from scripts.tests.test_product_closeout_qualification import (
-                rebuild_runtime_ledger,
+                forge_runtime_ledger_for_negative_test,
             )
 
-            rebuild_runtime_ledger(original, additional_targets=("target-2",))
+            forge_runtime_ledger_for_negative_test(
+                original, additional_targets=("target-2",)
+            )
 
             with self.assertRaisesRegex(
                 ValueError,

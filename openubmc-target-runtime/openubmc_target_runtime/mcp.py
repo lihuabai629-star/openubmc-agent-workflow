@@ -97,6 +97,7 @@ from .orchestration import (
     TaskTargetBinding,
     TaskWorkflowOrchestrator,
     WorkflowStep,
+    enforce_fresh_verification,
 )
 from .workflow import DEFAULT_PHASE_REGISTRY
 
@@ -1864,6 +1865,7 @@ class OrchestratedMcpBackend:
                 selected.setdefault("target_id", target_id.strip())
         if execution.phase == "fresh_verification":
             selected.setdefault("profile", "freshness")
+            selected = enforce_fresh_verification(selected)
             if execution.minimum_target_epochs:
                 selected["_minimum_target_epoch"] = max(
                     int(epoch)
@@ -2692,6 +2694,23 @@ class RuntimeMcpService:
                                     "bounded by the task deadline."
                                 ),
                             },
+                            "active_mode": {
+                                "type": "string",
+                                "enum": ["Immediately", "ResetBMC"],
+                                "default": "ResetBMC",
+                                "description": (
+                                    "Target activation mode requested with an upload "
+                                    "method that supports UpdateParameters."
+                                ),
+                            },
+                            "force_update": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": (
+                                    "Request a deliberate same-version reflash when the "
+                                    "target supports UpdateParameters."
+                                ),
+                            },
                             "transport": {
                                 "type": "string",
                                 "enum": ["redfish"],
@@ -2723,6 +2742,37 @@ class RuntimeMcpService:
                         "type": "object",
                         "required": ["case_id"],
                         "properties": {"case_id": {"type": "string", "minLength": 1}},
+                        "additionalProperties": False,
+                    },
+                },
+                {
+                    "name": "evidence_attach",
+                    "description": (
+                        "Attach digest-verified local file bytes to one open Runtime "
+                        "Run without changing its Gate, phase, or Outcome."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "required": [
+                            "run_id",
+                            "target",
+                            "path",
+                            "sha256",
+                            "evidence_type",
+                        ],
+                        "properties": {
+                            "run_id": {"type": "string", "minLength": 1},
+                            "target": {"type": "string", "minLength": 1},
+                            "path": {"type": "string", "minLength": 1},
+                            "sha256": {
+                                "type": "string",
+                                "pattern": "^(?:sha256:)?[0-9a-f]{64}$",
+                            },
+                            "evidence_type": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                            },
+                        },
                         "additionalProperties": False,
                     },
                 },

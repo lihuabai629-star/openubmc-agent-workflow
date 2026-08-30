@@ -1192,8 +1192,9 @@ def effect_recovery_mode(
         return None
     if isinstance(raw, EffectRecoveryMode):
         return raw
+    candidate = raw.value if isinstance(raw, Enum) else raw
     try:
-        return EffectRecoveryMode(str(raw).strip().lower())
+        return EffectRecoveryMode(str(candidate).strip().lower())
     except ValueError as exc:
         raise ValueError("unsupported Runtime Effect recovery mode") from exc
 

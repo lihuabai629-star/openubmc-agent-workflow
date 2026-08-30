@@ -180,6 +180,15 @@ fresh MDB reads during the SSH anchor refresh. This is not result caching: every
 query is executed again. `debug_run --mdb-only` keeps the full start/end freshness boundary.
 `freshness` is not a profile and is rejected.
 
+For post-upgrade Drive convergence, the Runtime may pass a bounded
+`hardware_acceptance` object with one `devices` array. Each item has `device_id` (`Drive<N>`),
+`protocol` (`NVMe`, `SATA`, or `SAS`), and `resource_id` (`positive` or `zero`). The declaration is
+validated when the workflow starts but is enforced only by `debug_collect`. Every declared Drive
+must also be present, healthy, and identified; NVMe Drives must be direct. If any condition is not
+yet true, the native result is `partial` with `hardware_acceptance_pending` and exact gaps. A later
+Runtime resume recollects the same verification step; no target state is changed and elapsed time
+alone never satisfies acceptance.
+
 Use `openubmc-debug-dev/tools/benchmark_fast_mdb.py --target <ip> --iterations 2 --json` to record
 one cold and one epoch-valid warm snapshot in the same task. Repeat `--target` for a small
 comparison; the tool keeps target-specific leases isolated and reports timing plus bounded Runtime

@@ -26,7 +26,8 @@ profile.
 Keep exactly two transport projections:
 
 - `agent`: `observe` and `execute`;
-- `operator`: Evidence, Replay, lifecycle, Runtime status, and Session Outcome governance.
+- `operator`: digest-bound Evidence attachment and inspection, Replay, lifecycle, Runtime status,
+  and Session Outcome governance.
 
 Keep historical compatibility telemetry readable through operator Runtime status, but stop writing
 new compatibility counters. Preserve explicit old-event upcasters for supported persisted Runs.

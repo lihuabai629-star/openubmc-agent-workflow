@@ -1,0 +1,49 @@
+{
+  "devices": [
+    {
+      "device_id": "Drive8",
+      "protocol": "NVMe"
+    },
+    {
+      "device_id": "Drive9",
+      "protocol": "NVMe"
+    },
+    {
+      "device_id": "Drive10",
+      "protocol": "NVMe"
+    },
+    {
+      "device_id": "Drive11",
+      "protocol": "NVMe"
+    },
+    {
+      "device_id": "Drive20",
+      "protocol": "NVMe"
+    },
+    {
+      "device_id": "Drive21",
+      "protocol": "NVMe"
+    },
+    {
+      "device_id": "Drive22",
+      "protocol": "NVMe"
+    },
+    {
+      "device_id": "Drive23",
+      "protocol": "NVMe"
+    }
+  ],
+  "dimension": "hardware",
+  "observed_at": "2026-08-30T13:13:21.973285Z",
+  "required_protocols": [
+    "NVMe"
+  ],
+  "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+  "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
+  "status": "covered",
+  "supporting_evidence": {
+    "evidence_type": "runtime-debug-evidence",
+    "sha256": "604b26dc95f4b66d444018cfb69fb97e11f3a539e9e035b50fd704c72fa9b847"
+  },
+  "target": "10.121.136.200"
+}

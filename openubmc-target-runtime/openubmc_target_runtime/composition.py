@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from .agent_gateway import AgentGateway, ResultProjector
 from .artifact_store import LocalArtifactStore, SQLiteArtifactRepository
@@ -125,9 +126,11 @@ class _RuntimeOperatorPort:
         self,
         context_runtime: ContextRuntime,
         artifact_store: LocalArtifactStore,
+        run_engine: RunEngine,
     ) -> None:
         self._context_runtime = context_runtime
         self._artifact_store = artifact_store
+        self._run_engine = run_engine
         self._evidence_query = EvidenceQueryService(context_runtime.repository)
 
     def replay_service(self):
@@ -187,6 +190,23 @@ class _RuntimeOperatorPort:
             case_id=case_id,
         )
 
+    def wrap_result(
+        self,
+        value: Mapping[str, object],
+        *,
+        operation: str,
+        operation_id: str,
+        case_id: str,
+    ) -> dict[str, object]:
+        """Wrap an Operator command result without describing it as a read."""
+
+        return self._context_runtime.wrap_operator_result(
+            value,
+            operation=operation,
+            operation_id=operation_id,
+            case_id=case_id,
+        )
+
     def read_case_projection(self, case_id: str) -> Mapping[str, object]:
         return self._context_runtime.read_case(case_id)
 
@@ -220,6 +240,87 @@ class _RuntimeOperatorPort:
                 operation=name,
                 operation_id=operation_id,
                 case_id=case_id,
+            )
+        if name == "evidence_attach":
+            run_id = str(arguments.get("run_id", "")).strip()
+            target = str(arguments.get("target", "")).strip()
+            path = str(arguments.get("path", "")).strip()
+            expected_sha256 = str(arguments.get("sha256", "")).strip()
+            evidence_type = str(arguments.get("evidence_type", "")).strip()
+            if evidence_type == "firmware-recovery-artifact":
+                artifact_path = Path(path).expanduser()
+                if not artifact_path.is_absolute():
+                    raise ValueError("evidence path must be absolute")
+                artifact_path = artifact_path.absolute()
+                artifact_target = self._context_runtime.operator_evidence_target(
+                    run_id, target=target
+                )
+                artifact_ref = self._artifact_store.find(
+                    kind="openubmc-hpm",
+                    target=artifact_target,
+                    run_id=run_id,
+                    created_by_effect=operation_id,
+                )
+                if artifact_ref is not None:
+                    normalized_expected = expected_sha256.removeprefix(
+                        "sha256:"
+                    ).lower()
+                    if normalized_expected != artifact_ref.digest:
+                        raise ValueError(
+                            "recovery Artifact Effect identity is already bound "
+                            "to a different SHA-256"
+                        )
+                else:
+                    self._context_runtime.operator_evidence_target(
+                        run_id,
+                        target=target,
+                        require_open=True,
+                    )
+                    artifact_ref = self._artifact_store.put(
+                        artifact_path,
+                        kind="openubmc-hpm",
+                        provenance="operator-evidence-attach",
+                        retention_hint="run-lifetime",
+                        target=artifact_target,
+                        run_id=run_id,
+                        created_by_effect=operation_id,
+                        expected_sha256=expected_sha256,
+                    )
+                prepared = self._context_runtime.prepare_artifact_evidence(
+                    run_id,
+                    target=artifact_target,
+                    artifact_ref=artifact_ref.to_public_dict(),
+                    evidence_type=evidence_type,
+                )
+            else:
+                prepared = self._context_runtime.prepare_file_evidence(
+                    run_id,
+                    target=target,
+                    path=path,
+                    expected_sha256=expected_sha256,
+                    evidence_type=evidence_type,
+                    operation_id=operation_id,
+                )
+            reference, replayed = self._run_engine.attach_operator_evidence(
+                run_id,
+                prepared["evidence"],
+                operation_id=operation_id,
+            )
+            value = {
+                "schema": "openubmc.target-runtime/operator-evidence-attach-v1",
+                "run_id": run_id,
+                "attached": True,
+                "idempotent_replay": bool(
+                    prepared.get("already_attached") or replayed
+                ),
+                "evidence_type": prepared["evidence_type"],
+                "evidence": dict(reference),
+            }
+            return self.wrap_result(
+                value,
+                operation=name,
+                operation_id=operation_id,
+                case_id=run_id,
             )
         if name == "evidence_query":
             return self.wrap_read(
@@ -716,7 +817,7 @@ def compose_runtime(
             artifact_store=artifact_store,
             orchestrated_backend=options.orchestrated_backend,
         ),
-        operator=_RuntimeOperatorPort(context_runtime, artifact_store),
+        operator=_RuntimeOperatorPort(context_runtime, artifact_store, run_engine),
         lifecycle=lifecycle,
         artifact_store=artifact_store,
         _test=_RuntimeTestSupport(

@@ -751,6 +751,114 @@ class RunEngine:
         except RunDecisionConflict as exc:
             raise CommandConflict(str(exc)) from exc
 
+    def attach_operator_evidence(
+        self,
+        run_id: str,
+        reference: Mapping[str, object],
+        *,
+        operation_id: str,
+    ) -> tuple[Mapping[str, object], bool]:
+        """Append one Operator/CI EvidenceAttached fact through RunEngine."""
+
+        evidence_id = _text(reference.get("evidence_id"))
+        if not evidence_id:
+            raise ValueError("operator evidence requires an evidence_id")
+        command_id = _text(operation_id) or evidence_id
+        input_digest = fingerprint(
+            {
+                "schema": "openubmc.target-runtime/operator-evidence-attach-v1",
+                "run_id": run_id,
+                "evidence": dict(reference),
+            }
+        )
+        prior = self.run_store.load(
+            run_id,
+            command_id=command_id,
+            input_digest=input_digest,
+        ).decision
+        if prior is not None:
+            persisted = next(
+                (
+                    item
+                    for item in prior.projection.get("evidence_refs", [])
+                    if isinstance(item, Mapping)
+                    and _text(item.get("evidence_id")) == evidence_id
+                ),
+                None,
+            )
+            if not isinstance(persisted, Mapping):
+                raise CommandConflict(
+                    "operator evidence decision did not persist its Evidence fact"
+                )
+            return dict(persisted), True
+
+        existing: Mapping[str, object] | None = None
+
+        def build(transaction: RunDecisionDraft) -> RunDecision | None:
+            nonlocal existing
+            snapshot = self.driver.run_snapshot(run_id)
+            projection = _projection(snapshot)
+            if not projection:
+                raise ValueError(f"run {run_id} is unavailable")
+            if (
+                _text(projection.get("status")) in {"terminal", "cancelled"}
+                or bool(_mapping(projection.get("run_outcome")))
+            ):
+                raise ValueError(f"run {run_id} no longer accepts evidence")
+            existing = next(
+                (
+                    item
+                    for item in projection.get("evidence_refs", [])
+                    if isinstance(item, Mapping)
+                    and _text(item.get("evidence_id")) == evidence_id
+                ),
+                None,
+            )
+            if isinstance(existing, Mapping):
+                return None
+            self._stage(
+                (
+                    RunEvent(
+                        "EvidenceAttached",
+                        {"evidence": dict(reference)},
+                        command_id,
+                    ),
+                )
+            )
+            return RunDecision(
+                run_id=run_id,
+                command_id=command_id,
+                input_digest=input_digest,
+                expected_revision=transaction.expected_revision,
+                events=transaction.events,
+                turn=self._turn(snapshot),
+            )
+
+        committed = self._commit_run_decision(
+            run_id=run_id,
+            command_id=command_id,
+            input_digest=input_digest,
+            build=build,
+            retry_conflicts=True,
+            exhausted_message="operator EvidenceAttached decision could not converge",
+        )
+        if committed is None:
+            if isinstance(existing, Mapping):
+                return dict(existing), True
+            raise CommandConflict("operator EvidenceAttached decision was not built")
+        persisted = next(
+            (
+                item
+                for item in committed.projection.get("evidence_refs", [])
+                if isinstance(item, Mapping)
+                and _text(item.get("evidence_id")) == evidence_id
+            ),
+            None,
+        )
+        if not isinstance(persisted, Mapping):
+            raise CommandConflict("operator EvidenceAttached fact is unavailable")
+        return dict(persisted), False
+
     def _apply_transition(
         self,
         run_id: str,
@@ -1551,6 +1659,38 @@ class RunEngine:
             available_evidence = {
                 item.evidence_id: item.to_public_dict() for item in prior.evidence
             }
+            run_target_ids = {
+                _text(item.get("target_id"))
+                for item in projection.get("targets", [])
+                if isinstance(item, Mapping) and _text(item.get("target_id"))
+            }
+            for evidence_id in requested_evidence_ids:
+                if evidence_id in available_evidence:
+                    continue
+                attached: Mapping[str, object] = {}
+                for target_id in run_target_ids:
+                    try:
+                        loaded = self.driver.read_evidence(
+                            command.run_id,
+                            evidence_id,
+                            target_id=target_id,
+                        )
+                    except Exception:
+                        continue
+                    candidate = loaded.get("evidence")
+                    if isinstance(candidate, Mapping):
+                        attached = candidate
+                        break
+                if (
+                    _text(attached.get("case_id")) == command.run_id
+                    and _text(attached.get("target_id")) in run_target_ids
+                    and _text(attached.get("workflow_cycle_id")) == cycle_id
+                    and _text(attached.get("producer"))
+                    == "operator-evidence-attach"
+                    and _text(attached.get("evidence_type"))
+                    == "workflow-diagnosis-record"
+                ):
+                    available_evidence[evidence_id] = dict(attached)
             unknown_evidence = sorted(
                 set(requested_evidence_ids) - set(available_evidence)
             )

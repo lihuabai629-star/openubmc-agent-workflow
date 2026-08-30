@@ -54,6 +54,7 @@ from .run_store import (
 )
 from .semantic_runtime import GateConflict
 from .observation import observation_consistency, observation_reusable
+from .orchestration import enforce_fresh_verification
 from .workflow import (
     DEFAULT_PHASE_REGISTRY,
     DEFAULT_WORKFLOW_DEFINITIONS,
@@ -219,6 +220,7 @@ _DEBUG_DOMAIN_ARGUMENTS = {
     "correlation_time_window",
     "deadline",
     "files",
+    "hardware_acceptance",
     "include_rotated",
     "ip",
     "keyword",
@@ -4687,11 +4689,12 @@ class ContextRuntime:
             value = dict(raw_value)
             minimum_epoch = arguments.get("_minimum_target_epoch")
             if minimum_epoch is not None:
-                self._require_minimum_target_epoch(
+                observed_epoch = self._require_minimum_target_epoch(
                     value,
                     minimum_epoch=minimum_epoch,
                     target_id=execution_target_id,
                 )
+                value.setdefault("target_epoch", observed_epoch)
             operation_status = self._domain_result_status(descriptor, value)
         except Exception as exc:
             current = self.repository.load(case_id)
@@ -5033,6 +5036,25 @@ class ContextRuntime:
         case_id: str,
         status: str = "completed",
     ) -> ContextToolResult:
+        return self.wrap_operator_result(
+            value,
+            operation=operation,
+            operation_id=operation_id,
+            case_id=case_id,
+            status=status,
+        )
+
+    def wrap_operator_result(
+        self,
+        value: Mapping[str, object],
+        *,
+        operation: str,
+        operation_id: str,
+        case_id: str,
+        status: str = "completed",
+    ) -> ContextToolResult:
+        """Wrap one Operator / CI Plane result regardless of read/write semantics."""
+
         projection = self._load(case_id) if case_id else None
         continuation = (
             self._continuation_for(value) if operation == "case_read" else None
@@ -6017,8 +6039,15 @@ class ContextRuntime:
         raw = projection.get("workflow_inputs", {})
         arguments = dict(raw) if isinstance(raw, Mapping) else {}
         raw_entry_arguments = arguments.pop("entry_arguments", {})
+        entry_operation = str(projection.get("entry_operation", ""))
         if (
-            operation == str(projection.get("entry_operation", ""))
+            (
+                operation == entry_operation
+                or (
+                    operation == "debug_collect"
+                    and entry_operation in {"debug_run", "debug_collect"}
+                )
+            )
             and isinstance(raw_entry_arguments, Mapping)
         ):
             arguments.update(raw_entry_arguments)
@@ -6142,7 +6171,7 @@ class ContextRuntime:
                     arguments.pop(name, None)
         if operation == "debug_collect":
             arguments.setdefault("profile", "standard")
-            arguments.setdefault("no_freshness", False)
+            arguments = enforce_fresh_verification(arguments)
         if operation == "live_patch_run":
             developer = completed_phases.get("developer.change", {})
             artifact_ref = developer.get("artifact_ref")
@@ -6563,11 +6592,12 @@ class ContextRuntime:
             minimum_epoch = arguments.get("_minimum_target_epoch")
             if minimum_epoch is not None:
                 try:
-                    self._require_minimum_target_epoch(
+                    observed_epoch = self._require_minimum_target_epoch(
                         value,
                         minimum_epoch=minimum_epoch,
                         target_id=target_id,
                     )
+                    value.setdefault("target_epoch", observed_epoch)
                 except (TypeError, ValueError) as exc:
                     error = exc
                     value = None
@@ -6869,6 +6899,258 @@ class ContextRuntime:
             "returned_bytes": len(body),
             "truncated": offset + len(body) < int(reference["byte_count"]),
             "body": body.decode("utf-8", errors="replace"),
+        }
+
+    @staticmethod
+    def _accepts_operator_evidence(projection: Mapping[str, object]) -> bool:
+        return not (
+            projection.get("status") in {"terminal", "cancelled"}
+            or isinstance(projection.get("run_outcome"), Mapping)
+            and bool(projection.get("run_outcome"))
+        )
+
+    def _operator_evidence_context(
+        self, run_id: str, *, target: str, require_open: bool = True
+    ) -> tuple[dict[str, object], dict[str, object], str]:
+        projection = self._load(run_id)
+        if projection is None:
+            raise CaseNotFound(run_id)
+        if require_open and not self._accepts_operator_evidence(projection):
+            raise CaseClosed(f"run {run_id} no longer accepts evidence")
+        targets = [
+            dict(item)
+            for item in projection.get("targets", [])
+            if isinstance(item, Mapping)
+            and target
+            in {
+                str(item.get("target_id", "")).strip(),
+                str(item.get("address", "")).strip(),
+            }
+        ]
+        if len(targets) != 1:
+            raise ValueError("target must select exactly one Runtime Run target")
+        selected_target = targets[0]
+        target_id = str(
+            selected_target.get("target_id") or selected_target.get("address")
+        ).strip()
+        return projection, selected_target, target_id
+
+    def operator_evidence_target(
+        self,
+        run_id: str,
+        *,
+        target: str,
+        require_open: bool = False,
+    ) -> str:
+        """Resolve one Run target to its canonical ArtifactRef binding."""
+
+        _projection, selected_target, target_id = self._operator_evidence_context(
+            run_id, target=target, require_open=require_open
+        )
+        return str(selected_target.get("address") or target_id).strip()
+
+    def prepare_file_evidence(
+        self,
+        run_id: str,
+        *,
+        target: str,
+        path: str,
+        expected_sha256: str,
+        evidence_type: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Validate and persist exact Operator/CI bytes without writing Run facts."""
+
+        projection, selected_target, target_id = self._operator_evidence_context(
+            run_id, target=target, require_open=False
+        )
+        source_path = Path(path).expanduser()
+        if not source_path.is_absolute():
+            raise ValueError("evidence path must be absolute")
+        source_path = source_path.absolute()
+        normalized_sha256 = expected_sha256.removeprefix("sha256:")
+        if len(normalized_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in normalized_sha256
+        ):
+            raise ValueError("evidence sha256 must be 64 lowercase hex characters")
+        if not evidence_type or _safe_identifier(
+            evidence_type, fallback=""
+        ) != evidence_type:
+            raise ValueError("evidence_type must be a safe identifier")
+        evidence_id = "evidence-" + _fingerprint(
+            {
+                "run_id": run_id,
+                "target_id": target_id,
+                "evidence_type": evidence_type,
+                "blob_id": normalized_sha256,
+            }
+        )[:32]
+        existing = self.repository.evidence_reference(run_id, evidence_id)
+        if isinstance(existing, Mapping):
+            return {
+                "run_id": run_id,
+                "evidence_type": evidence_type,
+                "evidence": dict(existing),
+                "already_attached": True,
+            }
+        if not self._accepts_operator_evidence(projection):
+            raise CaseClosed(f"run {run_id} no longer accepts evidence")
+        if not source_path.is_file():
+            raise EvidenceUnavailable(f"evidence file is unavailable: {source_path}")
+        body = source_path.read_bytes()
+        actual_sha256 = hashlib.sha256(body).hexdigest()
+        if actual_sha256 != normalized_sha256:
+            raise ValueError(
+                "evidence digest mismatch: "
+                f"expected {normalized_sha256}, actual {actual_sha256}"
+            )
+        blob_id = self.blob_repository.put(body)
+        if blob_id != actual_sha256:
+            raise EvidenceUnavailable("evidence blob identity does not match source bytes")
+        self._metrics["evidence_bytes_written"] += len(body)
+        definition = projection.get("workflow_definition", {})
+        definition = definition if isinstance(definition, Mapping) else {}
+        epochs = selected_target.get("epochs", {})
+        epochs = epochs if isinstance(epochs, Mapping) else {}
+        target_epoch_value = epochs.get("target_epoch")
+        target_epoch = (
+            int(target_epoch_value)
+            if isinstance(target_epoch_value, int)
+            and not isinstance(target_epoch_value, bool)
+            and target_epoch_value >= 0
+            else None
+        )
+        reference = {
+            "evidence_id": evidence_id,
+            "blob_id": blob_id,
+            "media_type": "application/octet-stream",
+            "byte_count": len(body),
+            "target_id": target_id,
+            "generation": str(target_epoch if target_epoch is not None else "operator"),
+            "provenance": f"operator-evidence-attach:{evidence_type}",
+            "observed_at": self.clock(),
+            "case_id": run_id,
+            "producer": "operator-evidence-attach",
+            "evidence_type": evidence_type,
+            "target_epoch": target_epoch,
+            "workflow_definition_id": str(definition.get("definition_id", "")),
+            "workflow_definition_version": int(definition.get("version", 0) or 0),
+            "workflow_definition_fingerprint": str(
+                definition.get("fingerprint", "")
+            ),
+            "workflow_cycle_id": str(projection.get("workflow_cycle_id", "")),
+            "workflow_step_id": "",
+            "workflow_attempt": 0,
+            "parent_evidence_ids": [],
+        }
+        return {
+            "run_id": run_id,
+            "evidence_type": evidence_type,
+            "evidence": reference,
+            "already_attached": False,
+        }
+
+    def prepare_artifact_evidence(
+        self,
+        run_id: str,
+        *,
+        target: str,
+        artifact_ref: Mapping[str, object],
+        evidence_type: str,
+    ) -> dict[str, object]:
+        """Bind one ArtifactStore-owned package to an open Run Evidence fact."""
+
+        projection, selected_target, target_id = self._operator_evidence_context(
+            run_id, target=target, require_open=False
+        )
+        if evidence_type != "firmware-recovery-artifact":
+            raise ValueError("Artifact evidence type is unsupported")
+        target_bindings = {
+            target_id,
+            str(selected_target.get("address", "")).strip(),
+        }
+        target_bindings.discard("")
+        reference_value = dict(artifact_ref)
+        digest = str(reference_value.get("digest", "")).removeprefix("sha256:")
+        size = reference_value.get("size")
+        if (
+            len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size <= 0
+            or str(reference_value.get("kind", "")) != "openubmc-hpm"
+            or str(reference_value.get("run_id", "")) != run_id
+            or str(reference_value.get("target", "")) not in target_bindings
+        ):
+            raise ValueError("recovery ArtifactRef is not bound to the selected Run target")
+        evidence_id = "evidence-" + _fingerprint(
+            {
+                "run_id": run_id,
+                "target_id": target_id,
+                "evidence_type": evidence_type,
+                "artifact_digest": digest,
+            }
+        )[:32]
+        existing = self.repository.evidence_reference(run_id, evidence_id)
+        if isinstance(existing, Mapping):
+            return {
+                "run_id": run_id,
+                "evidence_type": evidence_type,
+                "evidence": dict(existing),
+                "already_attached": True,
+            }
+        if not self._accepts_operator_evidence(projection):
+            raise CaseClosed(f"run {run_id} no longer accepts evidence")
+        definition = projection.get("workflow_definition", {})
+        definition = definition if isinstance(definition, Mapping) else {}
+        epochs = selected_target.get("epochs", {})
+        epochs = epochs if isinstance(epochs, Mapping) else {}
+        target_epoch_value = epochs.get("target_epoch")
+        target_epoch = (
+            int(target_epoch_value)
+            if isinstance(target_epoch_value, int)
+            and not isinstance(target_epoch_value, bool)
+            and target_epoch_value >= 0
+            else None
+        )
+        descriptor = _json_bytes(
+            {
+                "schema": f"{CONTEXT_RUNTIME_SCHEMA}/artifact-evidence-v1",
+                "artifact_ref": reference_value,
+            }
+        )
+        descriptor_blob_id = self.blob_repository.put(descriptor)
+        self._metrics["evidence_bytes_written"] += len(descriptor)
+        reference = {
+            "evidence_id": evidence_id,
+            "blob_id": descriptor_blob_id,
+            "media_type": "application/vnd.openubmc.artifact-ref+json",
+            "byte_count": len(descriptor),
+            "target_id": target_id,
+            "generation": str(target_epoch if target_epoch is not None else "operator"),
+            "provenance": f"operator-evidence-attach:{evidence_type}",
+            "observed_at": self.clock(),
+            "case_id": run_id,
+            "producer": "operator-evidence-attach",
+            "evidence_type": evidence_type,
+            "artifact_ref": reference_value,
+            "target_epoch": target_epoch,
+            "workflow_definition_id": str(definition.get("definition_id", "")),
+            "workflow_definition_version": int(definition.get("version", 0) or 0),
+            "workflow_definition_fingerprint": str(
+                definition.get("fingerprint", "")
+            ),
+            "workflow_cycle_id": str(projection.get("workflow_cycle_id", "")),
+            "workflow_step_id": "",
+            "workflow_attempt": 0,
+            "parent_evidence_ids": [],
+        }
+        return {
+            "run_id": run_id,
+            "evidence_type": evidence_type,
+            "evidence": reference,
+            "already_attached": False,
         }
 
     def close_case(self, case_id: str, *, expected_revision: int) -> dict[str, object]:

@@ -1,0 +1,9 @@
+{
+  "artifact": {
+    "path": "/home/workspace/.codex-runs/nvme-temp-na-20260806/rollback/rootfs_openUBMC-12.08.21.04.hpm",
+    "sha256": "3040fe54afd6ea2ec9cfc302062cfd0a2d350db70b7adb51ad8cf64ab044fd22",
+    "size": 93562495,
+    "version": "12.08.21.04"
+  },
+  "schema": "openubmc-agent-workflow/recovery-artifact-record-v1"
+}

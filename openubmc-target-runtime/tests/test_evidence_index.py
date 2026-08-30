@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import sqlite3
 import sys
@@ -13,10 +14,13 @@ sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import (  # noqa: E402
     EVIDENCE_QUERY_MAX_BYTES,
+    FilesystemBlobRepository,
     InMemoryBlobRepository,
     JsonRpcMcpEndpoint,
+    LocalArtifactStore,
     PendingCaseEvent,
     RuntimeMcpService,
+    SQLiteArtifactRepository,
     SQLiteRuntimeRepository,
 )
 
@@ -45,10 +49,580 @@ class _Backend:
     @staticmethod
     def debug_run(_task, _arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
-        return {"ok": True, "schema": "test/debug", "summary": "captured"}
+        return {
+            "ok": True,
+            "schema": "test/debug",
+            "summary": "captured",
+            "root_cause": "bounded test diagnosis",
+            "observed_at": "2026-08-30T00:00:00Z",
+            "freshness": {"status": "fresh"},
+        }
+
+
+def _create_public_run(
+    repository: SQLiteRuntimeRepository,
+    *,
+    target: str,
+    terminal: bool = False,
+) -> str:
+    service = RuntimeMcpService(_Backend(), context_repository=repository)
+    try:
+        turn = service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": target,
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "entry_operation": "debug_run",
+            },
+            task_id=f"public-run-{target}",
+            operation_id=f"public-run-{target}-start",
+        )
+        run_id = str(turn["run_id"])
+        if terminal:
+            gate = turn["gate"]
+            assert isinstance(gate, dict)
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": run_id,
+                    "gate_id": gate["gate_id"],
+                    "gate_version": gate["gate_version"],
+                    "schema_digest": gate["schema_digest"],
+                    "response": {
+                        "status": "completed",
+                        "summary": "source-only test completed",
+                        "payload": {
+                            "source_revision": "test-source-revision",
+                            "authored_files": ["src/test.lua"],
+                            "verification_plan": ["local validation"],
+                        },
+                    },
+                },
+                task_id=f"public-run-{target}",
+                operation_id=f"public-run-{target}-developer",
+            )
+            if turn["state"] != "completed":
+                raise AssertionError("public terminal Run did not complete")
+        return run_id
+    finally:
+        service.close()
 
 
 class EvidenceIndexTests(unittest.TestCase):
+    def test_operator_can_attach_digest_bound_file_evidence_to_an_open_run(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            database = root / "runtime.sqlite3"
+            evidence_path = root / "official-ut.log"
+            evidence_path.write_bytes(b"3/3 passed\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(database)
+            run_id = _create_public_run(repository, target="192.0.2.80")
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                interface_profile="operator",
+            )
+            try:
+                attached = service.call_exposed_tool(
+                    "evidence_attach",
+                    {
+                        "run_id": run_id,
+                        "target": "192.0.2.80",
+                        "path": str(evidence_path),
+                        "sha256": digest,
+                        "evidence_type": "workflow-official-ut-record",
+                    },
+                    task_id="operator-evidence",
+                    operation_id="attach-official-ut",
+                )
+                loaded = service.call_exposed_tool(
+                    "evidence_read",
+                    {
+                        "case_id": run_id,
+                        "evidence_id": attached["evidence"]["evidence_id"],
+                    },
+                    task_id="operator-evidence",
+                    operation_id="read-official-ut",
+                )
+            finally:
+                service.close()
+
+        self.assertTrue(attached["attached"])
+        self.assertFalse(attached["idempotent_replay"])
+        self.assertEqual(attached["evidence"]["blob_id"], digest)
+        self.assertEqual(attached["evidence"]["target_id"], "target-1")
+        self.assertEqual(loaded["body"], "3/3 passed\n")
+
+    def test_recovery_package_is_managed_by_artifact_store_not_evidence_blob(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            recovery = root / "recovery.hpm"
+            recovery_body = b"firmware recovery package" * 4096
+            recovery.write_bytes(recovery_body)
+            digest = hashlib.sha256(recovery_body).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            blobs = InMemoryBlobRepository()
+            artifacts = LocalArtifactStore(
+                content_root=root / "artifacts",
+                repository=SQLiteArtifactRepository(root / "artifacts.sqlite3"),
+            )
+            run_id = _create_public_run(repository, target="192.0.2.84")
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                artifact_store=artifacts,
+                interface_profile="operator",
+            )
+            try:
+                attached = service.call_exposed_tool(
+                    "evidence_attach",
+                    {
+                        "run_id": run_id,
+                        "target": "192.0.2.84",
+                        "path": str(recovery),
+                        "sha256": digest,
+                        "evidence_type": "firmware-recovery-artifact",
+                    },
+                    task_id="operator-recovery-artifact",
+                    operation_id="attach-recovery-artifact",
+                )
+                loaded = service.call_exposed_tool(
+                    "evidence_read",
+                    {
+                        "case_id": run_id,
+                        "evidence_id": attached["evidence"]["evidence_id"],
+                    },
+                    task_id="operator-recovery-artifact",
+                    operation_id="read-recovery-artifact",
+                )
+            finally:
+                service.close()
+            artifact_ref = attached["evidence"]["artifact_ref"]
+            managed_body = artifacts.resolve(
+                artifacts.reference(artifact_ref)
+            ).read_bytes()
+
+        self.assertNotEqual(attached["evidence"]["blob_id"], digest)
+        self.assertLess(blobs.size_bytes(), len(recovery_body))
+        self.assertEqual(artifact_ref["handle"], f"artifact://sha256/{digest}")
+        self.assertEqual(artifact_ref["digest"], f"sha256:{digest}")
+        self.assertEqual(artifact_ref["kind"], "openubmc-hpm")
+        self.assertEqual(artifact_ref["run_id"], run_id)
+        self.assertEqual(artifact_ref["target"], "192.0.2.84")
+        self.assertEqual(managed_body, recovery_body)
+        self.assertEqual(json.loads(loaded["body"])["artifact_ref"], artifact_ref)
+
+    def test_operator_file_evidence_attach_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence_path = root / "build.log"
+            evidence_path.write_bytes(b"build completed\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            run_id = _create_public_run(repository, target="192.0.2.81")
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                interface_profile="operator",
+            )
+            arguments = {
+                "run_id": run_id,
+                "target": "target-1",
+                "path": str(evidence_path),
+                "sha256": digest,
+                "evidence_type": "component-build-log",
+            }
+            try:
+                first = service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="operator-evidence",
+                    operation_id="attach-build-first",
+                )
+                first_revision = repository.current_revision(run_id)
+                attachment_events = [
+                    event["kind"]
+                    for event in repository.events(run_id)
+                    if event["operation_id"] == "attach-build-first"
+                ]
+                second = service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="operator-evidence",
+                    operation_id="attach-build-second",
+                )
+                second_revision = repository.current_revision(run_id)
+            finally:
+                service.close()
+
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(second["idempotent_replay"])
+        self.assertEqual(first["evidence"], second["evidence"])
+        self.assertEqual(
+            attachment_events,
+            ["EvidenceAttached", "RunDecisionCommitted"],
+        )
+        self.assertEqual(first_revision, second_revision)
+
+    def test_operator_file_evidence_retry_survives_source_removal_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence_path = root / "build.log"
+            evidence_path.write_bytes(b"build completed\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            blobs = FilesystemBlobRepository(root / "blobs")
+            run_id = _create_public_run(repository, target="192.0.2.85")
+            arguments = {
+                "run_id": run_id,
+                "target": "target-1",
+                "path": str(evidence_path),
+                "sha256": digest,
+                "evidence_type": "component-build-log",
+            }
+
+            first_service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                interface_profile="operator",
+            )
+            try:
+                first = first_service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="operator-evidence-restart",
+                    operation_id="attach-build-after-restart",
+                )
+            finally:
+                first_service.close()
+
+            evidence_path.unlink()
+            second_service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                interface_profile="operator",
+            )
+            try:
+                replayed = second_service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="operator-evidence-restart",
+                    operation_id="attach-build-after-restart",
+                )
+            finally:
+                second_service.close()
+
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(first["evidence"], replayed["evidence"])
+
+    def test_operator_file_evidence_retry_survives_terminal_run_and_source_removal(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence_path = root / "build.log"
+            evidence_path.write_bytes(b"build completed\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            blobs = FilesystemBlobRepository(root / "blobs")
+            agent = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+            )
+            operator = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                interface_profile="operator",
+            )
+            try:
+                turn = agent.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.86",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                        "entry_operation": "debug_run",
+                    },
+                    task_id="terminal-evidence-run",
+                    operation_id="terminal-evidence-start",
+                )
+                run_id = str(turn["run_id"])
+                arguments = {
+                    "run_id": run_id,
+                    "target": "target-1",
+                    "path": str(evidence_path),
+                    "sha256": digest,
+                    "evidence_type": "component-build-log",
+                }
+                first = operator.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="terminal-evidence-operator",
+                    operation_id="terminal-evidence-attach",
+                )
+                gate = turn["gate"]
+                terminal = agent.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": run_id,
+                        "gate_id": gate["gate_id"],
+                        "gate_version": gate["gate_version"],
+                        "schema_digest": gate["schema_digest"],
+                        "response": {
+                            "status": "completed",
+                            "summary": "source-only test completed",
+                            "payload": {
+                                "source_revision": "terminal-evidence-source",
+                                "authored_files": ["src/test.lua"],
+                                "verification_plan": ["local validation"],
+                            },
+                        },
+                    },
+                    task_id="terminal-evidence-run",
+                    operation_id="terminal-evidence-complete",
+                )
+                self.assertEqual(terminal["state"], "completed")
+            finally:
+                operator.close()
+                agent.close()
+
+            evidence_path.unlink()
+            replay_service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                interface_profile="operator",
+            )
+            try:
+                replayed = replay_service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="terminal-evidence-operator",
+                    operation_id="terminal-evidence-attach",
+                )
+            finally:
+                replay_service.close()
+
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(first["evidence"], replayed["evidence"])
+
+    def test_recovery_artifact_retry_survives_terminal_run_and_source_removal(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            recovery_path = root / "recovery.hpm"
+            recovery_path.write_bytes(b"recovery firmware")
+            digest = hashlib.sha256(recovery_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            blobs = FilesystemBlobRepository(root / "blobs")
+            artifact_database = root / "artifacts.sqlite3"
+            artifact_content = root / "artifacts"
+            artifacts = LocalArtifactStore(
+                content_root=artifact_content,
+                repository=SQLiteArtifactRepository(artifact_database),
+            )
+            agent = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+            )
+            operator = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                artifact_store=artifacts,
+                interface_profile="operator",
+            )
+            try:
+                turn = agent.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.87",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                        "entry_operation": "debug_run",
+                    },
+                    task_id="terminal-recovery-run",
+                    operation_id="terminal-recovery-start",
+                )
+                run_id = str(turn["run_id"])
+                arguments = {
+                    "run_id": run_id,
+                    "target": "target-1",
+                    "path": str(recovery_path),
+                    "sha256": digest,
+                    "evidence_type": "firmware-recovery-artifact",
+                }
+                first = operator.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="terminal-recovery-operator",
+                    operation_id="terminal-recovery-attach",
+                )
+                gate = turn["gate"]
+                terminal = agent.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": run_id,
+                        "gate_id": gate["gate_id"],
+                        "gate_version": gate["gate_version"],
+                        "schema_digest": gate["schema_digest"],
+                        "response": {
+                            "status": "completed",
+                            "summary": "source-only test completed",
+                            "payload": {
+                                "source_revision": "terminal-recovery-source",
+                                "authored_files": ["src/test.lua"],
+                                "verification_plan": ["local validation"],
+                            },
+                        },
+                    },
+                    task_id="terminal-recovery-run",
+                    operation_id="terminal-recovery-complete",
+                )
+                self.assertEqual(terminal["state"], "completed")
+            finally:
+                operator.close()
+                agent.close()
+
+            recovery_path.unlink()
+            replay_service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                blob_repository=blobs,
+                artifact_store=LocalArtifactStore(
+                    content_root=artifact_content,
+                    repository=SQLiteArtifactRepository(artifact_database),
+                ),
+                interface_profile="operator",
+            )
+            try:
+                replayed = replay_service.call_exposed_tool(
+                    "evidence_attach",
+                    arguments,
+                    task_id="terminal-recovery-operator",
+                    operation_id="terminal-recovery-attach",
+                )
+            finally:
+                replay_service.close()
+
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(first["evidence"], replayed["evidence"])
+
+    def test_recovery_artifact_attach_rejects_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            run_id = _create_public_run(repository, target="192.0.2.88")
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                interface_profile="operator",
+            )
+            try:
+                with self.assertRaisesRegex(ValueError, "absolute"):
+                    service.call_exposed_tool(
+                        "evidence_attach",
+                        {
+                            "run_id": run_id,
+                            "target": "target-1",
+                            "path": "recovery.hpm",
+                            "sha256": "0" * 64,
+                            "evidence_type": "firmware-recovery-artifact",
+                        },
+                        task_id="relative-recovery-artifact",
+                        operation_id="relative-recovery-artifact",
+                    )
+            finally:
+                service.close()
+
+    def test_operator_file_evidence_attach_rejects_invalid_run_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence_path = root / "diagnosis.md"
+            evidence_path.write_bytes(b"root cause and fix\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            run_id = _create_public_run(
+                repository,
+                target="192.0.2.82",
+                terminal=True,
+            )
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                interface_profile="operator",
+            )
+            try:
+                with self.assertRaisesRegex(Exception, "no longer accepts evidence"):
+                    service.call_exposed_tool(
+                        "evidence_attach",
+                        {
+                            "run_id": run_id,
+                            "target": "target-1",
+                            "path": str(evidence_path),
+                            "sha256": digest,
+                            "evidence_type": "workflow-diagnosis-record",
+                        },
+                        task_id="operator-evidence",
+                        operation_id="attach-terminal",
+                    )
+            finally:
+                service.close()
+
+    def test_operator_file_evidence_attach_rejects_digest_and_target_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence_path = root / "diagnosis.md"
+            evidence_path.write_bytes(b"root cause and fix\n")
+            digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            run_id = _create_public_run(repository, target="192.0.2.83")
+            service = RuntimeMcpService(
+                _Backend(),
+                context_repository=repository,
+                interface_profile="operator",
+            )
+            base = {
+                "run_id": run_id,
+                "target": "target-1",
+                "path": str(evidence_path),
+                "sha256": digest,
+                "evidence_type": "workflow-diagnosis-record",
+            }
+            try:
+                with self.assertRaisesRegex(ValueError, "exactly one Runtime Run target"):
+                    service.call_exposed_tool(
+                        "evidence_attach",
+                        {**base, "target": "192.0.2.200"},
+                        task_id="operator-evidence",
+                        operation_id="attach-wrong-target",
+                    )
+                with self.assertRaisesRegex(ValueError, "digest mismatch"):
+                    service.call_exposed_tool(
+                        "evidence_attach",
+                        {**base, "sha256": "0" * 64},
+                        task_id="operator-evidence",
+                        operation_id="attach-wrong-digest",
+                    )
+            finally:
+                service.close()
+
     def test_operator_query_rejects_non_finite_observation_times(self) -> None:
         service = RuntimeMcpService(_Backend(), interface_profile="operator")
         try:

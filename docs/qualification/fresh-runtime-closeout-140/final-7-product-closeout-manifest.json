@@ -1,0 +1,231 @@
+{
+  "artifact": {
+    "path": "/home/workspace/openubmc-nvme-replay-20260812/manifest/output/rootfs_openUBMC.hpm",
+    "provenance": "openubmc-build",
+    "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+    "sha256": "2fc339ddadc4fb4b1d550257f7f07986f290f562a964c50a535030f6b9ace987",
+    "size": 93563247,
+    "source_revision": "manifest:bacde32dbfb7ea41ebee81e7f87524b46f6e759b;mdb_interface:93a7cff7ef1f9c970325795f5e072e2d0eb4362c;pcie_device:a3eb9b97056a79b29b60d61a7c558ae8f194df41;storage:0839004bb4d24e4efbd3a9d5c26bd6ba6d53378c",
+    "status": "verified",
+    "target": "10.121.136.200",
+    "version": "12.08.21.10"
+  },
+  "case": {
+    "name": "630 NVMe CPU resource attribution fresh Runtime closeout",
+    "required_protocols": [
+      "NVMe"
+    ],
+    "target": "10.121.136.200"
+  },
+  "diagnosis": {
+    "evidence": [
+      {
+        "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-diagnosis-proof.json",
+        "sha256": "70cc19c678f87213f4bbe0f3edb61f91e146a9f4a9dbd6fcdd02cb2f8d6041a7",
+        "supporting_evidence": {
+          "evidence_type": "workflow-diagnosis-record",
+          "path": "/home/workspace/openubmc-nvme-replay-20260812/records/630-nvme-resource-attribution-replay-full.md",
+          "sha256": "f8e0f9a39c608564f4a52dd324de5e456e857d7638e1a2684fa9ada9a0e92c67"
+        }
+      }
+    ],
+    "status": "passed"
+  },
+  "freshness": {
+    "evidence": [
+      {
+        "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-freshness-proof.json",
+        "sha256": "a73cf26a6d7f51f4def3f17bcf2226e517d54ee2aff720984d841b588b445c11",
+        "supporting_evidence": {
+          "evidence_type": "runtime-debug-evidence",
+          "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-runtime-debug-evidence.json",
+          "sha256": "604b26dc95f4b66d444018cfb69fb97e11f3a539e9e035b50fd704c72fa9b847"
+        }
+      }
+    ],
+    "max_age_seconds": 3600,
+    "status": "fresh"
+  },
+  "hardware": {
+    "devices": [
+      {
+        "device_id": "Drive8",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive9",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive10",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive11",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive20",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive21",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive22",
+        "protocol": "NVMe"
+      },
+      {
+        "device_id": "Drive23",
+        "protocol": "NVMe"
+      }
+    ],
+    "evidence": [
+      {
+        "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-hardware-proof.json",
+        "sha256": "5049a7e96248ac2b9d636779977fefb84ab16a80e52a9bc0caf597bfd5006acf",
+        "supporting_evidence": {
+          "evidence_type": "runtime-debug-evidence",
+          "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-runtime-debug-evidence.json",
+          "sha256": "604b26dc95f4b66d444018cfb69fb97e11f3a539e9e035b50fd704c72fa9b847"
+        }
+      }
+    ],
+    "required_protocols": [
+      "NVMe"
+    ],
+    "status": "covered"
+  },
+  "mode": "fresh-runtime",
+  "recovery": {
+    "evidence": [
+      {
+        "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-recovery-proof.json",
+        "sha256": "e0618c185f6a9d5ab4029a6b1cb1f992d1c993fb016d298b97e1356c2539e2a5",
+        "supporting_evidence": {
+          "evidence_type": "firmware-recovery-artifact-record",
+          "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/recovery-artifact-record.json",
+          "sha256": "ed895bc09643bce661ba7aefdd47994a9062e0fd21513f6bc5a988031f888905"
+        }
+      }
+    ],
+    "path": "/home/workspace/.codex-runs/nvme-temp-na-20260806/rollback/rootfs_openUBMC-12.08.21.04.hpm",
+    "sha256": "3040fe54afd6ea2ec9cfc302062cfd0a2d350db70b7adb51ad8cf64ab044fd22",
+    "size": 93562495,
+    "status": "verified",
+    "version": "12.08.21.04"
+  },
+  "runtime": {
+    "evidence": [
+      {
+        "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-runtime-proof.json",
+        "sha256": "932001428b7d1b5edb4a733554c016648f02466c8db262305fd539b79e43f4b9"
+      }
+    ],
+    "repository": {
+      "digest_scope": "run-events",
+      "path": "/home/workspace/.codex-runs/fresh-runtime-closeout-140-20260830-final-7/state/context-runtime.sqlite3",
+      "sha256": "f5c2537fec8ff801d2e46e8e9b2a35d2e8d66bbdd18ab7735ccfe977cd639225"
+    },
+    "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+    "terminal_outcome": "completed"
+  },
+  "schema": "openubmc-agent-workflow.product-closeout-evidence.v1",
+  "source": {
+    "repositories": [
+      {
+        "commit": "bacde32dbfb7ea41ebee81e7f87524b46f6e759b",
+        "name": "manifest",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/manifest"
+      },
+      {
+        "commit": "93a7cff7ef1f9c970325795f5e072e2d0eb4362c",
+        "name": "mdb_interface",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/mdb_interface"
+      },
+      {
+        "commit": "a3eb9b97056a79b29b60d61a7c558ae8f194df41",
+        "name": "pcie_device",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/pcie_device"
+      },
+      {
+        "commit": "0839004bb4d24e4efbd3a9d5c26bd6ba6d53378c",
+        "name": "storage",
+        "path": "/home/workspace/openubmc-nvme-replay-20260812/storage"
+      }
+    ],
+    "status": "completed"
+  },
+  "upgrade": {
+    "evidence": [
+      {
+        "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-upgrade-proof.json",
+        "sha256": "ef08a55566214a26b134209090cdc83bf06cabc6f9a94456321f582c534250a3",
+        "supporting_evidence": {
+          "evidence_type": "runtime-upgrade-evidence",
+          "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-runtime-upgrade-evidence.json",
+          "sha256": "3a578a416199dde558ebfab60f50e5ece4b153f3131e7898a5b789a10dad6e6a"
+        }
+      }
+    ],
+    "status": "completed"
+  },
+  "validation": {
+    "build": {
+      "evidence": [
+        {
+          "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-mdb-interface-build-proof.json",
+          "sha256": "b114efac852a53fbb0332ad33aae6e7be8b686b387c3badefd283ccc2bd7a16f",
+          "supporting_evidence": {
+            "evidence_type": "component-build-log",
+            "path": "/home/workspace/openubmc-nvme-replay-20260812/build-runs/final-12.08.21.10/mdb_interface-build.log",
+            "sha256": "049404940fdd536915f2d8bb6c17da1dc78c8bced31bbbe9cd6496232865c55f"
+          }
+        },
+        {
+          "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-pcie-device-build-proof.json",
+          "sha256": "da9c5bff21c2c8dc22f9c74a116bd2f33bf071d677d5eca88949c49c86108561",
+          "supporting_evidence": {
+            "evidence_type": "component-build-log",
+            "path": "/home/workspace/openubmc-nvme-replay-20260812/build-runs/final-12.08.21.10/pcie_device-build.log",
+            "sha256": "a8697816b4e0e6f50a096d0717685f52deae290de0b4c8459a7b23c91c13ac97"
+          }
+        },
+        {
+          "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-storage-build-proof.json",
+          "sha256": "d9ea7b732148aa4a48356762a428482953c8140ef0cd92df9febece001a06d13",
+          "supporting_evidence": {
+            "evidence_type": "component-build-log",
+            "path": "/home/workspace/openubmc-nvme-replay-20260812/build-runs/final-12.08.21.10/storage-build.log",
+            "sha256": "ccf4f4b552bd8c0962892bf196897a128f9447886849d2ca8f3a7585d0ce2eac"
+          }
+        },
+        {
+          "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-product-build-proof.json",
+          "sha256": "1b1e2d2ed726e36675799f3048e43a3340ead58c3a54c0d67f7ebf17715a2683",
+          "supporting_evidence": {
+            "evidence_type": "product-build-log",
+            "path": "/home/workspace/openubmc-nvme-replay-20260812/build-runs/final-12.08.21.10/product-12.08.21.10-active.log",
+            "sha256": "ce92ff0ba4d14c80b5e6411178aa81a9c2916c7637a44f63c2ac449eb9118422"
+          }
+        }
+      ],
+      "status": "compiled"
+    },
+    "official_ut": {
+      "evidence": [
+        {
+          "path": "/home/workspace/.skill-worktrees/openubmc-fresh-runtime-closeout-140/docs/qualification/fresh-runtime-closeout-140/final-7-official-ut-proof.json",
+          "sha256": "a451e78fef40fbd541578bdcab944a9b4ecc6440c33f4fae159ba1847bd88650",
+          "supporting_evidence": {
+            "evidence_type": "workflow-official-ut-record",
+            "path": "/home/workspace/openubmc-nvme-replay-20260812/records/630-nvme-resource-attribution-replay-full.md",
+            "sha256": "f8e0f9a39c608564f4a52dd324de5e456e857d7638e1a2684fa9ada9a0e92c67"
+          }
+        }
+      ],
+      "status": "passed"
+    }
+  }
+}

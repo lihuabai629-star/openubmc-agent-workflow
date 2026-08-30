@@ -431,6 +431,61 @@ class SemanticBackend:
         }
 
 
+class CompleteDriveVerificationSemanticBackend(SemanticBackend):
+    def debug_collect(self, task, arguments, context) -> dict[str, object]:
+        value = super().debug_collect(task, arguments, context)
+        if arguments.get("mdb_expand_classes") != ["Drive"]:
+            return value
+        observed_at = "2026-08-19T00:00:00Z"
+        ssh = value["result"]["lanes"]["ssh"]
+        ssh.update(
+            {
+                "mdbctl_expand_1": {
+                    "ok": True,
+                    "observed_at": observed_at,
+                    "result": {"stdout_lines": ["Drive_1_010102"]},
+                },
+                "mdbctl_expand_1_object_drive23": {
+                    "ok": True,
+                    "observed_at": observed_at,
+                    "result": {
+                        "properties": {
+                            "Id": 23,
+                            "Protocol": 6,
+                            "Presence": 1,
+                            "Health": 0,
+                            "ResourceId": 1,
+                            "SerialNumber": "NVME-DRIVE-23",
+                        }
+                    },
+                },
+            }
+        )
+        value["result"]["freshness"] = {
+            "status": "fresh",
+            "complete": True,
+            "bmc_time_delta": {
+                "before": "2026-08-19 00:00:00 +0000",
+                "after": "2026-08-19 00:00:01 +0000",
+                "elapsed_seconds": 1.0,
+                "comparable": True,
+                "clock_moved_backwards": False,
+            },
+        }
+        value.pop("target_epoch", None)
+        value["result"]["runtime"] = {
+            "status": {
+                "targets": [
+                    {
+                        "target_id": str(arguments.get("target_id", "")),
+                        "epochs": {"target_epoch": 1},
+                    }
+                ]
+            }
+        }
+        return value
+
+
 class GenericCompletionBackend(SemanticBackend):
     def debug_run(self, task, arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
@@ -11161,6 +11216,150 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(resumed["gate"]["gate_id"], waiting["gate"]["gate_id"])
         self.assertEqual(resumed["gate"]["name"], "diagnosis.acceptance")
 
+    def test_diagnosis_gate_accepts_run_bound_operator_diagnosis_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            blobs = InMemoryBlobRepository()
+            agent = RuntimeMcpService(
+                SemanticBackend(),
+                context_repository=repository,
+                blob_repository=blobs,
+            )
+            diagnosis_path = root / "diagnosis.md"
+            diagnosis_path.write_text(
+                "The component-global slot was compared with a local slot.\n",
+                encoding="utf-8",
+            )
+            try:
+                observation = agent.call_exposed_tool(
+                    "observe",
+                    {
+                        "target": "192.0.2.47",
+                        "selectors": [
+                            {
+                                "id": "drive-facts",
+                                "kind": "mdb",
+                                "queries": ["lsprop Drive_1_010102"],
+                            }
+                        ],
+                    },
+                    task_id="diagnosis-attachment-observe",
+                    operation_id="diagnosis-attachment-observe-1",
+                )
+                waiting = agent.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "start",
+                        "target": "192.0.2.47",
+                        "intent": "diagnose-and-fix",
+                        "delivery_strategy": "source-only",
+                        "observation_ref": observation["observation_ref"],
+                    },
+                    task_id="diagnosis-attachment-run",
+                    operation_id="diagnosis-attachment-start",
+                )
+                operator = RuntimeMcpService(
+                    SemanticBackend(),
+                    context_repository=repository,
+                    blob_repository=blobs,
+                    interface_profile="operator",
+                )
+                try:
+                    attached = operator.call_exposed_tool(
+                        "evidence_attach",
+                        {
+                            "run_id": waiting["run_id"],
+                            "target": "192.0.2.47",
+                            "path": str(diagnosis_path),
+                            "sha256": hashlib.sha256(
+                                diagnosis_path.read_bytes()
+                            ).hexdigest(),
+                            "evidence_type": "workflow-diagnosis-record",
+                        },
+                        task_id="diagnosis-attachment-operator",
+                        operation_id="diagnosis-attachment-attach",
+                    )
+                    unrelated = operator.call_exposed_tool(
+                        "evidence_attach",
+                        {
+                            "run_id": waiting["run_id"],
+                            "target": "192.0.2.47",
+                            "path": str(diagnosis_path),
+                            "sha256": hashlib.sha256(
+                                diagnosis_path.read_bytes()
+                            ).hexdigest(),
+                            "evidence_type": "workflow-official-ut-record",
+                        },
+                        task_id="diagnosis-attachment-operator",
+                        operation_id="diagnosis-attachment-unrelated",
+                    )
+                finally:
+                    operator.close()
+                evidence_ids = [
+                    item["evidence_id"]
+                    for item in waiting["diagnostic_receipt"]["evidence"]
+                ]
+                evidence_ids.append(attached["evidence"]["evidence_id"])
+
+                with self.assertRaisesRegex(GateConflict, "not bound"):
+                    agent.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "respond",
+                            "run_id": waiting["run_id"],
+                            **gate_binding(waiting),
+                            "response": {
+                                "status": "completed",
+                                "summary": "an unrelated record is not diagnosis proof",
+                                "payload": {
+                                    "root_cause": "wrong slot scope",
+                                    "evidence_ids": [
+                                        unrelated["evidence"]["evidence_id"]
+                                    ],
+                                    "known_gaps": [],
+                                },
+                            },
+                        },
+                        task_id="diagnosis-attachment-run",
+                        operation_id="diagnosis-attachment-reject-unrelated",
+                    )
+
+                development = agent.call_exposed_tool(
+                    "execute",
+                    {
+                        "kind": "respond",
+                        "run_id": waiting["run_id"],
+                        **gate_binding(waiting),
+                        "response": {
+                            "status": "completed",
+                            "summary": "the drive identity mismatch is diagnosed",
+                            "payload": {
+                                "root_cause": (
+                                    "component-global slot was compared with a local slot"
+                                ),
+                                "evidence_ids": evidence_ids,
+                                "known_gaps": [],
+                            },
+                        },
+                    },
+                    task_id="diagnosis-attachment-run",
+                    operation_id="diagnosis-attachment-accept",
+                )
+            finally:
+                agent.close()
+
+        self.assertEqual(development["gate"]["name"], "developer.change")
+        self.assertEqual(
+            [
+                item["evidence_id"]
+                for item in development["diagnostic_receipt"]["evidence"]
+            ],
+            evidence_ids,
+        )
+
     def test_diagnosis_gate_cannot_reclassify_stale_runtime_evidence_as_fresh(
         self,
     ) -> None:
@@ -11916,7 +12115,7 @@ class AgentGatewayTests(unittest.TestCase):
             1,
         )
 
-    def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
+    def test_execute_build_upgrade_rejects_missing_requested_drive_expansion(self) -> None:
         first = self.service.call_exposed_tool(
             "execute",
             {
@@ -11924,10 +12123,39 @@ class AgentGatewayTests(unittest.TestCase):
                 "target": "192.0.2.22",
                 "intent": "diagnose-and-fix",
                 "delivery_strategy": "build-upgrade",
+                "entry_operation": "debug_run",
+                "entry_arguments": {
+                    "mdb_expand_classes": ["Drive"],
+                    "no_freshness": True,
+                },
                 "purpose": "build, deploy, and verify a firmware repair",
             },
             task_id="execute-build-upgrade",
             operation_id="build-upgrade-start",
+        )
+        self.assertEqual(first["gate"]["name"], "diagnosis.acceptance")
+        evidence_ids = [
+            item["evidence_id"]
+            for item in first["diagnostic_receipt"]["evidence"]
+        ]
+        first = self.service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": first["run_id"],
+                **gate_binding(first),
+                "response": {
+                    "status": "completed",
+                    "summary": "Drive evidence defines the repair scope",
+                    "payload": {
+                        "root_cause": "Drive state requires a source repair",
+                        "evidence_ids": evidence_ids,
+                        "known_gaps": [],
+                    },
+                },
+            },
+            task_id="execute-build-upgrade",
+            operation_id="build-upgrade-diagnosis",
         )
         self.assertEqual(first["gate"]["name"], "developer.change")
 
@@ -11981,7 +12209,7 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="build-upgrade-build",
         )
 
-        self.assertEqual(final["state"], "completed")
+        self.assertEqual(final["state"], "failed")
         self.assertTrue(final["outcome_recorded"])
         self.assertEqual(
             [name for name, _arguments in self.backend.calls],
@@ -11990,6 +12218,177 @@ class AgentGatewayTests(unittest.TestCase):
         verification_arguments = self.backend.calls[-1][1]
         self.assertEqual(verification_arguments["profile"], "standard")
         self.assertFalse(verification_arguments["no_freshness"])
+        self.assertEqual(
+            verification_arguments["mdb_expand_classes"],
+            ["Drive"],
+        )
+
+    def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
+        backend = CompleteDriveVerificationSemanticBackend()
+        repository = InMemoryRuntimeRepository()
+        blob_repository = InMemoryBlobRepository()
+        service = RuntimeMcpService(
+            backend,
+            context_repository=repository,
+            blob_repository=blob_repository,
+        )
+        operator = RuntimeMcpService(
+            backend,
+            context_repository=repository,
+            blob_repository=blob_repository,
+            interface_profile="operator",
+        )
+        product = self.artifact_root / "complete-drive-verification-product.hpm"
+        product.write_bytes(b"firmware-1.2.4")
+        try:
+            diagnosis = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "start",
+                    "target": "192.0.2.23",
+                    "intent": "diagnose-and-fix",
+                    "delivery_strategy": "build-upgrade",
+                    "entry_operation": "debug_run",
+                    "entry_arguments": {
+                        "mdb_expand_classes": ["Drive"],
+                        "hardware_acceptance": {
+                            "devices": [
+                                {
+                                    "device_id": "Drive20",
+                                    "protocol": "NVMe",
+                                    "resource_id": "positive",
+                                }
+                            ]
+                        },
+                    },
+                    "purpose": "build, deploy, and verify a Drive repair",
+                },
+                task_id="complete-drive-verification",
+                operation_id="complete-drive-verification-start",
+            )
+            evidence_ids = [
+                item["evidence_id"]
+                for item in diagnosis["diagnostic_receipt"]["evidence"]
+            ]
+            developer_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": diagnosis["run_id"],
+                    **gate_binding(diagnosis),
+                    "response": {
+                        "status": "completed",
+                        "summary": "Drive evidence defines the repair scope",
+                        "payload": {
+                            "root_cause": "Drive state requires a source repair",
+                            "evidence_ids": evidence_ids,
+                            "known_gaps": [],
+                        },
+                    },
+                },
+                task_id="complete-drive-verification",
+                operation_id="complete-drive-verification-diagnosis",
+            )
+            build_gate = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": diagnosis["run_id"],
+                    **gate_binding(developer_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "source repair completed",
+                        "payload": {
+                            "source_revision": "upgrade-source",
+                            "authored_files": ["src/fix.lua"],
+                            "verification_plan": ["build and Drive verification"],
+                        },
+                    },
+                },
+                task_id="complete-drive-verification",
+                operation_id="complete-drive-verification-developer",
+            )
+            final = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": diagnosis["run_id"],
+                    **gate_binding(build_gate),
+                    "response": {
+                        "status": "completed",
+                        "summary": "firmware artifact completed",
+                        "payload": {
+                            "source_revision": "upgrade-source",
+                            "artifact_ref": artifact_ref(
+                                product,
+                                kind="openubmc-hpm",
+                                target="192.0.2.23",
+                                run_id=diagnosis["run_id"],
+                                version="1.2.4",
+                            ),
+                            **compiled_validation_payload(
+                                "complete-drive-verification"
+                            ),
+                        },
+                    },
+                },
+                task_id="complete-drive-verification",
+                operation_id="complete-drive-verification-build",
+            )
+            projection = operator.call_exposed_tool(
+                "case_read",
+                {"case_id": diagnosis["run_id"]},
+                task_id="complete-drive-verification-operator",
+                operation_id="complete-drive-verification-case-read",
+            )
+            verification_operation = next(
+                operation
+                for operation in projection["operations"]
+                if operation.get("operation") == "debug_collect"
+            )
+            verification_evidence = operator.call_exposed_tool(
+                "evidence_read",
+                {
+                    "case_id": diagnosis["run_id"],
+                    "evidence_id": verification_operation["evidence_ids"][-1],
+                    "target_id": "target-1",
+                },
+                task_id="complete-drive-verification-operator",
+                operation_id="complete-drive-verification-evidence-read",
+            )
+        finally:
+            operator.close()
+            service.close()
+
+        self.assertEqual(final["state"], "completed")
+        self.assertEqual(final["outcome"]["status"], "completed")
+        self.assertEqual(
+            [name for name, _arguments in backend.calls],
+            ["debug_run", "upgrade_run", "debug_collect"],
+        )
+        verification_arguments = backend.calls[-1][1]
+        self.assertEqual(verification_arguments["mdb_expand_classes"], ["Drive"])
+        self.assertEqual(
+            verification_arguments["hardware_acceptance"],
+            {
+                "devices": [
+                    {
+                        "device_id": "Drive20",
+                        "protocol": "NVMe",
+                        "resource_id": "positive",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(verification_arguments["_minimum_target_epoch"], 1)
+        self.assertEqual(
+            verification_operation["diagnostic_receipt"]["status"],
+            "complete",
+        )
+        self.assertEqual(
+            json.loads(verification_evidence["body"])["target_epoch"],
+            1,
+        )
 
     def test_build_upgrade_closes_from_runtime_adapter_receipts(self) -> None:
         backend = AdapterProjectionBuildUpgradeBackend()
@@ -13537,6 +13936,7 @@ class AgentGatewayTests(unittest.TestCase):
         operator = RuntimeMcpService(SemanticBackend(), interface_profile="operator")
         try:
             self.assertEqual(agent.interface_catalog.names(), ("observe", "execute"))
+            self.assertIn("evidence_attach", operator.interface_catalog.names())
             self.assertIn("evidence_query", operator.interface_catalog.names())
             self.assertIn("evidence_read", operator.interface_catalog.names())
             self.assertNotIn("debug_run", operator.interface_catalog.names())

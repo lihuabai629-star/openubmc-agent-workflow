@@ -136,7 +136,13 @@ requested only when the caller explicitly needs pre-upgrade runtime evidence.
    activation fallback instead of polling forever or uploading again. Record
    it as a terminal failed verification so it does not block later work on the
    target; replaying the same operation reports the same failure without
-   uploading again.
+   uploading again. `ActiveMode=ResetBMC` selects activation on a BMC reset; it
+   does not prove that the firmware task itself immediately restarted the BMC.
+   For a deliberate same-version reflash, success requires Manager
+   `LastResetTime` to become strictly newer than the pre-upload value. If the
+   task completes without that boundary, invoke the Manager-advertised standard
+   `#Manager.Reset` action with `ResetType=ForceRestart`, reconnect, and verify
+   the newer reset time before accepting the installed version.
 7. If the caller requested runtime acceptance, hand the target, installed
    version, and acceptance checks to openubmc-debug.
 

@@ -43,8 +43,9 @@ The default profile is `agent` and exposes only:
 
 One explicit non-Agent profile preserves governance access:
 
-- `operator`: only operations marked `exposure=operator`, including Case inspection, raw Evidence,
-  Replay, Session Outcome governance, lifecycle, and Runtime status.
+- `operator`: only operations marked `exposure=operator`, including Case inspection, digest-bound
+  local Evidence attachment and readback, Replay, Session Outcome governance, lifecycle, and
+  Runtime status.
 
 The projections are disjoint. `operator` does not expose Agent or internal Domain execution
 operations. The retired `compatibility` value is rejected during Runtime construction.
@@ -174,9 +175,12 @@ diagnosis step automatically. A partial or blocked receipt instead yields a dura
 unanswered.
 
 A completed `diagnosis.acceptance` response is bound by `run_id`, `gate_id`, `gate_version`, and
-`schema_digest` and supplies `root_cause`, non-empty `evidence_ids` drawn from the current Runtime
-DiagnosticReceipt, and `known_gaps`. The Runtime rejects Evidence IDs from another receipt and
-derives observation time and freshness from the persisted ObservationRef and DiagnosticReceipt.
+`schema_digest` and supplies `root_cause`, non-empty `evidence_ids`, and `known_gaps`. Evidence may
+come from the current Runtime DiagnosticReceipt or from a `workflow-diagnosis-record` attached by
+the Operator plane to the same Run, target, and workflow cycle. The Runtime resolves attachments
+from its durable Evidence index, rejects unrelated types and Evidence IDs from another Run or
+cycle, and derives observation time and freshness from the persisted ObservationRef and
+DiagnosticReceipt.
 `execute(kind=resume)` only reattaches the same unanswered Gate, so repeated resume calls cannot
 repair missing diagnosis input or advance the workflow. A failed or cancelled diagnosis becomes a
 terminal Run before any development phase.
@@ -193,6 +197,14 @@ or unrelated target evidence is rejected, so SATA/SAS-only observations cannot v
 repair. If a Developer response omits validation fields, the Runtime records official UT and build
 as `not_run` and hardware coverage as `not_reported`; those become visible gaps rather than an
 implicit success.
+
+Post-upgrade hardware convergence can be part of the executable verification contract rather than
+an after-the-fact qualification check. A bounded `hardware_acceptance.devices` declaration carried
+by the Debug entry arguments is validated before mutation and applied only to the fresh
+`debug_collect` step. Until every declared Drive has the expected protocol and ResourceId shape and
+is present, healthy, and identified, the operation remains `partial`; Runtime resume recollects it
+with the same workflow step instead of recording a successful Outcome. This avoids both a fixed
+settling delay and a terminal success formed from an early but internally complete snapshot.
 
 A `source-only` Run can reach a completed in-scope Outcome while official validation or hardware
 coverage remains blocked. Its Turn and Closeout retain those gaps and its claim level remains
@@ -284,6 +296,23 @@ Terminal Runs persist one authoritative Run Outcome. The Agent path does not wri
 Outcome. An operator may explicitly project the redacted governance record from the persisted Run
 Outcome; retries cannot create another Run Outcome or alter the Run ledger. Review, approval,
 rejection, and promotion remain operator-only operations.
+
+`evidence_attach` is an Operator / CI write to the Evidence seam, not a Run transition command. It
+can attach verified local file bytes only while the selected Run is open. Runtime Core resolves the
+Run-bound target, verifies the expected digest, stores the bytes content-addressably, and appends an
+idempotent `EvidenceAttached` fact. The operation cannot answer a Gate or change phase, Incident,
+Effect, or Outcome state, and it is absent from the Agent profile.
+
+A `workflow-diagnosis-record` attachment may subsequently be cited by the same Run's current
+`diagnosis.acceptance` Gate. Citation does not let the Operator plane answer that Gate: the Agent
+must still submit the version-bound response, and Runtime Core verifies the attachment's Run,
+target, cycle, producer, and evidence type before accepting it.
+
+Firmware recovery packages use the same Operator operation but keep large bytes under
+`ArtifactStore`. Evidence contains a bounded ArtifactRef descriptor, preserving one authority for
+digest verification, retention, access, and garbage collection. Product qualification requires
+that binding before the earliest target Mutation attempt, not merely before a later successful
+retry.
 
 ## Descriptor direction
 

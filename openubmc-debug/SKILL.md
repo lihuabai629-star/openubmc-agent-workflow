@@ -33,6 +33,12 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   Observation Adapter performs it.
 - Call `execute` when work can cross diagnosis, source change, build, live patch, upgrade,
   recovery, verification, or acceptance phases.
+- A build-upgrade Run that requires exact Drive convergence may carry a bounded
+  `hardware_acceptance.devices` declaration in its Debug entry arguments. It is validated
+  before mutation but applied only to post-upgrade `debug_collect`: missing, unhealthy,
+  unidentified, protocol-mismatched, or incorrectly attributed Drives keep verification
+  `partial` so the same Runtime step recollects fresh evidence instead of forming an early
+  success Outcome.
 - An `ObservationRef` proves reusable observation evidence; it does not by itself prove a root
   cause. For `diagnose-and-fix`, inspect the returned `DiagnosticReceipt.agent_acceptance`. A
   complete Runtime receipt may advance automatically, while a partial or blocked receipt returns

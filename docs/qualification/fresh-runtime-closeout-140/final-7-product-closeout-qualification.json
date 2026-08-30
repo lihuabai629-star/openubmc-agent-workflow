@@ -1,0 +1,91 @@
+{
+  "case": {
+    "name": "630 NVMe CPU resource attribution fresh Runtime closeout",
+    "required_protocols": [
+      "NVMe"
+    ],
+    "target": "10.121.136.200"
+  },
+  "claim_level": "fresh-runtime-product-closed",
+  "dimensions": {
+    "artifact": {
+      "accepted": true,
+      "size": 93563247,
+      "status": "verified",
+      "version": "12.08.21.10"
+    },
+    "build": {
+      "accepted": true,
+      "evidence_count": 4,
+      "status": "compiled",
+      "verified_evidence_count": 4
+    },
+    "diagnosis": {
+      "accepted": true,
+      "evidence_count": 1,
+      "status": "passed",
+      "verified_evidence_count": 1
+    },
+    "freshness": {
+      "accepted": true,
+      "evidence_count": 1,
+      "status": "fresh",
+      "verified_evidence_count": 1
+    },
+    "hardware": {
+      "accepted": true,
+      "device_count": 8,
+      "evidence_count": 1,
+      "observed_protocols": [
+        "NVMe"
+      ],
+      "required_protocols": [
+        "NVMe"
+      ],
+      "status": "covered",
+      "verified_evidence_count": 1
+    },
+    "official_ut": {
+      "accepted": true,
+      "evidence_count": 1,
+      "status": "passed",
+      "verified_evidence_count": 1
+    },
+    "recovery": {
+      "accepted": true,
+      "evidence_count": 1,
+      "size": 93562495,
+      "status": "verified",
+      "verified_evidence_count": 1,
+      "version": "12.08.21.04"
+    },
+    "runtime": {
+      "accepted": true,
+      "evidence_count": 1,
+      "ledger_verified": true,
+      "run_id": "run-f35945940b6a8c2463a5b811996af7a8",
+      "terminal_outcome": "completed",
+      "verified_evidence_count": 1
+    },
+    "source": {
+      "accepted": true,
+      "repository_count": 4,
+      "status": "completed",
+      "verified_repository_count": 4
+    },
+    "upgrade": {
+      "accepted": true,
+      "evidence_count": 1,
+      "status": "completed",
+      "verified_evidence_count": 1
+    }
+  },
+  "evidence_digest": "sha256:c5a2e6c3669afa7214b69f5851e1dfb5d085c8fe96f6c9b809d5170384e27d2f",
+  "gaps": [],
+  "manifest_digest": "sha256:b6760299372dbe93abd3373aeb0ee5d713638fcb035d3a41cafaa43f118aca43",
+  "mode": "fresh-runtime",
+  "promotable": true,
+  "qualified": true,
+  "schema": "openubmc-agent-workflow.product-closeout-qualification.v1",
+  "violations": []
+}

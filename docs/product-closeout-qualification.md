@@ -32,17 +32,35 @@ python3 scripts/product_closeout_ingestion.py fresh-ingestion.json \
 Continuous qualification accepts the same descriptor through `--product-ingestion`. Ingestion
 derives the selected target and terminal Outcome from the Run ledger, source commits from clean Git
 repositories, artifact identity from the adjacent build metadata, and status/digests from fixed
-proof and support files. It does not write Runtime state: every proof and support digest must
-already be attached before `RunOutcomeRecorded`.
+proof and support files. Ingestion does not write Runtime state. Raw diagnosis, official UT,
+build, upgrade, and target-observation evidence must already be attached before
+`RunOutcomeRecorded`; structured proofs are deterministic Operator / CI projections and may be
+created after the terminal Outcome.
 
-The manifest separates nine dimensions: Runtime continuity, diagnosis, source identity, official
-UT, compiled build, artifact identity, upgrade, freshness, and hardware coverage. Every referenced
+The manifest separates ten dimensions: Runtime continuity, diagnosis, source identity, official
+UT, compiled build, ArtifactRef identity, Recovery Artifact identity, upgrade, freshness, and
+hardware coverage. Every referenced
 file is verified by SHA-256. Fresh Runtime evidence uses the structured proof schema, but a proof
-is accepted only when its digest and its fixed-format supporting evidence were attached to the
-same persisted Runtime Run before `RunOutcomeRecorded`. The qualifier replays that SQLite ledger,
-checks the target and completed Outcome, and verifies an immutable digest of the Run events. The
-Operator-selected database and WAL are copied into a stable snapshot before replay, so
-qualification never runs migrations or index backfills against the trusted ledger.
+is accepted only when its fields match independently verified Runtime and product facts. Its raw
+supporting evidence must be attached to the same persisted Runtime Run before
+`RunOutcomeRecorded`; the proof file itself is not required to predate the Outcome. Runtime
+continuity is verified directly from the trusted ledger rather than from a circular pre-attached
+Runtime proof. A fresh claim requires the current-task Upgrade authorization and the complete
+ordered chain: diagnostic operation, accepted diagnosis Gate, development Gate, build Artifact
+Gate, one completed Upgrade Effect, one post-upgrade Debug Observation, and only then the completed
+terminal Outcome. Native Upgrade and Debug JSON is accepted only when its exact digest was emitted
+by those corresponding Runtime operations; operator-attached or self-authored JSON cannot stand in
+for a MutationJournal or Observation provenance. The qualifier replays that SQLite ledger, checks
+the target and completed Outcome, and verifies an immutable digest of the Run events. The
+Operator-selected database and WAL are
+copied into a stable snapshot before replay, so qualification never runs migrations or index
+backfills against the trusted ledger.
+
+The Operator profile exposes `evidence_attach` for local CI and operator evidence. It accepts one
+absolute file path, expected SHA-256, Run ID, target, and evidence type; persists the exact bytes
+content-addressably; and appends only `EvidenceAttached` to an open Run. It is idempotent and
+rejects terminal Runs, target mismatches, and digest mismatches. It cannot submit a Gate or write a
+phase, Incident, or Outcome.
 Historical manifests select one repository-owned `evidence_type`; they cannot supply executable or
 declarative content claims. The built-in evidence types are:
 
@@ -53,15 +71,41 @@ declarative content claims. The built-in evidence types are:
 | `component-build-log` | build | package revision, matching full package reference, successful terminal state |
 | `product-build-log` | build | HPM build, signing, and successful final task |
 | `workflow-upgrade-record` | upgrade | upload/activation completion and installed artifact version |
+| `runtime-upgrade-evidence` | upgrade | native verified mutation journal, HPM digest, installed version, and monotonic target epoch |
 | `reboot-acceptance-timeline` | freshness | manager readiness, final direct/RAID convergence, accepted elapsed time |
+| `runtime-debug-evidence` | freshness, hardware | native complete freshness record plus Drive MDB properties, protocol-specific attribution, health, presence, and serial identity |
+| `firmware-recovery-artifact-record` | recovery | independently identified Recovery Artifact path, SHA-256, size, and version |
 | `drive-summary-json` | hardware | direct attribution, RAID zero attribution, health, presence, serial, and scoped drive identities |
 
-Every source repository must be clean at the exact recorded commit; the firmware artifact must
-match its path, digest, size, and version. Hardware coverage is exact, so SATA or SAS evidence
+For a fresh Runtime Run, a `workflow-diagnosis-record` attached before development may be cited by
+the current `diagnosis.acceptance` response only when Runtime Core verifies the same Run, target,
+workflow cycle, and Operator producer binding. Other attachment types cannot stand in for diagnosis
+Evidence.
+
+Every source repository must be clean at the exact recorded commit; a fresh firmware artifact must
+match its absolute path, digest, size, version, provenance, source revision, target, and Run ID in
+both the manifest and the Runtime-owned `build.artifact` Gate. Hardware coverage is exact, so SATA or SAS evidence
 cannot satisfy an NVMe case; the protocol is parsed from the drive evidence rather than accepted
-from manifest device labels. Fresh evidence also binds upgrade completion, target observation,
-hardware acceptance, and terminal Runtime Outcome into one ordered, timezone-aware timeline with a
-declared maximum post-upgrade evidence age.
+from manifest device labels. Fresh ordering and age are derived from trusted Run events and native
+Observation provenance. Structured proof timestamps remain presentation fields and cannot override
+the ledger timeline.
+
+The Recovery Artifact is qualified independently from the upgrade HPM. Reusing the same path or
+digest fails promotion. Before the target Mutation begins, the Operator / CI Plane attaches the
+identity record and binds the package as `firmware-recovery-artifact`. Runtime Core persists the
+package through the sole `ArtifactStore` authority and stores only a lifecycle-bearing,
+Run/target-bound ArtifactRef descriptor in Evidence; the HPM bytes are not duplicated into the
+Evidence Blob store. Qualification requires the package digest and size in that pre-mutation
+Runtime binding to match the independently verified file. Ordering is checked against the earliest
+recorded `upgrade_run` `OperationStarted`, including failed or retried attempts, so evidence added
+after any mutation attempt cannot promote a later success. The Recovery Artifact is not applied
+automatically; it proves that an explicit, separately identified recovery option exists before the
+target Mutation begins.
+
+Fresh upgrade evidence must also prove a real BMC reboot boundary. A target-epoch increment or
+`after_last_reboot_or_change=true` alone is insufficient: the native Upgrade result must retain
+comparable Manager `LastResetTime` values from before upload and after installed-version
+verification, with the post-upgrade value strictly newer.
 
 Two claim levels are intentionally different:
 
@@ -95,7 +139,8 @@ synthetic repository fixtures.
 
 ## Fresh product checkpoint
 
-A fresh product promotion additionally needs an independently authorized target, a rollback
-package, a new Runtime Run, official validation and build evidence, a digest-bound HPM, successful
+A fresh product promotion additionally needs an independently authorized target, an independently
+identified Recovery Artifact, a new Runtime Run, official validation and build evidence, a
+digest-bound HPM, successful
 upgrade, and fresh protocol-specific target acceptance. Repository CI deliberately requires no
 BMC, credentials, private network, or upgrade authority.

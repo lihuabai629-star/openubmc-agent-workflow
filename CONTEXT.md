@@ -32,6 +32,7 @@ operation identities, retry safety, target fencing, or terminal success.
 | **ObservationRef** | A stable handle and digest that lets the Runtime reconstruct and validate persisted observation content. |
 | **DiagnosticRequestPlan** | One Runtime-internal normalized representation of accepted diagnostic result identities, shared by scope validation and durable receipt materialization. |
 | **ArtifactRef** | A bounded handle, digest, type, size, provenance, retention, target, and Run binding for content stored outside Run state. |
+| **Recovery Artifact** | An independently identified firmware package available before a target Mutation starts. Its absolute path, digest, size, and version are bound to Run Evidence; it is not applied automatically. |
 | **Run** | One durable execution of a pinned workflow definition for a target and intent. |
 | **RunCommand** | A typed request to start, respond to, resume, or control a Run. |
 | **RunEngine** | The only Module allowed to commit Run, Gate, Incident, Effect-reference, and Outcome transitions. |
@@ -63,9 +64,9 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Release identity verification** | Verification that a managed immutable source matches its recorded commit, release lock, Runtime, Skills, and source-tree identity. It proves source identity, not by itself that a tag was published. |
 | **Release trust mode** | The installer classification of a source as linked development, unverified managed source, or verified immutable source. |
 | **Evaluation readiness** | An Operator / CI Plane projection requiring installation consistency, Operational readiness, and Release identity verification before formal qualification evidence is accepted. |
-| **Product Closeout Qualification** | An Operator / CI Plane verification of Runtime continuity, diagnosis, source, official UT, build, artifact, upgrade, freshness, and exact hardware coverage. It does not write Run state. |
+| **Product Closeout Qualification** | An Operator / CI Plane verification of Runtime continuity, diagnosis, source, official UT, build, ArtifactRef identity, Recovery Artifact identity, upgrade, freshness, and exact hardware coverage. It does not write Run state. |
 | **Historical product validation** | A verified reconstruction of original product evidence that predates the current Runtime identity. It remains non-promotable as a fresh Runtime closeout. |
-| **Fresh Runtime product closeout** | A Product Closeout Qualification bound to a fresh Run, terminal Outcome, exact source and artifact identity, successful upgrade, freshness, and required Hardware Coverage. |
+| **Fresh Runtime product closeout** | A Product Closeout Qualification bound to a fresh Run, terminal Outcome, exact source and ArtifactRef identity, an independently identified Recovery Artifact, successful upgrade, freshness, and required Hardware Coverage. |
 | **Maintenance checkpoint** | A repository-level qualification decision covering Runtime correctness, supported clients, evaluation isolation, and MCP lifecycle closeout. It does not imply a Fresh Runtime product closeout. |
 | **DiagnosticReceiptRef** | A digest-bound terminal projection for an unchanged complete DiagnosticReceipt already shown within the same task. The durable full receipt remains Runtime-owned and reconstructable. |
 
