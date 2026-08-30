@@ -52,6 +52,18 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 for run in report["client_matrix"]["runs"].values()
             )
         )
+        for name in ("claude", "codex"):
+            run = report["client_matrix"]["runs"][name]
+            self.assertTrue(run["adapter_available"])
+            self.assertTrue(run["declared_mcp"])
+            self.assertEqual(run["runtime_invocation"], "initialize-tools-list")
+            self.assertEqual(run["tools"], ["execute", "observe"])
+        openclaw = report["client_matrix"]["runs"]["openclaw"]
+        self.assertFalse(openclaw["adapter_available"])
+        self.assertFalse(openclaw["declared_mcp"])
+        self.assertTrue(openclaw["runtime_launcher_verified"])
+        self.assertEqual(openclaw["runtime_invocation"], "initialize-tools-list")
+        self.assertEqual(openclaw["tools"], ["execute", "observe"])
         client_tests = {
             name: tuple(run["tests"])
             for name, run in report["client_matrix"]["runs"].items()
@@ -98,7 +110,10 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 "_workflow_metadata",
                 return_value={
                     "clients": {
-                        name: {"role": "supported-product-client"}
+                        name: {
+                            "role": "supported-product-client",
+                            "mcp": name != "openclaw",
+                        }
                         for name in ("claude", "codex", "openclaw")
                     },
                     "evaluation_harnesses": {
@@ -146,6 +161,18 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             report = qualification.qualify()
 
         self.assertTrue(report["qualified"])
+        for name in ("claude", "codex"):
+            run = report["client_matrix"]["runs"][name]
+            self.assertEqual(run["client"], name)
+            self.assertTrue(run["adapter_available"])
+            self.assertTrue(run["declared_mcp"])
+            self.assertTrue(run["runtime_launcher_verified"])
+            self.assertEqual(run["runtime_invocation"], "initialize-tools-list")
+            self.assertEqual(run["tools"], ["execute", "observe"])
+        openclaw = report["client_matrix"]["runs"]["openclaw"]
+        self.assertFalse(openclaw["adapter_available"])
+        self.assertFalse(openclaw["declared_mcp"])
+        self.assertTrue(openclaw["runtime_launcher_verified"])
         self.assertTrue(report["task_matrix"]["correctness_primary"])
         self.assertEqual(
             sorted(report["task_matrix"]["groups"]),
@@ -195,7 +222,10 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 "_workflow_metadata",
                 return_value={
                     "clients": {
-                        name: {"role": "supported-product-client"}
+                        name: {
+                            "role": "supported-product-client",
+                            "mcp": name != "openclaw",
+                        }
                         for name in ("claude", "codex", "openclaw")
                     },
                     "evaluation_harnesses": {

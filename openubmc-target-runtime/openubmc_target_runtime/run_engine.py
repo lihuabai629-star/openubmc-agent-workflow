@@ -2825,6 +2825,39 @@ class RunEngine:
             exhausted_message="Effect recovery decision could not converge",
         ) is not None
 
+    def _bind_reconcile_command(self, command: ReconcileRun) -> ReconcileRun:
+        projection = _projection(self.driver.run_snapshot(command.run_id))
+        unknown = self._unknown_mutation(projection)
+        raw_intents = projection.get("effect_intents", [])
+        intents = raw_intents if isinstance(raw_intents, list) else []
+        effect_id = (
+            _text(unknown.get("operation_id"))
+            if isinstance(unknown, Mapping)
+            else next(
+                (
+                    _text(item.get("effect_id"))
+                    for item in reversed(intents)
+                    if isinstance(item, Mapping)
+                    and _text(item.get("effect_class")) != EffectClass.READ_ONLY.value
+                    and _text(item.get("effect_id"))
+                ),
+                "",
+            )
+        )
+        if not effect_id:
+            return command
+        if command.effect_id and command.effect_id != effect_id:
+            raise CommandConflict("reconcile command is bound to another Effect identity")
+        return replace(
+            command,
+            effect_id=effect_id,
+            command_id="reconcile-"
+            + fingerprint(
+                {"run_id": command.run_id, "effect_id": effect_id}
+            )[:32],
+            input_digest="",
+        )
+
     def execute(
         self,
         command: RunCommand,
@@ -2835,6 +2868,8 @@ class RunEngine:
         deadline_at = time.monotonic() + float(
             getattr(command, "caller_deadline", 120.0)
         )
+        if isinstance(command, ReconcileRun):
+            command = self._bind_reconcile_command(command)
         command_id, input_digest = run_command_identity(
             command,
             operation_id=operation_id,
@@ -2876,7 +2911,10 @@ class RunEngine:
                     )
             return turn
 
-        def build(transaction: RunDecisionDraft) -> RunDecision:
+        no_progress_turn: RunTurn | None = None
+
+        def build(transaction: RunDecisionDraft) -> RunDecision | None:
+            nonlocal no_progress_turn
             turn = self._execute_uncommitted(
                 command,
                 task_id=task_id,
@@ -2886,6 +2924,14 @@ class RunEngine:
                 raise CommandConflict(
                     "Run command produced a Turn for a different Run"
                 )
+            if (
+                isinstance(command, ResumeRun)
+                and _text(_mapping(turn.progress).get("status")) == "no_progress"
+                and not transaction.events
+                and transaction.effect_intent is None
+            ):
+                no_progress_turn = turn
+                return None
             return RunDecision(
                 run_id=run_id,
                 command_id=command_id,
@@ -2906,6 +2952,8 @@ class RunEngine:
             task_id=task_id,
         )
         if committed is None:
+            if no_progress_turn is not None:
+                return no_progress_turn
             raise CommandConflict("RunDecision was not built")
 
         return self._settle_effect(

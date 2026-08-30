@@ -35,6 +35,7 @@ from openubmc_target_runtime import (  # noqa: E402
     PendingCaseEvent,
     RevisionConflict,
     ReferenceViolation,
+    ReconcileRun,
     ResumeRun,
     RunDecision,
     RunEngine,
@@ -2249,8 +2250,9 @@ class RequiredIdentityPressureTurnRuntime(OversizedTerminalTurnRuntime):
 
 
 class PersistentUnknownRunDriver:
-    def __init__(self, repository=None) -> None:
+    def __init__(self, repository=None, *, effect_id: str = "mutation-unknown-1") -> None:
         self.repository = repository
+        self.effect_id = effect_id
 
     def _snapshot(self) -> dict[str, object]:
         persisted = (
@@ -2269,7 +2271,7 @@ class PersistentUnknownRunDriver:
             "operations": [
                 {
                     "operation": "live_patch_run",
-                    "operation_id": "mutation-unknown-1",
+                    "operation_id": self.effect_id,
                     "status": "mutation_outcome_unknown",
                 }
             ],
@@ -7625,7 +7627,7 @@ class AgentGatewayTests(unittest.TestCase):
             1,
         )
 
-    def test_resume_persists_and_replays_a_decision_by_operation_identity(self) -> None:
+    def test_repeated_resume_with_no_progress_never_records_a_decision(self) -> None:
         waiting = self.service.call_exposed_tool(
             "execute",
             {
@@ -7639,28 +7641,36 @@ class AgentGatewayTests(unittest.TestCase):
         )
         action = {"kind": "resume", "run_id": waiting["run_id"]}
 
+        before = self.service._test.context_runtime.read_case(waiting["run_id"])
         first = self.service.call_exposed_tool(
             "execute",
             action,
             task_id="atomic-resume-first",
-            operation_id="atomic-resume-command",
+            operation_id="atomic-resume-first-command",
         )
         replayed = self.service.call_exposed_tool(
             "execute",
             action,
             task_id="atomic-resume-replay",
-            operation_id="atomic-resume-command",
+            operation_id="atomic-resume-second-command",
         )
         projection = self.service._test.context_runtime.read_case(waiting["run_id"])
         decisions = [
             item
             for item in projection["run_decisions"]
-            if item.get("command_id") == "atomic-resume-command"
+            if item.get("command_id")
+            in {"atomic-resume-first-command", "atomic-resume-second-command"}
         ]
 
-        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions, [])
         self.assertEqual(first["gate"], waiting["gate"])
         self.assertEqual(replayed["gate"], first["gate"])
+        self.assertEqual(
+            first["progress"],
+            {"status": "no_progress", "reason": "response_required"},
+        )
+        self.assertEqual(replayed["progress"], first["progress"])
+        self.assertEqual(projection["revision"], before["revision"])
 
     def test_reconcile_command_replays_without_repeating_the_effect(self) -> None:
         class FailOnceLivePatchSemanticBackend(SemanticBackend):
@@ -12221,6 +12231,45 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIsNotNone(turn.incident)
         self.assertEqual(turn.incident.code, "mutation_outcome_unknown")
         self.assertEqual(resumed.state, "incident")
+
+    def test_reconcile_identity_tracks_the_current_unknown_effect(self) -> None:
+        repository = InMemoryRuntimeRepository()
+        transactions = BufferedRuntimeRepository(repository)
+        driver = PersistentUnknownRunDriver(transactions)
+        engine = RunEngine(
+            driver,
+            run_store=EventRunStore(
+                repository,
+                draft_buffer=transactions,
+            ),
+        )
+
+        first = engine.execute(
+            ReconcileRun("run-persistent-unknown"),
+            task_id="reconcile-first-effect",
+            operation_id="reconcile-first-request",
+        )
+        driver.effect_id = "mutation-unknown-2"
+        second = engine.execute(
+            ReconcileRun("run-persistent-unknown"),
+            task_id="reconcile-second-effect",
+            operation_id="reconcile-second-request",
+        )
+        projection = repository.load("run-persistent-unknown")
+        assert projection is not None
+        reconcile_decisions = [
+            item
+            for item in projection["run_decisions"]
+            if str(item.get("command_id", "")).startswith("reconcile-")
+        ]
+
+        self.assertEqual(first.state, "incident")
+        self.assertEqual(second.state, "incident")
+        self.assertEqual(len(reconcile_decisions), 2)
+        self.assertNotEqual(
+            reconcile_decisions[0]["command_id"],
+            reconcile_decisions[1]["command_id"],
+        )
 
     def test_run_engine_requires_durable_command_dependencies(self) -> None:
         with self.assertRaisesRegex(

@@ -99,6 +99,10 @@ class ProductCloseoutIngestionTests(unittest.TestCase):
         self.assertEqual(assembled["case"]["target"], "target-1")
         self.assertEqual(assembled["runtime"]["terminal_outcome"], "completed")
         self.assertEqual(
+            assembled["runtime"]["repository"]["digest_scope"],
+            "run-events",
+        )
+        self.assertEqual(
             assembled["source"]["repositories"][0]["commit"],
             original["source"]["repositories"][0]["commit"],
         )

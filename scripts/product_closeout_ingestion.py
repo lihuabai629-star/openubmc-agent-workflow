@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -40,6 +41,13 @@ DIMENSIONS = (
     "freshness",
     "hardware",
 )
+
+
+@dataclass(frozen=True)
+class RuntimeSnapshot:
+    target: str
+    terminal_outcome: str
+    run_events_sha256: str
 
 
 def _mapping(value: object, label: str) -> dict[str, object]:
@@ -86,7 +94,7 @@ def _runtime_snapshot(
     *,
     run_id: str,
     selected_target: str,
-) -> tuple[str, str, str]:
+) -> RuntimeSnapshot:
     with stable_runtime_ledger_copy(repository_path) as snapshot:
         repository = SQLiteRuntimeRepository(snapshot)
         projection = repository.load(run_id)
@@ -120,7 +128,11 @@ def _runtime_snapshot(
     terminal_outcome = _text(outcome.get("status"))
     if terminal_outcome != "completed":
         raise ValueError("Runtime terminal Outcome is not completed")
-    return target_identity, terminal_outcome, _sha256_bytes(_json_bytes(events))
+    return RuntimeSnapshot(
+        target=target_identity,
+        terminal_outcome=terminal_outcome,
+        run_events_sha256=_sha256_bytes(_json_bytes(events)),
+    )
 
 
 def _evidence_refs(
@@ -254,11 +266,12 @@ def assemble_manifest(
     run_id = _text(runtime.get("run_id"))
     if not run_id:
         raise ValueError("runtime.run_id is required")
-    target, terminal_outcome, ledger_digest = _runtime_snapshot(
+    runtime_snapshot = _runtime_snapshot(
         runtime_repository,
         run_id=run_id,
         selected_target=_text(case.get("target")),
     )
+    target = runtime_snapshot.target
     runtime_refs, _runtime_proofs = _evidence_refs(
         runtime.get("evidence"),
         dimension="runtime",
@@ -294,10 +307,11 @@ def assemble_manifest(
         },
         "runtime": {
             "run_id": run_id,
-            "terminal_outcome": terminal_outcome,
+            "terminal_outcome": runtime_snapshot.terminal_outcome,
             "repository": {
                 "path": str(runtime_repository.expanduser().absolute()),
-                "sha256": ledger_digest,
+                "sha256": runtime_snapshot.run_events_sha256,
+                "digest_scope": "run-events",
             },
             "evidence": runtime_refs,
         },

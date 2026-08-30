@@ -258,6 +258,26 @@ def _run_task_group(
     }
 
 
+def _product_client_run(
+    name: str,
+    tests: Sequence[str],
+    contract: Mapping[str, object],
+) -> dict[str, object]:
+    result = _run_tests(tests, cwd=ROOT)
+    passed = result.get("status") == "passed"
+    declared_mcp = contract.get("mcp") is True
+    return {
+        **result,
+        "client": name,
+        "tests": list(tests),
+        "adapter_available": declared_mcp,
+        "declared_mcp": declared_mcp,
+        "runtime_launcher_verified": passed,
+        "runtime_invocation": "initialize-tools-list" if passed else "not-run",
+        "tools": ["execute", "observe"] if passed else [],
+    }
+
+
 def load_product_ingestion(path: Path) -> dict[str, object]:
     return _load_json_object(path, "product ingestion input")
 
@@ -411,7 +431,13 @@ def qualify(
 
     product_contract = _run_tests(PRODUCT_CONTRACT_TESTS, cwd=ROOT)
     client_runs = {
-        name: {**_run_tests(tests, cwd=ROOT), "tests": list(tests)}
+        name: _product_client_run(
+            name,
+            tests,
+            clients.get(name, {})
+            if isinstance(clients.get(name), Mapping)
+            else {},
+        )
         for name, tests in SUPPORTED_CLIENT_TESTS.items()
     }
     evaluation_isolation = _run_tests(EVALUATION_ISOLATION_TESTS, cwd=ROOT)

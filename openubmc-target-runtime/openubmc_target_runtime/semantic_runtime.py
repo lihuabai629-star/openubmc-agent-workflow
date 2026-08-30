@@ -1142,6 +1142,7 @@ class CancelIncident:
 @dataclass(frozen=True)
 class ReconcileRun:
     run_id: str
+    effect_id: str = ""
     command_id: str = ""
     input_digest: str = ""
     caller_deadline: float = 120.0
@@ -1254,8 +1255,9 @@ def run_command_semantic_input(command: RunCommand) -> Mapping[str, object]:
         }
     if isinstance(command, ReconcileRun):
         return {
-            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/reconcile-run-input-v1",
+            "schema": f"{SEMANTIC_RUNTIME_SCHEMA}/reconcile-run-input-v2",
             "run_id": command.run_id,
+            "effect_id": command.effect_id,
         }
     if isinstance(command, ResumeRun):
         return {
@@ -1847,20 +1849,19 @@ def decode_run_command(
                 caller_deadline=caller_deadline,
             )
         if command == "reconcile":
-            command_id = "reconcile-" + fingerprint({"run_id": run_id})[:32]
+            reconcile = ReconcileRun(
+                run_id,
+                command_id=_text(operation_id),
+                caller_deadline=caller_deadline,
+            )
             identity, digest = run_command_identity(
-                ReconcileRun(
-                    run_id,
-                    command_id=command_id,
-                    caller_deadline=caller_deadline,
-                ),
+                reconcile,
                 operation_id=operation_id,
             )
-            return ReconcileRun(
-                run_id,
+            return replace(
+                reconcile,
                 command_id=identity,
                 input_digest=digest,
-                caller_deadline=caller_deadline,
             )
         raise AgentGatewayError(
             "control command must be one of: reconcile, cancel"

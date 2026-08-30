@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import json
 import threading
 
@@ -948,18 +948,19 @@ class CostGovernor:
         return result
 
 
-def _finalize_turn_projection(
+def _finalize_projection(
     document: Mapping[str, object],
     *,
+    projector: Callable[[Mapping[str, object]], dict[str, object]],
     preflight_failure: bool = False,
-    include_overage: bool = False,
+    overage_target_bytes: int | None = None,
 ) -> dict[str, object]:
     """Reach a fixed point between soft-budget and interaction telemetry."""
 
     result = dict(document)
     for _attempt in range(8):
         before = dict(result)
-        result = CostGovernor.turn(result)
+        result = projector(result)
         telemetry = interaction_telemetry(
             result,
             preflight_failure=preflight_failure,
@@ -968,32 +969,40 @@ def _finalize_turn_projection(
             result.pop("interaction_telemetry", None)
         else:
             result["interaction_telemetry"] = telemetry
-        if include_overage and result.get("projection_target_exceeded") is True:
+        if (
+            overage_target_bytes is not None
+            and result.get("projection_target_exceeded") is True
+        ):
             result.setdefault("projection_target_overage_bytes", 0)
             result["projection_target_overage_bytes"] = max(
                 1,
-                len(_json_bytes(result)) - TURN_PROJECTION_TARGET_BYTES,
+                len(_json_bytes(result)) - overage_target_bytes,
             )
         if result == before:
             break
     return result
 
 
+def _finalize_turn_projection(
+    document: Mapping[str, object],
+    *,
+    preflight_failure: bool = False,
+    include_overage: bool = False,
+) -> dict[str, object]:
+    return _finalize_projection(
+        document,
+        projector=CostGovernor.turn,
+        preflight_failure=preflight_failure,
+        overage_target_bytes=(
+            TURN_PROJECTION_TARGET_BYTES if include_overage else None
+        ),
+    )
+
+
 def _finalize_observation_projection(
     document: Mapping[str, object],
 ) -> dict[str, object]:
-    result = dict(document)
-    for _attempt in range(4):
-        before = dict(result)
-        result = CostGovernor.observation(result)
-        telemetry = interaction_telemetry(result)
-        if telemetry is None:
-            result.pop("interaction_telemetry", None)
-        else:
-            result["interaction_telemetry"] = telemetry
-        if result == before:
-            break
-    return result
+    return _finalize_projection(document, projector=CostGovernor.observation)
 
 
 class ResultProjector:
