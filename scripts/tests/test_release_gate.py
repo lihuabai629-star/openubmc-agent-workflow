@@ -31,7 +31,7 @@ def resolved_candidate(
     *,
     release_commit: str = RELEASE_COMMIT,
     source_commit: str = SOURCE_COMMIT,
-    release_version: str = "1.2.0",
+    release_version: str = "1.1.2",
 ):
     with patch.object(
         release_gate,
@@ -47,22 +47,22 @@ def resolved_candidate(
 
 
 class ReleaseGateTests(unittest.TestCase):
-    def test_release_tag_must_match_lock_version(self) -> None:
-        candidate = SimpleNamespace(
-            requested_ref="v2.0.2",
-            release_commit=RELEASE_COMMIT,
-            source_commit=SOURCE_COMMIT,
-            release_version="2.0.1",
-        )
+    def assert_release_candidate_rejected(
+        self,
+        candidate: SimpleNamespace,
+        *,
+        previous_ref: str,
+        pattern: str,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.object(
             release_gate,
             "_resolve_release_candidate",
             return_value=candidate,
         ), patch.object(release_gate, "require_published_candidate"):
-            with self.assertRaisesRegex(ValueError, "does not match"):
+            with self.assertRaisesRegex(ValueError, pattern):
                 release_gate.execute_release_gate(
-                    current_ref="v2.0.2",
-                    previous_ref="v2.0.1",
+                    current_ref=candidate.requested_ref,
+                    previous_ref=previous_ref,
                     workspace=Path.cwd(),
                     work_root=Path(directory),
                     executor=lambda command, *, cwd: subprocess.CompletedProcess(
@@ -73,6 +73,19 @@ class ReleaseGateTests(unittest.TestCase):
                     ),
                 )
 
+    def test_release_tag_must_match_lock_version(self) -> None:
+        candidate = SimpleNamespace(
+            requested_ref="v2.0.2",
+            release_commit=RELEASE_COMMIT,
+            source_commit=SOURCE_COMMIT,
+            release_version="2.0.1",
+        )
+        self.assert_release_candidate_rejected(
+            candidate,
+            previous_ref="v2.0.1",
+            pattern="does not match",
+        )
+
     def test_release_version_must_advance_from_previous_tag(self) -> None:
         candidate = SimpleNamespace(
             requested_ref="HEAD",
@@ -80,24 +93,37 @@ class ReleaseGateTests(unittest.TestCase):
             source_commit=SOURCE_COMMIT,
             release_version="2.0.1",
         )
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            release_gate,
-            "_resolve_release_candidate",
-            return_value=candidate,
-        ), patch.object(release_gate, "require_published_candidate"):
-            with self.assertRaisesRegex(ValueError, "must be newer"):
-                release_gate.execute_release_gate(
-                    current_ref="HEAD",
-                    previous_ref="v2.0.1",
-                    workspace=Path.cwd(),
-                    work_root=Path(directory),
-                    executor=lambda command, *, cwd: subprocess.CompletedProcess(
-                        command,
-                        0,
-                        "ok",
-                        "",
-                    ),
-                )
+        self.assert_release_candidate_rejected(
+            candidate,
+            previous_ref="v2.0.1",
+            pattern="must be newer",
+        )
+
+    def test_maintenance_release_requires_the_immediate_patch_predecessor(self) -> None:
+        candidate = SimpleNamespace(
+            requested_ref="v2.0.2",
+            release_commit=RELEASE_COMMIT,
+            source_commit=SOURCE_COMMIT,
+            release_version="2.0.2",
+        )
+        self.assert_release_candidate_rejected(
+            candidate,
+            previous_ref="v2.0.0",
+            pattern="immediate maintenance predecessor",
+        )
+
+    def test_symbolic_release_ref_must_be_a_strict_version_tag(self) -> None:
+        candidate = SimpleNamespace(
+            requested_ref="candidate-final",
+            release_commit=RELEASE_COMMIT,
+            source_commit=SOURCE_COMMIT,
+            release_version="2.0.2",
+        )
+        self.assert_release_candidate_rejected(
+            candidate,
+            previous_ref="v2.0.1",
+            pattern="strict vMAJOR.MINOR.PATCH tag",
+        )
 
     def test_all_release_gates_are_required_for_promotion(self) -> None:
         calls: list[tuple[str, ...]] = []
@@ -108,11 +134,11 @@ class ReleaseGateTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
-            "v1.2.0"
+            "v1.1.2"
         ):
             root = Path(directory)
             report = release_gate.execute_release_gate(
-                current_ref="v1.2.0",
+                current_ref="v1.1.2",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
                 work_root=root,
@@ -163,10 +189,10 @@ class ReleaseGateTests(unittest.TestCase):
             )
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
-            "v1.2.0"
+            "v1.1.2"
         ):
             report = release_gate.execute_release_gate(
-                current_ref="v1.2.0",
+                current_ref="v1.1.2",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
                 work_root=Path(directory),
@@ -259,7 +285,7 @@ class ReleaseGateTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
             ).stdout.strip()
             subprocess.run(
-                ["git", "tag", "v1.2.0", lock_commit],
+                ["git", "tag", "v1.1.2", lock_commit],
                 cwd=root,
                 check=True,
             )
@@ -269,7 +295,7 @@ class ReleaseGateTests(unittest.TestCase):
                 "verify_release_lock",
                 return_value={
                     "source_commit": source_commit,
-                    "release_version": "1.2.0",
+                    "release_version": "1.1.2",
                 },
             ), patch.object(
                 release_gate,
@@ -277,7 +303,7 @@ class ReleaseGateTests(unittest.TestCase):
             ):
                 reports = []
                 for index, requested_ref in enumerate(
-                    ("HEAD", lock_commit, "v1.2.0")
+                    ("HEAD", lock_commit, "v1.1.2")
                 ):
                     reports.append(
                         release_gate.execute_release_gate(
@@ -304,7 +330,7 @@ class ReleaseGateTests(unittest.TestCase):
         )
         self.assertEqual(
             [report["requested_ref"] for report in reports],
-            ["HEAD", lock_commit, "v1.2.0"],
+            ["HEAD", lock_commit, "v1.1.2"],
         )
 
     def test_invalid_release_lock_fails_instead_of_falling_back(self) -> None:
@@ -371,6 +397,7 @@ class ReleaseGateTests(unittest.TestCase):
                 requested_ref="HEAD",
                 release_commit="b" * 40,
                 source_commit="a" * 40,
+                release_version="2.0.1",
             ),
         ), patch.object(
             release_gate,
@@ -484,10 +511,10 @@ class ReleaseGateTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
-            "candidate"
+            "HEAD"
         ):
             report = release_gate.execute_release_gate(
-                current_ref="candidate",
+                current_ref="HEAD",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
                 work_root=Path(directory),
@@ -505,10 +532,10 @@ class ReleaseGateTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
-            "candidate"
+            "HEAD"
         ):
             report = release_gate.execute_release_gate(
-                current_ref="candidate",
+                current_ref="HEAD",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
                 work_root=Path(directory),

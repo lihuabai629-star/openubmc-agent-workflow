@@ -137,6 +137,12 @@ class ReleaseCandidate(NamedTuple):
     release_version: str = ""
 
 
+class ReleaseVersion(NamedTuple):
+    major: int
+    minor: int
+    patch: int
+
+
 _RELEASE_VERSION = re.compile(
     r"(?P<major>0|[1-9][0-9]*)\."
     r"(?P<minor>0|[1-9][0-9]*)\."
@@ -144,13 +150,24 @@ _RELEASE_VERSION = re.compile(
 )
 
 
-def _release_version(value: str, *, label: str, tag: bool) -> tuple[int, int, int]:
-    normalized = value.removeprefix("v") if tag else value
-    matched = _RELEASE_VERSION.fullmatch(normalized)
-    if matched is None or (tag and not value.startswith("v")):
-        expected = "vMAJOR.MINOR.PATCH tag" if tag else "MAJOR.MINOR.PATCH version"
-        raise ValueError(f"{label} must be a strict {expected}")
-    return tuple(int(matched.group(name)) for name in ("major", "minor", "patch"))
+def _parsed_release_version(value: str, *, label: str) -> ReleaseVersion:
+    matched = _RELEASE_VERSION.fullmatch(value)
+    if matched is None:
+        raise ValueError(f"{label} must be a strict MAJOR.MINOR.PATCH version")
+    return ReleaseVersion(
+        *(int(matched.group(name)) for name in ("major", "minor", "patch"))
+    )
+
+
+def _parsed_release_tag(value: str, *, label: str) -> ReleaseVersion:
+    if not value.startswith("v"):
+        raise ValueError(f"{label} must be a strict vMAJOR.MINOR.PATCH tag")
+    try:
+        return _parsed_release_version(value[1:], label=label)
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} must be a strict vMAJOR.MINOR.PATCH tag"
+        ) from exc
 
 
 def require_published_candidate(
@@ -377,22 +394,20 @@ def execute_release_gate(
     candidate = _resolve_release_candidate(workspace, current_ref)
     resolved_source_commit = candidate.source_commit
     resolved_release_commit = candidate.release_commit
-    require_published_candidate(resolved_release_commit, github_repository)
-    current_version = _release_version(
+    current_version = _parsed_release_version(
         candidate.release_version,
         label="release lock version",
-        tag=False,
     )
-    previous_version = _release_version(
+    previous_version = _parsed_release_tag(
         previous_ref,
         label="previous release ref",
-        tag=True,
     )
-    if candidate.requested_ref.startswith("v"):
-        requested_version = _release_version(
+    if candidate.requested_ref != "HEAD" and not is_full_commit(
+        candidate.requested_ref
+    ):
+        requested_version = _parsed_release_tag(
             candidate.requested_ref,
             label="current release ref",
-            tag=True,
         )
         if requested_version != current_version:
             raise ValueError(
@@ -400,6 +415,15 @@ def execute_release_gate(
             )
     if current_version <= previous_version:
         raise ValueError("current release version must be newer than previous release")
+    if (
+        current_version.major != previous_version.major
+        or current_version.minor != previous_version.minor
+        or current_version.patch != previous_version.patch + 1
+    ):
+        raise ValueError(
+            "previous release ref must be the immediate maintenance predecessor"
+        )
+    require_published_candidate(resolved_release_commit, github_repository)
     for name, commands in gate_commands(
         current_ref=resolved_release_commit,
         previous_ref=previous_ref,
