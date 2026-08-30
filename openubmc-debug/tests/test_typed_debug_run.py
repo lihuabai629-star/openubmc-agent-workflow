@@ -400,6 +400,92 @@ class TypedDebugRunTests(unittest.TestCase):
         self.assertEqual(len(outputs), 1)
         self.assertFalse(outputs[0]["request"]["source_correlation_requested"])
 
+    def test_object_only_freshness_does_not_require_skipped_telnet_dimensions(
+        self,
+    ) -> None:
+        class ObjectOnlyFreshnessRunner(FakeTypedToolRunner):
+            def __call__(self, name, command, env, timeout, *, deadline=None):
+                script = next(
+                    (Path(item).stem for item in command if str(item).endswith(".py")),
+                    name,
+                )
+                if script != "preflight_remote":
+                    return super().__call__(
+                        name,
+                        command,
+                        env,
+                        timeout,
+                        deadline=deadline,
+                    )
+                observed = (
+                    "2026-08-01T00:01:00+00:00"
+                    if name == "preflight_end"
+                    else "2026-08-01T00:00:00+00:00"
+                )
+                clock = (
+                    "2026-08-01 00:01:00 +0000"
+                    if name == "preflight_end"
+                    else "2026-08-01 00:00:00 +0000"
+                )
+                return tool_result(
+                    name,
+                    script,
+                    {
+                        "capabilities": {
+                            "remote_object": True,
+                            "remote_log_file": False,
+                            "combined_snapshot": False,
+                            "ssh_transport": True,
+                            "dbus_env": True,
+                            "mdbctl": True,
+                            "busctl": True,
+                            "active_alarm_transport": True,
+                            "active_alarms": True,
+                        },
+                        "checks": {
+                            "SSH": {"ok": True, "lines": [clock, "up 1 day"]},
+                            "DBUS_ENV": {"ok": True, "lines": []},
+                            "MDBCTL": {"ok": True, "lines": ["Drive"]},
+                            "BUSCTL": {"ok": True, "lines": ["/object"]},
+                        },
+                    },
+                    observed_at=observed,
+                )
+
+        args = workflow_remote.parse_args(
+            [
+                "--ip",
+                TEST_IP,
+                "--skip-telnet",
+                "--no-source-correlation",
+                "--mdb-expand-class",
+                "Drive",
+                "--json",
+            ]
+        )
+        outputs: list[dict[str, object]] = []
+
+        returncode = workflow_remote._execute_workflow(
+            args,
+            source_root_source="none",
+            engine="v1",
+            env={},
+            tool_runner=ObjectOnlyFreshnessRunner(),
+            parallel_lanes=False,
+            emit_output=False,
+            output_handler=outputs.append,
+        )
+
+        self.assertEqual(returncode, 0)
+        freshness = outputs[0]["result"]["freshness"]
+        self.assertEqual(freshness["status"], "complete")
+        self.assertTrue(freshness["complete"])
+        self.assertEqual(freshness["unavailable_dimensions"], [])
+        self.assertEqual(
+            freshness["not_requested_dimensions"],
+            ["version", "uptime"],
+        )
+
     def test_capability_ready_workflow_composes_with_real_typed_runner(self) -> None:
         args = workflow_remote.parse_args(
             [

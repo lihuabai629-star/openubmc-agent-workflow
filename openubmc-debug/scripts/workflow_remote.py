@@ -1553,6 +1553,20 @@ def _collect_freshness(
         version_delta=version_delta,
         uptime_delta=uptime_delta,
         bmc_time_delta=bmc_time_delta,
+        required_dimensions={
+            "preflight",
+            "bmc_time",
+            *(
+                ()
+                if bool(getattr(args, "mdb_only", False))
+                else ("active_alarms",)
+            ),
+            *(
+                ()
+                if bool(getattr(args, "skip_telnet", False))
+                else ("version", "uptime")
+            ),
+        },
     )
     freshness.update(assessment)
     freshness_ok = not assessment["lost_dimensions"] and not assessment["stale_evidence"]
@@ -1600,6 +1614,7 @@ def _assess_freshness(
     version_delta: dict[str, object],
     uptime_delta: dict[str, object],
     bmc_time_delta: dict[str, object],
+    required_dimensions: set[str] | None = None,
 ) -> dict[str, object]:
     """Aggregate freshness completeness without hiding changed or lost lanes."""
 
@@ -1610,11 +1625,21 @@ def _assess_freshness(
         "uptime": uptime_delta,
         "bmc_time": bmc_time_delta,
     }
+    selected_dimensions = set(deltas) if required_dimensions is None else set(
+        required_dimensions
+    )
     comparable_dimensions = [
-        name for name, delta in deltas.items() if bool(delta.get("comparable"))
+        name
+        for name, delta in deltas.items()
+        if name in selected_dimensions and bool(delta.get("comparable"))
     ]
     unavailable_dimensions = [
-        name for name in deltas if name not in comparable_dimensions
+        name
+        for name in deltas
+        if name in selected_dimensions and name not in comparable_dimensions
+    ]
+    not_requested_dimensions = [
+        name for name in deltas if name not in selected_dimensions
     ]
     availability_pairs = {
         "preflight": (
@@ -1635,7 +1660,9 @@ def _assess_freshness(
         ),
     }
     lost_dimensions = [
-        name for name, (before, after) in availability_pairs.items() if before and not after
+        name
+        for name, (before, after) in availability_pairs.items()
+        if name in selected_dimensions and before and not after
     ]
     stale_evidence: list[str] = []
 
@@ -1646,11 +1673,11 @@ def _assess_freshness(
 
     if bool(preflight_delta.get("changed")):
         mark_stale("preflight_start")
-    if bool(alarm_delta.get("changed")):
+    if "active_alarms" in selected_dimensions and bool(alarm_delta.get("changed")):
         mark_stale("active_alarms_start")
-    if bool(version_delta.get("changed")):
+    if "version" in selected_dimensions and bool(version_delta.get("changed")):
         mark_stale("version_start")
-    if bool(uptime_delta.get("reboot_detected")):
+    if "uptime" in selected_dimensions and bool(uptime_delta.get("reboot_detected")):
         mark_stale(
             "preflight_start",
             "active_alarms_start",
@@ -1680,6 +1707,7 @@ def _assess_freshness(
         "complete": status == "complete",
         "comparable_dimensions": comparable_dimensions,
         "unavailable_dimensions": unavailable_dimensions,
+        "not_requested_dimensions": not_requested_dimensions,
         "lost_dimensions": lost_dimensions,
         "after_last_reboot_or_change": after_last_change,
         "stale_evidence": stale_evidence,
