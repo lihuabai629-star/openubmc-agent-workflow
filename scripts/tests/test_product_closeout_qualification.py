@@ -802,15 +802,15 @@ def forge_runtime_ledger_for_negative_test(
                 PendingCaseEvent(
                     "OperationAccepted",
                     {"operation": "upgrade_run", "target_id": target},
-                    "earlier-upgrade-attempt",
+                    "upgrade-effect-1",
                 ),
                 PendingCaseEvent(
-                    "OperationStarted", {}, "earlier-upgrade-attempt"
+                    "OperationStarted", {}, "upgrade-effect-1"
                 ),
                 PendingCaseEvent(
                     "OperationTerminal",
                     {"status": "failed", "target_epoch": 3},
-                    "earlier-upgrade-attempt",
+                    "upgrade-effect-1",
                 ),
             )
         )

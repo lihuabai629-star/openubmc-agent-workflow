@@ -1133,9 +1133,21 @@ def _runtime_ledger(
         if kind == "OperationAccepted":
             state["operation"] = _text(payload.get("operation"))
             state["target_id"] = _text(payload.get("target_id"))
-            state["accepted_revision"] = int(event.get("revision", 0))
+            accepted_revision = int(event.get("revision", 0))
+            prior_accepted = int(state.get("accepted_revision", 0) or 0)
+            state["accepted_revision"] = (
+                min(prior_accepted, accepted_revision)
+                if prior_accepted > 0
+                else accepted_revision
+            )
         elif kind == "OperationStarted":
-            state["started_revision"] = int(event.get("revision", 0))
+            started_revision = int(event.get("revision", 0))
+            prior_started = int(state.get("started_revision", 0) or 0)
+            state["started_revision"] = (
+                min(prior_started, started_revision)
+                if prior_started > 0
+                else started_revision
+            )
         elif kind in {"OperationTerminal", "OperationReconciled"}:
             state["terminal_revision"] = int(event.get("revision", 0))
             state["terminal_status"] = _text(payload.get("status"))

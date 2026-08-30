@@ -6900,18 +6900,9 @@ class ContextRuntime:
             "body": body.decode("utf-8", errors="replace"),
         }
 
-    def prepare_file_evidence(
-        self,
-        run_id: str,
-        *,
-        target: str,
-        path: str,
-        expected_sha256: str,
-        evidence_type: str,
-        operation_id: str,
-    ) -> dict[str, object]:
-        """Validate and persist exact Operator/CI bytes without writing Run facts."""
-
+    def _operator_evidence_context(
+        self, run_id: str, *, target: str
+    ) -> tuple[dict[str, object], dict[str, object], str]:
         projection = self._load(run_id)
         if projection is None:
             raise CaseNotFound(run_id)
@@ -6921,21 +6912,6 @@ class ContextRuntime:
             and bool(projection.get("run_outcome"))
         ):
             raise CaseClosed(f"run {run_id} no longer accepts evidence")
-        source_path = Path(path).expanduser()
-        if not source_path.is_absolute():
-            raise ValueError("evidence path must be absolute")
-        source_path = source_path.absolute()
-        if not source_path.is_file():
-            raise EvidenceUnavailable(f"evidence file is unavailable: {source_path}")
-        normalized_sha256 = expected_sha256.removeprefix("sha256:")
-        if len(normalized_sha256) != 64 or any(
-            character not in "0123456789abcdef" for character in normalized_sha256
-        ):
-            raise ValueError("evidence sha256 must be 64 lowercase hex characters")
-        if not evidence_type or _safe_identifier(
-            evidence_type, fallback=""
-        ) != evidence_type:
-            raise ValueError("evidence_type must be a safe identifier")
         targets = [
             dict(item)
             for item in projection.get("targets", [])
@@ -6952,6 +6928,46 @@ class ContextRuntime:
         target_id = str(
             selected_target.get("target_id") or selected_target.get("address")
         ).strip()
+        return projection, selected_target, target_id
+
+    def operator_evidence_target(self, run_id: str, *, target: str) -> str:
+        """Resolve one open Run target to its canonical ArtifactRef binding."""
+
+        _projection, selected_target, target_id = self._operator_evidence_context(
+            run_id, target=target
+        )
+        return str(selected_target.get("address") or target_id).strip()
+
+    def prepare_file_evidence(
+        self,
+        run_id: str,
+        *,
+        target: str,
+        path: str,
+        expected_sha256: str,
+        evidence_type: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Validate and persist exact Operator/CI bytes without writing Run facts."""
+
+        projection, selected_target, target_id = self._operator_evidence_context(
+            run_id, target=target
+        )
+        source_path = Path(path).expanduser()
+        if not source_path.is_absolute():
+            raise ValueError("evidence path must be absolute")
+        source_path = source_path.absolute()
+        if not source_path.is_file():
+            raise EvidenceUnavailable(f"evidence file is unavailable: {source_path}")
+        normalized_sha256 = expected_sha256.removeprefix("sha256:")
+        if len(normalized_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in normalized_sha256
+        ):
+            raise ValueError("evidence sha256 must be 64 lowercase hex characters")
+        if not evidence_type or _safe_identifier(
+            evidence_type, fallback=""
+        ) != evidence_type:
+            raise ValueError("evidence_type must be a safe identifier")
         body = source_path.read_bytes()
         actual_sha256 = hashlib.sha256(body).hexdigest()
         if actual_sha256 != normalized_sha256:
@@ -7028,37 +7044,14 @@ class ContextRuntime:
         target: str,
         artifact_ref: Mapping[str, object],
         evidence_type: str,
-        operation_id: str,
     ) -> dict[str, object]:
         """Bind one ArtifactStore-owned package to an open Run Evidence fact."""
 
-        projection = self._load(run_id)
-        if projection is None:
-            raise CaseNotFound(run_id)
-        if (
-            projection.get("status") in {"terminal", "cancelled"}
-            or isinstance(projection.get("run_outcome"), Mapping)
-            and bool(projection.get("run_outcome"))
-        ):
-            raise CaseClosed(f"run {run_id} no longer accepts evidence")
+        projection, selected_target, target_id = self._operator_evidence_context(
+            run_id, target=target
+        )
         if evidence_type != "firmware-recovery-artifact":
             raise ValueError("Artifact evidence type is unsupported")
-        targets = [
-            dict(item)
-            for item in projection.get("targets", [])
-            if isinstance(item, Mapping)
-            and target
-            in {
-                str(item.get("target_id", "")).strip(),
-                str(item.get("address", "")).strip(),
-            }
-        ]
-        if len(targets) != 1:
-            raise ValueError("target must select exactly one Runtime Run target")
-        selected_target = targets[0]
-        target_id = str(
-            selected_target.get("target_id") or selected_target.get("address")
-        ).strip()
         target_bindings = {
             target_id,
             str(selected_target.get("address", "")).strip(),

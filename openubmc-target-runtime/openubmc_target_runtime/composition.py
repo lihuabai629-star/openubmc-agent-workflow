@@ -248,22 +248,24 @@ class _RuntimeOperatorPort:
             expected_sha256 = str(arguments.get("sha256", "")).strip()
             evidence_type = str(arguments.get("evidence_type", "")).strip()
             if evidence_type == "firmware-recovery-artifact":
+                artifact_target = self._context_runtime.operator_evidence_target(
+                    run_id, target=target
+                )
                 artifact_ref = self._artifact_store.put(
                     Path(path).expanduser().absolute(),
                     kind="openubmc-hpm",
                     provenance="operator-evidence-attach",
                     retention_hint="run-lifetime",
-                    target=target,
+                    target=artifact_target,
                     run_id=run_id,
                     created_by_effect=operation_id,
                     expected_sha256=expected_sha256,
                 )
                 prepared = self._context_runtime.prepare_artifact_evidence(
                     run_id,
-                    target=target,
+                    target=artifact_target,
                     artifact_ref=artifact_ref.to_public_dict(),
                     evidence_type=evidence_type,
-                    operation_id=operation_id,
                 )
             else:
                 prepared = self._context_runtime.prepare_file_evidence(

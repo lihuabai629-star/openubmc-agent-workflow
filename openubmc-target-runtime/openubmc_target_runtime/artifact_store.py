@@ -710,7 +710,10 @@ class LocalArtifactStore:
 
         if expected_sha256:
             normalized_expected = expected_sha256.removeprefix("sha256:").lower()
-            if len(normalized_expected) != 64:
+            if len(normalized_expected) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in normalized_expected
+            ):
                 raise ReferenceViolation("expected Artifact SHA-256 is invalid")
             actual_digest, _actual_size = self._digest(Path(path))
             if actual_digest != normalized_expected:
