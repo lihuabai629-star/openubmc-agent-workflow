@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -30,6 +31,7 @@ def resolved_candidate(
     *,
     release_commit: str = RELEASE_COMMIT,
     source_commit: str = SOURCE_COMMIT,
+    release_version: str = "1.1.2",
 ):
     with patch.object(
         release_gate,
@@ -38,12 +40,111 @@ def resolved_candidate(
             requested_ref=requested_ref,
             release_commit=release_commit,
             source_commit=source_commit,
+            release_version=release_version,
         ),
     ), patch.object(release_gate, "require_published_candidate"):
         yield
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def assert_release_candidate_rejected(
+        self,
+        candidate: SimpleNamespace,
+        *,
+        previous_ref: str,
+        pattern: str,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            release_gate,
+            "_resolve_release_candidate",
+            return_value=candidate,
+        ), patch.object(release_gate, "require_published_candidate"):
+            with self.assertRaisesRegex(ValueError, pattern):
+                release_gate.execute_release_gate(
+                    current_ref=candidate.requested_ref,
+                    previous_ref=previous_ref,
+                    workspace=Path.cwd(),
+                    work_root=Path(directory),
+                    executor=lambda command, *, cwd: subprocess.CompletedProcess(
+                        command,
+                        0,
+                        "ok",
+                        "",
+                    ),
+                )
+
+    def test_release_tag_must_match_lock_version(self) -> None:
+        candidate = SimpleNamespace(
+            requested_ref="v2.0.2",
+            release_commit=RELEASE_COMMIT,
+            source_commit=SOURCE_COMMIT,
+            release_version="2.0.1",
+        )
+        self.assert_release_candidate_rejected(
+            candidate,
+            previous_ref="v2.0.1",
+            pattern="does not match",
+        )
+
+    def test_release_version_must_advance_from_previous_tag(self) -> None:
+        candidate = SimpleNamespace(
+            requested_ref="HEAD",
+            release_commit=RELEASE_COMMIT,
+            source_commit=SOURCE_COMMIT,
+            release_version="2.0.1",
+        )
+        self.assert_release_candidate_rejected(
+            candidate,
+            previous_ref="v2.0.1",
+            pattern="must be newer",
+        )
+
+    def test_maintenance_release_requires_the_immediate_patch_predecessor(self) -> None:
+        candidate = SimpleNamespace(
+            requested_ref="v2.0.2",
+            release_commit=RELEASE_COMMIT,
+            source_commit=SOURCE_COMMIT,
+            release_version="2.0.2",
+        )
+        self.assert_release_candidate_rejected(
+            candidate,
+            previous_ref="v2.0.0",
+            pattern="immediate maintenance predecessor",
+        )
+
+    def test_symbolic_release_ref_must_be_a_strict_version_tag(self) -> None:
+        candidate = SimpleNamespace(
+            requested_ref="candidate-final",
+            release_commit=RELEASE_COMMIT,
+            source_commit=SOURCE_COMMIT,
+            release_version="2.0.2",
+        )
+        self.assert_release_candidate_rejected(
+            candidate,
+            previous_ref="v2.0.1",
+            pattern="strict vMAJOR.MINOR.PATCH tag",
+        )
+
+    def test_release_tag_is_validated_without_replacing_requested_ref(self) -> None:
+        def succeed(command, *, cwd):
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "HEAD",
+            release_version="2.0.2",
+        ):
+            report = release_gate.execute_release_gate(
+                current_ref="HEAD",
+                release_tag="v2.0.2",
+                previous_ref="v2.0.1",
+                workspace=Path.cwd(),
+                work_root=Path(directory),
+                executor=succeed,
+            )
+
+        self.assertEqual(report["requested_ref"], "HEAD")
+        self.assertEqual(report["release_tag"], "v2.0.2")
+
     def test_all_release_gates_are_required_for_promotion(self) -> None:
         calls: list[tuple[str, ...]] = []
 
@@ -53,11 +154,11 @@ class ReleaseGateTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
-            "v1.2.0"
+            "v1.1.2"
         ):
             root = Path(directory)
             report = release_gate.execute_release_gate(
-                current_ref="v1.2.0",
+                current_ref="v1.1.2",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
                 work_root=root,
@@ -108,10 +209,10 @@ class ReleaseGateTests(unittest.TestCase):
             )
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
-            "v1.2.0"
+            "v1.1.2"
         ):
             report = release_gate.execute_release_gate(
-                current_ref="v1.2.0",
+                current_ref="v1.1.2",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
                 work_root=Path(directory),
@@ -204,7 +305,7 @@ class ReleaseGateTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
             ).stdout.strip()
             subprocess.run(
-                ["git", "tag", "v-test-candidate", lock_commit],
+                ["git", "tag", "v1.1.2", lock_commit],
                 cwd=root,
                 check=True,
             )
@@ -212,19 +313,22 @@ class ReleaseGateTests(unittest.TestCase):
             with patch.object(
                 release_gate,
                 "verify_release_lock",
-                return_value={"source_commit": source_commit},
+                return_value={
+                    "source_commit": source_commit,
+                    "release_version": "1.1.2",
+                },
             ), patch.object(
                 release_gate,
                 "require_published_candidate",
             ):
                 reports = []
                 for index, requested_ref in enumerate(
-                    ("HEAD", lock_commit, "v-test-candidate")
+                    ("HEAD", lock_commit, "v1.1.2")
                 ):
                     reports.append(
                         release_gate.execute_release_gate(
                             current_ref=requested_ref,
-                            previous_ref="v-previous",
+                            previous_ref="v1.1.1",
                             workspace=root,
                             work_root=root / f"gate-{index}",
                             executor=lambda command, *, cwd: subprocess.CompletedProcess(
@@ -246,7 +350,7 @@ class ReleaseGateTests(unittest.TestCase):
         )
         self.assertEqual(
             [report["requested_ref"] for report in reports],
-            ["HEAD", lock_commit, "v-test-candidate"],
+            ["HEAD", lock_commit, "v1.1.2"],
         )
 
     def test_invalid_release_lock_fails_instead_of_falling_back(self) -> None:
@@ -278,6 +382,7 @@ class ReleaseGateTests(unittest.TestCase):
             "HEAD",
             release_commit=release_commit,
             source_commit=source_commit,
+            release_version="2.0.1",
         ):
             report = release_gate.execute_release_gate(
                 current_ref="HEAD",
@@ -312,6 +417,7 @@ class ReleaseGateTests(unittest.TestCase):
                 requested_ref="HEAD",
                 release_commit="b" * 40,
                 source_commit="a" * 40,
+                release_version="2.0.1",
             ),
         ), patch.object(
             release_gate,
@@ -425,11 +531,11 @@ class ReleaseGateTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
-            "candidate"
+            "HEAD"
         ):
             report = release_gate.execute_release_gate(
-                current_ref="candidate",
-                previous_ref="previous",
+                current_ref="HEAD",
+                previous_ref="v1.1.1",
                 workspace=Path.cwd(),
                 work_root=Path(directory),
                 executor=succeed,
@@ -446,11 +552,11 @@ class ReleaseGateTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
-            "candidate"
+            "HEAD"
         ):
             report = release_gate.execute_release_gate(
-                current_ref="candidate",
-                previous_ref="previous",
+                current_ref="HEAD",
+                previous_ref="v1.1.1",
                 workspace=Path.cwd(),
                 work_root=Path(directory),
                 executor=succeed,
@@ -566,6 +672,14 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("base64 --decode", trust_root["run"])
         self.assertIn("$RUNNER_TEMP/agent-gateway-ab-attestation.pub", trust_root["run"])
         gate = steps["Run immutable release gates"]["run"]
+        self.assertIn(
+            '--current-ref "${{ inputs.current_ref }}"',
+            gate,
+        )
+        self.assertIn(
+            '--release-tag "${{ steps.candidate.outputs.release_tag }}"',
+            gate,
+        )
         self.assertIn(
             '--ab-evidence "$RUNNER_TEMP/agent-gateway-ab-evidence/summary.json"',
             gate,

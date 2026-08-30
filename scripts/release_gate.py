@@ -9,6 +9,7 @@ import hashlib
 import json
 import platform
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -133,6 +134,40 @@ class ReleaseCandidate(NamedTuple):
     requested_ref: str
     release_commit: str
     source_commit: str
+    release_version: str = ""
+
+
+class ReleaseVersion(NamedTuple):
+    major: int
+    minor: int
+    patch: int
+
+
+_RELEASE_VERSION = re.compile(
+    r"(?P<major>0|[1-9][0-9]*)\."
+    r"(?P<minor>0|[1-9][0-9]*)\."
+    r"(?P<patch>0|[1-9][0-9]*)"
+)
+
+
+def _parsed_release_version(value: str, *, label: str) -> ReleaseVersion:
+    matched = _RELEASE_VERSION.fullmatch(value)
+    if matched is None:
+        raise ValueError(f"{label} must be a strict MAJOR.MINOR.PATCH version")
+    return ReleaseVersion(
+        *(int(matched.group(name)) for name in ("major", "minor", "patch"))
+    )
+
+
+def _parsed_release_tag(value: str, *, label: str) -> ReleaseVersion:
+    if not value.startswith("v"):
+        raise ValueError(f"{label} must be a strict vMAJOR.MINOR.PATCH tag")
+    try:
+        return _parsed_release_version(value[1:], label=label)
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} must be a strict vMAJOR.MINOR.PATCH tag"
+        ) from exc
 
 
 def require_published_candidate(
@@ -194,6 +229,7 @@ def _resolve_release_candidate(workspace: Path, ref: str) -> ReleaseCandidate:
     except ReleaseLockError as exc:
         raise ValueError(f"invalid immutable release ref: {exc}") from exc
     source_commit = str(identity.get("source_commit", "")).strip().lower()
+    release_version = str(identity.get("release_version", "")).strip()
     if not is_full_commit(source_commit):
         raise ValueError("immutable release ref records an invalid source_commit")
     if source_commit == release_commit:
@@ -204,6 +240,7 @@ def _resolve_release_candidate(workspace: Path, ref: str) -> ReleaseCandidate:
         requested_ref=ref,
         release_commit=release_commit,
         source_commit=source_commit,
+        release_version=release_version,
     )
 
 
@@ -349,6 +386,7 @@ def execute_release_gate(
     ab_evidence: Path | None = None,
     github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
     ab_attestation_public_key: Path | None = None,
+    release_tag: str | None = None,
 ) -> dict[str, object]:
     clean_home = work_root / "clean-install-home"
     lifecycle_home = work_root / "lifecycle-home"
@@ -357,6 +395,40 @@ def execute_release_gate(
     candidate = _resolve_release_candidate(workspace, current_ref)
     resolved_source_commit = candidate.source_commit
     resolved_release_commit = candidate.release_commit
+    current_version = _parsed_release_version(
+        candidate.release_version,
+        label="release lock version",
+    )
+    previous_version = _parsed_release_tag(
+        previous_ref,
+        label="previous release ref",
+    )
+    selected_release_tag = str(release_tag or "").strip()
+    if (
+        not selected_release_tag
+        and candidate.requested_ref != "HEAD"
+        and not is_full_commit(candidate.requested_ref)
+    ):
+        selected_release_tag = candidate.requested_ref
+    if selected_release_tag:
+        requested_version = _parsed_release_tag(
+            selected_release_tag,
+            label="current release tag",
+        )
+        if requested_version != current_version:
+            raise ValueError(
+                "current release tag does not match release-lock.json version"
+            )
+    if current_version <= previous_version:
+        raise ValueError("current release version must be newer than previous release")
+    if (
+        current_version.major != previous_version.major
+        or current_version.minor != previous_version.minor
+        or current_version.patch != previous_version.patch + 1
+    ):
+        raise ValueError(
+            "previous release ref must be the immediate maintenance predecessor"
+        )
     require_published_candidate(resolved_release_commit, github_repository)
     for name, commands in gate_commands(
         current_ref=resolved_release_commit,
@@ -419,6 +491,7 @@ def execute_release_gate(
         "schema": RELEASE_GATE_SCHEMA,
         "current_ref": current_ref,
         "requested_ref": candidate.requested_ref,
+        "release_tag": selected_release_tag,
         "release_commit": candidate.release_commit,
         "previous_ref": previous_ref,
         "source_commit": resolved_source_commit,
@@ -437,6 +510,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--current-ref", required=True)
     parser.add_argument("--previous-ref", required=True)
+    parser.add_argument("--release-tag")
     parser.add_argument("--workspace", type=Path, default=ROOT)
     parser.add_argument("--work-root", type=Path)
     parser.add_argument("--output", type=Path)
@@ -470,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
                 work_root=work_root,
                 ab_evidence=args.ab_evidence.expanduser().absolute(),
                 github_repository=args.github_repository,
+                release_tag=args.release_tag,
                 ab_attestation_public_key=(
                     args.ab_attestation_public_key.expanduser().absolute()
                 ),
