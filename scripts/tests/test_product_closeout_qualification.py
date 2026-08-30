@@ -501,10 +501,12 @@ def forge_runtime_ledger_for_negative_test(
     attach_proofs: bool = True,
     attach_supporting: bool = True,
     authorize_upgrade: bool = True,
+    include_diagnosis_operation: bool = True,
     include_diagnosis_gate: bool = True,
     include_native_operations: bool = True,
     include_native_evidence: bool = True,
     native_operations_in_order: bool = True,
+    recovery_after_upgrade: bool = False,
 ) -> None:
     """Construct a deliberately forged ledger for qualification rejection tests.
 
@@ -614,18 +616,23 @@ def forge_runtime_ledger_for_negative_test(
             },
             "product-closeout-start",
         ),
-        PendingCaseEvent(
-            "OperationAccepted",
-            {"operation": "debug_run", "target_id": target},
-            "diagnosis-operation",
-        ),
-        PendingCaseEvent("OperationStarted", {}, "diagnosis-operation"),
-        PendingCaseEvent(
-            "OperationTerminal",
-            {"status": "completed", "target_epoch": 0},
-            "diagnosis-operation",
-        ),
     ]
+    if include_diagnosis_operation:
+        events.extend(
+            (
+                PendingCaseEvent(
+                    "OperationAccepted",
+                    {"operation": "debug_run", "target_id": target},
+                    "diagnosis-operation",
+                ),
+                PendingCaseEvent("OperationStarted", {}, "diagnosis-operation"),
+                PendingCaseEvent(
+                    "OperationTerminal",
+                    {"status": "completed", "target_epoch": 0},
+                    "diagnosis-operation",
+                ),
+            )
+        )
     if include_diagnosis_gate:
         events.append(
             PendingCaseEvent(
@@ -695,7 +702,18 @@ def forge_runtime_ledger_for_negative_test(
                 operator_items.append(item)
         else:
             operator_items.append(item)
-    for index, item in enumerate(operator_items, start=1):
+    deferred_recovery_items: list[dict[str, object]] = []
+    immediate_operator_items: list[dict[str, object]] = []
+    for item in operator_items:
+        if (
+            recovery_after_upgrade
+            and item.get("evidence_type") == "firmware-recovery-artifact-record"
+        ):
+            deferred_recovery_items.append(item)
+        else:
+            immediate_operator_items.append(item)
+
+    def append_operator_evidence(item: dict[str, object], index: int) -> None:
         digest = item["sha256"]
         events.append(
             PendingCaseEvent(
@@ -717,6 +735,9 @@ def forge_runtime_ledger_for_negative_test(
                 f"product-closeout-evidence-{index}",
             )
         )
+
+    for index, item in enumerate(immediate_operator_items, start=1):
+        append_operator_evidence(item, index)
     if include_native_operations:
         operations = (
             ("upgrade_run", "upgrade-effect-1", 4),
@@ -770,6 +791,10 @@ def forge_runtime_ledger_for_negative_test(
                     operation_id,
                 )
             )
+            if operation == "upgrade_run":
+                first_deferred_index = len(immediate_operator_items) + 1
+                for offset, item in enumerate(deferred_recovery_items):
+                    append_operator_evidence(item, first_deferred_index + offset)
     events.append(
         PendingCaseEvent(
             "RunOutcomeRecorded",
@@ -1369,6 +1394,24 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
             report["violations"],
         )
 
+    def test_fresh_runtime_requires_a_completed_native_diagnosis_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            forge_runtime_ledger_for_negative_test(
+                manifest,
+                include_diagnosis_operation=False,
+            )
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("ordered debug_run" in item for item in report["violations"]),
+            report["violations"],
+        )
+
     def test_fresh_runtime_requires_diagnosis_acceptance_before_development(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -1383,6 +1426,27 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertFalse(report["promotable"])
         self.assertTrue(
             any("diagnosis.acceptance" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_recovery_artifact_must_be_attached_before_upgrade_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            forge_runtime_ledger_for_negative_test(
+                manifest,
+                recovery_after_upgrade=True,
+            )
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any(
+                "before upgrade_run" in item
+                for item in report["violations"]
+            ),
             report["violations"],
         )
 

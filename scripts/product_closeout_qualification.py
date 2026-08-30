@@ -120,6 +120,7 @@ class RuntimeLedgerFacts:
     build_artifact_ref: Mapping[str, object]
     build_source_revision: str
     upgrade_operation_id: str
+    upgrade_started_revision: int
     upgrade_completed_at: datetime
     upgrade_target_epoch: int
     debug_operation_id: str
@@ -134,6 +135,7 @@ EMPTY_RUNTIME_FACTS = RuntimeLedgerFacts(
     build_artifact_ref={},
     build_source_revision="",
     upgrade_operation_id="",
+    upgrade_started_revision=0,
     upgrade_completed_at=datetime.fromtimestamp(0, tz=UTC),
     upgrade_target_epoch=0,
     debug_operation_id="",
@@ -786,6 +788,18 @@ def _verify_fixed_supporting_evidence(
             violations.append(f"{label}.supporting_evidence: {reason}")
     else:
         if evidence_type == "firmware-recovery-artifact-record":
+            if (
+                runtime_facts.upgrade_started_revision <= 0
+                or not any(
+                    fact.revision < runtime_facts.upgrade_started_revision
+                    for fact in bindings
+                )
+            ):
+                violations.append(
+                    f"{label}.supporting_evidence: recovery artifact must be "
+                    "attached before upgrade_run starts"
+                )
+                return False
             reason = _recovery_artifact_record(raw, requirements)
             accepted = reason is None
             if reason is not None:
@@ -1128,9 +1142,25 @@ def _runtime_ledger(
         return operation_id, state
 
     build_revision = phase_order[2] if len(phase_order) == 3 else 0
+    diagnosis_operation_id, diagnosis_state = selected_operation(
+        "debug_run", after_revision=0
+    )
+    diagnosis_terminal_revision = int(
+        diagnosis_state.get("terminal_revision", 0) or 0
+    )
+    diagnosis_gate_revision = phase_order[0] if phase_order else 0
+    if (
+        diagnosis_operation_id
+        and (
+            diagnosis_gate_revision <= 0
+            or diagnosis_terminal_revision >= diagnosis_gate_revision
+        )
+    ):
+        reject("debug_run must complete before diagnosis.acceptance")
     upgrade_operation_id, upgrade_state = selected_operation(
         "upgrade_run", after_revision=build_revision
     )
+    upgrade_started_revision = int(upgrade_state.get("started_revision", 0) or 0)
     upgrade_terminal_revision = int(upgrade_state.get("terminal_revision", 0) or 0)
     debug_operation_id, debug_state = selected_operation(
         "debug_collect", after_revision=upgrade_terminal_revision
@@ -1192,6 +1222,7 @@ def _runtime_ledger(
             )
         )
     for name, operation_id in (
+        ("debug_run", diagnosis_operation_id),
         ("upgrade_run", upgrade_operation_id),
         ("debug_collect", debug_operation_id),
     ):
@@ -1213,6 +1244,7 @@ def _runtime_ledger(
         build_artifact_ref=build_artifact_ref,
         build_source_revision=build_source_revision,
         upgrade_operation_id=upgrade_operation_id,
+        upgrade_started_revision=upgrade_started_revision,
         upgrade_completed_at=upgrade_completed_at,
         upgrade_target_epoch=int(upgrade_epoch),
         debug_operation_id=debug_operation_id,

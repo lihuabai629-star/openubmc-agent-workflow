@@ -38,7 +38,7 @@ build, upgrade, and target-observation evidence must already be attached before
 created after the terminal Outcome.
 
 The manifest separates ten dimensions: Runtime continuity, diagnosis, source identity, official
-UT, compiled build, artifact identity, independent recovery identity, upgrade, freshness, and
+UT, compiled build, ArtifactRef identity, Recovery Artifact identity, upgrade, freshness, and
 hardware coverage. Every referenced
 file is verified by SHA-256. Fresh Runtime evidence uses the structured proof schema, but a proof
 is accepted only when its fields match independently verified Runtime and product facts. Its raw
@@ -74,7 +74,7 @@ declarative content claims. The built-in evidence types are:
 | `runtime-upgrade-evidence` | upgrade | native verified mutation journal, HPM digest, installed version, and monotonic target epoch |
 | `reboot-acceptance-timeline` | freshness | manager readiness, final direct/RAID convergence, accepted elapsed time |
 | `runtime-debug-evidence` | freshness, hardware | native complete freshness record plus Drive MDB properties, protocol-specific attribution, health, presence, and serial identity |
-| `firmware-recovery-artifact-record` | recovery | independently identified recovery HPM path, SHA-256, size, and version |
+| `firmware-recovery-artifact-record` | recovery | independently identified Recovery Artifact path, SHA-256, size, and version |
 | `drive-summary-json` | hardware | direct attribution, RAID zero attribution, health, presence, serial, and scoped drive identities |
 
 Every source repository must be clean at the exact recorded commit; a fresh firmware artifact must
@@ -85,9 +85,9 @@ from manifest device labels. Fresh ordering and age are derived from trusted Run
 Observation provenance. Structured proof timestamps remain presentation fields and cannot override
 the ledger timeline.
 
-The recovery HPM is qualified independently from the upgrade HPM. Reusing the same path or digest
-fails promotion. The package itself is not applied automatically; it proves that an explicit,
-separately identified recovery path exists before the target mutation begins.
+The Recovery Artifact is qualified independently from the upgrade HPM. Reusing the same path or
+digest fails promotion. The Recovery Artifact is not applied automatically; it proves that an
+explicit, separately identified recovery option exists before the target Mutation begins.
 
 Fresh upgrade evidence must also prove a real BMC reboot boundary. A target-epoch increment or
 `after_last_reboot_or_change=true` alone is insufficient: the native Upgrade result must retain
@@ -127,7 +127,7 @@ synthetic repository fixtures.
 ## Fresh product checkpoint
 
 A fresh product promotion additionally needs an independently authorized target, an independently
-identified recovery package, a new Runtime Run, official validation and build evidence, a
+identified Recovery Artifact, a new Runtime Run, official validation and build evidence, a
 digest-bound HPM, successful
 upgrade, and fresh protocol-specific target acceptance. Repository CI deliberately requires no
 BMC, credentials, private network, or upgrade authority.
