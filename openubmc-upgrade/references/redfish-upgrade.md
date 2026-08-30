@@ -25,8 +25,10 @@ system certificate verification unless `--allow-insecure-tls` is supplied.
 
 ## Mutation
 
-- Multipart upload sends the HPM as the UpdateFile part and follows the target's
-  documented parameters.
+- Multipart upload sends the HPM as the UpdateFile part and defaults its documented
+  UpdateParameters to `ForceUpdate=true` and `ActiveMode=ResetBMC`. This permits a
+  deliberate same-version reflash and gives Fresh Runtime qualification an observable
+  reboot boundary. Callers may override only the supported typed values.
 - HttpPush uploads the HPM body to the target-advertised URI.
 - SimpleUpdate posts an explicitly supplied, BMC-reachable ImageURI; it does
   not upload a local file.
@@ -37,14 +39,18 @@ default is 600 seconds and the task deadline remains the outer bound. A lost
 transport response must report the selected path, request byte count, timeout,
 and exception type without including credentials or artifact content.
 
-Capture the returned Location, TaskMonitor, or task URI. Do not retry an
+Capture the returned Location, TaskMonitor, or task URI. Retain the Manager firmware
+version and `LastResetTime` observed before upload when available. Do not retry an
 ambiguous request before checking that resource.
 
 ## Monitoring
 
 Poll the returned task or monitor URI until a terminal state. Handle a reboot
 window by reconnecting and checking the same task or installed version. Treat
-Completed as necessary but not sufficient: re-read the installed version.
+Completed as necessary but not sufficient: re-read the installed version and Manager
+`LastResetTime`. A Fresh Runtime release qualification requires the post-upgrade reset
+time to be strictly newer than the pre-upload value; target epoch alone does not prove
+a reboot.
 Invoke openubmc-debug afterward only when the caller requested runtime
 acceptance.
 

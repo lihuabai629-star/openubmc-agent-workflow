@@ -97,6 +97,7 @@ from .orchestration import (
     TaskTargetBinding,
     TaskWorkflowOrchestrator,
     WorkflowStep,
+    enforce_fresh_verification,
 )
 from .workflow import DEFAULT_PHASE_REGISTRY
 
@@ -1864,7 +1865,7 @@ class OrchestratedMcpBackend:
                 selected.setdefault("target_id", target_id.strip())
         if execution.phase == "fresh_verification":
             selected.setdefault("profile", "freshness")
-            selected["no_freshness"] = False
+            selected = enforce_fresh_verification(selected)
             if execution.minimum_target_epochs:
                 selected["_minimum_target_epoch"] = max(
                     int(epoch)
@@ -2691,6 +2692,23 @@ class RuntimeMcpService:
                                 "description": (
                                     "Per-request timeout for HPM byte upload; "
                                     "bounded by the task deadline."
+                                ),
+                            },
+                            "active_mode": {
+                                "type": "string",
+                                "enum": ["Immediately", "ResetBMC"],
+                                "default": "ResetBMC",
+                                "description": (
+                                    "Target activation mode requested with an upload "
+                                    "method that supports UpdateParameters."
+                                ),
+                            },
+                            "force_update": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": (
+                                    "Request a deliberate same-version reflash when the "
+                                    "target supports UpdateParameters."
                                 ),
                             },
                             "transport": {

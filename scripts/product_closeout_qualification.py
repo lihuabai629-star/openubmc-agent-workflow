@@ -9,6 +9,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from enum import IntEnum
 from pathlib import Path
 import re
 import sqlite3
@@ -35,7 +36,35 @@ REPORT_SCHEMA = "openubmc-agent-workflow.product-closeout-qualification.v1"
 PROOF_SCHEMA = "openubmc-agent-workflow.product-closeout-proof.v1"
 MODES = {"fresh-runtime", "historical-reconstruction"}
 PROTOCOLS = {"NVMe", "SATA", "SAS"}
-DRIVE_PROTOCOL_BY_CODE = {3: "SATA", 4: "SAS", 6: "NVMe"}
+
+
+class DriveProtocol(IntEnum):
+    SATA = 3
+    SAS = 4
+    NVME = 6
+
+
+class DrivePresence(IntEnum):
+    ABSENT = 0
+    PRESENT = 1
+
+
+class DriveHealth(IntEnum):
+    OK = 0
+
+
+class DriveController(IntEnum):
+    DIRECT = 255
+
+
+DRIVE_PROTOCOL_LABEL = {
+    DriveProtocol.SATA: "SATA",
+    DriveProtocol.SAS: "SAS",
+    DriveProtocol.NVME: "NVMe",
+}
+DRIVE_PROTOCOL_BY_CODE = {
+    int(protocol): label for protocol, label in DRIVE_PROTOCOL_LABEL.items()
+}
 SHA256 = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 PASSED_COUNT = re.compile(r"(?<!\d)(\d+)\s*/\s*(\d+)\s+passed\b", re.IGNORECASE)
@@ -68,6 +97,7 @@ FRESH_SUPPORT_TYPES = {
     "upgrade": {"runtime-upgrade-evidence"},
     "freshness": {"runtime-debug-evidence"},
     "hardware": {"runtime-debug-evidence"},
+    "recovery": {"firmware-recovery-artifact-record"},
 }
 
 
@@ -288,6 +318,18 @@ def _runtime_upgrade_evidence(
         return "Runtime Upgrade evidence does not contain one verified upgrade journal"
     if not mutation:
         return "Runtime Upgrade evidence is missing its mutation result"
+    parameters = _mapping(mutation.get("parameters"))
+    if (
+        parameters.get("ActiveMode") != "ResetBMC"
+        or parameters.get("ForceUpdate") is not True
+    ):
+        return "Runtime Upgrade evidence does not request a forced BMC reset"
+    manager_before = _mapping(mutation.get("manager_before"))
+    manager_after = _mapping(verification.get("version"))
+    reset_before = _timestamp(manager_before.get("last_reset_time"))
+    reset_after = _timestamp(manager_after.get("last_reset_time"))
+    if reset_before is None or reset_after is None or reset_after <= reset_before:
+        return "Runtime Upgrade evidence does not prove a BMC reboot boundary"
     expected_artifact = _text(requirements.get("artifact.sha256"))
     if _expected_sha256(journal.get("expected_checksum")) != expected_artifact:
         return "Runtime Upgrade evidence artifact digest does not match the qualified HPM"
@@ -351,7 +393,7 @@ def _runtime_debug_evidence(
     result = _mapping(document.get("result"))
     freshness = _mapping(result.get("freshness"))
     if (
-        _text(freshness.get("status")) != "complete"
+        _text(freshness.get("status")) not in {"complete", "fresh"}
         or freshness.get("complete") is not True
         or freshness.get("after_last_reboot_or_change") is not True
         or _sequence(freshness.get("stale_evidence"))
@@ -378,22 +420,33 @@ def _runtime_debug_evidence(
         drive_id = _runtime_property(drive.get("Id"))
         if isinstance(drive_id, bool) or not isinstance(drive_id, int):
             continue
-        protocol = _runtime_property(drive.get("Protocol"))
+        protocol_value = _runtime_property(drive.get("Protocol"))
         controller = _runtime_property(drive.get("RefControllerId"))
         resource = _runtime_property(drive.get("ResourceId"))
         presence = _runtime_property(drive.get("Presence"))
         health = _runtime_property(status.get("Health"))
         serial = _text(_runtime_property(inventory.get("SerialNumber")))
-        if protocol not in DRIVE_PROTOCOL_BY_CODE:
+        try:
+            protocol = DriveProtocol(protocol_value)
+        except (TypeError, ValueError):
             return f"Runtime Debug Drive{drive_id} has an unsupported protocol"
-        if presence != 1 or health != 0 or not serial:
+        if (
+            presence != DrivePresence.PRESENT
+            or health != DriveHealth.OK
+            or not serial
+        ):
             return f"Runtime Debug Drive{drive_id} is not healthy, present, and identified"
-        if protocol == 6 and (controller != 255 or not isinstance(resource, int) or resource <= 0):
+        if protocol == DriveProtocol.NVME and (
+            controller != DriveController.DIRECT
+            or not isinstance(resource, int)
+            or isinstance(resource, bool)
+            or resource <= 0
+        ):
             return f"Runtime Debug Drive{drive_id} NVMe resource attribution is invalid"
-        if protocol in {3, 4} and resource != 0:
+        if protocol in {DriveProtocol.SATA, DriveProtocol.SAS} and resource != 0:
             return f"Runtime Debug Drive{drive_id} SATA/SAS ResourceId must be zero"
         drives[drive_id] = {
-            "protocol": DRIVE_PROTOCOL_BY_CODE[protocol],
+            "protocol": DRIVE_PROTOCOL_LABEL[protocol],
             "controller": controller,
             "resource": resource,
         }
@@ -424,6 +477,37 @@ def _runtime_debug_evidence(
     observed_protocols = {drives[drive_id]["protocol"] for drive_id in expected_devices}
     if not required_protocols.issubset(observed_protocols):
         return "Runtime Debug evidence does not cover every required protocol"
+    return None
+
+
+def _recovery_artifact_record(
+    raw: bytes, requirements: Mapping[str, object]
+) -> str | None:
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "recovery artifact record must be UTF-8 JSON"
+    if (
+        not isinstance(document, Mapping)
+        or document.get("schema")
+        != "openubmc-agent-workflow/recovery-artifact-record-v1"
+    ):
+        return "recovery artifact record schema is unsupported"
+    artifact = _mapping(document.get("artifact"))
+    expected = {
+        "path": _text(requirements.get("artifact.path")),
+        "sha256": _expected_sha256(requirements.get("artifact.sha256")),
+        "size": requirements.get("artifact.size"),
+        "version": _text(requirements.get("artifact.version")),
+    }
+    actual = {
+        "path": _text(artifact.get("path")),
+        "sha256": _expected_sha256(artifact.get("sha256")),
+        "size": artifact.get("size"),
+        "version": _text(artifact.get("version")),
+    }
+    if actual != expected:
+        return "recovery artifact record does not match the qualified recovery package"
     return None
 
 
@@ -486,8 +570,16 @@ def _historical_drive_summary(
         return "drive summary counts must be non-negative integers"
     if counts["drives"] <= 0 or len(drives) != counts["drives"]:
         return "drive summary drive count does not match its records"
-    direct = [drive for drive in drives if drive.get("controller") == 255]
-    raid = [drive for drive in drives if drive.get("controller") != 255]
+    direct = [
+        drive
+        for drive in drives
+        if drive.get("controller") == DriveController.DIRECT
+    ]
+    raid = [
+        drive
+        for drive in drives
+        if drive.get("controller") != DriveController.DIRECT
+    ]
     actual = {
         "drives": len(drives),
         "direct": len(direct),
@@ -499,8 +591,12 @@ def _historical_drive_summary(
         ),
         "raid": len(raid),
         "raid_zero": sum(drive.get("resource") == 0 for drive in raid),
-        "health_ok": sum(drive.get("health") == 0 for drive in drives),
-        "presence_ok": sum(drive.get("presence") == 1 for drive in drives),
+        "health_ok": sum(
+            drive.get("health") == DriveHealth.OK for drive in drives
+        ),
+        "presence_ok": sum(
+            drive.get("presence") == DrivePresence.PRESENT for drive in drives
+        ),
         "serial_ok": sum(drive.get("serial_present") is True for drive in drives),
     }
     if any(counts[field] != actual[field] for field in fields):
@@ -689,13 +785,19 @@ def _verify_fixed_supporting_evidence(
         if reason is not None:
             violations.append(f"{label}.supporting_evidence: {reason}")
     else:
-        accepted = _verify_historical_evidence(
-            source,
-            raw=raw,
-            label=f"{label}.supporting_evidence",
-            requirements=requirements,
-            violations=violations,
-        )
+        if evidence_type == "firmware-recovery-artifact-record":
+            reason = _recovery_artifact_record(raw, requirements)
+            accepted = reason is None
+            if reason is not None:
+                violations.append(f"{label}.supporting_evidence: {reason}")
+        else:
+            accepted = _verify_historical_evidence(
+                source,
+                raw=raw,
+                label=f"{label}.supporting_evidence",
+                requirements=requirements,
+                violations=violations,
+            )
     if accepted:
         identities.append(
             f"file:{label}.supporting_evidence:{actual}:{len(raw)}"
@@ -784,7 +886,7 @@ def _verify_structured_proof(
                 f"{label}: {dimension} proof requires a timezone-aware observed_at"
             )
             accepted = False
-    elif dimension in {"runtime", "upgrade"}:
+    elif dimension in {"runtime", "upgrade", "recovery"}:
         if _timestamp(proof.get("completed_at")) is None:
             violations.append(
                 f"{label}: {dimension} proof requires a timezone-aware completed_at"
@@ -1401,6 +1503,103 @@ def _artifact_dimension(
     }
 
 
+def _recovery_dimension(
+    value: object,
+    *,
+    primary_artifact: Mapping[str, object],
+    violations: list[str],
+    gaps: list[str],
+    identities: list[str],
+    target: str,
+    run_id: str,
+    runtime_facts: RuntimeLedgerFacts,
+    parsed_proofs: list[Mapping[str, object]],
+) -> dict[str, object]:
+    document = _mapping(value)
+    status = _text(document.get("status")) or "not_reported"
+    path_text = _text(document.get("path"))
+    expected = _expected_sha256(document.get("sha256"))
+    expected_size = document.get("size")
+    version = _text(document.get("version"))
+    if status != "verified":
+        gaps.append(f"recovery={status}")
+    if (
+        not path_text
+        or not expected
+        or isinstance(expected_size, bool)
+        or not isinstance(expected_size, int)
+        or expected_size <= 0
+        or not version
+    ):
+        violations.append(
+            "recovery: verified identity requires absolute path, sha256, positive "
+            "integer size, and version"
+        )
+        return {"status": status, "accepted": False, "version": version, "size": 0}
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        violations.append("recovery: path must be absolute")
+        path = path.absolute()
+    if (
+        str(path) == _text(primary_artifact.get("path"))
+        or expected == _expected_sha256(primary_artifact.get("sha256"))
+    ):
+        violations.append(
+            "recovery: package must be independently identified from the upgrade artifact"
+        )
+    actual_size = 0
+    if not path.is_file():
+        violations.append(f"recovery: file is unavailable: {path}")
+    else:
+        try:
+            raw = path.read_bytes()
+        except OSError as error:
+            violations.append(f"recovery: cannot read content: {error}")
+        else:
+            actual_size = len(raw)
+            actual = _digest_bytes(raw)
+            if actual != expected:
+                violations.append(
+                    f"recovery: digest mismatch: expected {expected}, actual {actual}"
+                )
+            if actual_size != expected_size:
+                violations.append(
+                    f"recovery: size mismatch: expected {expected_size}, actual {actual_size}"
+                )
+    evidence_result = _evidence_dimension(
+        document,
+        label="recovery",
+        accepted_statuses={"verified"},
+        violations=violations,
+        gaps=gaps,
+        identities=identities,
+        proof_requirements={
+            "dimension": "recovery",
+            "status": "verified",
+            "target": target,
+            "run_id": run_id,
+            "artifact.path": str(path),
+            "artifact.sha256": expected,
+            "artifact.size": expected_size,
+            "artifact.version": version,
+        },
+        structured_proof_required=True,
+        runtime_facts=runtime_facts,
+        parsed_proofs=parsed_proofs,
+    )
+    accepted = bool(evidence_result["accepted"]) and not any(
+        item.startswith("recovery:") for item in violations
+    )
+    if accepted:
+        identities.append(f"recovery:{version}:{expected}:{actual_size}")
+    return {
+        **evidence_result,
+        "accepted": accepted,
+        "version": version,
+        "size": actual_size,
+    }
+
+
 def _hardware_dimension(
     value: object,
     *,
@@ -1564,6 +1763,7 @@ def qualify(
         "upgrade": [],
         "freshness": [],
         "hardware": [],
+        "recovery": [],
     }
     if manifest.get("schema") != EVIDENCE_SCHEMA:
         violations.append(f"schema must be {EVIDENCE_SCHEMA}")
@@ -1687,6 +1887,18 @@ def qualify(
         runtime_facts=runtime_facts,
         fresh_runtime=mode == "fresh-runtime",
     )
+    if mode == "fresh-runtime":
+        dimensions["recovery"] = _recovery_dimension(
+            manifest.get("recovery"),
+            primary_artifact=artifact_document,
+            violations=violations,
+            gaps=gaps,
+            identities=identities,
+            target=case_target,
+            run_id=run_id,
+            runtime_facts=runtime_facts,
+            parsed_proofs=parsed_proofs["recovery"],
+        )
     dimensions["upgrade"] = _evidence_dimension(
         manifest.get("upgrade"),
         label="upgrade",

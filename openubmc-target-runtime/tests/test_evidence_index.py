@@ -46,7 +46,66 @@ class _Backend:
     @staticmethod
     def debug_run(_task, _arguments, context) -> dict[str, object]:
         context.raise_if_stopped()
-        return {"ok": True, "schema": "test/debug", "summary": "captured"}
+        return {
+            "ok": True,
+            "schema": "test/debug",
+            "summary": "captured",
+            "root_cause": "bounded test diagnosis",
+            "observed_at": "2026-08-30T00:00:00Z",
+            "freshness": {"status": "fresh"},
+        }
+
+
+def _create_public_run(
+    repository: SQLiteRuntimeRepository,
+    *,
+    target: str,
+    terminal: bool = False,
+) -> str:
+    service = RuntimeMcpService(_Backend(), context_repository=repository)
+    try:
+        turn = service.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": target,
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "source-only",
+                "entry_operation": "debug_run",
+            },
+            task_id=f"public-run-{target}",
+            operation_id=f"public-run-{target}-start",
+        )
+        run_id = str(turn["run_id"])
+        if terminal:
+            gate = turn["gate"]
+            assert isinstance(gate, dict)
+            turn = service.call_exposed_tool(
+                "execute",
+                {
+                    "kind": "respond",
+                    "run_id": run_id,
+                    "gate_id": gate["gate_id"],
+                    "gate_version": gate["gate_version"],
+                    "schema_digest": gate["schema_digest"],
+                    "response": {
+                        "status": "completed",
+                        "summary": "source-only test completed",
+                        "payload": {
+                            "source_revision": "test-source-revision",
+                            "authored_files": ["src/test.lua"],
+                            "verification_plan": ["local validation"],
+                        },
+                    },
+                },
+                task_id=f"public-run-{target}",
+                operation_id=f"public-run-{target}-developer",
+            )
+            if turn["state"] != "completed":
+                raise AssertionError("public terminal Run did not complete")
+        return run_id
+    finally:
+        service.close()
 
 
 class EvidenceIndexTests(unittest.TestCase):
@@ -58,27 +117,7 @@ class EvidenceIndexTests(unittest.TestCase):
             evidence_path.write_bytes(b"3/3 passed\n")
             digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
             repository = SQLiteRuntimeRepository(database)
-            repository.commit(
-                "run-operator-evidence",
-                expected_revision=0,
-                events=(
-                    PendingCaseEvent(
-                        "CaseOpened",
-                        {
-                            "intent": "diagnose-and-fix",
-                            "delivery_strategy": "build-upgrade",
-                            "targets": [
-                                {
-                                    "target_id": "target-1",
-                                    "address": "192.0.2.80",
-                                    "role": "candidate",
-                                }
-                            ],
-                        },
-                        "start-run",
-                    ),
-                ),
-            )
+            run_id = _create_public_run(repository, target="192.0.2.80")
             service = RuntimeMcpService(
                 _Backend(),
                 context_repository=repository,
@@ -88,7 +127,7 @@ class EvidenceIndexTests(unittest.TestCase):
                 attached = service.call_exposed_tool(
                     "evidence_attach",
                     {
-                        "run_id": "run-operator-evidence",
+                        "run_id": run_id,
                         "target": "192.0.2.80",
                         "path": str(evidence_path),
                         "sha256": digest,
@@ -100,7 +139,7 @@ class EvidenceIndexTests(unittest.TestCase):
                 loaded = service.call_exposed_tool(
                     "evidence_read",
                     {
-                        "case_id": "run-operator-evidence",
+                        "case_id": run_id,
                         "evidence_id": attached["evidence"]["evidence_id"],
                     },
                     task_id="operator-evidence",
@@ -122,33 +161,14 @@ class EvidenceIndexTests(unittest.TestCase):
             evidence_path.write_bytes(b"build completed\n")
             digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
             repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
-            repository.commit(
-                "run-idempotent-evidence",
-                expected_revision=0,
-                events=(
-                    PendingCaseEvent(
-                        "CaseOpened",
-                        {
-                            "intent": "diagnose-and-fix",
-                            "targets": [
-                                {
-                                    "target_id": "target-1",
-                                    "address": "192.0.2.81",
-                                    "role": "candidate",
-                                }
-                            ],
-                        },
-                        "start-run",
-                    ),
-                ),
-            )
+            run_id = _create_public_run(repository, target="192.0.2.81")
             service = RuntimeMcpService(
                 _Backend(),
                 context_repository=repository,
                 interface_profile="operator",
             )
             arguments = {
-                "run_id": "run-idempotent-evidence",
+                "run_id": run_id,
                 "target": "target-1",
                 "path": str(evidence_path),
                 "sha256": digest,
@@ -161,24 +181,29 @@ class EvidenceIndexTests(unittest.TestCase):
                     task_id="operator-evidence",
                     operation_id="attach-build-first",
                 )
-                first_revision = repository.current_revision(
-                    "run-idempotent-evidence"
-                )
+                first_revision = repository.current_revision(run_id)
+                attachment_events = [
+                    event["kind"]
+                    for event in repository.events(run_id)
+                    if event["operation_id"] == "attach-build-first"
+                ]
                 second = service.call_exposed_tool(
                     "evidence_attach",
                     arguments,
                     task_id="operator-evidence",
                     operation_id="attach-build-second",
                 )
-                second_revision = repository.current_revision(
-                    "run-idempotent-evidence"
-                )
+                second_revision = repository.current_revision(run_id)
             finally:
                 service.close()
 
         self.assertFalse(first["idempotent_replay"])
         self.assertTrue(second["idempotent_replay"])
         self.assertEqual(first["evidence"], second["evidence"])
+        self.assertEqual(
+            attachment_events,
+            ["EvidenceAttached", "RunDecisionCommitted"],
+        )
         self.assertEqual(first_revision, second_revision)
 
     def test_operator_file_evidence_attach_rejects_invalid_run_binding(self) -> None:
@@ -188,30 +213,10 @@ class EvidenceIndexTests(unittest.TestCase):
             evidence_path.write_bytes(b"root cause and fix\n")
             digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
             repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
-            repository.commit(
-                "run-terminal-evidence",
-                expected_revision=0,
-                events=(
-                    PendingCaseEvent(
-                        "CaseOpened",
-                        {
-                            "intent": "diagnose-and-fix",
-                            "targets": [
-                                {
-                                    "target_id": "target-1",
-                                    "address": "192.0.2.82",
-                                    "role": "candidate",
-                                }
-                            ],
-                        },
-                        "start-run",
-                    ),
-                    PendingCaseEvent(
-                        "RunOutcomeRecorded",
-                        {"outcome": {"status": "completed", "summary": "done"}},
-                        "finish-run",
-                    ),
-                ),
+            run_id = _create_public_run(
+                repository,
+                target="192.0.2.82",
+                terminal=True,
             )
             service = RuntimeMcpService(
                 _Backend(),
@@ -223,7 +228,7 @@ class EvidenceIndexTests(unittest.TestCase):
                     service.call_exposed_tool(
                         "evidence_attach",
                         {
-                            "run_id": "run-terminal-evidence",
+                            "run_id": run_id,
                             "target": "target-1",
                             "path": str(evidence_path),
                             "sha256": digest,
@@ -242,33 +247,14 @@ class EvidenceIndexTests(unittest.TestCase):
             evidence_path.write_bytes(b"root cause and fix\n")
             digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
             repository = SQLiteRuntimeRepository(root / "runtime.sqlite3")
-            repository.commit(
-                "run-bound-evidence",
-                expected_revision=0,
-                events=(
-                    PendingCaseEvent(
-                        "CaseOpened",
-                        {
-                            "intent": "diagnose-and-fix",
-                            "targets": [
-                                {
-                                    "target_id": "target-1",
-                                    "address": "192.0.2.83",
-                                    "role": "candidate",
-                                }
-                            ],
-                        },
-                        "start-run",
-                    ),
-                ),
-            )
+            run_id = _create_public_run(repository, target="192.0.2.83")
             service = RuntimeMcpService(
                 _Backend(),
                 context_repository=repository,
                 interface_profile="operator",
             )
             base = {
-                "run_id": "run-bound-evidence",
+                "run_id": run_id,
                 "target": "target-1",
                 "path": str(evidence_path),
                 "sha256": digest,

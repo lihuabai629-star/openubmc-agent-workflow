@@ -358,6 +358,7 @@ def _response_uri(response: RedfishResponse) -> str:
 def _multipart_body(
     artifact: UpgradeArtifact,
     artifact_bytes: bytes,
+    update_parameters: Mapping[str, object],
 ) -> tuple[bytes, str]:
     boundary = "openubmc-target-runtime-" + uuid.uuid4().hex
     filename = Path(artifact.path).name.replace('"', "")
@@ -365,13 +366,29 @@ def _multipart_body(
         f"--{boundary}\r\n"
         "Content-Disposition: form-data; name=\"UpdateParameters\"\r\n"
         "Content-Type: application/json\r\n\r\n"
-        "{}\r\n"
+        + json.dumps(
+            dict(update_parameters),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\r\n"
         f"--{boundary}\r\n"
         f"Content-Disposition: form-data; name=\"UpdateFile\"; filename=\"{filename}\"\r\n"
         "Content-Type: application/octet-stream\r\n\r\n"
     ).encode("utf-8")
     suffix = f"\r\n--{boundary}--\r\n".encode("ascii")
     return prefix + artifact_bytes + suffix, boundary
+
+
+def _update_parameters(arguments: Mapping[str, object]) -> dict[str, object]:
+    active_mode = _argument_text(arguments, "active_mode") or "ResetBMC"
+    if active_mode not in {"Immediately", "ResetBMC"}:
+        raise ValueError("active_mode must be Immediately or ResetBMC")
+    return {
+        "ActiveMode": active_mode,
+        "ForceUpdate": _argument_bool(arguments, "force_update", default=True),
+    }
 
 
 @dataclass
@@ -562,7 +579,12 @@ class UpgradeMcpBackend:
             else None
         )
         if isinstance(multipart_uri, str) and multipart_uri:
-            body, boundary = _multipart_body(artifact, artifact_bytes)
+            parameters = _update_parameters(arguments)
+            body, boundary = _multipart_body(
+                artifact,
+                artifact_bytes,
+                parameters,
+            )
             mark_effects()
             response = session.request_json(
                 "POST",
@@ -593,19 +615,22 @@ class UpgradeMcpBackend:
             response = session.request_json(
                 "POST",
                 target,
-                payload={"ImageURI": image_uri},
+                payload={"ImageURI": image_uri, **_update_parameters(arguments)},
             )
             method = "SimpleUpdate"
         else:
             raise ValueError("target UpdateService advertises no supported upload method")
         if response.status < 200 or response.status >= 300:
             raise RuntimeError(f"Redfish upgrade upload returned HTTP {response.status}")
-        return {
+        result = {
             "method": method,
             "http_status": response.status,
             "task_uri": _response_uri(response),
             "upload_timeout_seconds": upload_timeout,
         }
+        if method in {"MultipartHttpPushUri", "SimpleUpdate"}:
+            result["parameters"] = _update_parameters(arguments)
+        return result
 
     @staticmethod
     def _monitor_task(session, task_uri: str, context) -> dict[str, object]:
@@ -664,7 +689,11 @@ class UpgradeMcpBackend:
             for key in ("FirmwareVersion", "ManagerFirmwareVersion", "Version"):
                 version = manager.get(key)
                 if isinstance(version, str) and version:
-                    return {"version": version, "manager": path}
+                    identity = {"version": version, "manager": path}
+                    last_reset_time = manager.get("LastResetTime")
+                    if isinstance(last_reset_time, str) and last_reset_time.strip():
+                        identity["last_reset_time"] = last_reset_time.strip()
+                    return identity
         raise ValueError("Redfish Managers did not report an installed firmware version")
 
     @staticmethod
@@ -901,8 +930,11 @@ class UpgradeMcpBackend:
             ssh_selector=binding.ssh_selector,
             redfish_transport=binding.transport,
         )
+        update_parameters = _update_parameters(arguments)
         mutation_options = {
             "image_uri": _argument_text(arguments, "image_uri"),
+            "active_mode": update_parameters["ActiveMode"],
+            "force_update": update_parameters["ForceUpdate"],
         }
         recovery_mode = effect_recovery_mode(arguments)
         recovery_route = mutation_recovery_route(
@@ -1177,6 +1209,13 @@ class UpgradeMcpBackend:
             "upload_timeout",
             600,
         )
+        try:
+            manager_before = self._installed_version(session)
+        except (OSError, TimeoutError, RedfishHttpError, ValueError, urlerror.URLError) as exc:
+            manager_before = {
+                "available": False,
+                "error": type(exc).__name__,
+            }
         discovery = session.request_json("GET", "/redfish/v1/UpdateService")
         if not isinstance(discovery.payload, Mapping):
             raise ValueError("Redfish UpdateService response must be an object")
@@ -1206,6 +1245,7 @@ class UpgradeMcpBackend:
         return {
             **upload,
             "monitor": monitor,
+            "manager_before": manager_before,
             "artifact_path": artifact.path,
             "artifact_sha256": artifact.sha256,
             "product_version": artifact.product_version,

@@ -12081,7 +12081,19 @@ class AgentGatewayTests(unittest.TestCase):
 
     def test_execute_build_upgrade_runs_both_gates_and_fresh_verification(self) -> None:
         backend = CompleteDriveVerificationSemanticBackend()
-        service = RuntimeMcpService(backend)
+        repository = InMemoryRuntimeRepository()
+        blob_repository = InMemoryBlobRepository()
+        service = RuntimeMcpService(
+            backend,
+            context_repository=repository,
+            blob_repository=blob_repository,
+        )
+        operator = RuntimeMcpService(
+            backend,
+            context_repository=repository,
+            blob_repository=blob_repository,
+            interface_profile="operator",
+        )
         product = self.artifact_root / "complete-drive-verification-product.hpm"
         product.write_bytes(b"firmware-1.2.4")
         try:
@@ -12168,20 +12180,29 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="complete-drive-verification",
                 operation_id="complete-drive-verification-build",
             )
-            projection = service._test.context_runtime.read_case(
-                diagnosis["run_id"]
+            projection = operator.call_exposed_tool(
+                "case_read",
+                {"case_id": diagnosis["run_id"]},
+                task_id="complete-drive-verification-operator",
+                operation_id="complete-drive-verification-case-read",
             )
             verification_operation = next(
                 operation
                 for operation in projection["operations"]
                 if operation.get("operation") == "debug_collect"
             )
-            verification_evidence = service._test.context_runtime.read_evidence(
-                diagnosis["run_id"],
-                verification_operation["evidence_ids"][-1],
-                target_id="target-1",
+            verification_evidence = operator.call_exposed_tool(
+                "evidence_read",
+                {
+                    "case_id": diagnosis["run_id"],
+                    "evidence_id": verification_operation["evidence_ids"][-1],
+                    "target_id": "target-1",
+                },
+                task_id="complete-drive-verification-operator",
+                operation_id="complete-drive-verification-evidence-read",
             )
         finally:
+            operator.close()
             service.close()
 
         self.assertEqual(final["state"], "completed")

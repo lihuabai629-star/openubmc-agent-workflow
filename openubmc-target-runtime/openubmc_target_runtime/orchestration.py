@@ -29,6 +29,14 @@ _OUTCOME_STATUSES = frozenset(
 ValueT = TypeVar("ValueT")
 
 
+def enforce_fresh_verification(arguments: Mapping[str, object]) -> dict[str, object]:
+    """Return workflow arguments with freshness collection enabled."""
+
+    selected = dict(arguments)
+    selected["no_freshness"] = False
+    return selected
+
+
 @dataclass(frozen=True)
 class WorkflowStep:
     domain: str

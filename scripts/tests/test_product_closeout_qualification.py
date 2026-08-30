@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import sqlite3
@@ -17,11 +18,215 @@ SCRIPT = ROOT / "scripts" / "product_closeout_qualification.py"
 RUNTIME_ROOT = ROOT / "openubmc-target-runtime"
 sys.path.insert(0, str(RUNTIME_ROOT))
 
-from openubmc_target_runtime import SQLiteRuntimeRepository  # noqa: E402
+from openubmc_target_runtime import (  # noqa: E402
+    FilesystemBlobRepository,
+    RuntimeMcpService,
+    SQLiteRuntimeRepository,
+)
 from openubmc_target_runtime.context_runtime import PendingCaseEvent  # noqa: E402
 
 
 AUTO_RUNTIME_REPOSITORY = object()
+
+
+class _QualificationTask:
+    def __init__(self, task_id: str) -> None:
+        self.task_id = task_id
+
+
+class _QualificationBackend:
+    def open_task(self, task_id: str) -> _QualificationTask:
+        return _QualificationTask(task_id)
+
+    @staticmethod
+    def close_task(_task: _QualificationTask) -> None:
+        return None
+
+    @staticmethod
+    def maintain_task(_task: _QualificationTask) -> int:
+        return 0
+
+    @staticmethod
+    def task_status(task: _QualificationTask) -> dict[str, object]:
+        return {"task_id": task.task_id}
+
+    @staticmethod
+    def debug_run(_task, _arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        return {
+            "ok": True,
+            "schema": "openubmc-debug.v1",
+            "summary": "Drive resource attribution defect isolated",
+            "root_cause": "global and local slot identity mismatch",
+            "hardware_devices": [{"device_id": "Drive1", "protocol": "NVMe"}],
+            "observed_at": datetime.now(UTC).isoformat(),
+            "freshness": {"status": "fresh"},
+        }
+
+    @staticmethod
+    def upgrade_run(_task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        digest = str(arguments.get("artifact_sha256", ""))
+        version = str(arguments.get("product_version", ""))
+        target_epoch = int(arguments.get("_minimum_target_epoch", 0)) + 1
+        return {
+            "ok": True,
+            "operation_id": context.operation_id,
+            "action": "upgrade",
+            "epoch_before": target_epoch - 1,
+            "epoch_after": target_epoch,
+            "target_epoch": target_epoch,
+            "mutation": {
+                "method": "MultipartHttpPushUri",
+                "task_uri": "/redfish/v1/TaskService/Tasks/1",
+                "parameters": {"ActiveMode": "ResetBMC", "ForceUpdate": True},
+                "manager_before": {
+                    "version": version,
+                    "last_reset_time": "2026-08-29T10:00:00Z",
+                },
+            },
+            "verification": {
+                "installed_version": version,
+                "target_epoch": target_epoch,
+                "version": {
+                    "version": version,
+                    "last_reset_time": "2026-08-29T11:00:00Z",
+                },
+            },
+            "journal": {
+                "operation_id": context.operation_id,
+                "action": "upgrade",
+                "stage": "verified",
+                "effects_started": True,
+                "expected_checksum": digest,
+                "epoch_before": target_epoch - 1,
+                "epoch_after": target_epoch,
+            },
+        }
+
+    @staticmethod
+    def debug_collect(_task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        target_epoch = int(arguments.get("_minimum_target_epoch", 0))
+        return {
+            "ok": True,
+            "observed_at": datetime.now(UTC).isoformat(),
+            "target_epoch": target_epoch,
+            "business_acceptance": "passed",
+            "result": {
+                "freshness": {
+                    "status": "fresh",
+                    "complete": True,
+                    "after_last_reboot_or_change": True,
+                    "stale_evidence": [],
+                    "lost_dimensions": [],
+                    "unavailable_dimensions": [],
+                    "bmc_time_delta": {
+                        "before": "2026-08-29 11:00:00 +0000",
+                        "after": "2026-08-29 11:00:01 +0000",
+                        "elapsed_seconds": 1.0,
+                        "comparable": True,
+                        "clock_moved_backwards": False,
+                    },
+                },
+                "lanes": {
+                    "ssh": {
+                        "mdbctl_expand_1": {
+                            "ok": True,
+                            "result": {"stdout_lines": ["Drive_1_010102"]},
+                        },
+                        "mdbctl_expand_1_object_drive1": {
+                            "ok": True,
+                            "result": {
+                                "properties": {
+                                    "Id": 1,
+                                    "Protocol": 6,
+                                    "Presence": 1,
+                                    "Health": 0,
+                                    "ResourceId": 7,
+                                    "SerialNumber": "NVME-SERIAL-1",
+                                    "bmc.kepler.Systems.Storage.Drive": {
+                                        "Id": "1",
+                                        "Name": "\"Drive1\"",
+                                        "Protocol": "6",
+                                        "RefControllerId": "255",
+                                        "ResourceId": "7",
+                                        "Presence": "1",
+                                    },
+                                    "bmc.kepler.Systems.Storage.Drive.DriveStatus": {
+                                        "Health": "0"
+                                    },
+                                    "bmc.kepler.Inventory.Hardware": {
+                                        "SerialNumber": "\"NVME-SERIAL-1\""
+                                    },
+                                }
+                            },
+                        }
+                    }
+                },
+                "runtime": {
+                    "status": {
+                        "targets": [
+                            {
+                                "target_id": str(arguments.get("target_id", "")),
+                                "epochs": {"target_epoch": target_epoch},
+                            }
+                        ]
+                    }
+                },
+            },
+        }
+
+
+def _gate_binding(turn: Mapping[str, object]) -> dict[str, object]:
+    gate = turn["gate"]
+    assert isinstance(gate, Mapping)
+    return {
+        "gate_id": gate["gate_id"],
+        "gate_version": gate["gate_version"],
+        "schema_digest": gate["schema_digest"],
+    }
+
+
+def _compiled_validation_payload(evidence_ids: list[str]) -> dict[str, object]:
+    readiness_id = "qualification-readiness"
+    return {
+        "dependency_readiness": {
+            "readiness_id": readiness_id,
+            "status": "ready",
+            "resolution": "available",
+            "summary": "build dependencies resolved",
+            "check_commands": ["conan graph info ."],
+            "evidence_ids": list(evidence_ids),
+            "attempt_count": 1,
+            "reused_by": ["official_ut", "build"],
+        },
+        "validation_results": [
+            {
+                "kind": "official_ut",
+                "status": "passed",
+                "summary": "official UT passed",
+                "commands": ["bingo test"],
+                "evidence_ids": list(evidence_ids),
+                "dependency_readiness_id": readiness_id,
+            },
+            {
+                "kind": "build",
+                "status": "compiled",
+                "summary": "firmware compilation completed",
+                "commands": ["bmcgo build"],
+                "evidence_ids": list(evidence_ids),
+                "dependency_readiness_id": readiness_id,
+            },
+        ],
+        "hardware_coverage": {
+            "status": "covered",
+            "required_protocols": ["NVMe"],
+            "devices": [{"device_id": "Drive1", "protocol": "NVMe"}],
+            "evidence_ids": list(evidence_ids),
+            "gaps": [],
+        },
+    }
 
 
 def sha256(path: Path) -> str:
@@ -49,7 +254,7 @@ def all_manifest_evidence(manifest: dict[str, object]) -> list[dict[str, object]
 
 def manifest_dimensions(manifest: dict[str, object]) -> tuple[dict[str, object], ...]:
     validation = manifest["validation"]
-    return (
+    dimensions = [
         manifest["runtime"],
         manifest["diagnosis"],
         validation["official_ut"],
@@ -57,10 +262,238 @@ def manifest_dimensions(manifest: dict[str, object]) -> tuple[dict[str, object],
         manifest["upgrade"],
         manifest["freshness"],
         manifest["hardware"],
+    ]
+    recovery = manifest.get("recovery")
+    if isinstance(recovery, dict):
+        dimensions.append(recovery)
+    return tuple(dimensions)
+
+
+def _refresh_proof_bindings(manifest: dict[str, object]) -> None:
+    run_id = manifest["runtime"]["run_id"]
+    target = manifest["case"]["target"]
+    for dimension in manifest_dimensions(manifest):
+        for item in dimension.get("evidence", []):
+            proof_path = Path(item["path"])
+            proof = json.loads(proof_path.read_text(encoding="utf-8"))
+            proof["run_id"] = run_id
+            proof["target"] = target
+            support = item.get("supporting_evidence")
+            if isinstance(support, dict):
+                proof["supporting_evidence"] = {
+                    "evidence_type": support["evidence_type"],
+                    "sha256": sha256(Path(support["path"])),
+                }
+                support["sha256"] = proof["supporting_evidence"]["sha256"]
+            if proof.get("dimension") == "upgrade":
+                proof["artifact"] = {
+                    key: manifest["artifact"][key]
+                    for key in (
+                        "path",
+                        "sha256",
+                        "size",
+                        "version",
+                        "provenance",
+                        "source_revision",
+                        "target",
+                        "run_id",
+                    )
+                }
+                proof["installed_version"] = manifest["artifact"]["version"]
+            elif proof.get("dimension") == "freshness":
+                proof["artifact_sha256"] = manifest["artifact"]["sha256"]
+            elif proof.get("dimension") == "recovery":
+                proof["artifact"] = {
+                    key: manifest["recovery"][key]
+                    for key in ("path", "sha256", "size", "version")
+                }
+            proof_path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
+            item["sha256"] = sha256(proof_path)
+
+
+def _build_public_runtime_ledger(manifest: dict[str, object]) -> None:
+    repository_path = Path(manifest["runtime"]["repository"]["path"])
+    repository = SQLiteRuntimeRepository(repository_path)
+    blobs = FilesystemBlobRepository(repository_path.with_suffix(".blobs"))
+    backend = _QualificationBackend()
+    agent = RuntimeMcpService(
+        backend,
+        context_repository=repository,
+        blob_repository=blobs,
     )
+    operator = RuntimeMcpService(
+        backend,
+        context_repository=repository,
+        blob_repository=blobs,
+        interface_profile="operator",
+    )
+    try:
+        diagnosis = agent.call_exposed_tool(
+            "execute",
+            {
+                "kind": "start",
+                "target": manifest["case"]["target"],
+                "intent": "diagnose-and-fix",
+                "delivery_strategy": "build-upgrade",
+                "entry_operation": "debug_run",
+                "entry_arguments": {"mdb_expand_classes": ["Drive"]},
+                "purpose": "qualify one public Runtime product closeout",
+            },
+            task_id="product-closeout-qualification",
+            operation_id="product-closeout-start",
+        )
+        run_id = str(diagnosis["run_id"])
+        manifest["runtime"]["run_id"] = run_id
+        manifest["artifact"]["run_id"] = run_id
+        if diagnosis["gate"]["name"] != "diagnosis.acceptance":
+            raise AssertionError("qualification Run did not expose diagnosis acceptance")
+        evidence_ids = [
+            item["evidence_id"]
+            for item in diagnosis["diagnostic_receipt"]["evidence"]
+        ]
+        developer = agent.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": run_id,
+                **_gate_binding(diagnosis),
+                "response": {
+                    "status": "completed",
+                    "summary": "diagnosis accepted",
+                    "payload": {
+                        "root_cause": "global and local slot identity mismatch",
+                        "evidence_ids": evidence_ids,
+                        "known_gaps": [],
+                    },
+                },
+            },
+            task_id="product-closeout-qualification",
+            operation_id="product-closeout-diagnosis",
+        )
+        build = agent.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": run_id,
+                **_gate_binding(developer),
+                "response": {
+                    "status": "completed",
+                    "summary": "source repair completed",
+                    "payload": {
+                        "source_revision": manifest["artifact"]["source_revision"],
+                        "authored_files": ["fix.lua"],
+                        "verification_plan": ["official UT", "build", "upgrade"],
+                    },
+                },
+            },
+            task_id="product-closeout-qualification",
+            operation_id="product-closeout-developer",
+        )
+        attached: set[str] = set()
+        for dimension in manifest_dimensions(manifest):
+            for item in dimension.get("evidence", []):
+                support = item.get("supporting_evidence")
+                if not isinstance(support, dict):
+                    continue
+                evidence_type = str(support.get("evidence_type", ""))
+                if evidence_type in {
+                    "runtime-upgrade-evidence",
+                    "runtime-debug-evidence",
+                }:
+                    continue
+                digest = str(support["sha256"])
+                if digest in attached:
+                    continue
+                attached.add(digest)
+                operator.call_exposed_tool(
+                    "evidence_attach",
+                    {
+                        "run_id": run_id,
+                        "target": manifest["case"]["target"],
+                        "path": support["path"],
+                        "sha256": digest,
+                        "evidence_type": evidence_type,
+                    },
+                    task_id="product-closeout-qualification-operator",
+                    operation_id=f"attach-{evidence_type}",
+                )
+        artifact_path = Path(manifest["artifact"]["path"])
+        final = agent.call_exposed_tool(
+            "execute",
+            {
+                "kind": "respond",
+                "run_id": run_id,
+                **_gate_binding(build),
+                "response": {
+                    "status": "completed",
+                    "summary": "firmware artifact completed",
+                    "payload": {
+                        "source_revision": manifest["artifact"]["source_revision"],
+                        "artifact_ref": {
+                            "handle": str(artifact_path),
+                            "digest": "sha256:" + manifest["artifact"]["sha256"],
+                            "kind": "openubmc-hpm",
+                            "size": manifest["artifact"]["size"],
+                            "provenance": manifest["artifact"]["provenance"],
+                            "retention_hint": "run-lifetime",
+                            "version": manifest["artifact"]["version"],
+                            "target": manifest["case"]["target"],
+                            "run_id": run_id,
+                        },
+                        **_compiled_validation_payload(evidence_ids),
+                    },
+                },
+            },
+            task_id="product-closeout-qualification",
+            operation_id="product-closeout-build",
+        )
+        if final["state"] != "completed":
+            raise AssertionError(f"qualification Run did not complete: {final}")
+        projection = operator.call_exposed_tool(
+            "case_read",
+            {"case_id": run_id},
+            task_id="product-closeout-qualification-operator",
+            operation_id="product-closeout-case-read",
+        )
+        native_paths = {
+            "upgrade_run": Path(
+                manifest["upgrade"]["evidence"][0]["supporting_evidence"]["path"]
+            ),
+            "debug_collect": Path(
+                manifest["freshness"]["evidence"][0]["supporting_evidence"]["path"]
+            ),
+        }
+        for operation in projection["operations"]:
+            name = operation.get("operation")
+            if name not in native_paths:
+                continue
+            evidence_id = operation["evidence_ids"][-1]
+            loaded = operator.call_exposed_tool(
+                "evidence_read",
+                {
+                    "case_id": run_id,
+                    "evidence_id": evidence_id,
+                    "target_id": "target-1",
+                },
+                task_id="product-closeout-qualification-operator",
+                operation_id=f"product-closeout-read-{name}",
+            )
+            native_paths[name].write_text(loaded["body"], encoding="utf-8")
+        _refresh_proof_bindings(manifest)
+        manifest["runtime"]["repository"]["sha256"] = hashlib.sha256(
+            json.dumps(
+                repository.events(run_id),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    finally:
+        operator.close()
+        agent.close()
 
 
-def rebuild_runtime_ledger(
+def forge_runtime_ledger_for_negative_test(
     manifest: dict[str, object],
     *,
     evidence_target: str | None = None,
@@ -73,6 +506,13 @@ def rebuild_runtime_ledger(
     include_native_evidence: bool = True,
     native_operations_in_order: bool = True,
 ) -> None:
+    """Construct a deliberately forged ledger for qualification rejection tests.
+
+    Positive fixtures always use ``_build_public_runtime_ledger`` and therefore
+    exercise the public Agent and Operator interfaces.  This helper is limited
+    to tests that need an impossible or malicious persisted history that the
+    public Runtime correctly refuses to create.
+    """
     runtime = manifest["runtime"]
     repository_ref = runtime["repository"]
     database = Path(repository_ref["path"])
@@ -396,6 +836,8 @@ def complete_manifest(
     ).stdout.strip()
     artifact = root / "firmware.hpm"
     artifact.write_bytes(b"firmware")
+    recovery_artifact = root / "recovery.hpm"
+    recovery_artifact.write_bytes(b"recovery-firmware")
     source_revision = f"source:{source_commit}"
     artifact_identity = {
         "path": str(artifact),
@@ -407,6 +849,22 @@ def complete_manifest(
         "target": "target-1",
         "run_id": "run-product-closeout-1",
     }
+    Path(str(artifact) + ".metadata.json").write_text(
+        json.dumps(
+            {
+                "schema": "openubmc-agent-workflow/artifact-metadata-v1",
+                "artifact": {
+                    "sha256": artifact_identity["sha256"],
+                    "size": artifact_identity["size"],
+                    "kind": "openubmc-hpm",
+                },
+                "product_version": artifact_identity["version"],
+                "provenance": artifact_identity["provenance"],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     proof_base = {
         "schema": "openubmc-agent-workflow.product-closeout-proof.v1",
         "target": "target-1",
@@ -491,6 +949,23 @@ def complete_manifest(
             "observed_at": "2026-08-29T12:00:00Z",
         },
     )
+    recovery_identity = {
+        "path": str(recovery_artifact),
+        "sha256": sha256(recovery_artifact),
+        "size": recovery_artifact.stat().st_size,
+        "version": "0.9.0",
+    }
+    recovery_ref, recovery_proof = structured_proof(
+        root,
+        "recovery-proof",
+        {
+            **proof_base,
+            "dimension": "recovery",
+            "status": "verified",
+            "artifact": recovery_identity,
+            "completed_at": "2026-08-29T10:30:00Z",
+        },
+    )
     diagnosis_support = root / "diagnosis-record.md"
     diagnosis_support.write_text(
         "根因：目标盘资源关联键错误。\n修复：使用全局盘位映射。\n",
@@ -520,8 +995,23 @@ def complete_manifest(
                 "mutation": {
                     "method": "MultipartHttpPushUri",
                     "task_uri": "/redfish/v1/TaskService/Tasks/1",
+                    "parameters": {
+                        "ActiveMode": "ResetBMC",
+                        "ForceUpdate": True,
+                    },
+                    "manager_before": {
+                        "version": "1.0.0",
+                        "last_reset_time": "2026-08-29T10:00:00Z",
+                    },
                 },
-                "verification": {"installed_version": "1.0.0", "target_epoch": 4},
+                "verification": {
+                    "installed_version": "1.0.0",
+                    "target_epoch": 4,
+                    "version": {
+                        "version": "1.0.0",
+                        "last_reset_time": "2026-08-29T11:00:00Z",
+                    },
+                },
                 "journal": {
                     "operation_id": "upgrade-effect-1",
                     "action": "upgrade",
@@ -582,6 +1072,17 @@ def complete_manifest(
         ),
         encoding="utf-8",
     )
+    recovery_support = root / "recovery-artifact-record.json"
+    recovery_support.write_text(
+        json.dumps(
+            {
+                "schema": "openubmc-agent-workflow/recovery-artifact-record-v1",
+                "artifact": recovery_identity,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
     def support(path: Path, evidence_type: str) -> dict[str, str]:
         return {
@@ -634,6 +1135,11 @@ def complete_manifest(
         hardware_proof,
         support(debug_support, "runtime-debug-evidence"),
     )
+    bind_support(
+        recovery_ref,
+        recovery_proof,
+        support(recovery_support, "firmware-recovery-artifact-record"),
+    )
     runtime_database = root / "runtime.sqlite3"
     manifest: dict[str, object] = {
         "schema": "openubmc-agent-workflow.product-closeout-evidence.v1",
@@ -664,6 +1170,11 @@ def complete_manifest(
             "status": "verified",
             **artifact_identity,
         },
+        "recovery": {
+            "status": "verified",
+            **recovery_identity,
+            "evidence": [recovery_ref],
+        },
         "upgrade": {"status": "completed", "evidence": [upgrade_ref]},
         "freshness": {
             "status": "fresh",
@@ -677,7 +1188,7 @@ def complete_manifest(
             "evidence": [hardware_ref],
         },
     }
-    rebuild_runtime_ledger(manifest)
+    _build_public_runtime_ledger(manifest)
     del runtime_proof
     return manifest, source, diagnosis_proof, artifact
 
@@ -714,7 +1225,6 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             manifest, _, _, _ = complete_manifest(root)
-            rebuild_runtime_ledger(manifest, attach_proofs=False)
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -726,7 +1236,7 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             manifest, _, _, _ = complete_manifest(root)
-            rebuild_runtime_ledger(
+            forge_runtime_ledger_for_negative_test(
                 manifest,
                 attach_proofs=False,
                 attach_supporting=False,
@@ -747,52 +1257,7 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
     def test_native_runtime_upgrade_evidence_verifies_artifact_version_and_epoch(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            manifest, _, _, artifact = complete_manifest(root)
-            native_upgrade = root / "runtime-upgrade.json"
-            native_upgrade.write_text(
-                json.dumps(
-                    {
-                        "operation_id": "upgrade-effect-1",
-                        "action": "upgrade",
-                        "epoch_before": 3,
-                        "epoch_after": 4,
-                        "mutation": {
-                            "method": "MultipartHttpPushUri",
-                            "task_uri": "/redfish/v1/TaskService/Tasks/1",
-                        },
-                        "verification": {
-                            "installed_version": "1.0.0",
-                            "target_epoch": 4,
-                        },
-                        "journal": {
-                            "operation_id": "upgrade-effect-1",
-                            "action": "upgrade",
-                            "stage": "verified",
-                            "effects_started": True,
-                            "expected_checksum": sha256(artifact),
-                            "epoch_before": 3,
-                            "epoch_after": 4,
-                        },
-                    },
-                    sort_keys=True,
-                ),
-                encoding="utf-8",
-            )
-            upgrade_ref = manifest["upgrade"]["evidence"][0]
-            upgrade_proof = Path(upgrade_ref["path"])
-            proof = json.loads(upgrade_proof.read_text(encoding="utf-8"))
-            proof["supporting_evidence"] = {
-                "evidence_type": "runtime-upgrade-evidence",
-                "sha256": sha256(native_upgrade),
-            }
-            upgrade_proof.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
-            upgrade_ref["sha256"] = sha256(upgrade_proof)
-            upgrade_ref["supporting_evidence"] = {
-                "path": str(native_upgrade),
-                "sha256": sha256(native_upgrade),
-                "evidence_type": "runtime-upgrade-evidence",
-            }
-            rebuild_runtime_ledger(manifest, attach_proofs=False)
+            manifest, _, _, _ = complete_manifest(root)
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -804,71 +1269,6 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             manifest, _, _, _ = complete_manifest(root)
-            native_debug = root / "runtime-debug.json"
-            native_debug.write_text(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "observed_at": (
-                            datetime.now(UTC) + timedelta(seconds=10)
-                        ).isoformat(),
-                        "target_epoch": 4,
-                        "result": {
-                            "freshness": {
-                                "status": "complete",
-                                "complete": True,
-                                "after_last_reboot_or_change": True,
-                                "stale_evidence": [],
-                                "lost_dimensions": [],
-                                "unavailable_dimensions": [],
-                            },
-                            "lanes": {
-                                "ssh": {
-                                    "mdbctl_expand_1_object_drive1": {
-                                        "ok": True,
-                                        "result": {
-                                            "properties": {
-                                                "bmc.kepler.Systems.Storage.Drive": {
-                                                    "Id": "1",
-                                                    "Name": "\"Drive1\"",
-                                                    "Protocol": "6",
-                                                    "RefControllerId": "255",
-                                                    "ResourceId": "7",
-                                                    "Presence": "1",
-                                                },
-                                                "bmc.kepler.Systems.Storage.Drive.DriveStatus": {
-                                                    "Health": "0"
-                                                },
-                                                "bmc.kepler.Inventory.Hardware": {
-                                                    "SerialNumber": "\"NVME-SERIAL-1\""
-                                                },
-                                            }
-                                        },
-                                    }
-                                }
-                            },
-                        },
-                    },
-                    sort_keys=True,
-                ),
-                encoding="utf-8",
-            )
-            for dimension in ("freshness", "hardware"):
-                evidence_ref = manifest[dimension]["evidence"][0]
-                proof_path = Path(evidence_ref["path"])
-                proof = json.loads(proof_path.read_text(encoding="utf-8"))
-                proof["supporting_evidence"] = {
-                    "evidence_type": "runtime-debug-evidence",
-                    "sha256": sha256(native_debug),
-                }
-                proof_path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
-                evidence_ref["sha256"] = sha256(proof_path)
-                evidence_ref["supporting_evidence"] = {
-                    "path": str(native_debug),
-                    "sha256": sha256(native_debug),
-                    "evidence_type": "runtime-debug-evidence",
-                }
-            rebuild_runtime_ledger(manifest, attach_proofs=False)
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -891,11 +1291,74 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(report["gaps"], [])
         self.assertEqual(report["violations"], [])
 
+    def test_fresh_runtime_requires_an_independent_recovery_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            manifest["recovery"].update(
+                {
+                    "path": manifest["artifact"]["path"],
+                    "sha256": manifest["artifact"]["sha256"],
+                    "size": manifest["artifact"]["size"],
+                    "version": manifest["artifact"]["version"],
+                }
+            )
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("independent" in item for item in report["violations"]),
+            report["violations"],
+        )
+
+    def test_fresh_runtime_requires_an_observed_manager_reboot_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            upgrade_ref = manifest["upgrade"]["evidence"][0]
+            support = Path(upgrade_ref["supporting_evidence"]["path"])
+            document = json.loads(support.read_text(encoding="utf-8"))
+            document["operation_id"] = "upgrade-effect-1"
+            document["journal"]["operation_id"] = "upgrade-effect-1"
+            document["epoch_before"] = 3
+            document["epoch_after"] = 4
+            document["journal"]["epoch_before"] = 3
+            document["journal"]["epoch_after"] = 4
+            document["verification"]["target_epoch"] = 4
+            document["verification"]["version"]["last_reset_time"] = (
+                document["mutation"]["manager_before"]["last_reset_time"]
+            )
+            support.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+            support_digest = sha256(support)
+            upgrade_ref["supporting_evidence"]["sha256"] = support_digest
+            proof = Path(upgrade_ref["path"])
+            proof_document = json.loads(proof.read_text(encoding="utf-8"))
+            proof_document["supporting_evidence"]["sha256"] = support_digest
+            proof.write_text(
+                json.dumps(proof_document, sort_keys=True),
+                encoding="utf-8",
+            )
+            upgrade_ref["sha256"] = sha256(proof)
+            forge_runtime_ledger_for_negative_test(manifest, attach_proofs=False)
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any("BMC reboot boundary" in item for item in report["violations"]),
+            report["violations"],
+        )
+
     def test_fresh_runtime_requires_current_task_upgrade_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             manifest, _, _, _ = complete_manifest(root)
-            rebuild_runtime_ledger(manifest, authorize_upgrade=False)
+            forge_runtime_ledger_for_negative_test(
+                manifest, authorize_upgrade=False
+            )
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 1, completed.stderr)
@@ -910,7 +1373,9 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             manifest, _, _, _ = complete_manifest(root)
-            rebuild_runtime_ledger(manifest, include_diagnosis_gate=False)
+            forge_runtime_ledger_for_negative_test(
+                manifest, include_diagnosis_gate=False
+            )
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 1, completed.stderr)
@@ -925,7 +1390,9 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             manifest, _, _, _ = complete_manifest(root)
-            rebuild_runtime_ledger(manifest, native_operations_in_order=False)
+            forge_runtime_ledger_for_negative_test(
+                manifest, native_operations_in_order=False
+            )
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 1, completed.stderr)
@@ -940,7 +1407,9 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             manifest, _, _, _ = complete_manifest(root)
-            rebuild_runtime_ledger(manifest, include_native_evidence=False)
+            forge_runtime_ledger_for_negative_test(
+                manifest, include_native_evidence=False
+            )
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 1, completed.stderr)
@@ -970,7 +1439,7 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                 proof["supporting_evidence"]["sha256"] = support["sha256"]
                 proof_path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
                 evidence_ref["sha256"] = sha256(proof_path)
-            rebuild_runtime_ledger(manifest, attach_proofs=False)
+            forge_runtime_ledger_for_negative_test(manifest, attach_proofs=False)
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 1, completed.stderr)
@@ -1019,7 +1488,7 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             manifest, _, _, _ = complete_manifest(root)
-            rebuild_runtime_ledger(
+            forge_runtime_ledger_for_negative_test(
                 manifest,
                 evidence_target="target-2",
                 additional_targets=("target-2",),
@@ -1394,7 +1863,7 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                     json.dumps(proof, sort_keys=True), encoding="utf-8"
                 )
                 evidence_ref["sha256"] = sha256(evidence_path)
-            rebuild_runtime_ledger(manifest, attach_proofs=False)
+            forge_runtime_ledger_for_negative_test(manifest, attach_proofs=False)
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 1, completed.stderr)
@@ -1441,7 +1910,6 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
                         ),
                     }
                 )
-            rebuild_runtime_ledger(manifest)
             completed = run_qualification(root, manifest)
 
         self.assertEqual(completed.returncode, 0, completed.stderr)

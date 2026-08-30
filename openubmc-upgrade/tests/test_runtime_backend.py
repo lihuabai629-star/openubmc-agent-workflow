@@ -1108,13 +1108,18 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
 
     def test_multipart_body_includes_parameters_and_update_file(self) -> None:
         artifact = SimpleNamespace(path="/tmp/openubmc.hpm")
-        body, boundary = _multipart_body(artifact, b"firmware-bytes")
+        body, boundary = _multipart_body(
+            artifact,
+            b"firmware-bytes",
+            {"ForceUpdate": True, "ActiveMode": "ResetBMC"},
+        )
 
         self.assertIn(
             b'Content-Disposition: form-data; name="UpdateParameters"',
             body,
         )
-        self.assertIn(b"Content-Type: application/json\r\n\r\n{}", body)
+        self.assertIn(b'"ActiveMode":"ResetBMC"', body)
+        self.assertIn(b'"ForceUpdate":true', body)
         self.assertIn(
             b'Content-Disposition: form-data; name="UpdateFile"; filename="openubmc.hpm"',
             body,
@@ -1122,6 +1127,145 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         self.assertIn(b"Content-Type: application/octet-stream", body)
         self.assertIn(b"firmware-bytes", body)
         self.assertTrue(body.endswith(f"\r\n--{boundary}--\r\n".encode("ascii")))
+
+    def test_multipart_upload_defaults_to_forced_reset_and_reports_parameters(
+        self,
+    ) -> None:
+        class CaptureSession:
+            def request_json(self, method, path, **kwargs):
+                self.method = method
+                self.path = path
+                self.data = kwargs["data"]
+                return RedfishResponse(status=202, headers={}, payload={})
+
+        session = CaptureSession()
+        result = UpgradeMcpBackend._upload(
+            session,
+            {"MultipartHttpPushUri": "/redfish/v1/UpdateService/upload"},
+            SimpleNamespace(path="/tmp/openubmc.hpm"),
+            b"firmware",
+            {},
+            upload_timeout=600,
+        )
+
+        self.assertEqual(session.method, "POST")
+        self.assertEqual(session.path, "/redfish/v1/UpdateService/upload")
+        self.assertIn(b'"ActiveMode":"ResetBMC"', session.data)
+        self.assertIn(b'"ForceUpdate":true', session.data)
+        self.assertEqual(
+            result["parameters"],
+            {"ActiveMode": "ResetBMC", "ForceUpdate": True},
+        )
+
+    def test_simple_update_forwards_explicit_force_reset_parameters(self) -> None:
+        class CaptureSession:
+            def request_json(self, method, path, **kwargs):
+                self.method = method
+                self.path = path
+                self.payload = kwargs["payload"]
+                return RedfishResponse(status=202, headers={}, payload={})
+
+        session = CaptureSession()
+        result = UpgradeMcpBackend._upload(
+            session,
+            {
+                "Actions": {
+                    "#UpdateService.SimpleUpdate": {
+                        "target": "/redfish/v1/UpdateService/Actions/SimpleUpdate"
+                    }
+                }
+            },
+            SimpleNamespace(path="/tmp/openubmc.hpm"),
+            b"firmware",
+            {
+                "image_uri": "https://files.example/openubmc.hpm",
+                "active_mode": "Immediately",
+                "force_update": False,
+            },
+            upload_timeout=600,
+        )
+
+        self.assertEqual(
+            session.payload,
+            {
+                "ImageURI": "https://files.example/openubmc.hpm",
+                "ActiveMode": "Immediately",
+                "ForceUpdate": False,
+            },
+        )
+        self.assertEqual(
+            result["parameters"],
+            {"ActiveMode": "Immediately", "ForceUpdate": False},
+        )
+
+    def test_invalid_active_mode_is_rejected_before_the_effect_boundary(self) -> None:
+        effects_started = 0
+
+        def mark_effects_started() -> None:
+            nonlocal effects_started
+            effects_started += 1
+
+        with self.assertRaisesRegex(ValueError, "active_mode"):
+            UpgradeMcpBackend._upload(
+                FakeRedfishSession(1),
+                {"MultipartHttpPushUri": "/redfish/v1/UpdateService/upload"},
+                SimpleNamespace(path="/tmp/openubmc.hpm"),
+                b"firmware",
+                {"active_mode": "OnReboot"},
+                upload_timeout=600,
+                mark_effects_started=mark_effects_started,
+            )
+
+        self.assertEqual(effects_started, 0)
+
+    def test_upgrade_schema_rejects_an_unknown_active_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "redfish": {"user": "Administrator", "password": "secret"}
+                },
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                with self.assertRaisesRegex(ValueError, "active_mode must be one of"):
+                    service.call_tool(
+                        "upgrade_run",
+                        {
+                            **self.arguments(artifact, digest),
+                            "active_mode": "OnReboot",
+                        },
+                        task_id="schema-active-mode",
+                        operation_id="schema-active-mode",
+                    )
+            finally:
+                service.close()
+
+    def test_installed_version_includes_manager_reset_identity(self) -> None:
+        class ManagerSession(FakeRedfishSession):
+            def request_json(self, method: str, path: str, **kwargs) -> RedfishResponse:
+                if path == "/redfish/v1/Managers/1":
+                    return RedfishResponse(
+                        status=200,
+                        headers={},
+                        payload={
+                            "FirmwareVersion": "2.0.0",
+                            "LastResetTime": "2026-08-30T07:52:31+00:00",
+                        },
+                    )
+                return super().request_json(method, path, **kwargs)
+
+        identity = UpgradeMcpBackend._installed_version(ManagerSession(1))
+
+        self.assertEqual(identity["version"], "2.0.0")
+        self.assertEqual(
+            identity["last_reset_time"],
+            "2026-08-30T07:52:31+00:00",
+        )
 
     def test_discovery_failure_before_upload_is_replan_required(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1494,6 +1638,69 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         ]
         self.assertEqual(len(uploads), 1)
         self.assertTrue(replayed["idempotent_replay"])
+
+    def test_backend_reports_the_manager_reset_boundary_across_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / "openubmc.hpm"
+            artifact.write_bytes(b"firmware")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+            class ResetBoundarySession(FakeRedfishSession):
+                def request_json(self, method: str, path: str, **kwargs) -> RedfishResponse:
+                    if path == "/redfish/v1/Managers/1":
+                        self.calls.append((method, path))
+                        return RedfishResponse(
+                            status=200,
+                            headers={},
+                            payload={
+                                "FirmwareVersion": "2.0.0",
+                                "LastResetTime": (
+                                    "2026-08-30T07:00:00+00:00"
+                                    if self.number == 1
+                                    else "2026-08-30T08:00:00+00:00"
+                                ),
+                            },
+                        )
+                    return super().request_json(method, path, **kwargs)
+
+            class ResetBoundaryTransport(FakeRedfishTransport):
+                def open_session(self, *, target, credentials) -> FakeRedfishSession:
+                    self.opens += 1
+                    session = ResetBoundarySession(self.opens)
+                    self.sessions.append(session)
+                    return session
+
+            transport = ResetBoundaryTransport()
+            backend = UpgradeMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "redfish": {
+                        "user": "Administrator",
+                        "password": "redfish-secret",
+                    }
+                },
+                redfish_transport_factory=lambda _arguments: transport,
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                result = service.call_tool(
+                    "upgrade_run",
+                    self.arguments(artifact, digest),
+                    task_id="reset-boundary-upgrade",
+                    operation_id="reset-boundary-upgrade",
+                )
+            finally:
+                service.close()
+
+        self.assertEqual(
+            result["mutation"]["manager_before"]["last_reset_time"],
+            "2026-08-30T07:00:00+00:00",
+        )
+        self.assertEqual(
+            result["verification"]["version"]["last_reset_time"],
+            "2026-08-30T08:00:00+00:00",
+        )
 
     def test_recovery_without_a_durable_journal_never_uploads_firmware(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

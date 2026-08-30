@@ -125,9 +125,11 @@ class _RuntimeOperatorPort:
         self,
         context_runtime: ContextRuntime,
         artifact_store: LocalArtifactStore,
+        run_engine: RunEngine,
     ) -> None:
         self._context_runtime = context_runtime
         self._artifact_store = artifact_store
+        self._run_engine = run_engine
         self._evidence_query = EvidenceQueryService(context_runtime.repository)
 
     def replay_service(self):
@@ -187,6 +189,23 @@ class _RuntimeOperatorPort:
             case_id=case_id,
         )
 
+    def wrap_result(
+        self,
+        value: Mapping[str, object],
+        *,
+        operation: str,
+        operation_id: str,
+        case_id: str,
+    ) -> dict[str, object]:
+        """Wrap an Operator command result without describing it as a read."""
+
+        return self._context_runtime.wrap_operator_result(
+            value,
+            operation=operation,
+            operation_id=operation_id,
+            case_id=case_id,
+        )
+
     def read_case_projection(self, case_id: str) -> Mapping[str, object]:
         return self._context_runtime.read_case(case_id)
 
@@ -223,7 +242,7 @@ class _RuntimeOperatorPort:
             )
         if name == "evidence_attach":
             run_id = str(arguments.get("run_id", "")).strip()
-            value = self._context_runtime.attach_file_evidence(
+            prepared = self._context_runtime.prepare_file_evidence(
                 run_id,
                 target=str(arguments.get("target", "")).strip(),
                 path=str(arguments.get("path", "")).strip(),
@@ -231,7 +250,22 @@ class _RuntimeOperatorPort:
                 evidence_type=str(arguments.get("evidence_type", "")).strip(),
                 operation_id=operation_id,
             )
-            return self.wrap_read(
+            reference, replayed = self._run_engine.attach_operator_evidence(
+                run_id,
+                prepared["evidence"],
+                operation_id=operation_id,
+            )
+            value = {
+                "schema": "openubmc.target-runtime/operator-evidence-attach-v1",
+                "run_id": run_id,
+                "attached": True,
+                "idempotent_replay": bool(
+                    prepared.get("already_attached") or replayed
+                ),
+                "evidence_type": prepared["evidence_type"],
+                "evidence": dict(reference),
+            }
+            return self.wrap_result(
                 value,
                 operation=name,
                 operation_id=operation_id,
@@ -732,7 +766,7 @@ def compose_runtime(
             artifact_store=artifact_store,
             orchestrated_backend=options.orchestrated_backend,
         ),
-        operator=_RuntimeOperatorPort(context_runtime, artifact_store),
+        operator=_RuntimeOperatorPort(context_runtime, artifact_store, run_engine),
         lifecycle=lifecycle,
         artifact_store=artifact_store,
         _test=_RuntimeTestSupport(

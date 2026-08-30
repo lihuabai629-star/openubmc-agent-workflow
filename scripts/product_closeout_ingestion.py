@@ -40,6 +40,7 @@ DIMENSIONS = (
     "upgrade",
     "freshness",
     "hardware",
+    "recovery",
 )
 
 
@@ -276,6 +277,49 @@ def _artifact(
     }
 
 
+def _recovery_artifact(
+    value: object,
+    *,
+    primary_artifact: Mapping[str, object],
+) -> dict[str, object]:
+    identity = _mapping(value, "recovery_artifact")
+    path = Path(_text(identity.get("path"))).expanduser().absolute()
+    expected = _text(identity.get("sha256")).removeprefix("sha256:")
+    expected_size = identity.get("size")
+    version = _text(identity.get("version"))
+    if (
+        len(expected) != 64
+        or any(character not in "0123456789abcdef" for character in expected)
+        or isinstance(expected_size, bool)
+        or not isinstance(expected_size, int)
+        or expected_size <= 0
+        or not version
+    ):
+        raise ValueError(
+            "recovery_artifact requires path, sha256, positive integer size, and version"
+        )
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"recovery artifact is unavailable: {error}") from error
+    digest = _sha256_bytes(raw)
+    size = len(raw)
+    if digest != expected or size != expected_size:
+        raise ValueError("recovery artifact content does not match its identity")
+    if (
+        str(path) == _text(primary_artifact.get("path"))
+        or digest == _text(primary_artifact.get("sha256"))
+    ):
+        raise ValueError("recovery artifact must be independent from the upgrade artifact")
+    return {
+        "status": "verified",
+        "path": str(path),
+        "sha256": digest,
+        "size": size,
+        "version": version,
+    }
+
+
 def assemble_manifest(
     descriptor: Mapping[str, object],
     *,
@@ -325,6 +369,16 @@ def assemble_manifest(
         f"{repository['name']}:{repository['commit']}"
         for repository in source_repositories
     )
+    artifact = _artifact(
+        document.get("artifact_path"),
+        source_revision=source_revision,
+        target=target,
+        run_id=run_id,
+    )
+    recovery = _recovery_artifact(
+        document.get("recovery_artifact"),
+        primary_artifact=artifact,
+    )
     manifest: dict[str, object] = {
         "schema": EVIDENCE_SCHEMA,
         "mode": "fresh-runtime",
@@ -363,12 +417,11 @@ def assemble_manifest(
                 "evidence": list(dimensions["build"].references),
             },
         },
-        "artifact": _artifact(
-            document.get("artifact_path"),
-            source_revision=source_revision,
-            target=target,
-            run_id=run_id,
-        ),
+        "artifact": artifact,
+        "recovery": {
+            **recovery,
+            "evidence": list(dimensions["recovery"].references),
+        },
         "upgrade": {
             "status": _text(dimensions["upgrade"].primary_proof.get("status")),
             "evidence": list(dimensions["upgrade"].references),

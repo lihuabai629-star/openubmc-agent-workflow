@@ -54,6 +54,7 @@ from .run_store import (
 )
 from .semantic_runtime import GateConflict
 from .observation import observation_consistency, observation_reusable
+from .orchestration import enforce_fresh_verification
 from .workflow import (
     DEFAULT_PHASE_REGISTRY,
     DEFAULT_WORKFLOW_DEFINITIONS,
@@ -5034,6 +5035,25 @@ class ContextRuntime:
         case_id: str,
         status: str = "completed",
     ) -> ContextToolResult:
+        return self.wrap_operator_result(
+            value,
+            operation=operation,
+            operation_id=operation_id,
+            case_id=case_id,
+            status=status,
+        )
+
+    def wrap_operator_result(
+        self,
+        value: Mapping[str, object],
+        *,
+        operation: str,
+        operation_id: str,
+        case_id: str,
+        status: str = "completed",
+    ) -> ContextToolResult:
+        """Wrap one Operator / CI Plane result regardless of read/write semantics."""
+
         projection = self._load(case_id) if case_id else None
         continuation = (
             self._continuation_for(value) if operation == "case_read" else None
@@ -6150,7 +6170,7 @@ class ContextRuntime:
                     arguments.pop(name, None)
         if operation == "debug_collect":
             arguments.setdefault("profile", "standard")
-            arguments["no_freshness"] = False
+            arguments = enforce_fresh_verification(arguments)
         if operation == "live_patch_run":
             developer = completed_phases.get("developer.change", {})
             artifact_ref = developer.get("artifact_ref")
@@ -6880,7 +6900,7 @@ class ContextRuntime:
             "body": body.decode("utf-8", errors="replace"),
         }
 
-    def attach_file_evidence(
+    def prepare_file_evidence(
         self,
         run_id: str,
         *,
@@ -6890,7 +6910,7 @@ class ContextRuntime:
         evidence_type: str,
         operation_id: str,
     ) -> dict[str, object]:
-        """Attach exact Operator/CI file bytes to one open Runtime Run."""
+        """Validate and persist exact Operator/CI bytes without writing Run facts."""
 
         projection = self._load(run_id)
         if projection is None:
@@ -6950,12 +6970,10 @@ class ContextRuntime:
         existing = self.repository.evidence_reference(run_id, evidence_id)
         if isinstance(existing, Mapping):
             return {
-                "schema": f"{CONTEXT_RUNTIME_SCHEMA}/operator-evidence-attach-v1",
                 "run_id": run_id,
-                "attached": True,
-                "idempotent_replay": True,
                 "evidence_type": evidence_type,
                 "evidence": dict(existing),
+                "already_attached": True,
             }
         blob_id = self.blob_repository.put(body)
         if blob_id != actual_sha256:
@@ -6996,34 +7014,11 @@ class ContextRuntime:
             "workflow_attempt": 0,
             "parent_evidence_ids": [],
         }
-        try:
-            updated = self.repository.commit(
-                run_id,
-                expected_revision=int(projection["revision"]),
-                events=(
-                    PendingCaseEvent(
-                        "EvidenceAttached",
-                        {"evidence": reference},
-                        _safe_identifier(operation_id, fallback=evidence_id),
-                    ),
-                ),
-            )
-        except RevisionConflict:
-            existing = self.repository.evidence_reference(run_id, evidence_id)
-            if not isinstance(existing, Mapping):
-                raise
-            reference = dict(existing)
-            idempotent_replay = True
-        else:
-            self._cache(updated)
-            idempotent_replay = False
         return {
-            "schema": f"{CONTEXT_RUNTIME_SCHEMA}/operator-evidence-attach-v1",
             "run_id": run_id,
-            "attached": True,
-            "idempotent_replay": idempotent_replay,
             "evidence_type": evidence_type,
             "evidence": reference,
+            "already_attached": False,
         }
 
     def close_case(self, case_id: str, *, expected_revision: int) -> dict[str, object]:
