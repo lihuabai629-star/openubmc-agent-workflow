@@ -32,7 +32,9 @@ the Operator / CI Plane independently of manifest-authored paths.
 
 The checkpoint verifies:
 
-- Codex, Claude, and OpenClaw remain the supported product clients;
+- Codex and Claude install working Runtime MCP registrations whose configured stdio command
+  completes `initialize` and `tools/list`; OpenClaw remains an explicit Skills-only product client
+  until a supported OpenClaw MCP configuration Adapter exists;
 - DSH remains a disjoint, task-owned evaluation harness with isolated home, configuration,
   Runtime state, session, and MCP lifecycle roots;
 - MCP lifecycle tests cover parent loss, active-request drain, identity-bound orphan cleanup, and

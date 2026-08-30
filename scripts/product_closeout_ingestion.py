@@ -50,6 +50,16 @@ class RuntimeSnapshot:
     run_events_sha256: str
 
 
+@dataclass(frozen=True)
+class DimensionEvidence:
+    references: tuple[dict[str, object], ...]
+    proofs: tuple[dict[str, object], ...]
+
+    @property
+    def primary_proof(self) -> dict[str, object]:
+        return self.proofs[0]
+
+
 def _mapping(value: object, label: str) -> dict[str, object]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{label} must be an object")
@@ -141,7 +151,7 @@ def _evidence_refs(
     dimension: str,
     target: str,
     run_id: str,
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+) -> DimensionEvidence:
     refs: list[dict[str, object]] = []
     proofs: list[dict[str, object]] = []
     for index, raw_item in enumerate(_sequence(value, f"{dimension}.evidence")):
@@ -187,7 +197,7 @@ def _evidence_refs(
         proofs.append(proof)
     if not refs:
         raise ValueError(f"{dimension}.evidence must not be empty")
-    return refs, proofs
+    return DimensionEvidence(tuple(refs), tuple(proofs))
 
 
 def _source_repositories(value: object) -> list[dict[str, str]]:
@@ -272,28 +282,28 @@ def assemble_manifest(
         selected_target=_text(case.get("target")),
     )
     target = runtime_snapshot.target
-    runtime_refs, _runtime_proofs = _evidence_refs(
+    runtime_evidence = _evidence_refs(
         runtime.get("evidence"),
         dimension="runtime",
         target=target,
         run_id=run_id,
     )
     evidence = _mapping(document.get("evidence"), "evidence")
-    refs: dict[str, list[dict[str, object]]] = {}
-    proofs: dict[str, list[dict[str, object]]] = {}
-    for dimension in DIMENSIONS[1:]:
-        refs[dimension], proofs[dimension] = _evidence_refs(
+    dimensions = {
+        dimension: _evidence_refs(
             evidence.get(dimension),
             dimension=dimension,
             target=target,
             run_id=run_id,
         )
+        for dimension in DIMENSIONS[1:]
+    }
     required_protocols = [
         _text(item)
         for item in _sequence(case.get("required_protocols"), "case.required_protocols")
         if _text(item)
     ]
-    hardware_proof = proofs["hardware"][0]
+    hardware_proof = dimensions["hardware"].primary_proof
     hardware_protocols = list(hardware_proof.get("required_protocols", []))
     if hardware_protocols != required_protocols:
         raise ValueError("hardware proof protocols do not match case.required_protocols")
@@ -313,11 +323,11 @@ def assemble_manifest(
                 "sha256": runtime_snapshot.run_events_sha256,
                 "digest_scope": "run-events",
             },
-            "evidence": runtime_refs,
+            "evidence": list(runtime_evidence.references),
         },
         "diagnosis": {
-            "status": _text(proofs["diagnosis"][0].get("status")),
-            "evidence": refs["diagnosis"],
+            "status": _text(dimensions["diagnosis"].primary_proof.get("status")),
+            "evidence": list(dimensions["diagnosis"].references),
         },
         "source": {
             "status": "completed",
@@ -325,29 +335,31 @@ def assemble_manifest(
         },
         "validation": {
             "official_ut": {
-                "status": _text(proofs["official_ut"][0].get("status")),
-                "evidence": refs["official_ut"],
+                "status": _text(
+                    dimensions["official_ut"].primary_proof.get("status")
+                ),
+                "evidence": list(dimensions["official_ut"].references),
             },
             "build": {
-                "status": _text(proofs["build"][0].get("status")),
-                "evidence": refs["build"],
+                "status": _text(dimensions["build"].primary_proof.get("status")),
+                "evidence": list(dimensions["build"].references),
             },
         },
         "artifact": _artifact(document.get("artifact_path")),
         "upgrade": {
-            "status": _text(proofs["upgrade"][0].get("status")),
-            "evidence": refs["upgrade"],
+            "status": _text(dimensions["upgrade"].primary_proof.get("status")),
+            "evidence": list(dimensions["upgrade"].references),
         },
         "freshness": {
-            "status": _text(proofs["freshness"][0].get("status")),
+            "status": _text(dimensions["freshness"].primary_proof.get("status")),
             "max_age_seconds": document.get("freshness_max_age_seconds", 3600),
-            "evidence": refs["freshness"],
+            "evidence": list(dimensions["freshness"].references),
         },
         "hardware": {
             "status": _text(hardware_proof.get("status")),
             "required_protocols": required_protocols,
             "devices": list(hardware_proof.get("devices", [])),
-            "evidence": refs["hardware"],
+            "evidence": list(dimensions["hardware"].references),
         },
     }
     return manifest

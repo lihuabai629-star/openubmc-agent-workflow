@@ -15,6 +15,31 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "continuous_closeout_qualification.py"
 
 
+def passed_product_client_run(name: str) -> dict[str, object]:
+    adapter_available = name != "openclaw"
+    return {
+        "status": "passed",
+        "client": name,
+        "tests": [f"qualification.{name}"],
+        "returncode": 0,
+        "failure_tail": "",
+        "adapter_available": adapter_available,
+        "support_mode": (
+            "skills-and-runtime-mcp" if adapter_available else "skills-only"
+        ),
+        "declared_mcp": adapter_available,
+        "mcp_registration_verified": adapter_available,
+        "runtime_launcher_verified": True,
+        "runtime_invocation": (
+            "client-configured-mcp-command"
+            if adapter_available
+            else "runtime-launcher-without-client-adapter"
+        ),
+        "protocol_exchange": ["initialize", "tools/list"],
+        "tools": ["execute", "observe"],
+    }
+
+
 class ContinuousCloseoutQualificationTests(unittest.TestCase):
     def test_qualification_integrates_product_client_isolation_lifecycle_and_projection(
         self,
@@ -55,14 +80,29 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         for name in ("claude", "codex"):
             run = report["client_matrix"]["runs"][name]
             self.assertTrue(run["adapter_available"])
+            self.assertEqual(run["support_mode"], "skills-and-runtime-mcp")
             self.assertTrue(run["declared_mcp"])
-            self.assertEqual(run["runtime_invocation"], "initialize-tools-list")
+            self.assertTrue(run["mcp_registration_verified"])
+            self.assertEqual(
+                run["runtime_invocation"], "client-configured-mcp-command"
+            )
+            self.assertEqual(
+                run["protocol_exchange"], ["initialize", "tools/list"]
+            )
             self.assertEqual(run["tools"], ["execute", "observe"])
         openclaw = report["client_matrix"]["runs"]["openclaw"]
         self.assertFalse(openclaw["adapter_available"])
+        self.assertEqual(openclaw["support_mode"], "skills-only")
         self.assertFalse(openclaw["declared_mcp"])
+        self.assertFalse(openclaw["mcp_registration_verified"])
         self.assertTrue(openclaw["runtime_launcher_verified"])
-        self.assertEqual(openclaw["runtime_invocation"], "initialize-tools-list")
+        self.assertEqual(
+            openclaw["runtime_invocation"],
+            "runtime-launcher-without-client-adapter",
+        )
+        self.assertEqual(
+            openclaw["protocol_exchange"], ["initialize", "tools/list"]
+        )
         self.assertEqual(openclaw["tools"], ["execute", "observe"])
         client_tests = {
             name: tuple(run["tests"])
@@ -128,6 +168,13 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             ),
             mock.patch.object(
                 qualification,
+                "_product_client_run",
+                side_effect=lambda name, tests, contract: passed_product_client_run(
+                    name
+                ),
+            ),
+            mock.patch.object(
+                qualification,
                 "_mcp_closeout_snapshot",
                 return_value={
                     "status": "passed",
@@ -167,7 +214,9 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             self.assertTrue(run["adapter_available"])
             self.assertTrue(run["declared_mcp"])
             self.assertTrue(run["runtime_launcher_verified"])
-            self.assertEqual(run["runtime_invocation"], "initialize-tools-list")
+            self.assertEqual(
+                run["runtime_invocation"], "client-configured-mcp-command"
+            )
             self.assertEqual(run["tools"], ["execute", "observe"])
         openclaw = report["client_matrix"]["runs"]["openclaw"]
         self.assertFalse(openclaw["adapter_available"])
@@ -237,6 +286,13 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 qualification,
                 "_run_tests",
                 return_value={"status": "passed", "tests": [], "returncode": 0},
+            ),
+            mock.patch.object(
+                qualification,
+                "_product_client_run",
+                side_effect=lambda name, tests, contract: passed_product_client_run(
+                    name
+                ),
             ),
             mock.patch.object(
                 qualification,

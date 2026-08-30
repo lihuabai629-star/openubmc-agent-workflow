@@ -477,11 +477,11 @@ tar -C /path/to/benchmark-work/results-YYYYMMDD-HHMMSS \
   -cJf agent-gateway-ab-evidence.tar.xz \
   summary.json all_metrics.json schedule.json run_evidence.json
 sha256sum agent-gateway-ab-evidence.tar.xz
-gh release create v2.0.1 --draft --verify-tag --generate-notes
-gh release upload v2.0.1 agent-gateway-ab-evidence.tar.xz
+gh release create v2.0.2 --draft --verify-tag --generate-notes
+gh release upload v2.0.2 agent-gateway-ab-evidence.tar.xz
 gh workflow run release.yml --ref main \
-  -f current_ref=v2.0.1 \
-  -f previous_ref=v2.0.0 \
+  -f current_ref=v2.0.2 \
+  -f previous_ref=v2.0.1 \
   -f ab_bundle_asset=agent-gateway-ab-evidence.tar.xz \
   -f ab_bundle_sha256="$(sha256sum agent-gateway-ab-evidence.tar.xz | cut -d' ' -f1)" \
   -f promote=true

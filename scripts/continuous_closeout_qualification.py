@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -211,7 +212,11 @@ def _run_tests(
     tests: Sequence[str],
     *,
     cwd: Path,
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
+    process_environment = None
+    if environment is not None:
+        process_environment = {**dict(os.environ), **dict(environment)}
     completed = subprocess.run(
         [sys.executable, "-m", "unittest", *tests],
         cwd=cwd,
@@ -219,6 +224,7 @@ def _run_tests(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        env=process_environment,
     )
     return {
         "status": "passed" if completed.returncode == 0 else "failed",
@@ -263,18 +269,65 @@ def _product_client_run(
     tests: Sequence[str],
     contract: Mapping[str, object],
 ) -> dict[str, object]:
-    result = _run_tests(tests, cwd=ROOT)
-    passed = result.get("status") == "passed"
+    with tempfile.TemporaryDirectory() as raw:
+        evidence_path = Path(raw) / f"{name}-product-client.json"
+        result = _run_tests(
+            tests,
+            cwd=ROOT,
+            environment={
+                "OPENUBMC_PRODUCT_CLIENT_EVIDENCE": str(evidence_path),
+            },
+        )
+        if result.get("status") != "passed":
+            return {**result, "client": name, "tests": list(tests)}
+        try:
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            return {
+                **result,
+                "status": "failed",
+                "client": name,
+                "tests": list(tests),
+                "failure_tail": f"product client evidence is unavailable: {error}",
+            }
+    if not isinstance(evidence, Mapping) or evidence.get("client") != name:
+        return {
+            **result,
+            "status": "failed",
+            "client": name,
+            "tests": list(tests),
+            "failure_tail": "product client evidence identity is invalid",
+        }
     declared_mcp = contract.get("mcp") is True
+    adapter_available = evidence.get("adapter_available") is True
+    registration_verified = evidence.get("mcp_registration_verified") is True
+    tools = evidence.get("tools")
+    evidence_valid = all(
+        (
+            adapter_available == declared_mcp,
+            evidence.get("support_mode")
+            == (
+                "skills-and-runtime-mcp"
+                if declared_mcp
+                else "skills-only"
+            ),
+            registration_verified == declared_mcp,
+            evidence.get("runtime_launcher_verified") is True,
+            evidence.get("protocol_exchange") == ["initialize", "tools/list"],
+            tools == ["execute", "observe"],
+        )
+    )
     return {
         **result,
-        "client": name,
+        **dict(evidence),
+        "status": "passed" if evidence_valid else "failed",
         "tests": list(tests),
-        "adapter_available": declared_mcp,
         "declared_mcp": declared_mcp,
-        "runtime_launcher_verified": passed,
-        "runtime_invocation": "initialize-tools-list" if passed else "not-run",
-        "tools": ["execute", "observe"] if passed else [],
+        "failure_tail": (
+            ""
+            if evidence_valid
+            else "product client evidence contradicts its contract"
+        ),
     }
 
 

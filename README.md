@@ -175,8 +175,8 @@ Before promotion, run the execute A/B qualification described in
 
 ```bash
 python3 scripts/release_gate.py \
-  --current-ref v2.0.1 \
-  --previous-ref v2.0.0 \
+  --current-ref v2.0.2 \
+  --previous-ref v2.0.1 \
   --ab-evidence /path/to/qualification-results/summary.json \
   --ab-attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
   --output release-gate.json

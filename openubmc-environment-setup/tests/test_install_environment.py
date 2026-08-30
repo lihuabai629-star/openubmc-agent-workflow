@@ -345,13 +345,49 @@ class EnvironmentSetupTests(unittest.TestCase):
             )
         state = installer.load_state(self.home)
         launcher = Path(state["runtime"]["launcher_path"])
+        return state, launcher
+
+    def record_product_client_evidence(
+        self,
+        *,
+        client: str,
+        command: Path,
+        adapter_available: bool,
+        mcp_registration_verified: bool,
+    ) -> None:
         healthy, detail, tools = installer.runtime_mcp_health(
-            launcher,
+            command,
             self.home,
         )
         self.assertTrue(healthy, detail)
         self.assertEqual(tools, ["execute", "observe"])
-        return state, launcher
+        evidence_path = os.environ.get("OPENUBMC_PRODUCT_CLIENT_EVIDENCE", "")
+        if not evidence_path:
+            return
+        Path(evidence_path).write_text(
+            json.dumps(
+                {
+                    "client": client,
+                    "adapter_available": adapter_available,
+                    "support_mode": (
+                        "skills-and-runtime-mcp"
+                        if adapter_available
+                        else "skills-only"
+                    ),
+                    "mcp_registration_verified": mcp_registration_verified,
+                    "runtime_launcher_verified": healthy,
+                    "runtime_invocation": (
+                        "client-configured-mcp-command"
+                        if adapter_available
+                        else "runtime-launcher-without-client-adapter"
+                    ),
+                    "protocol_exchange": ["initialize", "tools/list"],
+                    "tools": tools,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
 
     def test_bundle_manifest_has_eleven_canonical_mappings(self) -> None:
         self.assertEqual(installer.SKILL_BUNDLE, EXPECTED_BUNDLE)
@@ -2088,11 +2124,19 @@ class EnvironmentSetupTests(unittest.TestCase):
                 state["mcp"]["codex"],
             )
         )
-        self.assertTrue(
-            installer.check_toml_runtime_mcp(
-                self.home / ".codex" / "config.toml",
-                launcher,
-            )
+        config_path = self.home / ".codex" / "config.toml"
+        registration_verified = installer.check_toml_runtime_mcp(
+            config_path,
+            launcher,
+        )
+        self.assertTrue(registration_verified)
+        configured = installer.toml_stdio_mcp_entry(config_path)
+        assert configured is not None
+        self.record_product_client_evidence(
+            client="codex",
+            command=Path(str(configured["command"])),
+            adapter_available=True,
+            mcp_registration_verified=registration_verified,
         )
 
     def test_install_qualifies_claude_product_client(self) -> None:
@@ -2106,15 +2150,26 @@ class EnvironmentSetupTests(unittest.TestCase):
                 state["mcp"]["claude"],
             )
         )
-        self.assertTrue(
-            installer.check_json_runtime_mcp(
-                self.home / ".claude.json",
-                launcher,
-            )
+        config_path = self.home / ".claude.json"
+        registration_verified = installer.check_json_runtime_mcp(
+            config_path,
+            launcher,
+        )
+        self.assertTrue(registration_verified)
+        configured = installer.json_named_mcp_entry(
+            config_path,
+            installer.TARGET_RUNTIME_MCP_NAME,
+        )
+        assert configured is not None
+        self.record_product_client_evidence(
+            client="claude",
+            command=Path(str(configured["command"])),
+            adapter_available=True,
+            mcp_registration_verified=registration_verified,
         )
 
     def test_install_qualifies_openclaw_product_client(self) -> None:
-        state, _launcher = self.qualify_product_client("openclaw")
+        state, launcher = self.qualify_product_client("openclaw")
 
         self.assertEqual(state["clients"], ["codex", "openclaw"])
         self.assertIs(
@@ -2124,6 +2179,16 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertIs(
             state["runtime_mcp"]["openclaw"]["adapter_available"],
             False,
+        )
+        self.assertEqual(
+            Path(str(state["runtime_mcp"]["openclaw"]["command"])),
+            launcher,
+        )
+        self.record_product_client_evidence(
+            client="openclaw",
+            command=launcher,
+            adapter_available=False,
+            mcp_registration_verified=False,
         )
 
     def test_install_migrates_owned_codex_runtime_entry_without_args(self) -> None:
