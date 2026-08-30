@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from enum import Enum
 from pathlib import Path
 import sys
 import tempfile
@@ -28,8 +29,10 @@ from openubmc_target_runtime import (  # noqa: E402
     EffectRecoveryMode,
     MutationJournal,
     MutationRecoveryDisposition,
+    RUNTIME_EFFECT_RECOVERY_ARGUMENT,
     RuntimeMcpService,
     RuntimeSDKContext,
+    effect_recovery_mode,
     mutation_receipt_verifier,
     mutation_recovery_route,
 )
@@ -83,6 +86,10 @@ def example(
 class Task:
     def __init__(self, task_id: str) -> None:
         self.task_id = task_id
+
+
+class ForeignEffectRecoveryMode(str, Enum):
+    RECONCILE = "reconcile"
 
 
 class Backend:
@@ -761,6 +768,18 @@ class DomainPackConformanceTests(unittest.TestCase):
                 matches=lambda journal: journal.operation_fingerprint == "match",
             ).disposition,
             "new",
+        )
+
+    def test_effect_recovery_mode_accepts_equivalent_enum_from_adapter_boundary(self) -> None:
+        self.assertIs(
+            effect_recovery_mode(
+                {
+                    RUNTIME_EFFECT_RECOVERY_ARGUMENT: (
+                        ForeignEffectRecoveryMode.RECONCILE
+                    )
+                }
+            ),
+            EffectRecoveryMode.RECONCILE,
         )
 
     def test_mutation_verifier_authenticates_failed_receipts_without_claiming_success(self) -> None:
