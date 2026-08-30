@@ -6901,17 +6901,21 @@ class ContextRuntime:
             "body": body.decode("utf-8", errors="replace"),
         }
 
+    @staticmethod
+    def _accepts_operator_evidence(projection: Mapping[str, object]) -> bool:
+        return not (
+            projection.get("status") in {"terminal", "cancelled"}
+            or isinstance(projection.get("run_outcome"), Mapping)
+            and bool(projection.get("run_outcome"))
+        )
+
     def _operator_evidence_context(
-        self, run_id: str, *, target: str
+        self, run_id: str, *, target: str, require_open: bool = True
     ) -> tuple[dict[str, object], dict[str, object], str]:
         projection = self._load(run_id)
         if projection is None:
             raise CaseNotFound(run_id)
-        if (
-            projection.get("status") in {"terminal", "cancelled"}
-            or isinstance(projection.get("run_outcome"), Mapping)
-            and bool(projection.get("run_outcome"))
-        ):
+        if require_open and not self._accepts_operator_evidence(projection):
             raise CaseClosed(f"run {run_id} no longer accepts evidence")
         targets = [
             dict(item)
@@ -6931,11 +6935,17 @@ class ContextRuntime:
         ).strip()
         return projection, selected_target, target_id
 
-    def operator_evidence_target(self, run_id: str, *, target: str) -> str:
-        """Resolve one open Run target to its canonical ArtifactRef binding."""
+    def operator_evidence_target(
+        self,
+        run_id: str,
+        *,
+        target: str,
+        require_open: bool = False,
+    ) -> str:
+        """Resolve one Run target to its canonical ArtifactRef binding."""
 
         _projection, selected_target, target_id = self._operator_evidence_context(
-            run_id, target=target
+            run_id, target=target, require_open=require_open
         )
         return str(selected_target.get("address") or target_id).strip()
 
@@ -6952,7 +6962,7 @@ class ContextRuntime:
         """Validate and persist exact Operator/CI bytes without writing Run facts."""
 
         projection, selected_target, target_id = self._operator_evidence_context(
-            run_id, target=target
+            run_id, target=target, require_open=False
         )
         source_path = Path(path).expanduser()
         if not source_path.is_absolute():
@@ -6983,6 +6993,8 @@ class ContextRuntime:
                 "evidence": dict(existing),
                 "already_attached": True,
             }
+        if not self._accepts_operator_evidence(projection):
+            raise CaseClosed(f"run {run_id} no longer accepts evidence")
         if not source_path.is_file():
             raise EvidenceUnavailable(f"evidence file is unavailable: {source_path}")
         body = source_path.read_bytes()
@@ -7049,7 +7061,7 @@ class ContextRuntime:
         """Bind one ArtifactStore-owned package to an open Run Evidence fact."""
 
         projection, selected_target, target_id = self._operator_evidence_context(
-            run_id, target=target
+            run_id, target=target, require_open=False
         )
         if evidence_type != "firmware-recovery-artifact":
             raise ValueError("Artifact evidence type is unsupported")
@@ -7088,6 +7100,8 @@ class ContextRuntime:
                 "evidence": dict(existing),
                 "already_attached": True,
             }
+        if not self._accepts_operator_evidence(projection):
+            raise CaseClosed(f"run {run_id} no longer accepts evidence")
         definition = projection.get("workflow_definition", {})
         definition = definition if isinstance(definition, Mapping) else {}
         epochs = selected_target.get("epochs", {})

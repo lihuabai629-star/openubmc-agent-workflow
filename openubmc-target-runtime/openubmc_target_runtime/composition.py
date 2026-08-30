@@ -248,19 +248,44 @@ class _RuntimeOperatorPort:
             expected_sha256 = str(arguments.get("sha256", "")).strip()
             evidence_type = str(arguments.get("evidence_type", "")).strip()
             if evidence_type == "firmware-recovery-artifact":
+                artifact_path = Path(path).expanduser()
+                if not artifact_path.is_absolute():
+                    raise ValueError("evidence path must be absolute")
+                artifact_path = artifact_path.absolute()
                 artifact_target = self._context_runtime.operator_evidence_target(
                     run_id, target=target
                 )
-                artifact_ref = self._artifact_store.put(
-                    Path(path).expanduser().absolute(),
+                artifact_ref = self._artifact_store.find(
                     kind="openubmc-hpm",
-                    provenance="operator-evidence-attach",
-                    retention_hint="run-lifetime",
                     target=artifact_target,
                     run_id=run_id,
                     created_by_effect=operation_id,
-                    expected_sha256=expected_sha256,
                 )
+                if artifact_ref is not None:
+                    normalized_expected = expected_sha256.removeprefix(
+                        "sha256:"
+                    ).lower()
+                    if normalized_expected != artifact_ref.digest:
+                        raise ValueError(
+                            "recovery Artifact Effect identity is already bound "
+                            "to a different SHA-256"
+                        )
+                else:
+                    self._context_runtime.operator_evidence_target(
+                        run_id,
+                        target=target,
+                        require_open=True,
+                    )
+                    artifact_ref = self._artifact_store.put(
+                        artifact_path,
+                        kind="openubmc-hpm",
+                        provenance="operator-evidence-attach",
+                        retention_hint="run-lifetime",
+                        target=artifact_target,
+                        run_id=run_id,
+                        created_by_effect=operation_id,
+                        expected_sha256=expected_sha256,
+                    )
                 prepared = self._context_runtime.prepare_artifact_evidence(
                     run_id,
                     target=artifact_target,
