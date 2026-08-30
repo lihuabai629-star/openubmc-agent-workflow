@@ -7,6 +7,7 @@ import json
 import threading
 
 from .catalog import OperationDescriptor
+from .agent_interaction import interaction_telemetry
 from .capabilities import CAPABILITY_ALIASES, CAPABILITY_STATES
 from .contracts import RUNTIME_API_VERSION
 from .diagnostic_receipt import (
@@ -1288,6 +1289,9 @@ class ResultProjector:
     def turn(self, turn: RunTurn) -> dict[str, object]:
         document = {"schema": TURN_SCHEMA, **turn.to_public_dict()}
         document["next_action"] = self._suggested_action(document)
+        telemetry = interaction_telemetry(document)
+        if telemetry is not None:
+            document["interaction_telemetry"] = telemetry
         diagnostic_receipt = document.get("diagnostic_receipt")
         if isinstance(diagnostic_receipt, Mapping):
             receipt_gaps = diagnostic_receipt.get("gaps", [])
@@ -1463,6 +1467,10 @@ class AgentGateway:
             if detail.limit is not None:
                 error["limit"] = detail.limit
             result["next_action"] = next_action
+            result["interaction_telemetry"] = interaction_telemetry(
+                result,
+                preflight_failure=True,
+            )
             if len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES:
                 result.update(
                     _projection_telemetry(

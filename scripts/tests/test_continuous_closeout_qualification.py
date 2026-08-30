@@ -128,8 +128,120 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             report = qualification.qualify()
 
         self.assertTrue(report["qualified"])
+        self.assertTrue(report["task_matrix"]["correctness_primary"])
+        self.assertEqual(
+            sorted(report["task_matrix"]["groups"]),
+            [
+                "build_upgrade",
+                "dependency_blocked",
+                "hardware_blocked",
+                "live_patch",
+                "restart_crash",
+                "source_only",
+                "wide_observe",
+            ],
+        )
+        self.assertTrue(
+            all(
+                group["status"] == "passed"
+                for group in report["task_matrix"]["groups"].values()
+            )
+        )
         self.assertNotIn("198.51.100.99", json.dumps(report))
         self.assertNotIn("must-not-be-used", json.dumps(report))
+
+    def test_qualification_accepts_trusted_product_ingestion_input(self) -> None:
+        descriptor = Path("fresh-product-ingestion.json")
+        runtime_repository = Path("runtime.sqlite3")
+        with (
+            mock.patch.object(
+                qualification,
+                "_workflow_metadata",
+                return_value={
+                    "clients": {
+                        name: {"role": "supported-product-client"}
+                        for name in ("claude", "codex", "openclaw")
+                    },
+                    "evaluation_harnesses": {
+                        "dsh": {"role": "evaluation-harness"}
+                    },
+                },
+            ),
+            mock.patch.object(
+                qualification,
+                "_run_tests",
+                return_value={"status": "passed", "tests": [], "returncode": 0},
+            ),
+            mock.patch.object(
+                qualification,
+                "_mcp_closeout_snapshot",
+                return_value={
+                    "status": "passed",
+                    "task_closeout_ready": True,
+                    "summary": {"live_processes": 0, "active_requests": 0},
+                },
+            ),
+            mock.patch.object(
+                qualification,
+                "qualify_dual_projection",
+                return_value={
+                    "status": "passed",
+                    "correctness": {"passed": True},
+                    "representative_receipt": {
+                        "repeated_projection": {
+                            "repeated_reference": True,
+                            "full_bytes": 2,
+                            "reference_bytes": 1,
+                            "saved_bytes": 1,
+                        }
+                    },
+                },
+            ),
+            mock.patch.object(qualification, "_source_clean", return_value=True),
+            mock.patch.object(
+                qualification,
+                "resolve_source_commit",
+                return_value="a" * 40,
+            ),
+            mock.patch.object(
+                qualification,
+                "load_product_ingestion",
+                return_value={"schema": "ingestion"},
+            ) as load_ingestion,
+            mock.patch.object(
+                qualification,
+                "assemble_product_manifest",
+                return_value={"schema": "assembled-manifest"},
+            ) as assemble,
+            mock.patch.object(
+                qualification,
+                "qualify_product_closeout",
+                return_value={
+                    "qualified": True,
+                    "promotable": True,
+                    "claim_level": "fresh-runtime-product-closed",
+                    "manifest_digest": "sha256:" + "b" * 64,
+                    "evidence_digest": "sha256:" + "c" * 64,
+                    "gaps": [],
+                    "violations": [],
+                },
+            ),
+        ):
+            report = qualification.qualify(
+                product_ingestion=descriptor,
+                runtime_repository=runtime_repository,
+            )
+
+        load_ingestion.assert_called_once_with(descriptor)
+        assemble.assert_called_once_with(
+            {"schema": "ingestion"},
+            runtime_repository=runtime_repository,
+        )
+        self.assertEqual(
+            report["product_evidence"]["status"], "verified-ingestion"
+        )
+        self.assertTrue(report["fresh_product_promotable"])
+        self.assertEqual(report["external_blockers"], [])
 
 
 if __name__ == "__main__":

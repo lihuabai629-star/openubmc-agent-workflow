@@ -98,6 +98,14 @@ QUALIFICATIONS = (
         ),
     ),
     (
+        "agent_interaction_guidance",
+        (
+            "tests.test_agent_gateway.AgentGatewayTests.test_public_preflight_error_identifies_field_and_canonical_retry",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_gate_target_preserves_runtime_gate_semantics",
+            "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_target_preserves_runtime_incident_semantics",
+        ),
+    ),
+    (
         "task_scoped_mcp_lifecycle",
         (
             "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_unknown_owner_still_exits_after_confirmed_parent_loss",

@@ -3944,6 +3944,15 @@ class AgentGatewayTests(unittest.TestCase):
             result["structuredContent"]["next_action"],
             "retry observe with the corrected canonical capability name",
         )
+        self.assertEqual(
+            result["structuredContent"]["interaction_telemetry"],
+            {
+                "classification": "preflight_failure",
+                "preflight_failure": True,
+                "no_progress_retry": False,
+                "manual_action_required": False,
+            },
+        )
 
     def test_mixed_case_canonical_capability_remains_compatible(self) -> None:
         receipt = self.service.call_exposed_tool(
@@ -7887,6 +7896,15 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(turn["gate"]["gate_id"], "gate-oversized-no-progress")
         self.assertTrue(turn["projection_target_exceeded"])
+        self.assertEqual(
+            turn["interaction_telemetry"],
+            {
+                "classification": "no_progress_retry",
+                "preflight_failure": False,
+                "no_progress_retry": True,
+                "manual_action_required": False,
+            },
+        )
 
     def test_execute_turn_soft_target_preserves_runtime_incident_semantics(self) -> None:
         turn = AgentGateway(OversizedIncidentTurnRuntime()).execute(
@@ -7918,6 +7936,15 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(turn["projection_target_exceeded"])
         self.assertFalse(turn["manual_narrowing_required"])
         self.assertFalse(turn["budget_blocker"])
+        self.assertEqual(
+            turn["interaction_telemetry"],
+            {
+                "classification": "manual_action_required",
+                "preflight_failure": False,
+                "no_progress_retry": False,
+                "manual_action_required": True,
+            },
+        )
 
     def test_execute_turn_budget_preserves_diagnostic_receipt_semantics(self) -> None:
         turn = AgentGateway(OversizedDiagnosticTurnRuntime()).execute(

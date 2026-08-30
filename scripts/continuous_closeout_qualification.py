@@ -25,6 +25,9 @@ from scripts.evidence_report import (  # noqa: E402
 from scripts.product_closeout_qualification import (  # noqa: E402
     qualify as qualify_product_closeout,
 )
+from scripts.product_closeout_ingestion import (  # noqa: E402
+    assemble_manifest as assemble_product_manifest,
+)
 from scripts.mcp_process_lifecycle import summarize as summarize_mcp_records  # noqa: E402
 from scripts.runtime_stability import qualify_dual_projection  # noqa: E402
 from openubmc_target_runtime import inspect_mcp_process_records  # noqa: E402
@@ -34,6 +37,9 @@ SCHEMA = "openubmc-agent-workflow.continuous-closeout-qualification.v1"
 PRODUCT_CLIENTS = ("claude", "codex", "openclaw")
 EVALUATION_HARNESSES = ("dsh",)
 PRODUCT_CONTRACT_TESTS = (
+    "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_assembles_a_promotable_manifest_from_runtime_and_fixed_evidence",
+    "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_cli_writes_deterministic_manifest_and_qualification_report",
+    "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_rejects_supporting_evidence_that_is_not_bound_by_its_proof",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_complete_fresh_runtime_closeout_is_promotable",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_historical_product_evidence_is_qualified_but_not_fresh_runtime_promotable",
     "scripts.tests.test_product_closeout_qualification.ProductCloseoutQualificationTests.test_evidence_digest_tamper_is_rejected",
@@ -90,6 +96,36 @@ PROJECTION_TESTS = (
     "tests.test_agent_gateway.AgentGatewayTests.test_retried_one_shot_terminal_turn_keeps_the_complete_receipt",
     "tests.test_runtime_stability.RuntimeStabilityTests.test_dual_projection_qualification_measures_gate_and_terminal_seams",
 )
+TASK_MATRIX_TESTS = {
+    "source_only": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_terminal_response_is_one_complete_run_decision",
+        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_failed_phase_never_produces_a_success_outcome",
+    ),
+    "live_patch": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_execute_live_patch_runs_diagnosis_mutation_and_fresh_verification",
+        "tests.test_agent_gateway.AgentGatewayTests.test_incomplete_live_patch_acceptance_cannot_report_completed_success",
+    ),
+    "build_upgrade": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_execute_build_upgrade_runs_both_gates_and_fresh_verification",
+        "tests.test_agent_gateway.AgentGatewayTests.test_build_upgrade_closes_from_runtime_adapter_receipts",
+    ),
+    "wide_observe": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_wide_observation_query_is_partitioned_without_becoming_a_blocker",
+        "tests.test_agent_gateway.AgentGatewayTests.test_wide_observation_assurance_cannot_mask_fast_target_epoch_drift",
+    ),
+    "restart_crash": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_execute_workflows_resume_after_process_restart",
+        "tests.test_mutation_recovery.MutationRecoveryTests.test_sigkill_crash_cuts_preserve_identity_and_never_repeat_the_mutation",
+    ),
+    "dependency_blocked": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_reports_official_validation_and_build_classifications",
+        "tests.test_agent_gateway.AgentGatewayTests.test_source_only_keeps_dependency_and_nvme_coverage_gaps_visible",
+    ),
+    "hardware_blocked": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_hardware_coverage_rejects_unrelated_current_evidence",
+        "tests.test_agent_gateway.AgentGatewayTests.test_completed_failed_build_does_not_advance_to_upgrade",
+    ),
+}
 
 
 def _workflow_metadata() -> dict[str, object]:
@@ -136,27 +172,50 @@ def _run_tests(
     }
 
 
+def load_product_ingestion(path: Path) -> dict[str, object]:
+    value = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    if not isinstance(value, Mapping):
+        raise ValueError("product ingestion input must contain an object")
+    return dict(value)
+
+
 def _product_evidence(
     path: Path | None,
     *,
+    ingestion_path: Path | None,
     runtime_repository: Path | None,
 ) -> dict[str, object]:
-    if path is None:
+    if path is not None and ingestion_path is not None:
+        raise ValueError(
+            "product manifest and product ingestion input are mutually exclusive"
+        )
+    if path is None and ingestion_path is None:
         return {
             "status": "not-supplied",
             "qualified": False,
             "promotable": False,
             "claim_level": "unavailable",
         }
-    value = json.loads(path.expanduser().read_text(encoding="utf-8"))
-    if not isinstance(value, Mapping):
-        raise ValueError("product manifest must contain an object")
+    if ingestion_path is not None:
+        if runtime_repository is None:
+            raise ValueError("product ingestion requires --runtime-repository")
+        value = assemble_product_manifest(
+            load_product_ingestion(ingestion_path),
+            runtime_repository=runtime_repository,
+        )
+        status = "verified-ingestion"
+    else:
+        assert path is not None
+        value = json.loads(path.expanduser().read_text(encoding="utf-8"))
+        if not isinstance(value, Mapping):
+            raise ValueError("product manifest must contain an object")
+        status = "verified-manifest"
     report = qualify_product_closeout(
         value,
         runtime_repository=runtime_repository,
     )
     return {
-        "status": "verified-manifest",
+        "status": status,
         "qualified": report.get("qualified") is True,
         "promotable": report.get("promotable") is True,
         "claim_level": str(report.get("claim_level", "unqualified")),
@@ -240,6 +299,7 @@ def _mcp_closeout_snapshot() -> dict[str, object]:
 def qualify(
     product_manifest: Path | None = None,
     *,
+    product_ingestion: Path | None = None,
     runtime_repository: Path | None = None,
 ) -> dict[str, object]:
     workflow = _workflow_metadata()
@@ -269,6 +329,10 @@ def qualify(
     }
     lifecycle_closeout = _mcp_closeout_snapshot()
     projection_tests = _run_tests(PROJECTION_TESTS, cwd=RUNTIME_ROOT)
+    task_matrix = {
+        name: _run_tests(tests, cwd=RUNTIME_ROOT)
+        for name, tests in TASK_MATRIX_TESTS.items()
+    }
     projection = qualify_dual_projection()
     repeated = projection.get("representative_receipt", {}).get(
         "repeated_projection", {}
@@ -276,6 +340,7 @@ def qualify(
     repeated_projection = repeated if isinstance(repeated, Mapping) else {}
     product_evidence = _product_evidence(
         product_manifest,
+        ingestion_path=product_ingestion,
         runtime_repository=runtime_repository,
     )
     source_clean = _source_clean()
@@ -295,6 +360,9 @@ def qualify(
         and projection.get("correctness", {}).get("passed") is True
         and projection_tests.get("status") == "passed"
     )
+    task_matrix_passed = all(
+        result.get("status") == "passed" for result in task_matrix.values()
+    )
     qualified = all(
         (
             client_matrix_passed,
@@ -302,6 +370,7 @@ def qualify(
             evaluation_isolation.get("status") == "passed",
             lifecycle_passed,
             correctness_primary,
+            task_matrix_passed,
             source_clean,
         )
     )
@@ -361,6 +430,15 @@ def qualify(
             "blocks_promotability": False,
             "tests": projection_tests,
         },
+        "task_matrix": {
+            "status": "passed" if task_matrix_passed else "failed",
+            "correctness_primary": task_matrix_passed,
+            "completion_primary": task_matrix_passed,
+            "token_bytes_secondary": True,
+            "groups": task_matrix,
+            "product_clients": product_clients,
+            "evaluation_harnesses": evaluation_harnesses,
+        },
         "external_blockers": external_blockers,
     }
     report["qualification_digest"] = evidence_fingerprint(report)
@@ -370,12 +448,14 @@ def qualify(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--product-manifest", type=Path)
+    parser.add_argument("--product-ingestion", type=Path)
     parser.add_argument("--runtime-repository", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         report = qualify(
             args.product_manifest,
+            product_ingestion=args.product_ingestion,
             runtime_repository=args.runtime_repository,
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
