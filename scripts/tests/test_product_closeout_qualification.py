@@ -311,7 +311,11 @@ def _refresh_proof_bindings(manifest: dict[str, object]) -> None:
             item["sha256"] = sha256(proof_path)
 
 
-def _build_public_runtime_ledger(manifest: dict[str, object]) -> None:
+def _build_public_runtime_ledger(
+    manifest: dict[str, object],
+    *,
+    attach_recovery_package: bool = True,
+) -> None:
     repository_path = Path(manifest["runtime"]["repository"]["path"])
     repository = SQLiteRuntimeRepository(repository_path)
     blobs = FilesystemBlobRepository(repository_path.with_suffix(".blobs"))
@@ -417,6 +421,19 @@ def _build_public_runtime_ledger(manifest: dict[str, object]) -> None:
                     task_id="product-closeout-qualification-operator",
                     operation_id=f"attach-{evidence_type}",
                 )
+        if attach_recovery_package:
+            operator.call_exposed_tool(
+                "evidence_attach",
+                {
+                    "run_id": run_id,
+                    "target": manifest["case"]["target"],
+                    "path": manifest["recovery"]["path"],
+                    "sha256": manifest["recovery"]["sha256"],
+                    "evidence_type": "firmware-recovery-artifact",
+                },
+                task_id="product-closeout-qualification-operator",
+                operation_id="attach-firmware-recovery-artifact",
+            )
         artifact_path = Path(manifest["artifact"]["path"])
         final = agent.call_exposed_tool(
             "execute",
@@ -507,6 +524,7 @@ def forge_runtime_ledger_for_negative_test(
     include_native_evidence: bool = True,
     native_operations_in_order: bool = True,
     recovery_after_upgrade: bool = False,
+    attach_recovery_package: bool = True,
 ) -> None:
     """Construct a deliberately forged ledger for qualification rejection tests.
 
@@ -727,6 +745,7 @@ def forge_runtime_ledger_for_negative_test(
                         "target_id": evidence_target or target,
                         "generation": "fresh-product-closeout",
                         "provenance": "product-closeout-qualification",
+                        "evidence_type": item.get("evidence_type", ""),
                         "observed_at": 1.0 + index,
                         "case_id": run_id,
                         "producer": "operator-evidence-attach",
@@ -738,6 +757,31 @@ def forge_runtime_ledger_for_negative_test(
 
     for index, item in enumerate(immediate_operator_items, start=1):
         append_operator_evidence(item, index)
+    if attach_recovery_package:
+        recovery = manifest["recovery"]
+        events.append(
+            PendingCaseEvent(
+                "EvidenceAttached",
+                {
+                    "evidence": {
+                        "evidence_id": "firmware-recovery-artifact",
+                        "blob_id": recovery["sha256"],
+                        "media_type": "application/octet-stream",
+                        "byte_count": recovery["size"],
+                        "target_id": evidence_target or target,
+                        "generation": "fresh-product-closeout",
+                        "provenance": (
+                            "operator-evidence-attach:firmware-recovery-artifact"
+                        ),
+                        "evidence_type": "firmware-recovery-artifact",
+                        "observed_at": 19.0,
+                        "case_id": run_id,
+                        "producer": "operator-evidence-attach",
+                    }
+                },
+                "attach-firmware-recovery-artifact",
+            )
+        )
     if include_native_operations:
         operations = (
             ("upgrade_run", "upgrade-effect-1", 4),
@@ -1445,6 +1489,27 @@ class ProductCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "before upgrade_run" in item
+                for item in report["violations"]
+            ),
+            report["violations"],
+        )
+
+    def test_recovery_artifact_bytes_must_be_bound_before_upgrade_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _, _, _ = complete_manifest(root)
+            forge_runtime_ledger_for_negative_test(
+                manifest,
+                attach_recovery_package=False,
+            )
+            completed = run_qualification(root, manifest)
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertFalse(report["promotable"])
+        self.assertTrue(
+            any(
+                "recovery package bytes" in item
                 for item in report["violations"]
             ),
             report["violations"],

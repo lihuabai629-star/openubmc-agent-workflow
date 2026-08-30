@@ -106,6 +106,8 @@ class RuntimeEvidenceFact:
     digest: str
     operation_id: str
     producer: str
+    evidence_type: str
+    byte_count: int
     target_id: str
     target_epoch: int | None
     observed_at: datetime
@@ -800,6 +802,26 @@ def _verify_fixed_supporting_evidence(
                     "attached before upgrade_run starts"
                 )
                 return False
+            recovery_digest = _expected_sha256(
+                requirements.get("artifact.sha256")
+            )
+            recovery_size = requirements.get("artifact.size")
+            recovery_package_bindings = [
+                fact
+                for fact in runtime_facts.evidence_by_digest.get(
+                    recovery_digest, ()
+                )
+                if fact.producer == "operator-evidence-attach"
+                and fact.evidence_type == "firmware-recovery-artifact"
+                and fact.byte_count == recovery_size
+                and fact.revision < runtime_facts.upgrade_started_revision
+            ]
+            if len(recovery_package_bindings) != 1:
+                violations.append(
+                    f"{label}.supporting_evidence: recovery package bytes must be "
+                    "digest-bound to the Runtime Run before upgrade_run starts"
+                )
+                return False
             reason = _recovery_artifact_record(raw, requirements)
             accepted = reason is None
             if reason is not None:
@@ -1211,6 +1233,13 @@ def _runtime_ledger(
                 digest=digest,
                 operation_id=_text(event.get("operation_id")),
                 producer=_text(reference.get("producer")),
+                evidence_type=_text(reference.get("evidence_type")),
+                byte_count=(
+                    reference.get("byte_count")
+                    if isinstance(reference.get("byte_count"), int)
+                    and not isinstance(reference.get("byte_count"), bool)
+                    else 0
+                ),
                 target_id=target_id,
                 target_epoch=(
                     target_epoch
