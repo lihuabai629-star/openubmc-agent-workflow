@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import json
+import re
 import threading
 
 from .catalog import OperationDescriptor
@@ -90,7 +91,85 @@ def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _observe_preflight_example(detail: PreflightDetail) -> dict[str, object]:
+def _observe_preflight_example(
+    detail: PreflightDetail,
+    query: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    if query is not None:
+        example = dict(query)
+        raw_selectors = query.get("selectors")
+        if isinstance(raw_selectors, list):
+            example["selectors"] = [
+                dict(item) if isinstance(item, Mapping) else item
+                for item in raw_selectors
+            ]
+        raw_freshness = query.get("freshness")
+        if isinstance(raw_freshness, Mapping):
+            example["freshness"] = dict(raw_freshness)
+        if detail.reason == PreflightReason.UNSUPPORTED_CAPABILITY:
+            match = re.fullmatch(r"selectors\[(\d+)]\.names\[(\d+)]", detail.field)
+            if match is not None:
+                selector_index, name_index = (int(item) for item in match.groups())
+                selectors = example.get("selectors")
+                if isinstance(selectors, list) and selector_index < len(selectors):
+                    selector = selectors[selector_index]
+                    if isinstance(selector, dict):
+                        raw_names = selector.get("names")
+                        if isinstance(raw_names, list) and name_index < len(raw_names):
+                            names = list(raw_names)
+                            correction = {"mdb": "mdbctl"}.get(
+                                _text(names[name_index]).lower()
+                            )
+                            if correction:
+                                names[name_index] = correction
+                                selector["names"] = names
+                                return example
+        if detail.reason == PreflightReason.FRESHNESS_MODE:
+            freshness = dict(_mapping(example.get("freshness")))
+            freshness["mode"] = "live"
+            example["freshness"] = freshness
+            return example
+        if detail.reason == PreflightReason.LIVE_MAX_AGE:
+            freshness = dict(_mapping(example.get("freshness")))
+            freshness["max_age_seconds"] = 0
+            example["freshness"] = freshness
+            return example
+        if detail.reason == PreflightReason.DEADLINE:
+            example["deadline"] = 180
+            return example
+        if detail.reason == PreflightReason.UNDECLARED_FIELD:
+            selector_match = re.fullmatch(r"selectors\[(\d+)]\.([^.[\]]+)", detail.field)
+            if selector_match is not None:
+                selector_index = int(selector_match.group(1))
+                field = selector_match.group(2)
+                selectors = example.get("selectors")
+                if isinstance(selectors, list) and selector_index < len(selectors):
+                    selector = selectors[selector_index]
+                    if isinstance(selector, dict):
+                        selector.pop(field, None)
+                        return example
+            freshness_match = re.fullmatch(r"freshness\.([^.[\]]+)", detail.field)
+            if freshness_match is not None:
+                freshness = dict(_mapping(example.get("freshness")))
+                freshness.pop(freshness_match.group(1), None)
+                example["freshness"] = freshness
+                return example
+            if detail.field in example:
+                example.pop(detail.field, None)
+                return example
+        if detail.reason == PreflightReason.UNSUPPORTED_SELECTOR_KIND:
+            selector_match = re.fullmatch(r"selectors\[(\d+)]\.kind", detail.field)
+            if selector_match is not None:
+                selector_index = int(selector_match.group(1))
+                selectors = example.get("selectors")
+                if isinstance(selectors, list) and selector_index < len(selectors):
+                    selector = selectors[selector_index]
+                    if (
+                        isinstance(selector, dict)
+                        and _text(selector.get("kind")).lower() == "mdbctl"
+                    ):
+                        selector["kind"] = "mdb"
+                        return example
     if ".names" in detail.field or detail.reason == PreflightReason.UNSUPPORTED_CAPABILITY:
         return {
             "target": "<BMC IP>",
@@ -242,6 +321,7 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
 def _preflight_guidance(
     operation: str,
     detail: PreflightDetail,
+    arguments: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], str]:
     if operation == "observe":
         actions = {
@@ -265,7 +345,7 @@ def _preflight_guidance(
             ),
         }
         return (
-            _observe_preflight_example(detail),
+            _observe_preflight_example(detail, arguments),
             actions.get(
                 detail.reason,
                 f"correct {detail.field} to satisfy the reported contract and retry observe",
@@ -299,6 +379,14 @@ def _preflight_guidance(
             f"correct {detail.field} to satisfy the reported contract and retry execute",
         )
     return _execute_action_example(detail), next_action
+
+
+def _contains_preflight_placeholder(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return any(_contains_preflight_placeholder(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_preflight_placeholder(item) for item in value)
+    return isinstance(value, str) and value.startswith("<") and value.endswith(">")
 
 
 def _text(value: object) -> str:
@@ -1101,14 +1189,23 @@ class ResultProjector:
             return None
         gate = _mapping(document.get("gate"))
         if state == "waiting_response" and _text(gate.get("kind")) == "phase":
+            schema_digest = _text(gate.get("schema_digest"))
             action = {
                 "kind": "respond",
                 "run_id": run_id,
                 "gate_id": gate.get("gate_id"),
                 "gate_version": gate.get("gate_version"),
-                "schema_digest": gate.get("schema_digest"),
+                "schema_digest": schema_digest,
             }
             if all(action.get(name) not in (None, "") for name in action):
+                action["submission_id"] = "gate-submit-" + _fingerprint(
+                    {
+                        "run_id": run_id,
+                        "gate_id": action["gate_id"],
+                        "gate_version": action["gate_version"],
+                        "schema_digest": schema_digest.removeprefix("sha256:"),
+                    }
+                )[:32]
                 return action
             return None
         if state == "running":
@@ -1322,6 +1419,7 @@ class ResultProjector:
         document = {
             "schema": OBSERVATION_RECEIPT_SCHEMA,
             "receipt_id": receipt_id,
+            "next_action": None,
             "status": (
                 "complete"
                 if counts["not_checked"] == 0 and temporally_coherent
@@ -1503,12 +1601,18 @@ class AgentGateway:
         return _finalize_turn_projection(projected)
 
     @staticmethod
-    def error(operation: str, exc: Exception) -> dict[str, object]:
+    def error(
+        operation: str,
+        exc: Exception,
+        *,
+        arguments: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
         schema = OBSERVATION_RECEIPT_SCHEMA if operation == "observe" else TURN_SCHEMA
         key = "receipt_id" if operation == "observe" else "run_id"
         result = {
             "schema": schema,
             key: "",
+            "next_action": None,
             "status" if operation == "observe" else "state": "failed",
             "error": {
                 "code": (
@@ -1528,7 +1632,8 @@ class AgentGateway:
                 )
             )
             result["budget_blocker"] = True
-            result["next_action"] = (
+            result["next_action"] = None
+            result["next_guidance"] = (
                 "reduce the request structure or move large content behind an "
                 "ArtifactRef, then retry the same operation"
             )
@@ -1537,7 +1642,11 @@ class AgentGateway:
             detail = exc.detail
             error = result["error"]
             assert isinstance(error, dict)
-            example, next_action = _preflight_guidance(operation, detail)
+            example, next_guidance = _preflight_guidance(
+                operation,
+                detail,
+                arguments,
+            )
             projected_example = _project_preflight_example(example)
             error["field"] = detail.field
             error["example"] = projected_example
@@ -1545,7 +1654,17 @@ class AgentGateway:
                 error["supported"] = list(detail.supported)
             if detail.limit is not None:
                 error["limit"] = detail.limit
-            result["next_action"] = next_action
+            result["next_action"] = (
+                None
+                if _contains_preflight_placeholder(projected_example)
+                or (
+                    operation == "execute"
+                    and detail.reason == PreflightReason.GATE_BINDING
+                    and not isinstance(exc, GatePreflightError)
+                )
+                else projected_example
+            )
+            result["next_guidance"] = next_guidance
             return _finalize_turn_projection(
                 result,
                 preflight_failure=True,
@@ -1835,7 +1954,9 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
             name="execute",
             description=(
                 "Start or continue one Runtime workflow and return only the next semantic "
-                "Turn. Copy next_action bindings exactly; response_required with "
+                "Turn. next_action is the sole structured reusable action; copy its "
+                "bindings exactly, and treat null as requiring missing external input. "
+                "response_required with "
                 "progress.status=no_progress means respond to the unchanged Gate instead "
                 "of retrying resume."
             ),

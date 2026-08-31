@@ -117,8 +117,18 @@ class _AgentRuntimePort:
             operation_id=operation_id,
         )
 
-    def error(self, operation: str, exc: Exception) -> dict[str, object]:
-        return self._gateway.error(operation, exc)
+    def error(
+        self,
+        operation: str,
+        exc: Exception,
+        *,
+        arguments: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        return self._gateway.error(
+            operation,
+            exc,
+            arguments=arguments,
+        )
 
 
 class _RuntimeOperatorPort:

@@ -3359,7 +3359,11 @@ class RuntimeMcpService:
         operation_id: str,
     ) -> Mapping[str, object]:
         if name in {"observe", "execute"}:
-            return self._runtime.agent.error(name, exc)
+            return self._runtime.agent.error(
+                name,
+                exc,
+                arguments=arguments,
+            )
         return self._runtime.operator.error_result(
             exc,
             operation=name,
@@ -3550,7 +3554,12 @@ class JsonRpcMcpEndpoint:
                 recovery = "失效连接会被丢弃，任务上下文仍保留，重试时将重新建连"
             else:
                 recovery = "任务上下文仍保留，但本次调用未自动重放"
-            next_action = cls._summary_text(mapping, "next_action", "next_step")
+            next_action = cls._summary_text(
+                mapping,
+                "next_guidance",
+                "next_action",
+                "next_step",
+            )
             if not next_action:
                 if "deadline" in lowered or "timeout" in lowered:
                     next_action = "增大 deadline 或缩小采集范围后重试"

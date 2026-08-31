@@ -2533,6 +2533,7 @@ class AgentGatewayTests(unittest.TestCase):
             capability_item["description"],
         )
         self.assertIn("response_required", definitions[1]["description"])
+        self.assertIn("sole structured reusable action", definitions[1]["description"])
         action_shapes = {
             branch["properties"]["kind"]["const"]: branch
             for branch in execute_schema["oneOf"]
@@ -2968,7 +2969,12 @@ class AgentGatewayTests(unittest.TestCase):
                 self.assertEqual(structured["error"]["field"], field)
                 self.assertEqual(structured["error"]["limit"], limit)
                 self.assertEqual(structured["error"]["example"], example)
-                self.assertTrue(structured["next_action"])
+                has_placeholder = "<" in json.dumps(example)
+                self.assertEqual(
+                    structured["next_action"],
+                    None if has_placeholder else example,
+                )
+                self.assertTrue(structured["next_guidance"])
                 self.assertNotIn("structuredContent", json.dumps(structured))
 
     def test_execute_preflight_preserves_large_response_in_canonical_example(
@@ -3089,6 +3095,10 @@ class AgentGatewayTests(unittest.TestCase):
                     self.assertEqual(example[preserved], arguments[preserved])
                 self.assertEqual(
                     structured["next_action"],
+                    None,
+                )
+                self.assertEqual(
+                    structured["next_guidance"],
                     "retry execute with the projected GateBinding, response, and submission identity",
                 )
 
@@ -3161,11 +3171,23 @@ class AgentGatewayTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     structured["next_action"],
+                    example,
+                )
+                self.assertEqual(
+                    structured["next_guidance"],
                     "retry execute with the projected GateBinding, response, and submission identity",
                 )
 
         after = self.service._test.context_runtime.read_case(waiting["run_id"])
         self.assertEqual(after["revision"], before["revision"])
+        continued = self.service.call_exposed_tool(
+            "execute",
+            structured["next_action"],
+            task_id="stale-gate-binding-corrected",
+            operation_id="stale-gate-binding-corrected",
+        )
+        self.assertEqual(continued["state"], "completed")
+        self.assertIsNone(continued["next_action"])
 
     def test_execute_preflight_preserves_wide_canonical_example_semantics(
         self,
@@ -3498,7 +3520,14 @@ class AgentGatewayTests(unittest.TestCase):
                 self.assertTrue(response["result"]["isError"])
                 self.assertEqual(structured["error"]["field"], field)
                 self.assertTrue(structured["error"]["example"])
-                self.assertTrue(structured["next_action"])
+                if field == "selectors[0].queries":
+                    self.assertEqual(
+                        structured["next_action"],
+                        structured["error"]["example"],
+                    )
+                else:
+                    self.assertIsNone(structured["next_action"])
+                self.assertTrue(structured["next_guidance"])
 
         self.assertEqual(self.backend.calls, [])
 
@@ -3581,7 +3610,11 @@ class AgentGatewayTests(unittest.TestCase):
                 self.assertEqual(structured["error"]["field"], field)
                 self.assertEqual(structured["error"]["limit"], limit)
                 self.assertTrue(structured["error"]["example"])
-                self.assertTrue(structured["next_action"])
+                self.assertEqual(
+                    structured["next_action"],
+                    structured["error"]["example"],
+                )
+                self.assertTrue(structured["next_guidance"])
 
         self.assertEqual(self.backend.calls, [])
 
@@ -3636,6 +3669,11 @@ class AgentGatewayTests(unittest.TestCase):
             },
         )
         self.assertNotIn("reconcile", json.dumps(structured["error"]["example"]))
+        self.assertEqual(
+            structured["next_action"],
+            structured["error"]["example"],
+        )
+        self.assertTrue(structured["next_guidance"])
         self.assertEqual(len(self.backend.calls), call_count)
         self.assertEqual(
             self.service._test.context_runtime.read_case(terminal["run_id"])[
@@ -3885,6 +3923,11 @@ class AgentGatewayTests(unittest.TestCase):
                 example["response"]["payload"]["artifact_ref"]["target"],
                 "192.0.2.10",
             )
+            if response is missing_ref:
+                self.assertIsNone(structured["next_action"])
+            else:
+                self.assertEqual(structured["next_action"], example)
+            self.assertTrue(structured["next_guidance"])
 
         after = self.service._test.context_runtime.read_case(build_gate["run_id"])
         self.assertEqual(after["revision"], before["revision"])
@@ -3941,6 +3984,12 @@ class AgentGatewayTests(unittest.TestCase):
             "response"
         ]["payload"]
         example = response["result"]["structuredContent"]["error"]["example"]
+        self.assertIsNone(
+            response["result"]["structuredContent"]["next_action"]
+        )
+        self.assertTrue(
+            response["result"]["structuredContent"]["next_guidance"]
+        )
         self.assertEqual(
             example["submission_id"],
             "live-patch-artifact-submission",
@@ -4001,18 +4050,22 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             error["example"],
             {
-                "target": "<BMC IP>",
+                "target": "192.0.2.10",
                 "selectors": [
                     {
                         "id": "capabilities",
                         "kind": "capability",
-                        "names": ["ssh", "mdbctl"],
+                        "names": ["mdbctl"],
                     }
                 ],
             },
         )
         self.assertEqual(
             result["structuredContent"]["next_action"],
+            error["example"],
+        )
+        self.assertEqual(
+            result["structuredContent"]["next_guidance"],
             "retry observe with the corrected canonical capability name",
         )
         self.assertEqual(
@@ -4112,7 +4165,8 @@ class AgentGatewayTests(unittest.TestCase):
                 if limit is not None:
                     self.assertEqual(structured["error"]["limit"], limit)
                 self.assertTrue(structured["error"]["example"])
-                self.assertTrue(structured["next_action"])
+                self.assertIsNone(structured["next_action"])
+                self.assertTrue(structured["next_guidance"])
 
         self.assertEqual(self.backend.calls, [])
 
@@ -4294,6 +4348,7 @@ class AgentGatewayTests(unittest.TestCase):
                 "gate_id": "gate-one",
                 "gate_version": 3,
                 "schema_digest": "sha256:" + "a" * 64,
+                "submission_id": "gate-submit-4b436fa3cbfc58763c93fea6562340e0",
             },
         )
         self.assertEqual(projected["gate"]["gate"]["input_schema"], gate_schema)
@@ -4376,6 +4431,7 @@ class AgentGatewayTests(unittest.TestCase):
         )
 
         self.assertLessEqual(encoded_size(receipt), OBSERVATION_MAX_BYTES)
+        self.assertIsNone(receipt["next_action"])
         states = {
             item["name"]: item["status"]
             for item in receipt["results"]["caps"]["values"]
@@ -4692,6 +4748,11 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertTrue(response["result"]["isError"])
         self.assertTrue(structured["budget_blocker"])
+        self.assertIsNone(structured["next_action"])
+        self.assertEqual(
+            structured["next_guidance"],
+            "reduce the request structure or move large content behind an ArtifactRef, then retry the same operation",
+        )
         self.assertEqual(
             structured["interaction_telemetry"],
             {
@@ -7315,6 +7376,7 @@ class AgentGatewayTests(unittest.TestCase):
         after = self.service._test.context_runtime.read_case(waiting["run_id"])
 
         self.assertEqual(completed["state"], "completed")
+        self.assertIsNone(completed["next_action"])
         self.assertEqual(after["revision"], before["revision"])
         self.assertEqual(
             replayed["progress"],
@@ -7323,6 +7385,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(
             replayed["interaction_telemetry"]["no_progress_retry"]
         )
+        self.assertIsNone(replayed["next_action"])
 
     def test_replaying_an_old_start_command_returns_the_current_turn(self) -> None:
         action = {
@@ -7736,6 +7799,8 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(decisions, [])
         self.assertEqual(first["gate"], waiting["gate"])
         self.assertEqual(replayed["gate"], first["gate"])
+        self.assertEqual(first["next_action"], waiting["next_action"])
+        self.assertEqual(replayed["next_action"], first["next_action"])
         self.assertEqual(
             first["progress"],
             {"status": "no_progress", "reason": "response_required"},
@@ -7948,6 +8013,7 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertEqual(replay["run_id"], first["run_id"])
         self.assertEqual(replay["gate"], first["gate"])
+        self.assertEqual(replay["next_action"], first["next_action"])
         self.assertEqual(sum(event["kind"] == "CaseOpened" for event in events), 1)
         self.assertEqual(second_backend.calls, [])
 
@@ -9944,6 +10010,7 @@ class AgentGatewayTests(unittest.TestCase):
             blocked["incident"]["incident_id"],
         )
         self.assertEqual(cancelled["state"], "cancelled")
+        self.assertIsNone(cancelled["next_action"])
         self.assertEqual(cancelled["outcome"]["status"], "cancelled")
         self.assertIn("diagnostic_receipt_ref", cancelled)
         self.assertIn("diagnostic_receipt", replayed)
@@ -9980,6 +10047,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertTrue(
             replayed["interaction_telemetry"]["no_progress_retry"]
         )
+        self.assertIsNone(replayed["next_action"])
         self.assertEqual(
             replayed["diagnostic_receipt"]["receipt_id"],
             cancelled["diagnostic_receipt_ref"]["receipt_id"],
@@ -10215,11 +10283,7 @@ class AgentGatewayTests(unittest.TestCase):
         )
         self.assertEqual(
             resumed["next_action"],
-            {
-                "kind": "respond",
-                "run_id": waiting["run_id"],
-                **gate_binding(waiting),
-            },
+            waiting["next_action"],
         )
         self.assertFalse(
             any(

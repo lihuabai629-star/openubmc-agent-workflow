@@ -96,7 +96,9 @@ automatic Runtime policy and is not returned in the Agent projection.
 An `ObservationReceipt` contains semantic values, tri-state capability results
 (`available | unavailable | not_checked`), coverage, observation time, target identity when
 available, grounded claims, and receipt-local evidence references. It does not open a Case or
-generate a Closeout. The model-visible document targets 4 KiB. Projection pressure may compact
+generate a Closeout. `next_action` is explicitly `null`: the Runtime can preserve an
+`ObservationRef`, but it cannot invent the intent, delivery strategy, or authorization needed to
+start a Run. The model-visible document targets 4 KiB. Projection pressure may compact
 inline values and set `projection_truncated`; it never changes source status or coverage, removes a
 valid `ObservationRef`, or requires the Agent to guess narrower selectors. A projection that still
 cannot preserve those semantics within the target may exceed it with
@@ -120,6 +122,15 @@ accepted as `execute` input; callers pass the Receipt's verified `ObservationRef
 - `respond`: satisfy the current phase Gate and continue;
 - `resume`: continue an existing Run;
 - `control`: reconcile an unresolved mutation or cancel a current Gate or Incident.
+
+Every Agent result uses one authoritative interaction field. `next_action` is either a structured
+`observe`/`execute` argument object that preserves every Runtime-known binding, or `null` when a
+safe action would require missing target, Artifact, authorization, or acceptance evidence.
+`next_guidance` is prose only and never competes with `next_action`. Preflight errors retain a
+canonical example for diagnosis, but promote it to `next_action` only when it contains no invented
+placeholder. Gate actions include the stable submission identity derived from the Run and current
+Gate binding. Running and recoverable Incident Turns return the corresponding resume or control
+action; terminal Outcomes always return `next_action=null`.
 
 The Runtime Core advances deterministic steps internally and returns a `Turn` only at a real Gate,
 an unresolved Incident, a running reattach point, or terminal Outcome. A Turn contains the Run ID,
