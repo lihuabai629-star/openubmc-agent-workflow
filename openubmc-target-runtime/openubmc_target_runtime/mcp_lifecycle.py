@@ -115,6 +115,10 @@ class McpProcessLifecycle:
             if self.parent_pid > 1 and self._process_alive(self.parent_pid)
             else "unknown"
         )
+        self._parent_identity_verified_ever = (
+            self.parent_identity != "unknown"
+            and self._parent_identity_currently_verified()
+        )
         self._started_monotonic = self._monotonic_clock()
         self._last_activity = self._started_monotonic
         self._started_at = self._timestamp()
@@ -199,11 +203,12 @@ class McpProcessLifecycle:
             and current_parent_identity != self.parent_identity
         ):
             return "orphaned"
+        self._parent_identity_verified_ever = True
         if self.client == "unknown-client" or self.task_id == "unknown-task":
             return "unknown-owner"
         return "active" if self._active_requests else "idle"
 
-    def _parent_identity_verified(self) -> bool:
+    def _parent_identity_currently_verified(self) -> bool:
         if self.parent_pid <= 1 or self.parent_identity == "unknown":
             return False
         try:
@@ -217,6 +222,11 @@ class McpProcessLifecycle:
         with self._lock:
             now = self._monotonic_clock()
             lifecycle_state = self._ownership_state()
+            parent_identity_currently_verified = (
+                self._parent_identity_currently_verified()
+            )
+            if parent_identity_currently_verified:
+                self._parent_identity_verified_ever = True
             return {
                 "schema": MCP_PROCESS_LIFECYCLE_SCHEMA,
                 "component": self.component,
@@ -229,7 +239,10 @@ class McpProcessLifecycle:
                 "codex_identity": dict(self.codex_identity),
                 "parent_pid": self.parent_pid,
                 "parent_identity": self.parent_identity,
-                "parent_identity_verified": self._parent_identity_verified(),
+                "parent_identity_verified": self._parent_identity_verified_ever,
+                "parent_identity_currently_verified": (
+                    parent_identity_currently_verified
+                ),
                 "process_id": self.process_id,
                 "process_identity": self.process_identity,
                 "start_time": self._started_at,
@@ -418,16 +431,22 @@ def inspect_mcp_process_records(
             and not str(record[field]).startswith("unknown-")
             for field in ("client", "task_id", "session_id")
         )
+        parent_identity_currently_verified = False
+        if parent_pid > 1 and parent_identity != "unknown" and process_alive(parent_pid):
+            parent_identity_currently_verified = (
+                process_identity(parent_pid) == parent_identity
+            )
+        parent_identity_verified = (
+            record.get("parent_identity_verified") is True
+            or parent_identity_currently_verified
+        )
         ownership_identity_bound = (
             identity_verified
             and owner_known
             and parent_pid > 1
+            and parent_identity != "unknown"
+            and parent_identity_verified
         )
-        parent_identity_verified = False
-        if parent_pid > 1 and parent_identity != "unknown" and process_alive(parent_pid):
-            parent_identity_verified = (
-                process_identity(parent_pid) == parent_identity
-            )
         if not running:
             lifecycle_state = "stopped"
         elif parent_pid <= 1 or not identity_verified:
@@ -460,6 +479,9 @@ def inspect_mcp_process_records(
                 "process_running": running,
                 "identity_verified": identity_verified,
                 "parent_identity_verified": parent_identity_verified,
+                "parent_identity_currently_verified": (
+                    parent_identity_currently_verified
+                ),
                 "ownership_identity_bound": ownership_identity_bound,
                 "lifecycle_state": lifecycle_state,
                 "shutdown_requested": shutdown_requested,
@@ -488,6 +510,7 @@ def cleanup_confirmed_orphaned_mcp_processes(
             process_id == os.getpid()
             or status["lifecycle_state"] != "orphaned"
             or status["identity_verified"] is not True
+            or status["ownership_identity_bound"] is not True
             or int(status.get("active_requests", 0)) != 0
         ):
             continue
@@ -519,6 +542,7 @@ def cleanup_confirmed_orphaned_mcp_processes(
                 continue
             if (
                 latest_status.get("lifecycle_state") != "orphaned"
+                or latest_status.get("ownership_identity_bound") is not True
                 or int(latest_status.get("process_id", -1)) != process_id
                 or str(latest_status.get("process_identity", "unknown"))
                 != status["process_identity"]

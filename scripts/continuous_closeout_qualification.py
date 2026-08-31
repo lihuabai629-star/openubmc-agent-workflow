@@ -53,6 +53,20 @@ class CandidateRelease(NamedTuple):
     bundle: Path
     release_commit: str
     release: dict[str, object]
+
+
+def _normalized_identity(
+    value: Mapping[str, object] | None,
+    fallback: Mapping[str, object],
+) -> dict[str, object]:
+    selected = fallback if value is None else value
+    encoded = json.dumps(dict(selected), ensure_ascii=True, sort_keys=True)
+    decoded = json.loads(encoded)
+    if not isinstance(decoded, dict) or not decoded:
+        raise ValueError("formal identity must be a non-empty JSON object")
+    return decoded
+
+
 PRODUCT_CONTRACT_TESTS = (
     "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_assembles_a_promotable_manifest_from_runtime_and_fixed_evidence",
     "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_cli_writes_deterministic_manifest_and_qualification_report",
@@ -103,9 +117,11 @@ MCP_LIFECYCLE_TESTS = {
     "active_request_drain": (
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_requested_shutdown_waits_for_the_active_request_to_finish",
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_stdio_sigterm_drains_the_active_response_before_exit",
+        "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_stdio_task_closeout_drains_overlapping_responses_and_rejects_new_work",
     ),
     "cleanup": (
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_terminates_only_confirmed_orphaned_processes",
+        "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_preserves_orphan_without_verified_ownership_binding",
     ),
     "zero_live_orphans": (
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_signals_the_identity_bound_process_handle",
@@ -118,6 +134,7 @@ PROJECTION_TESTS = (
     "tests.test_agent_gateway.AgentGatewayTests.test_retried_one_shot_terminal_turn_keeps_the_complete_receipt",
     "tests.test_runtime_stability.RuntimeStabilityTests.test_dual_projection_qualification_measures_gate_and_terminal_seams",
     "tests.test_mcp_contracts.RuntimeMcpServiceTests.test_operator_status_derives_bounded_current_run_evidence_from_the_ledger",
+    "tests.test_mcp_contracts.RuntimeMcpServiceTests.test_operator_status_without_task_binding_has_no_current_run",
 )
 TASK_MATRIX_TESTS = {
     "source_only": {
@@ -383,6 +400,9 @@ def _product_client_run(
     tests: Sequence[str],
     contract: Mapping[str, object],
     source_commit: str,
+    *,
+    model_identity: Mapping[str, object],
+    codex_identity: Mapping[str, object],
 ) -> dict[str, object]:
     with tempfile.TemporaryDirectory() as raw:
         qualification_root = Path(raw)
@@ -406,6 +426,12 @@ def _product_client_run(
                 "OPENUBMC_PRODUCT_CLIENT_EVIDENCE": str(evidence_path),
                 "OPENUBMC_PRODUCT_CLIENT_REPO_URL": str(candidate.bundle),
                 "OPENUBMC_PRODUCT_CLIENT_RELEASE_COMMIT": candidate.release_commit,
+                "OPENUBMC_PRODUCT_CLIENT_MODEL_IDENTITY": json.dumps(
+                    dict(model_identity), ensure_ascii=True, sort_keys=True
+                ),
+                "OPENUBMC_PRODUCT_CLIENT_CODEX_IDENTITY": json.dumps(
+                    dict(codex_identity), ensure_ascii=True, sort_keys=True
+                ),
             },
         )
         if result.get("status") != "passed":
@@ -434,6 +460,20 @@ def _product_client_run(
         expected_source_commit=source_commit,
         expected_release=candidate.release,
     )
+    lifecycle_records = evidence.get("mcp_lifecycle_records", [])
+    records = lifecycle_records if isinstance(lifecycle_records, list) else []
+    if any(
+        not isinstance(record, Mapping)
+        or record.get("model_identity") != dict(model_identity)
+        for record in records
+    ):
+        failures.append("model_identity_mismatch")
+    if any(
+        not isinstance(record, Mapping)
+        or record.get("codex_identity") != dict(codex_identity)
+        for record in records
+    ):
+        failures.append("codex_identity_mismatch")
     return {
         **result,
         **dict(evidence),
@@ -509,7 +549,12 @@ def _product_evidence(
     }
 
 
-def _mcp_closeout_snapshot(source_commit: str) -> dict[str, object]:
+def _mcp_closeout_snapshot(
+    source_commit: str,
+    *,
+    model_identity: Mapping[str, object],
+    codex_identity: Mapping[str, object],
+) -> dict[str, object]:
     with tempfile.TemporaryDirectory() as raw:
         qualification_root = Path(raw)
         task_home = qualification_root / "task-home"
@@ -533,8 +578,8 @@ def _mcp_closeout_snapshot(source_commit: str) -> dict[str, object]:
                 "    task_id='continuous-closeout-qualification',",
                 "    session_id='continuous-closeout-session',",
                 f"    source_commit={source_commit!r},",
-                "    model_identity={'model': 'continuous-closeout-qualification'},",
-                "    codex_identity={'client': 'codex', 'qualification': 'continuous-closeout'},",
+                f"    model_identity={dict(model_identity)!r},",
+                f"    codex_identity={dict(codex_identity)!r},",
                 "    parent_pid=os.getppid(),",
                 f"    state_path=Path({str(runtime_state_root)!r}),",
                 "    lifecycle_root=root,",
@@ -582,10 +627,11 @@ def _mcp_closeout_snapshot(source_commit: str) -> dict[str, object]:
             and record.get("session_id") == "continuous-closeout-session"
             and record.get("source_commit") == source_commit
             and isinstance(record.get("model_identity"), Mapping)
-            and bool(record.get("model_identity"))
+            and record.get("model_identity") == dict(model_identity)
             and isinstance(record.get("codex_identity"), Mapping)
-            and bool(record.get("codex_identity"))
+            and record.get("codex_identity") == dict(codex_identity)
             and record.get("parent_identity_verified") is True
+            and isinstance(record.get("parent_identity_currently_verified"), bool)
             and record.get("runtime_state_root") == str(runtime_state_root)
             and record.get("exit_reason") == "task-closeout"
             for record in records
@@ -655,8 +701,18 @@ def qualify(
     product_ingestion: Path | None = None,
     runtime_repository: Path | None = None,
     source_commit: str | None = None,
+    model_identity: Mapping[str, object] | None = None,
+    codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     selected_source_commit = source_commit or resolve_source_commit(ROOT)
+    selected_model_identity = _normalized_identity(
+        model_identity,
+        {"model": "continuous-closeout-qualification"},
+    )
+    selected_codex_identity = _normalized_identity(
+        codex_identity,
+        {"client": "codex", "qualification": "continuous-closeout"},
+    )
     workflow = _workflow_metadata()
     raw_clients = workflow.get("clients", {})
     clients = raw_clients if isinstance(raw_clients, Mapping) else {}
@@ -685,6 +741,8 @@ def qualify(
             if isinstance(clients.get(name), Mapping)
             else {},
             selected_source_commit,
+            model_identity=selected_model_identity,
+            codex_identity=selected_codex_identity,
         )
         for name, tests in SUPPORTED_CLIENT_TESTS.items()
     }
@@ -693,7 +751,11 @@ def qualify(
         name: _run_tests(tests, cwd=RUNTIME_ROOT)
         for name, tests in MCP_LIFECYCLE_TESTS.items()
     }
-    lifecycle_closeout = _mcp_closeout_snapshot(selected_source_commit)
+    lifecycle_closeout = _mcp_closeout_snapshot(
+        selected_source_commit,
+        model_identity=selected_model_identity,
+        codex_identity=selected_codex_identity,
+    )
     projection_tests = _run_tests(PROJECTION_TESTS, cwd=RUNTIME_ROOT)
     task_matrix = {
         name: _run_task_group(dimensions)
@@ -765,6 +827,10 @@ def qualify(
         "schema": SCHEMA,
         "source_commit": selected_source_commit,
         "source_clean": source_clean,
+        "formal_identity": {
+            "model": selected_model_identity,
+            "codex": selected_codex_identity,
+        },
         "qualified": qualified,
         "maintenance_checkpoint_ready": qualified,
         "fresh_product_promotable": product_evidence.get("promotable") is True,

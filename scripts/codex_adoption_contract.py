@@ -208,6 +208,7 @@ def _mcp_lifecycle_failures(
         and isinstance(record.get("codex_identity"), Mapping)
         and bool(record.get("codex_identity"))
         and record.get("parent_identity_verified") is True
+        and isinstance(record.get("parent_identity_currently_verified"), bool)
         and isinstance(record.get("start_time"), str)
         and bool(str(record.get("start_time", "")).strip())
         and isinstance(record.get("runtime_state_root"), str)

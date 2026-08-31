@@ -28,6 +28,7 @@ test("records ownership and never expires while a request is active", async () =
     parentPid: 1200,
     processId: 1201,
     statePath: join(root, "kb-state"),
+    runtimeStateRoot: join(root, "runtime-state"),
     lifecycleRoot: join(root, "processes"),
     idleTimeoutSeconds: 30,
     monotonicClock: () => monotonic,
@@ -55,8 +56,10 @@ test("records ownership and never expires while a request is active", async () =
     executable_sha256: `sha256:${"b".repeat(64)}`
   });
   assert.equal(recorded.parent_identity_verified, true);
+  assert.equal(recorded.parent_identity_currently_verified, true);
   assert.equal(recorded.process_identity, "process-1201-start");
-  assert.equal(recorded.runtime_state_root, join(root, "kb-state"));
+  assert.equal(recorded.state_path, join(root, "kb-state"));
+  assert.equal(recorded.runtime_state_root, join(root, "runtime-state"));
   assert.equal(recorded.lifecycle_state, "stopped");
   assert.equal(recorded.exit_reason, "idle-timeout");
   assert.match(lifecycle.recordPath, /knowledge-mcp-1201-process-1201-start\.json$/);
@@ -103,6 +106,8 @@ test("an unreadable live parent identity remains unknown-owner", async () => {
   parentIdentity = "unknown";
 
   assert.equal(lifecycle.status().lifecycle_state, "unknown-owner");
+  assert.equal(lifecycle.status().parent_identity_verified, true);
+  assert.equal(lifecycle.status().parent_identity_currently_verified, false);
 });
 
 test("startup ownership stays unknown until parent identity is verified", async () => {
@@ -126,6 +131,8 @@ test("startup ownership stays unknown until parent identity is verified", async 
 
   parentIdentity = "process-1200-start";
   assert.equal(lifecycle.status().parent_identity, "process-1200-start");
+  assert.equal(lifecycle.status().parent_identity_verified, true);
+  assert.equal(lifecycle.status().parent_identity_currently_verified, true);
   assert.equal(lifecycle.status().lifecycle_state, "idle");
 });
 

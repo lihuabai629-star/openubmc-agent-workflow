@@ -59,11 +59,22 @@ def qualify(
     model_identity: Mapping[str, object] | None = None,
     codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    selected_model_identity = _normalized_identity(model_identity) or {
+        "model": "codex-product-client-qualification"
+    }
+    selected_codex_identity = _normalized_identity(codex_identity) or {
+        "client_info_name": "codex-adoption-qualification",
+        "client_info_version": "1",
+    }
     selected_source_commit = bind_source_commit(
         source_commit or "",
         workspace=ROOT,
     )
-    closeout = qualify_closeout(source_commit=selected_source_commit)
+    closeout = qualify_closeout(
+        source_commit=selected_source_commit,
+        model_identity=selected_model_identity,
+        codex_identity=selected_codex_identity,
+    )
     qualification_commit = str(closeout.get("source_commit", ""))
     release = build_release_lock(ROOT, source_commit=selected_source_commit)
 
@@ -141,6 +152,18 @@ def qualify(
         expected_source_commit=selected_source_commit,
         expected_runtime=runtime,
     )
+    if any(
+        not isinstance(record, Mapping)
+        or record.get("model_identity") != selected_model_identity
+        for record in mcp_lifecycle_records
+    ):
+        mcp_failures.append("model_identity_mismatch")
+    if any(
+        not isinstance(record, Mapping)
+        or record.get("codex_identity") != selected_codex_identity
+        for record in mcp_lifecycle_records
+    ):
+        mcp_failures.append("codex_identity_mismatch")
     identity_bound = all(
         (
             installed_source_commit == selected_source_commit,
@@ -293,8 +316,8 @@ def qualify(
                     closeout.get("qualification_digest", "")
                 ),
             },
-            "model": _normalized_identity(model_identity),
-            "codex": _normalized_identity(codex_identity),
+            "model": selected_model_identity,
+            "codex": selected_codex_identity,
         },
         "external_evaluation": {
             "blocking": False,

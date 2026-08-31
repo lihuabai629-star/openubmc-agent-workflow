@@ -117,6 +117,7 @@ def codex_adoption_report(
                         "parent_pid": 123,
                         "parent_identity": "parent-identity",
                         "parent_identity_verified": True,
+                        "parent_identity_currently_verified": True,
                         "process_id": 456,
                         "process_identity": "process-identity",
                         "start_time": "2026-08-31T00:00:00Z",

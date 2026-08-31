@@ -118,6 +118,7 @@ def closeout_report() -> dict[str, object]:
                             "parent_pid": 123,
                             "parent_identity": "parent-identity",
                             "parent_identity_verified": True,
+                            "parent_identity_currently_verified": True,
                             "process_id": 456,
                             "process_identity": "process-identity",
                             "start_time": "2026-08-31T00:00:00Z",
@@ -202,10 +203,25 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
     def test_one_report_combines_identity_codex_runtime_tasks_and_provenance(
         self,
     ) -> None:
+        model_identity = {
+            "provider": "openai",
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": "high",
+        }
+        codex_identity = {
+            "version": "codex-cli 0.150.0",
+            "sha256": "1" * 64,
+        }
+        closeout = closeout_report()
+        lifecycle = closeout["client_matrix"]["runs"]["codex"][
+            "mcp_lifecycle_records"
+        ][0]
+        lifecycle["model_identity"] = model_identity
+        lifecycle["codex_identity"] = codex_identity
         with (
             mock.patch.object(
-                adoption, "qualify_closeout", return_value=closeout_report()
-            ),
+                adoption, "qualify_closeout", return_value=closeout
+            ) as qualify_closeout,
             mock.patch.object(
                 adoption, "build_release_lock", return_value=release_identity()
             ),
@@ -216,16 +232,15 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             ),
         ):
             report = adoption.qualify(
-                model_identity={
-                    "provider": "openai",
-                    "model": "gpt-5.6-sol",
-                    "reasoning_effort": "high",
-                },
-                codex_identity={
-                    "version": "codex-cli 0.150.0",
-                    "sha256": "1" * 64,
-                },
+                model_identity=model_identity,
+                codex_identity=codex_identity,
             )
+
+        qualify_closeout.assert_called_once_with(
+            source_commit="a" * 40,
+            model_identity=model_identity,
+            codex_identity=codex_identity,
+        )
 
         self.assertEqual(
             report["schema"],
@@ -277,6 +292,29 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         unsigned = dict(report)
         digest = unsigned.pop("evidence_digest")
         self.assertEqual(digest, evidence_fingerprint(unsigned))
+
+    def test_lifecycle_identity_must_match_report_provenance(self) -> None:
+        closeout = closeout_report()
+        closeout["client_matrix"]["runs"]["codex"]["mcp_lifecycle_records"][0][
+            "model_identity"
+        ] = {"model": "different-model"}
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(adoption, "bind_source_commit", return_value="a" * 40),
+        ):
+            report = adoption.qualify(
+                model_identity={"model": "gpt-5.6-sol"},
+                codex_identity={"version": "codex-cli 0.150.0"},
+            )
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "model_identity_mismatch",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
 
     def test_failed_dimension_is_explicit_and_checkpoint_cannot_pass(self) -> None:
         closeout = closeout_report()
@@ -517,7 +555,14 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         ):
             adoption.qualify(source_commit="a" * 40)
 
-        closeout.assert_called_once_with(source_commit="a" * 40)
+        closeout.assert_called_once_with(
+            source_commit="a" * 40,
+            model_identity={"model": "codex-product-client-qualification"},
+            codex_identity={
+                "client_info_name": "codex-adoption-qualification",
+                "client_info_version": "1",
+            },
+        )
 
 
 if __name__ == "__main__":

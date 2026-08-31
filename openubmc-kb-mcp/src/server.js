@@ -93,6 +93,8 @@ function createProcessLifecycle(path) {
       || path
       || join(homedir(), ".config", "openubmc", "kb-mcp.json")
   );
+  const runtimeStateRoot = process.env.OPENUBMC_TARGET_RUNTIME_STATE_DIR?.trim()
+    || "";
   const lifecycleRoot = resolve(
     process.env.OPENUBMC_MCP_LIFECYCLE_DIR?.trim()
       || join(homedir(), ".local", "state", "openubmc-agent-workflow", "mcp-processes")
@@ -119,6 +121,7 @@ function createProcessLifecycle(path) {
       codexIdentity: codexIdentity.value,
       parentPid,
       statePath,
+      runtimeStateRoot,
       lifecycleRoot,
       idleTimeoutSeconds
     }),
@@ -277,6 +280,13 @@ async function main() {
       return;
     }
     dispatch?.(message, extra);
+    if (message.method === "notifications/openubmc-task-complete") {
+      processLifecycle.requestTaskCloseout();
+      pendingExitReason = "task-closeout";
+      if (processLifecycle.activeRequests === 0 && pendingResponses.size === 0) {
+        stop("task-closeout", { exitProcess: true }).catch(() => {});
+      }
+    }
   };
   process.once("exit", () => {
     removeSignalHandlers();

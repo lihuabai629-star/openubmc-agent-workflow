@@ -56,11 +56,13 @@ def summarize(records: list[dict[str, object]]) -> dict[str, int]:
             for record in live
             if record.get("lifecycle_state") == "orphaned"
             and record.get("identity_verified") is True
+            and record.get("ownership_identity_bound") is True
         ),
         "unattributed_live_processes": sum(
             1
             for record in live
             if record.get("lifecycle_state") == "unknown-owner"
+            or record.get("ownership_identity_bound") is not True
         ),
         "owned_live_processes": sum(
             1
@@ -83,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         for record in records
         if record.get("lifecycle_state") == "orphaned"
         and record.get("identity_verified") is True
+        and record.get("ownership_identity_bound") is True
         and int(record.get("active_requests", 0)) == 0
     )
     cleaned: list[int] = []

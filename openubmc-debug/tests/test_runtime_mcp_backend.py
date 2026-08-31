@@ -2012,6 +2012,9 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         )
         self.assertEqual(lifecycle["parent_pid"], os.getpid())
         self.assertTrue(lifecycle["parent_identity_verified"])
+        self.assertIsInstance(
+            lifecycle["parent_identity_currently_verified"], bool
+        )
         self.assertEqual(
             lifecycle["runtime_state_root"], str(root / "runtime-state")
         )

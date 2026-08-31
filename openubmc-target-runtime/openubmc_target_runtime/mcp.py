@@ -4109,6 +4109,12 @@ class StdioMcpServer:
                         continue
                     try:
                         write_response(self.endpoint.handle(message))
+                        if (
+                            self.process_lifecycle is not None
+                            and message.get("method")
+                            == "notifications/openubmc-task-complete"
+                        ):
+                            self.process_lifecycle.request_task_closeout()
                     finally:
                         end_request()
         finally:

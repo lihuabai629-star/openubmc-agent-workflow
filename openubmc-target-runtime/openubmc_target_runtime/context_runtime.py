@@ -7514,7 +7514,7 @@ class ContextRuntime:
                 break
         current_run = next(
             (run for run in runs if run.get("run_id") == bound_run_id),
-            runs[0] if runs else None,
+            None,
         )
         return {
             "schema": f"{CONTEXT_RUNTIME_SCHEMA}/operator-projection-v1",

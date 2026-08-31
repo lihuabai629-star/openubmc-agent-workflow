@@ -507,6 +507,38 @@ class RuntimeMcpServiceTests(unittest.TestCase):
         )
         self.assertLessEqual(len(projection["runs"]), 16)
 
+    def test_operator_status_without_task_binding_has_no_current_run(self) -> None:
+        operator = RuntimeMcpService(self.backend, interface_profile="operator")
+        try:
+            repository = operator._test.context_runtime.repository
+            repository.commit(
+                "run-operator-overview",
+                expected_revision=0,
+                events=(
+                    PendingCaseEvent(
+                        "CaseOpened",
+                        {"intent": "overview", "targets": []},
+                        "start",
+                    ),
+                ),
+            )
+
+            status = operator.call_tool(
+                "runtime_status",
+                {},
+                task_id="unbound-operator-task",
+                operation_id="operator-overview",
+            )
+        finally:
+            operator.close()
+
+        projection = status["operator_projection"]
+        self.assertIsNone(projection["current_run"])
+        self.assertEqual(
+            [run["run_id"] for run in projection["runs"]],
+            ["run-operator-overview"],
+        )
+
     def test_task_completion_closes_owned_runtime(self) -> None:
         self.service.call_tool(
             "debug_run",

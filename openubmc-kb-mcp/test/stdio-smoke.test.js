@@ -93,7 +93,8 @@ test("stdio server records task-scoped lifecycle ownership", async () => {
       OPENUBMC_MCP_CODEX_IDENTITY: JSON.stringify({ version: "codex-cli 0.150.0" }),
       OPENUBMC_MCP_PARENT_PID: String(process.pid),
       OPENUBMC_MCP_LIFECYCLE_DIR: lifecycleRoot,
-      OPENUBMC_KB_STATE_PATH: join(dir, "kb-state")
+      OPENUBMC_KB_STATE_PATH: join(dir, "kb-state"),
+      OPENUBMC_TARGET_RUNTIME_STATE_DIR: join(dir, "runtime-state")
     }
   });
   const client = new Client({ name: "smoke-test", version: "1.0.0" });
@@ -117,7 +118,9 @@ test("stdio server records task-scoped lifecycle ownership", async () => {
   assert.deepEqual(lifecycle.codex_identity, { version: "codex-cli 0.150.0" });
   assert.equal(lifecycle.parent_pid, process.pid);
   assert.equal(lifecycle.parent_identity_verified, true);
-  assert.equal(lifecycle.runtime_state_root, join(dir, "kb-state"));
+  assert.equal(lifecycle.parent_identity_currently_verified, true);
+  assert.equal(lifecycle.state_path, join(dir, "kb-state"));
+  assert.equal(lifecycle.runtime_state_root, join(dir, "runtime-state"));
   assert.equal(lifecycle.lifecycle_state, "stopped");
   assert.equal(lifecycle.exit_reason, "stdin-closed");
 });
@@ -168,6 +171,65 @@ test("stdio server exits after its recorded parent is gone", async () => {
   assert.equal(returnCode, 0);
   assert.equal(lifecycle.lifecycle_state, "stopped");
   assert.equal(lifecycle.exit_reason, "parent-exited");
+});
+
+test("stdio server recognizes explicit task closeout notification", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-task-closeout-"));
+  const lifecycleRoot = join(dir, "processes");
+  const child = spawn(process.execPath, [
+    resolve("src/server.js"),
+    "--config",
+    join(dir, "missing.json")
+  ], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      OPENUBMC_MCP_CLIENT: "codex",
+      OPENUBMC_MCP_TASK_ID: "kb-task-closeout",
+      OPENUBMC_MCP_SESSION_ID: "kb-task-closeout",
+      OPENUBMC_MCP_LIFECYCLE_DIR: lifecycleRoot,
+      OPENUBMC_MCP_LIFECYCLE_POLL_SECONDS: "0.01"
+    }
+  });
+  child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "codex", version: "1" }
+    }
+  })}\n`);
+  child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    method: "notifications/openubmc-task-complete",
+    params: {}
+  })}\n`);
+  const returnCode = await new Promise((resolveExit, rejectExit) => {
+    const timeout = setTimeout(
+      () => rejectExit(new Error("task closeout did not stop KB MCP")),
+      3000
+    );
+    child.once("exit", code => {
+      clearTimeout(timeout);
+      resolveExit(code);
+    });
+    child.once("error", error => {
+      clearTimeout(timeout);
+      rejectExit(error);
+    });
+  }).finally(() => {
+    if (child.exitCode === null) child.kill();
+  });
+
+  const records = await readdir(lifecycleRoot);
+  const lifecycle = JSON.parse(
+    await readFile(join(lifecycleRoot, records[0]), "utf8")
+  );
+  assert.equal(returnCode, 0);
+  assert.equal(lifecycle.active_requests, 0);
+  assert.equal(lifecycle.exit_reason, "task-closeout");
 });
 
 test("stdio server exits when stdin closes before initialization", async () => {

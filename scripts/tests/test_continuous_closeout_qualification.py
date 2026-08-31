@@ -33,6 +33,7 @@ def passed_lifecycle_record() -> dict[str, object]:
         "parent_pid": 123,
         "parent_identity": "parent-identity",
         "parent_identity_verified": True,
+        "parent_identity_currently_verified": True,
         "process_id": 456,
         "process_identity": "process-identity",
         "start_time": "2026-08-31T00:00:00Z",
@@ -156,6 +157,23 @@ def passed_product_client_run(name: str) -> dict[str, object]:
 
 
 class ContinuousCloseoutQualificationTests(unittest.TestCase):
+    def test_mcp_closeout_binds_requested_formal_identities(self) -> None:
+        report = qualification._mcp_closeout_snapshot(
+            "a" * 40,
+            model_identity={"model": "gpt-5.6-sol"},
+            codex_identity={"version": "codex-cli 0.150.0"},
+        )
+
+        self.assertEqual(report["status"], "passed", report)
+        self.assertEqual(
+            report["records"][0]["model_identity"],
+            {"model": "gpt-5.6-sol"},
+        )
+        self.assertEqual(
+            report["records"][0]["codex_identity"],
+            {"version": "codex-cli 0.150.0"},
+        )
+
     def test_candidate_release_commit_is_deterministic(self) -> None:
         source_commit = qualification.resolve_source_commit(ROOT)
         with (
@@ -385,7 +403,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_product_client_run",
-                side_effect=lambda name, tests, contract, source_commit: passed_product_client_run(name),
+                side_effect=lambda name, tests, contract, source_commit, **_kwargs: passed_product_client_run(name),
             ),
             mock.patch.object(
                 qualification,
@@ -496,7 +514,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_product_client_run",
-                side_effect=lambda name, tests, contract, source_commit: passed_product_client_run(name),
+                side_effect=lambda name, tests, contract, source_commit, **_kwargs: passed_product_client_run(name),
             ),
             mock.patch.object(
                 qualification,
