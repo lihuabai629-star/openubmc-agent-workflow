@@ -667,6 +667,62 @@ def product_client_failures(
     ]
 
 
+def projection_dimension_failures(
+    projection: Mapping[str, object],
+) -> list[str]:
+    """Validate one Codex projection dimension without duplicating policy."""
+
+    sizes = tuple(
+        projection.get(name)
+        for name in ("full_bytes", "reference_bytes", "saved_bytes")
+    )
+    causes = projection.get("target_exceeded_causes")
+    normalized_causes = causes if isinstance(causes, list) else []
+    checks = (
+        ("projection_not_passed", projection.get("status") == "passed"),
+        (
+            "projection_correctness_missing",
+            projection.get("correctness_primary") is True,
+        ),
+        (
+            "projection_reference_missing",
+            projection.get("repeated_reference") is True,
+        ),
+        (
+            "projection_operator_coverage_missing",
+            projection.get("operator_projection_covered") is True,
+        ),
+        (
+            "projection_repeated_fields_invalid",
+            projection.get("repeated_fields") == ["diagnostic_receipt"],
+        ),
+        (
+            "projection_sizes_invalid",
+            all(
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+                for value in sizes
+            )
+            and projection.get("full_bytes", 0)
+            >= projection.get("reference_bytes", 0),
+        ),
+        (
+            "projection_target_causes_invalid",
+            bool(normalized_causes)
+            and all(
+                isinstance(cause, Mapping)
+                and bool(str(cause.get("field", "")).strip())
+                and isinstance(cause.get("bytes"), int)
+                and not isinstance(cause.get("bytes"), bool)
+                and int(cause.get("bytes", 0)) > 0
+                for cause in normalized_causes
+            ),
+        ),
+    )
+    return [name for name, passed in checks if not passed]
+
+
 def verify_codex_adoption_report(
     report: Mapping[str, object],
     *,
@@ -761,25 +817,9 @@ def verify_codex_adoption_report(
             "Codex Adoption Qualification task matrix evidence is incomplete"
         )
     projection = _mapping(dimensions.get("projection"))
-    projection_sizes = tuple(
-        projection.get(name)
-        for name in ("full_bytes", "reference_bytes", "saved_bytes")
-    )
-    if projection.get("status") == "passed" and not all(
-        (
-            projection.get("correctness_primary") is True,
-            projection.get("repeated_reference") is True,
-            projection.get("operator_projection_covered") is True,
-            projection.get("repeated_fields") == ["diagnostic_receipt"],
-            isinstance(projection.get("target_exceeded_causes"), list),
-            bool(projection.get("target_exceeded_causes")),
-            all(
-                isinstance(value, int) and not isinstance(value, bool) and value >= 0
-                for value in projection_sizes
-            ),
-            projection.get("full_bytes", 0)
-            >= projection.get("reference_bytes", 0),
-        )
+    if (
+        projection.get("status") == "passed"
+        and projection_dimension_failures(projection)
     ):
         raise ValueError(
             "Codex Adoption Qualification projection evidence is incomplete"
