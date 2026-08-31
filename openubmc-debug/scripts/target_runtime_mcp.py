@@ -1472,6 +1472,8 @@ def main() -> int:
     if formal_run and (not model_identity or not codex_identity):
         identity_errors.append("formal MCP run requires model and Codex identity")
     parent_pid, parent_pid_error = _parent_pid_environment()
+    if formal_run and parent_pid != os.getppid():
+        identity_errors.append("formal MCP run requires direct parent identity")
     state_dir = _runtime_state_dir()
     configured_lifecycle_root = os.environ.get(
         "OPENUBMC_MCP_LIFECYCLE_DIR", ""

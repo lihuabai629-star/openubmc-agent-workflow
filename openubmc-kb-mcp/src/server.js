@@ -145,6 +145,13 @@ function createProcessLifecycle(path) {
       startupError = `formal MCP run requires ${requirements.join(", ")}`;
     }
   }
+  if (
+    startupError === null
+    && formalRun.value
+    && parentPid !== process.ppid
+  ) {
+    startupError = "formal MCP run requires direct parent identity";
+  }
   const lifecycle = new McpProcessLifecycle({
     component: "knowledge-mcp",
     version: "1.3.0",

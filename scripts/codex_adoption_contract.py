@@ -287,7 +287,7 @@ def _mcp_closeout_failures(value: object, records_value: object) -> list[str]:
             all(checks.get(name) is True for name in check_fields),
             roots_isolated,
             isolation.get("global_codex_state_used") is False,
-            isolation.get("configured_client_invocation") is True,
+            isolation.get("installed_launcher_invocation") is True,
         )
     )
     return [] if valid else ["mcp_closeout_invalid"]
@@ -329,7 +329,8 @@ def codex_mcp_failures(
         ),
         (
             "runtime_invocation_invalid",
-            evidence.get("runtime_invocation") == "client-configured-mcp-command",
+            evidence.get("runtime_invocation")
+            == "installed-runtime-launcher-protocol",
         ),
         (
             "protocol_exchange_invalid",
@@ -457,7 +458,7 @@ def codex_mcp_dimension_failures(
         (
             "runtime_invocation_invalid",
             codex_mcp.get("runtime_invocation")
-            == "client-configured-mcp-command",
+            == "installed-runtime-launcher-protocol",
         ),
         (
             "protocol_exchange_invalid",

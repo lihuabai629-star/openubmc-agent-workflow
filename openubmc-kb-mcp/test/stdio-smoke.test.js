@@ -406,6 +406,58 @@ test("formal stdio server rejects missing model and Codex identity", async () =>
   assert.equal(lifecycle.exit_reason, "startup-error");
 });
 
+test("formal stdio server rejects a live non-parent owner", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-formal-parent-"));
+  const lifecycleRoot = join(dir, "processes");
+  const unrelated = spawn(
+    process.execPath,
+    ["-e", "setTimeout(() => {}, 30000)"],
+    { stdio: "ignore" }
+  );
+  const child = spawn(process.execPath, [
+    resolve("src/server.js"),
+    "--config",
+    join(dir, "missing.json")
+  ], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      OPENUBMC_MCP_CLIENT: "codex",
+      OPENUBMC_MCP_TASK_ID: "formal-parent-task",
+      OPENUBMC_MCP_SESSION_ID: "formal-parent-session",
+      OPENUBMC_MCP_SOURCE_COMMIT: "a".repeat(40),
+      OPENUBMC_MCP_MODEL_IDENTITY: JSON.stringify({ model: "gpt-5.6-sol" }),
+      OPENUBMC_MCP_CODEX_IDENTITY: JSON.stringify({
+        version: "codex-cli 0.151.0"
+      }),
+      OPENUBMC_MCP_FORMAL_RUN: "1",
+      OPENUBMC_MCP_PARENT_PID: String(unrelated.pid),
+      OPENUBMC_MCP_LIFECYCLE_DIR: lifecycleRoot,
+      OPENUBMC_TARGET_RUNTIME_STATE_DIR: join(dir, "runtime-state")
+    }
+  });
+  let stderr = "";
+  child.stderr.on("data", chunk => { stderr += chunk.toString(); });
+  const returnCode = await new Promise((resolveExit, rejectExit) => {
+    child.once("exit", resolveExit);
+    child.once("error", rejectExit);
+  });
+  const unrelatedExit = new Promise(resolveExit => {
+    unrelated.once("exit", resolveExit);
+  });
+  unrelated.kill();
+  await unrelatedExit;
+  const records = await readdir(lifecycleRoot);
+  const lifecycle = JSON.parse(
+    await readFile(join(lifecycleRoot, records[0]), "utf8")
+  );
+
+  assert.equal(returnCode, 1);
+  assert.match(stderr, /formal MCP run requires direct parent identity/);
+  assert.equal(lifecycle.parent_pid, unrelated.pid);
+  assert.equal(lifecycle.exit_reason, "startup-error");
+});
+
 test("formal stdio server rejects unknown ownership and source", async () => {
   const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-formal-owner-"));
   const lifecycleRoot = join(dir, "processes");

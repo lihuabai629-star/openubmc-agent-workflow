@@ -2145,6 +2145,51 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertTrue(lifecycle["formal_run"])
         self.assertEqual(lifecycle["exit_reason"], "startup-error")
 
+    def test_formal_stdio_entrypoint_rejects_a_live_non_parent_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            unrelated = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+            )
+            try:
+                completed = subprocess.run(
+                    [sys.executable, str(SCRIPTS / "target_runtime_mcp.py")],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env={
+                        **os.environ,
+                        "OPENUBMC_MCP_CLIENT": "codex",
+                        "OPENUBMC_MCP_TASK_ID": "formal-parent-task",
+                        "OPENUBMC_MCP_SESSION_ID": "formal-parent-session",
+                        "OPENUBMC_MCP_SOURCE_COMMIT": "a" * 40,
+                        "OPENUBMC_MCP_MODEL_IDENTITY": json.dumps(
+                            {"model": "gpt-5.6-sol"}
+                        ),
+                        "OPENUBMC_MCP_CODEX_IDENTITY": json.dumps(
+                            {"version": "codex-cli 0.151.0"}
+                        ),
+                        "OPENUBMC_MCP_FORMAL_RUN": "1",
+                        "OPENUBMC_MCP_PARENT_PID": str(unrelated.pid),
+                        "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
+                        "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(
+                            root / "runtime-state"
+                        ),
+                    },
+                )
+            finally:
+                unrelated.terminate()
+                unrelated.wait(timeout=3)
+            records = list((root / "processes").glob("*.json"))
+            lifecycle = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn(
+            "formal MCP run requires direct parent identity", completed.stderr
+        )
+        self.assertEqual(lifecycle["parent_pid"], unrelated.pid)
+        self.assertEqual(lifecycle["exit_reason"], "startup-error")
+
     def test_formal_stdio_entrypoint_rejects_unknown_ownership_and_source(
         self,
     ) -> None:

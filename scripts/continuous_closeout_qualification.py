@@ -574,7 +574,7 @@ def _mcp_closeout_snapshot(
     isolation_verified = (
         closeout.get("isolation_verified") is True
         and normalized_isolation.get("global_codex_state_used") is False
-        and normalized_isolation.get("configured_client_invocation") is True
+        and normalized_isolation.get("installed_launcher_invocation") is True
     )
     return {
         "status": (

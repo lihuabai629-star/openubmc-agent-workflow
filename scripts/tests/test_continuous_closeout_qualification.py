@@ -83,7 +83,7 @@ def passed_mcp_closeout() -> dict[str, object]:
             "runtime_state_root": "/isolated/runtime-state",
             "lifecycle_root": "/isolated/mcp-processes",
             "global_codex_state_used": False,
-            "configured_client_invocation": True,
+            "installed_launcher_invocation": True,
         },
     }
 
@@ -112,7 +112,7 @@ def passed_product_client_run(name: str) -> dict[str, object]:
         "launcher_identity_digest": qualification.evidence_fingerprint(
             launcher_identity
         ),
-        "runtime_invocation": "client-configured-mcp-command",
+        "runtime_invocation": "installed-runtime-launcher-protocol",
         "protocol_exchange": [
             "initialize",
             "tools/list",
@@ -345,7 +345,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(run["declared_mcp"])
         self.assertTrue(run["mcp_registration_verified"])
         self.assertEqual(
-            run["runtime_invocation"], "client-configured-mcp-command"
+            run["runtime_invocation"], "installed-runtime-launcher-protocol"
         )
         self.assertEqual(
             run["protocol_exchange"],
@@ -481,7 +481,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(run["declared_mcp"])
         self.assertTrue(run["runtime_launcher_verified"])
         self.assertEqual(
-            run["runtime_invocation"], "client-configured-mcp-command"
+            run["runtime_invocation"], "installed-runtime-launcher-protocol"
         )
         self.assertEqual(run["tools"], ["execute", "observe"])
         self.assertTrue(report["task_matrix"]["correctness_primary"])

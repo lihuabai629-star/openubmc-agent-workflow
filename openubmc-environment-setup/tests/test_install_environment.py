@@ -738,7 +738,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                     "launcher_identity": launcher_identity,
                     "launcher_identity_digest": launcher_identity_digest,
                     "runtime_invocation": (
-                        "client-configured-mcp-command"
+                        "installed-runtime-launcher-protocol"
                         if adapter_available
                         else "runtime-launcher-without-client-adapter"
                     ),
@@ -807,7 +807,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                             "runtime_state_root": str(runtime_state_root),
                             "lifecycle_root": str(lifecycle_root),
                             "global_codex_state_used": global_codex_state_used,
-                            "configured_client_invocation": (
+                            "installed_launcher_invocation": (
                                 adapter_available
                                 and mcp_registration_verified
                                 and command.is_file()

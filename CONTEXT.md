@@ -68,6 +68,7 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Historical product validation** | A verified reconstruction of original product evidence that predates the current Runtime identity. It remains non-promotable as a fresh Runtime closeout. |
 | **Fresh Runtime product closeout** | A Product Closeout Qualification bound to a fresh Run, terminal Outcome, exact source and ArtifactRef identity, an independently identified Recovery Artifact, successful upgrade, freshness, and required Hardware Coverage. |
 | **Maintenance checkpoint** | A repository-level qualification decision covering Runtime correctness, supported clients, evaluation isolation, and MCP lifecycle closeout. It does not imply a Fresh Runtime product closeout. |
+| **Formal Codex run** | A Codex-owned qualification or release run whose task, session, direct parent process, immutable source, model/Codex identity, Runtime state root, and lifecycle root are explicit and auditable. Its MCP lifecycle evidence is promotable only after task closeout proves no active request or owned process remains live. |
 | **DiagnosticReceiptRef** | A digest-bound terminal projection for an unchanged complete DiagnosticReceipt already shown within the same task. The durable full receipt remains Runtime-owned and reconstructable. |
 
 ## Ownership rules

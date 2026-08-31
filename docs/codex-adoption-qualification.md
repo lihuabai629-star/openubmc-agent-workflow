@@ -29,12 +29,14 @@ Launcher verification uses a path-independent semantic identity bound to the Run
 content digest, Final source commit, and installed entrypoint; temporary installation paths are not
 part of that identity.
 
-The Codex exchange verifies `initialize`, `tools/list`, the exact `observe` and `execute` Agent
-Interface, and a hermetic `tools/call` through `execute`. The installed exchange deliberately uses
-an actionable preflight request so it cannot touch a BMC or credentials; successful workflow
-completion is proven separately by the representative task matrix. A requested source commit must
-match the clean workspace `HEAD` or the verified release-lock parent. This allows a lock-only child
-to qualify its exact Final-source parent without accidentally qualifying the child as source code.
+The installed-launcher exchange verifies `initialize`, `tools/list`, the exact `observe` and
+`execute` Agent Interface, and a hermetic `tools/call` through `execute`. It deliberately uses an
+actionable preflight request so it cannot touch a BMC or credentials. This stage verifies the exact
+Runtime launcher selected by the isolated Codex configuration; the real Codex process-level task
+matrix and paired evaluation are separate downstream qualification evidence. Successful workflow
+completion is proven by the representative task matrix. A requested source commit must match the
+clean workspace `HEAD` or the verified release-lock parent. This allows a lock-only child to qualify
+its exact Final-source parent without accidentally qualifying the child as source code.
 
 It emits an ordered `failed_dimensions` list for Codex product qualification. Maintenance
 checkpoint readiness requires those Codex-owned dimensions. External harness identity, presence,

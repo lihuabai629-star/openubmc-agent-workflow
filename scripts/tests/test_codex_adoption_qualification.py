@@ -60,7 +60,7 @@ def closeout_report() -> dict[str, object]:
                     "launcher_identity_digest": evidence_fingerprint(
                         launcher_identity
                     ),
-                    "runtime_invocation": "client-configured-mcp-command",
+                    "runtime_invocation": "installed-runtime-launcher-protocol",
                     "protocol_exchange": [
                         "initialize",
                         "tools/list",
@@ -141,7 +141,7 @@ def closeout_report() -> dict[str, object]:
                             "runtime_state_root": "/isolated/runtime-state",
                             "lifecycle_root": "/isolated/mcp-processes",
                             "global_codex_state_used": False,
-                            "configured_client_invocation": True,
+                            "installed_launcher_invocation": True,
                         },
                     },
                     "mcp_lifecycle_records": [
