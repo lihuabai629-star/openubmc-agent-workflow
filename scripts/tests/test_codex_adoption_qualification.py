@@ -29,16 +29,31 @@ def closeout_report() -> dict[str, object]:
                     "declared_mcp": True,
                     "mcp_registration_verified": True,
                     "runtime_launcher_verified": True,
+                    "launcher_state_verified": True,
+                    "launcher_sha256": "2" * 64,
                     "runtime_invocation": "client-configured-mcp-command",
-                    "protocol_exchange": ["initialize", "tools/list"],
+                    "protocol_exchange": [
+                        "initialize",
+                        "tools/list",
+                        "tools/call:execute",
+                    ],
                     "tools": ["execute", "observe"],
+                    "source_commit": "a" * 40,
+                    "runtime_api": "openubmc.target-runtime.v1",
+                    "runtime_content_digest": "sha256:" + "f" * 64,
+                    "workflow_exchange": {
+                        "tool": "execute",
+                        "state": "completed",
+                        "outcome": "completed",
+                        "is_error": False,
+                    },
                 }
             },
         },
         "evaluation_isolation": {
-            "status": "failed",
-            "global_state_blocked": False,
-            "task_owned": False,
+            "status": "passed",
+            "global_state_blocked": True,
+            "task_owned": True,
         },
         "mcp_lifecycle": {
             "status": "passed",
@@ -93,6 +108,11 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             mock.patch.object(
                 adoption, "build_release_lock", return_value=release_identity()
             ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
         ):
             report = adoption.qualify(
                 model_identity={
@@ -112,6 +132,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         )
         self.assertTrue(report["qualified"])
         self.assertTrue(report["maintenance_checkpoint_ready"])
+        self.assertTrue(report["release_gate"]["eligible"])
         self.assertEqual(report["failed_dimensions"], [])
         self.assertEqual(
             report["dimensions"]["installation_identity"]["clients"],
@@ -123,7 +144,12 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         )
         self.assertEqual(
             report["dimensions"]["codex_mcp"]["protocol_exchange"],
-            ["initialize", "tools/list"],
+            ["initialize", "tools/list", "tools/call:execute"],
+        )
+        self.assertTrue(report["dimensions"]["codex_mcp"]["identity_bound"])
+        self.assertEqual(
+            report["dimensions"]["codex_mcp"]["workflow_exchange"]["state"],
+            "completed",
         )
         self.assertEqual(
             report["dimensions"]["installation_identity"]["runtime_api"],
@@ -159,6 +185,11 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             mock.patch.object(
                 adoption, "build_release_lock", return_value=release_identity()
             ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
         ):
             report = adoption.qualify()
 
@@ -182,11 +213,80 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 "build_release_lock",
                 side_effect=[copy.deepcopy(release_identity()), copy.deepcopy(release_identity())],
             ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                side_effect=["a" * 40, "a" * 40],
+            ),
         ):
             first = adoption.qualify()
             second = adoption.qualify()
 
         self.assertEqual(first, second)
+
+    def test_external_harness_metadata_does_not_block_product_qualification(self) -> None:
+        closeout = closeout_report()
+        closeout["client_matrix"]["evaluation_harnesses"] = []
+        closeout["evaluation_isolation"] = {
+            "status": "failed",
+            "global_state_blocked": False,
+            "task_owned": False,
+        }
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = adoption.qualify()
+
+        self.assertTrue(report["qualified"])
+        self.assertEqual(report["failed_dimensions"], [])
+        self.assertFalse(report["maintenance_checkpoint_ready"])
+        self.assertEqual(
+            report["maintenance_checkpoint_blockers"],
+            ["evaluation_isolation"],
+        )
+        self.assertFalse(report["external_evaluation"]["blocking"])
+        self.assertFalse(report["release_gate"]["eligible"])
+
+    def test_installed_launcher_identity_mismatch_fails_codex_dimension(self) -> None:
+        closeout = closeout_report()
+        closeout["client_matrix"]["runs"]["codex"]["runtime_content_digest"] = (
+            "sha256:" + "9" * 64
+        )
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = adoption.qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertEqual(report["failed_dimensions"], ["codex_mcp"])
+        self.assertFalse(report["dimensions"]["codex_mcp"]["identity_bound"])
+
+    def test_requested_source_commit_is_verified_before_qualification(self) -> None:
+        with mock.patch.object(
+            adoption,
+            "bind_source_commit",
+            side_effect=ValueError(
+                "source commit must match workspace HEAD or the release-lock parent"
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "must match workspace HEAD"):
+                adoption.qualify(source_commit="9" * 40)
 
 
 if __name__ == "__main__":

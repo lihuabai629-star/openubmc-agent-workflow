@@ -27,9 +27,24 @@ def passed_product_client_run(name: str) -> dict[str, object]:
         "declared_mcp": True,
         "mcp_registration_verified": True,
         "runtime_launcher_verified": True,
+        "launcher_state_verified": True,
+        "launcher_sha256": "2" * 64,
         "runtime_invocation": "client-configured-mcp-command",
-        "protocol_exchange": ["initialize", "tools/list"],
+        "protocol_exchange": [
+            "initialize",
+            "tools/list",
+            "tools/call:execute",
+        ],
         "tools": ["execute", "observe"],
+        "source_commit": "a" * 40,
+        "runtime_api": "openubmc.target-runtime.v1",
+        "runtime_content_digest": "sha256:" + "f" * 64,
+        "workflow_exchange": {
+            "tool": "execute",
+            "state": "completed",
+            "outcome": "completed",
+            "is_error": False,
+        },
     }
 
 
@@ -79,8 +94,10 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             run["runtime_invocation"], "client-configured-mcp-command"
         )
         self.assertEqual(
-            run["protocol_exchange"], ["initialize", "tools/list"]
+            run["protocol_exchange"],
+            ["initialize", "tools/list", "tools/call:execute"],
         )
+        self.assertEqual(run["workflow_exchange"]["state"], "completed")
         self.assertEqual(run["tools"], ["execute", "observe"])
         self.assertTrue(
             any("codex_product_client" in item for item in run["tests"])
@@ -128,9 +145,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                             "mcp": True,
                         }
                     },
-                    "evaluation_harnesses": {
-                        "dsh": {"role": "evaluation-harness"}
-                    },
+                    "evaluation_harnesses": {},
                 },
             ),
             mock.patch.object(
@@ -180,6 +195,8 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             report = qualification.qualify()
 
         self.assertTrue(report["qualified"])
+        self.assertEqual(report["client_matrix"]["status"], "passed")
+        self.assertEqual(report["client_matrix"]["evaluation_harnesses"], [])
         run = report["client_matrix"]["runs"]["codex"]
         self.assertEqual(run["client"], "codex")
         self.assertTrue(run["adapter_available"])

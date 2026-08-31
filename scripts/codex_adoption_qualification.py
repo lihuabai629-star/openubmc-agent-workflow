@@ -20,7 +20,10 @@ from openubmc_target_runtime import build_release_lock  # noqa: E402
 from scripts.continuous_closeout_qualification import (  # noqa: E402
     qualify as qualify_closeout,
 )
-from scripts.evidence_report import evidence_fingerprint  # noqa: E402
+from scripts.evidence_report import (  # noqa: E402
+    evidence_fingerprint,
+    source_commit as bind_source_commit,
+)
 
 
 SCHEMA = "openubmc-agent-workflow.codex-adoption-qualification.v1"
@@ -58,9 +61,12 @@ def qualify(
     model_identity: Mapping[str, object] | None = None,
     codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    selected_source_commit = bind_source_commit(
+        source_commit or "",
+        workspace=ROOT,
+    )
     closeout = qualify_closeout()
     qualification_commit = str(closeout.get("source_commit", ""))
-    selected_source_commit = source_commit or qualification_commit
     release = build_release_lock(ROOT, source_commit=selected_source_commit)
 
     compatibility = _mapping(release.get("compatibility"))
@@ -95,6 +101,21 @@ def qualify(
     client_matrix = _mapping(closeout.get("client_matrix"))
     runs = _mapping(client_matrix.get("runs"))
     codex_run = _mapping(runs.get("codex"))
+    workflow_exchange = _mapping(codex_run.get("workflow_exchange"))
+    launcher_sha256 = str(codex_run.get("launcher_sha256", ""))
+    installed_source_commit = str(codex_run.get("source_commit", ""))
+    identity_bound = all(
+        (
+            installed_source_commit
+            in {selected_source_commit, qualification_commit},
+            codex_run.get("runtime_api") == runtime.get("api_version"),
+            codex_run.get("runtime_content_digest")
+            == runtime.get("content_digest"),
+            codex_run.get("launcher_state_verified") is True,
+            len(launcher_sha256) == 64,
+            all(character in "0123456789abcdef" for character in launcher_sha256),
+        )
+    )
     codex_mcp_passed = all(
         (
             client_matrix.get("status") == "passed",
@@ -109,8 +130,14 @@ def qualify(
             codex_run.get("runtime_launcher_verified") is True,
             codex_run.get("runtime_invocation")
             == "client-configured-mcp-command",
-            codex_run.get("protocol_exchange") == ["initialize", "tools/list"],
+            codex_run.get("protocol_exchange")
+            == ["initialize", "tools/list", "tools/call:execute"],
             codex_run.get("tools") == ["execute", "observe"],
+            identity_bound,
+            workflow_exchange.get("tool") == "execute",
+            workflow_exchange.get("state") == "completed",
+            workflow_exchange.get("outcome") == "completed",
+            workflow_exchange.get("is_error") is False,
         )
     )
     codex_mcp = {
@@ -123,6 +150,16 @@ def qualify(
         "runtime_invocation": str(codex_run.get("runtime_invocation", "")),
         "protocol_exchange": list(codex_run.get("protocol_exchange", [])),
         "tools": list(codex_run.get("tools", [])),
+        "identity_bound": identity_bound,
+        "installed_source_commit": installed_source_commit,
+        "runtime_api": str(codex_run.get("runtime_api", "")),
+        "runtime_content_digest": str(
+            codex_run.get("runtime_content_digest", "")
+        ),
+        "launcher_state_verified": codex_run.get("launcher_state_verified")
+        is True,
+        "launcher_sha256": launcher_sha256,
+        "workflow_exchange": workflow_exchange,
     }
 
     product_contract = _mapping(closeout.get("product_contract"))
@@ -185,11 +222,23 @@ def qualify(
         name for name in DIMENSION_ORDER if dimensions[name]["status"] != "passed"
     ]
     qualified = not failed_dimensions
+    evaluation_isolation = _mapping(closeout.get("evaluation_isolation"))
+    maintenance_checkpoint_blockers = list(failed_dimensions)
+    if not all(
+        (
+            _passed(evaluation_isolation),
+            evaluation_isolation.get("global_state_blocked") is True,
+            evaluation_isolation.get("task_owned") is True,
+        )
+    ):
+        maintenance_checkpoint_blockers.append("evaluation_isolation")
+    maintenance_checkpoint_ready = not maintenance_checkpoint_blockers
     report: dict[str, object] = {
         "schema": SCHEMA,
         "source_commit": selected_source_commit,
         "qualified": qualified,
-        "maintenance_checkpoint_ready": qualified,
+        "maintenance_checkpoint_ready": maintenance_checkpoint_ready,
+        "maintenance_checkpoint_blockers": maintenance_checkpoint_blockers,
         "failed_dimensions": failed_dimensions,
         "dimensions": dimensions,
         "provenance": {
@@ -206,11 +255,12 @@ def qualify(
         "external_evaluation": {
             "blocking": False,
             "harnesses": list(client_matrix.get("evaluation_harnesses", [])),
-            "isolation": _mapping(closeout.get("evaluation_isolation")),
+            "isolation": evaluation_isolation,
+            "required_for_maintenance_checkpoint": True,
         },
         "release_gate": {
             "evidence_type": "codex-adoption-qualification",
-            "eligible": qualified,
+            "eligible": maintenance_checkpoint_ready,
         },
     }
     report["evidence_digest"] = evidence_fingerprint(report)
@@ -249,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(rendered, encoding="utf-8")
     print(rendered, end="")
-    return 0 if report["qualified"] else 1
+    return 0 if report["maintenance_checkpoint_ready"] else 1
 
 
 if __name__ == "__main__":

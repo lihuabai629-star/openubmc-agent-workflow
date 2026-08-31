@@ -19,10 +19,15 @@ python3 scripts/codex_adoption_qualification.py \
   --output codex-adoption-qualification.json
 ```
 
-The report verifies immutable installation identity, the configured Codex Runtime launcher,
-`initialize`, `tools/list`, the exact `observe` and `execute` Agent Interface, the representative
-task matrix, projection correctness, and task-level MCP lifecycle closeout. It emits an ordered
-`failed_dimensions` list and cannot set `maintenance_checkpoint_ready` when any dimension fails.
+The report verifies immutable source identity, the configured Codex Runtime launcher's installed
+state and content digest, `initialize`, `tools/list`, one hermetic `tools/call` through `execute`,
+the exact `observe` and `execute` Agent Interface, the representative task matrix, projection
+correctness, and task-level MCP lifecycle closeout. A requested source commit must match the clean
+workspace `HEAD` or the verified release-lock parent.
+
+It emits an ordered `failed_dimensions` list for Codex product qualification. Maintenance
+checkpoint readiness is a separate aggregate: it requires those dimensions and evaluation
+isolation, while external harness identity or presence cannot block Codex product qualification.
 
 External evaluation harness metadata is recorded as non-blocking provenance. It is not a product
 client and cannot change the Codex qualification result. The report is deterministic for the same

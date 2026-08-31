@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+import hashlib
 import http.server
 import importlib.util
 import io
@@ -96,21 +97,37 @@ class EnvironmentSetupTests(unittest.TestCase):
         debug_mcp.parent.mkdir(parents=True)
         debug_mcp.write_text(
             "import json, sys\n"
-            "for line in sys.stdin:\n"
-            "    request = json.loads(line)\n"
-            "    if request.get('method') == 'initialize':\n"
-            "        result = {'protocolVersion': '2025-06-18', 'serverInfo': "
-            "{'name': 'openubmc-target-runtime', 'version': "
-            "'openubmc.target-runtime.v1'}, 'capabilities': {'tools': {}}}\n"
-            "    elif request.get('method') == 'tools/list':\n"
-            "        result = {'tools': [{'name': name} for name in "
-            "('observe', 'execute')]}\n"
-            "    elif request.get('method') == 'notifications/initialized':\n"
-            "        continue\n"
-            "    else:\n"
-            "        continue\n"
-            "    print(json.dumps({'jsonrpc': '2.0', 'id': request.get('id'), "
-            "'result': result}), flush=True)\n",
+            "from openubmc_target_runtime import JsonRpcMcpEndpoint, RuntimeMcpService\n"
+            "class Task:\n"
+            "    def __init__(self, task_id):\n"
+            "        self.task_id = task_id\n"
+            "class Backend:\n"
+            "    def open_task(self, task_id):\n"
+            "        return Task(task_id)\n"
+            "    def close_task(self, task):\n"
+            "        return None\n"
+            "    def maintain_task(self, task):\n"
+            "        return 0\n"
+            "    def task_status(self, task):\n"
+            "        return {'task_id': task.task_id}\n"
+            "    def debug_run(self, task, arguments, context):\n"
+            "        context.raise_if_stopped()\n"
+            "        return {'schema': 'openubmc-debug.v1', "
+            "'task': task.task_id, 'root_cause': 'hermetic diagnosis', "
+            "'observed_at': '2026-08-31T00:00:00Z', "
+            "'freshness': {'status': 'fresh'}}\n"
+            "    def debug_collect(self, task, arguments, context):\n"
+            "        return self.debug_run(task, arguments, context)\n"
+            "service = RuntimeMcpService(Backend())\n"
+            "endpoint = JsonRpcMcpEndpoint(service, "
+            "session_task_id='codex-adoption-probe')\n"
+            "try:\n"
+            "    for line in sys.stdin:\n"
+            "        response = endpoint.handle(json.loads(line))\n"
+            "        if response is not None:\n"
+            "            print(json.dumps(response), flush=True)\n"
+            "finally:\n"
+            "    service.close()\n",
             encoding="utf-8",
         )
         for helper in (
@@ -361,6 +378,80 @@ class EnvironmentSetupTests(unittest.TestCase):
         )
         self.assertTrue(healthy, detail)
         self.assertEqual(tools, ["execute", "observe"])
+        requests = "\n".join(
+            json.dumps(request, separators=(",", ":"))
+            for request in (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "codex-adoption-qualification",
+                            "version": "1",
+                        },
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                    "params": {},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/list",
+                    "params": {},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "execute",
+                        "arguments": {
+                            "kind": "start",
+                            "target": "qualification.invalid",
+                            "intent": "diagnosis-only",
+                            "entry_operation": "debug_run",
+                        },
+                        "_meta": {"codex/taskId": "codex-adoption-probe"},
+                    },
+                },
+            )
+        ) + "\n"
+        environment = {**os.environ, "HOME": str(self.home)}
+        completed = subprocess.run(
+            [str(command)],
+            input=requests,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+            env=environment,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        responses = {
+            document.get("id"): document
+            for document in (
+                json.loads(line) for line in completed.stdout.splitlines()
+            )
+            if isinstance(document, dict)
+        }
+        workflow_result = responses[3]["result"]
+        structured = workflow_result["structuredContent"]
+        self.assertFalse(workflow_result["isError"])
+        self.assertEqual(structured["state"], "completed")
+        self.assertEqual(structured["outcome"]["status"], "completed")
+        state = installer.load_state(self.home)
+        runtime = state["runtime"]
+        launcher_state_verified = command.read_text(encoding="utf-8") == (
+            installer.render_runtime_launcher(runtime)
+        )
+        launcher_sha256 = hashlib.sha256(command.read_bytes()).hexdigest()
         evidence_path = os.environ.get("OPENUBMC_PRODUCT_CLIENT_EVIDENCE", "")
         if not evidence_path:
             return
@@ -376,13 +467,31 @@ class EnvironmentSetupTests(unittest.TestCase):
                     ),
                     "mcp_registration_verified": mcp_registration_verified,
                     "runtime_launcher_verified": healthy,
+                    "launcher_state_verified": launcher_state_verified,
+                    "launcher_sha256": launcher_sha256,
                     "runtime_invocation": (
                         "client-configured-mcp-command"
                         if adapter_available
                         else "runtime-launcher-without-client-adapter"
                     ),
-                    "protocol_exchange": ["initialize", "tools/list"],
+                    "protocol_exchange": [
+                        "initialize",
+                        "tools/list",
+                        "tools/call:execute",
+                    ],
                     "tools": tools,
+                    "source_commit": os.environ.get(
+                        "OPENUBMC_PRODUCT_CLIENT_SOURCE_COMMIT",
+                        "",
+                    ),
+                    "runtime_api": runtime["api_version"],
+                    "runtime_content_digest": runtime["content_digest"],
+                    "workflow_exchange": {
+                        "tool": "execute",
+                        "state": structured["state"],
+                        "outcome": structured["outcome"]["status"],
+                        "is_error": workflow_result["isError"],
+                    },
                 },
                 sort_keys=True,
             ),

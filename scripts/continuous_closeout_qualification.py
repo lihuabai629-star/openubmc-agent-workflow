@@ -275,6 +275,7 @@ def _product_client_run(
             cwd=ROOT,
             environment={
                 "OPENUBMC_PRODUCT_CLIENT_EVIDENCE": str(evidence_path),
+                "OPENUBMC_PRODUCT_CLIENT_SOURCE_COMMIT": resolve_source_commit(ROOT),
             },
         )
         if result.get("status") != "passed":
@@ -301,6 +302,8 @@ def _product_client_run(
     adapter_available = evidence.get("adapter_available") is True
     registration_verified = evidence.get("mcp_registration_verified") is True
     tools = evidence.get("tools")
+    workflow_exchange = evidence.get("workflow_exchange")
+    launcher_sha256 = str(evidence.get("launcher_sha256", ""))
     evidence_valid = all(
         (
             adapter_available == declared_mcp,
@@ -312,8 +315,21 @@ def _product_client_run(
             ),
             registration_verified == declared_mcp,
             evidence.get("runtime_launcher_verified") is True,
-            evidence.get("protocol_exchange") == ["initialize", "tools/list"],
+            evidence.get("launcher_state_verified") is True,
+            len(launcher_sha256) == 64,
+            all(character in "0123456789abcdef" for character in launcher_sha256),
+            evidence.get("protocol_exchange")
+            == ["initialize", "tools/list", "tools/call:execute"],
             tools == ["execute", "observe"],
+            isinstance(evidence.get("source_commit"), str),
+            len(str(evidence.get("source_commit", ""))) == 40,
+            evidence.get("runtime_api") == "openubmc.target-runtime.v1",
+            isinstance(evidence.get("runtime_content_digest"), str),
+            isinstance(workflow_exchange, Mapping),
+            workflow_exchange.get("tool") == "execute",
+            workflow_exchange.get("state") == "completed",
+            workflow_exchange.get("outcome") == "completed",
+            workflow_exchange.get("is_error") is False,
         )
     )
     return {
@@ -518,7 +534,6 @@ def qualify(
     client_matrix_passed = all(
         (
             product_clients == list(PRODUCT_CLIENTS),
-            evaluation_harnesses == list(EVALUATION_HARNESSES),
             not overlap,
             all(result.get("status") == "passed" for result in client_runs.values()),
         )
