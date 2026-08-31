@@ -32,9 +32,8 @@ the Operator / CI Plane independently of manifest-authored paths.
 
 The checkpoint verifies:
 
-- Codex and Claude install working Runtime MCP registrations whose configured stdio command
-  completes `initialize` and `tools/list`; OpenClaw remains an explicit Skills-only product client
-  until a supported OpenClaw MCP configuration Adapter exists;
+- Codex installs a working Runtime MCP registration whose configured stdio command completes
+  `initialize` and `tools/list`;
 - DSH remains a disjoint, task-owned evaluation harness with isolated home, configuration,
   Runtime state, session, and MCP lifecycle roots;
 - MCP lifecycle tests cover parent loss, active-request drain, identity-bound orphan cleanup, and
@@ -47,8 +46,8 @@ The checkpoint verifies:
   saved as a secondary metric.
 
 Task correctness and terminal completion are qualification gates. Token and projection byte
-measurements remain secondary telemetry. Codex, Claude, and OpenClaw are product clients; DSH is a
-separate evaluation harness and is never installed or evaluated as a fourth product client.
+measurements remain secondary telemetry. Codex is the product client; DSH is a separate evaluation
+harness and is never installed or evaluated as a product client.
 
 The representative repeated DiagnosticReceipt is 15,516 bytes in full and 1,035 bytes as a
 digest-bound terminal reference, saving 14,481 bytes. Initial actionable Turns, one-shot terminal

@@ -87,7 +87,7 @@ class BootstrapTests(unittest.TestCase):
                     "--skill-profile",
                     "target-runtime",
                     "--clients",
-                    "codex,claude",
+                    "codex",
                 ]
             )
 
@@ -126,8 +126,28 @@ class BootstrapTests(unittest.TestCase):
             "--skill-profile",
             "target-runtime",
             "--clients",
-            "codex,claude",
+            "codex",
         ])
+
+    def test_bootstrap_rejects_retired_clients_before_download(self) -> None:
+        for clients in ("claude", "openclaw", "codex,claude"):
+            with self.subTest(clients=clients):
+                stderr = io.StringIO()
+                with (
+                    mock.patch.object(bootstrap.urllib.request, "urlopen") as urlopen,
+                    mock.patch.object(bootstrap.subprocess, "run") as run,
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    bootstrap.main(
+                        ["--ref", "v2.0.3", "--clients", clients]
+                    )
+
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("only Codex is supported", stderr.getvalue())
+                self.assertIn("--clients codex", stderr.getvalue())
+                urlopen.assert_not_called()
+                run.assert_not_called()
 
     def test_bootstrap_runs_legacy_installer_without_companion_module(self) -> None:
         completed = subprocess.CompletedProcess([], 0)

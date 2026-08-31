@@ -48,16 +48,6 @@
       "role": "supported-product-client",
       "skills": true,
       "mcp": true
-    },
-    "claude": {
-      "role": "supported-product-client",
-      "skills": true,
-      "mcp": true
-    },
-    "openclaw": {
-      "role": "supported-product-client",
-      "skills": true,
-      "mcp": false
     }
   },
   "evaluation_harnesses": {

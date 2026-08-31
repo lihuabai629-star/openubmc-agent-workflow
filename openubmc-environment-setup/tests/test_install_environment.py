@@ -1624,59 +1624,6 @@ class EnvironmentSetupTests(unittest.TestCase):
             installer.same_target(debug_link, self.source / "openubmc-debug")
         )
 
-    def test_preserved_targets_remain_distinct_across_clients(self) -> None:
-        self.prepare_credentials()
-        self.assertEqual(
-            self.install(
-                "--clients",
-                "codex,claude",
-                "--skill-profile",
-                "target-runtime",
-            )[0],
-            0,
-        )
-        links = {
-            client: installer.client_skills_dir(self.home, client) / "openubmc-debug"
-            for client in ("codex", "claude")
-        }
-        targets: dict[str, Path] = {}
-        for client, link in links.items():
-            target = self.root / f"updated-debug-{client}"
-            shutil.copytree(self.source / "openubmc-debug", target)
-            link.unlink()
-            link.symlink_to(target, target_is_directory=True)
-            targets[client] = target
-
-        self.assertEqual(
-            self.install(
-                "--clients",
-                "codex,claude",
-                "--skill-profile",
-                "target-runtime",
-                "--preserve-skills",
-                "openubmc-debug",
-            )[0],
-            0,
-        )
-        for client, link in links.items():
-            self.assertTrue(installer.same_target(link, targets[client]))
-
-        wrong_target = self.root / "wrong-debug"
-        shutil.copytree(self.source / "openubmc-debug", wrong_target)
-        for link in links.values():
-            link.unlink()
-            link.symlink_to(wrong_target, target_is_directory=True)
-        repair_args = installer.parse_args(["repair", "--home", str(self.home)])
-        with (
-            mock.patch.object(
-                installer, "resolve_tool_dirs", return_value=([str(self.bin_dir)], [])
-            ),
-            mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")),
-        ):
-            self.assertEqual(installer.perform_repair(repair_args), 0)
-        for client, link in links.items():
-            self.assertTrue(installer.same_target(link, targets[client]))
-
     def test_repair_rejects_an_unavailable_recorded_preserved_target(self) -> None:
         self.prepare_credentials()
         self.assertEqual(
@@ -1982,6 +1929,59 @@ class EnvironmentSetupTests(unittest.TestCase):
             installer.same_target(changed_link, managed_source / "openubmc-build")
         )
 
+    def test_uninstall_keeps_source_used_by_unmanaged_legacy_client_link(self) -> None:
+        self.prepare_credentials()
+        managed_source = installer.managed_source_dir(self.home)
+        shutil.copytree(self.source, managed_source)
+        install_args = installer.parse_args(
+            [
+                "install",
+                "--home",
+                str(self.home),
+                "--source-mode",
+                "managed",
+                "--ref",
+                "v1.2.3",
+                "--clients",
+                "codex",
+                "--skill-profile",
+                "target-runtime",
+                "--non-interactive",
+            ]
+        )
+        with (
+            mock.patch.object(
+                installer,
+                "resolve_tool_dirs",
+                return_value=([str(self.bin_dir)], []),
+            ),
+            mock.patch.object(
+                installer, "checkout_managed_release", return_value="a" * 40
+            ),
+        ):
+            self.assertEqual(installer.perform_install(install_args), 0)
+
+        legacy_link = self.home / ".claude" / "skills" / "private-openubmc"
+        legacy_link.parent.mkdir(parents=True)
+        legacy_link.symlink_to(
+            managed_source / "openubmc-debug", target_is_directory=True
+        )
+        uninstall_args = installer.parse_args(
+            ["uninstall", "--home", str(self.home)]
+        )
+        with (
+            mock.patch.object(
+                installer, "git_output", return_value=installer.DEFAULT_REPO_URL
+            ),
+            mock.patch.object(installer, "git_dirty", return_value=False),
+        ):
+            self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+
+        self.assertTrue(managed_source.is_dir())
+        self.assertTrue(
+            installer.same_target(legacy_link, managed_source / "openubmc-debug")
+        )
+
     def test_new_subcommands_and_legacy_flags_parse_to_the_same_commands(self) -> None:
         modern = installer.parse_args(["check", "--json", "--home", str(self.home)])
         legacy = installer.parse_args(["--check", "--home", str(self.home)])
@@ -2007,18 +2007,22 @@ class EnvironmentSetupTests(unittest.TestCase):
 
     def test_install_is_idempotent_for_all_clients_and_shell_hook(self) -> None:
         credentials = self.prepare_credentials()
+        (self.home / ".claude").mkdir(parents=True)
+        (self.home / ".openclaw").mkdir(parents=True)
         (self.home / ".bash_profile").write_text("user login content\n", encoding="utf-8")
-        first, first_output = self.install("--clients", "all")
+        first, first_output = self.install("--clients", "auto")
         second, second_output = self.install("--clients", "all")
         self.assertEqual(first, 0)
         self.assertEqual(second, 0)
 
-        for client in installer.CLIENTS:
-            skills_dir = installer.client_skills_dir(self.home, client)
-            for canonical, relative in EXPECTED_BUNDLE:
-                link = skills_dir / canonical
-                self.assertTrue(link.is_symlink())
-                self.assertEqual(link.resolve(), (self.source / relative).resolve())
+        state = installer.load_state(self.home)
+        self.assertEqual(state["clients"], ["codex"])
+        for canonical, relative in EXPECTED_BUNDLE:
+            link = self.home / ".agents" / "skills" / canonical
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), (self.source / relative).resolve())
+            self.assertFalse((self.home / ".claude" / "skills" / canonical).exists())
+            self.assertFalse((self.home / ".openclaw" / "skills" / canonical).exists())
 
         for profile in (
             self.home / ".bashrc",
@@ -2066,27 +2070,45 @@ class EnvironmentSetupTests(unittest.TestCase):
         combined_output = first_output + second_output
         for secret in ("fixture-bmc-password", "fixture-os-password"):
             self.assertNotIn(secret, combined_output)
-        state = installer.load_state(self.home)
         self.assertTrue(
             installer.check_toml_mcp(
                 self.home / ".codex/config.toml", "", state["mcp"]["codex"]
             )
         )
-        self.assertTrue(
-            installer.check_json_mcp(
-                self.home / ".claude.json", "", state["mcp"]["claude"]
-            )
-        )
+        self.assertFalse((self.home / ".claude.json").exists())
+
+    def test_explicit_non_codex_client_fails_before_filesystem_mutation(self) -> None:
+        for selection in ("claude", "openclaw", "codex,claude", "openclaw,codex"):
+            with self.subTest(selection=selection):
+                shutil.rmtree(self.home, ignore_errors=True)
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    result = installer.main(
+                        [
+                            "install",
+                            "--home",
+                            str(self.home),
+                            "--source",
+                            str(self.source),
+                            "--clients",
+                            selection,
+                            "--non-interactive",
+                        ]
+                    )
+
+                self.assertEqual(result, 2)
+                self.assertIn("only Codex is supported", stderr.getvalue())
+                self.assertIn("--clients codex", stderr.getvalue())
+                self.assertFalse(self.home.exists())
 
     def test_install_deploys_runtime_launcher_and_registers_stdio_mcp(self) -> None:
         self.prepare_credentials()
         codex = self.home / ".codex" / "config.toml"
-        claude = self.home / ".claude.json"
         codex.parent.mkdir(parents=True)
         codex.write_text("[other]\nvalue = 1\n", encoding="utf-8")
-        claude.write_text('{"keep": true}\n', encoding="utf-8")
 
-        result, _ = self.install("--clients", "codex,claude")
+        result, _ = self.install("--clients", "codex")
 
         self.assertEqual(result, 0)
         state = installer.load_state(self.home)
@@ -2105,13 +2127,6 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertIn("[mcp_servers.openubmc-kb]", codex_text)
         self.assertIn("[mcp_servers.openubmc-target-runtime]", codex_text)
         self.assertIn(f"command = {json.dumps(str(launcher))}", codex_text)
-
-        claude_document = json.loads(claude.read_text(encoding="utf-8"))
-        self.assertTrue(claude_document["keep"])
-        self.assertEqual(
-            claude_document["mcpServers"]["openubmc-target-runtime"],
-            {"type": "stdio", "command": str(launcher), "args": []},
-        )
 
     def test_install_qualifies_codex_product_client(self) -> None:
         state, launcher = self.qualify_product_client("codex")
@@ -2137,58 +2152,6 @@ class EnvironmentSetupTests(unittest.TestCase):
             command=Path(str(configured["command"])),
             adapter_available=True,
             mcp_registration_verified=registration_verified,
-        )
-
-    def test_install_qualifies_claude_product_client(self) -> None:
-        state, launcher = self.qualify_product_client("claude")
-
-        self.assertEqual(state["clients"], ["codex", "claude"])
-        self.assertTrue(
-            installer.check_json_mcp(
-                self.home / ".claude.json",
-                "",
-                state["mcp"]["claude"],
-            )
-        )
-        config_path = self.home / ".claude.json"
-        registration_verified = installer.check_json_runtime_mcp(
-            config_path,
-            launcher,
-        )
-        self.assertTrue(registration_verified)
-        configured = installer.json_named_mcp_entry(
-            config_path,
-            installer.TARGET_RUNTIME_MCP_NAME,
-        )
-        assert configured is not None
-        self.record_product_client_evidence(
-            client="claude",
-            command=Path(str(configured["command"])),
-            adapter_available=True,
-            mcp_registration_verified=registration_verified,
-        )
-
-    def test_install_qualifies_openclaw_product_client(self) -> None:
-        state, launcher = self.qualify_product_client("openclaw")
-
-        self.assertEqual(state["clients"], ["codex", "openclaw"])
-        self.assertIs(
-            state["mcp"]["openclaw"]["adapter_available"],
-            False,
-        )
-        self.assertIs(
-            state["runtime_mcp"]["openclaw"]["adapter_available"],
-            False,
-        )
-        self.assertEqual(
-            Path(str(state["runtime_mcp"]["openclaw"]["command"])),
-            launcher,
-        )
-        self.record_product_client_evidence(
-            client="openclaw",
-            command=launcher,
-            adapter_available=False,
-            mcp_registration_verified=False,
         )
 
     def test_install_migrates_owned_codex_runtime_entry_without_args(self) -> None:
@@ -2413,7 +2376,6 @@ class EnvironmentSetupTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-
         with self.assertRaisesRegex(
             installer.SetupError,
             "existing openubmc-target-runtime MCP command differs",
@@ -2487,7 +2449,7 @@ class EnvironmentSetupTests(unittest.TestCase):
 
     def test_install_removes_duplicate_default_legacy_kb_alias(self) -> None:
         self.prepare_credentials()
-        self.assertEqual(self.install("--clients", "codex,claude")[0], 0)
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
         codex = self.home / ".codex" / "config.toml"
         codex.write_text(
             codex.read_text(encoding="utf-8")
@@ -2495,24 +2457,10 @@ class EnvironmentSetupTests(unittest.TestCase):
             + f"url = {json.dumps(installer.LEGACY_STUDIO_HTTP_URL)}\n",
             encoding="utf-8",
         )
-        claude = self.home / ".claude.json"
-        claude_document = json.loads(claude.read_text(encoding="utf-8"))
-        claude_document["mcpServers"]["openubmc-studio"] = {
-            "type": "http",
-            "url": installer.LEGACY_STUDIO_HTTP_URL,
-        }
-        claude.write_text(
-            json.dumps(claude_document, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-
-        result, output = self.install("--clients", "codex,claude")
+        result, output = self.install("--clients", "codex")
 
         self.assertEqual(result, 0, output)
         self.assertNotIn("openubmc-studio", codex.read_text(encoding="utf-8"))
-        remaining = json.loads(claude.read_text(encoding="utf-8"))["mcpServers"]
-        self.assertNotIn("openubmc-studio", remaining)
-        self.assertIn("openubmc-kb", remaining)
 
     def test_install_removes_escaped_default_legacy_kb_alias_in_codex(self) -> None:
         self.prepare_credentials()
@@ -2644,28 +2592,6 @@ class EnvironmentSetupTests(unittest.TestCase):
         ):
             self.install("--clients", "codex")
 
-    def test_install_rejects_custom_duplicate_legacy_kb_alias_in_claude(self) -> None:
-        self.prepare_credentials()
-        self.assertEqual(self.install("--clients", "claude")[0], 0)
-        claude = self.home / ".claude.json"
-        document = json.loads(claude.read_text(encoding="utf-8"))
-        document["mcpServers"]["openubmc-studio"] = {
-            "type": "http",
-            "url": installer.LEGACY_STUDIO_HTTP_URL,
-            "description": "custom alias",
-        }
-        claude.write_text(
-            json.dumps(document, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-
-        with self.assertRaisesRegex(
-            installer.SetupError, "both openubmc-studio and openubmc-kb"
-        ):
-            self.install("--clients", "claude")
-        remaining = json.loads(claude.read_text(encoding="utf-8"))["mcpServers"]
-        self.assertEqual(remaining["openubmc-studio"]["description"], "custom alias")
-
     def test_install_rejects_default_legacy_alias_next_to_unmanaged_codex_kb(self) -> None:
         self.prepare_credentials()
         codex = self.home / ".codex" / "config.toml"
@@ -2683,36 +2609,6 @@ class EnvironmentSetupTests(unittest.TestCase):
             installer.SetupError, "both openubmc-studio and openubmc-kb"
         ):
             self.install("--clients", "codex")
-
-    def test_install_rejects_default_legacy_alias_next_to_unmanaged_claude_kb(self) -> None:
-        self.prepare_credentials()
-        claude = self.home / ".claude.json"
-        claude.write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "openubmc-kb": {
-                            "type": "stdio",
-                            "command": "/opt/external-kb",
-                            "args": [],
-                        },
-                        "openubmc-studio": {
-                            "type": "http",
-                            "url": installer.LEGACY_STUDIO_HTTP_URL,
-                        },
-                    }
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-        with self.assertRaisesRegex(
-            installer.SetupError, "both openubmc-studio and openubmc-kb"
-        ):
-            self.install("--clients", "claude")
 
     def test_external_codex_kb_stdio_skips_legacy_http_health_probe(self) -> None:
         self.prepare_credentials()
@@ -2765,9 +2661,8 @@ class EnvironmentSetupTests(unittest.TestCase):
 
     def test_repair_restores_installer_owned_knowledge_mcp_entries(self) -> None:
         self.prepare_credentials()
-        self.assertEqual(self.install("--clients", "codex,claude")[0], 0)
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
         codex = self.home / ".codex" / "config.toml"
-        claude = self.home / ".claude.json"
         codex.write_text(
             codex.read_text(encoding="utf-8").replace(
                 str(installer.knowledge_launcher_path(self.home)),
@@ -2775,13 +2670,6 @@ class EnvironmentSetupTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        claude_document = json.loads(claude.read_text(encoding="utf-8"))
-        claude_document["mcpServers"][installer.KNOWLEDGE_MCP_NAME]["command"] = "/tmp/broken-openubmc-kb"
-        claude.write_text(
-            json.dumps(claude_document, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-
         self.assertEqual(self.check()[0], 1)
         repair_args = installer.parse_args(["repair", "--home", str(self.home)])
         with mock.patch.object(installer, "knowledge_http_health", return_value=(True, "ok")):
@@ -2789,7 +2677,6 @@ class EnvironmentSetupTests(unittest.TestCase):
 
         repaired = installer.load_state(self.home)
         self.assertTrue(installer.check_toml_mcp(codex, "", repaired["mcp"]["codex"]))
-        self.assertTrue(installer.check_json_mcp(claude, "", repaired["mcp"]["claude"]))
 
     def test_non_boolean_mcp_ownership_never_authorizes_replacement_or_removal(self) -> None:
         codex = self.home / ".codex" / "config.toml"
@@ -2951,6 +2838,123 @@ class EnvironmentSetupTests(unittest.TestCase):
             codex.read_text(encoding="utf-8") if codex.exists() else "",
         )
 
+    def test_repair_migrates_managed_multiclient_state_to_codex_only(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        knowledge_launcher = Path(state["knowledge_mcp"]["launcher_path"])
+        runtime_launcher = Path(state["runtime"]["launcher_path"])
+
+        for client in ("claude", "openclaw"):
+            skills = installer.client_skills_dir(self.home, client)
+            skills.mkdir(parents=True)
+            for canonical, relative in EXPECTED_BUNDLE:
+                link = skills / canonical
+                link.symlink_to(self.source / relative, target_is_directory=True)
+                state["links"][str(link)] = str(self.source / relative)
+        unrelated_skill = self.home / ".claude" / "skills" / "private-skill"
+        unrelated_skill.mkdir()
+        (unrelated_skill / "SKILL.md").write_text("private\n", encoding="utf-8")
+        openclaw_note = self.home / ".openclaw" / "keep.txt"
+        openclaw_note.write_text("keep\n", encoding="utf-8")
+
+        claude = self.home / ".claude.json"
+        claude.write_text(
+            json.dumps(
+                {
+                    "keep": True,
+                    "mcpServers": {
+                        installer.KNOWLEDGE_MCP_NAME: {
+                            "type": "stdio",
+                            "command": str(knowledge_launcher),
+                            "args": [],
+                        },
+                        installer.TARGET_RUNTIME_MCP_NAME: {
+                            "type": "stdio",
+                            "command": str(runtime_launcher),
+                            "args": [],
+                        },
+                        "private-server": {
+                            "type": "stdio",
+                            "command": "/opt/private-server",
+                            "args": ["serve"],
+                        },
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        original_claude = claude.read_text(encoding="utf-8")
+        state["clients"] = ["codex", "claude", "openclaw"]
+        state["mcp"]["claude"] = {
+            "path": str(claude),
+            "transport": "stdio",
+            "command": str(knowledge_launcher),
+            "args": [],
+            "created_entry": True,
+            "created_file": False,
+        }
+        state["mcp"]["openclaw"] = {"adapter_available": False}
+        state["runtime_mcp"]["claude"] = {
+            "path": str(claude),
+            "command": str(runtime_launcher),
+            "args": [],
+            "created_entry": True,
+            "created_file": False,
+        }
+        state["runtime_mcp"]["openclaw"] = {"adapter_available": False}
+        installer.save_state(self.home, state, False)
+
+        for _ in range(2):
+            repair_args = installer.parse_args(["repair", "--home", str(self.home)])
+            with mock.patch.object(
+                installer, "knowledge_http_health", return_value=(True, "ok")
+            ):
+                self.assertEqual(installer.perform_repair(repair_args), 0)
+
+        repaired = installer.load_state(self.home)
+        self.assertEqual(repaired["clients"], ["codex"])
+        self.assertEqual(sorted(repaired["mcp"]), ["codex"])
+        self.assertEqual(sorted(repaired["runtime_mcp"]), ["codex"])
+        for client in ("claude", "openclaw"):
+            skills = installer.client_skills_dir(self.home, client)
+            for canonical, _ in EXPECTED_BUNDLE:
+                self.assertFalse((skills / canonical).exists())
+        self.assertTrue(unrelated_skill.is_dir())
+        self.assertEqual(openclaw_note.read_text(encoding="utf-8"), "keep\n")
+        claude_document = json.loads(claude.read_text(encoding="utf-8"))
+        self.assertTrue(claude_document["keep"])
+        self.assertEqual(
+            claude_document["mcpServers"],
+            {
+                "private-server": {
+                    "type": "stdio",
+                    "command": "/opt/private-server",
+                    "args": ["serve"],
+                }
+            },
+        )
+        claude_backups = list(
+            (installer.openubmc_config_dir(self.home) / "backups").rglob(
+                ".claude.json"
+            )
+        )
+        self.assertEqual(len(claude_backups), 1)
+        self.assertEqual(
+            claude_backups[0].read_text(encoding="utf-8"), original_claude
+        )
+
+        uninstall_args = installer.parse_args(["uninstall", "--home", str(self.home)])
+        self.assertEqual(installer.perform_uninstall(uninstall_args), 0)
+        self.assertEqual(
+            json.loads(claude.read_text(encoding="utf-8"))["mcpServers"],
+            claude_document["mcpServers"],
+        )
+        self.assertTrue(unrelated_skill.is_dir())
+
     def test_launcher_rejects_digest_mismatch_before_mcp_entrypoint_runs(self) -> None:
         self.prepare_credentials()
         self.assertEqual(self.install("--clients", "codex")[0], 0)
@@ -3058,23 +3062,19 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertIn("[other]", codex.read_text(encoding="utf-8"))
         self.assertFalse(installer.runtime_install_root(self.home).exists())
 
-    def test_uninstall_removes_client_files_created_for_both_mcp_entries(self) -> None:
+    def test_uninstall_removes_codex_file_created_for_both_mcp_entries(self) -> None:
         self.prepare_credentials()
         codex = self.home / ".codex" / "config.toml"
-        claude = self.home / ".claude.json"
         self.assertFalse(codex.exists())
-        self.assertFalse(claude.exists())
 
-        self.assertEqual(self.install("--clients", "codex,claude")[0], 0)
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
         state = installer.load_state(self.home)
-        for client in ("codex", "claude"):
-            self.assertIs(state["mcp"][client]["created_file"], True)
-            self.assertIs(state["runtime_mcp"][client]["created_file"], True)
+        self.assertIs(state["mcp"]["codex"]["created_file"], True)
+        self.assertIs(state["runtime_mcp"]["codex"]["created_file"], True)
 
         args = installer.parse_args(["uninstall", "--home", str(self.home)])
         self.assertEqual(installer.perform_uninstall(args), 0)
         self.assertFalse(codex.exists())
-        self.assertFalse(claude.exists())
 
     def test_uninstall_decodes_invalid_state_before_removing_anything(self) -> None:
         self.prepare_credentials()
@@ -3376,6 +3376,47 @@ class EnvironmentSetupTests(unittest.TestCase):
                 "resolved_commit": "a" * 40,
             }
         )
+        state["clients"] = ["codex", "claude", "openclaw"]
+        state["mcp"]["openclaw"] = {"adapter_available": False}
+        legacy_link = self.home / ".claude" / "skills" / "openubmc-debug"
+        legacy_link.parent.mkdir(parents=True)
+        legacy_link.symlink_to(
+            self.source / "openubmc-debug", target_is_directory=True
+        )
+        state["links"][str(legacy_link)] = str(self.source / "openubmc-debug")
+        claude = self.home / ".claude.json"
+        runtime_launcher = Path(state["runtime"]["launcher_path"])
+        claude.write_text(
+            json.dumps(
+                {
+                    "keep": True,
+                    "mcpServers": {
+                        installer.TARGET_RUNTIME_MCP_NAME: {
+                            "type": "stdio",
+                            "command": str(runtime_launcher),
+                            "args": [],
+                        },
+                        "private-server": {
+                            "type": "stdio",
+                            "command": "/opt/private-server",
+                            "args": [],
+                        },
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        state["runtime_mcp"]["claude"] = {
+            "path": str(claude),
+            "command": str(runtime_launcher),
+            "args": [],
+            "created_entry": True,
+            "created_file": False,
+        }
+        state["runtime_mcp"]["openclaw"] = {"adapter_available": False}
         installer.save_state(self.home, state, False)
 
         args = installer.parse_args(["update", "--home", str(self.home)])
@@ -3402,6 +3443,22 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(updated["requested_ref"], "v1.2.3")
         self.assertEqual(updated["ref_kind"], "tag")
         self.assertEqual(updated["resolved_commit"], "a" * 40)
+        self.assertEqual(updated["clients"], ["codex"])
+        self.assertEqual(updated["mcp"], {})
+        self.assertEqual(sorted(updated["runtime_mcp"]), ["codex"])
+        self.assertFalse(legacy_link.exists())
+        claude_document = json.loads(claude.read_text(encoding="utf-8"))
+        self.assertTrue(claude_document["keep"])
+        self.assertEqual(
+            claude_document["mcpServers"],
+            {
+                "private-server": {
+                    "type": "stdio",
+                    "command": "/opt/private-server",
+                    "args": [],
+                }
+            },
+        )
 
     def test_explicit_release_upgrade_records_revision_and_public_check(self) -> None:
         self.prepare_credentials()
@@ -3512,6 +3569,9 @@ class EnvironmentSetupTests(unittest.TestCase):
                 "rollback_commit": "b" * 40,
             }
         )
+        state["clients"] = ["codex", "claude", "openclaw"]
+        state["mcp"]["openclaw"] = {"adapter_available": False}
+        state["runtime_mcp"]["openclaw"] = {"adapter_available": False}
         installer.save_state(self.home, state, False)
 
         args = installer.parse_args(["rollback", "--home", str(self.home)])
@@ -3533,6 +3593,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(rolled_back["requested_ref"], "b" * 40)
         self.assertEqual(rolled_back["ref_kind"], "commit")
         self.assertEqual(rolled_back["rollback_commit"], "a" * 40)
+        self.assertEqual(rolled_back["clients"], ["codex"])
 
         args = installer.parse_args(["rollback", "--home", str(self.home)])
         with (

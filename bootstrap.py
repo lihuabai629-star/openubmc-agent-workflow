@@ -34,6 +34,7 @@ MUTABLE_REFS = frozenset({"head", "main", "master", "develop", "development", "t
 FORBIDDEN_FORWARDED_OPTIONS = frozenset(
     {"--installer-url", "--ref", "--repo-url", "--source", "--source-mode"}
 )
+RETIRED_CLIENTS = frozenset({"claude", "openclaw"})
 
 
 def github_token() -> str | None:
@@ -108,6 +109,21 @@ def main(argv: list[str] | None = None) -> int:
             "bootstrap must use the primary GitHub release source; "
             f"forwarding {blocked} is unsupported"
         )
+    for index, argument in enumerate(remaining):
+        if argument == "--clients":
+            value = remaining[index + 1] if index + 1 < len(remaining) else ""
+        elif argument.startswith("--clients="):
+            value = argument.split("=", 1)[1]
+        else:
+            continue
+        selected = {
+            item.strip().lower() for item in value.split(",") if item.strip()
+        }
+        if selected & RETIRED_CLIENTS:
+            parser.error(
+                f"only Codex is supported; replace --clients {value} with "
+                "--clients codex"
+            )
     assets: dict[str, bytes] = {}
     for name, template in INSTALLER_ASSETS.items():
         request = github_file_request(template, known.ref)

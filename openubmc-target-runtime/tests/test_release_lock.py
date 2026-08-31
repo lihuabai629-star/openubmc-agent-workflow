@@ -38,6 +38,7 @@ class ReleaseLockTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["schema"], RELEASE_LOCK_SCHEMA)
         self.assertEqual(first["source_commit_policy"], RELEASE_COMMIT_POLICY)
+        self.assertEqual(list(first["compatibility"]["clients"]), ["codex"])
         self.assertEqual(len(first["skills"]), 11)
         self.assertEqual(
             len({item["name"] for item in first["skills"]}),
