@@ -46,7 +46,7 @@ MAX_EVENTS_PER_RUN = 16
 DUAL_PROJECTION_TEXT_TARGET_BYTES = 4 * 1024
 DUAL_PROJECTION_MIN_PREVIEW_BYTES = 2 * 1024
 DUAL_PROJECTION_STRUCTURED_TURN_DIGESTS = {
-    "gate": "sha256:ec1a68b276cb5f699b776f2fefd0cfe3c0cd4feb0db4709a7c9c811f949a3f46",
+    "gate": "sha256:bfe5b8705f79e8f80df42c32c820dde86f7d2b132183c366140640dc26d3fcee",
     "terminal": "sha256:603f068c46a5ce41d55c60800fc2e9706b9fe36c3f9be0983e5061ba6b2bda8d",
 }
 DUAL_PROJECTION_SEMANTIC_TEXT_MARKERS = (
@@ -65,10 +65,9 @@ DUAL_PROJECTION_SEMANTIC_TEXT_MARKERS = (
 DUAL_PROJECTION_REQUIRED_TEXT_LINE_DIGESTS = {
     "gate": (
         "sha256:d960111f36c771d581999ed83227f973284229d9f43972082a16d01f94e0cd21",
-        "sha256:855549720180dbd524fe731d565e76e810e9cf813910e2e97a4afa7fd29138c4",
+        "sha256:cc51ad782922d90c50a53e40f5f65ff100ca3e5a1d1aef8c39ed03a347bfce76",
         "sha256:53e77c7e177b22753ee4574245edb0bfd59c537f955e96b27b3cb4cac0ecc71c",
         "sha256:5af18c5d13c6bea731ef8aed7df686d2a9eadd1e78f1814e779cce432cac1ba1",
-        "sha256:b92b1bf0df36042761c23811b141b81f8e6b2ff26ea829a1623a27a18bd103bf",
         "sha256:95a9ddbf8f7d562c0e848d2a193278e9d4f07764d7da347a7b9e463f3889262e",
         "sha256:bd30b82d8d069cd0877ee94b283573806407cc65d9117c8cc01d49b34f63c28d",
         "sha256:46457a95085ffe22678335a62f9bc6b8ab1e70929ab9b778a70d6972d44ec42c",
@@ -695,8 +694,11 @@ def _verify_runtime_stability_report(
                     and isinstance(gate_schema, Mapping)
                     else False
                 ),
+                gate_turn.get("response_required") is True,
+                gate_turn.get("next_action") is None,
+                bool(gate.get("submission_id")) if isinstance(gate, Mapping) else False,
                 "GateBinding" in turn_text["gate"],
-                '"kind":"respond"' in turn_text["gate"],
+                "submission_id=" in turn_text["gate"],
             )
         )
         terminal_semantics_complete = all(

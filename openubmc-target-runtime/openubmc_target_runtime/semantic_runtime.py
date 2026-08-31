@@ -252,6 +252,7 @@ class PreflightContext:
     artifact_kind: str = ""
     version_required: bool = False
     required_payload_fields: tuple[str, ...] = ()
+    terminal: bool = False
 
 
 @dataclass(frozen=True)
@@ -1341,8 +1342,14 @@ def _schema_digest(value: object) -> str:
     return selected
 
 
+def gate_submission_id(binding: Mapping[str, object]) -> str:
+    """Derive the stable default identity for one persisted Gate binding."""
+
+    return "gate-submit-" + fingerprint(binding)[:32]
+
+
 def _submission_id(value: object, *, binding: Mapping[str, object]) -> str:
-    selected = _text(value) or "gate-submit-" + fingerprint(binding)[:32]
+    selected = _text(value) or gate_submission_id(binding)
     if _SAFE_ID.fullmatch(selected) is None:
         raise AgentGatewayError("submission_id must be a safe 1-128 character identifier")
     return selected
