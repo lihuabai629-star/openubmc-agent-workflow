@@ -506,7 +506,6 @@ class EnvironmentSetupTests(unittest.TestCase):
         launcher_state_verified = command.read_text(encoding="utf-8") == (
             installer.render_runtime_launcher(runtime)
         )
-        launcher_sha256 = hashlib.sha256(command.read_bytes()).hexdigest()
         evidence_path = os.environ.get("OPENUBMC_PRODUCT_CLIENT_EVIDENCE", "")
         if not evidence_path:
             return
@@ -535,6 +534,36 @@ class EnvironmentSetupTests(unittest.TestCase):
             check_report = installer.collect_check_report(check_args)
         check_report.pop("_messages", None)
         release = check_report.get("release", {})
+        launcher_identity = {
+            "schema": "openubmc-agent-workflow.codex-launcher-identity.v1",
+            "runtime_api": runtime["api_version"],
+            "runtime_content_digest": runtime["content_digest"],
+            "source_commit": release.get("source_commit", ""),
+            "entrypoint": "openubmc-debug/scripts/target_runtime_mcp.py",
+        }
+        launcher_identity_digest = "sha256:" + hashlib.sha256(
+            json.dumps(
+                launcher_identity,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        source = check_report["source"]
+        stable_source = {
+            key: source[key]
+            for key in (
+                "mode",
+                "valid",
+                "requested_ref",
+                "ref_kind",
+                "resolved_commit",
+                "expected_commit",
+                "current_commit",
+                "dirty",
+                "dirty_scope",
+            )
+        }
         Path(evidence_path).write_text(
             json.dumps(
                 {
@@ -548,7 +577,8 @@ class EnvironmentSetupTests(unittest.TestCase):
                     "mcp_registration_verified": mcp_registration_verified,
                     "runtime_launcher_verified": healthy,
                     "launcher_state_verified": launcher_state_verified,
-                    "launcher_sha256": launcher_sha256,
+                    "launcher_identity": launcher_identity,
+                    "launcher_identity_digest": launcher_identity_digest,
                     "runtime_invocation": (
                         "client-configured-mcp-command"
                         if adapter_available
@@ -571,7 +601,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                             "release_identity_verified"
                         ],
                         "evaluation_ready": check_report["evaluation_ready"],
-                        "source": check_report["source"],
+                        "source": stable_source,
                         "release": release,
                     },
                     "runtime_api": runtime["api_version"],

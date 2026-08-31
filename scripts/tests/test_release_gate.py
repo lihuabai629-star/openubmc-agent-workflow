@@ -28,6 +28,13 @@ RELEASE_COMMIT = "b" * 40
 def codex_adoption_report(
     source_commit: str = SOURCE_COMMIT,
 ) -> dict[str, object]:
+    launcher_identity = {
+        "schema": "openubmc-agent-workflow.codex-launcher-identity.v1",
+        "runtime_api": "openubmc.target-runtime.v1",
+        "runtime_content_digest": "sha256:" + "5" * 64,
+        "source_commit": source_commit,
+        "entrypoint": "openubmc-debug/scripts/target_runtime_mcp.py",
+    }
     report: dict[str, object] = {
         "schema": "openubmc-agent-workflow.codex-adoption-qualification.v1",
         "source_commit": source_commit,
@@ -36,15 +43,110 @@ def codex_adoption_report(
         "maintenance_checkpoint_blockers": [],
         "failed_dimensions": [],
         "dimensions": {
-            name: {"status": "passed"}
-            for name in (
-                "installation_identity",
-                "codex_mcp",
-                "product_contract",
-                "task_matrix",
-                "projection",
-                "lifecycle",
-            )
+            "installation_identity": {
+                "status": "passed",
+                "failure_codes": [],
+                "source_clean": True,
+                "release_version": "2.0.2",
+                "source_commit": source_commit,
+                "release_commit": RELEASE_COMMIT,
+                "lock_digest": "sha256:" + "1" * 64,
+                "source_tree_digest": "sha256:" + "2" * 64,
+                "workflow_digest": "sha256:" + "3" * 64,
+                "clients": ["codex"],
+                "source_mode": "managed",
+                "trust_mode": "verified-immutable-source",
+                "operational_ready": True,
+                "release_identity_verified": True,
+                "evaluation_ready": True,
+                "skill_digests": {
+                    "openubmc-debug": "sha256:" + "4" * 64,
+                },
+                "runtime_api": "openubmc.target-runtime.v1",
+                "runtime_content_digest": "sha256:" + "5" * 64,
+            },
+            "codex_mcp": {
+                "status": "passed",
+                "failure_codes": [],
+                "configured": True,
+                "registration_verified": True,
+                "runtime_launcher_verified": True,
+                "runtime_invocation": "client-configured-mcp-command",
+                "protocol_exchange": [
+                    "initialize",
+                    "tools/list",
+                    "tools/call:execute",
+                ],
+                "tools": ["execute", "observe"],
+                "identity_bound": True,
+                "installed_source_commit": source_commit,
+                "runtime_api": "openubmc.target-runtime.v1",
+                "runtime_content_digest": "sha256:" + "5" * 64,
+                "launcher_state_verified": True,
+                "launcher_identity": launcher_identity,
+                "launcher_identity_digest": release_gate.evidence_fingerprint(
+                    launcher_identity
+                ),
+                "workflow_exchange": {
+                    "tool": "execute",
+                    "state": "preflight_failed",
+                    "classification": "preflight_failure",
+                    "error_field": "run_id",
+                    "canonical_retry": {
+                        "kind": "resume",
+                        "run_id": "<current Run ID>",
+                    },
+                    "is_error": True,
+                },
+            },
+            "product_contract": {
+                "status": "passed",
+                "returncode": 0,
+                "tests": ["qualification.product"],
+            },
+            "task_matrix": {
+                "status": "passed",
+                "correctness_primary": True,
+                "completion_primary": True,
+                "terminal_contract_primary": True,
+                "groups": {"source_only": {"status": "passed"}},
+            },
+            "projection": {
+                "status": "passed",
+                "correctness_primary": True,
+                "repeated_reference": True,
+                "full_bytes": 2,
+                "reference_bytes": 1,
+                "saved_bytes": 1,
+            },
+            "lifecycle": {
+                "status": "passed",
+                "closeout": {
+                    "status": "passed",
+                    "task_closeout_ready": True,
+                    "summary": {
+                        "active_requests": 0,
+                        "live_processes": 0,
+                        "confirmed_live_orphans": 0,
+                        "unattributed_live_processes": 0,
+                    },
+                },
+            },
+        },
+        "provenance": {
+            "source": {
+                "commit": source_commit,
+                "qualification_commit": source_commit,
+                "continuous_closeout_digest": "sha256:" + "7" * 64,
+            },
+            "model": None,
+            "codex": None,
+        },
+        "external_evaluation": {
+            "blocking": False,
+            "harnesses": ["dsh"],
+            "isolation": {"status": "failed"},
+            "required_for_maintenance_checkpoint": False,
         },
         "release_gate": {
             "evidence_type": "codex-adoption-qualification",
@@ -651,6 +753,43 @@ class ReleaseGateTests(unittest.TestCase):
                 "stderr_tail"
             ],
         )
+
+    def test_release_gate_rejects_digest_valid_skeletal_adoption_report(
+        self,
+    ) -> None:
+        skeletal = {
+            "schema": "openubmc-agent-workflow.codex-adoption-qualification.v1",
+            "source_commit": SOURCE_COMMIT,
+            "qualified": True,
+            "maintenance_checkpoint_ready": True,
+            "maintenance_checkpoint_blockers": [],
+            "failed_dimensions": [],
+            "dimensions": {
+                name: {"status": "passed"}
+                for name in (
+                    "installation_identity",
+                    "codex_mcp",
+                    "product_contract",
+                    "task_matrix",
+                    "projection",
+                    "lifecycle",
+                )
+            },
+            "release_gate": {
+                "evidence_type": "codex-adoption-qualification",
+                "eligible": True,
+            },
+        }
+        skeletal["evidence_digest"] = release_gate.evidence_fingerprint(
+            skeletal
+        )
+
+        with self.assertRaisesRegex(ValueError, "installation identity"):
+            release_gate.verify_codex_adoption_report(
+                skeletal,
+                expected_source_commit=SOURCE_COMMIT,
+                require_ready=True,
+            )
 
     def test_new_reports_require_identity_while_v2_evidence_remains_readable(
         self,

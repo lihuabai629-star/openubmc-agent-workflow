@@ -19,20 +19,25 @@ python3 scripts/codex_adoption_qualification.py \
   --output codex-adoption-qualification.json
 ```
 
-The report builds a temporary lock-only child from the clean candidate source, installs that child
-as a managed immutable source, and accepts installation identity only when the installer reports
-operational readiness, verified Release identity, and evaluation readiness. The installed Release
-lock, source tree, workflow, Runtime, and launcher identities must match the candidate.
+The report builds a deterministic temporary lock-only child from the clean candidate source,
+installs that child as a managed immutable source, and accepts installation identity only when the
+installer reports operational readiness, verified Release identity, and evaluation readiness. The
+installed Release lock, source tree, workflow, and Runtime identities must match the candidate.
+Launcher verification uses a path-independent semantic identity bound to the Runtime API, Runtime
+content digest, Final source commit, and installed entrypoint; temporary installation paths are not
+part of that identity.
 
 The Codex exchange verifies `initialize`, `tools/list`, the exact `observe` and `execute` Agent
 Interface, and a hermetic `tools/call` through `execute`. The installed exchange deliberately uses
 an actionable preflight request so it cannot touch a BMC or credentials; successful workflow
 completion is proven separately by the representative task matrix. A requested source commit must
-match the clean workspace `HEAD` or the verified release-lock parent.
+match the clean workspace `HEAD` or the verified release-lock parent. This allows a lock-only child
+to qualify its exact Final-source parent without accidentally qualifying the child as source code.
 
 It emits an ordered `failed_dimensions` list for Codex product qualification. Maintenance
-checkpoint readiness is a separate aggregate: it requires those dimensions and evaluation
-isolation, while external harness identity or presence cannot block Codex product qualification.
+checkpoint readiness requires those Codex-owned dimensions. External harness identity, presence,
+or isolation status is recorded separately and cannot block either Codex product qualification or
+the maintenance checkpoint.
 
 External evaluation harness metadata is recorded as non-blocking provenance. It is not a product
 client and cannot change the Codex qualification result. The report is deterministic for the same

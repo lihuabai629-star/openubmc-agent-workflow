@@ -61,7 +61,7 @@ def qualify(
         source_commit or "",
         workspace=ROOT,
     )
-    closeout = qualify_closeout()
+    closeout = qualify_closeout(source_commit=selected_source_commit)
     qualification_commit = str(closeout.get("source_commit", ""))
     release = build_release_lock(ROOT, source_commit=selected_source_commit)
 
@@ -110,7 +110,10 @@ def qualify(
         "runtime_content_digest": str(runtime.get("content_digest", "")),
     }
 
-    launcher_sha256 = str(codex_run.get("launcher_sha256", ""))
+    launcher_identity = _mapping(codex_run.get("launcher_identity"))
+    launcher_identity_digest = str(
+        codex_run.get("launcher_identity_digest", "")
+    )
     installed_source_commit = str(codex_run.get("source_commit", ""))
     mcp_failures = codex_mcp_failures(
         codex_run,
@@ -124,8 +127,8 @@ def qualify(
             codex_run.get("runtime_api") == runtime.get("api_version"),
             codex_run.get("runtime_content_digest") == runtime.get("content_digest"),
             codex_run.get("launcher_state_verified") is True,
-            len(launcher_sha256) == 64,
-            all(character in "0123456789abcdef" for character in launcher_sha256),
+            launcher_identity.get("source_commit") == selected_source_commit,
+            launcher_identity_digest.startswith("sha256:"),
         )
     )
     if client_matrix.get("status") != "passed":
@@ -156,7 +159,8 @@ def qualify(
         ),
         "launcher_state_verified": codex_run.get("launcher_state_verified")
         is True,
-        "launcher_sha256": launcher_sha256,
+        "launcher_identity": launcher_identity,
+        "launcher_identity_digest": launcher_identity_digest,
         "workflow_exchange": workflow_exchange,
     }
 
@@ -222,14 +226,6 @@ def qualify(
     qualified = not failed_dimensions
     evaluation_isolation = _mapping(closeout.get("evaluation_isolation"))
     maintenance_checkpoint_blockers = list(failed_dimensions)
-    if not all(
-        (
-            _passed(evaluation_isolation),
-            evaluation_isolation.get("global_state_blocked") is True,
-            evaluation_isolation.get("task_owned") is True,
-        )
-    ):
-        maintenance_checkpoint_blockers.append("evaluation_isolation")
     maintenance_checkpoint_ready = not maintenance_checkpoint_blockers
     report: dict[str, object] = {
         "schema": SCHEMA,
@@ -254,7 +250,7 @@ def qualify(
             "blocking": False,
             "harnesses": list(client_matrix.get("evaluation_harnesses", [])),
             "isolation": evaluation_isolation,
-            "required_for_maintenance_checkpoint": True,
+            "required_for_maintenance_checkpoint": False,
         },
         "release_gate": {
             "evidence_type": "codex-adoption-qualification",

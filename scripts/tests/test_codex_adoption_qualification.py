@@ -9,12 +9,23 @@ from scripts.evidence_report import evidence_fingerprint
 
 
 def closeout_report() -> dict[str, object]:
+    launcher_identity = {
+        "schema": "openubmc-agent-workflow.codex-launcher-identity.v1",
+        "runtime_api": "openubmc.target-runtime.v1",
+        "runtime_content_digest": "sha256:" + "f" * 64,
+        "source_commit": "a" * 40,
+        "entrypoint": "openubmc-debug/scripts/target_runtime_mcp.py",
+    }
     return {
         "source_commit": "a" * 40,
         "source_clean": True,
         "qualified": True,
         "qualification_digest": "sha256:" + "b" * 64,
-        "product_contract": {"status": "passed"},
+        "product_contract": {
+            "status": "passed",
+            "returncode": 0,
+            "tests": ["qualification.product"],
+        },
         "client_matrix": {
             "status": "passed",
             "product_clients": ["codex"],
@@ -30,7 +41,10 @@ def closeout_report() -> dict[str, object]:
                     "mcp_registration_verified": True,
                     "runtime_launcher_verified": True,
                     "launcher_state_verified": True,
-                    "launcher_sha256": "2" * 64,
+                    "launcher_identity": launcher_identity,
+                    "launcher_identity_digest": evidence_fingerprint(
+                        launcher_identity
+                    ),
                     "runtime_invocation": "client-configured-mcp-command",
                     "protocol_exchange": [
                         "initialize",
@@ -98,7 +112,12 @@ def closeout_report() -> dict[str, object]:
             "closeout": {
                 "status": "passed",
                 "task_closeout_ready": True,
-                "summary": {"live_processes": 0, "active_requests": 0},
+                "summary": {
+                    "live_processes": 0,
+                    "active_requests": 0,
+                    "confirmed_live_orphans": 0,
+                    "unattributed_live_processes": 0,
+                },
             },
         },
         "execute_projection": {
@@ -191,6 +210,15 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             ["initialize", "tools/list", "tools/call:execute"],
         )
         self.assertTrue(report["dimensions"]["codex_mcp"]["identity_bound"])
+        self.assertEqual(
+            report["dimensions"]["codex_mcp"]["launcher_identity_digest"],
+            evidence_fingerprint(
+                report["dimensions"]["codex_mcp"]["launcher_identity"]
+            ),
+        )
+        self.assertNotIn(
+            "launcher_sha256", report["dimensions"]["codex_mcp"]
+        )
         self.assertEqual(
             report["dimensions"]["codex_mcp"]["workflow_exchange"]["state"],
             "preflight_failed",
@@ -291,13 +319,13 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
 
         self.assertTrue(report["qualified"])
         self.assertEqual(report["failed_dimensions"], [])
-        self.assertFalse(report["maintenance_checkpoint_ready"])
-        self.assertEqual(
-            report["maintenance_checkpoint_blockers"],
-            ["evaluation_isolation"],
-        )
+        self.assertTrue(report["maintenance_checkpoint_ready"])
+        self.assertEqual(report["maintenance_checkpoint_blockers"], [])
         self.assertFalse(report["external_evaluation"]["blocking"])
-        self.assertFalse(report["release_gate"]["eligible"])
+        self.assertFalse(
+            report["external_evaluation"]["required_for_maintenance_checkpoint"]
+        )
+        self.assertTrue(report["release_gate"]["eligible"])
 
     def test_installed_launcher_identity_mismatch_fails_codex_dimension(self) -> None:
         closeout = closeout_report()
@@ -367,6 +395,24 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "must match workspace HEAD"):
                 adoption.qualify(source_commit="9" * 40)
+
+    def test_selected_source_commit_is_propagated_to_the_collector(self) -> None:
+        with (
+            mock.patch.object(
+                adoption, "qualify_closeout", return_value=closeout_report()
+            ) as closeout,
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            adoption.qualify(source_commit="a" * 40)
+
+        closeout.assert_called_once_with(source_commit="a" * 40)
 
 
 if __name__ == "__main__":

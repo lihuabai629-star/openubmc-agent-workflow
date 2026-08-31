@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -16,6 +17,13 @@ SCRIPT = ROOT / "scripts" / "continuous_closeout_qualification.py"
 
 
 def passed_product_client_run(name: str) -> dict[str, object]:
+    launcher_identity = {
+        "schema": "openubmc-agent-workflow.codex-launcher-identity.v1",
+        "runtime_api": "openubmc.target-runtime.v1",
+        "runtime_content_digest": "sha256:" + "f" * 64,
+        "source_commit": "a" * 40,
+        "entrypoint": "openubmc-debug/scripts/target_runtime_mcp.py",
+    }
     return {
         "status": "passed",
         "client": name,
@@ -28,7 +36,10 @@ def passed_product_client_run(name: str) -> dict[str, object]:
         "mcp_registration_verified": True,
         "runtime_launcher_verified": True,
         "launcher_state_verified": True,
-        "launcher_sha256": "2" * 64,
+        "launcher_identity": launcher_identity,
+        "launcher_identity_digest": qualification.evidence_fingerprint(
+            launcher_identity
+        ),
         "runtime_invocation": "client-configured-mcp-command",
         "protocol_exchange": [
             "initialize",
@@ -87,6 +98,22 @@ def passed_product_client_run(name: str) -> dict[str, object]:
 
 
 class ContinuousCloseoutQualificationTests(unittest.TestCase):
+    def test_candidate_release_commit_is_deterministic(self) -> None:
+        source_commit = qualification.resolve_source_commit(ROOT)
+        with (
+            tempfile.TemporaryDirectory() as first_raw,
+            tempfile.TemporaryDirectory() as second_raw,
+        ):
+            first = qualification._prepare_candidate_release(
+                Path(first_raw), source_commit
+            )
+            second = qualification._prepare_candidate_release(
+                Path(second_raw), source_commit
+            )
+
+        self.assertEqual(first.release_commit, second.release_commit)
+        self.assertEqual(first.release, second.release)
+
     def test_qualification_integrates_product_client_isolation_lifecycle_and_projection(
         self,
     ) -> None:
@@ -202,9 +229,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_product_client_run",
-                side_effect=lambda name, tests, contract: passed_product_client_run(
-                    name
-                ),
+                side_effect=lambda name, tests, contract, source_commit: passed_product_client_run(name),
             ),
             mock.patch.object(
                 qualification,
@@ -319,9 +344,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_product_client_run",
-                side_effect=lambda name, tests, contract: passed_product_client_run(
-                    name
-                ),
+                side_effect=lambda name, tests, contract, source_commit: passed_product_client_run(name),
             ),
             mock.patch.object(
                 qualification,

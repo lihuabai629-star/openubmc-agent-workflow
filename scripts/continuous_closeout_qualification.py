@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from typing import NamedTuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,12 @@ SUPPORTED_CLIENT_TESTS = {
         "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_qualifies_codex_product_client",
     ),
 }
+
+
+class CandidateRelease(NamedTuple):
+    bundle: Path
+    release_commit: str
+    release: dict[str, object]
 PRODUCT_CONTRACT_TESTS = (
     "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_assembles_a_promotable_manifest_from_runtime_and_fixed_evidence",
     "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_cli_writes_deterministic_manifest_and_qualification_report",
@@ -267,119 +274,122 @@ def _run_task_group(
     }
 
 
+def _checked(
+    command: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(command),
+        cwd=cwd,
+        env=dict(environment) if environment is not None else None,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _prepare_candidate_release(
+    qualification_root: Path,
+    source_commit: str,
+) -> CandidateRelease:
+    candidate_repository = qualification_root / "candidate-release"
+    _checked(
+        (
+            "git",
+            "clone",
+            "--quiet",
+            "--no-checkout",
+            "--no-hardlinks",
+            str(ROOT),
+            str(candidate_repository),
+        )
+    )
+    _checked(
+        (
+            "git",
+            "fetch",
+            "--quiet",
+            str(ROOT),
+            "+refs/remotes/github/*:refs/remotes/github/*",
+            "+refs/tags/*:refs/tags/*",
+        ),
+        cwd=candidate_repository,
+    )
+    for command in (
+        ("git", "checkout", "--quiet", "--detach", source_commit),
+        ("git", "config", "user.name", "Workflow Qualification"),
+        (
+            "git",
+            "config",
+            "user.email",
+            "workflow-qualification@example.invalid",
+        ),
+    ):
+        _checked(command, cwd=candidate_repository)
+    release = build_release_lock(
+        candidate_repository,
+        source_commit=source_commit,
+    )
+    (candidate_repository / "release-lock.json").write_text(
+        json.dumps(release, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    _checked(("git", "add", "release-lock.json"), cwd=candidate_repository)
+    commit_environment = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
+        "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
+    }
+    _checked(
+        (
+            "git",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "qualification release lock",
+        ),
+        cwd=candidate_repository,
+        environment=commit_environment,
+    )
+    release_commit = _checked(
+        ("git", "rev-parse", "HEAD"),
+        cwd=candidate_repository,
+    ).stdout.strip()
+    _checked(
+        (
+            "git",
+            "update-ref",
+            "refs/heads/qualification-release",
+            release_commit,
+        ),
+        cwd=candidate_repository,
+    )
+    candidate_bundle = qualification_root / "candidate-release.bundle"
+    _checked(
+        ("git", "bundle", "create", str(candidate_bundle), "--all"),
+        cwd=candidate_repository,
+    )
+    return CandidateRelease(candidate_bundle, release_commit, release)
+
+
 def _product_client_run(
     name: str,
     tests: Sequence[str],
     contract: Mapping[str, object],
+    source_commit: str,
 ) -> dict[str, object]:
     with tempfile.TemporaryDirectory() as raw:
         qualification_root = Path(raw)
         evidence_path = qualification_root / f"{name}-product-client.json"
-        source_commit = resolve_source_commit(ROOT)
-        candidate_repository = qualification_root / "candidate-release"
         try:
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--quiet",
-                    "--no-checkout",
-                    "--no-hardlinks",
-                    str(ROOT),
-                    str(candidate_repository),
-                ],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            subprocess.run(
-                [
-                    "git",
-                    "fetch",
-                    "--quiet",
-                    str(ROOT),
-                    "+refs/remotes/github/*:refs/remotes/github/*",
-                    "+refs/tags/*:refs/tags/*",
-                ],
-                cwd=candidate_repository,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            for command in (
-                ("git", "checkout", "--quiet", "--detach", source_commit),
-                ("git", "config", "user.name", "Workflow Qualification"),
-                (
-                    "git",
-                    "config",
-                    "user.email",
-                    "workflow-qualification@example.invalid",
-                ),
-            ):
-                subprocess.run(
-                    command,
-                    cwd=candidate_repository,
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-            release = build_release_lock(
-                candidate_repository,
-                source_commit=source_commit,
-            )
-            (candidate_repository / "release-lock.json").write_text(
-                json.dumps(release, ensure_ascii=True, indent=2, sort_keys=True)
-                + "\n",
-                encoding="utf-8",
-            )
-            subprocess.run(
-                ["git", "add", "release-lock.json"],
-                cwd=candidate_repository,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            subprocess.run(
-                ["git", "commit", "--quiet", "-m", "qualification release lock"],
-                cwd=candidate_repository,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            release_commit = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=candidate_repository,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            ).stdout.strip()
-            subprocess.run(
-                [
-                    "git",
-                    "update-ref",
-                    "refs/heads/qualification-release",
-                    release_commit,
-                ],
-                cwd=candidate_repository,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            candidate_bundle = qualification_root / "candidate-release.bundle"
-            subprocess.run(
-                ["git", "bundle", "create", str(candidate_bundle), "--all"],
-                cwd=candidate_repository,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+            candidate = _prepare_candidate_release(
+                qualification_root,
+                source_commit,
             )
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
             return {
@@ -393,8 +403,8 @@ def _product_client_run(
             cwd=ROOT,
             environment={
                 "OPENUBMC_PRODUCT_CLIENT_EVIDENCE": str(evidence_path),
-                "OPENUBMC_PRODUCT_CLIENT_REPO_URL": str(candidate_bundle),
-                "OPENUBMC_PRODUCT_CLIENT_RELEASE_COMMIT": release_commit,
+                "OPENUBMC_PRODUCT_CLIENT_REPO_URL": str(candidate.bundle),
+                "OPENUBMC_PRODUCT_CLIENT_RELEASE_COMMIT": candidate.release_commit,
             },
         )
         if result.get("status") != "passed":
@@ -421,7 +431,7 @@ def _product_client_run(
         evidence,
         contract=contract,
         expected_source_commit=source_commit,
-        expected_release=release,
+        expected_release=candidate.release,
     )
     return {
         **result,
@@ -569,7 +579,9 @@ def qualify(
     *,
     product_ingestion: Path | None = None,
     runtime_repository: Path | None = None,
+    source_commit: str | None = None,
 ) -> dict[str, object]:
+    selected_source_commit = source_commit or resolve_source_commit(ROOT)
     workflow = _workflow_metadata()
     raw_clients = workflow.get("clients", {})
     clients = raw_clients if isinstance(raw_clients, Mapping) else {}
@@ -597,6 +609,7 @@ def qualify(
             clients.get(name, {})
             if isinstance(clients.get(name), Mapping)
             else {},
+            selected_source_commit,
         )
         for name, tests in SUPPORTED_CLIENT_TESTS.items()
     }
@@ -675,7 +688,7 @@ def qualify(
         )
     report: dict[str, object] = {
         "schema": SCHEMA,
-        "source_commit": resolve_source_commit(ROOT),
+        "source_commit": selected_source_commit,
         "source_clean": source_clean,
         "qualified": qualified,
         "maintenance_checkpoint_ready": qualified,
@@ -742,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--product-manifest", type=Path)
     parser.add_argument("--product-ingestion", type=Path)
     parser.add_argument("--runtime-repository", type=Path)
+    parser.add_argument("--source-commit")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
@@ -749,6 +763,7 @@ def main(argv: list[str] | None = None) -> int:
             args.product_manifest,
             product_ingestion=args.product_ingestion,
             runtime_repository=args.runtime_repository,
+            source_commit=args.source_commit,
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)

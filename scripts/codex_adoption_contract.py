@@ -135,7 +135,10 @@ def codex_mcp_failures(
     expected_runtime: Mapping[str, object],
 ) -> list[str]:
     workflow_exchange = _mapping(evidence.get("workflow_exchange"))
-    launcher_sha256 = str(evidence.get("launcher_sha256", ""))
+    launcher_identity = _mapping(evidence.get("launcher_identity"))
+    launcher_identity_digest = str(
+        evidence.get("launcher_identity_digest", "")
+    )
     declared_mcp = contract.get("mcp") is True
     checks = (
         ("wrong_client", evidence.get("client") == "codex"),
@@ -161,11 +164,19 @@ def codex_mcp_failures(
             evidence.get("launcher_state_verified") is True,
         ),
         (
-            "launcher_digest_invalid",
-            len(launcher_sha256) == 64
-            and all(
-                character in "0123456789abcdef" for character in launcher_sha256
-            ),
+            "launcher_identity_invalid",
+            launcher_identity.get("schema")
+            == "openubmc-agent-workflow.codex-launcher-identity.v1"
+            and launcher_identity.get("runtime_api")
+            == expected_runtime.get("api_version")
+            and launcher_identity.get("runtime_content_digest")
+            == expected_runtime.get("content_digest")
+            and launcher_identity.get("source_commit")
+            == expected_source_commit
+            and launcher_identity.get("entrypoint")
+            == "openubmc-debug/scripts/target_runtime_mcp.py"
+            and launcher_identity_digest
+            == evidence_fingerprint(launcher_identity),
         ),
         (
             "runtime_invocation_invalid",
@@ -268,6 +279,156 @@ def verify_codex_adoption_report(
             )
         if value.get("status") != "passed":
             failed_dimensions.append(name)
+    installation = _mapping(dimensions.get("installation_identity"))
+    installation_complete = all(
+        (
+            installation.get("failure_codes") == [],
+            installation.get("source_clean") is True,
+            isinstance(installation.get("release_version"), str),
+            installation.get("source_commit") == source_commit,
+            _full_commit(installation.get("release_commit")),
+            _sha256(installation.get("lock_digest")),
+            _sha256(installation.get("source_tree_digest")),
+            _sha256(installation.get("workflow_digest")),
+            installation.get("clients") == ["codex"],
+            installation.get("source_mode") == "managed",
+            installation.get("trust_mode") == "verified-immutable-source",
+            installation.get("operational_ready") is True,
+            installation.get("release_identity_verified") is True,
+            installation.get("evaluation_ready") is True,
+            isinstance(installation.get("skill_digests"), Mapping),
+            bool(installation.get("skill_digests")),
+            installation.get("runtime_api") == "openubmc.target-runtime.v1",
+            _sha256(installation.get("runtime_content_digest")),
+        )
+    )
+    if installation.get("status") == "passed" and not installation_complete:
+        raise ValueError(
+            "Codex Adoption Qualification installation identity is incomplete"
+        )
+    if installation.get("status") == "failed" and not installation.get(
+        "failure_codes"
+    ):
+        raise ValueError(
+            "Codex Adoption Qualification installation failure is unexplained"
+        )
+    codex_mcp = _mapping(dimensions.get("codex_mcp"))
+    launcher_identity = _mapping(codex_mcp.get("launcher_identity"))
+    workflow_exchange = _mapping(codex_mcp.get("workflow_exchange"))
+    codex_mcp_complete = all(
+        (
+            codex_mcp.get("failure_codes") == [],
+            codex_mcp.get("configured") is True,
+            codex_mcp.get("registration_verified") is True,
+            codex_mcp.get("runtime_launcher_verified") is True,
+            codex_mcp.get("runtime_invocation")
+            == "client-configured-mcp-command",
+            codex_mcp.get("protocol_exchange")
+            == ["initialize", "tools/list", "tools/call:execute"],
+            codex_mcp.get("tools") == ["execute", "observe"],
+            codex_mcp.get("identity_bound") is True,
+            codex_mcp.get("installed_source_commit") == source_commit,
+            codex_mcp.get("runtime_api") == "openubmc.target-runtime.v1",
+            _sha256(codex_mcp.get("runtime_content_digest")),
+            codex_mcp.get("launcher_state_verified") is True,
+            launcher_identity.get("source_commit") == source_commit,
+            codex_mcp.get("launcher_identity_digest")
+            == evidence_fingerprint(launcher_identity),
+            workflow_exchange.get("tool") == "execute",
+            workflow_exchange.get("state") == "preflight_failed",
+            workflow_exchange.get("classification") == "preflight_failure",
+            workflow_exchange.get("error_field") == "run_id",
+            workflow_exchange.get("is_error") is True,
+        )
+    )
+    if codex_mcp.get("status") == "passed" and not codex_mcp_complete:
+        raise ValueError("Codex Adoption Qualification MCP evidence is incomplete")
+    if codex_mcp.get("status") == "failed" and not codex_mcp.get(
+        "failure_codes"
+    ):
+        raise ValueError("Codex Adoption Qualification MCP failure is unexplained")
+    product_contract = _mapping(dimensions.get("product_contract"))
+    if product_contract.get("status") == "passed" and not (
+        product_contract.get("status") == "passed"
+        and product_contract.get("returncode") == 0
+        and isinstance(product_contract.get("tests"), list)
+        and bool(product_contract.get("tests"))
+    ):
+        raise ValueError(
+            "Codex Adoption Qualification product contract evidence is incomplete"
+        )
+    task_matrix = _mapping(dimensions.get("task_matrix"))
+    if task_matrix.get("status") == "passed" and not all(
+        (
+            task_matrix.get("correctness_primary") is True,
+            task_matrix.get("completion_primary") is True,
+            task_matrix.get("terminal_contract_primary") is True,
+            isinstance(task_matrix.get("groups"), Mapping),
+            bool(task_matrix.get("groups")),
+        )
+    ):
+        raise ValueError(
+            "Codex Adoption Qualification task matrix evidence is incomplete"
+        )
+    projection = _mapping(dimensions.get("projection"))
+    projection_sizes = tuple(
+        projection.get(name)
+        for name in ("full_bytes", "reference_bytes", "saved_bytes")
+    )
+    if projection.get("status") == "passed" and not all(
+        (
+            projection.get("correctness_primary") is True,
+            projection.get("repeated_reference") is True,
+            all(
+                isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                for value in projection_sizes
+            ),
+            projection.get("full_bytes", 0)
+            >= projection.get("reference_bytes", 0),
+        )
+    ):
+        raise ValueError(
+            "Codex Adoption Qualification projection evidence is incomplete"
+        )
+    lifecycle = _mapping(dimensions.get("lifecycle"))
+    lifecycle_closeout = _mapping(lifecycle.get("closeout"))
+    lifecycle_summary = _mapping(lifecycle_closeout.get("summary"))
+    if lifecycle.get("status") == "passed" and not all(
+        (
+            lifecycle_closeout.get("status") == "passed",
+            lifecycle_closeout.get("task_closeout_ready") is True,
+            lifecycle_summary.get("active_requests") == 0,
+            lifecycle_summary.get("live_processes") == 0,
+            lifecycle_summary.get("confirmed_live_orphans") == 0,
+            lifecycle_summary.get("unattributed_live_processes") == 0,
+        )
+    ):
+        raise ValueError(
+            "Codex Adoption Qualification lifecycle evidence is incomplete"
+        )
+    provenance = _mapping(report.get("provenance"))
+    source_provenance = _mapping(provenance.get("source"))
+    if not all(
+        (
+            source_provenance.get("commit") == source_commit,
+            _full_commit(source_provenance.get("qualification_commit")),
+            _sha256(source_provenance.get("continuous_closeout_digest")),
+            "model" in provenance,
+            "codex" in provenance,
+        )
+    ):
+        raise ValueError(
+            "Codex Adoption Qualification provenance evidence is incomplete"
+        )
+    external = _mapping(report.get("external_evaluation"))
+    if not (
+        external.get("blocking") is False
+        and external.get("required_for_maintenance_checkpoint") is False
+        and isinstance(external.get("harnesses"), list)
+    ):
+        raise ValueError(
+            "Codex Adoption Qualification external evaluation binding is invalid"
+        )
     if report.get("failed_dimensions") != failed_dimensions:
         raise ValueError("Codex Adoption Qualification failed dimensions are invalid")
     qualified = report.get("qualified") is True
