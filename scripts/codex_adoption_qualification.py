@@ -59,13 +59,10 @@ def qualify(
     model_identity: Mapping[str, object] | None = None,
     codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    selected_model_identity = _normalized_identity(model_identity) or {
-        "model": "codex-product-client-qualification"
-    }
-    selected_codex_identity = _normalized_identity(codex_identity) or {
-        "client_info_name": "codex-adoption-qualification",
-        "client_info_version": "1",
-    }
+    selected_model_identity = _normalized_identity(model_identity)
+    selected_codex_identity = _normalized_identity(codex_identity)
+    if not selected_model_identity or not selected_codex_identity:
+        raise ValueError("formal model and Codex identity are required")
     selected_source_commit = bind_source_commit(
         source_commit or "",
         workspace=ROOT,

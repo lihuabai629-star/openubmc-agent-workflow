@@ -14,6 +14,27 @@ SCRIPT = ROOT / "scripts" / "mcp_process_lifecycle.py"
 
 
 class McpProcessLifecycleCliTests(unittest.TestCase):
+    def test_cleanup_requires_task_and_session_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "cleanup",
+                    "--root",
+                    str(Path(raw) / "processes"),
+                    "--dry-run",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn(
+            "cleanup requires --task-id and --session-id", completed.stderr
+        )
+
     def test_status_reports_empty_lifecycle_root_without_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "processes"
@@ -106,6 +127,10 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                         "--root",
                         str(root),
                         "--dry-run",
+                        "--task-id",
+                        "test-task",
+                        "--session-id",
+                        "test-session",
                     ],
                     text=True,
                     capture_output=True,
@@ -120,7 +145,17 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                 self.assertEqual(json.loads(dry_run.stdout)["cleaned_processes"], [])
 
                 cleanup = subprocess.run(
-                    [sys.executable, str(SCRIPT), "cleanup", "--root", str(root)],
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "cleanup",
+                        "--root",
+                        str(root),
+                        "--task-id",
+                        "test-task",
+                        "--session-id",
+                        "test-session",
+                    ],
                     text=True,
                     capture_output=True,
                     check=False,
@@ -172,8 +207,8 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                     "component": "test-mcp",
                     "version": "1",
                     "client": "test-client",
-                    "task_id": "test-task",
-                    "session_id": "test-session",
+                    "task_id": "unknown-task",
+                    "session_id": "unknown-session",
                     "parent_pid": 999999999,
                     "parent_identity": "unknown",
                     "parent_identity_verified": False,
@@ -186,7 +221,17 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                 )
 
                 completed = subprocess.run(
-                    [sys.executable, str(SCRIPT), "cleanup", "--root", str(root)],
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "cleanup",
+                        "--root",
+                        str(root),
+                        "--task-id",
+                        "test-task",
+                        "--session-id",
+                        "test-session",
+                    ],
                     text=True,
                     capture_output=True,
                     check=False,

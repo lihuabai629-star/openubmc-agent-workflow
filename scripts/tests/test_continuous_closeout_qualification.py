@@ -41,7 +41,7 @@ def passed_lifecycle_record() -> dict[str, object]:
         "runtime_state_root": "/isolated/runtime-state",
         "lifecycle_state": "stopped",
         "active_requests": 0,
-        "exit_reason": "stdin-closed",
+        "exit_reason": "task-closeout",
     }
 
 

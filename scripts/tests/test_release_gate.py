@@ -125,7 +125,7 @@ def codex_adoption_report(
                         "runtime_state_root": "/isolated/runtime-state",
                         "lifecycle_state": "stopped",
                         "active_requests": 0,
-                        "exit_reason": "stdin-closed",
+                        "exit_reason": "task-closeout",
                     }
                 ],
             },

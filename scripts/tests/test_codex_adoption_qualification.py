@@ -8,6 +8,21 @@ from scripts import codex_adoption_qualification as adoption
 from scripts.evidence_report import evidence_fingerprint
 
 
+FORMAL_MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
+FORMAL_CODEX_IDENTITY = {
+    "client_info_name": "codex-adoption-qualification",
+    "client_info_version": "1",
+}
+
+
+def qualify(**kwargs: object) -> dict[str, object]:
+    return adoption.qualify(
+        model_identity=FORMAL_MODEL_IDENTITY,
+        codex_identity=FORMAL_CODEX_IDENTITY,
+        **kwargs,
+    )
+
+
 def closeout_report() -> dict[str, object]:
     launcher_identity = {
         "schema": "openubmc-agent-workflow.codex-launcher-identity.v1",
@@ -126,7 +141,7 @@ def closeout_report() -> dict[str, object]:
                             "runtime_state_root": "/isolated/runtime-state",
                             "lifecycle_state": "stopped",
                             "active_requests": 0,
-                            "exit_reason": "stdin-closed",
+                            "exit_reason": "task-closeout",
                         }
                     ],
                 }
@@ -201,6 +216,10 @@ def release_identity() -> dict[str, object]:
 
 
 class CodexAdoptionQualificationTests(unittest.TestCase):
+    def test_qualification_requires_explicit_formal_identities(self) -> None:
+        with self.assertRaisesRegex(ValueError, "formal model and Codex identity"):
+            adoption.qualify()
+
     def test_one_report_combines_identity_codex_runtime_tasks_and_provenance(
         self,
     ) -> None:
@@ -340,7 +359,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertFalse(report["maintenance_checkpoint_ready"])
@@ -368,8 +387,8 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 side_effect=["a" * 40, "a" * 40],
             ),
         ):
-            first = adoption.qualify()
-            second = adoption.qualify()
+            first = qualify()
+            second = qualify()
 
         self.assertEqual(first, second)
 
@@ -392,7 +411,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertTrue(report["qualified"])
         self.assertEqual(report["failed_dimensions"], [])
@@ -420,7 +439,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertEqual(report["failed_dimensions"], ["codex_mcp"])
@@ -442,7 +461,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertIn(
@@ -466,7 +485,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertIn(
@@ -493,7 +512,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertEqual(report["dimensions"]["lifecycle"]["status"], "failed")
@@ -512,7 +531,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertEqual(report["dimensions"]["projection"]["status"], "failed")
@@ -543,7 +562,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertFalse(report["maintenance_checkpoint_ready"])
@@ -562,7 +581,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(ValueError, "must match workspace HEAD"):
-                adoption.qualify(source_commit="9" * 40)
+                qualify(source_commit="9" * 40)
 
     def test_selected_source_commit_is_propagated_to_the_collector(self) -> None:
         with (
@@ -578,7 +597,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            adoption.qualify(source_commit="a" * 40)
+            qualify(source_commit="a" * 40)
 
         closeout.assert_called_once_with(
             source_commit="a" * 40,

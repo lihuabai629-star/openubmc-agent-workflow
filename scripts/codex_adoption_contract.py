@@ -218,8 +218,7 @@ def _mcp_lifecycle_failures(
         and isinstance(record.get("active_requests"), int)
         and not isinstance(record.get("active_requests"), bool)
         and record.get("active_requests") == 0
-        and isinstance(record.get("exit_reason"), str)
-        and bool(str(record.get("exit_reason", "")).strip())
+        and record.get("exit_reason") == "task-closeout"
         for record in records
     )
     return [] if valid else ["mcp_lifecycle_identity_invalid"]

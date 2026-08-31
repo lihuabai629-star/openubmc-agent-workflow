@@ -480,6 +480,13 @@ class EnvironmentSetupTests(unittest.TestCase):
                         "_meta": {"codex/taskId": "codex-adoption-probe"},
                     },
                 },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/openubmc-task-complete",
+                    "params": {
+                        "_meta": {"codex/taskId": "codex-adoption-probe"}
+                    },
+                },
             )
         ) + "\n"
         lifecycle_root = self.home / ".local" / "state" / "codex-product-lifecycle"
@@ -552,6 +559,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(lifecycle["runtime_state_root"], str(runtime_state_root))
         self.assertEqual(lifecycle["lifecycle_state"], "stopped")
         self.assertEqual(lifecycle["active_requests"], 0)
+        self.assertEqual(lifecycle["exit_reason"], "task-closeout")
         launcher_state_verified = command.read_text(encoding="utf-8") == (
             installer.render_runtime_launcher(runtime)
         )
