@@ -563,6 +563,52 @@ class RuntimeQualificationTests(unittest.TestCase):
                 expected_source_commit=SOURCE_COMMIT,
             )
 
+    def test_dual_projection_verifier_requires_repeated_field_attribution(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        terminal = projection["canonical_results"]["terminal"]
+        metrics = terminal["structuredContent"]["projection_metrics"][
+            "diagnostic_receipt"
+        ]
+        metrics.pop("repeated_fields")
+        projection["representative_receipt"]["repeated_projection"] = dict(
+            metrics
+        )
+        projection["measurements"]["terminal"] = (
+            runtime_stability.projection_measurement(terminal)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|canonical|attribution"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
+    def test_dual_projection_verifier_requires_target_exceeded_cause_attribution(
+        self,
+    ) -> None:
+        report = json.loads(self.stability_report(SOURCE_COMMIT))
+        projection = report["scenarios"]["dual_projection"]
+        gate = projection["canonical_results"]["gate"]
+        gate["structuredContent"]["projection_metrics"]["soft_target"][
+            "target_exceeded_causes"
+        ] = []
+        projection["measurements"]["gate"] = (
+            runtime_stability.projection_measurement(gate)
+        )
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+
+        with self.assertRaisesRegex(ValueError, "contract|canonical|attribution"):
+            qualification.verify_runtime_stability_report(
+                report,
+                expected_source_commit=SOURCE_COMMIT,
+            )
+
     def test_dual_projection_verifier_rejects_gate_binding_after_identities(
         self,
     ) -> None:

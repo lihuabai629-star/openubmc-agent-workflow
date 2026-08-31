@@ -1916,10 +1916,16 @@ class OversizedDiagnosticTurnRuntime:
 
 
 class RepeatedAcceptedDiagnosticTurnRuntime(OversizedDiagnosticTurnRuntime):
-    def __init__(self, *, change_receipt: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        change_receipt: bool = False,
+        incomplete_receipt: bool = False,
+    ) -> None:
         super().__init__()
         self.calls = 0
         self.change_receipt = change_receipt
+        self.incomplete_receipt = incomplete_receipt
 
     def execute(self, command, *, task_id, operation_id):
         del command, task_id, operation_id
@@ -1930,6 +1936,21 @@ class RepeatedAcceptedDiagnosticTurnRuntime(OversizedDiagnosticTurnRuntime):
             changed = receipt.to_public_dict()
             changed["receipt_id"] = "diagnostic-oversized-new-cycle"
             receipt = DiagnosticReceipt.from_public_dict(changed)
+        if self.incomplete_receipt:
+            incomplete = receipt.to_public_dict()
+            incomplete["status"] = "incomplete"
+            incomplete["coverage"] = {
+                "requested": self.result_count,
+                "evaluable": self.result_count - 1,
+                "unavailable": 0,
+                "not_checked": 1,
+                "complete": False,
+            }
+            incomplete["results"][-1]["status"] = "not_checked"
+            incomplete["results"][-1]["gap"] = "diagnostic_result_not_visible"
+            incomplete["content_complete"] = False
+            incomplete["gaps"] = ["diagnostic_result_not_visible"]
+            receipt = DiagnosticReceipt.from_public_dict(incomplete)
         if self.calls == 1:
             return RunTurn(
                 run_id="case-repeated-accepted-diagnostic",
@@ -4688,6 +4709,11 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(receipt["budget_blocker"])
         self.assertIn("observation_ref", receipt)
         self.assertNotIn("narrow the selectors", json.dumps(receipt))
+        target_metrics = receipt["projection_metrics"]["soft_target"]
+        self.assertEqual(target_metrics["target_bytes"], OBSERVATION_MAX_BYTES)
+        self.assertEqual(
+            target_metrics["target_exceeded_causes"][0]["field"], "results"
+        )
         projected_value = receipt["results"]["large"]["values"][0]["value"]
         self.assertIn("Large", json.dumps(projected_value))
         self.assertNotIn("<compacted>", json.dumps(projected_value))
@@ -8318,6 +8344,11 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(turn.get("projection_target_exceeded", False))
         self.assertFalse(turn["manual_narrowing_required"])
         self.assertFalse(turn["budget_blocker"])
+        gate_metrics = turn["projection_metrics"]["gate_schema_soft_target"]
+        self.assertEqual(
+            gate_metrics["target_exceeded_causes"][0]["field"],
+            "gate.input_schema",
+        )
 
     def test_large_gate_compaction_preserves_no_progress_semantics(self) -> None:
         turn = AgentGateway(OversizedNoProgressGateTurnRuntime()).execute(
@@ -8406,6 +8437,11 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(turn["manual_narrowing_required"])
         self.assertFalse(turn["budget_blocker"])
         self.assertEqual(
+            turn["projection_metrics"]["soft_target"]
+            ["target_exceeded_causes"][0]["field"],
+            "incident",
+        )
+        self.assertEqual(
             turn["interaction_telemetry"],
             {
                 "classification": "incident",
@@ -8469,6 +8505,17 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertNotIn("content_truncated", receipt["gaps"])
         self.assertFalse(turn["content_compacted"])
         self.assertTrue(turn["projection_target_exceeded"])
+        target_metrics = turn["projection_metrics"]["soft_target"]
+        self.assertEqual(target_metrics["target_bytes"], TURN_MAX_BYTES)
+        self.assertGreater(target_metrics["full_bytes"], TURN_MAX_BYTES)
+        self.assertEqual(
+            target_metrics["overage_bytes"],
+            target_metrics["full_bytes"] - target_metrics["target_bytes"],
+        )
+        self.assertEqual(
+            target_metrics["target_exceeded_causes"][0]["field"],
+            "diagnostic_receipt",
+        )
 
     def test_terminal_turn_references_an_unchanged_previously_presented_receipt(
         self,
@@ -8528,10 +8575,15 @@ class AgentGatewayTests(unittest.TestCase):
         )
         metrics = terminal["projection_metrics"]["diagnostic_receipt"]
         self.assertTrue(metrics["repeated_reference"])
+        self.assertEqual(metrics["repeated_fields"], ["diagnostic_receipt"])
         self.assertGreater(metrics["full_bytes"], metrics["reference_bytes"])
         self.assertEqual(
             metrics["saved_bytes"],
             metrics["full_bytes"] - metrics["reference_bytes"],
+        )
+        self.assertEqual(
+            metrics["target_exceeded_causes"],
+            [{"field": "diagnostic_receipt", "bytes": metrics["full_bytes"]}],
         )
         self.assertTrue(terminal["projection_compacted"])
         self.assertFalse(terminal["manual_narrowing_required"])
@@ -8583,6 +8635,76 @@ class AgentGatewayTests(unittest.TestCase):
         )
 
         self.assertIn("diagnostic_receipt", terminal)
+        self.assertNotIn("diagnostic_receipt_ref", terminal)
+
+    def test_terminal_turn_does_not_reference_a_stale_presentation_record(self) -> None:
+        runtime = RepeatedAcceptedDiagnosticTurnRuntime()
+        AgentGateway(runtime).execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnose-and-fix",
+            },
+            task_id="stale-presentation",
+            operation_id="stale-presentation-start",
+        )
+
+        terminal = AgentGateway(runtime).execute(
+            {
+                "kind": "respond",
+                "run_id": "case-repeated-accepted-diagnostic",
+                "gate_id": "gate-developer-change",
+                "gate_version": 1,
+                "schema_digest": "sha256:" + "a" * 64,
+                "submission_id": "stale-presentation",
+                "response": {
+                    "status": "completed",
+                    "summary": "developer change completed",
+                    "payload": {},
+                },
+            },
+            task_id="stale-presentation",
+            operation_id="stale-presentation-resume",
+        )
+
+        self.assertIn("diagnostic_receipt", terminal)
+        self.assertNotIn("diagnostic_receipt_ref", terminal)
+
+    def test_terminal_turn_never_references_an_incomplete_receipt(self) -> None:
+        gateway = AgentGateway(
+            RepeatedAcceptedDiagnosticTurnRuntime(incomplete_receipt=True)
+        )
+        gateway.execute(
+            {
+                "kind": "start",
+                "target": "192.0.2.20",
+                "intent": "diagnose-and-fix",
+            },
+            task_id="incomplete-receipt",
+            operation_id="incomplete-receipt-start",
+        )
+        terminal = gateway.execute(
+            {
+                "kind": "respond",
+                "run_id": "case-repeated-accepted-diagnostic",
+                "gate_id": "gate-developer-change",
+                "gate_version": 1,
+                "schema_digest": "sha256:" + "a" * 64,
+                "submission_id": "incomplete-receipt",
+                "response": {
+                    "status": "completed",
+                    "summary": "developer change completed",
+                    "payload": {},
+                },
+            },
+            task_id="incomplete-receipt",
+            operation_id="incomplete-receipt-resume",
+        )
+
+        self.assertNotEqual(terminal["diagnostic_receipt"]["status"], "complete")
+        self.assertNotEqual(
+            terminal["diagnostic_receipt"]["agent_acceptance"], "complete"
+        )
         self.assertNotIn("diagnostic_receipt_ref", terminal)
 
     def test_terminal_turn_preserves_a_changed_diagnostic_receipt(self) -> None:

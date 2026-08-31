@@ -770,6 +770,9 @@ def verify_codex_adoption_report(
             projection.get("correctness_primary") is True,
             projection.get("repeated_reference") is True,
             projection.get("operator_projection_covered") is True,
+            projection.get("repeated_fields") == ["diagnostic_receipt"],
+            isinstance(projection.get("target_exceeded_causes"), list),
+            bool(projection.get("target_exceeded_causes")),
             all(
                 isinstance(value, int) and not isinstance(value, bool) and value >= 0
                 for value in projection_sizes

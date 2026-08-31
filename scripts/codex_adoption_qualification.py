@@ -265,6 +265,12 @@ def qualify(
                         projection.get("correctness_primary") is True,
                         projection.get("repeated_reference") is True,
                         projection.get("operator_projection_covered") is True,
+                        projection.get("repeated_fields")
+                        == ["diagnostic_receipt"],
+                        isinstance(
+                            projection.get("target_exceeded_causes"), list
+                        ),
+                        bool(projection.get("target_exceeded_causes")),
                     )
                 )
                 else "failed"

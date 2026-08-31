@@ -305,6 +305,10 @@ def closeout_report() -> dict[str, object]:
             "full_bytes": 15516,
             "reference_bytes": 1035,
             "saved_bytes": 14481,
+            "repeated_fields": ["diagnostic_receipt"],
+            "target_exceeded_causes": [
+                {"field": "diagnostic_receipt", "bytes": 15516}
+            ],
             "blocks_promotability": False,
             "operator_projection_covered": True,
         },
@@ -832,6 +836,33 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["qualified"])
         self.assertEqual(report["dimensions"]["projection"]["status"], "failed")
+
+    def test_projection_attribution_is_required(self) -> None:
+        for field in ("repeated_fields", "target_exceeded_causes"):
+            with self.subTest(field=field):
+                closeout = closeout_report()
+                closeout["execute_projection"][field] = []
+                with (
+                    mock.patch.object(
+                        adoption, "qualify_closeout", return_value=closeout
+                    ),
+                    mock.patch.object(
+                        adoption,
+                        "build_release_lock",
+                        return_value=release_identity(),
+                    ),
+                    mock.patch.object(
+                        adoption,
+                        "bind_source_commit",
+                        return_value="a" * 40,
+                    ),
+                ):
+                    report = qualify()
+
+                self.assertFalse(report["qualified"])
+                self.assertEqual(
+                    report["dimensions"]["projection"]["status"], "failed"
+                )
 
     def test_linked_development_install_cannot_pass_release_qualification(
         self,

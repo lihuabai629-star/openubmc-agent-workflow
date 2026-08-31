@@ -46,8 +46,8 @@ MAX_EVENTS_PER_RUN = 16
 DUAL_PROJECTION_TEXT_TARGET_BYTES = 4 * 1024
 DUAL_PROJECTION_MIN_PREVIEW_BYTES = 2 * 1024
 DUAL_PROJECTION_STRUCTURED_TURN_DIGESTS = {
-    "gate": "sha256:bfe5b8705f79e8f80df42c32c820dde86f7d2b132183c366140640dc26d3fcee",
-    "terminal": "sha256:603f068c46a5ce41d55c60800fc2e9706b9fe36c3f9be0983e5061ba6b2bda8d",
+    "gate": "sha256:5fd2cf9de8fc41e75d1b36bc35a365ae99d1b4dc90ea86d7ee1bd8d0f2457871",
+    "terminal": "sha256:340234c5816c2e9a738211a0929a302883a9c1ccaef342d8178e052681e13c39",
 }
 DUAL_PROJECTION_SEMANTIC_TEXT_MARKERS = (
     "openUBMC 工作流",
@@ -755,12 +755,19 @@ def _verify_runtime_stability_report(
         }
         expected_repeated_projection = {
             "repeated_reference": True,
+            "repeated_fields": ["diagnostic_receipt"],
             "full_bytes": json_size_bytes(gate_receipt),
             "reference_bytes": json_size_bytes(expected_reference),
             "saved_bytes": (
                 json_size_bytes(gate_receipt)
                 - json_size_bytes(expected_reference)
             ),
+            "target_exceeded_causes": [
+                {
+                    "field": "diagnostic_receipt",
+                    "bytes": json_size_bytes(gate_receipt),
+                }
+            ],
         }
         receipt_semantics_complete = all(
             (

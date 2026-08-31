@@ -281,6 +281,10 @@ def codex_adoption_report(
                 "full_bytes": 2,
                 "reference_bytes": 1,
                 "saved_bytes": 1,
+                "repeated_fields": ["diagnostic_receipt"],
+                "target_exceeded_causes": [
+                    {"field": "diagnostic_receipt", "bytes": 2}
+                ],
                 "operator_projection_covered": True,
             },
             "lifecycle": {
