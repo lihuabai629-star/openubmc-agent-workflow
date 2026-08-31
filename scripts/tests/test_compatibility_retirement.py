@@ -115,6 +115,15 @@ def release_gate(source_commit: str) -> dict[str, object]:
             )
         },
     }
+    report["artifacts"]["codex_adoption_qualification"].update(
+        {
+            "schema": "openubmc-agent-workflow.codex-adoption-qualification.v1",
+            "source_commit": source_commit,
+            "evidence_digest": "sha256:" + "e" * 64,
+            "qualified": True,
+            "maintenance_checkpoint_ready": True,
+        }
+    )
     report["evidence_digest"] = digest(report)
     return report
 
