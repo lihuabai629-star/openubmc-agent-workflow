@@ -2419,14 +2419,21 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertTrue(registration_verified)
         configured = installer.toml_stdio_mcp_entry(config_path)
         assert configured is not None
-        self.assertEqual(state["runtime"]["source_commit"], state["source_commit"])
+        expected_launcher_source = (
+            state["release"].get("source_commit") or state["source_commit"]
+        )
+        self.assertEqual(
+            state["runtime"]["source_commit"],
+            expected_launcher_source,
+        )
         self.assertIn(
             "OPENUBMC_MCP_SOURCE_COMMIT",
             launcher.read_text(encoding="utf-8"),
         )
         knowledge_launcher = Path(state["knowledge_mcp"]["launcher_path"])
         self.assertEqual(
-            state["knowledge_mcp"]["source_commit"], state["source_commit"]
+            state["knowledge_mcp"]["source_commit"],
+            expected_launcher_source,
         )
         self.assertIn(
             "OPENUBMC_MCP_SOURCE_COMMIT",
