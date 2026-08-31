@@ -1,7 +1,11 @@
-# Continuous closeout qualification
+# Continuous closeout evidence collector
 
-The continuous closeout checkpoint combines the repository-level evidence needed to pass a
-Maintenance checkpoint without weakening product promotion semantics:
+The continuous closeout collector assembles repository-level Runtime, task, projection, and
+lifecycle evidence. It is an internal input to the canonical
+[Codex Adoption Qualification](codex-adoption-qualification.md), not a separate public CI or
+Release Gate decision.
+
+It can still be run directly for diagnostics or product-closeout evidence assembly:
 
 ```bash
 python3 scripts/continuous_closeout_qualification.py \
@@ -54,6 +58,6 @@ digest-bound terminal reference, saving 14,481 bytes. Initial actionable Turns, 
 Turns, cross-task resumes, and changed receipts retain the complete evaluable receipt. Projection
 size remains a soft display target and never becomes a 4 KiB or 8 KiB control-flow gate.
 
-`maintenance_checkpoint_ready` concerns repository correctness and qualification coverage.
-`fresh_product_promotable` remains false until fresh Runtime-bound product evidence is supplied.
-These are separate decisions.
+Its `maintenance_checkpoint_ready` and `fresh_product_promotable` fields are collector-level
+evidence used by higher-level qualification. Product-client adoption decisions come from Codex
+Adoption Qualification.

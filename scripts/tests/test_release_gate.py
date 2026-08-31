@@ -181,11 +181,12 @@ class ReleaseGateTests(unittest.TestCase):
                 "old_schema_compatibility",
                 "domain_pack_conformance",
                 "runtime_safety_qualification",
+                "codex_adoption_qualification",
                 "agent_gateway_ab_evidence",
             ],
         )
         self.assertTrue(all(item["status"] == "passed" for item in report["gates"]))
-        self.assertEqual(len(calls), 14)
+        self.assertEqual(len(calls), 15)
         github_ci = calls[0]
         self.assertIn("github_ci_evidence.py", github_ci[1])
         self.assertEqual(
@@ -222,7 +223,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertFalse(report["promotable"])
         self.assertEqual(
             [item["status"] for item in report["gates"]],
-            ["passed", "passed", "failed"] + ["skipped"] * 10,
+            ["passed", "passed", "failed"] + ["skipped"] * 11,
         )
         self.assertEqual(call_count, 4)
 
@@ -250,6 +251,13 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("--output", qualification)
         self.assertEqual(
             qualification[qualification.index("--source-commit") + 1],
+            "a" * 40,
+        )
+        adoption = gates["codex_adoption_qualification"][0]
+        self.assertIn("codex_adoption_qualification.py", adoption[1])
+        self.assertIn("--output", adoption)
+        self.assertEqual(
+            adoption[adoption.index("--source-commit") + 1],
             "a" * 40,
         )
         ab_evidence = gates["agent_gateway_ab_evidence"][0]
@@ -519,13 +527,26 @@ class ReleaseGateTests(unittest.TestCase):
                     "release-ref",
                 )
 
-    def test_release_report_digests_runtime_qualification_evidence(self) -> None:
+    def test_release_report_digests_qualification_evidence(self) -> None:
         def succeed(command, *, cwd):
             if "runtime_qualification.py" in " ".join(command):
                 output = Path(command[command.index("--output") + 1])
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(
                     json.dumps({"promotable": True, "violations": {}}),
+                    encoding="utf-8",
+                )
+            if "codex_adoption_qualification.py" in " ".join(command):
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(
+                        {
+                            "qualified": True,
+                            "maintenance_checkpoint_ready": True,
+                            "failed_dimensions": [],
+                        }
+                    ),
                     encoding="utf-8",
                 )
             return subprocess.CompletedProcess(command, 0, "ok", "")
@@ -541,9 +562,11 @@ class ReleaseGateTests(unittest.TestCase):
                 executor=succeed,
             )
 
-        artifact = report["artifacts"]["runtime_qualification"]
-        self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
-        self.assertGreater(artifact["size_bytes"], 0)
+        for name in ("runtime_qualification", "codex_adoption_qualification"):
+            with self.subTest(name=name):
+                artifact = report["artifacts"][name]
+                self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
+                self.assertGreater(artifact["size_bytes"], 0)
 
     def test_new_reports_require_identity_while_v2_evidence_remains_readable(
         self,

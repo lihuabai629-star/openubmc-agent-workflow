@@ -260,6 +260,7 @@ def gate_commands(
     current_upgrade = tuple(_install_command(current_ref, lifecycle_home))
     installer = str(_installed_installer(lifecycle_home))
     qualification_output = lifecycle_home.parent / "runtime-qualification.json"
+    adoption_output = lifecycle_home.parent / "codex-adoption-qualification.json"
     selected_ab_evidence = (
         ab_evidence
         if ab_evidence is not None
@@ -353,6 +354,19 @@ def gate_commands(
                     str(qualification_output),
                     "--source-commit",
                     source_commit,
+                ),
+            ),
+        ),
+        (
+            "codex_adoption_qualification",
+            (
+                (
+                    sys.executable,
+                    str(ROOT / "scripts" / "codex_adoption_qualification.py"),
+                    "--source-commit",
+                    source_commit,
+                    "--output",
+                    str(adoption_output),
                 ),
             ),
         ),
@@ -480,6 +494,9 @@ def execute_release_gate(
     qualification_artifact = _artifact(qualification_path)
     if qualification_artifact is not None:
         artifacts["runtime_qualification"] = qualification_artifact
+    adoption_artifact = _artifact(work_root / "codex-adoption-qualification.json")
+    if adoption_artifact is not None:
+        artifacts["codex_adoption_qualification"] = adoption_artifact
     github_ci_artifact = _artifact(work_root / "github-ci-evidence.json")
     if github_ci_artifact is not None:
         artifacts["github_ci"] = github_ci_artifact

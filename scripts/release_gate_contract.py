@@ -32,10 +32,12 @@ REQUIRED_RELEASE_GATES = (
     "old_schema_compatibility",
     "domain_pack_conformance",
     "runtime_safety_qualification",
+    "codex_adoption_qualification",
     "agent_gateway_ab_evidence",
 )
 RETIREMENT_RELEASE_ARTIFACTS = (
     "runtime_qualification",
+    "codex_adoption_qualification",
     "github_ci",
     "agent_gateway_ab",
 )
