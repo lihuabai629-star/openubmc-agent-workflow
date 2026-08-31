@@ -35,6 +35,7 @@ from .semantic_runtime import (
     ScopeContract,
     ScopeViolation,
     SelectorContract,
+    SemanticRuntimeError,
     SemanticRuntimePort,
     SubmitGate,
     decode_run_command,
@@ -80,6 +81,7 @@ _PREFLIGHT_PLACEHOLDERS = frozenset(
         "<restart scope>",
     }
 )
+_MISSING = object()
 
 
 def agent_projection_policy() -> dict[str, object]:
@@ -220,8 +222,9 @@ def _complete_observe_preflight_example(
     """Apply every deterministic observe correction without narrowing valid scope."""
 
     example = _observe_preflight_example(detail, query)
-    for _attempt in range(32):
-        if _contains_preflight_placeholder(example):
+    correction_budget = _preflight_value_count(example) + 8
+    for _attempt in range(correction_budget):
+        if _contains_synthesized_preflight_placeholder(example, query):
             return example
         try:
             ObservationQuery.from_query(example)
@@ -429,15 +432,46 @@ def _preflight_guidance(
     return _execute_action_example(detail), next_action
 
 
-def _contains_preflight_placeholder(value: object) -> bool:
-    if isinstance(value, Mapping):
-        return any(_contains_preflight_placeholder(item) for item in value.values())
-    if isinstance(value, list):
-        return any(_contains_preflight_placeholder(item) for item in value)
+def _is_preflight_placeholder(value: object) -> bool:
     return isinstance(value, str) and (
         value in _PREFLIGHT_PLACEHOLDERS
         or re.fullmatch(r"<Gate-required [^<>]+>", value) is not None
     )
+
+
+def _contains_synthesized_preflight_placeholder(
+    value: object,
+    source: object = _MISSING,
+) -> bool:
+    if isinstance(value, Mapping):
+        source_mapping = source if isinstance(source, Mapping) else {}
+        return any(
+            _contains_synthesized_preflight_placeholder(
+                item,
+                source_mapping.get(key, _MISSING),
+            )
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        source_list = source if isinstance(source, list) else []
+        return any(
+            _contains_synthesized_preflight_placeholder(
+                item,
+                source_list[index] if index < len(source_list) else _MISSING,
+            )
+            for index, item in enumerate(value)
+        )
+    return _is_preflight_placeholder(value) and (
+        source is _MISSING or source != value
+    )
+
+
+def _preflight_value_count(value: object) -> int:
+    if isinstance(value, Mapping):
+        return 1 + sum(_preflight_value_count(item) for item in value.values())
+    if isinstance(value, list):
+        return 1 + sum(_preflight_value_count(item) for item in value)
+    return 1
 
 
 def _is_reusable_preflight_action(
@@ -454,7 +488,7 @@ def _is_reusable_preflight_action(
                 action,
                 operation_id="preflight-next-action-validation",
             )
-    except AgentGatewayError:
+    except SemanticRuntimeError:
         return False
     return True
 
@@ -1728,7 +1762,10 @@ class AgentGateway:
             result["next_action"] = (
                 None
                 if not projected_example
-                or _contains_preflight_placeholder(projected_example)
+                or _contains_synthesized_preflight_placeholder(
+                    projected_example,
+                    arguments,
+                )
                 or not _is_reusable_preflight_action(operation, projected_example)
                 or (
                     operation == "execute"

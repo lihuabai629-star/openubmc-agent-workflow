@@ -3697,18 +3697,21 @@ class AgentGatewayTests(unittest.TestCase):
         )
         long_query = "lsprop Object" + "x" * 180
         selectors = [
-            {
-                "id": "capabilities",
-                "kind": "capability",
-                "names": ["mdb"],
-            },
+            *[
+                {
+                    "id": f"capabilities-{index}",
+                    "kind": "capability",
+                    "names": ["mdb"] * 16,
+                }
+                for index in range(3)
+            ],
             *[
                 {
                     "id": f"mdb-{index}",
                     "kind": "mdb",
                     "queries": [long_query if index == 0 else f"lsprop Object{index}"],
                 }
-                for index in range(15)
+                for index in range(13)
             ],
         ]
 
@@ -3735,8 +3738,9 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(structured["error"]["field"], "selectors[0].names[0]")
         self.assertIsInstance(action, dict)
         self.assertEqual(len(action["selectors"]), 16)
-        self.assertEqual(action["selectors"][0]["names"], ["mdbctl"])
-        self.assertEqual(action["selectors"][1]["queries"], [long_query])
+        for selector in action["selectors"][:3]:
+            self.assertEqual(selector["names"], ["mdbctl"] * 16)
+        self.assertEqual(action["selectors"][3]["queries"], [long_query])
         self.assertEqual(action["deadline"], 180)
         self.assertEqual(action, structured["error"]["example"])
         ObservationQuery.from_query(action)
@@ -3761,7 +3765,7 @@ class AgentGatewayTests(unittest.TestCase):
                         "kind": "start",
                         "target": "192.0.2.10",
                         "intent": "diagnosis-only",
-                        "purpose": "<NVMe>",
+                        "purpose": "<BMC IP>",
                         "deadline": 121,
                     },
                 },
@@ -3773,7 +3777,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(structured["error"]["field"], "deadline")
         self.assertEqual(
             structured["next_action"]["purpose"],
-            "<NVMe>",
+            "<BMC IP>",
         )
         self.assertEqual(structured["next_action"]["deadline"], 120)
         decode_run_command(
@@ -3813,6 +3817,38 @@ class AgentGatewayTests(unittest.TestCase):
             structured["error"]["example"]["delivery_strategy"],
             "unsupported-delivery",
         )
+        self.assertIsNone(structured["next_action"])
+
+    def test_retry_validation_projects_reference_errors_instead_of_raising(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="invalid-reference-retry",
+        )
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 204,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "192.0.2.10",
+                        "intent": "diagnosis-only",
+                        "observation_ref": {"handle": "missing-bindings"},
+                        "deadline": 121,
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(structured["error"]["field"], "deadline")
+        self.assertEqual(structured["error"]["example"]["deadline"], 120)
         self.assertIsNone(structured["next_action"])
 
     def test_build_gate_preflights_artifact_ref_and_run_binding_before_effects(
