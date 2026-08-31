@@ -804,6 +804,8 @@ def verify_codex_adoption_report(
             "Codex Adoption Qualification product contract evidence is incomplete"
         )
     task_matrix = _mapping(dimensions.get("task_matrix"))
+    risk_controls = _mapping(task_matrix.get("risk_controls"))
+    risk_violations = _mapping(risk_controls.get("violations"))
     if task_matrix.get("status") == "passed" and not all(
         (
             task_matrix.get("correctness_primary") is True,
@@ -811,6 +813,9 @@ def verify_codex_adoption_report(
             task_matrix.get("terminal_contract_primary") is True,
             isinstance(task_matrix.get("groups"), Mapping),
             bool(task_matrix.get("groups")),
+            risk_controls.get("passed") is True,
+            bool(risk_violations),
+            all(value == 0 for value in risk_violations.values()),
         )
     ):
         raise ValueError(

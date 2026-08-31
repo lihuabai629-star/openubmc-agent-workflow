@@ -503,6 +503,18 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             "test_terminal_turn_never_references_an_incomplete_receipt",
         ):
             self.assertIn(required, projection_tests)
+        risk_controls = report["task_matrix"]["risk_controls"]
+        self.assertTrue(risk_controls["passed"])
+        self.assertEqual(
+            risk_controls["violations"],
+            {
+                "false_successes": 0,
+                "duplicate_dangerous_effects": 0,
+                "unknown_new_identity_retries": 0,
+                "wrong_target_or_artifact_mutations": 0,
+                "lifecycle_leaks": 0,
+            },
+        )
         self.assertIn(
             "fresh_runtime_product_evidence_required",
             report["external_blockers"],

@@ -273,6 +273,16 @@ def codex_adoption_report(
                 "completion_primary": True,
                 "terminal_contract_primary": True,
                 "groups": {"source_only": {"status": "passed"}},
+                "risk_controls": {
+                    "passed": True,
+                    "violations": {
+                        "false_successes": 0,
+                        "duplicate_dangerous_effects": 0,
+                        "unknown_new_identity_retries": 0,
+                        "wrong_target_or_artifact_mutations": 0,
+                        "lifecycle_leaks": 0,
+                    },
+                },
             },
             "projection": {
                 "status": "passed",
