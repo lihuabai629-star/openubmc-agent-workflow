@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -615,6 +616,30 @@ class EnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(lifecycle["lifecycle_state"], "stopped")
             self.assertEqual(lifecycle["active_requests"], 0)
             self.assertEqual(lifecycle["exit_reason"], "client-terminated")
+        operator_status_process = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "mcp_process_lifecycle.py"),
+                "status",
+                "--root",
+                str(lifecycle_root),
+                "--task-id",
+                "codex-adoption-probe",
+                "--session-id",
+                "codex-adoption-session",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(
+            operator_status_process.returncode,
+            0,
+            operator_status_process.stderr,
+        )
+        operator_status = json.loads(operator_status_process.stdout)
         task_home = self.home.absolute()
         codex_config_root = (self.home / ".codex").absolute()
         runtime_state_root = runtime_state_root.absolute()
@@ -660,24 +685,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             and lifecycle["exit_reason"] == "client-terminated"
             for lifecycle in lifecycle_records
         )
-        closeout_checks = {
-            "active_requests_zero": all(
-                lifecycle["active_requests"] == 0
-                for lifecycle in lifecycle_records
-            ),
-            "confirmed_live_orphans_zero": all(
-                lifecycle["lifecycle_state"] == "stopped"
-                for lifecycle in lifecycle_records
-            ),
-            "unattributed_live_processes_zero": all(
-                lifecycle["lifecycle_state"] == "stopped"
-                for lifecycle in lifecycle_records
-            ),
-            "owned_live_processes_zero": all(
-                lifecycle["lifecycle_state"] == "stopped"
-                for lifecycle in lifecycle_records
-            ),
-        }
+        closeout_checks = operator_status["closeout_checks"]
         check_args = installer.parse_args(
             ["check", "--home", str(self.home), "--deep"]
         )
@@ -812,15 +820,9 @@ class EnvironmentSetupTests(unittest.TestCase):
                         ),
                         "identity_records_valid": identity_records_valid,
                         "isolation_verified": isolation_verified,
-                        "summary": {
-                            "record_count": len(lifecycle_records),
-                            "live_processes": 0,
-                            "active_requests": 0,
-                            "confirmed_live_orphans": 0,
-                            "unattributed_live_processes": 0,
-                            "owned_live_processes": 0,
-                        },
+                        "summary": operator_status["summary"],
                         "closeout_checks": closeout_checks,
+                        "operator_status": operator_status,
                         "isolation": {
                             "qualification_root": str(qualification_root),
                             "task_home": str(task_home),

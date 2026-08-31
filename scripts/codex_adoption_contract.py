@@ -253,6 +253,7 @@ def _codex_process_failures(
         if isinstance(tool, Mapping)
     }
     bindings: set[tuple[int, str]] = set()
+    executable_identities: set[tuple[str, str, str]] = set()
     valid_runs = len(runs) == 2
     for run in runs:
         if not isinstance(run, Mapping):
@@ -277,6 +278,13 @@ def _codex_process_failures(
         valid_runs = valid_runs and valid
         if valid and isinstance(process_id, int):
             bindings.add((process_id, process_identity))
+            executable_identities.add(
+                (
+                    str(run.get("executable", "")),
+                    str(run.get("executable_sha256", "")),
+                    str(run.get("version", "")),
+                )
+            )
     record_bindings = {
         (record.get("parent_pid"), str(record.get("parent_identity", "")))
         for record in records
@@ -287,7 +295,13 @@ def _codex_process_failures(
             evidence.get("codex_process_invocation") is True,
             valid_runs,
             len(bindings) == 2,
+            len(executable_identities) == 1,
             record_bindings == bindings,
+            all(
+                isinstance(record, Mapping)
+                and record.get("exit_reason") == "client-terminated"
+                for record in records
+            ),
             isinstance(captured_tools, list),
             "mcp__openubmc_target_runtime" in (
                 {str(item) for item in captured_tools}
@@ -307,6 +321,9 @@ def _mcp_closeout_failures(value: object, records_value: object) -> list[str]:
     summary = _mapping(closeout.get("summary"))
     checks = _mapping(closeout.get("closeout_checks"))
     isolation = _mapping(closeout.get("isolation"))
+    operator_status = _mapping(closeout.get("operator_status"))
+    operator_summary = _mapping(operator_status.get("summary"))
+    operator_checks = _mapping(operator_status.get("closeout_checks"))
     try:
         qualification_root = Path(
             str(isolation.get("qualification_root", ""))
@@ -361,6 +378,17 @@ def _mcp_closeout_failures(value: object, records_value: object) -> list[str]:
             summary.get("record_count") == len(records),
             all(summary.get(name) == 0 for name in zero_fields),
             all(checks.get(name) is True for name in check_fields),
+            operator_status.get("schema")
+            == "openubmc-agent-workflow.mcp-process-status.v1",
+            operator_status.get("operation") == "status",
+            operator_status.get("task_id")
+            == (records[0].get("task_id") if records else None),
+            operator_status.get("session_id")
+            == (records[0].get("session_id") if records else None),
+            operator_status.get("task_closeout_ready") is True,
+            operator_summary == summary,
+            operator_checks == checks,
+            operator_summary.get("stopped_processes") == len(records),
             roots_isolated,
             isolation.get("global_codex_state_used") is False,
             isolation.get("installed_launcher_invocation") is True,

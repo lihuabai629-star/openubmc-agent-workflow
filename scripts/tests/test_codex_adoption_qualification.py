@@ -163,12 +163,35 @@ def closeout_report() -> dict[str, object]:
                             "confirmed_live_orphans": 0,
                             "unattributed_live_processes": 0,
                             "owned_live_processes": 0,
+                            "stopped_processes": 2,
                         },
                         "closeout_checks": {
                             "active_requests_zero": True,
                             "confirmed_live_orphans_zero": True,
                             "unattributed_live_processes_zero": True,
                             "owned_live_processes_zero": True,
+                        },
+                        "operator_status": {
+                            "schema": "openubmc-agent-workflow.mcp-process-status.v1",
+                            "operation": "status",
+                            "task_id": "codex-adoption-probe",
+                            "session_id": "codex-adoption-session",
+                            "task_closeout_ready": True,
+                            "summary": {
+                                "record_count": 2,
+                                "live_processes": 0,
+                                "active_requests": 0,
+                                "confirmed_live_orphans": 0,
+                                "unattributed_live_processes": 0,
+                                "owned_live_processes": 0,
+                                "stopped_processes": 2,
+                            },
+                            "closeout_checks": {
+                                "active_requests_zero": True,
+                                "confirmed_live_orphans_zero": True,
+                                "unattributed_live_processes_zero": True,
+                                "owned_live_processes_zero": True,
+                            },
                         },
                         "isolation": {
                             "qualification_root": "/isolated",
@@ -627,6 +650,54 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         self.assertFalse(report["qualified"])
         self.assertIn(
             "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_codex_restart_must_use_one_pinned_executable_identity(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["codex_process_runs"][1]["executable_sha256"] = (
+            "sha256:" + "8" * 64
+        )
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_closeout_requires_operator_status_evidence(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["mcp_closeout"].pop("operator_status", None)
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "mcp_closeout_invalid",
             report["dimensions"]["codex_mcp"]["failure_codes"],
         )
 

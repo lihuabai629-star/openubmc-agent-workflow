@@ -160,9 +160,22 @@ def _runtime_tool_contracts(
                 isinstance(tool, Mapping)
                 and "openubmc_target_runtime" in str(tool.get("name", ""))
             ):
-                normalized = json.loads(
-                    json.dumps(dict(tool), ensure_ascii=True, sort_keys=True)
-                )
+                nested_tools = tool.get("tools")
+                normalized = {
+                    "name": str(tool.get("name", "")),
+                    "type": str(tool.get("type", "")),
+                    "tools": sorted(
+                        (
+                            {"name": str(item.get("name", ""))}
+                            for item in nested_tools
+                            if isinstance(item, Mapping)
+                            and str(item.get("name", ""))
+                        ),
+                        key=lambda item: item["name"],
+                    )
+                    if isinstance(nested_tools, list)
+                    else [],
+                }
                 if normalized not in contracts:
                     contracts.append(normalized)
     return contracts
@@ -285,7 +298,19 @@ def probe_codex_runtime(
                 env=environment,
             )
             identity = _process_identity(process.pid)
-            stdout, stderr = process.communicate(timeout=30)
+            try:
+                stdout, stderr = process.communicate(timeout=30)
+            except subprocess.TimeoutExpired as error:
+                process.terminate()
+                try:
+                    stdout, stderr = process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    stdout, stderr = process.communicate(timeout=5)
+                raise ValueError(
+                    "real Codex process probe timed out: "
+                    + (stderr or stdout).strip()[-2000:]
+                ) from error
             if process.returncode != 0:
                 raise ValueError(
                     "real Codex process probe failed: "

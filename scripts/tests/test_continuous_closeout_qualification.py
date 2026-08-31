@@ -69,12 +69,35 @@ def passed_mcp_closeout() -> dict[str, object]:
             "confirmed_live_orphans": 0,
             "unattributed_live_processes": 0,
             "owned_live_processes": 0,
+            "stopped_processes": 2,
         },
         "closeout_checks": {
             "active_requests_zero": True,
             "confirmed_live_orphans_zero": True,
             "unattributed_live_processes_zero": True,
             "owned_live_processes_zero": True,
+        },
+        "operator_status": {
+            "schema": "openubmc-agent-workflow.mcp-process-status.v1",
+            "operation": "status",
+            "task_id": "codex-adoption-probe",
+            "session_id": "codex-adoption-session",
+            "task_closeout_ready": True,
+            "summary": {
+                "record_count": 2,
+                "live_processes": 0,
+                "active_requests": 0,
+                "confirmed_live_orphans": 0,
+                "unattributed_live_processes": 0,
+                "owned_live_processes": 0,
+                "stopped_processes": 2,
+            },
+            "closeout_checks": {
+                "active_requests_zero": True,
+                "confirmed_live_orphans_zero": True,
+                "unattributed_live_processes_zero": True,
+                "owned_live_processes_zero": True,
+            },
         },
         "isolation": {
             "qualification_root": "/isolated",
@@ -436,6 +459,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(closeout["summary"]["confirmed_live_orphans"], 0)
         self.assertEqual(closeout["summary"]["unattributed_live_processes"], 0)
         self.assertEqual(closeout["summary"]["owned_live_processes"], 0)
+        self.assertEqual(closeout["summary"]["stopped_processes"], 2)
         self.assertTrue(all(closeout["closeout_checks"].values()))
         self.assertEqual(closeout["task_ids"], ["codex-adoption-probe"])
         self.assertEqual(closeout["session_ids"], ["codex-adoption-session"])
