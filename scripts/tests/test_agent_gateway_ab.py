@@ -169,7 +169,7 @@ def signed_run_evidence(
                     "python": "3.12",
                     "node": "v22",
                     "codex": module.QUALIFICATION_CODEX_VERSION,
-                    "codex_executable": "/tools/codex-0.150.0/bin/codex",
+                    "codex_executable": "/tools/codex-0.151.0/bin/codex",
                     "codex_sha256": "0" * 64,
                 }
             ),
@@ -594,9 +594,14 @@ def passing_execute_run_evidence(
     candidate_commit: str = "a" * 40,
     baseline_commit: str = module.DEFAULT_BASELINE_REF,
 ):
+    batch_id = str(uuid.UUID(int=9_001))
     qualification_contract = {
+        "batch_id": batch_id,
         "requested_pairs": len(schedule),
         "schedule_digest": module._fingerprint(schedule),
+        "scenario": "execute-source-only",
+        "candidate_commit": candidate_commit,
+        "baseline_commit": baseline_commit,
     }
     runs = []
     for pair, first, second in schedule:
@@ -604,121 +609,43 @@ def passing_execute_run_evidence(
             execution_id = str(
                 uuid.UUID(int=(pair * 2) + (0 if arm == "A" else 1))
             )
-            if arm == "B":
-                events = [
-                    {"type": "thread.started", "thread_id": execution_id},
-                    {
-                        "type": "item.completed",
-                        "item": {"type": "agent_message", "text": "start"},
+            events = [
+                {"type": "thread.started", "thread_id": execution_id},
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "start"},
+                },
+                candidate_execute_event(
+                    "start",
+                    "waiting_response",
+                    elapsed=0.5,
+                    gate="diagnosis",
+                ),
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "diagnose"},
+                },
+                candidate_execute_event(
+                    "respond",
+                    "waiting_response",
+                    elapsed=1.0,
+                    gate="diagnosis",
+                ),
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "develop"},
+                },
+                candidate_execute_event("respond", "completed", elapsed=1.5),
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 100 if arm == "A" else 80,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 10 if arm == "A" else 8,
                     },
-                    candidate_execute_event(
-                        "start",
-                        "waiting_response",
-                        elapsed=0.5,
-                        gate="diagnosis",
-                    ),
-                    {
-                        "type": "item.completed",
-                        "item": {"type": "agent_message", "text": "diagnose"},
-                    },
-                    candidate_execute_event(
-                        "respond",
-                        "waiting_response",
-                        elapsed=1.0,
-                        gate="diagnosis",
-                    ),
-                    {
-                        "type": "item.completed",
-                        "item": {"type": "agent_message", "text": "develop"},
-                    },
-                    candidate_execute_event("respond", "completed", elapsed=1.5),
-                    {
-                        "type": "turn.completed",
-                        "usage": {
-                            "input_tokens": 80,
-                            "cached_input_tokens": 20,
-                            "output_tokens": 8,
-                        },
-                    },
-                ]
-                duration = 2.0
-            else:
-                phase_contract = {
-                    "case_id": "case-qualified",
-                    "expected_revision": 2,
-                    "idempotency_key": "qualification-development",
-                    "phase_type": "developer.change",
-                    "producer_identity": "openubmc-developer",
-                }
-                events = [
-                    {"type": "thread.started", "thread_id": execution_id},
-                    {
-                        "type": "item.completed",
-                        "item": {"type": "agent_message", "text": "start"},
-                    },
-                    baseline_execute_event(
-                        "workflow.advance",
-                        {
-                            "ip": "10.121.136.200",
-                            "intent": "diagnose-and-fix",
-                            "delivery_strategy": "source-only",
-                            "final_purpose": "qualify Runtime source-only execution",
-                        },
-                        {
-                            "status": "waiting_phase_record",
-                            "required_skill": "openubmc-developer",
-                            "handoff_arguments": {
-                                "phase_record_contract": phase_contract,
-                            },
-                            "agent_envelope": {
-                                "case_id": "case-qualified",
-                                "revision": 5,
-                            },
-                        },
-                        elapsed=1.0,
-                    ),
-                    {
-                        "type": "item.completed",
-                        "item": {"type": "agent_message", "text": "record"},
-                    },
-                    baseline_execute_event(
-                        "phase_record",
-                        {
-                            **phase_contract,
-                            "expected_revision": 5,
-                            "status": "completed",
-                            "source_revision": "qualification-source",
-                            "summary": "qualification source-only receipt completed",
-                            "authored_files": ["src/qualification.lua"],
-                            "verification_plan": ["run qualification tests"],
-                        },
-                        {"status": "completed", "case_id": "case-qualified"},
-                        elapsed=2.0,
-                    ),
-                    {
-                        "type": "item.completed",
-                        "item": {"type": "agent_message", "text": "continue"},
-                    },
-                    baseline_execute_event(
-                        "workflow.next",
-                        {"case_id": "case-qualified"},
-                        {
-                            "status": "completed",
-                            "completed": True,
-                            "case_id": "case-qualified",
-                        },
-                        elapsed=3.0,
-                    ),
-                    {
-                        "type": "turn.completed",
-                        "usage": {
-                            "input_tokens": 100,
-                            "cached_input_tokens": 20,
-                            "output_tokens": 10,
-                        },
-                    },
-                ]
-                duration = 4.0
+                },
+            ]
+            duration = 4.0 if arm == "A" else 2.0
             events.append(
                 {
                     "type": "runner.completed",
@@ -747,6 +674,11 @@ def passing_execute_run_evidence(
             "candidate_commit": candidate_commit,
             "baseline_commit": baseline_commit,
         },
+        "qualification_batch": {
+            **qualification_contract,
+            "status": "completed",
+            "completed_runs": len(schedule) * 2,
+        },
         "runs": runs,
     }
 
@@ -758,9 +690,14 @@ def passing_skill_disclosure_run_evidence(
     baseline_commit: str = module.DEFAULT_BASELINE_REF,
     invalid_candidate_pairs=(),
 ):
+    batch_id = str(uuid.UUID(int=9_002))
     qualification_contract = {
+        "batch_id": batch_id,
         "requested_pairs": len(schedule),
         "schedule_digest": module._fingerprint(schedule),
+        "scenario": "skill-disclosure",
+        "candidate_commit": candidate_commit,
+        "baseline_commit": baseline_commit,
     }
     invalid = set(invalid_candidate_pairs)
     runs = []
@@ -823,6 +760,11 @@ def passing_skill_disclosure_run_evidence(
             "candidate_commit": candidate_commit,
             "baseline_commit": baseline_commit,
         },
+        "qualification_batch": {
+            **qualification_contract,
+            "status": "completed",
+            "completed_runs": len(schedule) * 2,
+        },
         "runs": runs,
     }
 
@@ -857,7 +799,7 @@ def verify_run_evidence_summary(
                 "python": "3.12",
                 "node": "v22",
                 "codex": module.QUALIFICATION_CODEX_VERSION,
-                "codex_executable": "/tools/codex-0.150.0/bin/codex",
+                "codex_executable": "/tools/codex-0.151.0/bin/codex",
                 "codex_sha256": "0" * 64,
             }
         )
@@ -1053,7 +995,7 @@ class AgentGatewayAbTests(unittest.TestCase):
             )
 
             with patch.object(module, "_prepare_worktree") as prepare, self.assertRaisesRegex(
-                RuntimeError, "qualification Codex must be codex-cli 0.150.0"
+                RuntimeError, "qualification Codex must be codex-cli 0.151.0"
             ):
                 module.run_benchmark(args)
 
@@ -1426,40 +1368,42 @@ class AgentGatewayAbTests(unittest.TestCase):
             )
             self.assertIn(expected, prompt, arm)
 
-        self.assertIn(
-            module._execute_dispatch_instruction("工具不可用或调用失败"),
-            module._prompt(
-                Path("/tmp/openubmc-debug/SKILL.md"),
-                scenario="execute-source-only",
-                arm="A",
-            ),
-        )
-        self.assertIn(
-            module._execute_dispatch_instruction("工具不可用或 start 失败"),
-            module._prompt(
-                Path("/tmp/openubmc-debug/SKILL.md"),
-                scenario="execute-source-only",
-                arm="B",
-            ),
-        )
+        for arm in ("A", "B"):
+            self.assertIn(
+                module._execute_dispatch_instruction("工具不可用或 start 失败"),
+                module._prompt(
+                    Path("/tmp/openubmc-debug/SKILL.md"),
+                    scenario="execute-source-only",
+                    arm=arm,
+                ),
+            )
 
-    def test_baseline_execute_prompt_preserves_the_actionable_continuation(self) -> None:
-        prompt = module._prompt(
+    def test_v202_baseline_uses_the_same_agent_interface_and_prompt(self) -> None:
+        self.assertEqual(
+            module.DEFAULT_BASELINE_REF,
+            "c3139d21190900ebd052cc22471050ef56fcfee9",
+        )
+        baseline_prompt = module._prompt(
             Path("/tmp/openubmc-debug/SKILL.md"),
             scenario="execute-source-only",
             arm="A",
         )
+        candidate_prompt = module._prompt(
+            Path("/tmp/openubmc-debug/SKILL.md"),
+            scenario="execute-source-only",
+            arm="B",
+        )
+        configs = module.run_configs(
+            "execute-source-only",
+            Path("/tmp/baseline"),
+            Path("/tmp/candidate"),
+        )
 
-        self.assertIn(
-            "标准 content 的“尚未完成”只表示 Case 正在等待 phase_record",
-            prompt,
-        )
-        self.assertIn(
-            "case_id、顶层 revision 与 handoff_arguments.phase_record_contract "
-            "都必须从同一次 structured_content 记录为非空原值",
-            prompt,
-        )
-        self.assertIn("不得在读取 structured_content 前报告这些字段缺失", prompt)
+        self.assertEqual(baseline_prompt, candidate_prompt)
+        self.assertIn("openubmc-target-runtime.execute", baseline_prompt)
+        self.assertNotIn("workflow.advance", baseline_prompt)
+        self.assertEqual(configs["A"].interface_profile, "agent")
+        self.assertEqual(configs["B"].interface_profile, "agent")
 
     def test_skill_disclosure_uses_the_same_agent_profile_and_prompt_semantics(self) -> None:
         baseline = Path("/tmp/baseline/openubmc-debug/SKILL.md")
@@ -2381,6 +2325,96 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(metric["model_turns"], 1)
         self.assertEqual(metric["time_to_next_actionable_turn_seconds"], 2)
 
+    def test_metric_parser_requires_baseline_to_use_the_same_observe_interface(
+        self,
+    ) -> None:
+        events = [
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 20,
+                    "output_tokens": 10,
+                },
+            },
+        ]
+        final = (
+            "SSH Telnet MDBCTL BUSCTL Name Protocol ResourceId SlotNumber Presence "
+            "TemperatureCelsius Type SocketId Health，不能证明 ResourceId 异常。"
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            events_path = root / "events.jsonl"
+            events_path.write_text(
+                "\n".join(json.dumps(item) for item in events) + "\n",
+                encoding="utf-8",
+            )
+            final_path = root / "final.md"
+            final_path.write_text(final, encoding="utf-8")
+            metric = module.metric_from_run(
+                arm="A",
+                pair=1,
+                order=1,
+                events_path=events_path,
+                final_path=final_path,
+                exit_code=0,
+                duration_seconds=2,
+                scenario="observation",
+            )
+
+        self.assertFalse(metric["valid"], metric)
+        self.assertFalse(metric["scope_validation"]["passed"])
+
+    def test_baseline_agent_execute_records_the_first_actionable_turn(self) -> None:
+        events = [
+            candidate_execute_event(
+                "start",
+                "waiting_response",
+                elapsed=0.5,
+                gate="diagnosis",
+            ),
+            candidate_execute_event(
+                "respond",
+                "waiting_response",
+                elapsed=1.0,
+                gate="diagnosis",
+            ),
+            candidate_execute_event("respond", "completed", elapsed=1.5),
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 20,
+                    "output_tokens": 10,
+                },
+            },
+        ]
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            events_path = root / "events.jsonl"
+            events_path.write_text(
+                "\n".join(json.dumps(item) for item in events) + "\n",
+                encoding="utf-8",
+            )
+            final_path = root / "final.md"
+            final_path.write_text(
+                "source-only Runtime Outcome completed",
+                encoding="utf-8",
+            )
+            metric = module.metric_from_run(
+                arm="A",
+                pair=1,
+                order=1,
+                events_path=events_path,
+                final_path=final_path,
+                exit_code=0,
+                duration_seconds=4,
+                scenario="execute-source-only",
+            )
+
+        self.assertTrue(metric["valid"], metric)
+        self.assertEqual(metric["time_to_next_actionable_turn_seconds"], 0.5)
+
     def test_metric_parser_rejects_wrong_scope_or_incomplete_receipt(self) -> None:
         final = (
             "SSH Telnet MDBCTL BUSCTL Name Protocol ResourceId SlotNumber Presence "
@@ -3050,6 +3084,36 @@ class AgentGatewayAbTests(unittest.TestCase):
             result["efficiency_warnings"],
         )
 
+    def test_efficiency_metrics_include_complete_cause_attribution(self) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        metrics = module.metrics_from_run_evidence(
+            passing_execute_run_evidence(schedule)
+        )
+
+        result = module.analyze(metrics)
+
+        attribution = result["efficiency_attribution"]
+        self.assertTrue(attribution["complete"])
+        self.assertEqual(
+            set(attribution["metrics"]),
+            {"noncached_input_plus_output", "tool_output_bytes"},
+        )
+        self.assertEqual(
+            set(attribution["metrics"]["noncached_input_plus_output"]["components"]),
+            {"noncached_input_tokens", "output_tokens"},
+        )
+        self.assertTrue(
+            attribution["metrics"]["tool_output_bytes"]["components"]
+        )
+        self.assertTrue(
+            all(
+                {"field", "baseline_total", "candidate_total", "delta"}
+                <= set(cause)
+                for metric in attribution["metrics"].values()
+                for cause in metric["causes"]
+            )
+        )
+
     def test_verify_accepts_signed_skill_disclosure_validity_with_one_invalid_candidate_run(self) -> None:
         verified = verify_skill_disclosure_summary(
             pairs=20,
@@ -3084,7 +3148,7 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(verified["efficiency_decision"], "warning")
         self.assertEqual(
             verified["efficiency_warnings"],
-            ["tool_output_bytes", "duration_seconds"],
+            ["duration_seconds"],
         )
 
     def test_verify_rejects_efficiency_claims_not_derived_from_signed_evidence(self) -> None:
@@ -3145,6 +3209,35 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertFalse(verified["promotable"], verified)
         self.assertIn("AB efficiency evidence is incomplete", verified["errors"])
 
+    def test_verify_rejects_each_missing_token_measurement_field(self) -> None:
+        for field in ("input_tokens", "cached_input_tokens", "output_tokens"):
+            with self.subTest(field=field):
+                schedule = module.balanced_schedule(10, seed=7)
+                run_evidence = passing_execute_run_evidence(schedule)
+                candidate = next(
+                    run for run in run_evidence["runs"] if run["arm"] == "B"
+                )
+                completed = next(
+                    event
+                    for event in candidate["events"]
+                    if event.get("type") == "turn.completed"
+                )
+                completed["usage"].pop(field)
+
+                verified = verify_run_evidence_summary(
+                    scenario="execute-source-only",
+                    schedule=schedule,
+                    run_evidence=run_evidence,
+                    candidate_commit="a" * 40,
+                    baseline_commit=module.DEFAULT_BASELINE_REF,
+                )
+
+                self.assertFalse(verified["promotable"], verified)
+                self.assertTrue(
+                    any("measurement" in error for error in verified["errors"]),
+                    verified,
+                )
+
     def test_verify_rejects_missing_terminal_p95_with_one_invalid_pair(self) -> None:
         def remove_p95(analysis):
             for metric in module.METRICS:
@@ -3178,6 +3271,47 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertFalse(verified["promotable"], verified)
         self.assertTrue(
             any("qualification contract" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_rejects_evidence_without_one_completed_batch_identity(self) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        run_evidence = passing_execute_run_evidence(schedule)
+        run_evidence.pop("qualification_batch")
+
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=run_evidence,
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("qualification batch" in error for error in verified["errors"]),
+            verified,
+        )
+
+    def test_verify_rejects_signed_runs_combined_from_another_batch(self) -> None:
+        schedule = module.balanced_schedule(10, seed=7)
+        run_evidence = passing_execute_run_evidence(schedule)
+        run_evidence["runs"][0]["qualification_contract"] = {
+            **run_evidence["runs"][0]["qualification_contract"],
+            "batch_id": str(uuid.UUID(int=9_999)),
+        }
+
+        verified = verify_run_evidence_summary(
+            scenario="execute-source-only",
+            schedule=schedule,
+            run_evidence=run_evidence,
+            candidate_commit="a" * 40,
+            baseline_commit=module.DEFAULT_BASELINE_REF,
+        )
+
+        self.assertFalse(verified["promotable"], verified)
+        self.assertTrue(
+            any("qualification batch" in error for error in verified["errors"]),
             verified,
         )
 
@@ -3326,8 +3460,10 @@ class AgentGatewayAbTests(unittest.TestCase):
             Path(__file__).resolve().parents[2] / "docs" / "agent-semantic-gateway.md"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("codex-cli 0.150.0", documentation)
-        self.assertIn("--codex /path/to/codex-0.150.0/bin/codex", documentation)
+        self.assertIn("codex-cli 0.151.0", documentation)
+        self.assertIn("--codex /path/to/codex-0.151.0/bin/codex", documentation)
+        self.assertIn("c3139d21190900ebd052cc22471050ef56fcfee9", documentation)
+        self.assertIn("one completed qualification batch", documentation)
         self.assertIn("required=true", documentation)
         self.assertIn("absolute executable path and SHA-256", documentation)
         self.assertIn("isolated `CODEX_HOME`", documentation)
@@ -3491,7 +3627,7 @@ class AgentGatewayAbTests(unittest.TestCase):
         run_evidence = passing_execute_run_evidence(
             schedule,
             candidate_commit=LEGACY_V201_CANDIDATE_COMMIT,
-            baseline_commit=module.DEFAULT_BASELINE_REF,
+            baseline_commit=module.LEGACY_V122_BASELINE_REF,
         )
         normalized_prompts = {
             arm: legacy_v201_execute_prompt(arm) for arm in ("A", "B")
@@ -3524,7 +3660,8 @@ class AgentGatewayAbTests(unittest.TestCase):
             schedule=schedule,
             run_evidence=run_evidence,
             candidate_commit=LEGACY_V201_CANDIDATE_COMMIT,
-            baseline_commit=module.DEFAULT_BASELINE_REF,
+            baseline_commit=module.LEGACY_V122_BASELINE_REF,
+            expected_baseline_commit=module.LEGACY_V122_BASELINE_REF,
             release_evidence_mutator=select_legacy_contract,
         )
 
@@ -3626,7 +3763,7 @@ class AgentGatewayAbTests(unittest.TestCase):
             "python": "3.12",
             "node": "v22",
             "codex": module.QUALIFICATION_CODEX_VERSION,
-            "codex_executable": "/tools/codex-0.150.0/bin/codex",
+            "codex_executable": "/tools/codex-0.151.0/bin/codex",
             "codex_sha256": "0" * 64,
         }
         verified = verify_passing_summary(

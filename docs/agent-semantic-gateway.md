@@ -374,12 +374,12 @@ complete while preview values are not repeated in standard text. Correctness rem
 byte-target regressions are secondary warnings only.
 
 Live qualification remains a separate paired AB/BA experiment with a correctness-first release
-contract. Historical execute qualification may check out a pinned pre-retirement source for the
-baseline arm; the candidate and all current installations use the Agent profile.
-The verifier retains the immutable v2.0.1 execute prompt contract by its recorded digest, so its
-signed v3 evidence remains independently verifiable without rewriting the evidence schema or Run
-records. New runs always use the current prompt contract; unknown digests and any signed-Run prompt
-mismatch remain verification failures.
+contract. The baseline is the immutable v2.0.2 lock commit
+`c3139d21190900ebd052cc22471050ef56fcfee9`, whose source parent is
+`4ec9f392b93793db2ff0c0d97dd53be3da0bf037`. Both arms use the same Agent profile, the same
+`observe`/`execute` interface, and the same prompt contract. The candidate is one exact clean source
+commit; a moving branch name is resolved before collection and cannot replace that identity during
+the run.
 
 Use `scripts/agent_gateway_ab.py` to run or re-evaluate the qualification. The runner creates a
 balanced AB/BA schedule, isolates every Codex home, applies semantic and scope acceptance, and
@@ -388,6 +388,9 @@ non-cached input plus output, tool-output bytes, model turns, wall time, and tim
 actionable Turn. Correctness, semantic acceptance, exact scope, and scenario validity determine the
 release `decision`. The six efficiency metrics produce a separate `efficiency_decision` and an
 ordered list of `efficiency_warnings`; an authentic efficiency warning does not block promotion.
+Non-cached input/output is decomposed into uncached input and output tokens. Tool-output bytes are
+decomposed by exact MCP tool or command source. The report retains paired deltas, arm totals, and
+non-zero causes, and verification rejects missing attribution.
 Missing or non-positive efficiency measurements produce `efficiency_decision=incomplete`: the
 correctness decision remains unchanged and does not request more pairs, while verification rejects
 the incomplete evidence. The 4 KiB Observation/Gate and 8 KiB Turn targets are display targets,
@@ -396,7 +399,7 @@ Ten valid pairs are the first decision point. A correctness or validity result t
 sufficient expands to twenty and then thirty pairs. Each result records both source commits, the
 model and environment fingerprint, thresholds, valid and invalid pairs, both decisions, warnings,
 and digests for the schedule, raw metrics, and signed run events used to recompute every result.
-Formal qualification pins an isolated `codex-cli 0.150.0` executable. The runner configures the
+Formal qualification pins an isolated `codex-cli 0.151.0` executable. The runner configures the
 Target Runtime MCP with `required=true`, so failure to initialize the only Agent-facing Runtime
 entry aborts session startup instead of producing a zero-call benchmark run. `--codex` must name
 an absolute executable; the environment evidence binds its resolved absolute executable path and SHA-256.
@@ -406,8 +409,9 @@ this removes plugin-registry network synchronization from the MCP startup window
 
 ```bash
 python scripts/agent_gateway_ab.py run \
-  --codex /path/to/codex-0.150.0/bin/codex \
+  --codex /path/to/codex-0.151.0/bin/codex \
   --work-root /path/to/benchmark-work \
+  --baseline-ref c3139d21190900ebd052cc22471050ef56fcfee9 \
   --credentials /path/to/private/credentials.env \
   --attestation-private-key /path/to/private/ab-evidence-signing-key \
   --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
@@ -442,19 +446,17 @@ failure or retry. In particular, 尚未发出的 MCP 调用不算失败或重试
 registered benchmark tool entry and still issues the required actual call. Skill disclosure issues
 exactly one `observe`; execute source-only issues its fixed continuation calls. This avoids turning
 transient deferred tool-entry resolution into an arm-specific validity failure without accepting a
-run that never dispatches the required MCP call. The compatibility arm also treats its standard
-“not completed” text as a waiting phase state and reads the same result's structured continuation
-contract before deciding that `case_id`, revision, or phase arguments are unavailable.
+run that never dispatches the required MCP call.
 
 ```bash
 python scripts/agent_gateway_ab.py run \
-  --codex /path/to/codex-0.150.0/bin/codex \
+  --codex /path/to/codex-0.151.0/bin/codex \
   --work-root /path/to/benchmark-work \
   --credentials /path/to/private/credentials.env \
   --attestation-private-key /path/to/private/ab-evidence-signing-key \
   --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
   --model gpt-5.6-sol \
-  --baseline-ref github/main \
+  --baseline-ref c3139d21190900ebd052cc22471050ef56fcfee9 \
   --scenario skill-disclosure \
   --pairs 10 \
   --codex-config 'features.shell_tool=false' \
@@ -470,7 +472,7 @@ python scripts/agent_gateway_ab.py verify \
   /path/to/benchmark-work/results-*/summary.json \
   --scenario skill-disclosure \
   --source-ref <candidate-commit> \
-  --baseline-ref github/main \
+  --baseline-ref c3139d21190900ebd052cc22471050ef56fcfee9 \
   --attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub
 ```
 
@@ -491,7 +493,7 @@ The scenario records its own prompt digest, source commits, schedule, raw metric
 and signed run evidence. It evaluates Skill disclosure behavior; the default release qualification
 remains `execute-source-only`.
 
-Treat each checkpoint as a complete preregistered experiment. `collect_more` is reserved for
+Treat each checkpoint as one completed qualification batch. `collect_more` is reserved for
 insufficient correctness or scenario-validity evidence; an efficiency warning never expands the
 sample. If a 10-pair result says `collect_more`, start a new independent run at the full 20-pair
 target. If that result is still insufficient, start another new independent run at the full
@@ -499,10 +501,14 @@ target. If that result is still insufficient, start another new independent run 
 and promote only the single complete result directory for the final checkpoint. Reaching the
 30-pair checkpoint calculates p95 for every metric even when the validity policy excludes one or
 more signed pairs. A missing terminal p95 value fails evidence verification; exceeding its target
-adds an efficiency warning. Every signed run also binds the complete checkpoint pair count and
-schedule digest, so a 30-pair run cannot be truncated or rebound as a smaller checkpoint.
+adds an efficiency warning. Every signed run also binds one UUID batch identity, the complete
+checkpoint pair count, schedule digest, scenario, immutable baseline, and exact candidate. The
+top-level batch must be completed with exactly twice the requested pair count. An interrupted,
+partial, truncated, appended, or cross-batch result cannot be promoted.
 
-Every run record carries its tested source commit and a unique execution identity. The runner
+The batch and attribution contract is emitted as Agent Gateway evidence schema v4; this version
+change prevents older v3 evidence from being mistaken for a batch-bound qualification. Every run
+record carries its tested source commit and a unique execution identity. The runner
 signs that record with the qualification key; verification uses a public key held outside the
 candidate checkout. The GitHub Release workflow restores that trust root from the
 `AB_ATTESTATION_PUBLIC_KEY_BASE64` repository variable managed outside source control, so editing
@@ -519,11 +525,11 @@ tar -C /path/to/benchmark-work/results-YYYYMMDD-HHMMSS \
   -cJf agent-gateway-ab-evidence.tar.xz \
   summary.json all_metrics.json schedule.json run_evidence.json
 sha256sum agent-gateway-ab-evidence.tar.xz
-gh release create v2.0.2 --draft --verify-tag --generate-notes
-gh release upload v2.0.2 agent-gateway-ab-evidence.tar.xz
+gh release create v2.0.3 --draft --verify-tag --generate-notes
+gh release upload v2.0.3 agent-gateway-ab-evidence.tar.xz
 gh workflow run release.yml --ref main \
-  -f current_ref=v2.0.2 \
-  -f previous_ref=v2.0.1 \
+  -f current_ref=v2.0.3 \
+  -f previous_ref=v2.0.2 \
   -f ab_bundle_asset=agent-gateway-ab-evidence.tar.xz \
   -f ab_bundle_sha256="$(sha256sum agent-gateway-ab-evidence.tar.xz | cut -d' ' -f1)" \
   -f promote=true

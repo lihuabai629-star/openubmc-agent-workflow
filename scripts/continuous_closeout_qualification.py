@@ -29,7 +29,10 @@ from scripts.formal_identity import (  # noqa: E402
     normalize_codex_identity,
     normalize_model_identity,
 )
-from scripts.codex_adoption_contract import product_client_failures  # noqa: E402
+from scripts.codex_adoption_contract import (  # noqa: E402
+    RISK_CONTROL_NAMES,
+    product_client_failures,
+)
 from scripts.product_closeout_qualification import (  # noqa: E402
     qualify as qualify_product_closeout,
 )
@@ -210,6 +213,26 @@ TASK_MATRIX_TESTS = {
         ),
     },
 }
+RISK_CONTROL_TESTS = {
+    "false_successes": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_validation_evidence_rejects_false_success_and_repeated_preflight",
+    ),
+    "duplicate_dangerous_effects": (
+        "tests.test_mutation_recovery.MutationRecoveryTests.test_sigkill_crash_cuts_preserve_identity_and_never_repeat_the_mutation",
+    ),
+    "unknown_new_identity_retries": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_automatic_reconcile_returns_running_at_the_caller_deadline",
+    ),
+    "wrong_target_or_artifact_mutations": (
+        "tests.test_agent_gateway.AgentGatewayTests.test_artifact_ref_is_bound_to_content_kind_target_run_and_provenance",
+    ),
+    "lifecycle_leaks": (
+        "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_terminates_only_confirmed_orphaned_processes",
+        "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_preserves_orphan_without_verified_ownership_binding",
+    ),
+}
+if tuple(RISK_CONTROL_TESTS) != RISK_CONTROL_NAMES:
+    raise RuntimeError("risk control qualification set drifted")
 
 
 def _workflow_metadata() -> dict[str, object]:
@@ -690,6 +713,10 @@ def qualify(
         name: _run_task_group(dimensions)
         for name, dimensions in TASK_MATRIX_TESTS.items()
     }
+    risk_control_results = {
+        name: _run_tests(tests, cwd=RUNTIME_ROOT)
+        for name, tests in RISK_CONTROL_TESTS.items()
+    }
     projection = qualify_dual_projection()
     repeated = projection.get("representative_receipt", {}).get(
         "repeated_projection", {}
@@ -732,6 +759,11 @@ def qualify(
     task_matrix_passed = all(
         (task_matrix_completion, task_matrix_correctness, task_matrix_terminal)
     )
+    risk_control_violations = {
+        name: 0 if result.get("status") == "passed" else 1
+        for name, result in risk_control_results.items()
+    }
+    risk_controls_passed = not any(risk_control_violations.values())
     qualified = all(
         (
             client_matrix_passed,
@@ -740,6 +772,7 @@ def qualify(
             lifecycle_passed,
             correctness_primary,
             task_matrix_passed,
+            risk_controls_passed,
             source_clean,
         )
     )
@@ -821,6 +854,11 @@ def qualify(
             "terminal_contract_primary": task_matrix_terminal,
             "token_bytes_secondary": True,
             "groups": task_matrix,
+            "risk_controls": {
+                "passed": risk_controls_passed,
+                "violations": risk_control_violations,
+                "tests": risk_control_results,
+            },
             "product_clients": product_clients,
             "evaluation_harnesses": evaluation_harnesses,
         },

@@ -36,12 +36,13 @@ from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
 )
 
 
-SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v3"
-RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v2"
-RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v2"
+SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v4"
+RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v1"
+RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v1"
 RUN_ATTESTATION_IDENTITY = "openubmc-agent-workflow-qualification"
 RUN_ATTESTATION_NAMESPACE = "openubmc-agent-gateway-ab"
-DEFAULT_BASELINE_REF = "35b36efb6503d05a811b51bf09fb5f8dead0e208"
+DEFAULT_BASELINE_REF = "c3139d21190900ebd052cc22471050ef56fcfee9"
+LEGACY_V122_BASELINE_REF = "35b36efb6503d05a811b51bf09fb5f8dead0e208"
 CHECKPOINTS = (10, 20, 30)
 METRICS = (
     "total_tokens",
@@ -68,7 +69,7 @@ SKILL_DISCLOSURE_VALIDITY_THRESHOLDS = {
 }
 BENCHMARK_TARGET = "10.121.136.200"
 QUALIFICATION_MODEL = "gpt-5.6-sol"
-QUALIFICATION_CODEX_VERSION = "codex-cli 0.150.0"
+QUALIFICATION_CODEX_VERSION = "codex-cli 0.151.0"
 QUALIFICATION_CODEX_CONFIG = (
     "features.shell_tool=false",
     "features.plugins=false",
@@ -157,6 +158,25 @@ def _tool_output_bytes(item: Mapping[str, object]) -> int:
             separators=(",", ":"),
         ).encode("utf-8")
     )
+
+
+def _tool_output_source(item: Mapping[str, object]) -> str:
+    if item.get("type") == "command_execution":
+        return "command_execution"
+    if item.get("type") == "mcp_tool_call":
+        return f"mcp:{str(item.get('tool', '')).strip() or 'unknown'}"
+    return "other"
+
+
+def _usage_count(usage: Mapping[str, object], field: str) -> int | None:
+    value = usage.get(field)
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 0
+    ):
+        return None
+    return value
 
 
 def observe_scope_acceptance(
@@ -910,15 +930,11 @@ def _actionable_elapsed(
             continue
         if scenario == "execute-source-only":
             structured = _structured_tool_result(item)
-            if arm == "B":
-                if item.get("tool") != "execute":
-                    continue
+            if item.get("tool") == "execute":
                 state = str(structured.get("state", ""))
                 if state not in {"waiting_response", "incident", "running", "completed", "failed"}:
                     continue
-            else:
-                if item.get("tool") not in {"workflow.advance", "workflow.next"}:
-                    continue
+            elif item.get("tool") in {"workflow.advance", "workflow.next"}:
                 if structured.get("status") not in {
                     "waiting_phase_record",
                     "completed",
@@ -927,6 +943,8 @@ def _actionable_elapsed(
                     "mutation_outcome_unknown",
                 }:
                     continue
+            else:
+                continue
         elapsed = event.get("observed_elapsed_seconds")
         if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
             return round(float(elapsed), 3)
@@ -1056,9 +1074,37 @@ class RunEvidenceRecord:
             if item.get("type") == "mcp_tool_call":
                 name = str(item.get("tool", ""))
                 mcp_tools[name] = mcp_tools.get(name, 0) + 1
-        input_tokens = int(usage.get("input_tokens", 0) or 0)
-        cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
-        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        input_tokens = _usage_count(usage, "input_tokens")
+        cached_tokens = _usage_count(usage, "cached_input_tokens")
+        output_tokens = _usage_count(usage, "output_tokens")
+        noncached_input_tokens = (
+            input_tokens - cached_tokens
+            if input_tokens is not None
+            and cached_tokens is not None
+            and cached_tokens <= input_tokens
+            else None
+        )
+        total_tokens = (
+            input_tokens + output_tokens
+            if input_tokens is not None and output_tokens is not None
+            else None
+        )
+        noncached_input_plus_output = (
+            noncached_input_tokens + output_tokens
+            if noncached_input_tokens is not None and output_tokens is not None
+            else None
+        )
+        usage_complete = (
+            noncached_input_tokens is not None
+            and total_tokens is not None
+            and total_tokens > 0
+        )
+        tool_output_breakdown: dict[str, int] = {}
+        for item in tools:
+            source = _tool_output_source(item)
+            tool_output_breakdown[source] = (
+                tool_output_breakdown.get(source, 0) + _tool_output_bytes(item)
+            )
         acceptance = semantic_acceptance(
             self.final,
             scenario=self.scenario,
@@ -1068,22 +1114,23 @@ class RunEvidenceRecord:
                 else None
             ),
         )
-        if self.scenario == "skill-disclosure":
+        if self.scenario in {"observation", "skill-disclosure"}:
             scope_validation = observe_scope_acceptance(
                 tools, scenario=self.scenario
             )
-        elif self.arm == "B":
+        elif self.scenario == "execute-source-only":
+            legacy_baseline = self.arm == "A" and any(
+                item.get("type") == "mcp_tool_call"
+                and item.get("tool") in {"workflow.advance", "workflow.next", "phase_record"}
+                for item in tools
+            )
             scope_validation = (
-                observe_scope_acceptance(tools)
-                if self.scenario == "observation"
+                baseline_execute_acceptance(tools)
+                if legacy_baseline
                 else candidate_execute_acceptance(tools)
             )
         else:
-            scope_validation = (
-                baseline_execute_acceptance(tools)
-                if self.scenario == "execute-source-only"
-                else {"passed": True, "errors": []}
-            )
+            scope_validation = {"passed": True, "errors": []}
         scope_ok = bool(scope_validation["passed"])
         model_turns = max(
             1,
@@ -1102,18 +1149,24 @@ class RunEvidenceRecord:
             "duration_seconds": round(self.duration_seconds, 3),
             "input_tokens": input_tokens,
             "cached_input_tokens": cached_tokens,
+            "noncached_input_tokens": noncached_input_tokens,
             "output_tokens": output_tokens,
+            "usage_complete": usage_complete,
             "reasoning_output_tokens": int(
                 usage.get("reasoning_output_tokens", 0) or 0
             ),
-            "total_tokens": input_tokens + output_tokens,
-            "noncached_input_plus_output": input_tokens - cached_tokens + output_tokens,
+            "total_tokens": total_tokens,
+            "noncached_input_plus_output": noncached_input_plus_output,
             "tool_events": len(tools),
             "command_events": sum(
                 item.get("type") == "command_execution" for item in tools
             ),
             "mcp_events": sum(item.get("type") == "mcp_tool_call" for item in tools),
-            "tool_output_bytes": sum(_tool_output_bytes(item) for item in tools),
+            "tool_output_bytes": sum(tool_output_breakdown.values()),
+            "tool_output_breakdown": [
+                {"source": source, "bytes": byte_count}
+                for source, byte_count in sorted(tool_output_breakdown.items())
+            ],
             "model_turns": model_turns,
             "time_to_next_actionable_turn_seconds": _actionable_elapsed(
                 list(self.events),
@@ -1133,7 +1186,7 @@ class RunEvidenceRecord:
             "scope_validation": scope_validation,
             "valid": (
                 self.exit_code == 0
-                and input_tokens + output_tokens > 0
+                and int(input_tokens or 0) + int(output_tokens or 0) > 0
                 and acceptance["passed"]
                 and scope_ok
             ),
@@ -1292,29 +1345,56 @@ def _run_qualification_contract_errors(
     *,
     expected_requested_pairs: object,
     expected_schedule_digest: str,
+    expected_candidate_commit: str,
+    expected_baseline_commit: str,
+    expected_scenario: str,
 ) -> list[str]:
     document = _json_object(value)
+    batch = _json_object(document.get("qualification_batch"))
     runs = document.get("runs")
-    if not isinstance(runs, list):
-        return []
+    batch_id = batch.get("batch_id")
+    try:
+        normalized_batch_id = str(uuid.UUID(str(batch_id)))
+    except (ValueError, AttributeError):
+        normalized_batch_id = ""
     expected = {
+        "batch_id": normalized_batch_id,
         "requested_pairs": expected_requested_pairs,
         "schedule_digest": expected_schedule_digest,
+        "scenario": expected_scenario,
+        "candidate_commit": expected_candidate_commit,
+        "baseline_commit": expected_baseline_commit,
     }
+    errors: list[str] = []
+    if not normalized_batch_id:
+        errors.append("AB qualification batch identity is unavailable")
+    if batch.get("status") != "completed":
+        errors.append("AB qualification batch is not completed")
+    if batch.get("completed_runs") != (
+        int(expected_requested_pairs) * 2
+        if isinstance(expected_requested_pairs, int)
+        and not isinstance(expected_requested_pairs, bool)
+        else -1
+    ):
+        errors.append("AB qualification batch run count is incomplete")
+    if any(batch.get(name) != expected_value for name, expected_value in expected.items()):
+        errors.append("AB qualification batch does not match the release evidence")
+    if not isinstance(runs, list):
+        return errors
     mismatches = [
         index
         for index, value in enumerate(runs, 1)
         if _json_object(value).get("qualification_contract") != expected
     ]
-    if not mismatches:
-        return []
-    suffix = ", ".join(str(index) for index in mismatches[:5])
-    if len(mismatches) > 5:
-        suffix += ", ..."
-    return [
-        "AB run qualification contract does not match the requested checkpoint "
-        f"and schedule at items {suffix}"
-    ]
+    if mismatches:
+        suffix = ", ".join(str(index) for index in mismatches[:5])
+        if len(mismatches) > 5:
+            suffix += ", ..."
+        errors.append(
+            "AB run qualification contract does not match the qualification batch "
+            f"at items {suffix}"
+        )
+    return errors
 
 
 def _execution_identity_binding(
@@ -1876,6 +1956,155 @@ def _skill_disclosure_validity(
     }
 
 
+def _numeric_component(
+    item: Mapping[str, object], field: str
+) -> int | float | None:
+    value = item.get(field)
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or float(value) < 0
+    ):
+        return None
+    return value
+
+
+def _component_attribution(
+    paired: list[tuple[Mapping[str, object], Mapping[str, object]]],
+    fields: Iterable[str],
+) -> tuple[dict[str, object], bool]:
+    components: dict[str, object] = {}
+    complete = bool(paired)
+    for field in fields:
+        baseline_values = [
+            _numeric_component(baseline, field) for baseline, _ in paired
+        ]
+        candidate_values = [
+            _numeric_component(candidate, field) for _, candidate in paired
+        ]
+        field_complete = all(
+            value is not None for value in (*baseline_values, *candidate_values)
+        )
+        complete = complete and field_complete
+        baseline_total = sum(float(value or 0) for value in baseline_values)
+        candidate_total = sum(float(value or 0) for value in candidate_values)
+        components[field] = {
+            "baseline_total": round(baseline_total, 6),
+            "candidate_total": round(candidate_total, 6),
+            "delta": round(candidate_total - baseline_total, 6),
+            "paired_deltas": [
+                round(float(candidate or 0) - float(baseline or 0), 6)
+                for baseline, candidate in zip(baseline_values, candidate_values)
+            ],
+            "complete": field_complete,
+        }
+    return components, complete
+
+
+def _tool_breakdown(value: object) -> dict[str, int] | None:
+    if not isinstance(value, list):
+        return None
+    result: dict[str, int] = {}
+    for item in value:
+        if not isinstance(item, Mapping):
+            return None
+        source = str(item.get("source", "")).strip()
+        byte_count = item.get("bytes")
+        if (
+            not source
+            or not isinstance(byte_count, int)
+            or isinstance(byte_count, bool)
+            or byte_count < 0
+            or source in result
+        ):
+            return None
+        result[source] = byte_count
+    return result
+
+
+def _efficiency_attribution(
+    paired: list[tuple[Mapping[str, object], Mapping[str, object]]],
+) -> dict[str, object]:
+    token_components, token_complete = _component_attribution(
+        paired,
+        ("noncached_input_tokens", "output_tokens"),
+    )
+    tool_sources = sorted(
+        {
+            source
+            for baseline, candidate in paired
+            for item in (baseline, candidate)
+            for source in (_tool_breakdown(item.get("tool_output_breakdown")) or {})
+        }
+    )
+    tool_components: dict[str, object] = {}
+    tool_complete = bool(paired)
+    for source in tool_sources:
+        baseline_values: list[int] = []
+        candidate_values: list[int] = []
+        for baseline, candidate in paired:
+            baseline_breakdown = _tool_breakdown(
+                baseline.get("tool_output_breakdown")
+            )
+            candidate_breakdown = _tool_breakdown(
+                candidate.get("tool_output_breakdown")
+            )
+            if baseline_breakdown is None or candidate_breakdown is None:
+                tool_complete = False
+                continue
+            baseline_values.append(baseline_breakdown.get(source, 0))
+            candidate_values.append(candidate_breakdown.get(source, 0))
+        source_complete = (
+            len(baseline_values) == len(paired) == len(candidate_values)
+        )
+        tool_complete = tool_complete and source_complete
+        baseline_total = sum(baseline_values)
+        candidate_total = sum(candidate_values)
+        tool_components[source] = {
+            "baseline_total": baseline_total,
+            "candidate_total": candidate_total,
+            "delta": candidate_total - baseline_total,
+            "paired_deltas": [
+                candidate - baseline
+                for baseline, candidate in zip(baseline_values, candidate_values)
+            ],
+            "complete": source_complete,
+        }
+    for baseline, candidate in paired:
+        for item in (baseline, candidate):
+            breakdown = _tool_breakdown(item.get("tool_output_breakdown"))
+            tool_bytes = _numeric_component(item, "tool_output_bytes")
+            if (
+                breakdown is None
+                or tool_bytes is None
+                or sum(breakdown.values()) != int(tool_bytes)
+            ):
+                tool_complete = False
+
+    metrics = {
+        "noncached_input_plus_output": {
+            "complete": token_complete,
+            "components": token_components,
+        },
+        "tool_output_bytes": {
+            "complete": tool_complete,
+            "components": tool_components,
+        },
+    }
+    for metric in metrics.values():
+        components = _json_object(metric.get("components"))
+        metric["causes"] = [
+            {"field": field, **dict(_json_object(component))}
+            for field, component in components.items()
+            if float(_json_object(component).get("delta", 0) or 0) != 0
+        ]
+    return {
+        "complete": all(bool(metric["complete"]) for metric in metrics.values()),
+        "metrics": metrics,
+    }
+
+
 def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
     paired: list[tuple[Mapping[str, object], Mapping[str, object]]] = []
     pair_ids = sorted({int(item.get("pair", 0)) for item in metrics})
@@ -2039,6 +2268,7 @@ def analyze(metrics: list[Mapping[str, object]]) -> dict[str, object]:
         "efficiency_decision": efficiency_decision,
         "efficiency_warnings": efficiency_warnings,
         "efficiency_gaps": efficiency_gaps,
+        "efficiency_attribution": _efficiency_attribution(paired),
         "decision": decision,
         "next_pair_target": next_pairs,
         "thresholds": dict(THRESHOLDS),
@@ -2237,23 +2467,6 @@ def _prompt(
             )
         ) + "\n"
     if scenario == "execute-source-only":
-        if arm == "A":
-            return "\n".join(
-                (
-                    "这是一次真实 BMC 环境下的 Runtime compatibility execute 配对资格基准。",
-                    f"使用已安装的 {skill_path} 所定义的原生 Case Continuation 路径。",
-                    "只允许使用 openubmc-debug 与 Gate 指定的 openubmc-developer；不得使用其他 Skill、知识库、网络搜索或 shell。",
-                    "不要列出 MCP resources/templates，不要做工具发现。",
-                    _execute_dispatch_instruction("工具不可用或调用失败"),
-                    f"目标 BMC：{BENCHMARK_TARGET}。凭据位于标准私有配置中，不得显示凭据值。",
-                    "第一次调用 openubmc-target-runtime.workflow.advance：ip 为目标，intent=diagnose-and-fix，delivery_strategy=source-only，final_purpose=qualify Runtime source-only execution。",
-                    "标准 content 的“尚未完成”只表示 Case 正在等待 phase_record，不是调用失败。case_id、顶层 revision 与 handoff_arguments.phase_record_contract 都必须从同一次 structured_content 记录为非空原值；不得在读取 structured_content 前报告这些字段缺失，不得重新开始 Case。",
-                    "第二次调用 phase_record：参数必须是扁平 JSON 对象。展开 phase_record_contract，但 expected_revision 必须替换为 workflow.advance 结果的当前顶层 revision；再把 status=completed、source_revision=qualification-source、summary=qualification source-only receipt completed、authored_files=[src/qualification.lua]、verification_plan=[run qualification tests] 全部放在同一顶层。严禁创建 receipt 或 payload 嵌套字段。",
-                    "第三次调用 workflow.next，且只携带同一 case_id，直接推进到终态。",
-                    "不得读写源码、不得调用 mutation 工具、不得修改目标。",
-                    "最终中文回答必须包含原文：source-only Runtime Outcome completed。回答不超过 200 字。",
-                )
-            ) + "\n"
         return "\n".join(
             (
                 "这是一次真实 BMC 环境下的 Runtime execute 配对资格基准。",
@@ -2389,7 +2602,7 @@ def _prompt_contract_allowed_for_source(
         scenario == "execute-source-only"
         and prompt_contract_digest == LEGACY_V201_EXECUTE_PROMPT_DIGEST
         and candidate_commit in LEGACY_V201_EXECUTE_SOURCE_COMMITS
-        and baseline_commit == DEFAULT_BASELINE_REF
+        and baseline_commit == LEGACY_V122_BASELINE_REF
     )
 
 
@@ -2412,7 +2625,7 @@ def run_configs(
         "A": RunConfig(
             "A",
             baseline_root,
-            "agent" if scenario == "skill-disclosure" else "",
+            "agent",
         ),
         "B": RunConfig("B", candidate_root, "agent"),
     }
@@ -2677,6 +2890,13 @@ def release_evidence(
     codex_config: Iterable[str] = (),
 ) -> dict[str, object]:
     environment_record = dict(environment)
+    try:
+        run_document = json.loads(run_evidence_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        run_document = {}
+    qualification_batch = dict(
+        _json_object(_json_object(run_document).get("qualification_batch"))
+    )
     evidence: dict[str, object] = {
         "schema": f"{SCHEMA}/release-evidence-v1",
         "scenario": scenario,
@@ -2693,6 +2913,7 @@ def release_evidence(
         },
         "environment": environment_record,
         "environment_fingerprint": _fingerprint(environment_record),
+        "qualification_batch": qualification_batch,
         "thresholds": dict(THRESHOLDS),
         "samples": {
             "requested_pairs": requested_pairs,
@@ -2704,6 +2925,9 @@ def release_evidence(
                 analysis.get("efficiency_warnings", [])
             ),
             "efficiency_gaps": list(analysis.get("efficiency_gaps", [])),
+            "efficiency_attribution": dict(
+                _json_object(analysis.get("efficiency_attribution"))
+            ),
         },
         "artifacts": {
             "all_metrics": {
@@ -2839,6 +3063,14 @@ def verify_summary(
         errors.append(
             "AB release evidence efficiency gaps do not match the summary"
         )
+    if samples.get("efficiency_attribution") != summary.get(
+        "efficiency_attribution"
+    ):
+        errors.append(
+            "AB release evidence efficiency attribution does not match the summary"
+        )
+    if _json_object(summary.get("efficiency_attribution")).get("complete") is not True:
+        errors.append("AB efficiency cause attribution is incomplete")
     requested_pairs = samples.get("requested_pairs")
     if (
         isinstance(requested_pairs, int)
@@ -2938,6 +3170,12 @@ def verify_summary(
             run_evidence_value = json.loads(
                 run_evidence_path.read_text(encoding="utf-8")
             )
+            if _json_object(run_evidence_value).get(
+                "qualification_batch"
+            ) != evidence.get("qualification_batch"):
+                errors.append(
+                    "AB release evidence qualification batch does not match the run evidence"
+                )
             errors.extend(
                 _run_source_binding_errors(
                     run_evidence_value,
@@ -2970,6 +3208,11 @@ def verify_summary(
                     )
                 )
             recomputed_metrics = metrics_from_run_evidence(run_evidence_value)
+            if any(
+                item.get("usage_complete") is not True
+                for item in recomputed_metrics
+            ):
+                errors.append("AB token usage measurement is incomplete")
         except (
             OSError,
             UnicodeDecodeError,
@@ -2995,6 +3238,7 @@ def verify_summary(
                 "efficiency_decision",
                 "efficiency_warnings",
                 "efficiency_gaps",
+                "efficiency_attribution",
                 "decision",
                 "next_pair_target",
                 "thresholds",
@@ -3019,6 +3263,9 @@ def verify_summary(
                         run_evidence_value,
                         expected_requested_pairs=samples.get("requested_pairs"),
                         expected_schedule_digest=_fingerprint(raw_schedule),
+                        expected_candidate_commit=expected_source_commit,
+                        expected_baseline_commit=expected_baseline_commit,
+                        expected_scenario=expected_scenario,
                     )
                 )
             errors.extend(
@@ -3047,6 +3294,7 @@ def verify_summary(
         "efficiency_decision": summary.get("efficiency_decision"),
         "efficiency_warnings": summary.get("efficiency_warnings", []),
         "efficiency_gaps": summary.get("efficiency_gaps", []),
+        "efficiency_attribution": summary.get("efficiency_attribution", {}),
     }
 
 
@@ -3095,9 +3343,14 @@ def run_benchmark(args: argparse.Namespace) -> int:
         json.dumps(schedule, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    batch_id = str(uuid.uuid4())
     qualification_contract = {
+        "batch_id": batch_id,
         "requested_pairs": args.pairs,
         "schedule_digest": _fingerprint(schedule),
+        "scenario": args.scenario,
+        "candidate_commit": candidate_source_commit,
+        "baseline_commit": baseline_source_commit,
     }
     configs = run_configs(args.scenario, baseline_root, candidate_root)
     environment = os.environ.copy()
@@ -3117,6 +3370,11 @@ def run_benchmark(args: argparse.Namespace) -> int:
         "source": {
             "candidate_commit": candidate_source_commit,
             "baseline_commit": baseline_source_commit,
+        },
+        "qualification_batch": {
+            **qualification_contract,
+            "status": "running",
+            "completed_runs": 0,
         },
         "runs": [],
     }
@@ -3208,6 +3466,9 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     private_key=attestation_private_key,
                 )
             )
+            qualification_batch = run_evidence["qualification_batch"]
+            assert isinstance(qualification_batch, dict)
+            qualification_batch["completed_runs"] = len(raw_runs)
             run_evidence_path.write_text(
                 json.dumps(run_evidence, ensure_ascii=False, separators=(",", ":"))
                 + "\n",
@@ -3226,6 +3487,17 @@ def run_benchmark(args: argparse.Namespace) -> int:
             print(json.dumps(metric, ensure_ascii=False, sort_keys=True), flush=True)
             if args.pause_seconds:
                 time.sleep(args.pause_seconds)
+    qualification_batch = run_evidence["qualification_batch"]
+    assert isinstance(qualification_batch, dict)
+    qualification_batch["status"] = (
+        "completed"
+        if args.only_arm is None and len(run_evidence["runs"]) == args.pairs * 2
+        else "partial"
+    )
+    run_evidence_path.write_text(
+        json.dumps(run_evidence, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
     summary = analyze(metrics)
     _require_pinned_sources(
         repo=repo,

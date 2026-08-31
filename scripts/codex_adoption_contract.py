@@ -18,6 +18,13 @@ DIMENSION_ORDER = (
     "projection",
     "lifecycle",
 )
+RISK_CONTROL_NAMES = (
+    "false_successes",
+    "duplicate_dangerous_effects",
+    "unknown_new_identity_retries",
+    "wrong_target_or_artifact_mutations",
+    "lifecycle_leaks",
+)
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -37,6 +44,39 @@ def _full_commit(value: object) -> bool:
     text = str(value).lower()
     return len(text) in {40, 64} and all(
         character in "0123456789abcdef" for character in text
+    )
+
+
+def risk_controls_valid(value: object) -> bool:
+    controls = _mapping(value)
+    violations = _mapping(controls.get("violations"))
+    tests = _mapping(controls.get("tests"))
+    expected = set(RISK_CONTROL_NAMES)
+    return all(
+        (
+            controls.get("passed") is True,
+            set(violations) == expected,
+            all(
+                isinstance(violations.get(name), int)
+                and not isinstance(violations.get(name), bool)
+                and violations.get(name) == 0
+                for name in RISK_CONTROL_NAMES
+            ),
+            set(tests) == expected,
+            all(
+                _mapping(tests.get(name)).get("status") == "passed"
+                and isinstance(
+                    _mapping(tests.get(name)).get("returncode"), int
+                )
+                and not isinstance(
+                    _mapping(tests.get(name)).get("returncode"), bool
+                )
+                and _mapping(tests.get(name)).get("returncode") == 0
+                and isinstance(_mapping(tests.get(name)).get("tests"), list)
+                and bool(_mapping(tests.get(name)).get("tests"))
+                for name in RISK_CONTROL_NAMES
+            ),
+        )
     )
 
 
@@ -804,6 +844,7 @@ def verify_codex_adoption_report(
             "Codex Adoption Qualification product contract evidence is incomplete"
         )
     task_matrix = _mapping(dimensions.get("task_matrix"))
+    risk_controls = _mapping(task_matrix.get("risk_controls"))
     if task_matrix.get("status") == "passed" and not all(
         (
             task_matrix.get("correctness_primary") is True,
@@ -811,6 +852,7 @@ def verify_codex_adoption_report(
             task_matrix.get("terminal_contract_primary") is True,
             isinstance(task_matrix.get("groups"), Mapping),
             bool(task_matrix.get("groups")),
+            risk_controls_valid(risk_controls),
         )
     ):
         raise ValueError(
