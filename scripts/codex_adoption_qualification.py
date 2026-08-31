@@ -20,7 +20,9 @@ from openubmc_target_runtime import build_release_lock  # noqa: E402
 from scripts.codex_adoption_contract import (  # noqa: E402
     DIMENSION_ORDER,
     SCHEMA,
+    codex_mcp_dimension_failures,
     codex_mcp_failures,
+    installation_dimension_failures,
     installation_identity_failures,
     verify_codex_adoption_report,
 )
@@ -109,6 +111,18 @@ def qualify(
         "runtime_api": str(runtime.get("api_version", "")),
         "runtime_content_digest": str(runtime.get("content_digest", "")),
     }
+    installation_failures.extend(
+        failure
+        for failure in installation_dimension_failures(
+            installation_identity,
+            expected_source_commit=selected_source_commit,
+        )
+        if failure not in installation_failures
+    )
+    installation_identity["failure_codes"] = installation_failures
+    installation_identity["status"] = (
+        "passed" if not installation_failures else "failed"
+    )
 
     launcher_identity = _mapping(codex_run.get("launcher_identity"))
     launcher_identity_digest = str(
@@ -139,9 +153,8 @@ def qualify(
         mcp_failures.append("client_harness_overlap")
     if codex_run.get("status") != "passed":
         mcp_failures.append("product_client_run_failed")
-    codex_mcp_passed = not mcp_failures
     codex_mcp = {
-        "status": "passed" if codex_mcp_passed else "failed",
+        "status": "passed" if not mcp_failures else "failed",
         "failure_codes": mcp_failures,
         "configured": codex_run.get("declared_mcp") is True,
         "registration_verified": codex_run.get("mcp_registration_verified")
@@ -163,6 +176,17 @@ def qualify(
         "launcher_identity_digest": launcher_identity_digest,
         "workflow_exchange": workflow_exchange,
     }
+    mcp_failures.extend(
+        failure
+        for failure in codex_mcp_dimension_failures(
+            codex_mcp,
+            expected_source_commit=selected_source_commit,
+            expected_runtime=runtime,
+        )
+        if failure not in mcp_failures
+    )
+    codex_mcp["failure_codes"] = mcp_failures
+    codex_mcp["status"] = "passed" if not mcp_failures else "failed"
 
     product_contract = _mapping(closeout.get("product_contract"))
     task_matrix = _mapping(closeout.get("task_matrix"))

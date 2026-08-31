@@ -791,6 +791,37 @@ class ReleaseGateTests(unittest.TestCase):
                 require_ready=True,
             )
 
+    def test_adoption_verifier_rejects_failed_dimension_missing_from_checkpoint_blockers(
+        self,
+    ) -> None:
+        report = codex_adoption_report()
+        report["dimensions"]["codex_mcp"]["status"] = "failed"
+        report["dimensions"]["codex_mcp"]["failure_codes"] = [
+            "agent_tools_invalid"
+        ]
+        report["failed_dimensions"] = ["codex_mcp"]
+        report["qualified"] = False
+        report["evidence_digest"] = release_gate.evidence_fingerprint(
+            {key: value for key, value in report.items() if key != "evidence_digest"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "checkpoint blockers"):
+            release_gate.verify_codex_adoption_report(report)
+
+    def test_adoption_verifier_reuses_launcher_identity_contract(self) -> None:
+        report = codex_adoption_report()
+        launcher = report["dimensions"]["codex_mcp"]["launcher_identity"]
+        launcher["schema"] = "invalid-launcher-schema"
+        report["dimensions"]["codex_mcp"]["launcher_identity_digest"] = (
+            release_gate.evidence_fingerprint(launcher)
+        )
+        report["evidence_digest"] = release_gate.evidence_fingerprint(
+            {key: value for key, value in report.items() if key != "evidence_digest"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "MCP evidence"):
+            release_gate.verify_codex_adoption_report(report)
+
     def test_new_reports_require_identity_while_v2_evidence_remains_readable(
         self,
     ) -> None:

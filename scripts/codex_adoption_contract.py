@@ -38,6 +38,63 @@ def _full_commit(value: object) -> bool:
     )
 
 
+def _launcher_identity_failures(
+    launcher_identity: Mapping[str, object],
+    launcher_identity_digest: object,
+    *,
+    expected_source_commit: str,
+    expected_runtime: Mapping[str, object],
+) -> list[str]:
+    valid = all(
+        (
+            launcher_identity.get("schema")
+            == "openubmc-agent-workflow.codex-launcher-identity.v1",
+            launcher_identity.get("runtime_api")
+            == expected_runtime.get("api_version"),
+            launcher_identity.get("runtime_content_digest")
+            == expected_runtime.get("content_digest"),
+            launcher_identity.get("source_commit") == expected_source_commit,
+            launcher_identity.get("entrypoint")
+            == "openubmc-debug/scripts/target_runtime_mcp.py",
+            launcher_identity_digest == evidence_fingerprint(launcher_identity),
+        )
+    )
+    return [] if valid else ["launcher_identity_invalid"]
+
+
+def _workflow_exchange_failures(
+    workflow_exchange: Mapping[str, object],
+) -> list[str]:
+    checks = (
+        ("workflow_tool_invalid", workflow_exchange.get("tool") == "execute"),
+        (
+            "workflow_state_invalid",
+            workflow_exchange.get("state") == "preflight_failed",
+        ),
+        (
+            "workflow_classification_invalid",
+            workflow_exchange.get("classification") == "preflight_failure",
+        ),
+        (
+            "workflow_error_field_invalid",
+            workflow_exchange.get("error_field") == "run_id",
+        ),
+        (
+            "workflow_retry_invalid",
+            _mapping(workflow_exchange.get("canonical_retry")).get("kind")
+            == "resume"
+            and bool(
+                _mapping(workflow_exchange.get("canonical_retry")).get("run_id")
+            ),
+        ),
+        (
+            "workflow_error_contract_invalid",
+            workflow_exchange.get("is_error") is True,
+        ),
+    )
+    return [name for name, passed in checks if not passed]
+
+
 def installation_identity_failures(
     evidence: Mapping[str, object],
     *,
@@ -136,9 +193,7 @@ def codex_mcp_failures(
 ) -> list[str]:
     workflow_exchange = _mapping(evidence.get("workflow_exchange"))
     launcher_identity = _mapping(evidence.get("launcher_identity"))
-    launcher_identity_digest = str(
-        evidence.get("launcher_identity_digest", "")
-    )
+    launcher_identity_digest = evidence.get("launcher_identity_digest", "")
     declared_mcp = contract.get("mcp") is True
     checks = (
         ("wrong_client", evidence.get("client") == "codex"),
@@ -164,21 +219,6 @@ def codex_mcp_failures(
             evidence.get("launcher_state_verified") is True,
         ),
         (
-            "launcher_identity_invalid",
-            launcher_identity.get("schema")
-            == "openubmc-agent-workflow.codex-launcher-identity.v1"
-            and launcher_identity.get("runtime_api")
-            == expected_runtime.get("api_version")
-            and launcher_identity.get("runtime_content_digest")
-            == expected_runtime.get("content_digest")
-            and launcher_identity.get("source_commit")
-            == expected_source_commit
-            and launcher_identity.get("entrypoint")
-            == "openubmc-debug/scripts/target_runtime_mcp.py"
-            and launcher_identity_digest
-            == evidence_fingerprint(launcher_identity),
-        ),
-        (
             "runtime_invocation_invalid",
             evidence.get("runtime_invocation") == "client-configured-mcp-command",
         ),
@@ -201,27 +241,141 @@ def codex_mcp_failures(
             evidence.get("runtime_content_digest")
             == expected_runtime.get("content_digest"),
         ),
-        ("workflow_tool_invalid", workflow_exchange.get("tool") == "execute"),
+    )
+    return [
+        *[name for name, passed in checks if not passed],
+        *_launcher_identity_failures(
+            launcher_identity,
+            launcher_identity_digest,
+            expected_source_commit=expected_source_commit,
+            expected_runtime=expected_runtime,
+        ),
+        *_workflow_exchange_failures(workflow_exchange),
+    ]
+
+
+def installation_dimension_failures(
+    installation: Mapping[str, object],
+    *,
+    expected_source_commit: str,
+) -> list[str]:
+    checks = (
+        ("source_not_clean", installation.get("source_clean") is True),
         (
-            "workflow_state_invalid",
-            workflow_exchange.get("state") == "preflight_failed",
+            "release_version_invalid",
+            isinstance(installation.get("release_version"), str)
+            and bool(installation.get("release_version")),
         ),
         (
-            "workflow_classification_invalid",
-            workflow_exchange.get("classification") == "preflight_failure",
+            "source_commit_mismatch",
+            installation.get("source_commit") == expected_source_commit,
         ),
-        ("workflow_error_field_invalid", workflow_exchange.get("error_field") == "run_id"),
         (
-            "workflow_retry_invalid",
-            _mapping(workflow_exchange.get("canonical_retry")).get("kind")
-            == "resume"
-            and bool(
-                _mapping(workflow_exchange.get("canonical_retry")).get("run_id")
-            ),
+            "release_commit_invalid",
+            _full_commit(installation.get("release_commit")),
         ),
-        ("workflow_error_contract_invalid", workflow_exchange.get("is_error") is True),
+        ("lock_digest_invalid", _sha256(installation.get("lock_digest"))),
+        (
+            "source_tree_digest_invalid",
+            _sha256(installation.get("source_tree_digest")),
+        ),
+        (
+            "workflow_digest_invalid",
+            _sha256(installation.get("workflow_digest")),
+        ),
+        ("clients_invalid", installation.get("clients") == ["codex"]),
+        ("source_mode_invalid", installation.get("source_mode") == "managed"),
+        (
+            "trust_mode_invalid",
+            installation.get("trust_mode") == "verified-immutable-source",
+        ),
+        (
+            "operational_readiness_missing",
+            installation.get("operational_ready") is True,
+        ),
+        (
+            "release_identity_unverified",
+            installation.get("release_identity_verified") is True,
+        ),
+        (
+            "evaluation_readiness_missing",
+            installation.get("evaluation_ready") is True,
+        ),
+        (
+            "skill_identity_missing",
+            isinstance(installation.get("skill_digests"), Mapping)
+            and bool(installation.get("skill_digests")),
+        ),
+        (
+            "runtime_api_invalid",
+            installation.get("runtime_api") == "openubmc.target-runtime.v1",
+        ),
+        (
+            "runtime_digest_invalid",
+            _sha256(installation.get("runtime_content_digest")),
+        ),
     )
     return [name for name, passed in checks if not passed]
+
+
+def codex_mcp_dimension_failures(
+    codex_mcp: Mapping[str, object],
+    *,
+    expected_source_commit: str,
+    expected_runtime: Mapping[str, object],
+) -> list[str]:
+    launcher_identity = _mapping(codex_mcp.get("launcher_identity"))
+    workflow_exchange = _mapping(codex_mcp.get("workflow_exchange"))
+    checks = (
+        ("not_configured", codex_mcp.get("configured") is True),
+        (
+            "registration_unverified",
+            codex_mcp.get("registration_verified") is True,
+        ),
+        (
+            "runtime_launcher_unverified",
+            codex_mcp.get("runtime_launcher_verified") is True,
+        ),
+        (
+            "runtime_invocation_invalid",
+            codex_mcp.get("runtime_invocation")
+            == "client-configured-mcp-command",
+        ),
+        (
+            "protocol_exchange_invalid",
+            codex_mcp.get("protocol_exchange")
+            == ["initialize", "tools/list", "tools/call:execute"],
+        ),
+        ("agent_tools_invalid", codex_mcp.get("tools") == ["execute", "observe"]),
+        ("identity_unbound", codex_mcp.get("identity_bound") is True),
+        (
+            "source_binding_invalid",
+            codex_mcp.get("installed_source_commit") == expected_source_commit,
+        ),
+        (
+            "runtime_api_mismatch",
+            codex_mcp.get("runtime_api") == expected_runtime.get("api_version"),
+        ),
+        (
+            "runtime_digest_mismatch",
+            codex_mcp.get("runtime_content_digest")
+            == expected_runtime.get("content_digest"),
+        ),
+        (
+            "launcher_state_unverified",
+            codex_mcp.get("launcher_state_verified") is True,
+        ),
+    )
+    return [
+        *[name for name, passed in checks if not passed],
+        *_launcher_identity_failures(
+            launcher_identity,
+            codex_mcp.get("launcher_identity_digest", ""),
+            expected_source_commit=expected_source_commit,
+            expected_runtime=expected_runtime,
+        ),
+        *_workflow_exchange_failures(workflow_exchange),
+    ]
 
 
 def product_client_failures(
@@ -280,29 +434,14 @@ def verify_codex_adoption_report(
         if value.get("status") != "passed":
             failed_dimensions.append(name)
     installation = _mapping(dimensions.get("installation_identity"))
-    installation_complete = all(
-        (
-            installation.get("failure_codes") == [],
-            installation.get("source_clean") is True,
-            isinstance(installation.get("release_version"), str),
-            installation.get("source_commit") == source_commit,
-            _full_commit(installation.get("release_commit")),
-            _sha256(installation.get("lock_digest")),
-            _sha256(installation.get("source_tree_digest")),
-            _sha256(installation.get("workflow_digest")),
-            installation.get("clients") == ["codex"],
-            installation.get("source_mode") == "managed",
-            installation.get("trust_mode") == "verified-immutable-source",
-            installation.get("operational_ready") is True,
-            installation.get("release_identity_verified") is True,
-            installation.get("evaluation_ready") is True,
-            isinstance(installation.get("skill_digests"), Mapping),
-            bool(installation.get("skill_digests")),
-            installation.get("runtime_api") == "openubmc.target-runtime.v1",
-            _sha256(installation.get("runtime_content_digest")),
-        )
+    installation_contract_failures = installation_dimension_failures(
+        installation,
+        expected_source_commit=source_commit,
     )
-    if installation.get("status") == "passed" and not installation_complete:
+    if installation.get("status") == "passed" and (
+        installation.get("failure_codes") != []
+        or installation_contract_failures
+    ):
         raise ValueError(
             "Codex Adoption Qualification installation identity is incomplete"
         )
@@ -313,35 +452,19 @@ def verify_codex_adoption_report(
             "Codex Adoption Qualification installation failure is unexplained"
         )
     codex_mcp = _mapping(dimensions.get("codex_mcp"))
-    launcher_identity = _mapping(codex_mcp.get("launcher_identity"))
-    workflow_exchange = _mapping(codex_mcp.get("workflow_exchange"))
-    codex_mcp_complete = all(
-        (
-            codex_mcp.get("failure_codes") == [],
-            codex_mcp.get("configured") is True,
-            codex_mcp.get("registration_verified") is True,
-            codex_mcp.get("runtime_launcher_verified") is True,
-            codex_mcp.get("runtime_invocation")
-            == "client-configured-mcp-command",
-            codex_mcp.get("protocol_exchange")
-            == ["initialize", "tools/list", "tools/call:execute"],
-            codex_mcp.get("tools") == ["execute", "observe"],
-            codex_mcp.get("identity_bound") is True,
-            codex_mcp.get("installed_source_commit") == source_commit,
-            codex_mcp.get("runtime_api") == "openubmc.target-runtime.v1",
-            _sha256(codex_mcp.get("runtime_content_digest")),
-            codex_mcp.get("launcher_state_verified") is True,
-            launcher_identity.get("source_commit") == source_commit,
-            codex_mcp.get("launcher_identity_digest")
-            == evidence_fingerprint(launcher_identity),
-            workflow_exchange.get("tool") == "execute",
-            workflow_exchange.get("state") == "preflight_failed",
-            workflow_exchange.get("classification") == "preflight_failure",
-            workflow_exchange.get("error_field") == "run_id",
-            workflow_exchange.get("is_error") is True,
-        )
+    expected_runtime = {
+        "api_version": installation.get("runtime_api"),
+        "content_digest": installation.get("runtime_content_digest"),
+    }
+    codex_mcp_contract_failures = codex_mcp_dimension_failures(
+        codex_mcp,
+        expected_source_commit=source_commit,
+        expected_runtime=expected_runtime,
     )
-    if codex_mcp.get("status") == "passed" and not codex_mcp_complete:
+    if codex_mcp.get("status") == "passed" and (
+        codex_mcp.get("failure_codes") != []
+        or codex_mcp_contract_failures
+    ):
         raise ValueError("Codex Adoption Qualification MCP evidence is incomplete")
     if codex_mcp.get("status") == "failed" and not codex_mcp.get(
         "failure_codes"
@@ -439,6 +562,10 @@ def verify_codex_adoption_report(
         not isinstance(item, str) or not item for item in blockers
     ):
         raise ValueError("Codex Adoption Qualification blockers are invalid")
+    if blockers != failed_dimensions:
+        raise ValueError(
+            "Codex Adoption Qualification checkpoint blockers are invalid"
+        )
     checkpoint_ready = report.get("maintenance_checkpoint_ready") is True
     if checkpoint_ready != (not blockers):
         raise ValueError("Codex Adoption Qualification checkpoint is inconsistent")
