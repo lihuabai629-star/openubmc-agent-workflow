@@ -313,7 +313,7 @@ def _prepare_candidate_release(
             "fetch",
             "--quiet",
             str(ROOT),
-            "+refs/remotes/github/*:refs/remotes/github/*",
+            "+refs/remotes/*:refs/remotes/source/*",
             "+refs/tags/*:refs/tags/*",
         ),
         cwd=candidate_repository,

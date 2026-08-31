@@ -114,6 +114,86 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(first.release_commit, second.release_commit)
         self.assertEqual(first.release, second.release)
 
+    def test_candidate_release_does_not_depend_on_github_remote_name(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as clone_raw,
+            tempfile.TemporaryDirectory() as qualification_raw,
+        ):
+            isolated = Path(clone_raw) / "repository"
+            subprocess.run(
+                ["git", "clone", "--quiet", "--no-local", str(ROOT), str(isolated)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            github_refs = subprocess.run(
+                ["git", "for-each-ref", "--format=%(refname)", "refs/remotes/github"],
+                cwd=isolated,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(github_refs, "")
+            tree = subprocess.run(
+                ["git", "rev-parse", "HEAD^{tree}"],
+                cwd=isolated,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            commit_environment = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Qualification Test",
+                "GIT_AUTHOR_EMAIL": "qualification@example.invalid",
+                "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
+                "GIT_COMMITTER_NAME": "Qualification Test",
+                "GIT_COMMITTER_EMAIL": "qualification@example.invalid",
+                "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
+            }
+            historical_commit = subprocess.run(
+                ["git", "commit-tree", tree],
+                cwd=isolated,
+                check=True,
+                input="remote-only historical evidence\n",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=commit_environment,
+            ).stdout.strip()
+            subprocess.run(
+                [
+                    "git",
+                    "update-ref",
+                    "refs/remotes/origin/historical-evidence",
+                    historical_commit,
+                ],
+                cwd=isolated,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            source_commit = qualification.resolve_source_commit(isolated)
+
+            with mock.patch.object(qualification, "ROOT", isolated):
+                candidate = qualification._prepare_candidate_release(
+                    Path(qualification_raw),
+                    source_commit,
+                )
+            bundle_heads = subprocess.run(
+                ["git", "bundle", "list-heads", str(candidate.bundle)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout
+
+        self.assertEqual(candidate.release["source_commit"], source_commit)
+        self.assertIn(historical_commit, bundle_heads)
+
     def test_qualification_integrates_product_client_isolation_lifecycle_and_projection(
         self,
     ) -> None:
