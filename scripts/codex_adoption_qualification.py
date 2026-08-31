@@ -24,6 +24,7 @@ from scripts.codex_adoption_contract import (  # noqa: E402
     codex_mcp_failures,
     installation_dimension_failures,
     installation_identity_failures,
+    projection_dimension_failures,
     verify_codex_adoption_report,
 )
 from scripts.continuous_closeout_qualification import (  # noqa: E402
@@ -231,6 +232,7 @@ def qualify(
     product_contract = _mapping(closeout.get("product_contract"))
     task_matrix = _mapping(closeout.get("task_matrix"))
     projection = _mapping(closeout.get("execute_projection"))
+    projection_failures = projection_dimension_failures(projection)
     lifecycle = _mapping(closeout.get("mcp_lifecycle"))
     lifecycle_closeout = _mapping(lifecycle.get("closeout"))
     dimensions: dict[str, dict[str, object]] = {
@@ -257,18 +259,8 @@ def qualify(
         },
         "projection": {
             **projection,
-            "status": (
-                "passed"
-                if all(
-                    (
-                        _passed(projection),
-                        projection.get("correctness_primary") is True,
-                        projection.get("repeated_reference") is True,
-                        projection.get("operator_projection_covered") is True,
-                    )
-                )
-                else "failed"
-            ),
+            "status": "passed" if not projection_failures else "failed",
+            "failure_codes": projection_failures,
         },
         "lifecycle": {
             **lifecycle,

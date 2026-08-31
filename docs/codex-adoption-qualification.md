@@ -47,6 +47,10 @@ checkpoint readiness requires those Codex-owned dimensions. External harness ide
 or isolation status is recorded separately and cannot block either Codex product qualification or
 the maintenance checkpoint.
 
+The projection dimension includes digest-bound repeated-field attribution, full/reference/saved
+bytes, and the concrete fields responsible for exceeding a soft display target. Missing
+attribution fails the projection dimension; exceeding the 4/8 KiB display targets does not.
+
 External evaluation harness metadata is recorded as non-blocking provenance. It is not a product
 client and cannot change the Codex qualification result. The report is deterministic for the same
 source and inputs and includes a digest over its complete evidence payload.

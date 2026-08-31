@@ -1066,6 +1066,102 @@ def _projection_telemetry(
     }
 
 
+_PROJECTION_TELEMETRY_FIELDS = frozenset(
+    {
+        "interaction_telemetry",
+        "projection_metrics",
+        "projection_target_overage_bytes",
+    }
+)
+
+
+def _projection_payload(document: Mapping[str, object]) -> dict[str, object]:
+    """Return Agent semantics without the telemetry that measures them."""
+
+    return {
+        str(field): value
+        for field, value in document.items()
+        if field not in _PROJECTION_TELEMETRY_FIELDS
+    }
+
+
+def _target_exceeded_causes(
+    document: Mapping[str, object],
+    *,
+    target_bytes: int,
+) -> list[dict[str, object]]:
+    """Attribute an oversized projection to its largest bounded fields."""
+
+    payload = _projection_payload(document)
+    measured = sorted(
+        (
+            {
+                "field": field,
+                "bytes": len(_json_bytes(value)),
+            }
+            for field, value in payload.items()
+            if value not in (None, "", [], {}, ())
+        ),
+        key=lambda item: (-int(item["bytes"]), str(item["field"])),
+    )
+    material = [
+        item
+        for item in measured
+        if int(item["bytes"]) >= max(256, target_bytes // 16)
+    ]
+    return (material or measured[:3])[:8]
+
+
+def _record_soft_target_metrics(
+    document: Mapping[str, object],
+    *,
+    target_bytes: int,
+) -> dict[str, object]:
+    result = dict(document)
+    metrics = dict(_mapping(result.get("projection_metrics")))
+    metrics.pop("soft_target", None)
+    payload_bytes = len(_json_bytes(_projection_payload(result)))
+    if payload_bytes <= target_bytes:
+        if metrics:
+            result["projection_metrics"] = metrics
+        else:
+            result.pop("projection_metrics", None)
+        return result
+    metrics["soft_target"] = {
+        "target_bytes": target_bytes,
+        "full_bytes": payload_bytes,
+        "overage_bytes": payload_bytes - target_bytes,
+        "target_exceeded_causes": _target_exceeded_causes(
+            result,
+            target_bytes=target_bytes,
+        ),
+    }
+    result["projection_metrics"] = metrics
+    return result
+
+
+def _record_gate_schema_target_metrics(
+    document: Mapping[str, object],
+) -> dict[str, object]:
+    result = dict(document)
+    gate = _mapping(result.get("gate"))
+    input_schema = _mapping(gate.get("input_schema"))
+    schema_bytes = len(_json_bytes(input_schema))
+    if schema_bytes <= GATE_SCHEMA_PROJECTION_TARGET_BYTES:
+        return result
+    metrics = dict(_mapping(result.get("projection_metrics")))
+    metrics["gate_schema_soft_target"] = {
+        "target_bytes": GATE_SCHEMA_PROJECTION_TARGET_BYTES,
+        "full_bytes": schema_bytes,
+        "overage_bytes": schema_bytes - GATE_SCHEMA_PROJECTION_TARGET_BYTES,
+        "target_exceeded_causes": [
+            {"field": "gate.input_schema", "bytes": schema_bytes}
+        ],
+    }
+    result["projection_metrics"] = metrics
+    return result
+
+
 class CostGovernor:
     """Annotate soft display targets without rewriting Runtime semantics."""
 
@@ -1113,6 +1209,11 @@ class CostGovernor:
         compacted["projection_target_exceeded"] = (
             len(_json_bytes(compacted)) > OBSERVATION_PROJECTION_TARGET_BYTES
         )
+        if compacted["projection_target_exceeded"]:
+            compacted = _record_soft_target_metrics(
+                compacted,
+                target_bytes=OBSERVATION_PROJECTION_TARGET_BYTES,
+            )
         return compacted
 
     @staticmethod
@@ -1130,6 +1231,7 @@ class CostGovernor:
             result["gate_projection_target_exceeded"] = True
             result["manual_narrowing_required"] = False
             result["budget_blocker"] = False
+            result = _record_gate_schema_target_metrics(result)
         if len(_json_bytes(result)) > TURN_PROJECTION_TARGET_BYTES:
             result.update(
                 _projection_telemetry(
@@ -1140,7 +1242,10 @@ class CostGovernor:
                     target_exceeded=True,
                 )
             )
-        return result
+        return _record_soft_target_metrics(
+            result,
+            target_bytes=TURN_PROJECTION_TARGET_BYTES,
+        )
 
 
 def _finalize_projection(
@@ -1645,9 +1750,15 @@ class AgentGateway:
                 **dict(_mapping(result.get("projection_metrics"))),
                 "diagnostic_receipt": {
                     "repeated_reference": True,
+                    "repeated_fields": ["diagnostic_receipt"],
                     "full_bytes": full_bytes,
                     "reference_bytes": reference_bytes,
                     "saved_bytes": max(0, full_bytes - reference_bytes),
+                    "target_exceeded_causes": (
+                        [{"field": "diagnostic_receipt", "bytes": full_bytes}]
+                        if full_bytes > TURN_PROJECTION_TARGET_BYTES
+                        else []
+                    ),
                 },
             }
             result["content_compacted"] = True

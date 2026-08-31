@@ -59,6 +59,11 @@ Dual-projection correctness participates in promotion. Its byte target is diagno
 exceeding it produces `efficiency.decision=warning` with
 `blocks_promotability=false` and cannot rewrite Run status, source completeness, Agent acceptance,
 or the aggregate promotion result.
+The canonical projection also records the repeated top-level fields, full/reference/saved bytes,
+and bounded field-level causes for every exceeded soft target. Continuous qualification exercises
+complete first presentation of Observation, Gate, Incident, Outcome, and DiagnosticReceipt
+semantics, and rejects stale, changed, cross-task, incomplete, or one-shot use of a receipt
+reference.
 An explicit source commit must equal the tested workspace HEAD. The only exception is an immutable
 release-lock child, where it must equal that commit's sole parent and the lock's recorded source.
 The index and worktree must be clean, including untracked files, before evidence can bind to either

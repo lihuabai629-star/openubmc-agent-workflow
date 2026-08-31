@@ -198,6 +198,11 @@ class RuntimeStabilityTests(unittest.TestCase):
         )
         repeated = report["representative_receipt"]["repeated_projection"]
         self.assertTrue(repeated["repeated_reference"])
+        self.assertEqual(repeated["repeated_fields"], ["diagnostic_receipt"])
+        self.assertEqual(
+            repeated["target_exceeded_causes"],
+            [{"field": "diagnostic_receipt", "bytes": repeated["full_bytes"]}],
+        )
         self.assertGreater(repeated["saved_bytes"], 0)
         self.assertEqual(
             repeated["saved_bytes"],
@@ -219,6 +224,11 @@ class RuntimeStabilityTests(unittest.TestCase):
                     report["canonical_results"][turn_name]
                 ),
             )
+        gate_target = report["canonical_results"]["gate"]["structuredContent"][
+            "projection_metrics"
+        ]["soft_target"]
+        self.assertGreater(gate_target["full_bytes"], gate_target["target_bytes"])
+        self.assertTrue(gate_target["target_exceeded_causes"])
 
     def test_dual_projection_efficiency_warning_never_blocks_correctness(
         self,

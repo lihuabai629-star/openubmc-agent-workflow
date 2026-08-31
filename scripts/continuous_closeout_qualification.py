@@ -117,9 +117,15 @@ MCP_LIFECYCLE_TESTS = {
     ),
 }
 PROJECTION_TESTS = (
+    "tests.test_agent_gateway.AgentGatewayTests.test_observe_projection_target_preserves_complete_source_semantics",
+    "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_gate_target_preserves_runtime_gate_semantics",
+    "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_soft_target_preserves_runtime_incident_semantics",
+    "tests.test_agent_gateway.AgentGatewayTests.test_execute_turn_budget_preserves_diagnostic_receipt_semantics",
     "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_references_an_unchanged_previously_presented_receipt",
+    "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_does_not_reference_a_stale_presentation_record",
     "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_does_not_reference_receipt_across_task_ownership",
     "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_preserves_a_changed_diagnostic_receipt",
+    "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_never_references_an_incomplete_receipt",
     "tests.test_agent_gateway.AgentGatewayTests.test_retried_one_shot_terminal_turn_keeps_the_complete_receipt",
     "tests.test_runtime_stability.RuntimeStabilityTests.test_dual_projection_qualification_measures_gate_and_terminal_seams",
     "tests.test_mcp_contracts.RuntimeMcpServiceTests.test_operator_status_derives_bounded_current_run_evidence_from_the_ledger",
@@ -799,6 +805,10 @@ def qualify(
             "full_bytes": int(repeated_projection.get("full_bytes", 0)),
             "reference_bytes": int(repeated_projection.get("reference_bytes", 0)),
             "saved_bytes": int(repeated_projection.get("saved_bytes", 0)),
+            "repeated_fields": list(repeated_projection.get("repeated_fields", [])),
+            "target_exceeded_causes": list(
+                repeated_projection.get("target_exceeded_causes", [])
+            ),
             "blocks_promotability": False,
             "operator_projection_covered": projection_tests.get("status")
             == "passed",

@@ -487,8 +487,22 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(projection["correctness_primary"])
         self.assertTrue(projection["operator_projection_covered"])
         self.assertTrue(projection["repeated_reference"])
+        self.assertEqual(projection["repeated_fields"], ["diagnostic_receipt"])
+        self.assertTrue(projection["target_exceeded_causes"])
         self.assertGreater(projection["saved_bytes"], 0)
         self.assertFalse(projection["blocks_promotability"])
+        projection_tests = " ".join(projection["tests"]["tests"])
+        for required in (
+            "test_observe_projection_target_preserves_complete_source_semantics",
+            "test_execute_turn_soft_gate_target_preserves_runtime_gate_semantics",
+            "test_execute_turn_soft_target_preserves_runtime_incident_semantics",
+            "test_execute_turn_budget_preserves_diagnostic_receipt_semantics",
+            "test_terminal_turn_does_not_reference_a_stale_presentation_record",
+            "test_terminal_turn_does_not_reference_receipt_across_task_ownership",
+            "test_terminal_turn_preserves_a_changed_diagnostic_receipt",
+            "test_terminal_turn_never_references_an_incomplete_receipt",
+        ):
+            self.assertIn(required, projection_tests)
         self.assertIn(
             "fresh_runtime_product_evidence_required",
             report["external_blockers"],
@@ -545,6 +559,10 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                             "full_bytes": 2,
                             "reference_bytes": 1,
                             "saved_bytes": 1,
+                            "repeated_fields": ["diagnostic_receipt"],
+                            "target_exceeded_causes": [
+                                {"field": "diagnostic_receipt", "bytes": 2}
+                            ],
                         }
                     },
                 },
@@ -659,6 +677,10 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                             "full_bytes": 2,
                             "reference_bytes": 1,
                             "saved_bytes": 1,
+                            "repeated_fields": ["diagnostic_receipt"],
+                            "target_exceeded_causes": [
+                                {"field": "diagnostic_receipt", "bytes": 2}
+                            ],
                         }
                     },
                 },
