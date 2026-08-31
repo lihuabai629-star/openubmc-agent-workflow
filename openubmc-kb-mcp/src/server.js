@@ -47,23 +47,46 @@ function positiveEnvironmentNumber(name, fallback) {
 }
 
 
+function identityEnvironment(name) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return { value: {}, error: null };
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { value: {}, error: `${name} must be a JSON object` };
+    }
+    return { value, error: null };
+  } catch {
+    return { value: {}, error: `${name} must be a JSON object` };
+  }
+}
+
+
+function formalRunEnvironment() {
+  const raw = process.env.OPENUBMC_MCP_FORMAL_RUN?.trim().toLowerCase();
+  if (!raw) return { value: false, error: null };
+  if (["1", "true", "yes"].includes(raw)) return { value: true, error: null };
+  if (["0", "false", "no"].includes(raw)) return { value: false, error: null };
+  return { value: false, error: "OPENUBMC_MCP_FORMAL_RUN must be boolean" };
+}
+
+
 function createProcessLifecycle(path) {
   const configuredTask = process.env.OPENUBMC_MCP_TASK_ID?.trim()
     || process.env.CODEX_TASK_ID?.trim()
-    || process.env.OPENUBMC_EVALUATION_TASK_ID?.trim()
-    || process.env.CLAUDE_CODE_SESSION_ID?.trim()
-    || process.env.CLAUDE_SESSION_ID?.trim();
+    || process.env.OPENUBMC_EVALUATION_TASK_ID?.trim();
   const configuredSession = process.env.OPENUBMC_MCP_SESSION_ID?.trim();
   const sessionId = configuredSession || configuredTask || "unknown-session";
   const taskId = configuredTask || "unknown-task";
   let client = process.env.OPENUBMC_MCP_CLIENT?.trim();
   if (!client && process.env.CODEX_TASK_ID?.trim()) client = "codex";
-  else if (
-    !client
-    && (process.env.CLAUDE_CODE_SESSION_ID?.trim() || process.env.CLAUDE_SESSION_ID?.trim())
-  ) client = "claude";
   else if (!client && process.env.OPENUBMC_EVALUATION_TASK_ID?.trim()) client = "dsh";
   client ||= "unknown-client";
+  const sourceCommit = process.env.OPENUBMC_MCP_SOURCE_COMMIT?.trim()
+    || "unknown-source-commit";
+  const modelIdentity = identityEnvironment("OPENUBMC_MCP_MODEL_IDENTITY");
+  const codexIdentity = identityEnvironment("OPENUBMC_MCP_CODEX_IDENTITY");
+  const formalRun = formalRunEnvironment();
   const configuredParentPid = process.env.OPENUBMC_MCP_PARENT_PID?.trim();
   let parentPid = configuredParentPid ? Number(configuredParentPid) : process.ppid;
   let startupError = null;
@@ -80,6 +103,8 @@ function createProcessLifecycle(path) {
       || path
       || join(homedir(), ".config", "openubmc", "kb-mcp.json")
   );
+  const runtimeStateRoot = process.env.OPENUBMC_TARGET_RUNTIME_STATE_DIR?.trim()
+    || "";
   const lifecycleRoot = resolve(
     process.env.OPENUBMC_MCP_LIFECYCLE_DIR?.trim()
       || join(homedir(), ".local", "state", "openubmc-agent-workflow", "mcp-processes")
@@ -93,18 +118,65 @@ function createProcessLifecycle(path) {
   } catch (error) {
     startupError ||= error.message;
   }
-  return {
-    lifecycle: new McpProcessLifecycle({
+  startupError ||= modelIdentity.error || codexIdentity.error || formalRun.error;
+  if (
+    startupError === null
+    && formalRun.value
+    && (
+      Object.keys(modelIdentity.value).length === 0
+      || Object.keys(codexIdentity.value).length === 0
+    )
+  ) {
+    startupError = "formal MCP run requires model and Codex identity";
+  }
+  if (startupError === null && formalRun.value) {
+    const requirements = [];
+    if (client !== "codex") requirements.push("Codex client identity");
+    if (!configuredTask) requirements.push("task ID");
+    if (!configuredSession) requirements.push("session ID");
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceCommit)) {
+      requirements.push("full source commit");
+    }
+    if (!runtimeStateRoot) requirements.push("Runtime state root");
+    if (!process.env.OPENUBMC_MCP_LIFECYCLE_DIR?.trim()) {
+      requirements.push("lifecycle root");
+    }
+    if (requirements.length > 0) {
+      startupError = `formal MCP run requires ${requirements.join(", ")}`;
+    }
+  }
+  if (
+    startupError === null
+    && formalRun.value
+    && parentPid !== process.ppid
+  ) {
+    startupError = "formal MCP run requires direct parent identity";
+  }
+  const lifecycle = new McpProcessLifecycle({
     component: "knowledge-mcp",
     version: "1.3.0",
     client,
     taskId,
     sessionId,
+    sourceCommit,
+    modelIdentity: modelIdentity.value,
+    codexIdentity: codexIdentity.value,
+    formalRun: formalRun.value,
     parentPid,
     statePath,
+    runtimeStateRoot,
     lifecycleRoot,
     idleTimeoutSeconds
-    }),
+  });
+  if (
+    startupError === null
+    && formalRun.value
+    && lifecycle.status().parent_identity_verified !== true
+  ) {
+    startupError = "formal MCP run requires verified parent identity";
+  }
+  return {
+    lifecycle,
     startupError
   };
 }
@@ -260,6 +332,13 @@ async function main() {
       return;
     }
     dispatch?.(message, extra);
+    if (message.method === "notifications/openubmc-task-complete") {
+      processLifecycle.requestTaskCloseout();
+      pendingExitReason = "task-closeout";
+      if (processLifecycle.activeRequests === 0 && pendingResponses.size === 0) {
+        stop("task-closeout", { exitProcess: true }).catch(() => {});
+      }
+    }
   };
   process.once("exit", () => {
     removeSignalHandlers();

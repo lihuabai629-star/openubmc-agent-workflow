@@ -1428,8 +1428,6 @@ def main() -> int:
         os.environ.get("OPENUBMC_MCP_TASK_ID", "").strip()
         or os.environ.get("CODEX_TASK_ID", "").strip()
         or os.environ.get("OPENUBMC_EVALUATION_TASK_ID", "").strip()
-        or os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
-        or os.environ.get("CLAUDE_SESSION_ID", "").strip()
     )
     configured_session = os.environ.get(
         "OPENUBMC_MCP_SESSION_ID", ""
@@ -1439,15 +1437,43 @@ def main() -> int:
     client = os.environ.get("OPENUBMC_MCP_CLIENT", "").strip()
     if not client and os.environ.get("CODEX_TASK_ID", "").strip():
         client = "codex"
-    elif not client and (
-        os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
-        or os.environ.get("CLAUDE_SESSION_ID", "").strip()
-    ):
-        client = "claude"
     elif not client and os.environ.get("OPENUBMC_EVALUATION_TASK_ID", "").strip():
         client = "dsh"
     client = client or "unknown-client"
+    source_commit = os.environ.get(
+        "OPENUBMC_MCP_SOURCE_COMMIT", "unknown-source-commit"
+    ).strip() or "unknown-source-commit"
+    identity_errors: list[str] = []
+
+    def identity_environment(name: str) -> dict[str, object]:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            identity_errors.append(f"{name} must be a JSON object")
+            return {}
+        if not isinstance(value, dict):
+            identity_errors.append(f"{name} must be a JSON object")
+            return {}
+        return value
+
+    model_identity = identity_environment("OPENUBMC_MCP_MODEL_IDENTITY")
+    codex_identity = identity_environment("OPENUBMC_MCP_CODEX_IDENTITY")
+    formal_run_raw = os.environ.get("OPENUBMC_MCP_FORMAL_RUN", "").strip().lower()
+    if formal_run_raw in {"", "0", "false", "no"}:
+        formal_run = False
+    elif formal_run_raw in {"1", "true", "yes"}:
+        formal_run = True
+    else:
+        formal_run = False
+        identity_errors.append("OPENUBMC_MCP_FORMAL_RUN must be boolean")
+    if formal_run and (not model_identity or not codex_identity):
+        identity_errors.append("formal MCP run requires model and Codex identity")
     parent_pid, parent_pid_error = _parent_pid_environment()
+    if formal_run and parent_pid != os.getppid():
+        identity_errors.append("formal MCP run requires direct parent identity")
     state_dir = _runtime_state_dir()
     configured_lifecycle_root = os.environ.get(
         "OPENUBMC_MCP_LIFECYCLE_DIR", ""
@@ -1464,6 +1490,19 @@ def main() -> int:
             / "openubmc-agent-workflow"
             / "mcp-processes"
         )
+    if formal_run:
+        if client != "codex":
+            identity_errors.append("formal MCP run requires Codex client identity")
+        if not configured_task:
+            identity_errors.append("formal MCP run requires task ID")
+        if not configured_session:
+            identity_errors.append("formal MCP run requires session ID")
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_commit) is None:
+            identity_errors.append("formal MCP run requires full source commit")
+        if not os.environ.get("OPENUBMC_TARGET_RUNTIME_STATE_DIR", "").strip():
+            identity_errors.append("formal MCP run requires Runtime state root")
+        if not configured_lifecycle_root:
+            identity_errors.append("formal MCP run requires lifecycle root")
     idle_timeout_error: SystemExit | None = None
     try:
         mcp_idle_timeout_seconds = _positive_env_float(
@@ -1478,6 +1517,10 @@ def main() -> int:
         client=client,
         task_id=task_id,
         session_id=session_id,
+        source_commit=source_commit,
+        model_identity=model_identity,
+        codex_identity=codex_identity,
+        formal_run=formal_run,
         parent_pid=parent_pid,
         state_path=state_dir,
         lifecycle_root=lifecycle_root,
@@ -1486,6 +1529,12 @@ def main() -> int:
     if parent_pid_error is not None:
         process_lifecycle.record_exit("startup-error")
         raise SystemExit(parent_pid_error)
+    if identity_errors:
+        process_lifecycle.record_exit("startup-error")
+        raise SystemExit("; ".join(identity_errors))
+    if formal_run and not process_lifecycle.status()["parent_identity_verified"]:
+        process_lifecycle.record_exit("startup-error")
+        raise SystemExit("formal MCP run requires verified parent identity")
     if idle_timeout_error is not None:
         process_lifecycle.record_exit("startup-error")
         raise idle_timeout_error

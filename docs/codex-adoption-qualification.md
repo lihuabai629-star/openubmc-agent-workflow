@@ -6,16 +6,18 @@ qualification matrix:
 
 ```bash
 python3 scripts/codex_adoption_qualification.py \
+  --model-identity '{"model":"gpt-5.6-sol"}' \
+  --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --source-commit "$(git rev-parse HEAD)" \
   --output codex-adoption-qualification.json
 ```
 
-Optional model and Codex provenance can be supplied as JSON objects:
+Model and Codex provenance are required non-empty JSON objects:
 
 ```bash
 python3 scripts/codex_adoption_qualification.py \
-  --model-identity '{"provider":"openai","model":"gpt-5.6-sol"}' \
-  --codex-identity '{"version":"codex-cli 0.150.0"}' \
+  --model-identity '{"model":"gpt-5.6-sol"}' \
+  --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --output codex-adoption-qualification.json
 ```
 
@@ -27,12 +29,18 @@ Launcher verification uses a path-independent semantic identity bound to the Run
 content digest, Final source commit, and installed entrypoint; temporary installation paths are not
 part of that identity.
 
-The Codex exchange verifies `initialize`, `tools/list`, the exact `observe` and `execute` Agent
-Interface, and a hermetic `tools/call` through `execute`. The installed exchange deliberately uses
-an actionable preflight request so it cannot touch a BMC or credentials; successful workflow
-completion is proven separately by the representative task matrix. A requested source commit must
-match the clean workspace `HEAD` or the verified release-lock parent. This allows a lock-only child
-to qualify its exact Final-source parent without accidentally qualifying the child as source code.
+The installed-launcher exchange verifies `initialize`, `tools/list`, the exact `observe` and
+`execute` Agent Interface, and a hermetic `tools/call` through `execute`. It deliberately uses an
+actionable preflight request so it cannot touch a BMC or credentials. That protocol harness is
+non-formal. Formal lifecycle evidence comes from two pinned Codex 0.151.0 processes using an
+isolated local Responses endpoint; each process must start the installed Runtime launcher as its
+direct child, expose the Runtime namespace containing exactly `observe` and `execute`, and leave a
+stopped `client-terminated` lifecycle record. Restart evidence is derived from those two process
+runs. Active-request drain and explicit task closeout remain independently covered by hermetic
+Runtime lifecycle tests. Successful workflow completion is proven by the representative task
+matrix. A requested source commit must match the clean workspace `HEAD` or the verified
+release-lock parent. This allows a lock-only child to qualify its exact Final-source parent without
+accidentally qualifying the child as source code.
 
 It emits an ordered `failed_dimensions` list for Codex product qualification. Maintenance
 checkpoint readiness requires those Codex-owned dimensions. External harness identity, presence,

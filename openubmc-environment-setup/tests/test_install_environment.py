@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -25,6 +26,8 @@ SPEC = importlib.util.spec_from_file_location("openubmc_environment_installer", 
 assert SPEC is not None and SPEC.loader is not None
 installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
+
+from scripts.codex_process_probe import probe_codex_runtime
 
 
 EXPECTED_BUNDLE = (
@@ -96,8 +99,9 @@ class EnvironmentSetupTests(unittest.TestCase):
         debug_mcp = self.source / "openubmc-debug" / "scripts" / "target_runtime_mcp.py"
         debug_mcp.parent.mkdir(parents=True)
         debug_mcp.write_text(
-            "import json, sys\n"
-            "from openubmc_target_runtime import JsonRpcMcpEndpoint, RuntimeMcpService\n"
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "from openubmc_target_runtime import JsonRpcMcpEndpoint, McpProcessLifecycle, RuntimeMcpService, StdioMcpServer\n"
             "class Task:\n"
             "    def __init__(self, task_id):\n"
             "        self.task_id = task_id\n"
@@ -121,13 +125,22 @@ class EnvironmentSetupTests(unittest.TestCase):
             "service = RuntimeMcpService(Backend())\n"
             "endpoint = JsonRpcMcpEndpoint(service, "
             "session_task_id='codex-adoption-probe')\n"
-            "try:\n"
-            "    for line in sys.stdin:\n"
-            "        response = endpoint.handle(json.loads(line))\n"
-            "        if response is not None:\n"
-            "            print(json.dumps(response), flush=True)\n"
-            "finally:\n"
-            "    service.close()\n",
+            "state_root = Path(os.environ.get('OPENUBMC_TARGET_RUNTIME_STATE_DIR', Path.home() / '.local/state/openubmc-test-runtime'))\n"
+            "lifecycle_root = Path(os.environ.get('OPENUBMC_MCP_LIFECYCLE_DIR', state_root / 'mcp-processes'))\n"
+            "lifecycle = McpProcessLifecycle(\n"
+            "    component='target-runtime', version='openubmc.target-runtime.v1',\n"
+            "    client=os.environ.get('OPENUBMC_MCP_CLIENT', 'codex'),\n"
+            "    task_id=os.environ.get('OPENUBMC_MCP_TASK_ID', 'runtime-health'),\n"
+            "    session_id=os.environ.get('OPENUBMC_MCP_SESSION_ID', 'runtime-health'),\n"
+            "    source_commit=os.environ.get('OPENUBMC_MCP_SOURCE_COMMIT', 'unknown-source-commit'),\n"
+            "    model_identity=json.loads(os.environ.get('OPENUBMC_MCP_MODEL_IDENTITY', '{}')),\n"
+            "    codex_identity=json.loads(os.environ.get('OPENUBMC_MCP_CODEX_IDENTITY', '{}')),\n"
+            "    formal_run=os.environ.get('OPENUBMC_MCP_FORMAL_RUN') == '1',\n"
+            "    parent_pid=os.getppid(), state_path=state_root,\n"
+            "    lifecycle_root=lifecycle_root,\n"
+            "    idle_timeout_seconds=30,\n"
+            ")\n"
+            "StdioMcpServer(endpoint, process_lifecycle=lifecycle).serve()\n",
             encoding="utf-8",
         )
         for helper in (
@@ -470,19 +483,53 @@ class EnvironmentSetupTests(unittest.TestCase):
                         "_meta": {"codex/taskId": "codex-adoption-probe"},
                     },
                 },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/openubmc-task-complete",
+                    "params": {
+                        "_meta": {"codex/taskId": "codex-adoption-probe"}
+                    },
+                },
             )
         ) + "\n"
-        environment = {**os.environ, "HOME": str(self.home)}
-        completed = subprocess.run(
-            [str(command)],
-            input=requests,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=15,
-            env=environment,
+        harness_lifecycle_root = (
+            self.home / ".local" / "state" / "codex-product-harness-lifecycle"
         )
+        lifecycle_root = self.home / ".local" / "state" / "codex-product-lifecycle"
+        runtime_state_root = self.home / ".local" / "state" / "codex-product-runtime"
+        environment = {
+            **os.environ,
+            "HOME": str(self.home),
+            "CODEX_HOME": str(self.home / ".codex"),
+            "XDG_CONFIG_HOME": str(self.home / ".config"),
+            "OPENUBMC_MCP_CLIENT": "codex",
+            "OPENUBMC_MCP_TASK_ID": "codex-adoption-probe",
+            "OPENUBMC_MCP_SESSION_ID": "codex-adoption-session",
+            "OPENUBMC_MCP_MODEL_IDENTITY": os.environ.get(
+                "OPENUBMC_PRODUCT_CLIENT_MODEL_IDENTITY",
+                json.dumps({"model": "codex-product-client-qualification"}),
+            ),
+            "OPENUBMC_MCP_CODEX_IDENTITY": os.environ.get(
+                "OPENUBMC_PRODUCT_CLIENT_CODEX_IDENTITY",
+                json.dumps({"version": "codex-cli 0.151.0"}),
+            ),
+            "OPENUBMC_MCP_FORMAL_RUN": "0",
+            "OPENUBMC_MCP_LIFECYCLE_DIR": str(harness_lifecycle_root),
+            "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(runtime_state_root),
+        }
+        def run_runtime(payload: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [str(command)],
+                input=payload,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=15,
+                env=environment,
+            )
+
+        completed = run_runtime(requests)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         responses = {
             document.get("id"): document
@@ -503,12 +550,137 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertTrue(structured["error"]["example"]["run_id"])
         state = installer.load_state(self.home)
         runtime = state["runtime"]
+        harness_records = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(harness_lifecycle_root.glob("*.json"))
+        ]
+        self.assertEqual(len(harness_records), 1)
+        self.assertFalse(harness_records[0]["formal_run"])
+        self.assertEqual(harness_records[0]["exit_reason"], "task-closeout")
         launcher_state_verified = command.read_text(encoding="utf-8") == (
             installer.render_runtime_launcher(runtime)
         )
         evidence_path = os.environ.get("OPENUBMC_PRODUCT_CLIENT_EVIDENCE", "")
         if not evidence_path:
             return
+        model_identity = json.loads(
+            os.environ["OPENUBMC_PRODUCT_CLIENT_MODEL_IDENTITY"]
+        )
+        codex_identity = json.loads(
+            os.environ["OPENUBMC_PRODUCT_CLIENT_CODEX_IDENTITY"]
+        )
+        self.assertIsInstance(model_identity, dict)
+        self.assertIsInstance(codex_identity, dict)
+        codex_probe = probe_codex_runtime(
+            repository_root=REPO_ROOT,
+            home=self.home,
+            qualification_root=self.root,
+            lifecycle_root=lifecycle_root,
+            runtime_state_root=runtime_state_root,
+            model_identity=model_identity,
+            codex_identity=codex_identity,
+            source_commit=runtime["source_commit"],
+            task_id="codex-adoption-probe",
+            session_id="codex-adoption-session",
+        )
+        lifecycle_records = codex_probe["mcp_lifecycle_records"]
+        self.assertEqual(len(lifecycle_records), 2)
+        process_runs = codex_probe["codex_process_runs"]
+        self.assertEqual(len(process_runs), 2)
+        process_bindings = {
+            (run["process_id"], run["process_identity"])
+            for run in process_runs
+        }
+        for lifecycle in lifecycle_records:
+            self.assertEqual(lifecycle["client"], "codex")
+            self.assertEqual(lifecycle["task_id"], "codex-adoption-probe")
+            self.assertEqual(lifecycle["session_id"], "codex-adoption-session")
+            self.assertEqual(lifecycle["source_commit"], runtime["source_commit"])
+            self.assertTrue(lifecycle["formal_run"])
+            self.assertTrue(lifecycle["parent_identity_verified"])
+            self.assertIsInstance(
+                lifecycle["parent_identity_currently_verified"], bool
+            )
+            self.assertIn(
+                (lifecycle["parent_pid"], lifecycle["parent_identity"]),
+                process_bindings,
+            )
+            self.assertEqual(
+                lifecycle["runtime_state_root"], str(runtime_state_root)
+            )
+            self.assertEqual(lifecycle["lifecycle_state"], "stopped")
+            self.assertEqual(lifecycle["active_requests"], 0)
+            self.assertEqual(lifecycle["exit_reason"], "client-terminated")
+        operator_status_process = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "mcp_process_lifecycle.py"),
+                "status",
+                "--root",
+                str(lifecycle_root),
+                "--task-id",
+                "codex-adoption-probe",
+                "--session-id",
+                "codex-adoption-session",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(
+            operator_status_process.returncode,
+            0,
+            operator_status_process.stderr,
+        )
+        operator_status = json.loads(operator_status_process.stdout)
+        task_home = self.home.absolute()
+        codex_config_root = (self.home / ".codex").absolute()
+        runtime_state_root = runtime_state_root.absolute()
+        lifecycle_root = lifecycle_root.absolute()
+        qualification_root = task_home
+        isolated_roots = (
+            task_home,
+            codex_config_root,
+            runtime_state_root,
+            lifecycle_root,
+        )
+        global_home = Path.home().absolute()
+        global_codex_config = Path(
+            os.environ.get("CODEX_HOME", global_home / ".codex")
+        ).absolute()
+        global_xdg_config = Path(
+            os.environ.get("XDG_CONFIG_HOME", global_home / ".config")
+        ).absolute()
+        global_codex_state_used = any(
+            selected == inherited
+            for selected, inherited in (
+                (task_home, global_home),
+                (codex_config_root, global_codex_config),
+                ((self.home / ".config").absolute(), global_xdg_config),
+            )
+        )
+        isolation_verified = (
+            all(path.is_relative_to(qualification_root) for path in isolated_roots)
+            and len(set(isolated_roots)) == len(isolated_roots)
+            and not global_codex_state_used
+        )
+        identity_records_valid = all(
+            lifecycle["client"] == "codex"
+            and lifecycle["task_id"] == "codex-adoption-probe"
+            and lifecycle["session_id"] == "codex-adoption-session"
+            and lifecycle["source_commit"] == runtime["source_commit"]
+            and lifecycle["formal_run"] is True
+            and lifecycle["parent_identity_verified"] is True
+            and (
+                lifecycle["parent_pid"], lifecycle["parent_identity"]
+            ) in process_bindings
+            and lifecycle["active_requests"] == 0
+            and lifecycle["exit_reason"] == "client-terminated"
+            for lifecycle in lifecycle_records
+        )
+        closeout_checks = operator_status["closeout_checks"]
         check_args = installer.parse_args(
             ["check", "--home", str(self.home), "--deep"]
         )
@@ -580,7 +752,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                     "launcher_identity": launcher_identity,
                     "launcher_identity_digest": launcher_identity_digest,
                     "runtime_invocation": (
-                        "client-configured-mcp-command"
+                        "installed-runtime-launcher-protocol"
                         if adapter_available
                         else "runtime-launcher-without-client-adapter"
                     ),
@@ -615,6 +787,51 @@ class EnvironmentSetupTests(unittest.TestCase):
                         "error_field": structured["error"]["field"],
                         "canonical_retry": structured["error"]["example"],
                         "is_error": workflow_result["isError"],
+                    },
+                    "codex_process_invocation": codex_probe[
+                        "codex_process_invocation"
+                    ],
+                    "codex_process_runs": process_runs,
+                    "captured_model_tools": codex_probe[
+                        "captured_model_tools"
+                    ],
+                    "captured_runtime_tool_contracts": codex_probe[
+                        "captured_runtime_tool_contracts"
+                    ],
+                    "restart_verified": codex_probe["restart_verified"],
+                    "mcp_lifecycle_records": lifecycle_records,
+                    "mcp_closeout": {
+                        "status": (
+                            "passed"
+                            if identity_records_valid
+                            and isolation_verified
+                            and all(closeout_checks.values())
+                            else "failed"
+                        ),
+                        "task_closeout_ready": (
+                            identity_records_valid
+                            and isolation_verified
+                            and all(closeout_checks.values())
+                        ),
+                        "identity_records_valid": identity_records_valid,
+                        "isolation_verified": isolation_verified,
+                        "summary": operator_status["summary"],
+                        "closeout_checks": closeout_checks,
+                        "operator_status": operator_status,
+                        "isolation": {
+                            "qualification_root": str(qualification_root),
+                            "task_home": str(task_home),
+                            "codex_config_root": str(codex_config_root),
+                            "runtime_state_root": str(runtime_state_root),
+                            "lifecycle_root": str(lifecycle_root),
+                            "global_codex_state_used": global_codex_state_used,
+                            "installed_launcher_invocation": (
+                                adapter_available
+                                and mcp_registration_verified
+                                and command.is_file()
+                                and os.access(command, os.X_OK)
+                            ),
+                        },
                     },
                 },
                 sort_keys=True,
@@ -2380,6 +2597,49 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertTrue(registration_verified)
         configured = installer.toml_stdio_mcp_entry(config_path)
         assert configured is not None
+        expected_launcher_source = (
+            state["release"].get("source_commit") or state["source_commit"]
+        )
+        self.assertEqual(
+            state["runtime"]["source_commit"],
+            expected_launcher_source,
+        )
+        knowledge_launcher = Path(state["knowledge_mcp"]["launcher_path"])
+        self.assertEqual(
+            state["knowledge_mcp"]["source_commit"],
+            expected_launcher_source,
+        )
+        node = self.root / "capture-node"
+        capture = self.root / "knowledge-launcher-source.txt"
+        node.write_text(
+            "#!/bin/sh\n"
+            "printf '%s' \"$OPENUBMC_MCP_SOURCE_COMMIT\" > "
+            '"$OPENUBMC_TEST_SOURCE_CAPTURE"\n',
+            encoding="utf-8",
+        )
+        node.chmod(0o755)
+        capture_launcher = self.root / "openubmc-kb-mcp-capture"
+        capture_launcher.write_text(
+            installer.render_knowledge_launcher(
+                {**state["knowledge_mcp"], "node_path": str(node)}
+            ),
+            encoding="utf-8",
+        )
+        capture_launcher.chmod(0o755)
+        completed = subprocess.run(
+            [str(capture_launcher)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env={
+                **os.environ,
+                "HOME": str(self.home),
+                "OPENUBMC_TEST_SOURCE_CAPTURE": str(capture),
+            },
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(capture.read_text(encoding="utf-8"), expected_launcher_source)
         self.record_product_client_evidence(
             client="codex",
             command=Path(str(configured["command"])),

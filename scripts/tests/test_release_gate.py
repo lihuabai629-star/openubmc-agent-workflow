@@ -23,6 +23,16 @@ SPEC.loader.exec_module(release_gate)
 
 SOURCE_COMMIT = "a" * 40
 RELEASE_COMMIT = "b" * 40
+MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
+CODEX_IDENTITY = {"version": "codex-cli 0.151.0"}
+
+
+def execute_release_gate(**kwargs: object) -> dict[str, object]:
+    return release_gate.execute_release_gate(
+        model_identity=MODEL_IDENTITY,
+        codex_identity=CODEX_IDENTITY,
+        **kwargs,
+    )
 
 
 def codex_adoption_report(
@@ -71,7 +81,7 @@ def codex_adoption_report(
                 "configured": True,
                 "registration_verified": True,
                 "runtime_launcher_verified": True,
-                "runtime_invocation": "client-configured-mcp-command",
+                "runtime_invocation": "installed-runtime-launcher-protocol",
                 "protocol_exchange": [
                     "initialize",
                     "tools/list",
@@ -98,6 +108,159 @@ def codex_adoption_report(
                     },
                     "is_error": True,
                 },
+                "codex_process_invocation": True,
+                "codex_process_runs": [
+                    {
+                        "process_id": 123,
+                        "process_identity": "parent-identity",
+                        "parent_pid": 123,
+                        "parent_identity": "parent-identity",
+                        "executable": "/isolated/codex",
+                        "executable_sha256": "sha256:" + "9" * 64,
+                        "version": "codex-cli 0.151.0",
+                        "requested_model": "codex-product-client-qualification",
+                        "captured_request_models": [
+                            "codex-product-client-qualification"
+                        ],
+                        "transport_provenance": {
+                            "provider": "local-hermetic-responses",
+                            "wire_api": "responses",
+                            "network_scope": "loopback",
+                        },
+                        "returncode": 0,
+                    },
+                    {
+                        "process_id": 124,
+                        "process_identity": "parent-identity-2",
+                        "parent_pid": 124,
+                        "parent_identity": "parent-identity-2",
+                        "executable": "/isolated/codex",
+                        "executable_sha256": "sha256:" + "9" * 64,
+                        "version": "codex-cli 0.151.0",
+                        "requested_model": "codex-product-client-qualification",
+                        "captured_request_models": [
+                            "codex-product-client-qualification"
+                        ],
+                        "transport_provenance": {
+                            "provider": "local-hermetic-responses",
+                            "wire_api": "responses",
+                            "network_scope": "loopback",
+                        },
+                        "returncode": 0,
+                    },
+                ],
+                "captured_model_tools": ["mcp__openubmc_target_runtime"],
+                "captured_runtime_tool_contracts": [
+                    {
+                        "name": "mcp__openubmc_target_runtime",
+                        "type": "namespace",
+                        "tools": [
+                            {"name": "execute"},
+                            {"name": "observe"},
+                        ],
+                    }
+                ],
+                "restart_verified": True,
+                "mcp_closeout": {
+                    "status": "passed",
+                    "task_closeout_ready": True,
+                    "identity_records_valid": True,
+                    "isolation_verified": True,
+                    "summary": {
+                        "record_count": 2,
+                        "live_processes": 0,
+                        "active_requests": 0,
+                        "confirmed_live_orphans": 0,
+                        "unattributed_live_processes": 0,
+                        "owned_live_processes": 0,
+                        "stopped_processes": 2,
+                    },
+                    "closeout_checks": {
+                        "active_requests_zero": True,
+                        "confirmed_live_orphans_zero": True,
+                        "unattributed_live_processes_zero": True,
+                        "owned_live_processes_zero": True,
+                    },
+                    "operator_status": {
+                        "schema": "openubmc-agent-workflow.mcp-process-status.v1",
+                        "operation": "status",
+                        "task_id": "codex-adoption-probe",
+                        "session_id": "codex-adoption-session",
+                        "task_closeout_ready": True,
+                        "summary": {
+                            "record_count": 2,
+                            "live_processes": 0,
+                            "active_requests": 0,
+                            "confirmed_live_orphans": 0,
+                            "unattributed_live_processes": 0,
+                            "owned_live_processes": 0,
+                            "stopped_processes": 2,
+                        },
+                        "closeout_checks": {
+                            "active_requests_zero": True,
+                            "confirmed_live_orphans_zero": True,
+                            "unattributed_live_processes_zero": True,
+                            "owned_live_processes_zero": True,
+                        },
+                    },
+                    "isolation": {
+                        "qualification_root": "/isolated",
+                        "task_home": "/isolated/home",
+                        "codex_config_root": "/isolated/codex",
+                        "runtime_state_root": "/isolated/runtime-state",
+                        "lifecycle_root": "/isolated/mcp-processes",
+                        "global_codex_state_used": False,
+                        "installed_launcher_invocation": True,
+                    },
+                },
+                "mcp_lifecycle_records": [
+                    {
+                        "schema": "openubmc.mcp-process-lifecycle.v1",
+                        "component": "target-runtime",
+                        "version": "openubmc.target-runtime.v1",
+                        "client": "codex",
+                        "task_id": "codex-adoption-probe",
+                        "session_id": "codex-adoption-session",
+                        "source_commit": source_commit,
+                        "formal_run": True,
+                        "model_identity": MODEL_IDENTITY,
+                        "codex_identity": CODEX_IDENTITY,
+                        "parent_pid": 123,
+                        "parent_identity": "parent-identity",
+                        "parent_identity_verified": True,
+                        "parent_identity_currently_verified": True,
+                        "process_id": 456,
+                        "process_identity": "process-identity",
+                        "start_time": "2026-08-31T00:00:00Z",
+                        "runtime_state_root": "/isolated/runtime-state",
+                        "lifecycle_state": "stopped",
+                        "active_requests": 0,
+                        "exit_reason": "client-terminated",
+                    },
+                    {
+                        "schema": "openubmc.mcp-process-lifecycle.v1",
+                        "component": "target-runtime",
+                        "version": "openubmc.target-runtime.v1",
+                        "client": "codex",
+                        "task_id": "codex-adoption-probe",
+                        "session_id": "codex-adoption-session",
+                        "source_commit": source_commit,
+                        "formal_run": True,
+                        "model_identity": MODEL_IDENTITY,
+                        "codex_identity": CODEX_IDENTITY,
+                        "parent_pid": 124,
+                        "parent_identity": "parent-identity-2",
+                        "parent_identity_verified": True,
+                        "parent_identity_currently_verified": True,
+                        "process_id": 457,
+                        "process_identity": "process-identity-2",
+                        "start_time": "2026-08-31T00:00:01Z",
+                        "runtime_state_root": "/isolated/runtime-state",
+                        "lifecycle_state": "stopped",
+                        "active_requests": 0,
+                        "exit_reason": "client-terminated",
+                    },
+                ],
             },
             "product_contract": {
                 "status": "passed",
@@ -118,17 +281,27 @@ def codex_adoption_report(
                 "full_bytes": 2,
                 "reference_bytes": 1,
                 "saved_bytes": 1,
+                "operator_projection_covered": True,
             },
             "lifecycle": {
                 "status": "passed",
                 "closeout": {
                     "status": "passed",
                     "task_closeout_ready": True,
+                    "identity_records_valid": True,
+                    "isolation_verified": True,
                     "summary": {
                         "active_requests": 0,
                         "live_processes": 0,
                         "confirmed_live_orphans": 0,
                         "unattributed_live_processes": 0,
+                        "owned_live_processes": 0,
+                    },
+                    "closeout_checks": {
+                        "active_requests_zero": True,
+                        "confirmed_live_orphans_zero": True,
+                        "unattributed_live_processes_zero": True,
+                        "owned_live_processes_zero": True,
                     },
                 },
             },
@@ -139,8 +312,8 @@ def codex_adoption_report(
                 "qualification_commit": source_commit,
                 "continuous_closeout_digest": "sha256:" + "7" * 64,
             },
-            "model": None,
-            "codex": None,
+            "model": MODEL_IDENTITY,
+            "codex": CODEX_IDENTITY,
         },
         "external_evaluation": {
             "blocking": False,
@@ -192,7 +365,7 @@ class ReleaseGateTests(unittest.TestCase):
             return_value=candidate,
         ), patch.object(release_gate, "require_published_candidate"):
             with self.assertRaisesRegex(ValueError, pattern):
-                release_gate.execute_release_gate(
+                execute_release_gate(
                     current_ref=candidate.requested_ref,
                     previous_ref=previous_ref,
                     workspace=Path.cwd(),
@@ -265,7 +438,7 @@ class ReleaseGateTests(unittest.TestCase):
             "HEAD",
             release_version="2.0.2",
         ):
-            report = release_gate.execute_release_gate(
+            report = execute_release_gate(
                 current_ref="HEAD",
                 release_tag="v2.0.2",
                 previous_ref="v2.0.1",
@@ -296,7 +469,7 @@ class ReleaseGateTests(unittest.TestCase):
             "v1.1.2"
         ):
             root = Path(directory)
-            report = release_gate.execute_release_gate(
+            report = execute_release_gate(
                 current_ref="v1.1.2",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
@@ -333,6 +506,10 @@ class ReleaseGateTests(unittest.TestCase):
             SOURCE_COMMIT,
         )
         self.assertEqual(report["source_commit"], SOURCE_COMMIT)
+        self.assertEqual(
+            report["formal_identity"],
+            {"model": MODEL_IDENTITY, "codex": CODEX_IDENTITY},
+        )
         self.assertRegex(report["environment_fingerprint"], r"^sha256:[0-9a-f]{64}$")
 
     def test_failure_blocks_later_gates_and_promotion(self) -> None:
@@ -351,7 +528,7 @@ class ReleaseGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
             "v1.1.2"
         ):
-            report = release_gate.execute_release_gate(
+            report = execute_release_gate(
                 current_ref="v1.1.2",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
@@ -376,6 +553,8 @@ class ReleaseGateTests(unittest.TestCase):
                     clean_home=root / "clean",
                     lifecycle_home=root / "lifecycle",
                     source_commit="a" * 40,
+                    model_identity=MODEL_IDENTITY,
+                    codex_identity=CODEX_IDENTITY,
                 )
             )
 
@@ -398,6 +577,14 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(
             adoption[adoption.index("--source-commit") + 1],
             "a" * 40,
+        )
+        self.assertEqual(
+            json.loads(adoption[adoption.index("--model-identity") + 1]),
+            MODEL_IDENTITY,
+        )
+        self.assertEqual(
+            json.loads(adoption[adoption.index("--codex-identity") + 1]),
+            CODEX_IDENTITY,
         )
         ab_evidence = gates["agent_gateway_ab_evidence"][0]
         self.assertIn("agent_gateway_ab.py", ab_evidence[1])
@@ -473,7 +660,7 @@ class ReleaseGateTests(unittest.TestCase):
                     ("HEAD", lock_commit, "v1.1.2")
                 ):
                     reports.append(
-                        release_gate.execute_release_gate(
+                        execute_release_gate(
                             current_ref=requested_ref,
                             previous_ref="v1.1.1",
                             workspace=root,
@@ -531,7 +718,7 @@ class ReleaseGateTests(unittest.TestCase):
             source_commit=source_commit,
             release_version="2.0.1",
         ):
-            report = release_gate.execute_release_gate(
+            report = execute_release_gate(
                 current_ref="HEAD",
                 previous_ref="v2.0.0",
                 workspace=Path.cwd(),
@@ -578,7 +765,7 @@ class ReleaseGateTests(unittest.TestCase):
                 ValueError,
                 "not published or reachable.*push the lock-only commit or tag",
             ):
-                release_gate.execute_release_gate(
+                execute_release_gate(
                     current_ref="HEAD",
                     previous_ref="v2.0.0",
                     workspace=Path.cwd(),
@@ -604,6 +791,10 @@ class ReleaseGateTests(unittest.TestCase):
                     "HEAD",
                     "--previous-ref",
                     "v2.0.0",
+                    "--model-identity",
+                    json.dumps(MODEL_IDENTITY),
+                    "--codex-identity",
+                    json.dumps(CODEX_IDENTITY),
                     "--work-root",
                     directory,
                     "--ab-evidence",
@@ -687,7 +878,7 @@ class ReleaseGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
             "HEAD"
         ):
-            report = release_gate.execute_release_gate(
+            report = execute_release_gate(
                 current_ref="HEAD",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
@@ -734,7 +925,7 @@ class ReleaseGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
             "HEAD"
         ):
-            report = release_gate.execute_release_gate(
+            report = execute_release_gate(
                 current_ref="HEAD",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
@@ -749,6 +940,45 @@ class ReleaseGateTests(unittest.TestCase):
         )
         self.assertIn(
             "schema",
+            gates["codex_adoption_qualification"]["commands"][0][
+                "stderr_tail"
+            ],
+        )
+
+    def test_release_gate_rejects_adoption_evidence_for_another_identity(
+        self,
+    ) -> None:
+        def succeed(command, *, cwd):
+            if "codex_adoption_qualification.py" in " ".join(command):
+                report = codex_adoption_report()
+                report["provenance"]["model"] = {"model": "another-model"}
+                report["evidence_digest"] = release_gate.evidence_fingerprint(
+                    {
+                        key: value
+                        for key, value in report.items()
+                        if key != "evidence_digest"
+                    }
+                )
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(json.dumps(report), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "HEAD"
+        ):
+            report = execute_release_gate(
+                current_ref="HEAD",
+                previous_ref="v1.1.1",
+                workspace=Path.cwd(),
+                work_root=Path(directory),
+                executor=succeed,
+            )
+
+        gates = {item["name"]: item for item in report["gates"]}
+        self.assertFalse(report["promotable"])
+        self.assertIn(
+            "model identity mismatch",
             gates["codex_adoption_qualification"]["commands"][0][
                 "stderr_tail"
             ],
@@ -831,7 +1061,7 @@ class ReleaseGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
             "HEAD"
         ):
-            report = release_gate.execute_release_gate(
+            report = execute_release_gate(
                 current_ref="HEAD",
                 previous_ref="v1.1.1",
                 workspace=Path.cwd(),
@@ -863,6 +1093,14 @@ class ReleaseGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "candidate identity"):
                     release_gate.verify_release_gate_report(invalid)
 
+        invalid = dict(report)
+        invalid.pop("formal_identity")
+        invalid["evidence_digest"] = release_gate.evidence_fingerprint(
+            {key: value for key, value in invalid.items() if key != "evidence_digest"}
+        )
+        with self.assertRaisesRegex(ValueError, "formal identity"):
+            release_gate.verify_release_gate_report(invalid)
+
         legacy = dict(report)
         legacy["schema"] = "openubmc-agent-workflow.release-gate.v2"
         legacy.pop("requested_ref")
@@ -886,6 +1124,8 @@ class ReleaseGateTests(unittest.TestCase):
             {
                 "current_ref",
                 "previous_ref",
+                "model_identity",
+                "codex_identity",
                 "ab_bundle_asset",
                 "ab_bundle_sha256",
                 "promote",
@@ -914,6 +1154,14 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(
             steps["actions/setup-python@v7"]["with"]["python-version"],
             "3.12.13",
+        )
+        self.assertEqual(
+            steps["actions/setup-node@v7"]["with"]["node-version"],
+            "22.23.2",
+        )
+        self.assertEqual(
+            steps["Install locked Node validation dependencies"]["run"],
+            "npm ci --no-audit --no-fund --prefix openubmc-kb-mcp",
         )
         self.assertEqual(
             steps["Upload release evidence"]["uses"],
@@ -949,6 +1197,18 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("base64 --decode", trust_root["run"])
         self.assertIn("$RUNNER_TEMP/agent-gateway-ab-attestation.pub", trust_root["run"])
         gate = steps["Run immutable release gates"]["run"]
+        self.assertEqual(
+            steps["Run immutable release gates"]["env"][
+                "FORMAL_MODEL_IDENTITY"
+            ],
+            "${{ inputs.model_identity }}",
+        )
+        self.assertEqual(
+            steps["Run immutable release gates"]["env"][
+                "FORMAL_CODEX_IDENTITY"
+            ],
+            "${{ inputs.codex_identity }}",
+        )
         self.assertIn(
             '--current-ref "${{ inputs.current_ref }}"',
             gate,
@@ -957,6 +1217,8 @@ class ReleaseGateTests(unittest.TestCase):
             '--release-tag "${{ steps.candidate.outputs.release_tag }}"',
             gate,
         )
+        self.assertIn('--model-identity "$FORMAL_MODEL_IDENTITY"', gate)
+        self.assertIn('--codex-identity "$FORMAL_CODEX_IDENTITY"', gate)
         self.assertIn(
             '--ab-evidence "$RUNNER_TEMP/agent-gateway-ab-evidence/summary.json"',
             gate,

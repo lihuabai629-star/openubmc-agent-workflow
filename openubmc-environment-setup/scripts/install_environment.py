@@ -1007,6 +1007,7 @@ def build_runtime_plan(
     home: Path,
     source: Path,
     *,
+    source_commit: str = "unknown-source-commit",
     allow_missing_source: bool = False,
 ) -> dict[str, str]:
     source_package = source / "openubmc-target-runtime" / "openubmc_target_runtime"
@@ -1028,6 +1029,7 @@ def build_runtime_plan(
         "schema_version": TARGET_RUNTIME_INSTALL_SCHEMA,
         "api_version": api_version,
         "content_digest": content_digest,
+        "source_commit": str(source_commit).strip() or "unknown-source-commit",
         "source_package_path": str(source_package),
         "package_path": str(runtime_package_path(home)),
         "launcher_path": str(runtime_launcher_path(home)),
@@ -1041,6 +1043,7 @@ def render_runtime_launcher(plan: dict[str, str]) -> str:
     entrypoint = json.dumps(plan["mcp_entrypoint"])
     expected_api = json.dumps(plan["api_version"])
     expected_digest = json.dumps(plan["content_digest"])
+    source_commit = json.dumps(plan.get("source_commit", "unknown-source-commit"))
     return f'''#!/usr/bin/env python3
 from __future__ import annotations
 
@@ -1055,6 +1058,7 @@ PACKAGE_ROOT = Path({package})
 MCP_ENTRYPOINT = Path({entrypoint})
 EXPECTED_API = {expected_api}
 EXPECTED_DIGEST = {expected_digest}
+SOURCE_COMMIT = {source_commit}
 DIGEST_DOMAIN = b"openubmc-target-runtime-content-v1\\0"
 
 
@@ -1112,6 +1116,8 @@ if runtime_digest() != EXPECTED_DIGEST:
     fail("Runtime content digest mismatch")
 if not MCP_ENTRYPOINT.is_file():
     fail("MCP entrypoint is missing")
+
+os.environ["OPENUBMC_MCP_SOURCE_COMMIT"] = SOURCE_COMMIT
 
 config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
 credentials = config_root / "openubmc" / "credentials.env"
@@ -1266,6 +1272,7 @@ def build_knowledge_plan(
     source: Path,
     node: Path,
     *,
+    source_commit: str = "unknown-source-commit",
     allow_missing_source: bool = False,
 ) -> dict[str, str]:
     package_root = source / "openubmc-kb-mcp"
@@ -1274,6 +1281,7 @@ def build_knowledge_plan(
         "schema_version": KNOWLEDGE_MCP_INSTALL_SCHEMA,
         "version": KNOWLEDGE_MCP_VERSION,
         "content_digest": digest,
+        "source_commit": str(source_commit).strip() or "unknown-source-commit",
         "source_path": str(package_root),
         "server_path": str(package_root / "src" / "server.js"),
         "node_path": str(node),
@@ -1289,6 +1297,7 @@ def render_knowledge_launcher(plan: Mapping[str, str]) -> str:
     node = json.dumps(plan["node_path"])
     config = json.dumps(plan["config_path"])
     expected_digest = json.dumps(plan["content_digest"])
+    source_commit = json.dumps(plan.get("source_commit", "unknown-source-commit"))
     return f'''#!/usr/bin/env python3
 from __future__ import annotations
 
@@ -1301,6 +1310,7 @@ SERVER = Path({server})
 NODE = Path({node})
 CONFIG = Path({config})
 EXPECTED_DIGEST = {expected_digest}
+SOURCE_COMMIT = {source_commit}
 DIGEST_DOMAIN = b"openubmc-kb-content-v1\\0"
 
 
@@ -1327,6 +1337,7 @@ if "sha256:" + digest.hexdigest() != EXPECTED_DIGEST:
     fail("content digest mismatch")
 if not NODE.is_file() or not os.access(NODE, os.X_OK):
     fail("Node.js runtime is missing")
+os.environ["OPENUBMC_MCP_SOURCE_COMMIT"] = SOURCE_COMMIT
 os.environ.setdefault("OPENUBMC_KB_CONFIG", str(CONFIG))
 os.execv(str(NODE), [str(NODE), str(SERVER), "--config", str(CONFIG)])
 '''
@@ -4039,9 +4050,15 @@ def perform_install(
                 "automatic workflow tool installation did not complete: "
                 + ", ".join(sorted(set(unresolved)))
             )
+    planned_source_commit = str(
+        release_state.get("source_commit", "")
+    ).strip() or (
+        git_commit(source) if source.exists() else "planned"
+    )
     runtime_plan = build_runtime_plan(
         home,
         source,
+        source_commit=planned_source_commit,
         allow_missing_source=planned_missing_source,
     )
     knowledge_plan = (
@@ -4049,6 +4066,7 @@ def perform_install(
             home,
             source,
             knowledge_node or (home / ".local" / "bin" / "node"),
+            source_commit=planned_source_commit,
             allow_missing_source=planned_missing_source,
         )
         if manage_knowledge_mcp

@@ -33,20 +33,15 @@ from scripts.evidence_report import (  # noqa: E402
     evidence_fingerprint,
     source_commit as bind_source_commit,
 )
+from scripts.formal_identity import (  # noqa: E402
+    identity_argument,
+    normalize_codex_identity,
+    normalize_model_identity,
+)
 
 
 def _mapping(value: object) -> dict[str, object]:
     return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _normalized_identity(value: Mapping[str, object] | None) -> dict[str, object] | None:
-    if value is None:
-        return None
-    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True)
-    decoded = json.loads(encoded)
-    if not isinstance(decoded, dict):
-        raise ValueError("identity must be a JSON object")
-    return decoded
 
 
 def _passed(value: Mapping[str, object]) -> bool:
@@ -59,11 +54,24 @@ def qualify(
     model_identity: Mapping[str, object] | None = None,
     codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    required_identity = "formal model and Codex identity are required"
+    selected_model_identity = normalize_model_identity(
+        model_identity,
+        required_message=required_identity,
+    )
+    selected_codex_identity = normalize_codex_identity(
+        codex_identity,
+        required_message=required_identity,
+    )
     selected_source_commit = bind_source_commit(
         source_commit or "",
         workspace=ROOT,
     )
-    closeout = qualify_closeout(source_commit=selected_source_commit)
+    closeout = qualify_closeout(
+        source_commit=selected_source_commit,
+        model_identity=selected_model_identity,
+        codex_identity=selected_codex_identity,
+    )
     qualification_commit = str(closeout.get("source_commit", ""))
     release = build_release_lock(ROOT, source_commit=selected_source_commit)
 
@@ -129,12 +137,30 @@ def qualify(
         codex_run.get("launcher_identity_digest", "")
     )
     installed_source_commit = str(codex_run.get("source_commit", ""))
+    raw_mcp_lifecycle_records = codex_run.get("mcp_lifecycle_records")
+    mcp_lifecycle_records = (
+        list(raw_mcp_lifecycle_records)
+        if isinstance(raw_mcp_lifecycle_records, list)
+        else []
+    )
     mcp_failures = codex_mcp_failures(
         codex_run,
         contract={"mcp": True},
         expected_source_commit=selected_source_commit,
         expected_runtime=runtime,
     )
+    if any(
+        not isinstance(record, Mapping)
+        or record.get("model_identity") != selected_model_identity
+        for record in mcp_lifecycle_records
+    ):
+        mcp_failures.append("model_identity_mismatch")
+    if any(
+        not isinstance(record, Mapping)
+        or record.get("codex_identity") != selected_codex_identity
+        for record in mcp_lifecycle_records
+    ):
+        mcp_failures.append("codex_identity_mismatch")
     identity_bound = all(
         (
             installed_source_commit == selected_source_commit,
@@ -175,6 +201,20 @@ def qualify(
         "launcher_identity": launcher_identity,
         "launcher_identity_digest": launcher_identity_digest,
         "workflow_exchange": workflow_exchange,
+        "codex_process_invocation": codex_run.get(
+            "codex_process_invocation"
+        )
+        is True,
+        "codex_process_runs": list(codex_run.get("codex_process_runs", [])),
+        "captured_model_tools": list(
+            codex_run.get("captured_model_tools", [])
+        ),
+        "captured_runtime_tool_contracts": list(
+            codex_run.get("captured_runtime_tool_contracts", [])
+        ),
+        "mcp_lifecycle_records": mcp_lifecycle_records,
+        "restart_verified": codex_run.get("restart_verified") is True,
+        "mcp_closeout": _mapping(codex_run.get("mcp_closeout")),
     }
     mcp_failures.extend(
         failure
@@ -224,6 +264,7 @@ def qualify(
                         _passed(projection),
                         projection.get("correctness_primary") is True,
                         projection.get("repeated_reference") is True,
+                        projection.get("operator_projection_covered") is True,
                     )
                 )
                 else "failed"
@@ -238,6 +279,24 @@ def qualify(
                         _passed(lifecycle),
                         _passed(lifecycle_closeout),
                         lifecycle_closeout.get("task_closeout_ready") is True,
+                        lifecycle_closeout.get("identity_records_valid") is True,
+                        lifecycle_closeout.get("isolation_verified") is True,
+                        _mapping(lifecycle_closeout.get("summary")).get(
+                            "owned_live_processes"
+                        )
+                        == 0,
+                        all(
+                            _mapping(
+                                lifecycle_closeout.get("closeout_checks")
+                            ).get(name)
+                            is True
+                            for name in (
+                                "active_requests_zero",
+                                "confirmed_live_orphans_zero",
+                                "unattributed_live_processes_zero",
+                                "owned_live_processes_zero",
+                            )
+                        ),
                     )
                 )
                 else "failed"
@@ -267,8 +326,8 @@ def qualify(
                     closeout.get("qualification_digest", "")
                 ),
             },
-            "model": _normalized_identity(model_identity),
-            "codex": _normalized_identity(codex_identity),
+            "model": selected_model_identity,
+            "codex": selected_codex_identity,
         },
         "external_evaluation": {
             "blocking": False,
@@ -286,20 +345,18 @@ def qualify(
     return report
 
 
-def _identity_argument(value: str) -> dict[str, object]:
-    try:
-        document = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError("identity must be valid JSON") from exc
-    if not isinstance(document, dict):
-        raise argparse.ArgumentTypeError("identity must be a JSON object")
-    return document
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-identity", type=_identity_argument)
-    parser.add_argument("--codex-identity", type=_identity_argument)
+    parser.add_argument(
+        "--model-identity",
+        type=identity_argument,
+        required=True,
+    )
+    parser.add_argument(
+        "--codex-identity",
+        type=identity_argument,
+        required=True,
+    )
     parser.add_argument("--source-commit")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)

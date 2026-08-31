@@ -14,6 +14,27 @@ SCRIPT = ROOT / "scripts" / "mcp_process_lifecycle.py"
 
 
 class McpProcessLifecycleCliTests(unittest.TestCase):
+    def test_cleanup_requires_task_and_session_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "cleanup",
+                    "--root",
+                    str(Path(raw) / "processes"),
+                    "--dry-run",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn(
+            "cleanup requires --task-id and --session-id", completed.stderr
+        )
+
     def test_status_reports_empty_lifecycle_root_without_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "processes"
@@ -41,7 +62,17 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                 "active_requests": 0,
                 "confirmed_live_orphans": 0,
                 "unattributed_live_processes": 0,
+                "owned_live_processes": 0,
                 "stopped_processes": 0,
+            },
+        )
+        self.assertEqual(
+            payload["closeout_checks"],
+            {
+                "active_requests_zero": True,
+                "confirmed_live_orphans_zero": True,
+                "owned_live_processes_zero": True,
+                "unattributed_live_processes_zero": True,
             },
         )
         self.assertTrue(payload["task_closeout_ready"])
@@ -69,7 +100,9 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                     "task_id": "test-task",
                     "session_id": "test-session",
                     "parent_pid": missing_parent_pid,
-                    "parent_identity": "unknown",
+                    "parent_identity": "verified-parent-start",
+                    "parent_identity_verified": True,
+                    "parent_identity_currently_verified": False,
                     "process_id": child.pid,
                     "process_identity": identity,
                     "start_time": "2026-08-28T00:00:00Z",
@@ -94,6 +127,10 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                         "--root",
                         str(root),
                         "--dry-run",
+                        "--task-id",
+                        "test-task",
+                        "--session-id",
+                        "test-session",
                     ],
                     text=True,
                     capture_output=True,
@@ -108,7 +145,17 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                 self.assertEqual(json.loads(dry_run.stdout)["cleaned_processes"], [])
 
                 cleanup = subprocess.run(
-                    [sys.executable, str(SCRIPT), "cleanup", "--root", str(root)],
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "cleanup",
+                        "--root",
+                        str(root),
+                        "--task-id",
+                        "test-task",
+                        "--session-id",
+                        "test-session",
+                    ],
                     text=True,
                     capture_output=True,
                     check=False,
@@ -125,6 +172,9 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                     cleanup_payload["summary"]["confirmed_live_orphans"], 0
                 )
                 self.assertEqual(cleanup_payload["summary"]["live_processes"], 0)
+                self.assertEqual(
+                    cleanup_payload["summary"]["owned_live_processes"], 0
+                )
                 self.assertTrue(cleanup_payload["task_closeout_ready"])
                 self.assertEqual(
                     cleanup_payload["records_before_cleanup"][0][
@@ -136,6 +186,64 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                     cleanup_payload["records"][0]["lifecycle_state"],
                     "stopped",
                 )
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                    child.wait(timeout=5)
+
+    def test_cleanup_preserves_unbound_orphan_and_reports_it_unattributed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "processes"
+            root.mkdir()
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+            )
+            try:
+                stat = Path(f"/proc/{child.pid}/stat").read_text(encoding="utf-8")
+                command_end = stat.rfind(")")
+                identity = stat[command_end + 2 :].split()[19]
+                record = {
+                    "schema": "openubmc.mcp-process-lifecycle.v1",
+                    "component": "test-mcp",
+                    "version": "1",
+                    "client": "test-client",
+                    "task_id": "unknown-task",
+                    "session_id": "unknown-session",
+                    "parent_pid": 999999999,
+                    "parent_identity": "unknown",
+                    "parent_identity_verified": False,
+                    "process_id": child.pid,
+                    "process_identity": identity,
+                    "active_requests": 0,
+                }
+                (root / f"test-mcp-{child.pid}.json").write_text(
+                    json.dumps(record), encoding="utf-8"
+                )
+
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "cleanup",
+                        "--root",
+                        str(root),
+                        "--task-id",
+                        "test-task",
+                        "--session-id",
+                        "test-session",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                payload = json.loads(completed.stdout)
+
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(payload["confirmed_orphaned_processes"], [])
+                self.assertEqual(payload["cleaned_processes"], [])
+                self.assertEqual(payload["summary"]["unattributed_live_processes"], 1)
+                self.assertFalse(payload["task_closeout_ready"])
+                self.assertIsNone(child.poll())
             finally:
                 if child.poll() is None:
                     child.terminate()

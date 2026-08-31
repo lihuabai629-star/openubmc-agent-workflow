@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import hashlib
 import json
 import platform
@@ -28,6 +28,11 @@ from scripts.release_gate_contract import (  # noqa: E402
 )
 from scripts.codex_adoption_contract import (  # noqa: E402
     verify_codex_adoption_report,
+)
+from scripts.formal_identity import (  # noqa: E402
+    identity_argument,
+    normalize_codex_identity,
+    normalize_model_identity,
 )
 
 from openubmc_target_runtime.release import (  # noqa: E402
@@ -121,6 +126,8 @@ def _load_codex_adoption_evidence(
     path: Path,
     *,
     expected_source_commit: str,
+    expected_model_identity: Mapping[str, object],
+    expected_codex_identity: Mapping[str, object],
 ) -> dict[str, object]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -135,6 +142,13 @@ def _load_codex_adoption_evidence(
         expected_source_commit=expected_source_commit,
         require_ready=True,
     )
+    provenance = document.get("provenance")
+    if not isinstance(provenance, Mapping):
+        raise ValueError("Codex Adoption Qualification provenance is unavailable")
+    if provenance.get("model") != dict(expected_model_identity):
+        raise ValueError("Codex Adoption Qualification model identity mismatch")
+    if provenance.get("codex") != dict(expected_codex_identity):
+        raise ValueError("Codex Adoption Qualification Codex identity mismatch")
     return document
 
 
@@ -276,6 +290,8 @@ def gate_commands(
     lifecycle_home: Path,
     ab_evidence: Path | None = None,
     source_commit: str = "",
+    model_identity: Mapping[str, object],
+    codex_identity: Mapping[str, object],
     github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
     ab_attestation_public_key: Path | None = None,
 ) -> tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]:
@@ -389,6 +405,14 @@ def gate_commands(
                     str(ROOT / "scripts" / "codex_adoption_qualification.py"),
                     "--source-commit",
                     source_commit,
+                    "--model-identity",
+                    json.dumps(
+                        dict(model_identity), ensure_ascii=True, sort_keys=True
+                    ),
+                    "--codex-identity",
+                    json.dumps(
+                        dict(codex_identity), ensure_ascii=True, sort_keys=True
+                    ),
                     "--output",
                     str(adoption_output),
                 ),
@@ -420,12 +444,16 @@ def execute_release_gate(
     previous_ref: str,
     workspace: Path,
     work_root: Path,
+    model_identity: Mapping[str, object],
+    codex_identity: Mapping[str, object],
     executor: Callable[..., subprocess.CompletedProcess[str]] = run_process,
     ab_evidence: Path | None = None,
     github_repository: str = "lihuabai629-star/openubmc-agent-workflow",
     ab_attestation_public_key: Path | None = None,
     release_tag: str | None = None,
 ) -> dict[str, object]:
+    selected_model_identity = normalize_model_identity(model_identity)
+    selected_codex_identity = normalize_codex_identity(codex_identity)
     clean_home = work_root / "clean-install-home"
     lifecycle_home = work_root / "lifecycle-home"
     results: list[dict[str, object]] = []
@@ -476,6 +504,8 @@ def execute_release_gate(
         lifecycle_home=lifecycle_home,
         ab_evidence=ab_evidence,
         source_commit=resolved_source_commit,
+        model_identity=selected_model_identity,
+        codex_identity=selected_codex_identity,
         github_repository=github_repository,
         ab_attestation_public_key=ab_attestation_public_key,
     ):
@@ -509,6 +539,8 @@ def execute_release_gate(
                 adoption_document = _load_codex_adoption_evidence(
                     work_root / "codex-adoption-qualification.json",
                     expected_source_commit=resolved_source_commit,
+                    expected_model_identity=selected_model_identity,
+                    expected_codex_identity=selected_codex_identity,
                 )
             except ValueError as error:
                 blocked = True
@@ -558,6 +590,10 @@ def execute_release_gate(
         "release_commit": candidate.release_commit,
         "previous_ref": previous_ref,
         "source_commit": resolved_source_commit,
+        "formal_identity": {
+            "model": selected_model_identity,
+            "codex": selected_codex_identity,
+        },
         "environment": environment,
         "environment_fingerprint": evidence_fingerprint(environment),
         "promotable": promotable,
@@ -578,6 +614,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--current-ref", required=True)
     parser.add_argument("--previous-ref", required=True)
+    parser.add_argument(
+        "--model-identity",
+        type=identity_argument,
+        required=True,
+    )
+    parser.add_argument(
+        "--codex-identity",
+        type=identity_argument,
+        required=True,
+    )
     parser.add_argument("--release-tag")
     parser.add_argument("--workspace", type=Path, default=ROOT)
     parser.add_argument("--work-root", type=Path)
@@ -610,6 +656,8 @@ def main(argv: list[str] | None = None) -> int:
                 previous_ref=args.previous_ref,
                 workspace=args.workspace.expanduser().absolute(),
                 work_root=work_root,
+                model_identity=args.model_identity,
+                codex_identity=args.codex_identity,
                 ab_evidence=args.ab_evidence.expanduser().absolute(),
                 github_repository=args.github_repository,
                 release_tag=args.release_tag,

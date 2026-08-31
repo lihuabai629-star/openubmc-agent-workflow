@@ -61,6 +61,13 @@ class McpProcessLifecycleTests(unittest.TestCase):
             client="codex",
             task_id="task-100",
             session_id="session-100",
+            source_commit="a" * 40,
+            model_identity={"model": "gpt-5.6-sol"},
+            codex_identity={
+                "version": "codex-cli 0.150.0",
+                "executable_sha256": "sha256:" + "b" * 64,
+            },
+            formal_run=True,
             parent_pid=1200,
             process_id=1201,
             state_path=Path(raw) / "runtime-state",
@@ -89,13 +96,28 @@ class McpProcessLifecycleTests(unittest.TestCase):
         self.assertEqual(recorded["client"], "codex")
         self.assertEqual(recorded["task_id"], "task-100")
         self.assertEqual(recorded["session_id"], "session-100")
+        self.assertEqual(recorded["source_commit"], "a" * 40)
+        self.assertTrue(recorded["formal_run"])
+        self.assertEqual(recorded["model_identity"], {"model": "gpt-5.6-sol"})
+        self.assertEqual(
+            recorded["codex_identity"],
+            {
+                "version": "codex-cli 0.150.0",
+                "executable_sha256": "sha256:" + "b" * 64,
+            },
+        )
         self.assertEqual(recorded["parent_pid"], 1200)
         self.assertEqual(recorded["parent_identity"], "process-1200-start")
+        self.assertTrue(recorded["parent_identity_verified"])
+        self.assertTrue(recorded["parent_identity_currently_verified"])
         self.assertEqual(recorded["process_id"], 1201)
         self.assertEqual(recorded["process_identity"], "process-1201-start")
         self.assertEqual(recorded["component"], "target-runtime")
         self.assertEqual(recorded["version"], "openubmc.target-runtime.v1")
         self.assertEqual(recorded["state_path"], str(Path(raw) / "runtime-state"))
+        self.assertEqual(
+            recorded["runtime_state_root"], str(Path(raw) / "runtime-state")
+        )
         self.assertIsNone(recorded["exit_reason"])
         self.assertTrue(
             lifecycle.record_path.name.endswith(
@@ -128,12 +150,14 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
     def test_status_distinguishes_orphaned_and_unknown_owner_records(self) -> None:
         clock = FakeClock()
+        alive = {1200, 1201, 1301}
         with tempfile.TemporaryDirectory() as raw:
             lifecycle = self.make_lifecycle(
                 raw,
                 clock,
-                process_alive=lambda pid: pid == 1201,
+                process_alive=lambda pid: pid in alive,
             )
+            alive.remove(1200)
             self.assertEqual(lifecycle.status()["lifecycle_state"], "orphaned")
 
             unknown = lifecycle.status()
@@ -145,13 +169,15 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
             statuses = inspect_mcp_process_records(
                 lifecycle.lifecycle_root,
-                process_alive=lambda pid: pid in {1201, 1301},
+                process_alive=lambda pid: pid in alive,
                 process_identity=lambda pid: f"process-{pid}-start",
             )
 
         by_pid = {item["process_id"]: item for item in statuses}
         self.assertEqual(by_pid[1201]["lifecycle_state"], "orphaned")
+        self.assertTrue(by_pid[1201]["ownership_identity_bound"])
         self.assertEqual(by_pid[1301]["lifecycle_state"], "unknown-owner")
+        self.assertFalse(by_pid[1301]["ownership_identity_bound"])
 
     def test_first_request_can_attribute_an_initially_unknown_client_task(self) -> None:
         clock = FakeClock()
@@ -239,6 +265,33 @@ class McpProcessLifecycleTests(unittest.TestCase):
             )
 
         self.assertEqual(statuses[0]["lifecycle_state"], "unknown-owner")
+        self.assertTrue(statuses[0]["parent_identity_verified"])
+        self.assertFalse(statuses[0]["parent_identity_currently_verified"])
+
+    def test_verified_parent_identity_remains_bound_after_parent_exit(self) -> None:
+        clock = FakeClock()
+        alive = {1200, 1201}
+        with tempfile.TemporaryDirectory() as raw:
+            lifecycle = self.make_lifecycle(
+                raw,
+                clock,
+                process_alive=lambda pid: pid in alive,
+            )
+            alive.remove(1200)
+
+            status = lifecycle.status()
+            inspected = inspect_mcp_process_records(
+                lifecycle.lifecycle_root,
+                process_alive=lambda pid: pid in alive,
+                process_identity=lambda pid: f"process-{pid}-start",
+            )[0]
+
+        self.assertEqual(status["lifecycle_state"], "orphaned")
+        self.assertTrue(status["parent_identity_verified"])
+        self.assertFalse(status["parent_identity_currently_verified"])
+        self.assertTrue(inspected["parent_identity_verified"])
+        self.assertFalse(inspected["parent_identity_currently_verified"])
+        self.assertTrue(inspected["ownership_identity_bound"])
 
     def test_startup_parent_identity_stays_unknown_until_it_can_be_verified(self) -> None:
         clock = FakeClock()
@@ -268,7 +321,30 @@ class McpProcessLifecycleTests(unittest.TestCase):
             recovered = lifecycle.status()
 
         self.assertEqual(recovered["parent_identity"], "process-1200-start")
+        self.assertTrue(recovered["parent_identity_verified"])
         self.assertEqual(recovered["lifecycle_state"], "idle")
+
+    def test_explicit_task_closeout_drains_before_recording_exit(self) -> None:
+        clock = FakeClock()
+        with tempfile.TemporaryDirectory() as raw:
+            lifecycle = self.make_lifecycle(
+                raw,
+                clock,
+                process_alive=lambda pid: pid == 1200,
+            )
+
+            with lifecycle.request():
+                lifecycle.request_task_closeout()
+                self.assertIsNone(lifecycle.exit_reason_if_due())
+                self.assertEqual(
+                    lifecycle.status()["shutdown_requested"], "task-closeout"
+                )
+
+            self.assertEqual(lifecycle.exit_reason_if_due(), "task-closeout")
+            recorded = json.loads(lifecycle.record_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(recorded["active_requests"], 0)
+        self.assertEqual(recorded["exit_reason"], "task-closeout")
 
     def test_requested_shutdown_waits_for_the_active_request_to_finish(self) -> None:
         clock = FakeClock()
@@ -354,12 +430,14 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
     def test_cleanup_terminates_only_confirmed_orphaned_processes(self) -> None:
         clock = FakeClock()
+        alive = {1200, 1201, 1301, 1401}
         with tempfile.TemporaryDirectory() as raw:
             lifecycle = self.make_lifecycle(
                 raw,
                 clock,
-                process_alive=lambda pid: pid in {1201, 1301, 1401},
+                process_alive=lambda pid: pid in alive,
             )
+            alive.remove(1200)
             base = lifecycle.status()
             for process_id, parent_pid, identity in (
                 (1301, 1300, "stale-identity"),
@@ -390,19 +468,26 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 open_pidfd.return_value = 17
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
-                    process_alive=lambda pid: pid in {1201, 1301, 1401},
+                    task_id="task-100",
+                    session_id="session-100",
+                    process_alive=lambda pid: pid in alive,
                     process_identity=lambda pid: f"process-{pid}-start",
                 )
-            recorded_after_signal = json.loads(
-                lifecycle.record_path.read_text(encoding="utf-8")
+            inspected_after_signal = inspect_mcp_process_records(
+                lifecycle.lifecycle_root,
+                process_alive=lambda pid: pid in alive,
+                process_identity=lambda pid: f"process-{pid}-start",
             )
 
         self.assertEqual(cleaned, [1201])
         send_signal.assert_called_once_with(17, signal.SIGTERM)
-        self.assertIsNone(recorded_after_signal["exit_reason"])
-        self.assertEqual(recorded_after_signal["lifecycle_state"], "orphaned")
+        cleaned_status = next(
+            item for item in inspected_after_signal if item["process_id"] == 1201
+        )
+        self.assertIsNone(cleaned_status["exit_reason"])
+        self.assertEqual(cleaned_status["lifecycle_state"], "orphaned")
 
-    def test_cleanup_signals_the_identity_bound_process_handle(self) -> None:
+    def test_cleanup_preserves_orphan_without_verified_ownership_binding(self) -> None:
         clock = FakeClock()
         with tempfile.TemporaryDirectory() as raw:
             lifecycle = self.make_lifecycle(
@@ -410,6 +495,82 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 clock,
                 process_alive=lambda pid: pid == 1201,
             )
+            with (
+                mock.patch(
+                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open"
+                ) as open_pidfd,
+                mock.patch(
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                ) as send_signal,
+            ):
+                cleaned = cleanup_confirmed_orphaned_mcp_processes(
+                    lifecycle.lifecycle_root,
+                    task_id="task-100",
+                    session_id="session-100",
+                    process_alive=lambda pid: pid == 1201,
+                    process_identity=lambda pid: f"process-{pid}-start",
+                )
+
+        self.assertEqual(cleaned, [])
+        open_pidfd.assert_not_called()
+        send_signal.assert_not_called()
+
+    def test_cleanup_scopes_owned_orphans_to_one_task_and_session(self) -> None:
+        clock = FakeClock()
+        alive = {1200, 1201, 1301}
+        with tempfile.TemporaryDirectory() as raw:
+            lifecycle = self.make_lifecycle(
+                raw,
+                clock,
+                process_alive=lambda pid: pid in alive,
+            )
+            second = {
+                **lifecycle.status(),
+                "task_id": "task-200",
+                "session_id": "session-200",
+                "process_id": 1301,
+                "process_identity": "process-1301-start",
+            }
+            (lifecycle.lifecycle_root / "target-runtime-1301.json").write_text(
+                json.dumps(second), encoding="utf-8"
+            )
+            alive.remove(1200)
+            with (
+                mock.patch(
+                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open",
+                    return_value=17,
+                ) as open_pidfd,
+                mock.patch(
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                ) as send_signal,
+                mock.patch(
+                    "openubmc_target_runtime.mcp_lifecycle.select.poll",
+                    return_value=ExitedPidfdPoll(),
+                ),
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.close"),
+            ):
+                cleaned = cleanup_confirmed_orphaned_mcp_processes(
+                    lifecycle.lifecycle_root,
+                    task_id="task-100",
+                    session_id="session-100",
+                    process_alive=lambda pid: pid in alive,
+                    process_identity=lambda pid: f"process-{pid}-start",
+                )
+
+        self.assertEqual(cleaned, [1201])
+        open_pidfd.assert_called_once_with(1201, 0)
+        send_signal.assert_called_once_with(17, signal.SIGTERM)
+
+    def test_cleanup_signals_the_identity_bound_process_handle(self) -> None:
+        clock = FakeClock()
+        alive = {1200, 1201}
+        with tempfile.TemporaryDirectory() as raw:
+            lifecycle = self.make_lifecycle(
+                raw,
+                clock,
+                process_alive=lambda pid: pid in alive,
+            )
+            alive.remove(1200)
             with (
                 mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open") as open_pidfd,
                 mock.patch(
@@ -425,7 +586,9 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
-                    process_alive=lambda pid: pid == 1201,
+                    task_id="task-100",
+                    session_id="session-100",
+                    process_alive=lambda pid: pid in alive,
                     process_identity=lambda pid: f"process-{pid}-start",
                 )
 
@@ -436,12 +599,14 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
     def test_cleanup_does_not_report_cleaned_until_pidfd_confirms_exit(self) -> None:
         clock = FakeClock()
+        alive = {1200, 1201}
         with tempfile.TemporaryDirectory() as raw:
             lifecycle = self.make_lifecycle(
                 raw,
                 clock,
-                process_alive=lambda pid: pid == 1201,
+                process_alive=lambda pid: pid in alive,
             )
+            alive.remove(1200)
             pending_poll = mock.Mock()
             pending_poll.poll.return_value = []
             with (
@@ -460,7 +625,9 @@ class McpProcessLifecycleTests(unittest.TestCase):
             ):
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
-                    process_alive=lambda pid: pid == 1201,
+                    task_id="task-100",
+                    session_id="session-100",
+                    process_alive=lambda pid: pid in alive,
                     process_identity=lambda pid: f"process-{pid}-start",
                 )
 
@@ -469,6 +636,7 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
     def test_cleanup_abandons_a_pid_reused_after_opening_the_process_handle(self) -> None:
         clock = FakeClock()
+        alive = {1200, 1201}
         identities = iter(
             (
                 "process-1201-start",
@@ -480,8 +648,9 @@ class McpProcessLifecycleTests(unittest.TestCase):
             lifecycle = self.make_lifecycle(
                 raw,
                 clock,
-                process_alive=lambda pid: pid == 1201,
+                process_alive=lambda pid: pid in alive,
             )
+            alive.remove(1200)
             with (
                 mock.patch("openubmc_target_runtime.mcp_lifecycle.os.pidfd_open") as open_pidfd,
                 mock.patch(
@@ -493,7 +662,9 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
-                    process_alive=lambda pid: pid == 1201,
+                    task_id="task-100",
+                    session_id="session-100",
+                    process_alive=lambda pid: pid in alive,
                     process_identity=lambda _pid: next(identities),
                 )
 
@@ -503,12 +674,14 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
     def test_cleanup_rechecks_the_live_active_request_record_before_signal(self) -> None:
         clock = FakeClock()
+        alive = {1200, 1201}
         with tempfile.TemporaryDirectory() as raw:
             lifecycle = self.make_lifecycle(
                 raw,
                 clock,
-                process_alive=lambda pid: pid == 1201,
+                process_alive=lambda pid: pid in alive,
             )
+            alive.remove(1200)
 
             def open_and_mark_active(_process_id, _flags):
                 record = json.loads(lifecycle.record_path.read_text(encoding="utf-8"))
@@ -528,7 +701,9 @@ class McpProcessLifecycleTests(unittest.TestCase):
             ):
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
-                    process_alive=lambda pid: pid == 1201,
+                    task_id="task-100",
+                    session_id="session-100",
+                    process_alive=lambda pid: pid in alive,
                     process_identity=lambda pid: f"process-{pid}-start",
                 )
 
@@ -736,6 +911,218 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 child.stdout.close()
                 assert child.stderr is not None
                 child.stderr.close()
+
+    def test_stdio_task_closeout_drains_overlapping_responses_and_rejects_new_work(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            lifecycle_root = Path(raw) / "mcp-processes"
+            started_path = Path(raw) / "request-started"
+            release_path = Path(raw) / "release-request"
+            resource_count_path = Path(raw) / "resource-count"
+            child_program = textwrap.dedent(
+                """
+                import os
+                from pathlib import Path
+                import sys
+                import time
+
+                from openubmc_target_runtime import (
+                    JsonRpcMcpEndpoint,
+                    McpProcessLifecycle,
+                    RuntimeMcpService,
+                    StdioMcpServer,
+                )
+
+                class Task:
+                    def __init__(self, task_id, generation):
+                        self.task_id = task_id
+                        self.generation = generation
+
+                class Backend:
+                    created = 0
+
+                    def open_task(self, task_id):
+                        type(self).created += 1
+                        Path(sys.argv[4]).write_text(
+                            str(type(self).created), encoding="utf-8"
+                        )
+                        return Task(task_id, type(self).created)
+
+                    def close_task(self, _task):
+                        pass
+
+                    def maintain_task(self, _task):
+                        return 0
+
+                    def task_status(self, task):
+                        return {"task_id": task.task_id}
+
+                    def debug_run(self, task, _arguments, context):
+                        Path(sys.argv[2]).write_text("started", encoding="utf-8")
+                        deadline = time.monotonic() + 2
+                        while not Path(sys.argv[3]).exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        context.raise_if_stopped()
+                        return {
+                            "schema": "openubmc-debug.v1",
+                            "task": task.task_id,
+                            "root_cause": f"drained-{task.generation}",
+                            "observed_at": "2026-09-01T00:00:00Z",
+                            "freshness": {"status": "fresh"},
+                        }
+
+                class Service(RuntimeMcpService):
+                    def call_exposed_tool(
+                        self,
+                        _name,
+                        arguments,
+                        *,
+                        task_id,
+                        operation_id,
+                    ):
+                        return self.registry.execute(
+                            task_id=task_id,
+                            operation_id=operation_id,
+                            timeout_seconds=2,
+                            callback=lambda task, context: self.backend.debug_run(
+                                task, arguments, context
+                            ),
+                        )
+
+                root = Path(sys.argv[1])
+                lifecycle = McpProcessLifecycle(
+                    component="target-runtime",
+                    version="test",
+                    client="codex",
+                    task_id="closeout-task",
+                    session_id="closeout-session",
+                    parent_pid=os.getppid(),
+                    state_path=root / "state",
+                    lifecycle_root=root,
+                    idle_timeout_seconds=30,
+                )
+                service = Service(Backend())
+                StdioMcpServer(
+                    JsonRpcMcpEndpoint(
+                        service,
+                        session_task_id="closeout-task",
+                    ),
+                    max_workers=1,
+                    process_lifecycle=lifecycle,
+                    lifecycle_poll_seconds=0.01,
+                ).serve()
+                """
+            )
+            child = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    child_program,
+                    str(lifecycle_root),
+                    str(started_path),
+                    str(release_path),
+                    str(resource_count_path),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "PYTHONPATH": str(RUNTIME_ROOT)},
+                text=True,
+            )
+            assert child.stdin is not None
+            child.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "execute",
+                            "arguments": {
+                                "kind": "start",
+                                "target": "192.0.2.10",
+                                "intent": "diagnosis-only",
+                                "entry_operation": "debug_run",
+                                "entry_arguments": {},
+                                "deadline": 2,
+                            },
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            child.stdin.flush()
+            deadline = time.monotonic() + 2
+            while not started_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if not started_path.exists():
+                child.terminate()
+                stdout, stderr = child.communicate(timeout=5)
+                self.fail(
+                    "real Runtime service did not start the request: "
+                    f"stdout={stdout!r}, stderr={stderr!r}"
+                )
+            for message in (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "execute",
+                        "arguments": {
+                            "kind": "start",
+                            "target": "192.0.2.10",
+                            "intent": "diagnosis-only",
+                            "entry_operation": "debug_run",
+                            "entry_arguments": {},
+                            "deadline": 2,
+                        },
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/openubmc-task-complete",
+                    "params": {},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/list",
+                    "params": {},
+                },
+            ):
+                child.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+            child.stdin.flush()
+            time.sleep(0.1)
+            release_path.write_text("release", encoding="utf-8")
+            child.stdin.close()
+            child.stdin = None
+
+            stdout, stderr = child.communicate(timeout=5)
+            responses = {
+                document["id"]: document
+                for document in (
+                    json.loads(line) for line in stdout.splitlines() if line.strip()
+                )
+            }
+            records = sorted(lifecycle_root.glob("*.json"))
+            self.assertEqual(child.returncode, 0, stderr)
+            self.assertEqual(set(responses), {1, 2, 3})
+            self.assertFalse(responses[1]["result"]["isError"], responses[1])
+            self.assertFalse(responses[2]["result"]["isError"], responses[2])
+            self.assertEqual(responses[3]["error"]["code"], -32000)
+            self.assertEqual(
+                resource_count_path.read_text(encoding="utf-8"),
+                "1",
+                responses,
+            )
+            self.assertEqual(len(records), 1)
+            recorded = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(recorded["active_requests"], 0)
+        self.assertEqual(recorded["exit_reason"], "task-closeout")
 
     def _assert_stdio_signal_drains_the_active_response_before_exit(
         self,

@@ -19,6 +19,7 @@ from openubmc_target_runtime import (  # noqa: E402
     OrchestratedMcpBackend,
     RuntimeMcpService,
     TaskContextStore,
+    PendingCaseEvent,
 )
 from openubmc_target_runtime import mcp as runtime_mcp  # noqa: E402
 
@@ -380,6 +381,181 @@ class RuntimeMcpServiceTests(unittest.TestCase):
             task for task in status["tasks"] if task["task_id"] == "codex-task-a"
         )
         self.assertEqual(task_a["resource"]["calls"], ["debug_run", "debug_collect"])
+
+    def test_operator_status_derives_bounded_current_run_evidence_from_the_ledger(
+        self,
+    ) -> None:
+        operator = RuntimeMcpService(self.backend, interface_profile="operator")
+        try:
+            repository = operator._test.context_runtime.repository
+            run_id = "run-operator-projection"
+            artifact = {
+                "handle": "artifact://firmware/example",
+                "digest": "sha256:" + "a" * 64,
+                "kind": "openubmc-hpm",
+                "size": 4096,
+                "target": "target-a",
+                "run_id": run_id,
+            }
+            repository.commit(
+                run_id,
+                expected_revision=0,
+                events=(
+                    PendingCaseEvent(
+                        "CaseOpened",
+                        {
+                            "intent": "diagnose-and-fix",
+                            "targets": [
+                                {
+                                    "target_id": "target-a",
+                                    "epochs": {"target_epoch": 7},
+                                }
+                            ],
+                        },
+                        "start",
+                    ),
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {
+                            "operation": "upgrade_run",
+                            "inputs": {"artifact_ref": artifact},
+                            "workflow_cycle_id": "cycle-1",
+                            "workflow_step_id": "upgrade",
+                            "workflow_step_kind": "operation",
+                            "target_id": "target-a",
+                            "target_version": 1,
+                        },
+                        "upgrade-1",
+                    ),
+                    PendingCaseEvent(
+                        "OperationProgressed",
+                        {"status": "failed", "target_epoch": 7},
+                        "upgrade-1",
+                    ),
+                    PendingCaseEvent(
+                        "OperationAccepted",
+                        {
+                            "operation": "upgrade_run",
+                            "inputs": {"artifact_ref": artifact},
+                            "workflow_cycle_id": "cycle-1",
+                            "workflow_step_id": "upgrade",
+                            "workflow_step_kind": "operation",
+                            "target_id": "target-a",
+                            "target_version": 1,
+                        },
+                        "upgrade-2",
+                    ),
+                    PendingCaseEvent(
+                        "RunDecisionCommitted",
+                        {
+                            "schema": (
+                                "openubmc.target-runtime.v1/run-decision-v1"
+                            ),
+                            "version": 1,
+                            "turn": {
+                                "turn_id": "turn-upgrade-2",
+                                "state": "incident",
+                            }
+                        },
+                        "decision-upgrade-2",
+                    ),
+                    PendingCaseEvent(
+                        "RunIncidentRaised",
+                        {
+                            "incident": {
+                                "incident_id": "incident-upgrade",
+                                "code": "mutation_outcome_unknown",
+                                "effect_id": "upgrade-2",
+                                "message": "upgrade result is unknown",
+                            }
+                        },
+                        "incident",
+                    ),
+                ),
+            )
+            repository.bind_task("codex-task-a", run_id)
+            for index in range(20):
+                repository.commit(
+                    f"run-newer-{index}",
+                    expected_revision=0,
+                    events=(
+                        PendingCaseEvent(
+                            "CaseOpened",
+                            {"intent": "noise", "targets": []},
+                            f"noise-{index}",
+                        ),
+                    ),
+                )
+
+            status = operator.call_tool(
+                "runtime_status",
+                {},
+                task_id="codex-task-a",
+                operation_id="operator-status",
+            )
+        finally:
+            operator.close()
+
+        projection = status["operator_projection"]
+        self.assertEqual(projection["source"], "runtime-ledger")
+        self.assertFalse(projection["state_store"])
+        self.assertEqual(projection["current_run"]["run_id"], run_id)
+        self.assertEqual(projection["current_run"]["run_state"], "incident")
+        self.assertEqual(projection["current_run"]["turn_state"], "incident")
+        self.assertEqual(
+            projection["current_run"]["current_turn"],
+            {"turn_id": "turn-upgrade-2", "state": "incident"},
+        )
+        self.assertEqual(
+            projection["current_run"]["interaction_classification"], "incident"
+        )
+        self.assertEqual(projection["current_run"]["retry_count"], 1)
+        self.assertEqual(
+            projection["current_run"]["recovery"]["effect_id"], "upgrade-2"
+        )
+        self.assertEqual(projection["current_run"]["target_epoch"], 7)
+        self.assertEqual(
+            projection["current_run"]["artifact_outcome_linkage"][
+                "artifact_refs"
+            ],
+            [artifact],
+        )
+        self.assertIsNone(
+            projection["current_run"]["artifact_outcome_linkage"]["outcome"]
+        )
+        self.assertLessEqual(len(projection["runs"]), 16)
+
+    def test_operator_status_without_task_binding_has_no_current_run(self) -> None:
+        operator = RuntimeMcpService(self.backend, interface_profile="operator")
+        try:
+            repository = operator._test.context_runtime.repository
+            repository.commit(
+                "run-operator-overview",
+                expected_revision=0,
+                events=(
+                    PendingCaseEvent(
+                        "CaseOpened",
+                        {"intent": "overview", "targets": []},
+                        "start",
+                    ),
+                ),
+            )
+
+            status = operator.call_tool(
+                "runtime_status",
+                {},
+                task_id="unbound-operator-task",
+                operation_id="operator-overview",
+            )
+        finally:
+            operator.close()
+
+        projection = status["operator_projection"]
+        self.assertIsNone(projection["current_run"])
+        self.assertEqual(
+            [run["run_id"] for run in projection["runs"]],
+            ["run-operator-overview"],
+        )
 
     def test_task_completion_closes_owned_runtime(self) -> None:
         self.service.call_tool(

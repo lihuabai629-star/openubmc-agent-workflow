@@ -160,6 +160,9 @@ class _RuntimeOperatorPort:
             "artifact_store": self._artifact_store.status(),
         }
 
+    def operator_projection(self, *, task_id: str) -> Mapping[str, object]:
+        return self._context_runtime.operator_projection(task_id=task_id)
+
     def restore_domain_arguments(
         self,
         task_id: str,

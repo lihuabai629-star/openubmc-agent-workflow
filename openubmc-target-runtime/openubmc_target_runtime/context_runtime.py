@@ -76,6 +76,7 @@ DEFAULT_PROJECTION_CACHE_BYTES = 8 * 1024 * 1024
 MAX_PROJECTED_OPERATIONS = 128
 MAX_PROJECTED_PHASE_RECORDS = 32
 MAX_PROJECTED_EVIDENCE_REFS = 256
+MAX_OPERATOR_PROJECTED_RUNS = 16
 MAX_OBSERVATION_SOURCE_BYTES = 8 * 1024 * 1024
 OBSERVATION_REUSE_MAX_AGE_SECONDS = 15 * 60
 
@@ -1497,6 +1498,159 @@ def project_case(
         projection["entry_domain"] = _case_entry_domain(projection)
     projection["last_access"] = last_access
     return projection
+
+
+def _walk_projection_values(
+    value: object,
+    *,
+    field_name: str = "",
+) -> Iterable[tuple[str, object]]:
+    yield field_name, value
+    if isinstance(value, Mapping):
+        for name, nested in value.items():
+            yield from _walk_projection_values(nested, field_name=str(name))
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _walk_projection_values(nested)
+
+
+def _operator_artifact_refs(
+    projection: Mapping[str, object],
+    *,
+    limit: int = 16,
+) -> list[dict[str, object]]:
+    references: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    def visit(value: object) -> None:
+        if len(references) >= limit:
+            return
+        for field_name, candidate_value in _walk_projection_values(value):
+            if len(references) >= limit:
+                return
+            if not isinstance(candidate_value, Mapping):
+                continue
+            candidate = dict(candidate_value)
+            is_reference = field_name == "artifact_ref" or all(
+                name in candidate
+                for name in ("handle", "digest", "kind", "size", "run_id")
+            )
+            if is_reference:
+                identity = json.dumps(
+                    candidate,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if identity not in seen:
+                    seen.add(identity)
+                    references.append(candidate)
+
+    visit(projection.get("operations", []))
+    visit(projection.get("workflow_phase_values", {}))
+    visit(projection.get("evidence_refs", []))
+    visit(projection.get("run_outcome", {}))
+    return references
+
+
+def _operator_target_epoch(projection: Mapping[str, object]) -> int:
+    epochs: list[int] = []
+
+    for value in (
+        projection.get("targets", []),
+        projection.get("operations", []),
+        projection.get("workflow_step_states", {}),
+        projection.get("current_turn", {}),
+        projection.get("run_outcome", {}),
+    ):
+        epochs.extend(
+            nested
+            for name, nested in _walk_projection_values(value)
+            if name == "target_epoch"
+            and isinstance(nested, int)
+            and not isinstance(nested, bool)
+            and nested >= 0
+        )
+    return max(epochs, default=0)
+
+
+def operator_run_projection(projection: Mapping[str, object]) -> dict[str, object]:
+    """Derive one bounded Operator view from authoritative Run facts."""
+
+    current_turn = projection.get("current_turn")
+    turn = dict(current_turn) if isinstance(current_turn, Mapping) else {}
+    current_gate = projection.get("current_gate")
+    gate = dict(current_gate) if isinstance(current_gate, Mapping) else {}
+    current_incident = projection.get("current_incident")
+    incident = (
+        dict(current_incident)
+        if isinstance(current_incident, Mapping)
+        else {}
+    )
+    raw_outcome = projection.get("run_outcome")
+    outcome = dict(raw_outcome) if isinstance(raw_outcome, Mapping) else {}
+    run_state = str(projection.get("status", "open"))
+    turn_state = str(turn.get("state", "")).strip()
+    if not turn_state:
+        turn_state = (
+            "incident"
+            if incident
+            else "waiting_response"
+            if gate
+            else str(outcome.get("status", "terminal"))
+            if outcome
+            else run_state
+        )
+    workflow_attempts = projection.get("workflow_step_attempts", {})
+    retry_count = (
+        sum(
+            max(0, int(value) - 1)
+            for value in workflow_attempts.values()
+            if isinstance(value, int) and not isinstance(value, bool)
+        )
+        if isinstance(workflow_attempts, Mapping)
+        else 0
+    )
+    if incident or turn_state == "incident":
+        interaction_classification = "incident"
+    elif gate or turn_state == "waiting_response":
+        interaction_classification = "gate_response_required"
+    elif outcome or run_state in {"terminal", "closed", "cancelled"}:
+        interaction_classification = "terminal_outcome"
+    elif retry_count:
+        interaction_classification = "retrying"
+    else:
+        interaction_classification = turn_state or "running"
+    unknown = projection.get("mutation_outcome_unknown_operations", {})
+    unknown_effects = (
+        [dict(value) for value in unknown.values() if isinstance(value, Mapping)]
+        if isinstance(unknown, Mapping)
+        else []
+    )
+    return {
+        "run_id": str(projection.get("case_id", "")),
+        "revision": int(projection.get("revision", 0)),
+        "run_state": run_state,
+        "turn_state": turn_state,
+        "current_turn": turn or None,
+        "interaction_classification": interaction_classification,
+        "retry_count": retry_count,
+        "recovery": {
+            "required": bool(incident or unknown_effects),
+            "incident_id": str(incident.get("incident_id", "")),
+            "code": str(incident.get("code", "")),
+            "effect_id": str(incident.get("effect_id", "")),
+            "recovery_path": str(incident.get("recovery_path", "")),
+            "unknown_effects": unknown_effects[:8],
+        },
+        "target_epoch": _operator_target_epoch(projection),
+        "current_gate": gate or None,
+        "current_incident": incident or None,
+        "artifact_outcome_linkage": {
+            "artifact_refs": _operator_artifact_refs(projection),
+            "outcome": outcome or None,
+        },
+    }
 
 
 class RuntimeRepository(Protocol):
@@ -7326,4 +7480,51 @@ class ContextRuntime:
             "retention_seconds": self.retention_seconds,
             "storage_soft_limit_bytes": self.storage_soft_limit_bytes,
             "metrics": metrics,
+        }
+
+    def operator_projection(
+        self,
+        *,
+        task_id: str = "",
+        limit: int = MAX_OPERATOR_PROJECTED_RUNS,
+    ) -> dict[str, object]:
+        """Read a bounded Run/Turn view without persisting projection state."""
+
+        selected_limit = max(1, min(int(limit), MAX_OPERATOR_PROJECTED_RUNS))
+        metadata = sorted(
+            self.repository.metadata(),
+            key=lambda item: (
+                float(item.get("last_access", 0.0)),
+                str(item.get("case_id", "")),
+            ),
+            reverse=True,
+        )
+        bound_run_id = self.repository.case_for_task(task_id) if task_id else None
+        runs: list[dict[str, object]] = []
+        if bound_run_id is not None:
+            bound_projection = self._load(bound_run_id)
+            if bound_projection is not None:
+                runs.append(operator_run_projection(bound_projection))
+        for item in metadata:
+            run_id = str(item.get("case_id", ""))
+            if run_id == bound_run_id:
+                continue
+            projection = self._load(run_id)
+            if projection is None:
+                continue
+            runs.append(operator_run_projection(projection))
+            if len(runs) >= selected_limit:
+                break
+        current_run = next(
+            (run for run in runs if run.get("run_id") == bound_run_id),
+            None,
+        )
+        return {
+            "schema": f"{CONTEXT_RUNTIME_SCHEMA}/operator-projection-v1",
+            "source": "runtime-ledger",
+            "state_store": False,
+            "limit": selected_limit,
+            "run_count": len(runs),
+            "current_run": current_run,
+            "runs": runs,
         }

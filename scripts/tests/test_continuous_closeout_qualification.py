@@ -14,6 +14,98 @@ from scripts import continuous_closeout_qualification as qualification
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "continuous_closeout_qualification.py"
+MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
+CODEX_IDENTITY = {"version": "codex-cli 0.151.0"}
+
+
+def passed_lifecycle_record() -> dict[str, object]:
+    return {
+        "schema": "openubmc.mcp-process-lifecycle.v1",
+        "component": "target-runtime",
+        "version": "openubmc.target-runtime.v1",
+        "client": "codex",
+        "task_id": "codex-adoption-probe",
+        "session_id": "codex-adoption-session",
+        "source_commit": "a" * 40,
+        "formal_run": True,
+        "model_identity": {"model": "codex-product-client-qualification"},
+        "codex_identity": CODEX_IDENTITY,
+        "parent_pid": 123,
+        "parent_identity": "parent-identity",
+        "parent_identity_verified": True,
+        "parent_identity_currently_verified": True,
+        "process_id": 456,
+        "process_identity": "process-identity",
+        "start_time": "2026-08-31T00:00:00Z",
+        "runtime_state_root": "/isolated/runtime-state",
+        "lifecycle_state": "stopped",
+        "active_requests": 0,
+        "exit_reason": "client-terminated",
+    }
+
+
+def passed_mcp_closeout() -> dict[str, object]:
+    return {
+        "status": "passed",
+        "task_closeout_ready": True,
+        "identity_records_valid": True,
+        "isolation_verified": True,
+        "restart_verified": True,
+        "records": [
+            {
+                **passed_lifecycle_record(),
+                "task_id": "continuous-closeout-qualification",
+                "session_id": "continuous-closeout-session",
+                "exit_reason": "task-closeout",
+            }
+        ],
+        "summary": {
+            "record_count": 2,
+            "live_processes": 0,
+            "active_requests": 0,
+            "confirmed_live_orphans": 0,
+            "unattributed_live_processes": 0,
+            "owned_live_processes": 0,
+            "stopped_processes": 2,
+        },
+        "closeout_checks": {
+            "active_requests_zero": True,
+            "confirmed_live_orphans_zero": True,
+            "unattributed_live_processes_zero": True,
+            "owned_live_processes_zero": True,
+        },
+        "operator_status": {
+            "schema": "openubmc-agent-workflow.mcp-process-status.v1",
+            "operation": "status",
+            "task_id": "codex-adoption-probe",
+            "session_id": "codex-adoption-session",
+            "task_closeout_ready": True,
+            "summary": {
+                "record_count": 2,
+                "live_processes": 0,
+                "active_requests": 0,
+                "confirmed_live_orphans": 0,
+                "unattributed_live_processes": 0,
+                "owned_live_processes": 0,
+                "stopped_processes": 2,
+            },
+            "closeout_checks": {
+                "active_requests_zero": True,
+                "confirmed_live_orphans_zero": True,
+                "unattributed_live_processes_zero": True,
+                "owned_live_processes_zero": True,
+            },
+        },
+        "isolation": {
+            "qualification_root": "/isolated",
+            "task_home": "/isolated/home",
+            "codex_config_root": "/isolated/codex",
+            "runtime_state_root": "/isolated/runtime-state",
+            "lifecycle_root": "/isolated/mcp-processes",
+            "global_codex_state_used": False,
+            "installed_launcher_invocation": True,
+        },
+    }
 
 
 def passed_product_client_run(name: str) -> dict[str, object]:
@@ -40,7 +132,7 @@ def passed_product_client_run(name: str) -> dict[str, object]:
         "launcher_identity_digest": qualification.evidence_fingerprint(
             launcher_identity
         ),
-        "runtime_invocation": "client-configured-mcp-command",
+        "runtime_invocation": "installed-runtime-launcher-protocol",
         "protocol_exchange": [
             "initialize",
             "tools/list",
@@ -94,10 +186,93 @@ def passed_product_client_run(name: str) -> dict[str, object]:
             },
             "is_error": True,
         },
+        "codex_process_invocation": True,
+        "codex_process_runs": [
+            {
+                "process_id": 123,
+                "process_identity": "parent-identity",
+                "parent_pid": 123,
+                "parent_identity": "parent-identity",
+                "executable": "/isolated/codex",
+                "executable_sha256": "sha256:" + "9" * 64,
+                "version": "codex-cli 0.151.0",
+                "requested_model": "codex-product-client-qualification",
+                "captured_request_models": [
+                    "codex-product-client-qualification"
+                ],
+                "transport_provenance": {
+                    "provider": "local-hermetic-responses",
+                    "wire_api": "responses",
+                    "network_scope": "loopback",
+                },
+                "returncode": 0,
+            },
+            {
+                "process_id": 124,
+                "process_identity": "parent-identity-2",
+                "parent_pid": 124,
+                "parent_identity": "parent-identity-2",
+                "executable": "/isolated/codex",
+                "executable_sha256": "sha256:" + "9" * 64,
+                "version": "codex-cli 0.151.0",
+                "requested_model": "codex-product-client-qualification",
+                "captured_request_models": [
+                    "codex-product-client-qualification"
+                ],
+                "transport_provenance": {
+                    "provider": "local-hermetic-responses",
+                    "wire_api": "responses",
+                    "network_scope": "loopback",
+                },
+                "returncode": 0,
+            },
+        ],
+        "captured_model_tools": [
+            "mcp__openubmc_target_runtime",
+        ],
+        "captured_runtime_tool_contracts": [
+            {
+                "name": "mcp__openubmc_target_runtime",
+                "type": "namespace",
+                "tools": [
+                    {"name": "execute"},
+                    {"name": "observe"},
+                ],
+            }
+        ],
+        "restart_verified": True,
+        "mcp_closeout": passed_mcp_closeout(),
+        "mcp_lifecycle_records": [
+            passed_lifecycle_record(),
+            {
+                **passed_lifecycle_record(),
+                "parent_pid": 124,
+                "parent_identity": "parent-identity-2",
+                "process_id": 457,
+            },
+        ],
     }
 
 
 class ContinuousCloseoutQualificationTests(unittest.TestCase):
+    def test_mcp_closeout_binds_requested_formal_identities(self) -> None:
+        report = qualification._mcp_closeout_snapshot(
+            passed_product_client_run("codex"),
+            source_commit="a" * 40,
+            model_identity={"model": "codex-product-client-qualification"},
+            codex_identity=CODEX_IDENTITY,
+        )
+
+        self.assertEqual(report["status"], "passed", report)
+        self.assertEqual(
+            report["records"][0]["model_identity"],
+            {"model": "codex-product-client-qualification"},
+        )
+        self.assertEqual(
+            report["records"][0]["codex_identity"],
+            CODEX_IDENTITY,
+        )
+
     def test_candidate_release_commit_is_deterministic(self) -> None:
         source_commit = qualification.resolve_source_commit(ROOT)
         with (
@@ -198,7 +373,14 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self,
     ) -> None:
         completed = subprocess.run(
-            [sys.executable, str(SCRIPT)],
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--model-identity",
+                json.dumps(MODEL_IDENTITY),
+                "--codex-identity",
+                json.dumps(CODEX_IDENTITY),
+            ],
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -236,7 +418,22 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(run["declared_mcp"])
         self.assertTrue(run["mcp_registration_verified"])
         self.assertEqual(
-            run["runtime_invocation"], "client-configured-mcp-command"
+            run["runtime_invocation"], "installed-runtime-launcher-protocol"
+        )
+        self.assertTrue(run["codex_process_invocation"])
+        self.assertEqual(len(run["codex_process_runs"]), 2)
+        self.assertTrue(
+            all(item["version"] == "codex-cli 0.151.0" for item in run["codex_process_runs"])
+        )
+        self.assertEqual(
+            {item["process_id"] for item in run["codex_process_runs"]},
+            {item["parent_pid"] for item in run["mcp_lifecycle_records"]},
+        )
+        runtime_contract = run["captured_runtime_tool_contracts"][0]
+        self.assertEqual(runtime_contract["name"], "mcp__openubmc_target_runtime")
+        self.assertEqual(
+            {tool["name"] for tool in runtime_contract["tools"]},
+            {"execute", "observe"},
         )
         self.assertEqual(
             run["protocol_exchange"],
@@ -261,14 +458,34 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(report["mcp_lifecycle"]["active_request_drain_covered"])
         self.assertTrue(report["mcp_lifecycle"]["cleanup_covered"])
         self.assertTrue(report["mcp_lifecycle"]["zero_live_orphans_covered"])
+        self.assertTrue(report["mcp_lifecycle"]["restart_closeout_covered"])
         closeout = report["mcp_lifecycle"]["closeout"]
         self.assertTrue(closeout["task_closeout_ready"])
+        self.assertTrue(closeout["identity_records_valid"])
+        self.assertTrue(closeout["isolation_verified"])
         self.assertEqual(closeout["summary"]["live_processes"], 0)
         self.assertEqual(closeout["summary"]["active_requests"], 0)
-        self.assertEqual(closeout["task_ids"], ["continuous-closeout-qualification"])
-        self.assertEqual(closeout["session_ids"], ["continuous-closeout-session"])
+        self.assertEqual(closeout["summary"]["confirmed_live_orphans"], 0)
+        self.assertEqual(closeout["summary"]["unattributed_live_processes"], 0)
+        self.assertEqual(closeout["summary"]["owned_live_processes"], 0)
+        self.assertEqual(closeout["summary"]["stopped_processes"], 2)
+        self.assertTrue(all(closeout["closeout_checks"].values()))
+        self.assertEqual(closeout["task_ids"], ["codex-adoption-probe"])
+        self.assertEqual(closeout["session_ids"], ["codex-adoption-session"])
+        self.assertEqual(closeout["records"][0]["client"], "codex")
+        self.assertEqual(closeout["records"][0]["source_commit"], report["source_commit"])
+        self.assertEqual(closeout["records"][0]["exit_reason"], "client-terminated")
+        self.assertTrue(closeout["records"][0]["parent_identity_verified"])
+        self.assertTrue(closeout["records"][0]["model_identity"])
+        self.assertTrue(closeout["records"][0]["codex_identity"])
+        self.assertFalse(closeout["isolation"]["global_codex_state_used"])
+        self.assertNotEqual(
+            closeout["isolation"]["task_home"],
+            str(Path.home()),
+        )
         projection = report["execute_projection"]
         self.assertTrue(projection["correctness_primary"])
+        self.assertTrue(projection["operator_projection_covered"])
         self.assertTrue(projection["repeated_reference"])
         self.assertGreater(projection["saved_bytes"], 0)
         self.assertFalse(projection["blocks_promotability"])
@@ -309,16 +526,12 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_product_client_run",
-                side_effect=lambda name, tests, contract, source_commit: passed_product_client_run(name),
+                side_effect=lambda name, tests, contract, source_commit, **_kwargs: passed_product_client_run(name),
             ),
             mock.patch.object(
                 qualification,
                 "_mcp_closeout_snapshot",
-                return_value={
-                    "status": "passed",
-                    "task_closeout_ready": True,
-                    "summary": {"live_processes": 0, "active_requests": 0},
-                },
+                return_value=passed_mcp_closeout(),
             ),
             mock.patch.object(
                 qualification,
@@ -343,7 +556,10 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = qualification.qualify()
+            report = qualification.qualify(
+                model_identity=MODEL_IDENTITY,
+                codex_identity=CODEX_IDENTITY,
+            )
 
         self.assertTrue(report["qualified"])
         self.assertEqual(report["client_matrix"]["status"], "passed")
@@ -354,7 +570,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(run["declared_mcp"])
         self.assertTrue(run["runtime_launcher_verified"])
         self.assertEqual(
-            run["runtime_invocation"], "client-configured-mcp-command"
+            run["runtime_invocation"], "installed-runtime-launcher-protocol"
         )
         self.assertEqual(run["tools"], ["execute", "observe"])
         self.assertTrue(report["task_matrix"]["correctness_primary"])
@@ -424,16 +640,12 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_product_client_run",
-                side_effect=lambda name, tests, contract, source_commit: passed_product_client_run(name),
+                side_effect=lambda name, tests, contract, source_commit, **_kwargs: passed_product_client_run(name),
             ),
             mock.patch.object(
                 qualification,
                 "_mcp_closeout_snapshot",
-                return_value={
-                    "status": "passed",
-                    "task_closeout_ready": True,
-                    "summary": {"live_processes": 0, "active_requests": 0},
-                },
+                return_value=passed_mcp_closeout(),
             ),
             mock.patch.object(
                 qualification,
@@ -484,6 +696,8 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             report = qualification.qualify(
                 product_ingestion=descriptor,
                 runtime_repository=runtime_repository,
+                model_identity=MODEL_IDENTITY,
+                codex_identity=CODEX_IDENTITY,
             )
 
         load_ingestion.assert_called_once_with(descriptor)
@@ -496,6 +710,13 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         )
         self.assertTrue(report["fresh_product_promotable"])
         self.assertEqual(report["external_blockers"], [])
+
+    def test_qualification_requires_explicit_formal_identity(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal model and Codex identity are required",
+        ):
+            qualification.qualify()
 
 
 if __name__ == "__main__":

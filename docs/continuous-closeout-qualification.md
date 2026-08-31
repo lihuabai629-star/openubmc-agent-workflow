@@ -9,6 +9,8 @@ It can still be run directly for diagnostics or product-closeout evidence assemb
 
 ```bash
 python3 scripts/continuous_closeout_qualification.py \
+  --model-identity '{"model":"gpt-5.6-sol"}' \
+  --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --product-manifest /path/to/product-evidence.json \
   --runtime-repository /trusted/runtime-state/runtime.sqlite3 \
   --output continuous-closeout-report.json
@@ -18,6 +20,8 @@ The same checkpoint can assemble the manifest from trusted Operator / CI inputs:
 
 ```bash
 python3 scripts/continuous_closeout_qualification.py \
+  --model-identity '{"model":"gpt-5.6-sol"}' \
+  --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --product-ingestion /path/to/product-ingestion.json \
   --runtime-repository /trusted/runtime-state/runtime.sqlite3 \
   --output continuous-closeout-report.json
@@ -28,6 +32,10 @@ target, terminal Outcome, source, and artifact identity from the Runtime ledger,
 repositories, and adjacent artifact metadata before the existing closeout verifier evaluates the
 result.
 
+`--model-identity` and `--codex-identity` are required non-empty JSON objects. The collector
+records and verifies these caller-supplied identities; it never substitutes qualification
+defaults for a formal run.
+
 Without `--product-manifest`, the hermetic repository checkpoint still runs and reports the fresh
 product evidence as an external blocker. When a manifest is supplied, the product evidence is
 re-read and re-hashed rather than trusting a previously rendered report.
@@ -37,7 +45,8 @@ the Operator / CI Plane independently of manifest-authored paths.
 The checkpoint verifies:
 
 - Codex installs a working Runtime MCP registration whose configured stdio command completes
-  `initialize` and `tools/list`;
+  `initialize` and `tools/list`, while two pinned real Codex processes prove direct Runtime parent
+  ownership, restart, namespace registration, and process closeout;
 - DSH remains a disjoint, task-owned evaluation harness with isolated home, configuration,
   Runtime state, session, and MCP lifecycle roots;
 - MCP lifecycle tests cover parent loss, active-request drain, identity-bound orphan cleanup, and

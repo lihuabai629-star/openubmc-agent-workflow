@@ -157,6 +157,14 @@ class TaskRunRegistry(Generic[ResourceT]):
         except Exception:
             pass
 
+    def _prepare_completion(self, resource: ResourceT) -> None:
+        if self._completion_preparer is None:
+            return
+        try:
+            self._completion_preparer(resource)
+        except Exception:
+            pass
+
     def _get_or_create(self, task_id: str) -> _ManagedTask[ResourceT]:
         while True:
             victim: ResourceT | None = None
@@ -234,6 +242,13 @@ class TaskRunRegistry(Generic[ResourceT]):
             _clock=self._clock,
         )
         with self._condition:
+            if (
+                self._tasks.get(task_id) is not managed
+                or managed.state != "active"
+            ):
+                raise OperationCancelled(
+                    f"task {task_id} is completing and cannot accept new work"
+                )
             if operation_id in managed.operation_tokens:
                 raise ValueError(
                     f"operation_id is already active in task {task_id}: {operation_id}"
@@ -290,6 +305,7 @@ class TaskRunRegistry(Generic[ResourceT]):
             if task_lock_acquired:
                 managed.operation_lock.release()
             if close_after is not None:
+                self._prepare_completion(close_after)
                 self._close_resource(close_after)
 
     def cancel_operation(
@@ -315,29 +331,21 @@ class TaskRunRegistry(Generic[ResourceT]):
 
     def complete(self, task_id: str) -> bool:
         close_after: ResourceT | None = None
-        prepare: ResourceT | None = None
         with self._condition:
             managed = self._tasks.get(task_id)
             if managed is None:
                 return False
             managed.state = "completing"
-            prepare = managed.resource
             for key in tuple(self._pending_cancellations):
                 if key[0] == task_id:
                     self._pending_cancellations.pop(key, None)
-            for token in managed.operation_tokens.values():
-                token.cancel("task completed")
             if managed.active_operations == 0 and managed.queued_operations == 0:
                 self._tasks.pop(task_id, None)
                 managed.state = "completed"
                 close_after = managed.resource
             self._condition.notify_all()
-        if prepare is not None and self._completion_preparer is not None:
-            try:
-                self._completion_preparer(prepare)
-            except Exception:
-                pass
         if close_after is not None:
+            self._prepare_completion(close_after)
             self._close_resource(close_after)
         return True
 

@@ -8,6 +8,18 @@ from scripts import codex_adoption_qualification as adoption
 from scripts.evidence_report import evidence_fingerprint
 
 
+FORMAL_MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
+FORMAL_CODEX_IDENTITY = {"version": "codex-cli 0.151.0"}
+
+
+def qualify(**kwargs: object) -> dict[str, object]:
+    return adoption.qualify(
+        model_identity=FORMAL_MODEL_IDENTITY,
+        codex_identity=FORMAL_CODEX_IDENTITY,
+        **kwargs,
+    )
+
+
 def closeout_report() -> dict[str, object]:
     launcher_identity = {
         "schema": "openubmc-agent-workflow.codex-launcher-identity.v1",
@@ -45,7 +57,7 @@ def closeout_report() -> dict[str, object]:
                     "launcher_identity_digest": evidence_fingerprint(
                         launcher_identity
                     ),
-                    "runtime_invocation": "client-configured-mcp-command",
+                    "runtime_invocation": "installed-runtime-launcher-protocol",
                     "protocol_exchange": [
                         "initialize",
                         "tools/list",
@@ -99,6 +111,163 @@ def closeout_report() -> dict[str, object]:
                         },
                         "is_error": True,
                     },
+                    "codex_process_invocation": True,
+                    "codex_process_runs": [
+                        {
+                            "process_id": 123,
+                            "process_identity": "parent-identity",
+                            "parent_pid": 123,
+                            "parent_identity": "parent-identity",
+                            "executable": "/isolated/codex",
+                            "executable_sha256": "sha256:" + "9" * 64,
+                            "version": "codex-cli 0.151.0",
+                            "requested_model": "codex-product-client-qualification",
+                            "captured_request_models": [
+                                "codex-product-client-qualification"
+                            ],
+                            "transport_provenance": {
+                                "provider": "local-hermetic-responses",
+                                "wire_api": "responses",
+                                "network_scope": "loopback",
+                            },
+                            "returncode": 0,
+                        },
+                        {
+                            "process_id": 124,
+                            "process_identity": "parent-identity-2",
+                            "parent_pid": 124,
+                            "parent_identity": "parent-identity-2",
+                            "executable": "/isolated/codex",
+                            "executable_sha256": "sha256:" + "9" * 64,
+                            "version": "codex-cli 0.151.0",
+                            "requested_model": "codex-product-client-qualification",
+                            "captured_request_models": [
+                                "codex-product-client-qualification"
+                            ],
+                            "transport_provenance": {
+                                "provider": "local-hermetic-responses",
+                                "wire_api": "responses",
+                                "network_scope": "loopback",
+                            },
+                            "returncode": 0,
+                        },
+                    ],
+                    "captured_model_tools": [
+                        "mcp__openubmc_target_runtime",
+                    ],
+                    "captured_runtime_tool_contracts": [
+                        {
+                            "name": "mcp__openubmc_target_runtime",
+                            "type": "namespace",
+                            "tools": [
+                                {"name": "execute"},
+                                {"name": "observe"},
+                            ],
+                        }
+                    ],
+                    "restart_verified": True,
+                    "mcp_closeout": {
+                        "status": "passed",
+                        "task_closeout_ready": True,
+                        "identity_records_valid": True,
+                        "isolation_verified": True,
+                        "summary": {
+                            "record_count": 2,
+                            "live_processes": 0,
+                            "active_requests": 0,
+                            "confirmed_live_orphans": 0,
+                            "unattributed_live_processes": 0,
+                            "owned_live_processes": 0,
+                            "stopped_processes": 2,
+                        },
+                        "closeout_checks": {
+                            "active_requests_zero": True,
+                            "confirmed_live_orphans_zero": True,
+                            "unattributed_live_processes_zero": True,
+                            "owned_live_processes_zero": True,
+                        },
+                        "operator_status": {
+                            "schema": "openubmc-agent-workflow.mcp-process-status.v1",
+                            "operation": "status",
+                            "task_id": "codex-adoption-probe",
+                            "session_id": "codex-adoption-session",
+                            "task_closeout_ready": True,
+                            "summary": {
+                                "record_count": 2,
+                                "live_processes": 0,
+                                "active_requests": 0,
+                                "confirmed_live_orphans": 0,
+                                "unattributed_live_processes": 0,
+                                "owned_live_processes": 0,
+                                "stopped_processes": 2,
+                            },
+                            "closeout_checks": {
+                                "active_requests_zero": True,
+                                "confirmed_live_orphans_zero": True,
+                                "unattributed_live_processes_zero": True,
+                                "owned_live_processes_zero": True,
+                            },
+                        },
+                        "isolation": {
+                            "qualification_root": "/isolated",
+                            "task_home": "/isolated/home",
+                            "codex_config_root": "/isolated/codex",
+                            "runtime_state_root": "/isolated/runtime-state",
+                            "lifecycle_root": "/isolated/mcp-processes",
+                            "global_codex_state_used": False,
+                            "installed_launcher_invocation": True,
+                        },
+                    },
+                    "mcp_lifecycle_records": [
+                        {
+                            "schema": "openubmc.mcp-process-lifecycle.v1",
+                            "component": "target-runtime",
+                            "version": "openubmc.target-runtime.v1",
+                            "client": "codex",
+                            "task_id": "codex-adoption-probe",
+                            "session_id": "codex-adoption-session",
+                            "source_commit": "a" * 40,
+                            "formal_run": True,
+                            "model_identity": {
+                                "model": "codex-product-client-qualification"
+                            },
+                            "codex_identity": FORMAL_CODEX_IDENTITY,
+                            "parent_pid": 123,
+                            "parent_identity": "parent-identity",
+                            "parent_identity_verified": True,
+                            "parent_identity_currently_verified": True,
+                            "process_id": 456,
+                            "process_identity": "process-identity",
+                            "start_time": "2026-08-31T00:00:00Z",
+                            "runtime_state_root": "/isolated/runtime-state",
+                            "lifecycle_state": "stopped",
+                            "active_requests": 0,
+                            "exit_reason": "client-terminated",
+                        },
+                        {
+                            "schema": "openubmc.mcp-process-lifecycle.v1",
+                            "component": "target-runtime",
+                            "version": "openubmc.target-runtime.v1",
+                            "client": "codex",
+                            "task_id": "codex-adoption-probe",
+                            "session_id": "codex-adoption-session",
+                            "source_commit": "a" * 40,
+                            "formal_run": True,
+                            "model_identity": FORMAL_MODEL_IDENTITY,
+                            "codex_identity": FORMAL_CODEX_IDENTITY,
+                            "parent_pid": 124,
+                            "parent_identity": "parent-identity-2",
+                            "parent_identity_verified": True,
+                            "parent_identity_currently_verified": True,
+                            "process_id": 457,
+                            "process_identity": "process-identity-2",
+                            "start_time": "2026-08-31T00:00:01Z",
+                            "runtime_state_root": "/isolated/runtime-state",
+                            "lifecycle_state": "stopped",
+                            "active_requests": 0,
+                            "exit_reason": "client-terminated",
+                        },
+                    ],
                 }
             },
         },
@@ -112,11 +281,20 @@ def closeout_report() -> dict[str, object]:
             "closeout": {
                 "status": "passed",
                 "task_closeout_ready": True,
+                "identity_records_valid": True,
+                "isolation_verified": True,
                 "summary": {
                     "live_processes": 0,
                     "active_requests": 0,
                     "confirmed_live_orphans": 0,
                     "unattributed_live_processes": 0,
+                    "owned_live_processes": 0,
+                },
+                "closeout_checks": {
+                    "active_requests_zero": True,
+                    "confirmed_live_orphans_zero": True,
+                    "unattributed_live_processes_zero": True,
+                    "owned_live_processes_zero": True,
                 },
             },
         },
@@ -128,6 +306,7 @@ def closeout_report() -> dict[str, object]:
             "reference_bytes": 1035,
             "saved_bytes": 14481,
             "blocks_promotability": False,
+            "operator_projection_covered": True,
         },
         "task_matrix": {
             "status": "passed",
@@ -161,13 +340,59 @@ def release_identity() -> dict[str, object]:
 
 
 class CodexAdoptionQualificationTests(unittest.TestCase):
+    def test_qualification_requires_explicit_formal_identities(self) -> None:
+        with self.assertRaisesRegex(ValueError, "formal model and Codex identity"):
+            adoption.qualify()
+
+    def test_qualification_rejects_a_codex_version_other_than_the_pinned_process(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "codex-cli 0.151.0"):
+            adoption.qualify(
+                model_identity=FORMAL_MODEL_IDENTITY,
+                codex_identity={"version": "codex-cli 0.150.0"},
+            )
+
+    def test_qualification_rejects_unverifiable_formal_identity_fields(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only contain model"):
+            adoption.qualify(
+                model_identity={
+                    "model": "codex-product-client-qualification",
+                    "provider": "openai",
+                },
+                codex_identity=FORMAL_CODEX_IDENTITY,
+            )
+        with self.assertRaisesRegex(ValueError, "only contain version"):
+            adoption.qualify(
+                model_identity=FORMAL_MODEL_IDENTITY,
+                codex_identity={
+                    "version": "codex-cli 0.151.0",
+                    "sha256": "1" * 64,
+                },
+            )
+
     def test_one_report_combines_identity_codex_runtime_tasks_and_provenance(
         self,
     ) -> None:
+        model_identity = {
+            "model": "gpt-5.6-sol",
+        }
+        codex_identity = {"version": "codex-cli 0.151.0"}
+        closeout = closeout_report()
+        for lifecycle in closeout["client_matrix"]["runs"]["codex"][
+            "mcp_lifecycle_records"
+        ]:
+            lifecycle["model_identity"] = model_identity
+            lifecycle["codex_identity"] = codex_identity
+        for process_run in closeout["client_matrix"]["runs"]["codex"][
+            "codex_process_runs"
+        ]:
+            process_run["requested_model"] = model_identity["model"]
+            process_run["captured_request_models"] = [model_identity["model"]]
         with (
             mock.patch.object(
-                adoption, "qualify_closeout", return_value=closeout_report()
-            ),
+                adoption, "qualify_closeout", return_value=closeout
+            ) as qualify_closeout,
             mock.patch.object(
                 adoption, "build_release_lock", return_value=release_identity()
             ),
@@ -178,16 +403,15 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             ),
         ):
             report = adoption.qualify(
-                model_identity={
-                    "provider": "openai",
-                    "model": "gpt-5.6-sol",
-                    "reasoning_effort": "high",
-                },
-                codex_identity={
-                    "version": "codex-cli 0.150.0",
-                    "sha256": "1" * 64,
-                },
+                model_identity=model_identity,
+                codex_identity=codex_identity,
             )
+
+        qualify_closeout.assert_called_once_with(
+            source_commit="a" * 40,
+            model_identity=model_identity,
+            codex_identity=codex_identity,
+        )
 
         self.assertEqual(
             report["schema"],
@@ -232,13 +456,36 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         )
         self.assertEqual(
             report["provenance"]["codex"]["version"],
-            "codex-cli 0.150.0",
+            "codex-cli 0.151.0",
         )
         self.assertFalse(report["external_evaluation"]["blocking"])
         self.assertEqual(report["external_evaluation"]["harnesses"], ["dsh"])
         unsigned = dict(report)
         digest = unsigned.pop("evidence_digest")
         self.assertEqual(digest, evidence_fingerprint(unsigned))
+
+    def test_lifecycle_identity_must_match_report_provenance(self) -> None:
+        closeout = closeout_report()
+        closeout["client_matrix"]["runs"]["codex"]["mcp_lifecycle_records"][0][
+            "model_identity"
+        ] = {"model": "different-model"}
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(adoption, "bind_source_commit", return_value="a" * 40),
+        ):
+            report = adoption.qualify(
+                model_identity={"model": "gpt-5.6-sol"},
+                codex_identity={"version": "codex-cli 0.151.0"},
+            )
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "model_identity_mismatch",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
 
     def test_failed_dimension_is_explicit_and_checkpoint_cannot_pass(self) -> None:
         closeout = closeout_report()
@@ -263,7 +510,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertFalse(report["maintenance_checkpoint_ready"])
@@ -291,8 +538,8 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 side_effect=["a" * 40, "a" * 40],
             ),
         ):
-            first = adoption.qualify()
-            second = adoption.qualify()
+            first = qualify()
+            second = qualify()
 
         self.assertEqual(first, second)
 
@@ -315,7 +562,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertTrue(report["qualified"])
         self.assertEqual(report["failed_dimensions"], [])
@@ -343,11 +590,248 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertEqual(report["failed_dimensions"], ["codex_mcp"])
         self.assertFalse(report["dimensions"]["codex_mcp"]["identity_bound"])
+
+    def test_missing_codex_lifecycle_identity_fails_mcp_dimension(self) -> None:
+        closeout = closeout_report()
+        closeout["client_matrix"]["runs"]["codex"].pop(
+            "mcp_lifecycle_records"
+        )
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "mcp_lifecycle_records_missing",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_non_formal_lifecycle_identity_fails_mcp_dimension(self) -> None:
+        closeout = closeout_report()
+        closeout["client_matrix"]["runs"]["codex"]["mcp_lifecycle_records"][0][
+            "formal_run"
+        ] = False
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "mcp_lifecycle_identity_invalid",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_missing_restart_closeout_evidence_fails_mcp_dimension(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["restart_verified"] = False
+        codex["mcp_closeout"]["isolation"]["global_codex_state_used"] = True
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        failures = report["dimensions"]["codex_mcp"]["failure_codes"]
+        self.assertIn("restart_unverified", failures)
+        self.assertIn("mcp_closeout_invalid", failures)
+
+    def test_launcher_protocol_without_a_real_codex_process_fails_mcp_dimension(
+        self,
+    ) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["codex_process_invocation"] = False
+        codex["codex_process_runs"] = []
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_codex_restart_must_use_one_pinned_executable_identity(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["codex_process_runs"][1]["executable_sha256"] = (
+            "sha256:" + "8" * 64
+        )
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_real_codex_request_model_must_match_formal_model_identity(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["codex_process_runs"][0]["captured_request_models"] = [
+            "different-model"
+        ]
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_real_codex_transport_provenance_must_be_hermetic(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["codex_process_runs"][0]["transport_provenance"]["network_scope"] = (
+            "external"
+        )
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_closeout_requires_operator_status_evidence(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["mcp_closeout"].pop("operator_status", None)
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "mcp_closeout_invalid",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_missing_owned_process_zero_proof_fails_lifecycle_dimension(self) -> None:
+        closeout = closeout_report()
+        closeout["mcp_lifecycle"]["closeout"]["summary"].pop(
+            "owned_live_processes"
+        )
+        closeout["mcp_lifecycle"]["closeout"]["closeout_checks"].pop(
+            "owned_live_processes_zero"
+        )
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertEqual(report["dimensions"]["lifecycle"]["status"], "failed")
+
+    def test_operator_projection_coverage_is_required(self) -> None:
+        closeout = closeout_report()
+        closeout["execute_projection"]["operator_projection_covered"] = False
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertEqual(report["dimensions"]["projection"]["status"], "failed")
 
     def test_linked_development_install_cannot_pass_release_qualification(
         self,
@@ -375,7 +859,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = adoption.qualify()
+            report = qualify()
 
         self.assertFalse(report["qualified"])
         self.assertFalse(report["maintenance_checkpoint_ready"])
@@ -394,7 +878,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(ValueError, "must match workspace HEAD"):
-                adoption.qualify(source_commit="9" * 40)
+                qualify(source_commit="9" * 40)
 
     def test_selected_source_commit_is_propagated_to_the_collector(self) -> None:
         with (
@@ -410,9 +894,13 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            adoption.qualify(source_commit="a" * 40)
+            qualify(source_commit="a" * 40)
 
-        closeout.assert_called_once_with(source_commit="a" * 40)
+        closeout.assert_called_once_with(
+            source_commit="a" * 40,
+            model_identity={"model": "codex-product-client-qualification"},
+            codex_identity={"version": "codex-cli 0.151.0"},
+        )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,14 @@ on:
         description: Previous immutable release tag used for upgrade and rollback
         required: true
         type: string
+      model_identity:
+        description: JSON identity of the model that produced the formal release evidence
+        required: true
+        type: string
+      codex_identity:
+        description: JSON identity of the Codex client that produced the formal release evidence
+        required: true
+        type: string
       ab_bundle_asset:
         description: Evidence asset attached to the draft release for current_ref
         required: true
@@ -48,6 +56,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12.13"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: openubmc-kb-mcp/package-lock.json
+
+      - name: Install locked Node validation dependencies
+        run: npm ci --no-audit --no-fund --prefix openubmc-kb-mcp
 
       - name: Resolve release candidate identity
         id: candidate
@@ -105,11 +122,15 @@ jobs:
       - name: Run immutable release gates
         env:
           GH_TOKEN: ${{ github.token }}
+          FORMAL_MODEL_IDENTITY: ${{ inputs.model_identity }}
+          FORMAL_CODEX_IDENTITY: ${{ inputs.codex_identity }}
         run: >-
           python3 scripts/release_gate.py
           --current-ref "${{ inputs.current_ref }}"
           --release-tag "${{ steps.candidate.outputs.release_tag }}"
           --previous-ref "${{ inputs.previous_ref }}"
+          --model-identity "$FORMAL_MODEL_IDENTITY"
+          --codex-identity "$FORMAL_CODEX_IDENTITY"
           --github-repository "${{ github.repository }}"
           --work-root "$RUNNER_TEMP/release-gate-work"
           --ab-evidence "$RUNNER_TEMP/agent-gateway-ab-evidence/summary.json"

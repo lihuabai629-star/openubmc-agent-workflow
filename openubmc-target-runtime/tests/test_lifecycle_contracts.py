@@ -146,6 +146,63 @@ class TaskRunRegistryTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(len(created), 2)
 
+    def test_completion_drains_existing_work_and_rejects_new_operations(self) -> None:
+        registry, created = self.make_registry()
+        running_started = threading.Event()
+        release_running = threading.Event()
+        queued_started = threading.Event()
+
+        def running_callback(_resource, context):
+            running_started.set()
+            while not release_running.is_set():
+                context.wait(0.02)
+            return "running-completed"
+
+        def queued_callback(_resource, context):
+            context.raise_if_stopped()
+            queued_started.set()
+            return "queued-completed"
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            running = executor.submit(
+                registry.execute,
+                task_id="task-a",
+                operation_id="running",
+                timeout_seconds=2,
+                callback=running_callback,
+            )
+            self.assertTrue(running_started.wait(1))
+            queued = executor.submit(
+                registry.execute,
+                task_id="task-a",
+                operation_id="queued",
+                timeout_seconds=2,
+                callback=queued_callback,
+            )
+            for _ in range(100):
+                status = registry.status()["tasks"][0]
+                if status["queued_operations"] == 1:
+                    break
+                threading.Event().wait(0.01)
+            self.assertEqual(status["queued_operations"], 1)
+
+            self.assertTrue(registry.complete("task-a"))
+            with self.assertRaisesRegex(OperationCancelled, "cannot accept new work"):
+                registry.execute(
+                    task_id="task-a",
+                    operation_id="late",
+                    timeout_seconds=1,
+                    callback=lambda _resource, _context: "unexpected",
+                )
+
+            release_running.set()
+            self.assertEqual(running.result(timeout=1), "running-completed")
+            self.assertEqual(queued.result(timeout=1), "queued-completed")
+
+        self.assertTrue(queued_started.is_set())
+        self.assertTrue(created[0].closed)
+        self.assertEqual(registry.status()["task_count"], 0)
+
     def test_idle_timeout_and_lru_pressure_reclaim_only_idle_tasks(self) -> None:
         clock = FakeClock()
         registry, created = self.make_registry(

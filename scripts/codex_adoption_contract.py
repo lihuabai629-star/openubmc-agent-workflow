@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
 from scripts.evidence_report import evidence_fingerprint
+from scripts.formal_identity import PINNED_CODEX_VERSION
 
 
 SCHEMA = "openubmc-agent-workflow.codex-adoption-qualification.v1"
@@ -184,6 +186,250 @@ def installation_identity_failures(
     return [name for name, passed in checks if not passed]
 
 
+def _mcp_lifecycle_failures(
+    value: object,
+    *,
+    expected_source_commit: str,
+) -> list[str]:
+    records = value if isinstance(value, list) else []
+    if not records:
+        return ["mcp_lifecycle_records_missing"]
+    valid = all(
+        isinstance(record, Mapping)
+        and record.get("schema") == "openubmc.mcp-process-lifecycle.v1"
+        and record.get("client") == "codex"
+        and isinstance(record.get("task_id"), str)
+        and bool(str(record.get("task_id", "")).strip())
+        and not str(record.get("task_id", "")).startswith("unknown-")
+        and isinstance(record.get("session_id"), str)
+        and bool(str(record.get("session_id", "")).strip())
+        and not str(record.get("session_id", "")).startswith("unknown-")
+        and record.get("source_commit") == expected_source_commit
+        and record.get("formal_run") is True
+        and isinstance(record.get("model_identity"), Mapping)
+        and bool(record.get("model_identity"))
+        and isinstance(record.get("codex_identity"), Mapping)
+        and bool(record.get("codex_identity"))
+        and _mapping(record.get("codex_identity")).get("version")
+        == PINNED_CODEX_VERSION
+        and record.get("parent_identity_verified") is True
+        and isinstance(record.get("parent_identity_currently_verified"), bool)
+        and isinstance(record.get("start_time"), str)
+        and bool(str(record.get("start_time", "")).strip())
+        and isinstance(record.get("runtime_state_root"), str)
+        and bool(str(record.get("runtime_state_root", "")).strip())
+        and record.get("lifecycle_state") == "stopped"
+        and isinstance(record.get("active_requests"), int)
+        and not isinstance(record.get("active_requests"), bool)
+        and record.get("active_requests") == 0
+        and record.get("exit_reason") in {"client-terminated", "task-closeout"}
+        for record in records
+    )
+    return [] if valid else ["mcp_lifecycle_identity_invalid"]
+
+
+def _codex_process_failures(
+    evidence: Mapping[str, object],
+) -> list[str]:
+    raw_runs = evidence.get("codex_process_runs")
+    runs = raw_runs if isinstance(raw_runs, list) else []
+    raw_records = evidence.get("mcp_lifecycle_records")
+    records = raw_records if isinstance(raw_records, list) else []
+    captured_tools = evidence.get("captured_model_tools")
+    raw_contracts = evidence.get("captured_runtime_tool_contracts")
+    contracts = raw_contracts if isinstance(raw_contracts, list) else []
+    runtime_contracts = [
+        contract
+        for contract in contracts
+        if isinstance(contract, Mapping)
+        and contract.get("name") == "mcp__openubmc_target_runtime"
+        and contract.get("type") == "namespace"
+    ]
+    nested_tool_names = {
+        str(tool.get("name"))
+        for contract in runtime_contracts
+        for tool in (
+            contract.get("tools")
+            if isinstance(contract.get("tools"), list)
+            else []
+        )
+        if isinstance(tool, Mapping)
+    }
+    bindings: set[tuple[int, str]] = set()
+    executable_identities: set[tuple[str, str, str]] = set()
+    declared_models = {
+        str(_mapping(record.get("model_identity")).get("model", "")).strip()
+        for record in records
+        if isinstance(record, Mapping)
+    }
+    declared_codex_versions = {
+        str(_mapping(record.get("codex_identity")).get("version", "")).strip()
+        for record in records
+        if isinstance(record, Mapping)
+    }
+    expected_model = next(iter(declared_models)) if len(declared_models) == 1 else ""
+    valid_runs = len(runs) == 2
+    for run in runs:
+        if not isinstance(run, Mapping):
+            valid_runs = False
+            continue
+        process_id = run.get("process_id")
+        process_identity = str(run.get("process_identity", ""))
+        request_models = run.get("captured_request_models")
+        transport_provenance = _mapping(run.get("transport_provenance"))
+        normalized_request_models = (
+            request_models if isinstance(request_models, list) else []
+        )
+        valid = all(
+            (
+                isinstance(process_id, int),
+                not isinstance(process_id, bool),
+                int(process_id or 0) > 1,
+                process_identity not in {"", "unknown"},
+                run.get("parent_pid") == process_id,
+                run.get("parent_identity") == process_identity,
+                Path(str(run.get("executable", ""))).is_absolute(),
+                _sha256(run.get("executable_sha256")),
+                run.get("version") == PINNED_CODEX_VERSION,
+                declared_codex_versions == {PINNED_CODEX_VERSION},
+                bool(expected_model),
+                run.get("requested_model") == expected_model,
+                isinstance(request_models, list),
+                bool(normalized_request_models),
+                all(
+                    model == expected_model for model in normalized_request_models
+                ),
+                transport_provenance
+                == {
+                    "provider": "local-hermetic-responses",
+                    "wire_api": "responses",
+                    "network_scope": "loopback",
+                },
+                run.get("returncode") == 0,
+            )
+        )
+        valid_runs = valid_runs and valid
+        if valid and isinstance(process_id, int):
+            bindings.add((process_id, process_identity))
+            executable_identities.add(
+                (
+                    str(run.get("executable", "")),
+                    str(run.get("executable_sha256", "")),
+                    str(run.get("version", "")),
+                )
+            )
+    record_bindings = {
+        (record.get("parent_pid"), str(record.get("parent_identity", "")))
+        for record in records
+        if isinstance(record, Mapping)
+    }
+    valid = all(
+        (
+            evidence.get("codex_process_invocation") is True,
+            valid_runs,
+            len(bindings) == 2,
+            len(executable_identities) == 1,
+            record_bindings == bindings,
+            all(
+                isinstance(record, Mapping)
+                and record.get("exit_reason") == "client-terminated"
+                for record in records
+            ),
+            isinstance(captured_tools, list),
+            "mcp__openubmc_target_runtime" in (
+                {str(item) for item in captured_tools}
+                if isinstance(captured_tools, list)
+                else set()
+            ),
+            nested_tool_names == {"execute", "observe"},
+            evidence.get("restart_verified") is True,
+        )
+    )
+    return [] if valid else ["codex_process_unverified"]
+
+
+def _mcp_closeout_failures(value: object, records_value: object) -> list[str]:
+    closeout = _mapping(value)
+    records = records_value if isinstance(records_value, list) else []
+    summary = _mapping(closeout.get("summary"))
+    checks = _mapping(closeout.get("closeout_checks"))
+    isolation = _mapping(closeout.get("isolation"))
+    operator_status = _mapping(closeout.get("operator_status"))
+    operator_summary = _mapping(operator_status.get("summary"))
+    operator_checks = _mapping(operator_status.get("closeout_checks"))
+    try:
+        qualification_root = Path(
+            str(isolation.get("qualification_root", ""))
+        ).absolute()
+        isolated_roots = tuple(
+            Path(str(isolation.get(name, ""))).absolute()
+            for name in (
+                "task_home",
+                "codex_config_root",
+                "runtime_state_root",
+                "lifecycle_root",
+            )
+        )
+        roots_isolated = (
+            bool(str(isolation.get("qualification_root", "")).strip())
+            and all(
+                bool(str(isolation.get(name, "")).strip())
+                for name in (
+                    "task_home",
+                    "codex_config_root",
+                    "runtime_state_root",
+                    "lifecycle_root",
+                )
+            )
+            and all(path.is_relative_to(qualification_root) for path in isolated_roots)
+            and len(set(isolated_roots)) == len(isolated_roots)
+        )
+    except (OSError, RuntimeError, ValueError):
+        roots_isolated = False
+    zero_fields = (
+        "live_processes",
+        "active_requests",
+        "confirmed_live_orphans",
+        "unattributed_live_processes",
+        "owned_live_processes",
+    )
+    check_fields = (
+        "active_requests_zero",
+        "confirmed_live_orphans_zero",
+        "unattributed_live_processes_zero",
+        "owned_live_processes_zero",
+    )
+    valid = all(
+        (
+            closeout.get("status") == "passed",
+            closeout.get("task_closeout_ready") is True,
+            closeout.get("identity_records_valid") is True,
+            closeout.get("isolation_verified") is True,
+            isinstance(summary.get("record_count"), int),
+            not isinstance(summary.get("record_count"), bool),
+            int(summary.get("record_count", 0)) >= 2,
+            summary.get("record_count") == len(records),
+            all(summary.get(name) == 0 for name in zero_fields),
+            all(checks.get(name) is True for name in check_fields),
+            operator_status.get("schema")
+            == "openubmc-agent-workflow.mcp-process-status.v1",
+            operator_status.get("operation") == "status",
+            operator_status.get("task_id")
+            == (records[0].get("task_id") if records else None),
+            operator_status.get("session_id")
+            == (records[0].get("session_id") if records else None),
+            operator_status.get("task_closeout_ready") is True,
+            operator_summary == summary,
+            operator_checks == checks,
+            operator_summary.get("stopped_processes") == len(records),
+            roots_isolated,
+            isolation.get("global_codex_state_used") is False,
+            isolation.get("installed_launcher_invocation") is True,
+        )
+    )
+    return [] if valid else ["mcp_closeout_invalid"]
+
+
 def codex_mcp_failures(
     evidence: Mapping[str, object],
     *,
@@ -220,7 +466,8 @@ def codex_mcp_failures(
         ),
         (
             "runtime_invocation_invalid",
-            evidence.get("runtime_invocation") == "client-configured-mcp-command",
+            evidence.get("runtime_invocation")
+            == "installed-runtime-launcher-protocol",
         ),
         (
             "protocol_exchange_invalid",
@@ -241,9 +488,19 @@ def codex_mcp_failures(
             evidence.get("runtime_content_digest")
             == expected_runtime.get("content_digest"),
         ),
+        ("restart_unverified", evidence.get("restart_verified") is True),
     )
     return [
         *[name for name, passed in checks if not passed],
+        *_codex_process_failures(evidence),
+        *_mcp_lifecycle_failures(
+            evidence.get("mcp_lifecycle_records"),
+            expected_source_commit=expected_source_commit,
+        ),
+        *_mcp_closeout_failures(
+            evidence.get("mcp_closeout"),
+            evidence.get("mcp_lifecycle_records"),
+        ),
         *_launcher_identity_failures(
             launcher_identity,
             launcher_identity_digest,
@@ -339,7 +596,7 @@ def codex_mcp_dimension_failures(
         (
             "runtime_invocation_invalid",
             codex_mcp.get("runtime_invocation")
-            == "client-configured-mcp-command",
+            == "installed-runtime-launcher-protocol",
         ),
         (
             "protocol_exchange_invalid",
@@ -365,9 +622,19 @@ def codex_mcp_dimension_failures(
             "launcher_state_unverified",
             codex_mcp.get("launcher_state_verified") is True,
         ),
+        ("restart_unverified", codex_mcp.get("restart_verified") is True),
     )
     return [
         *[name for name, passed in checks if not passed],
+        *_codex_process_failures(codex_mcp),
+        *_mcp_lifecycle_failures(
+            codex_mcp.get("mcp_lifecycle_records"),
+            expected_source_commit=expected_source_commit,
+        ),
+        *_mcp_closeout_failures(
+            codex_mcp.get("mcp_closeout"),
+            codex_mcp.get("mcp_lifecycle_records"),
+        ),
         *_launcher_identity_failures(
             launcher_identity,
             codex_mcp.get("launcher_identity_digest", ""),
@@ -502,6 +769,7 @@ def verify_codex_adoption_report(
         (
             projection.get("correctness_primary") is True,
             projection.get("repeated_reference") is True,
+            projection.get("operator_projection_covered") is True,
             all(
                 isinstance(value, int) and not isinstance(value, bool) and value >= 0
                 for value in projection_sizes
@@ -516,14 +784,22 @@ def verify_codex_adoption_report(
     lifecycle = _mapping(dimensions.get("lifecycle"))
     lifecycle_closeout = _mapping(lifecycle.get("closeout"))
     lifecycle_summary = _mapping(lifecycle_closeout.get("summary"))
+    lifecycle_checks = _mapping(lifecycle_closeout.get("closeout_checks"))
     if lifecycle.get("status") == "passed" and not all(
         (
             lifecycle_closeout.get("status") == "passed",
             lifecycle_closeout.get("task_closeout_ready") is True,
+            lifecycle_closeout.get("identity_records_valid") is True,
+            lifecycle_closeout.get("isolation_verified") is True,
             lifecycle_summary.get("active_requests") == 0,
             lifecycle_summary.get("live_processes") == 0,
             lifecycle_summary.get("confirmed_live_orphans") == 0,
             lifecycle_summary.get("unattributed_live_processes") == 0,
+            lifecycle_summary.get("owned_live_processes") == 0,
+            lifecycle_checks.get("active_requests_zero") is True,
+            lifecycle_checks.get("confirmed_live_orphans_zero") is True,
+            lifecycle_checks.get("unattributed_live_processes_zero") is True,
+            lifecycle_checks.get("owned_live_processes_zero") is True,
         )
     ):
         raise ValueError(

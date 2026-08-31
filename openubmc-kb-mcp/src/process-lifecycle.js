@@ -36,6 +36,25 @@ function required(value, name) {
 }
 
 
+function normalizedJsonObject(value, name) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${name} must be an object`);
+  }
+  try {
+    const normalized = JSON.parse(JSON.stringify(value));
+    if (!normalized || typeof normalized !== "object" || Array.isArray(normalized)) {
+      throw new Error(`${name} must be an object`);
+    }
+    return normalized;
+  } catch (error) {
+    if (error instanceof Error && error.message === `${name} must be an object`) {
+      throw error;
+    }
+    throw new Error(`${name} must be JSON serializable`);
+  }
+}
+
+
 function defaultProcessAlive(processId) {
   if (!Number.isInteger(processId) || processId <= 1) return false;
   try {
@@ -77,11 +96,16 @@ export class McpProcessLifecycle {
     client,
     taskId,
     sessionId,
+    sourceCommit = "unknown-source-commit",
+    modelIdentity = {},
+    codexIdentity = {},
+    formalRun = false,
     parentPid,
     statePath,
     lifecycleRoot,
     idleTimeoutSeconds,
     processId = process.pid,
+    runtimeStateRoot = "",
     monotonicClock = () => performance.now() / 1000,
     wallClock = () => Date.now(),
     processAlive = defaultProcessAlive,
@@ -92,6 +116,13 @@ export class McpProcessLifecycle {
     this.client = required(client, "client");
     this.taskId = required(taskId, "taskId");
     this.sessionId = required(sessionId, "sessionId");
+    this.sourceCommit = required(sourceCommit, "sourceCommit");
+    this.modelIdentity = normalizedJsonObject(modelIdentity, "modelIdentity");
+    this.codexIdentity = normalizedJsonObject(codexIdentity, "codexIdentity");
+    if (typeof formalRun !== "boolean") {
+      throw new Error("formalRun must be a boolean");
+    }
+    this.formalRun = formalRun;
     this.parentPid = Number(parentPid);
     this.processId = Number(processId);
     if (!Number.isInteger(this.parentPid) || this.parentPid < 0) {
@@ -101,6 +132,7 @@ export class McpProcessLifecycle {
       throw new Error("processId must be a positive integer");
     }
     this.statePath = resolve(statePath);
+    this.runtimeStateRoot = runtimeStateRoot ? resolve(runtimeStateRoot) : "";
     this.lifecycleRoot = resolve(lifecycleRoot);
     this.idleTimeoutSeconds = Number(idleTimeoutSeconds);
     if (!Number.isFinite(this.idleTimeoutSeconds) || !(this.idleTimeoutSeconds > 0)) {
@@ -114,6 +146,8 @@ export class McpProcessLifecycle {
     this.parentIdentity = this.parentPid > 1 && processAlive(this.parentPid)
       ? processIdentity(this.parentPid)
       : "unknown";
+    this.parentIdentityVerifiedEver = this.parentIdentity !== "unknown"
+      && this.parentIdentityCurrentlyVerified();
     this.startedMonotonic = monotonicClock();
     this.lastActivity = this.startedMonotonic;
     this.startedAt = this.timestamp();
@@ -156,6 +190,7 @@ export class McpProcessLifecycle {
         this.parentIdentity !== "unknown"
         && currentParentIdentity !== this.parentIdentity
       ) return "orphaned";
+      this.parentIdentityVerifiedEver = true;
     } catch {
       return "unknown-owner";
     }
@@ -165,8 +200,20 @@ export class McpProcessLifecycle {
     return this.activeRequests > 0 ? "active" : "idle";
   }
 
+  parentIdentityCurrentlyVerified() {
+    if (this.parentPid <= 1 || this.parentIdentity === "unknown") return false;
+    try {
+      return this.processAlive(this.parentPid)
+        && this.identityReader(this.parentPid) === this.parentIdentity;
+    } catch {
+      return false;
+    }
+  }
+
   status() {
     const lifecycleState = this.lifecycleState();
+    const parentIdentityCurrentlyVerified = this.parentIdentityCurrentlyVerified();
+    if (parentIdentityCurrentlyVerified) this.parentIdentityVerifiedEver = true;
     return {
       schema: MCP_PROCESS_LIFECYCLE_SCHEMA,
       component: this.component,
@@ -174,13 +221,20 @@ export class McpProcessLifecycle {
       client: this.client,
       task_id: this.taskId,
       session_id: this.sessionId,
+      source_commit: this.sourceCommit,
+      model_identity: { ...this.modelIdentity },
+      codex_identity: { ...this.codexIdentity },
+      formal_run: this.formalRun,
       parent_pid: this.parentPid,
       parent_identity: this.parentIdentity,
+      parent_identity_verified: this.parentIdentityVerifiedEver,
+      parent_identity_currently_verified: parentIdentityCurrentlyVerified,
       process_id: this.processId,
       process_identity: this.processIdentity,
       start_time: this.startedAt,
       updated_at: this.timestamp(),
       state_path: this.statePath,
+      runtime_state_root: this.runtimeStateRoot,
       lifecycle_state: lifecycleState,
       active_requests: this.activeRequests,
       idle_seconds: Math.max(0, this.monotonicClock() - this.lastActivity),
@@ -280,6 +334,10 @@ export class McpProcessLifecycle {
       this.requestedExitReason = required(reason, "exitReason");
       this.persist();
     }
+  }
+
+  requestTaskCloseout() {
+    this.requestExit("task-closeout");
   }
 
   get shutdownRequested() {

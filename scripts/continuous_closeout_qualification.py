@@ -24,6 +24,11 @@ from scripts.evidence_report import (  # noqa: E402
     evidence_fingerprint,
     resolve_source_commit,
 )
+from scripts.formal_identity import (  # noqa: E402
+    identity_argument,
+    normalize_codex_identity,
+    normalize_model_identity,
+)
 from scripts.codex_adoption_contract import product_client_failures  # noqa: E402
 from scripts.product_closeout_qualification import (  # noqa: E402
     qualify as qualify_product_closeout,
@@ -31,12 +36,8 @@ from scripts.product_closeout_qualification import (  # noqa: E402
 from scripts.product_closeout_ingestion import (  # noqa: E402
     assemble_manifest as assemble_product_manifest,
 )
-from scripts.mcp_process_lifecycle import summarize as summarize_mcp_records  # noqa: E402
 from scripts.runtime_stability import qualify_dual_projection  # noqa: E402
-from openubmc_target_runtime import (  # noqa: E402
-    build_release_lock,
-    inspect_mcp_process_records,
-)
+from openubmc_target_runtime import build_release_lock  # noqa: E402
 
 
 SCHEMA = "openubmc-agent-workflow.continuous-closeout-qualification.v1"
@@ -53,6 +54,8 @@ class CandidateRelease(NamedTuple):
     bundle: Path
     release_commit: str
     release: dict[str, object]
+
+
 PRODUCT_CONTRACT_TESTS = (
     "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_assembles_a_promotable_manifest_from_runtime_and_fixed_evidence",
     "scripts.tests.test_product_closeout_ingestion.ProductCloseoutIngestionTests.test_cli_writes_deterministic_manifest_and_qualification_report",
@@ -103,9 +106,11 @@ MCP_LIFECYCLE_TESTS = {
     "active_request_drain": (
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_requested_shutdown_waits_for_the_active_request_to_finish",
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_stdio_sigterm_drains_the_active_response_before_exit",
+        "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_stdio_task_closeout_drains_overlapping_responses_and_rejects_new_work",
     ),
     "cleanup": (
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_terminates_only_confirmed_orphaned_processes",
+        "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_preserves_orphan_without_verified_ownership_binding",
     ),
     "zero_live_orphans": (
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_signals_the_identity_bound_process_handle",
@@ -117,6 +122,8 @@ PROJECTION_TESTS = (
     "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_preserves_a_changed_diagnostic_receipt",
     "tests.test_agent_gateway.AgentGatewayTests.test_retried_one_shot_terminal_turn_keeps_the_complete_receipt",
     "tests.test_runtime_stability.RuntimeStabilityTests.test_dual_projection_qualification_measures_gate_and_terminal_seams",
+    "tests.test_mcp_contracts.RuntimeMcpServiceTests.test_operator_status_derives_bounded_current_run_evidence_from_the_ledger",
+    "tests.test_mcp_contracts.RuntimeMcpServiceTests.test_operator_status_without_task_binding_has_no_current_run",
 )
 TASK_MATRIX_TESTS = {
     "source_only": {
@@ -382,6 +389,9 @@ def _product_client_run(
     tests: Sequence[str],
     contract: Mapping[str, object],
     source_commit: str,
+    *,
+    model_identity: Mapping[str, object],
+    codex_identity: Mapping[str, object],
 ) -> dict[str, object]:
     with tempfile.TemporaryDirectory() as raw:
         qualification_root = Path(raw)
@@ -405,6 +415,12 @@ def _product_client_run(
                 "OPENUBMC_PRODUCT_CLIENT_EVIDENCE": str(evidence_path),
                 "OPENUBMC_PRODUCT_CLIENT_REPO_URL": str(candidate.bundle),
                 "OPENUBMC_PRODUCT_CLIENT_RELEASE_COMMIT": candidate.release_commit,
+                "OPENUBMC_PRODUCT_CLIENT_MODEL_IDENTITY": json.dumps(
+                    dict(model_identity), ensure_ascii=True, sort_keys=True
+                ),
+                "OPENUBMC_PRODUCT_CLIENT_CODEX_IDENTITY": json.dumps(
+                    dict(codex_identity), ensure_ascii=True, sort_keys=True
+                ),
             },
         )
         if result.get("status") != "passed":
@@ -433,6 +449,20 @@ def _product_client_run(
         expected_source_commit=source_commit,
         expected_release=candidate.release,
     )
+    lifecycle_records = evidence.get("mcp_lifecycle_records", [])
+    records = lifecycle_records if isinstance(lifecycle_records, list) else []
+    if any(
+        not isinstance(record, Mapping)
+        or record.get("model_identity") != dict(model_identity)
+        for record in records
+    ):
+        failures.append("model_identity_mismatch")
+    if any(
+        not isinstance(record, Mapping)
+        or record.get("codex_identity") != dict(codex_identity)
+        for record in records
+    ):
+        failures.append("codex_identity_mismatch")
     return {
         **result,
         **dict(evidence),
@@ -508,54 +538,63 @@ def _product_evidence(
     }
 
 
-def _mcp_closeout_snapshot() -> dict[str, object]:
-    with tempfile.TemporaryDirectory() as raw:
-        lifecycle_root = Path(raw) / "mcp-processes"
-        child_source = "\n".join(
-            (
-                "import os",
-                "import sys",
-                "from pathlib import Path",
-                f"sys.path.insert(0, {str(RUNTIME_ROOT)!r})",
-                "from openubmc_target_runtime.mcp_lifecycle import McpProcessLifecycle",
-                f"root = Path({str(lifecycle_root)!r})",
-                "lifecycle = McpProcessLifecycle(",
-                "    component='continuous-closeout-mcp',",
-                "    version='1',",
-                "    client='qualification',",
-                "    task_id='continuous-closeout-qualification',",
-                "    session_id='continuous-closeout-session',",
-                "    parent_pid=os.getppid(),",
-                "    state_path=root / 'state',",
-                "    lifecycle_root=root,",
-                "    idle_timeout_seconds=300,",
-                ")",
-                "lifecycle.record_exit('qualification-complete')",
-            )
-        )
-        completed = subprocess.run(
-            [sys.executable, "-c", child_source],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        records = inspect_mcp_process_records(lifecycle_root)
-    summary = summarize_mcp_records(records)
+def _mcp_closeout_snapshot(
+    product_run: Mapping[str, object],
+    *,
+    source_commit: str,
+    model_identity: Mapping[str, object],
+    codex_identity: Mapping[str, object],
+) -> dict[str, object]:
+    raw_records = product_run.get("mcp_lifecycle_records", [])
+    records = [
+        dict(record) for record in raw_records if isinstance(record, Mapping)
+    ] if isinstance(raw_records, list) else []
+    raw_closeout = product_run.get("mcp_closeout", {})
+    closeout = dict(raw_closeout) if isinstance(raw_closeout, Mapping) else {}
+    summary = closeout.get("summary", {})
+    normalized_summary = dict(summary) if isinstance(summary, Mapping) else {}
+    checks = closeout.get("closeout_checks", {})
+    closeout_checks = dict(checks) if isinstance(checks, Mapping) else {}
+    isolation = closeout.get("isolation", {})
+    normalized_isolation = (
+        dict(isolation) if isinstance(isolation, Mapping) else {}
+    )
+    identity_records_valid = bool(records) and all(
+        record.get("client") == "codex"
+        and not str(record.get("task_id", "")).startswith("unknown-")
+        and not str(record.get("session_id", "")).startswith("unknown-")
+        and record.get("source_commit") == source_commit
+        and record.get("formal_run") is True
+        and record.get("model_identity") == dict(model_identity)
+        and record.get("codex_identity") == dict(codex_identity)
+        and record.get("parent_identity_verified") is True
+        and isinstance(record.get("parent_identity_currently_verified"), bool)
+        and record.get("exit_reason") == "client-terminated"
+        for record in records
+    )
+    isolation_verified = (
+        closeout.get("isolation_verified") is True
+        and normalized_isolation.get("global_codex_state_used") is False
+        and normalized_isolation.get("installed_launcher_invocation") is True
+    )
     return {
         "status": (
             "passed"
-            if completed.returncode == 0
-            and summary["live_processes"] == 0
-            and summary["active_requests"] == 0
+            if product_run.get("status") == "passed"
+            and product_run.get("restart_verified") is True
+            and closeout.get("status") == "passed"
+            and identity_records_valid
+            and isolation_verified
+            and all(closeout_checks.values())
             else "failed"
         ),
-        "returncode": completed.returncode,
-        "failure_tail": completed.stderr.strip()[-2000:],
-        "task_closeout_ready": (
-            summary["live_processes"] == 0 and summary["active_requests"] == 0
-        ),
+        "returncode": int(product_run.get("returncode", 1)),
+        "failure_tail": str(product_run.get("failure_tail", ""))[-2000:],
+        "task_closeout_ready": identity_records_valid
+        and all(closeout_checks.values()),
+        "identity_records_valid": identity_records_valid,
+        "isolation_verified": isolation_verified,
+        "restart_verified": product_run.get("restart_verified") is True,
         "task_ids": sorted(
             {
                 str(record.get("task_id", ""))
@@ -570,7 +609,10 @@ def _mcp_closeout_snapshot() -> dict[str, object]:
                 if record.get("session_id")
             }
         ),
-        "summary": summary,
+        "records": records,
+        "summary": normalized_summary,
+        "closeout_checks": closeout_checks,
+        "isolation": normalized_isolation,
     }
 
 
@@ -580,8 +622,19 @@ def qualify(
     product_ingestion: Path | None = None,
     runtime_repository: Path | None = None,
     source_commit: str | None = None,
+    model_identity: Mapping[str, object] | None = None,
+    codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     selected_source_commit = source_commit or resolve_source_commit(ROOT)
+    required_identity = "formal model and Codex identity are required"
+    selected_model_identity = normalize_model_identity(
+        model_identity,
+        required_message=required_identity,
+    )
+    selected_codex_identity = normalize_codex_identity(
+        codex_identity,
+        required_message=required_identity,
+    )
     workflow = _workflow_metadata()
     raw_clients = workflow.get("clients", {})
     clients = raw_clients if isinstance(raw_clients, Mapping) else {}
@@ -610,6 +663,8 @@ def qualify(
             if isinstance(clients.get(name), Mapping)
             else {},
             selected_source_commit,
+            model_identity=selected_model_identity,
+            codex_identity=selected_codex_identity,
         )
         for name, tests in SUPPORTED_CLIENT_TESTS.items()
     }
@@ -618,7 +673,12 @@ def qualify(
         name: _run_tests(tests, cwd=RUNTIME_ROOT)
         for name, tests in MCP_LIFECYCLE_TESTS.items()
     }
-    lifecycle_closeout = _mcp_closeout_snapshot()
+    lifecycle_closeout = _mcp_closeout_snapshot(
+        client_runs.get("codex", {}),
+        source_commit=selected_source_commit,
+        model_identity=selected_model_identity,
+        codex_identity=selected_codex_identity,
+    )
     projection_tests = _run_tests(PROJECTION_TESTS, cwd=RUNTIME_ROOT)
     task_matrix = {
         name: _run_task_group(dimensions)
@@ -690,6 +750,10 @@ def qualify(
         "schema": SCHEMA,
         "source_commit": selected_source_commit,
         "source_clean": source_clean,
+        "formal_identity": {
+            "model": selected_model_identity,
+            "codex": selected_codex_identity,
+        },
         "qualified": qualified,
         "maintenance_checkpoint_ready": qualified,
         "fresh_product_promotable": product_evidence.get("promotable") is True,
@@ -720,6 +784,10 @@ def qualify(
                 "status"
             ]
             == "passed",
+            "restart_closeout_covered": lifecycle_closeout.get(
+                "restart_verified"
+            )
+            is True,
             "groups": lifecycle_results,
             "closeout": lifecycle_closeout,
         },
@@ -732,6 +800,8 @@ def qualify(
             "reference_bytes": int(repeated_projection.get("reference_bytes", 0)),
             "saved_bytes": int(repeated_projection.get("saved_bytes", 0)),
             "blocks_promotability": False,
+            "operator_projection_covered": projection_tests.get("status")
+            == "passed",
             "tests": projection_tests,
         },
         "task_matrix": {
@@ -752,6 +822,16 @@ def qualify(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--model-identity",
+        type=identity_argument,
+        required=True,
+    )
+    parser.add_argument(
+        "--codex-identity",
+        type=identity_argument,
+        required=True,
+    )
     parser.add_argument("--product-manifest", type=Path)
     parser.add_argument("--product-ingestion", type=Path)
     parser.add_argument("--runtime-repository", type=Path)
@@ -764,6 +844,8 @@ def main(argv: list[str] | None = None) -> int:
             product_ingestion=args.product_ingestion,
             runtime_repository=args.runtime_repository,
             source_commit=args.source_commit,
+            model_identity=args.model_identity,
+            codex_identity=args.codex_identity,
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)

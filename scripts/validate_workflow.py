@@ -944,6 +944,10 @@ def main(argv: list[str] | None = None) -> int:
         [
             sys.executable,
             str(ROOT / "scripts" / "codex_adoption_qualification.py"),
+            "--model-identity",
+            '{"model":"codex-product-client-qualification"}',
+            "--codex-identity",
+            '{"version":"codex-cli 0.151.0"}',
         ],
         stage="Codex Adoption Qualification",
     )
