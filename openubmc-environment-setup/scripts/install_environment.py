@@ -184,8 +184,11 @@ RETIRED_SKILL_LINKS: tuple[tuple[str, str], ...] = (
     ("openubmc-debugging", "openubmc-debugging"),
 )
 
-CLIENTS = ("codex", "claude", "openclaw")
-SUPPORTED_MCP_CLIENTS = ("codex", "claude")
+CLIENTS = ("codex",)
+LEGACY_CLIENTS = ("claude", "openclaw")
+KNOWN_CLIENTS = (*CLIENTS, *LEGACY_CLIENTS)
+SUPPORTED_MCP_CLIENTS = ("codex",)
+MCP_OWNERSHIP_CLIENTS = ("codex", "claude")
 REQUIRED_TOOLS = ("bmcgo", "conan", "git", "python3", "ssh")
 CONDITIONAL_TOOLS = {
     "sshpass": (
@@ -198,8 +201,6 @@ RECOMMENDED_TOOLS = {
 }
 CLIENT_EXECUTABLES = {
     "codex": "codex",
-    "claude": "claude",
-    "openclaw": "openclaw",
 }
 APT_TOOL_PACKAGES = {
     "git": "git",
@@ -308,7 +309,7 @@ def add_install_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--clients",
         default="auto",
-        help="comma-separated clients: auto, codex, claude, openclaw, or all",
+        help="Codex client selection: auto, codex, or all",
     )
     parser.add_argument("--target", choices=("current", "docker"), default="current")
     parser.add_argument(
@@ -504,12 +505,8 @@ def client_skills_dir(home: Path, client: str) -> Path:
 
 
 def detected_clients(home: Path) -> list[str]:
-    detected = ["codex"]
-    if (home / ".claude").exists() or (home / ".claude.json").exists() or shutil.which("claude"):
-        detected.append("claude")
-    if (home / ".openclaw").exists() or shutil.which("openclaw"):
-        detected.append("openclaw")
-    return detected
+    del home
+    return ["codex"]
 
 
 def parse_clients(value: str, home: Path) -> list[str]:
@@ -522,6 +519,11 @@ def parse_clients(value: str, home: Path) -> list[str]:
         client = item.strip().lower()
         if not client:
             continue
+        if client in LEGACY_CLIENTS:
+            raise SetupError(
+                f"only Codex is supported; replace --clients {value} with "
+                "--clients codex"
+            )
         if client not in CLIENTS:
             raise SetupError(f"unsupported client: {client}")
         if client not in clients:
@@ -1653,7 +1655,7 @@ def remaining_links_into_source(
     planned_removals = {Path(path) for path in managed_links}
     consumers: list[Path] = []
     for client in clients:
-        if client not in CLIENTS:
+        if client not in KNOWN_CLIENTS:
             continue
         skills_root = client_skills_dir(home, client)
         if not skills_root.is_dir() or skills_root.is_symlink():
@@ -3058,6 +3060,73 @@ def remove_json_stdio_mcp(
         atomic_write(path, updated, None)
 
 
+def remove_retired_claude_mcp(
+    path: Path,
+    knowledge_record: Mapping[str, object] | None,
+    runtime_record: Mapping[str, object] | None,
+    backups: Path,
+    dry_run: bool,
+) -> None:
+    """Remove both workflow-owned Claude entries with one reversible backup."""
+    records = tuple(
+        record
+        for record in (knowledge_record, runtime_record)
+        if isinstance(record, Mapping) and record_created_entry(record)
+    )
+    if not records or not path.exists() or path.is_symlink():
+        return
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    servers = document.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+
+    changed = False
+    if isinstance(knowledge_record, Mapping) and record_created_entry(
+        knowledge_record
+    ):
+        expected_knowledge = (
+            stdio_mcp_entry(str(knowledge_record.get("command")))
+            if knowledge_record.get("command")
+            else http_mcp_entry(str(knowledge_record.get("url")))
+        )
+        if servers.get(KNOWLEDGE_MCP_NAME) == expected_knowledge:
+            servers.pop(KNOWLEDGE_MCP_NAME, None)
+            changed = True
+        else:
+            print(
+                f"warning: preserving changed {KNOWLEDGE_MCP_NAME} MCP entry in {path}"
+            )
+    if isinstance(runtime_record, Mapping) and record_created_entry(runtime_record):
+        expected_runtime = {
+            "type": "stdio",
+            "command": runtime_record.get("command"),
+            "args": runtime_record.get("args", []),
+        }
+        if servers.get(TARGET_RUNTIME_MCP_NAME) == expected_runtime:
+            servers.pop(TARGET_RUNTIME_MCP_NAME, None)
+            changed = True
+        else:
+            print(
+                f"warning: preserving changed {TARGET_RUNTIME_MCP_NAME} MCP entry in {path}"
+            )
+    if not changed:
+        return
+
+    backup_config_file(path, backups, dry_run)
+    updated = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if dry_run:
+        print(f"would remove retired workflow MCP entries from {path}")
+    elif any(record_created_file(record) for record in records) and document == {
+        "mcpServers": {}
+    }:
+        path.unlink()
+    else:
+        atomic_write(path, updated, None)
+
+
 def configure_runtime_mcp(
     home: Path,
     clients: Iterable[str],
@@ -3350,7 +3419,7 @@ def recover_runtime_mcp_ownership(
     launcher = runtime_launcher_path(home)
     expected = stdio_mcp_entry(launcher)
     for client in clients:
-        if client not in SUPPORTED_MCP_CLIENTS:
+        if client not in MCP_OWNERSHIP_CLIENTS:
             continue
         if valid_client_ownership_record(recovered.get(client)):
             continue
@@ -3677,7 +3746,7 @@ def missing_client_ownership_records(
 ) -> tuple[str, ...]:
     missing: list[str] = []
     for client in dict.fromkeys(recorded.clients):
-        if client not in SUPPORTED_MCP_CLIENTS:
+        if client not in MCP_OWNERSHIP_CLIENTS:
             continue
         if (
             recorded.profile.manages_knowledge_mcp
@@ -3687,6 +3756,54 @@ def missing_client_ownership_records(
         if not valid_client_ownership_record(recorded.runtime_mcp.get(client)):
             missing.append(f"runtime_mcp.{client}")
     return tuple(missing)
+
+
+def retire_legacy_client_state(
+    home: Path,
+    recorded: RecordedInstall,
+    retired_clients: Iterable[str],
+    prior_mcp: Mapping[str, object],
+    prior_runtime_mcp: Mapping[str, object],
+    backups: Path,
+    dry_run: bool,
+) -> None:
+    """Remove only installer-owned state for clients retired from the product."""
+    retired = tuple(dict.fromkeys(retired_clients))
+    preserved_link_paths = {
+        str(client_skills_dir(home, client) / canonical)
+        for client in retired
+        for canonical in recorded.preserved_skills
+    }
+    retired_roots = tuple(client_skills_dir(home, client) for client in retired)
+    for link_text, target_text in sorted(recorded.links.items()):
+        link = Path(link_text)
+        if not any(link == root or root in link.parents for root in retired_roots):
+            continue
+        if link_text in preserved_link_paths:
+            if same_target(link, Path(target_text)):
+                print(f"preserving external Skill link {link}")
+            continue
+        if not same_target(link, Path(target_text)):
+            continue
+        if dry_run:
+            print(f"would remove retired client Skill link {link}")
+        else:
+            link.unlink()
+
+    if "claude" not in retired:
+        return
+    knowledge_record = (
+        prior_mcp.get("claude") if recorded.profile.manages_knowledge_mcp else None
+    )
+    remove_retired_claude_mcp(
+        home / ".claude.json",
+        knowledge_record if isinstance(knowledge_record, Mapping) else None,
+        prior_runtime_mcp.get("claude")
+        if isinstance(prior_runtime_mcp.get("claude"), Mapping)
+        else None,
+        backups,
+        dry_run,
+    )
 
 
 def perform_install(
@@ -3764,8 +3881,15 @@ def perform_install(
         args.ref = prior_install.ref
         args.target = prior_install.target
     clients = parse_clients(args.clients, home)
-    if prior_install:
-        clients = list(dict.fromkeys([*prior_install.clients, *clients]))
+    retired_clients = (
+        tuple(
+            client
+            for client in dict.fromkeys(prior_install.clients)
+            if client in LEGACY_CLIENTS
+        )
+        if prior_install
+        else ()
+    )
     prior_mcp = dict(prior_install.mcp) if prior_install else {}
     prior_runtime_mcp = (
         recover_runtime_mcp_ownership(
@@ -3785,12 +3909,27 @@ def perform_install(
             prior_mcp,
             url=args.knowledge_url,
         )
+        if retired_clients:
+            validate_knowledge_mcp_configuration(
+                home,
+                retired_clients,
+                knowledge_launcher_path(home),
+                prior_mcp,
+                url=args.knowledge_url,
+            )
     validate_runtime_mcp_configuration(
         home,
         clients,
         runtime_launcher_path(home),
         prior_runtime_mcp,
     )
+    if retired_clients:
+        validate_runtime_mcp_configuration(
+            home,
+            retired_clients,
+            runtime_launcher_path(home),
+            prior_runtime_mcp,
+        )
     credential_plan = prepare_credentials(args, repair_only=repair_only)
     recorded_tool_dirs: Iterable[str] = (
         prior_install.tool_dirs if prior_install else ()
@@ -3932,12 +4071,30 @@ def perform_install(
         ),
     )
     backups = backup_path(home)
+    if prior_install is not None and retired_clients:
+        retire_legacy_client_state(
+            home,
+            prior_install,
+            retired_clients,
+            prior_mcp,
+            prior_runtime_mcp,
+            backups,
+            args.dry_run,
+        )
+    active_prior_mcp = {
+        client: record for client, record in prior_mcp.items() if client in clients
+    }
+    active_prior_runtime_mcp = {
+        client: record
+        for client, record in prior_runtime_mcp.items()
+        if client in clients
+    }
     migrate_legacy_mcp_names(
         home,
         clients,
         backups,
         args.dry_run,
-        prior_mcp,
+        active_prior_mcp,
     )
     managed_links = install_links(
         home,
@@ -3963,11 +4120,11 @@ def perform_install(
             Path(knowledge_state["launcher_path"]),
             backups,
             args.dry_run,
-            prior_mcp,
+            active_prior_mcp,
             url=args.knowledge_url,
         )
         if manage_knowledge_mcp
-        else dict(prior_mcp)
+        else dict(active_prior_mcp)
     )
     runtime_mcp_state = inherit_created_file_ownership(
         configure_runtime_mcp(
@@ -3976,7 +4133,7 @@ def perform_install(
             Path(runtime_state["launcher_path"]),
             backups,
             args.dry_run,
-            prior_runtime_mcp,
+            active_prior_runtime_mcp,
         ),
         mcp_state,
     )
@@ -5330,7 +5487,7 @@ def restore_recorded_lifecycle(
     args.source = None
     args.repo_url = recorded.repo_url
     args.ref = recorded.ref
-    args.clients = ",".join(recorded.clients or ("codex",))
+    args.clients = "codex"
     args.skill_profile = recorded.profile.name
     args.knowledge_url = recorded.knowledge_url
     args.target = recorded.target
@@ -5434,7 +5591,7 @@ def perform_uninstall(args: argparse.Namespace) -> int:
     preserved_link_paths = {
         str(client_skills_dir(home, client) / canonical)
         for client in recorded.clients
-        if client in CLIENTS
+        if client in KNOWN_CLIENTS
         for canonical in recorded.preserved_skills
     }
     managed_link_paths: set[str] = set()
@@ -5549,7 +5706,7 @@ def perform_uninstall(args: argparse.Namespace) -> int:
         elif source.exists():
             consumers = remaining_links_into_source(
                 home,
-                CLIENTS,
+                KNOWN_CLIENTS,
                 source,
                 managed_link_paths,
             )

@@ -1,7 +1,7 @@
 # openUBMC Agent Workflow
 
 Coordinated openUBMC development, diagnosis, build, delivery, and target-runtime workflow for
-Codex, Claude, and OpenClaw. The integrated Skills baseline is
+Codex. The integrated Skills baseline is
 `ceb46e8ca5542a4273128b1a4aa8606b2f5eaee0`.
 
 ## Install
@@ -36,9 +36,9 @@ gh api \
 unset GH_TOKEN
 ```
 
-Codex and Claude receive managed stdio MCP entries. OpenClaw receives the same Skill links; its
-current upstream configuration has no native MCP adapter, so no unsupported configuration key is
-written.
+Codex receives the managed Skill links and stdio MCP entries. Repair, update, rollback, and
+uninstall can retire workflow-owned entries from older multi-client installations without touching
+unrelated client configuration.
 
 The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
 queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,

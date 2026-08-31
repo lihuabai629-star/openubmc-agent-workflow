@@ -1,6 +1,6 @@
 ---
 name: openubmc-environment-setup
-description: Automatically install, inspect, repair, update, or uninstall the shared openUBMC agent workflow on Debian/Ubuntu Linux, WSL, or inside an existing Docker container. Use when preparing a workstation or container, installing required command-line tools, importing the full or Target Runtime-focused openUBMC Skill bundle, linking Skills for Codex/Claude/OpenClaw, preserving independently updated Skill links while switching the managed source, registering the Target Runtime or openubmc-kb MCP server, selecting a private BMC/OS credentials file, or repairing that managed configuration. Do not use to install SDKs, compilers, Docker itself, or to build, debug, publish, or upgrade openUBMC.
+description: Automatically install, inspect, repair, update, or uninstall the shared openUBMC agent workflow for Codex on Debian/Ubuntu Linux, WSL, or inside an existing Docker container. Use when preparing a workstation or container, installing required command-line tools, importing the full or Target Runtime-focused openUBMC Skill bundle, linking Skills for Codex, preserving independently updated Skill links while switching the managed source, registering the Target Runtime or openubmc-kb MCP server, selecting a private BMC/OS credentials file, repairing that managed configuration, or retiring workflow-owned entries from an older multi-client installation. Do not use to install SDKs, compilers, Docker itself, or to build, debug, publish, or upgrade openUBMC.
 ---
 
 # openUBMC Environment Setup
@@ -126,20 +126,21 @@ container from this Skill.
 
 ## Client adapters
 
-`--clients auto` always installs Codex links under `~/.agents/skills` and adds
-Claude or OpenClaw links when those clients are detected. Use `--clients all`
-or a comma-separated list for an explicit selection.
+`--clients auto`, `--clients all`, and `--clients codex` all install only Codex
+links under `~/.agents/skills`. Explicit Claude or OpenClaw selection is rejected
+with a Codex-only replacement command.
 
 The `full` profile deploys the repository-bundled `openubmc-kb` package and
-registers its managed stdio launcher for Codex and Claude. The client starts it
+registers its managed stdio launcher for Codex. The client starts it
 on demand; no Studio process or localhost service is required. A pre-existing
 custom external stdio entry is preserved. A legacy `openubmc-studio` entry is
 renamed to `openubmc-kb`; the historical default standalone Node entry and the
 legacy default localhost HTTP entry are migrated to the managed stdio launcher.
 An explicitly customized external endpoint remains external. The
-`target-runtime` profile leaves KB configuration untouched.
-OpenClaw receives Skill links and the deployed launchers, but no unsupported MCP
-configuration field is written. KB health failure is non-blocking.
+`target-runtime` profile leaves KB configuration untouched. Historical
+workflow-owned Claude or OpenClaw links and registrations are migration input:
+repair and update remove them while preserving unrelated files and entries.
+KB health failure is non-blocking.
 
 ## Credentials
 
@@ -214,8 +215,8 @@ Health output also distinguishes non-blocking capability gaps:
 - `sshpass` enables password-based SSH, remote log pulling, and Live Patch;
   SSH keys remain usable without it.
 - `rg` accelerates source evidence search; a slower fallback remains available.
-- A configured Codex, Claude, or OpenClaw executable may be absent while its
-  Skill links and MCP configuration are staged for later use.
+- The Codex executable may be absent while its Skill links and MCP configuration
+  are staged for later use.
 
 JSON lifecycle and check output includes `tooling`. `next_actions` remains for
 explicit skip mode, credentials, or external MCP configuration; a normal

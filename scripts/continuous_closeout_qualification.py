@@ -35,17 +35,11 @@ from openubmc_target_runtime import inspect_mcp_process_records  # noqa: E402
 
 
 SCHEMA = "openubmc-agent-workflow.continuous-closeout-qualification.v1"
-PRODUCT_CLIENTS = ("claude", "codex", "openclaw")
+PRODUCT_CLIENTS = ("codex",)
 EVALUATION_HARNESSES = ("dsh",)
 SUPPORTED_CLIENT_TESTS = {
     "codex": (
         "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_qualifies_codex_product_client",
-    ),
-    "claude": (
-        "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_qualifies_claude_product_client",
-    ),
-    "openclaw": (
-        "openubmc-environment-setup.tests.test_install_environment.EnvironmentSetupTests.test_install_qualifies_openclaw_product_client",
     ),
 }
 PRODUCT_CONTRACT_TESTS = (

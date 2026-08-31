@@ -16,25 +16,18 @@ SCRIPT = ROOT / "scripts" / "continuous_closeout_qualification.py"
 
 
 def passed_product_client_run(name: str) -> dict[str, object]:
-    adapter_available = name != "openclaw"
     return {
         "status": "passed",
         "client": name,
         "tests": [f"qualification.{name}"],
         "returncode": 0,
         "failure_tail": "",
-        "adapter_available": adapter_available,
-        "support_mode": (
-            "skills-and-runtime-mcp" if adapter_available else "skills-only"
-        ),
-        "declared_mcp": adapter_available,
-        "mcp_registration_verified": adapter_available,
+        "adapter_available": True,
+        "support_mode": "skills-and-runtime-mcp",
+        "declared_mcp": True,
+        "mcp_registration_verified": True,
         "runtime_launcher_verified": True,
-        "runtime_invocation": (
-            "client-configured-mcp-command"
-            if adapter_available
-            else "runtime-launcher-without-client-adapter"
-        ),
+        "runtime_invocation": "client-configured-mcp-command",
         "protocol_exchange": ["initialize", "tools/list"],
         "tools": ["execute", "observe"],
     }
@@ -61,7 +54,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(report["qualified"])
         self.assertEqual(
             report["client_matrix"]["product_clients"],
-            ["claude", "codex", "openclaw"],
+            ["codex"],
         )
         self.assertEqual(
             report["client_matrix"]["evaluation_harnesses"], ["dsh"]
@@ -69,7 +62,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(report["client_matrix"]["overlap"], [])
         self.assertEqual(
             sorted(report["client_matrix"]["runs"]),
-            ["claude", "codex", "openclaw"],
+            ["codex"],
         )
         self.assertTrue(
             all(
@@ -77,40 +70,20 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 for run in report["client_matrix"]["runs"].values()
             )
         )
-        for name in ("claude", "codex"):
-            run = report["client_matrix"]["runs"][name]
-            self.assertTrue(run["adapter_available"])
-            self.assertEqual(run["support_mode"], "skills-and-runtime-mcp")
-            self.assertTrue(run["declared_mcp"])
-            self.assertTrue(run["mcp_registration_verified"])
-            self.assertEqual(
-                run["runtime_invocation"], "client-configured-mcp-command"
-            )
-            self.assertEqual(
-                run["protocol_exchange"], ["initialize", "tools/list"]
-            )
-            self.assertEqual(run["tools"], ["execute", "observe"])
-        openclaw = report["client_matrix"]["runs"]["openclaw"]
-        self.assertFalse(openclaw["adapter_available"])
-        self.assertEqual(openclaw["support_mode"], "skills-only")
-        self.assertFalse(openclaw["declared_mcp"])
-        self.assertFalse(openclaw["mcp_registration_verified"])
-        self.assertTrue(openclaw["runtime_launcher_verified"])
+        run = report["client_matrix"]["runs"]["codex"]
+        self.assertTrue(run["adapter_available"])
+        self.assertEqual(run["support_mode"], "skills-and-runtime-mcp")
+        self.assertTrue(run["declared_mcp"])
+        self.assertTrue(run["mcp_registration_verified"])
         self.assertEqual(
-            openclaw["runtime_invocation"],
-            "runtime-launcher-without-client-adapter",
+            run["runtime_invocation"], "client-configured-mcp-command"
         )
         self.assertEqual(
-            openclaw["protocol_exchange"], ["initialize", "tools/list"]
+            run["protocol_exchange"], ["initialize", "tools/list"]
         )
-        self.assertEqual(openclaw["tools"], ["execute", "observe"])
-        client_tests = {
-            name: tuple(run["tests"])
-            for name, run in report["client_matrix"]["runs"].items()
-        }
-        self.assertEqual(len(set(client_tests.values())), 3)
+        self.assertEqual(run["tools"], ["execute", "observe"])
         self.assertTrue(
-            any("openclaw_product_client" in item for item in client_tests["openclaw"])
+            any("codex_product_client" in item for item in run["tests"])
         )
         self.assertTrue(report["evaluation_isolation"]["global_state_blocked"])
         self.assertTrue(report["evaluation_isolation"]["task_owned"])
@@ -150,11 +123,10 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 "_workflow_metadata",
                 return_value={
                     "clients": {
-                        name: {
+                        "codex": {
                             "role": "supported-product-client",
-                            "mcp": name != "openclaw",
+                            "mcp": True,
                         }
-                        for name in ("claude", "codex", "openclaw")
                     },
                     "evaluation_harnesses": {
                         "dsh": {"role": "evaluation-harness"}
@@ -208,20 +180,15 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             report = qualification.qualify()
 
         self.assertTrue(report["qualified"])
-        for name in ("claude", "codex"):
-            run = report["client_matrix"]["runs"][name]
-            self.assertEqual(run["client"], name)
-            self.assertTrue(run["adapter_available"])
-            self.assertTrue(run["declared_mcp"])
-            self.assertTrue(run["runtime_launcher_verified"])
-            self.assertEqual(
-                run["runtime_invocation"], "client-configured-mcp-command"
-            )
-            self.assertEqual(run["tools"], ["execute", "observe"])
-        openclaw = report["client_matrix"]["runs"]["openclaw"]
-        self.assertFalse(openclaw["adapter_available"])
-        self.assertFalse(openclaw["declared_mcp"])
-        self.assertTrue(openclaw["runtime_launcher_verified"])
+        run = report["client_matrix"]["runs"]["codex"]
+        self.assertEqual(run["client"], "codex")
+        self.assertTrue(run["adapter_available"])
+        self.assertTrue(run["declared_mcp"])
+        self.assertTrue(run["runtime_launcher_verified"])
+        self.assertEqual(
+            run["runtime_invocation"], "client-configured-mcp-command"
+        )
+        self.assertEqual(run["tools"], ["execute", "observe"])
         self.assertTrue(report["task_matrix"]["correctness_primary"])
         self.assertEqual(
             sorted(report["task_matrix"]["groups"]),
@@ -271,11 +238,10 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 "_workflow_metadata",
                 return_value={
                     "clients": {
-                        name: {
+                        "codex": {
                             "role": "supported-product-client",
-                            "mcp": name != "openclaw",
+                            "mcp": True,
                         }
-                        for name in ("claude", "codex", "openclaw")
                     },
                     "evaluation_harnesses": {
                         "dsh": {"role": "evaluation-harness"}
