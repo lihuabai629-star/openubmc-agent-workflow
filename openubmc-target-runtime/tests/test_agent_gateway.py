@@ -2969,10 +2969,28 @@ class AgentGatewayTests(unittest.TestCase):
                 self.assertEqual(structured["error"]["field"], field)
                 self.assertEqual(structured["error"]["limit"], limit)
                 self.assertEqual(structured["error"]["example"], example)
-                has_placeholder = "<" in json.dumps(example)
+                encoded_example = json.dumps(example)
+                has_placeholder = any(
+                    marker in encoded_example
+                    for marker in (
+                        "<current ",
+                        "<new submission identity>",
+                    )
+                )
+                try:
+                    if has_placeholder:
+                        raise AgentGatewayError("example requires external input")
+                    decode_run_command(
+                        example,
+                        operation_id=f"execute-preflight-example-{request_id}",
+                    )
+                except AgentGatewayError:
+                    expected_action = None
+                else:
+                    expected_action = example
                 self.assertEqual(
                     structured["next_action"],
-                    None if has_placeholder else example,
+                    expected_action,
                 )
                 self.assertTrue(structured["next_guidance"])
                 self.assertNotIn("structuredContent", json.dumps(structured))
@@ -3661,18 +3679,8 @@ class AgentGatewayTests(unittest.TestCase):
             structured["error"]["limit"],
             {"precondition": "same Run has an unknown mutation outcome"},
         )
-        self.assertEqual(
-            structured["error"]["example"],
-            {
-                "kind": "resume",
-                "run_id": terminal["run_id"],
-            },
-        )
-        self.assertNotIn("reconcile", json.dumps(structured["error"]["example"]))
-        self.assertEqual(
-            structured["next_action"],
-            structured["error"]["example"],
-        )
+        self.assertEqual(structured["error"]["example"], {})
+        self.assertIsNone(structured["next_action"])
         self.assertTrue(structured["next_guidance"])
         self.assertEqual(len(self.backend.calls), call_count)
         self.assertEqual(
@@ -3681,6 +3689,131 @@ class AgentGatewayTests(unittest.TestCase):
             ],
             before["revision"],
         )
+
+    def test_observe_preflight_returns_one_complete_valid_retry(self) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="observe-complete-retry",
+        )
+        long_query = "lsprop Object" + "x" * 180
+        selectors = [
+            {
+                "id": "capabilities",
+                "kind": "capability",
+                "names": ["mdb"],
+            },
+            *[
+                {
+                    "id": f"mdb-{index}",
+                    "kind": "mdb",
+                    "queries": [long_query if index == 0 else f"lsprop Object{index}"],
+                }
+                for index in range(15)
+            ],
+        ]
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 201,
+                "method": "tools/call",
+                "params": {
+                    "name": "observe",
+                    "arguments": {
+                        "target": "192.0.2.10",
+                        "selectors": selectors,
+                        "freshness": {"mode": "live", "max_age_seconds": 0},
+                        "deadline": 0,
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        action = structured["next_action"]
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(structured["error"]["field"], "selectors[0].names[0]")
+        self.assertIsInstance(action, dict)
+        self.assertEqual(len(action["selectors"]), 16)
+        self.assertEqual(action["selectors"][0]["names"], ["mdbctl"])
+        self.assertEqual(action["selectors"][1]["queries"], [long_query])
+        self.assertEqual(action["deadline"], 180)
+        self.assertEqual(action, structured["error"]["example"])
+        ObservationQuery.from_query(action)
+        self.assertEqual(self.backend.calls, [])
+
+    def test_preflight_placeholder_detection_preserves_literal_angle_brackets(
+        self,
+    ) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="literal-angle-brackets",
+        )
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 202,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "192.0.2.10",
+                        "intent": "diagnosis-only",
+                        "purpose": "<NVMe>",
+                        "deadline": 121,
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(structured["error"]["field"], "deadline")
+        self.assertEqual(
+            structured["next_action"]["purpose"],
+            "<NVMe>",
+        )
+        self.assertEqual(structured["next_action"]["deadline"], 120)
+        decode_run_command(
+            structured["next_action"],
+            operation_id="literal-angle-brackets-retry",
+        )
+
+    def test_execute_preflight_does_not_promote_a_still_invalid_retry(self) -> None:
+        endpoint = JsonRpcMcpEndpoint(
+            self.service,
+            session_task_id="execute-complete-retry",
+        )
+
+        response = endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 203,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "192.0.2.10",
+                        "intent": "diagnosis-only",
+                        "delivery_strategy": "unsupported-delivery",
+                        "deadline": 121,
+                    },
+                },
+            }
+        )
+
+        structured = response["result"]["structuredContent"]
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(structured["error"]["field"], "deadline")
+        self.assertEqual(structured["error"]["example"]["deadline"], 120)
+        self.assertEqual(
+            structured["error"]["example"]["delivery_strategy"],
+            "unsupported-delivery",
+        )
+        self.assertIsNone(structured["next_action"])
 
     def test_build_gate_preflights_artifact_ref_and_run_binding_before_effects(
         self,
@@ -4340,16 +4473,10 @@ class AgentGatewayTests(unittest.TestCase):
             for name, turn in turns.items()
         }
 
+        self.assertIsNone(projected["gate"]["next_action"])
         self.assertEqual(
-            projected["gate"]["next_action"],
-            {
-                "kind": "respond",
-                "run_id": "run-gate",
-                "gate_id": "gate-one",
-                "gate_version": 3,
-                "schema_digest": "sha256:" + "a" * 64,
-                "submission_id": "gate-submit-4b436fa3cbfc58763c93fea6562340e0",
-            },
+            projected["gate"]["gate"]["submission_id"],
+            "gate-submit-4b436fa3cbfc58763c93fea6562340e0",
         )
         self.assertEqual(projected["gate"]["gate"]["input_schema"], gate_schema)
         self.assertEqual(
@@ -4411,9 +4538,11 @@ class AgentGatewayTests(unittest.TestCase):
             operation_id="advancing-resume-1",
         )
 
-        self.assertNotIn("response_required", turn)
+        self.assertTrue(turn["response_required"])
         self.assertNotIn("progress", turn)
-        self.assertEqual(turn["next_action"]["gate_id"], "new-gate")
+        self.assertIsNone(turn["next_action"])
+        self.assertEqual(turn["gate"]["gate_id"], "new-gate")
+        self.assertTrue(turn["gate"]["submission_id"].startswith("gate-submit-"))
 
     def test_observe_is_bounded_grounded_and_does_not_open_a_case(self) -> None:
         receipt = self.service.call_exposed_tool(
@@ -7644,7 +7773,9 @@ class AgentGatewayTests(unittest.TestCase):
             "debug_run",
         )
         self.assertEqual(projection["current_turn"]["state"], "waiting_response")
-        self.assertEqual(projection["current_turn"]["gate"], waiting["gate"])
+        projected_gate = dict(waiting["gate"])
+        projected_gate.pop("submission_id", None)
+        self.assertEqual(projection["current_turn"]["gate"], projected_gate)
 
     def test_build_source_submission_decision_contains_the_next_gate_turn(self) -> None:
         developer_gate = self.service.call_exposed_tool(
@@ -7688,7 +7819,9 @@ class AgentGatewayTests(unittest.TestCase):
         )
 
         self.assertEqual(decision["turn"]["state"], "waiting_response")
-        self.assertEqual(decision["turn"]["gate"], build_gate["gate"])
+        projected_gate = dict(build_gate["gate"])
+        projected_gate.pop("submission_id", None)
+        self.assertEqual(decision["turn"]["gate"], projected_gate)
         self.assertEqual(decision["turn"]["gate"]["name"], "build.artifact")
 
     def test_live_patch_submission_replays_after_internal_effect_decisions(self) -> None:
@@ -14245,15 +14378,13 @@ class AgentGatewayTests(unittest.TestCase):
         replayed_text = replayed["result"]["content"][0]["text"]
         gate = first_structured["gate"]
         self.assertEqual(replayed_text, first_text)
-        self.assertEqual(first_structured["next_action"]["kind"], "respond")
-        self.assertEqual(
-            first_structured["next_action"]["gate_id"],
-            gate["gate_id"],
-        )
+        self.assertIsNone(first_structured["next_action"])
+        self.assertTrue(first_structured["response_required"])
+        self.assertTrue(gate["submission_id"].startswith("gate-submit-"))
         self.assertIn(f"gate_id={gate['gate_id']}", first_text)
         self.assertIn(f"gate_version={gate['gate_version']}", first_text)
         self.assertIn(f"schema_digest={gate['schema_digest']}", first_text)
-        self.assertIn('"kind":"respond"', first_text)
+        self.assertIn(f"submission_id={gate['submission_id']}", first_text)
 
     def test_agent_endpoint_renders_observation_values_in_bounded_text_content(self) -> None:
         endpoint = JsonRpcMcpEndpoint(self.service, session_task_id="observe-session")

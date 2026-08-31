@@ -39,6 +39,7 @@ from .semantic_runtime import (
     SubmitGate,
     decode_run_command,
     fingerprint,
+    gate_submission_id,
     is_safe_runtime_id,
     is_sha256_digest,
 )
@@ -58,6 +59,27 @@ TURN_PROJECTION_TARGET_BYTES = 8 * 1024
 TURN_MAX_BYTES = TURN_PROJECTION_TARGET_BYTES
 TOOLS_LIST_MAX_BYTES = 8 * 1024
 EXECUTE_TEXT_PROJECTION_TARGET_BYTES = 4 * 1024
+_PREFLIGHT_PLACEHOLDERS = frozenset(
+    {
+        "<Action kind>",
+        "<BMC IP>",
+        "<Gate artifact kind>",
+        "<absolute artifact path>",
+        "<artifact version>",
+        "<bounded summary>",
+        "<built source revision>",
+        "<compacted>",
+        "<control command>",
+        "<current Gate ID>",
+        "<current Gate schema digest>",
+        "<current Incident ID>",
+        "<current Run ID>",
+        "<current Run target>",
+        "<new submission identity>",
+        "<remote path>",
+        "<restart scope>",
+    }
+)
 
 
 def agent_projection_policy() -> dict[str, object]:
@@ -191,6 +213,28 @@ def _observe_preflight_example(
     }
 
 
+def _complete_observe_preflight_example(
+    detail: PreflightDetail,
+    query: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Apply every deterministic observe correction without narrowing valid scope."""
+
+    example = _observe_preflight_example(detail, query)
+    for _attempt in range(32):
+        if _contains_preflight_placeholder(example):
+            return example
+        try:
+            ObservationQuery.from_query(example)
+        except AgentPreflightError as exc:
+            corrected = _observe_preflight_example(exc.detail, example)
+            if corrected == example:
+                return example
+            example = corrected
+        else:
+            return example
+    return example
+
+
 def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
     context = detail.context
     if detail.reason in {
@@ -256,6 +300,8 @@ def _execute_action_example(detail: PreflightDetail) -> dict[str, object]:
     kind = context.action_kind or "resume"
     run_id = context.run_id or "<current Run ID>"
     if detail.reason == PreflightReason.RECONCILE_PRECONDITION:
+        if context.terminal:
+            return {}
         return {"kind": "resume", "run_id": run_id}
     if kind == "start":
         example: dict[str, object] = {"kind": "start"}
@@ -345,7 +391,7 @@ def _preflight_guidance(
             ),
         }
         return (
-            _observe_preflight_example(detail, arguments),
+            _complete_observe_preflight_example(detail, arguments),
             actions.get(
                 detail.reason,
                 f"correct {detail.field} to satisfy the reported contract and retry observe",
@@ -373,6 +419,8 @@ def _preflight_guidance(
     }
     if detail.reason == PreflightReason.RUNTIME_OWNED_FIELD:
         next_action = "remove Runtime-owned fields and retry execute"
+    elif detail.reason == PreflightReason.RECONCILE_PRECONDITION and detail.context.terminal:
+        next_action = "the Run is terminal; no further execute action is available"
     else:
         next_action = actions.get(
             detail.reason,
@@ -386,7 +434,29 @@ def _contains_preflight_placeholder(value: object) -> bool:
         return any(_contains_preflight_placeholder(item) for item in value.values())
     if isinstance(value, list):
         return any(_contains_preflight_placeholder(item) for item in value)
-    return isinstance(value, str) and value.startswith("<") and value.endswith(">")
+    return isinstance(value, str) and (
+        value in _PREFLIGHT_PLACEHOLDERS
+        or re.fullmatch(r"<Gate-required [^<>]+>", value) is not None
+    )
+
+
+def _is_reusable_preflight_action(
+    operation: str,
+    action: Mapping[str, object],
+) -> bool:
+    """Return whether the projected retry passes the public decoder unchanged."""
+
+    try:
+        if operation == "observe":
+            ObservationQuery.from_query(action)
+        else:
+            decode_run_command(
+                action,
+                operation_id="preflight-next-action-validation",
+            )
+    except AgentGatewayError:
+        return False
+    return True
 
 
 def _text(value: object) -> str:
@@ -529,7 +599,8 @@ def render_execute_turn_text(
             f"run_id={_text(value.get('run_id'))} "
             f"gate_id={_text(gate.get('gate_id'))} "
             f"gate_version={_bounded_text(gate.get('gate_version'), 24)} "
-            f"schema_digest={_text(gate.get('schema_digest'))}."
+            f"schema_digest={_text(gate.get('schema_digest'))} "
+            f"submission_id={_text(gate.get('submission_id'))}."
         )
     incident = _mapping(value.get("incident"))
     if incident:
@@ -892,6 +963,8 @@ def _project_preflight_example(
                 else "<BMC IP>"
             )
         elif field in {
+            "selectors",
+            "freshness",
             "targets",
             "intent",
             "purpose",
@@ -1189,24 +1262,6 @@ class ResultProjector:
             return None
         gate = _mapping(document.get("gate"))
         if state == "waiting_response" and _text(gate.get("kind")) == "phase":
-            schema_digest = _text(gate.get("schema_digest"))
-            action = {
-                "kind": "respond",
-                "run_id": run_id,
-                "gate_id": gate.get("gate_id"),
-                "gate_version": gate.get("gate_version"),
-                "schema_digest": schema_digest,
-            }
-            if all(action.get(name) not in (None, "") for name in action):
-                action["submission_id"] = "gate-submit-" + _fingerprint(
-                    {
-                        "run_id": run_id,
-                        "gate_id": action["gate_id"],
-                        "gate_version": action["gate_version"],
-                        "schema_digest": schema_digest.removeprefix("sha256:"),
-                    }
-                )[:32]
-                return action
             return None
         if state == "running":
             return {"kind": "resume", "run_id": run_id}
@@ -1454,6 +1509,22 @@ class ResultProjector:
 
     def turn(self, turn: RunTurn) -> dict[str, object]:
         document = {"schema": TURN_SCHEMA, **turn.to_public_dict()}
+        gate = dict(_mapping(document.get("gate")))
+        if (
+            _text(document.get("state")) == "waiting_response"
+            and _text(gate.get("kind")) == "phase"
+        ):
+            schema_digest = _text(gate.get("schema_digest"))
+            binding = {
+                "run_id": _text(document.get("run_id")),
+                "gate_id": gate.get("gate_id"),
+                "gate_version": gate.get("gate_version"),
+                "schema_digest": schema_digest.removeprefix("sha256:"),
+            }
+            if all(binding.get(name) not in (None, "") for name in binding):
+                gate["submission_id"] = gate_submission_id(binding)
+                document["gate"] = gate
+            document["response_required"] = True
         document["next_action"] = self._suggested_action(document)
         diagnostic_receipt = document.get("diagnostic_receipt")
         if isinstance(diagnostic_receipt, Mapping):
@@ -1656,7 +1727,9 @@ class AgentGateway:
                 error["limit"] = detail.limit
             result["next_action"] = (
                 None
-                if _contains_preflight_placeholder(projected_example)
+                if not projected_example
+                or _contains_preflight_placeholder(projected_example)
+                or not _is_reusable_preflight_action(operation, projected_example)
                 or (
                     operation == "execute"
                     and detail.reason == PreflightReason.GATE_BINDING
@@ -1956,6 +2029,8 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                 "Start or continue one Runtime workflow and return only the next semantic "
                 "Turn. next_action is the sole structured reusable action; copy its "
                 "bindings exactly, and treat null as requiring missing external input. "
+                "A response_required Gate carries its stable binding and submission_id "
+                "inside gate; add the external response rather than inventing it. "
                 "response_required with "
                 "progress.status=no_progress means respond to the unchanged Gate instead "
                 "of retrying resume."

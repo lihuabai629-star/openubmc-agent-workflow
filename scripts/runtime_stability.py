@@ -426,8 +426,11 @@ def qualify_dual_projection(
             (
                 gate_turn.get("state") == "waiting_response",
                 isinstance(gate_turn.get("gate"), Mapping),
+                gate_turn.get("response_required") is True,
+                gate_turn.get("next_action") is None,
+                bool(gate_turn.get("gate", {}).get("submission_id")),
                 "GateBinding" in gate_text,
-                '"kind":"respond"' in gate_text,
+                "submission_id=" in gate_text,
             )
         ),
         "terminal_semantics_complete": all(

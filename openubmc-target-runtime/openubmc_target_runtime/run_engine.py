@@ -1973,6 +1973,7 @@ class RunEngine:
         unknown = self._unknown_mutation(projection)
         if unknown is None:
             run_id = self._run_id(snapshot)
+            terminal = self._outcome(projection) is not None
             raise AgentPreflightError(
                 "run has no unknown mutation to reconcile",
                 reason=PreflightReason.RECONCILE_PRECONDITION,
@@ -1980,7 +1981,7 @@ class RunEngine:
                 limit={
                     "precondition": "same Run has an unknown mutation outcome"
                 },
-                context=PreflightContext(run_id=run_id),
+                context=PreflightContext(run_id=run_id, terminal=terminal),
             )
         effect_id = _text(unknown.get("operation_id"))
         intent = self._effect_intent_for_operation(

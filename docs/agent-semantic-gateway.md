@@ -123,14 +123,16 @@ accepted as `execute` input; callers pass the Receipt's verified `ObservationRef
 - `resume`: continue an existing Run;
 - `control`: reconcile an unresolved mutation or cancel a current Gate or Incident.
 
-Every Agent result uses one authoritative interaction field. `next_action` is either a structured
-`observe`/`execute` argument object that preserves every Runtime-known binding, or `null` when a
-safe action would require missing target, Artifact, authorization, or acceptance evidence.
-`next_guidance` is prose only and never competes with `next_action`. Preflight errors retain a
-canonical example for diagnosis, but promote it to `next_action` only when it contains no invented
-placeholder. Gate actions include the stable submission identity derived from the Run and current
-Gate binding. Running and recoverable Incident Turns return the corresponding resume or control
-action; terminal Outcomes always return `next_action=null`.
+Every Agent result uses one authoritative interaction field. `next_action` is either a complete,
+immediately reusable `observe`/`execute` argument object, or `null` when a safe action would require
+missing target, Artifact, authorization, response, or acceptance evidence. A phase Gate therefore
+projects `response_required=true` and keeps its complete stable binding, including the derived
+`submission_id`, inside `gate`; the Runtime does not fabricate the external `response` merely to
+make a syntactically callable Action. `next_guidance` is prose only and never competes with
+`next_action`. Preflight errors retain a canonical example for diagnosis, but promote it to
+`next_action` only when it contains no invented placeholder. Running and recoverable Incident Turns
+return the corresponding resume or control action; terminal Outcomes always return
+`next_action=null`.
 
 The Runtime Core advances deterministic steps internally and returns a `Turn` only at a real Gate,
 an unresolved Incident, a running reattach point, or terminal Outcome. A Turn contains the Run ID,
