@@ -61,6 +61,12 @@ class McpProcessLifecycleTests(unittest.TestCase):
             client="codex",
             task_id="task-100",
             session_id="session-100",
+            source_commit="a" * 40,
+            model_identity={"model": "gpt-5.6-sol"},
+            codex_identity={
+                "version": "codex-cli 0.150.0",
+                "executable_sha256": "sha256:" + "b" * 64,
+            },
             parent_pid=1200,
             process_id=1201,
             state_path=Path(raw) / "runtime-state",
@@ -89,13 +95,26 @@ class McpProcessLifecycleTests(unittest.TestCase):
         self.assertEqual(recorded["client"], "codex")
         self.assertEqual(recorded["task_id"], "task-100")
         self.assertEqual(recorded["session_id"], "session-100")
+        self.assertEqual(recorded["source_commit"], "a" * 40)
+        self.assertEqual(recorded["model_identity"], {"model": "gpt-5.6-sol"})
+        self.assertEqual(
+            recorded["codex_identity"],
+            {
+                "version": "codex-cli 0.150.0",
+                "executable_sha256": "sha256:" + "b" * 64,
+            },
+        )
         self.assertEqual(recorded["parent_pid"], 1200)
         self.assertEqual(recorded["parent_identity"], "process-1200-start")
+        self.assertTrue(recorded["parent_identity_verified"])
         self.assertEqual(recorded["process_id"], 1201)
         self.assertEqual(recorded["process_identity"], "process-1201-start")
         self.assertEqual(recorded["component"], "target-runtime")
         self.assertEqual(recorded["version"], "openubmc.target-runtime.v1")
         self.assertEqual(recorded["state_path"], str(Path(raw) / "runtime-state"))
+        self.assertEqual(
+            recorded["runtime_state_root"], str(Path(raw) / "runtime-state")
+        )
         self.assertIsNone(recorded["exit_reason"])
         self.assertTrue(
             lifecycle.record_path.name.endswith(
@@ -151,7 +170,9 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
         by_pid = {item["process_id"]: item for item in statuses}
         self.assertEqual(by_pid[1201]["lifecycle_state"], "orphaned")
+        self.assertTrue(by_pid[1201]["ownership_identity_bound"])
         self.assertEqual(by_pid[1301]["lifecycle_state"], "unknown-owner")
+        self.assertFalse(by_pid[1301]["ownership_identity_bound"])
 
     def test_first_request_can_attribute_an_initially_unknown_client_task(self) -> None:
         clock = FakeClock()
@@ -239,6 +260,7 @@ class McpProcessLifecycleTests(unittest.TestCase):
             )
 
         self.assertEqual(statuses[0]["lifecycle_state"], "unknown-owner")
+        self.assertFalse(statuses[0]["parent_identity_verified"])
 
     def test_startup_parent_identity_stays_unknown_until_it_can_be_verified(self) -> None:
         clock = FakeClock()
@@ -268,7 +290,30 @@ class McpProcessLifecycleTests(unittest.TestCase):
             recovered = lifecycle.status()
 
         self.assertEqual(recovered["parent_identity"], "process-1200-start")
+        self.assertTrue(recovered["parent_identity_verified"])
         self.assertEqual(recovered["lifecycle_state"], "idle")
+
+    def test_explicit_task_closeout_drains_before_recording_exit(self) -> None:
+        clock = FakeClock()
+        with tempfile.TemporaryDirectory() as raw:
+            lifecycle = self.make_lifecycle(
+                raw,
+                clock,
+                process_alive=lambda pid: pid == 1200,
+            )
+
+            with lifecycle.request():
+                lifecycle.request_task_closeout()
+                self.assertIsNone(lifecycle.exit_reason_if_due())
+                self.assertEqual(
+                    lifecycle.status()["shutdown_requested"], "task-closeout"
+                )
+
+            self.assertEqual(lifecycle.exit_reason_if_due(), "task-closeout")
+            recorded = json.loads(lifecycle.record_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(recorded["active_requests"], 0)
+        self.assertEqual(recorded["exit_reason"], "task-closeout")
 
     def test_requested_shutdown_waits_for_the_active_request_to_finish(self) -> None:
         clock = FakeClock()

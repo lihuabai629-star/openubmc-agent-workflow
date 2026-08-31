@@ -3150,6 +3150,9 @@ class RuntimeMcpService:
             if callable(persistent_status):
                 status["persistent_task_contexts"] = persistent_status()
             status["context_runtime"] = self._runtime.operator.status()
+            status["operator_projection"] = self._runtime.operator.operator_projection(
+                task_id=task_id
+            )
             status.update(self._runtime.transport.status())
             status["session_outcomes"] = self.session_outcome_service.status()
             status["context_maintenance"] = {

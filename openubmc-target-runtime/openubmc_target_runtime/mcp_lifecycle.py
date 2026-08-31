@@ -68,6 +68,9 @@ class McpProcessLifecycle:
         client: str,
         task_id: str,
         session_id: str,
+        source_commit: str = "unknown-source-commit",
+        model_identity: Mapping[str, object] | None = None,
+        codex_identity: Mapping[str, object] | None = None,
         parent_pid: int,
         state_path: Path,
         lifecycle_root: Path,
@@ -83,6 +86,9 @@ class McpProcessLifecycle:
         self.client = self._required(client, "client")
         self.task_id = self._required(task_id, "task_id")
         self.session_id = self._required(session_id, "session_id")
+        self.source_commit = self._required(source_commit, "source_commit")
+        self.model_identity = self._identity(model_identity, "model_identity")
+        self.codex_identity = self._identity(codex_identity, "codex_identity")
         if isinstance(parent_pid, bool) or not isinstance(parent_pid, int) or parent_pid < 0:
             raise ValueError("parent_pid must be a non-negative integer")
         resolved_process_id = os.getpid() if process_id is None else process_id
@@ -143,6 +149,25 @@ class McpProcessLifecycle:
             raise ValueError(f"{name} must not be empty")
         return normalized
 
+    @staticmethod
+    def _identity(
+        value: Mapping[str, object] | None,
+        name: str,
+    ) -> dict[str, object]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{name} must be an object")
+        try:
+            normalized = json.loads(
+                json.dumps(dict(value), ensure_ascii=True, sort_keys=True)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be JSON serializable") from exc
+        if not isinstance(normalized, dict):
+            raise ValueError(f"{name} must be an object")
+        return normalized
+
     def _timestamp(self) -> str:
         return datetime.fromtimestamp(self._wall_clock(), UTC).isoformat().replace(
             "+00:00", "Z"
@@ -178,6 +203,16 @@ class McpProcessLifecycle:
             return "unknown-owner"
         return "active" if self._active_requests else "idle"
 
+    def _parent_identity_verified(self) -> bool:
+        if self.parent_pid <= 1 or self.parent_identity == "unknown":
+            return False
+        try:
+            return self._process_alive(self.parent_pid) and (
+                self._process_identity(self.parent_pid) == self.parent_identity
+            )
+        except OSError:
+            return False
+
     def status(self) -> dict[str, object]:
         with self._lock:
             now = self._monotonic_clock()
@@ -189,13 +224,18 @@ class McpProcessLifecycle:
                 "client": self.client,
                 "task_id": self.task_id,
                 "session_id": self.session_id,
+                "source_commit": self.source_commit,
+                "model_identity": dict(self.model_identity),
+                "codex_identity": dict(self.codex_identity),
                 "parent_pid": self.parent_pid,
                 "parent_identity": self.parent_identity,
+                "parent_identity_verified": self._parent_identity_verified(),
                 "process_id": self.process_id,
                 "process_identity": self.process_identity,
                 "start_time": self._started_at,
                 "updated_at": self._timestamp(),
                 "state_path": str(self.state_path),
+                "runtime_state_root": str(self.state_path),
                 "lifecycle_state": lifecycle_state,
                 "active_requests": self._active_requests,
                 "idle_seconds": max(0.0, now - self._last_activity),
@@ -305,6 +345,11 @@ class McpProcessLifecycle:
                 self._requested_exit_reason = normalized
                 self._write_record(self.status())
 
+    def request_task_closeout(self) -> None:
+        """Request deterministic task closeout without interrupting responses."""
+
+        self.request_exit("task-closeout")
+
     @property
     def shutdown_requested(self) -> bool:
         with self._lock:
@@ -373,6 +418,16 @@ def inspect_mcp_process_records(
             and not str(record[field]).startswith("unknown-")
             for field in ("client", "task_id", "session_id")
         )
+        ownership_identity_bound = (
+            identity_verified
+            and owner_known
+            and parent_pid > 1
+        )
+        parent_identity_verified = False
+        if parent_pid > 1 and parent_identity != "unknown" and process_alive(parent_pid):
+            parent_identity_verified = (
+                process_identity(parent_pid) == parent_identity
+            )
         if not running:
             lifecycle_state = "stopped"
         elif parent_pid <= 1 or not identity_verified:
@@ -404,6 +459,8 @@ def inspect_mcp_process_records(
                 "record_path": str(path),
                 "process_running": running,
                 "identity_verified": identity_verified,
+                "parent_identity_verified": parent_identity_verified,
+                "ownership_identity_bound": ownership_identity_bound,
                 "lifecycle_state": lifecycle_state,
                 "shutdown_requested": shutdown_requested,
                 "exit_reason": exit_reason,

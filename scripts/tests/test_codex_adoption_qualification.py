@@ -99,6 +99,34 @@ def closeout_report() -> dict[str, object]:
                         },
                         "is_error": True,
                     },
+                    "mcp_lifecycle_records": [
+                        {
+                            "schema": "openubmc.mcp-process-lifecycle.v1",
+                            "component": "target-runtime",
+                            "version": "openubmc.target-runtime.v1",
+                            "client": "codex",
+                            "task_id": "codex-adoption-probe",
+                            "session_id": "codex-adoption-session",
+                            "source_commit": "a" * 40,
+                            "model_identity": {
+                                "model": "codex-product-client-qualification"
+                            },
+                            "codex_identity": {
+                                "client_info_name": "codex-adoption-qualification",
+                                "client_info_version": "1",
+                            },
+                            "parent_pid": 123,
+                            "parent_identity": "parent-identity",
+                            "parent_identity_verified": True,
+                            "process_id": 456,
+                            "process_identity": "process-identity",
+                            "start_time": "2026-08-31T00:00:00Z",
+                            "runtime_state_root": "/isolated/runtime-state",
+                            "lifecycle_state": "stopped",
+                            "active_requests": 0,
+                            "exit_reason": "stdin-closed",
+                        }
+                    ],
                 }
             },
         },
@@ -112,11 +140,20 @@ def closeout_report() -> dict[str, object]:
             "closeout": {
                 "status": "passed",
                 "task_closeout_ready": True,
+                "identity_records_valid": True,
+                "isolation_verified": True,
                 "summary": {
                     "live_processes": 0,
                     "active_requests": 0,
                     "confirmed_live_orphans": 0,
                     "unattributed_live_processes": 0,
+                    "owned_live_processes": 0,
+                },
+                "closeout_checks": {
+                    "active_requests_zero": True,
+                    "confirmed_live_orphans_zero": True,
+                    "unattributed_live_processes_zero": True,
+                    "owned_live_processes_zero": True,
                 },
             },
         },
@@ -128,6 +165,7 @@ def closeout_report() -> dict[str, object]:
             "reference_bytes": 1035,
             "saved_bytes": 14481,
             "blocks_promotability": False,
+            "operator_projection_covered": True,
         },
         "task_matrix": {
             "status": "passed",
@@ -348,6 +386,73 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         self.assertFalse(report["qualified"])
         self.assertEqual(report["failed_dimensions"], ["codex_mcp"])
         self.assertFalse(report["dimensions"]["codex_mcp"]["identity_bound"])
+
+    def test_missing_codex_lifecycle_identity_fails_mcp_dimension(self) -> None:
+        closeout = closeout_report()
+        closeout["client_matrix"]["runs"]["codex"].pop(
+            "mcp_lifecycle_records"
+        )
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = adoption.qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "mcp_lifecycle_records_missing",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_missing_owned_process_zero_proof_fails_lifecycle_dimension(self) -> None:
+        closeout = closeout_report()
+        closeout["mcp_lifecycle"]["closeout"]["summary"].pop(
+            "owned_live_processes"
+        )
+        closeout["mcp_lifecycle"]["closeout"]["closeout_checks"].pop(
+            "owned_live_processes_zero"
+        )
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = adoption.qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertEqual(report["dimensions"]["lifecycle"]["status"], "failed")
+
+    def test_operator_projection_coverage_is_required(self) -> None:
+        closeout = closeout_report()
+        closeout["execute_projection"]["operator_projection_covered"] = False
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = adoption.qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertEqual(report["dimensions"]["projection"]["status"], "failed")
 
     def test_linked_development_install_cannot_pass_release_qualification(
         self,

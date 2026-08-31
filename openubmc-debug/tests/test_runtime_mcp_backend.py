@@ -1985,6 +1985,13 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     "OPENUBMC_MCP_CLIENT": "codex",
                     "OPENUBMC_MCP_TASK_ID": "lifecycle-task",
                     "OPENUBMC_MCP_SESSION_ID": "lifecycle-session",
+                    "OPENUBMC_MCP_SOURCE_COMMIT": "a" * 40,
+                    "OPENUBMC_MCP_MODEL_IDENTITY": json.dumps(
+                        {"model": "gpt-5.6-sol"}
+                    ),
+                    "OPENUBMC_MCP_CODEX_IDENTITY": json.dumps(
+                        {"version": "codex-cli 0.150.0"}
+                    ),
                     "OPENUBMC_MCP_PARENT_PID": str(os.getpid()),
                     "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
                     "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
@@ -1998,7 +2005,16 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertEqual(lifecycle["client"], "codex")
         self.assertEqual(lifecycle["task_id"], "lifecycle-task")
         self.assertEqual(lifecycle["session_id"], "lifecycle-session")
+        self.assertEqual(lifecycle["source_commit"], "a" * 40)
+        self.assertEqual(lifecycle["model_identity"], {"model": "gpt-5.6-sol"})
+        self.assertEqual(
+            lifecycle["codex_identity"], {"version": "codex-cli 0.150.0"}
+        )
         self.assertEqual(lifecycle["parent_pid"], os.getpid())
+        self.assertTrue(lifecycle["parent_identity_verified"])
+        self.assertEqual(
+            lifecycle["runtime_state_root"], str(root / "runtime-state")
+        )
         self.assertEqual(lifecycle["lifecycle_state"], "stopped")
         self.assertEqual(lifecycle["exit_reason"], "stdin-closed")
 
@@ -2067,6 +2083,33 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertIn("must be a non-negative integer", completed.stderr)
         self.assertEqual(lifecycle["parent_pid"], 0)
         self.assertEqual(lifecycle["lifecycle_state"], "stopped")
+        self.assertEqual(lifecycle["exit_reason"], "startup-error")
+
+    def test_stdio_entrypoint_records_invalid_identity_environment_as_startup_error(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "target_runtime_mcp.py")],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "OPENUBMC_MCP_CLIENT": "codex",
+                    "OPENUBMC_MCP_TASK_ID": "invalid-identity-task",
+                    "OPENUBMC_MCP_SESSION_ID": "invalid-identity-session",
+                    "OPENUBMC_MCP_MODEL_IDENTITY": "[]",
+                    "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
+                    "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
+                },
+            )
+            records = list((root / "processes").glob("*.json"))
+            lifecycle = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("OPENUBMC_MCP_MODEL_IDENTITY must be a JSON object", completed.stderr)
         self.assertEqual(lifecycle["exit_reason"], "startup-error")
 
     def test_stdio_validation_failure_returns_an_error_and_keeps_serving(self) -> None:

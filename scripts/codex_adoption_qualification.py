@@ -129,6 +129,12 @@ def qualify(
         codex_run.get("launcher_identity_digest", "")
     )
     installed_source_commit = str(codex_run.get("source_commit", ""))
+    raw_mcp_lifecycle_records = codex_run.get("mcp_lifecycle_records")
+    mcp_lifecycle_records = (
+        list(raw_mcp_lifecycle_records)
+        if isinstance(raw_mcp_lifecycle_records, list)
+        else []
+    )
     mcp_failures = codex_mcp_failures(
         codex_run,
         contract={"mcp": True},
@@ -175,6 +181,7 @@ def qualify(
         "launcher_identity": launcher_identity,
         "launcher_identity_digest": launcher_identity_digest,
         "workflow_exchange": workflow_exchange,
+        "mcp_lifecycle_records": mcp_lifecycle_records,
     }
     mcp_failures.extend(
         failure
@@ -224,6 +231,7 @@ def qualify(
                         _passed(projection),
                         projection.get("correctness_primary") is True,
                         projection.get("repeated_reference") is True,
+                        projection.get("operator_projection_covered") is True,
                     )
                 )
                 else "failed"
@@ -238,6 +246,24 @@ def qualify(
                         _passed(lifecycle),
                         _passed(lifecycle_closeout),
                         lifecycle_closeout.get("task_closeout_ready") is True,
+                        lifecycle_closeout.get("identity_records_valid") is True,
+                        lifecycle_closeout.get("isolation_verified") is True,
+                        _mapping(lifecycle_closeout.get("summary")).get(
+                            "owned_live_processes"
+                        )
+                        == 0,
+                        all(
+                            _mapping(
+                                lifecycle_closeout.get("closeout_checks")
+                            ).get(name)
+                            is True
+                            for name in (
+                                "active_requests_zero",
+                                "confirmed_live_orphans_zero",
+                                "unattributed_live_processes_zero",
+                                "owned_live_processes_zero",
+                            )
+                        ),
                     )
                 )
                 else "failed"

@@ -47,23 +47,36 @@ function positiveEnvironmentNumber(name, fallback) {
 }
 
 
+function identityEnvironment(name) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return { value: {}, error: null };
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { value: {}, error: `${name} must be a JSON object` };
+    }
+    return { value, error: null };
+  } catch {
+    return { value: {}, error: `${name} must be a JSON object` };
+  }
+}
+
+
 function createProcessLifecycle(path) {
   const configuredTask = process.env.OPENUBMC_MCP_TASK_ID?.trim()
     || process.env.CODEX_TASK_ID?.trim()
-    || process.env.OPENUBMC_EVALUATION_TASK_ID?.trim()
-    || process.env.CLAUDE_CODE_SESSION_ID?.trim()
-    || process.env.CLAUDE_SESSION_ID?.trim();
+    || process.env.OPENUBMC_EVALUATION_TASK_ID?.trim();
   const configuredSession = process.env.OPENUBMC_MCP_SESSION_ID?.trim();
   const sessionId = configuredSession || configuredTask || "unknown-session";
   const taskId = configuredTask || "unknown-task";
   let client = process.env.OPENUBMC_MCP_CLIENT?.trim();
   if (!client && process.env.CODEX_TASK_ID?.trim()) client = "codex";
-  else if (
-    !client
-    && (process.env.CLAUDE_CODE_SESSION_ID?.trim() || process.env.CLAUDE_SESSION_ID?.trim())
-  ) client = "claude";
   else if (!client && process.env.OPENUBMC_EVALUATION_TASK_ID?.trim()) client = "dsh";
   client ||= "unknown-client";
+  const sourceCommit = process.env.OPENUBMC_MCP_SOURCE_COMMIT?.trim()
+    || "unknown-source-commit";
+  const modelIdentity = identityEnvironment("OPENUBMC_MCP_MODEL_IDENTITY");
+  const codexIdentity = identityEnvironment("OPENUBMC_MCP_CODEX_IDENTITY");
   const configuredParentPid = process.env.OPENUBMC_MCP_PARENT_PID?.trim();
   let parentPid = configuredParentPid ? Number(configuredParentPid) : process.ppid;
   let startupError = null;
@@ -93,17 +106,21 @@ function createProcessLifecycle(path) {
   } catch (error) {
     startupError ||= error.message;
   }
+  startupError ||= modelIdentity.error || codexIdentity.error;
   return {
     lifecycle: new McpProcessLifecycle({
-    component: "knowledge-mcp",
-    version: "1.3.0",
-    client,
-    taskId,
-    sessionId,
-    parentPid,
-    statePath,
-    lifecycleRoot,
-    idleTimeoutSeconds
+      component: "knowledge-mcp",
+      version: "1.3.0",
+      client,
+      taskId,
+      sessionId,
+      sourceCommit,
+      modelIdentity: modelIdentity.value,
+      codexIdentity: codexIdentity.value,
+      parentPid,
+      statePath,
+      lifecycleRoot,
+      idleTimeoutSeconds
     }),
     startupError
   };

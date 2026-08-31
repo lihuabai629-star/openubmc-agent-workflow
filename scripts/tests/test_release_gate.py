@@ -98,6 +98,34 @@ def codex_adoption_report(
                     },
                     "is_error": True,
                 },
+                "mcp_lifecycle_records": [
+                    {
+                        "schema": "openubmc.mcp-process-lifecycle.v1",
+                        "component": "target-runtime",
+                        "version": "openubmc.target-runtime.v1",
+                        "client": "codex",
+                        "task_id": "codex-adoption-probe",
+                        "session_id": "codex-adoption-session",
+                        "source_commit": source_commit,
+                        "model_identity": {
+                            "model": "codex-product-client-qualification"
+                        },
+                        "codex_identity": {
+                            "client_info_name": "codex-adoption-qualification",
+                            "client_info_version": "1",
+                        },
+                        "parent_pid": 123,
+                        "parent_identity": "parent-identity",
+                        "parent_identity_verified": True,
+                        "process_id": 456,
+                        "process_identity": "process-identity",
+                        "start_time": "2026-08-31T00:00:00Z",
+                        "runtime_state_root": "/isolated/runtime-state",
+                        "lifecycle_state": "stopped",
+                        "active_requests": 0,
+                        "exit_reason": "stdin-closed",
+                    }
+                ],
             },
             "product_contract": {
                 "status": "passed",
@@ -118,17 +146,27 @@ def codex_adoption_report(
                 "full_bytes": 2,
                 "reference_bytes": 1,
                 "saved_bytes": 1,
+                "operator_projection_covered": True,
             },
             "lifecycle": {
                 "status": "passed",
                 "closeout": {
                     "status": "passed",
                     "task_closeout_ready": True,
+                    "identity_records_valid": True,
+                    "isolation_verified": True,
                     "summary": {
                         "active_requests": 0,
                         "live_processes": 0,
                         "confirmed_live_orphans": 0,
                         "unattributed_live_processes": 0,
+                        "owned_live_processes": 0,
+                    },
+                    "closeout_checks": {
+                        "active_requests_zero": True,
+                        "confirmed_live_orphans_zero": True,
+                        "unattributed_live_processes_zero": True,
+                        "owned_live_processes_zero": True,
                     },
                 },
             },

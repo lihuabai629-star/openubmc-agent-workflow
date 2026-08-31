@@ -1428,8 +1428,6 @@ def main() -> int:
         os.environ.get("OPENUBMC_MCP_TASK_ID", "").strip()
         or os.environ.get("CODEX_TASK_ID", "").strip()
         or os.environ.get("OPENUBMC_EVALUATION_TASK_ID", "").strip()
-        or os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
-        or os.environ.get("CLAUDE_SESSION_ID", "").strip()
     )
     configured_session = os.environ.get(
         "OPENUBMC_MCP_SESSION_ID", ""
@@ -1439,14 +1437,30 @@ def main() -> int:
     client = os.environ.get("OPENUBMC_MCP_CLIENT", "").strip()
     if not client and os.environ.get("CODEX_TASK_ID", "").strip():
         client = "codex"
-    elif not client and (
-        os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
-        or os.environ.get("CLAUDE_SESSION_ID", "").strip()
-    ):
-        client = "claude"
     elif not client and os.environ.get("OPENUBMC_EVALUATION_TASK_ID", "").strip():
         client = "dsh"
     client = client or "unknown-client"
+    source_commit = os.environ.get(
+        "OPENUBMC_MCP_SOURCE_COMMIT", "unknown-source-commit"
+    ).strip() or "unknown-source-commit"
+    identity_errors: list[str] = []
+
+    def identity_environment(name: str) -> dict[str, object]:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            identity_errors.append(f"{name} must be a JSON object")
+            return {}
+        if not isinstance(value, dict):
+            identity_errors.append(f"{name} must be a JSON object")
+            return {}
+        return value
+
+    model_identity = identity_environment("OPENUBMC_MCP_MODEL_IDENTITY")
+    codex_identity = identity_environment("OPENUBMC_MCP_CODEX_IDENTITY")
     parent_pid, parent_pid_error = _parent_pid_environment()
     state_dir = _runtime_state_dir()
     configured_lifecycle_root = os.environ.get(
@@ -1478,6 +1492,9 @@ def main() -> int:
         client=client,
         task_id=task_id,
         session_id=session_id,
+        source_commit=source_commit,
+        model_identity=model_identity,
+        codex_identity=codex_identity,
         parent_pid=parent_pid,
         state_path=state_dir,
         lifecycle_root=lifecycle_root,
@@ -1486,6 +1503,9 @@ def main() -> int:
     if parent_pid_error is not None:
         process_lifecycle.record_exit("startup-error")
         raise SystemExit(parent_pid_error)
+    if identity_errors:
+        process_lifecycle.record_exit("startup-error")
+        raise SystemExit("; ".join(identity_errors))
     if idle_timeout_error is not None:
         process_lifecycle.record_exit("startup-error")
         raise idle_timeout_error

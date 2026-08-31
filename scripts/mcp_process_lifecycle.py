@@ -62,6 +62,11 @@ def summarize(records: list[dict[str, object]]) -> dict[str, int]:
             for record in live
             if record.get("lifecycle_state") == "unknown-owner"
         ),
+        "owned_live_processes": sum(
+            1
+            for record in live
+            if record.get("ownership_identity_bound") is True
+        ),
         "stopped_processes": sum(
             1 for record in records if record.get("lifecycle_state") == "stopped"
         ),
@@ -85,6 +90,14 @@ def main(argv: list[str] | None = None) -> int:
         cleaned = cleanup_confirmed_orphaned_mcp_processes(root)
         records = inspect_mcp_process_records(root)
     summary = summarize(records)
+    closeout_checks = {
+        "active_requests_zero": summary["active_requests"] == 0,
+        "confirmed_live_orphans_zero": summary["confirmed_live_orphans"] == 0,
+        "unattributed_live_processes_zero": (
+            summary["unattributed_live_processes"] == 0
+        ),
+        "owned_live_processes_zero": summary["owned_live_processes"] == 0,
+    }
     print(
         json.dumps(
             {
@@ -99,10 +112,8 @@ def main(argv: list[str] | None = None) -> int:
                 "cleaned_processes": cleaned,
                 "dry_run": bool(args.dry_run),
                 "summary": summary,
-                "task_closeout_ready": (
-                    summary["live_processes"] == 0
-                    and summary["active_requests"] == 0
-                ),
+                "closeout_checks": closeout_checks,
+                "task_closeout_ready": all(closeout_checks.values()),
             },
             ensure_ascii=False,
             indent=2,

@@ -184,6 +184,45 @@ def installation_identity_failures(
     return [name for name, passed in checks if not passed]
 
 
+def _mcp_lifecycle_failures(
+    value: object,
+    *,
+    expected_source_commit: str,
+) -> list[str]:
+    records = value if isinstance(value, list) else []
+    if not records:
+        return ["mcp_lifecycle_records_missing"]
+    valid = all(
+        isinstance(record, Mapping)
+        and record.get("schema") == "openubmc.mcp-process-lifecycle.v1"
+        and record.get("client") == "codex"
+        and isinstance(record.get("task_id"), str)
+        and bool(str(record.get("task_id", "")).strip())
+        and not str(record.get("task_id", "")).startswith("unknown-")
+        and isinstance(record.get("session_id"), str)
+        and bool(str(record.get("session_id", "")).strip())
+        and not str(record.get("session_id", "")).startswith("unknown-")
+        and record.get("source_commit") == expected_source_commit
+        and isinstance(record.get("model_identity"), Mapping)
+        and bool(record.get("model_identity"))
+        and isinstance(record.get("codex_identity"), Mapping)
+        and bool(record.get("codex_identity"))
+        and record.get("parent_identity_verified") is True
+        and isinstance(record.get("start_time"), str)
+        and bool(str(record.get("start_time", "")).strip())
+        and isinstance(record.get("runtime_state_root"), str)
+        and bool(str(record.get("runtime_state_root", "")).strip())
+        and record.get("lifecycle_state") == "stopped"
+        and isinstance(record.get("active_requests"), int)
+        and not isinstance(record.get("active_requests"), bool)
+        and record.get("active_requests") == 0
+        and isinstance(record.get("exit_reason"), str)
+        and bool(str(record.get("exit_reason", "")).strip())
+        for record in records
+    )
+    return [] if valid else ["mcp_lifecycle_identity_invalid"]
+
+
 def codex_mcp_failures(
     evidence: Mapping[str, object],
     *,
@@ -244,6 +283,10 @@ def codex_mcp_failures(
     )
     return [
         *[name for name, passed in checks if not passed],
+        *_mcp_lifecycle_failures(
+            evidence.get("mcp_lifecycle_records"),
+            expected_source_commit=expected_source_commit,
+        ),
         *_launcher_identity_failures(
             launcher_identity,
             launcher_identity_digest,
@@ -368,6 +411,10 @@ def codex_mcp_dimension_failures(
     )
     return [
         *[name for name, passed in checks if not passed],
+        *_mcp_lifecycle_failures(
+            codex_mcp.get("mcp_lifecycle_records"),
+            expected_source_commit=expected_source_commit,
+        ),
         *_launcher_identity_failures(
             launcher_identity,
             codex_mcp.get("launcher_identity_digest", ""),
@@ -502,6 +549,7 @@ def verify_codex_adoption_report(
         (
             projection.get("correctness_primary") is True,
             projection.get("repeated_reference") is True,
+            projection.get("operator_projection_covered") is True,
             all(
                 isinstance(value, int) and not isinstance(value, bool) and value >= 0
                 for value in projection_sizes
@@ -516,14 +564,22 @@ def verify_codex_adoption_report(
     lifecycle = _mapping(dimensions.get("lifecycle"))
     lifecycle_closeout = _mapping(lifecycle.get("closeout"))
     lifecycle_summary = _mapping(lifecycle_closeout.get("summary"))
+    lifecycle_checks = _mapping(lifecycle_closeout.get("closeout_checks"))
     if lifecycle.get("status") == "passed" and not all(
         (
             lifecycle_closeout.get("status") == "passed",
             lifecycle_closeout.get("task_closeout_ready") is True,
+            lifecycle_closeout.get("identity_records_valid") is True,
+            lifecycle_closeout.get("isolation_verified") is True,
             lifecycle_summary.get("active_requests") == 0,
             lifecycle_summary.get("live_processes") == 0,
             lifecycle_summary.get("confirmed_live_orphans") == 0,
             lifecycle_summary.get("unattributed_live_processes") == 0,
+            lifecycle_summary.get("owned_live_processes") == 0,
+            lifecycle_checks.get("active_requests_zero") is True,
+            lifecycle_checks.get("confirmed_live_orphans_zero") is True,
+            lifecycle_checks.get("unattributed_live_processes_zero") is True,
+            lifecycle_checks.get("owned_live_processes_zero") is True,
         )
     ):
         raise ValueError(

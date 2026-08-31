@@ -41,7 +41,17 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                 "active_requests": 0,
                 "confirmed_live_orphans": 0,
                 "unattributed_live_processes": 0,
+                "owned_live_processes": 0,
                 "stopped_processes": 0,
+            },
+        )
+        self.assertEqual(
+            payload["closeout_checks"],
+            {
+                "active_requests_zero": True,
+                "confirmed_live_orphans_zero": True,
+                "owned_live_processes_zero": True,
+                "unattributed_live_processes_zero": True,
             },
         )
         self.assertTrue(payload["task_closeout_ready"])
@@ -125,6 +135,9 @@ class McpProcessLifecycleCliTests(unittest.TestCase):
                     cleanup_payload["summary"]["confirmed_live_orphans"], 0
                 )
                 self.assertEqual(cleanup_payload["summary"]["live_processes"], 0)
+                self.assertEqual(
+                    cleanup_payload["summary"]["owned_live_processes"], 0
+                )
                 self.assertTrue(cleanup_payload["task_closeout_ready"])
                 self.assertEqual(
                     cleanup_payload["records_before_cleanup"][0][

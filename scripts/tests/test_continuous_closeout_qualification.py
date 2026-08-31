@@ -16,6 +16,63 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "continuous_closeout_qualification.py"
 
 
+def passed_lifecycle_record() -> dict[str, object]:
+    return {
+        "schema": "openubmc.mcp-process-lifecycle.v1",
+        "component": "target-runtime",
+        "version": "openubmc.target-runtime.v1",
+        "client": "codex",
+        "task_id": "codex-adoption-probe",
+        "session_id": "codex-adoption-session",
+        "source_commit": "a" * 40,
+        "model_identity": {"model": "codex-product-client-qualification"},
+        "codex_identity": {
+            "client_info_name": "codex-adoption-qualification",
+            "client_info_version": "1",
+        },
+        "parent_pid": 123,
+        "parent_identity": "parent-identity",
+        "parent_identity_verified": True,
+        "process_id": 456,
+        "process_identity": "process-identity",
+        "start_time": "2026-08-31T00:00:00Z",
+        "runtime_state_root": "/isolated/runtime-state",
+        "lifecycle_state": "stopped",
+        "active_requests": 0,
+        "exit_reason": "stdin-closed",
+    }
+
+
+def passed_mcp_closeout() -> dict[str, object]:
+    return {
+        "status": "passed",
+        "task_closeout_ready": True,
+        "identity_records_valid": True,
+        "isolation_verified": True,
+        "records": [
+            {
+                **passed_lifecycle_record(),
+                "task_id": "continuous-closeout-qualification",
+                "session_id": "continuous-closeout-session",
+                "exit_reason": "task-closeout",
+            }
+        ],
+        "summary": {
+            "live_processes": 0,
+            "active_requests": 0,
+            "confirmed_live_orphans": 0,
+            "unattributed_live_processes": 0,
+            "owned_live_processes": 0,
+        },
+        "closeout_checks": {
+            "active_requests_zero": True,
+            "confirmed_live_orphans_zero": True,
+            "unattributed_live_processes_zero": True,
+            "owned_live_processes_zero": True,
+        },
+    }
+
+
 def passed_product_client_run(name: str) -> dict[str, object]:
     launcher_identity = {
         "schema": "openubmc-agent-workflow.codex-launcher-identity.v1",
@@ -94,6 +151,7 @@ def passed_product_client_run(name: str) -> dict[str, object]:
             },
             "is_error": True,
         },
+        "mcp_lifecycle_records": [passed_lifecycle_record()],
     }
 
 
@@ -263,12 +321,30 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(report["mcp_lifecycle"]["zero_live_orphans_covered"])
         closeout = report["mcp_lifecycle"]["closeout"]
         self.assertTrue(closeout["task_closeout_ready"])
+        self.assertTrue(closeout["identity_records_valid"])
+        self.assertTrue(closeout["isolation_verified"])
         self.assertEqual(closeout["summary"]["live_processes"], 0)
         self.assertEqual(closeout["summary"]["active_requests"], 0)
+        self.assertEqual(closeout["summary"]["confirmed_live_orphans"], 0)
+        self.assertEqual(closeout["summary"]["unattributed_live_processes"], 0)
+        self.assertEqual(closeout["summary"]["owned_live_processes"], 0)
+        self.assertTrue(all(closeout["closeout_checks"].values()))
         self.assertEqual(closeout["task_ids"], ["continuous-closeout-qualification"])
         self.assertEqual(closeout["session_ids"], ["continuous-closeout-session"])
+        self.assertEqual(closeout["records"][0]["client"], "codex")
+        self.assertEqual(closeout["records"][0]["source_commit"], report["source_commit"])
+        self.assertEqual(closeout["records"][0]["exit_reason"], "task-closeout")
+        self.assertTrue(closeout["records"][0]["parent_identity_verified"])
+        self.assertTrue(closeout["records"][0]["model_identity"])
+        self.assertTrue(closeout["records"][0]["codex_identity"])
+        self.assertFalse(closeout["isolation"]["global_codex_state_used"])
+        self.assertNotEqual(
+            closeout["isolation"]["task_home"],
+            str(Path.home()),
+        )
         projection = report["execute_projection"]
         self.assertTrue(projection["correctness_primary"])
+        self.assertTrue(projection["operator_projection_covered"])
         self.assertTrue(projection["repeated_reference"])
         self.assertGreater(projection["saved_bytes"], 0)
         self.assertFalse(projection["blocks_promotability"])
@@ -314,11 +390,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_mcp_closeout_snapshot",
-                return_value={
-                    "status": "passed",
-                    "task_closeout_ready": True,
-                    "summary": {"live_processes": 0, "active_requests": 0},
-                },
+                return_value=passed_mcp_closeout(),
             ),
             mock.patch.object(
                 qualification,
@@ -429,11 +501,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_mcp_closeout_snapshot",
-                return_value={
-                    "status": "passed",
-                    "task_closeout_ready": True,
-                    "summary": {"live_processes": 0, "active_requests": 0},
-                },
+                return_value=passed_mcp_closeout(),
             ),
             mock.patch.object(
                 qualification,

@@ -117,6 +117,7 @@ PROJECTION_TESTS = (
     "tests.test_agent_gateway.AgentGatewayTests.test_terminal_turn_preserves_a_changed_diagnostic_receipt",
     "tests.test_agent_gateway.AgentGatewayTests.test_retried_one_shot_terminal_turn_keeps_the_complete_receipt",
     "tests.test_runtime_stability.RuntimeStabilityTests.test_dual_projection_qualification_measures_gate_and_terminal_seams",
+    "tests.test_mcp_contracts.RuntimeMcpServiceTests.test_operator_status_derives_bounded_current_run_evidence_from_the_ledger",
 )
 TASK_MATRIX_TESTS = {
     "source_only": {
@@ -508,9 +509,15 @@ def _product_evidence(
     }
 
 
-def _mcp_closeout_snapshot() -> dict[str, object]:
+def _mcp_closeout_snapshot(source_commit: str) -> dict[str, object]:
     with tempfile.TemporaryDirectory() as raw:
-        lifecycle_root = Path(raw) / "mcp-processes"
+        qualification_root = Path(raw)
+        task_home = qualification_root / "task-home"
+        codex_config_root = qualification_root / "codex-config"
+        runtime_state_root = qualification_root / "runtime-state"
+        lifecycle_root = qualification_root / "mcp-processes"
+        for path in (task_home, codex_config_root, runtime_state_root, lifecycle_root):
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
         child_source = "\n".join(
             (
                 "import os",
@@ -522,17 +529,34 @@ def _mcp_closeout_snapshot() -> dict[str, object]:
                 "lifecycle = McpProcessLifecycle(",
                 "    component='continuous-closeout-mcp',",
                 "    version='1',",
-                "    client='qualification',",
+                "    client='codex',",
                 "    task_id='continuous-closeout-qualification',",
                 "    session_id='continuous-closeout-session',",
+                f"    source_commit={source_commit!r},",
+                "    model_identity={'model': 'continuous-closeout-qualification'},",
+                "    codex_identity={'client': 'codex', 'qualification': 'continuous-closeout'},",
                 "    parent_pid=os.getppid(),",
-                "    state_path=root / 'state',",
+                f"    state_path=Path({str(runtime_state_root)!r}),",
                 "    lifecycle_root=root,",
                 "    idle_timeout_seconds=300,",
                 ")",
-                "lifecycle.record_exit('qualification-complete')",
+                "lifecycle.begin_request()",
+                "lifecycle.request_task_closeout()",
+                "if lifecycle.exit_reason_if_due() is not None:",
+                "    raise RuntimeError('task closeout interrupted an active request')",
+                "lifecycle.end_request()",
+                "if lifecycle.exit_reason_if_due() != 'task-closeout':",
+                "    raise RuntimeError('task closeout did not become terminal')",
             )
         )
+        environment = {
+            **os.environ,
+            "HOME": str(task_home),
+            "CODEX_HOME": str(codex_config_root),
+            "XDG_CONFIG_HOME": str(codex_config_root),
+            "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(runtime_state_root),
+            "OPENUBMC_MCP_LIFECYCLE_DIR": str(lifecycle_root),
+        }
         completed = subprocess.run(
             [sys.executable, "-c", child_source],
             cwd=ROOT,
@@ -540,22 +564,70 @@ def _mcp_closeout_snapshot() -> dict[str, object]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            env=environment,
         )
         records = inspect_mcp_process_records(lifecycle_root)
-    summary = summarize_mcp_records(records)
+        summary = summarize_mcp_records(records)
+        closeout_checks = {
+            "active_requests_zero": summary["active_requests"] == 0,
+            "confirmed_live_orphans_zero": summary["confirmed_live_orphans"] == 0,
+            "unattributed_live_processes_zero": (
+                summary["unattributed_live_processes"] == 0
+            ),
+            "owned_live_processes_zero": summary["owned_live_processes"] == 0,
+        }
+        identity_records_valid = bool(records) and all(
+            record.get("client") == "codex"
+            and record.get("task_id") == "continuous-closeout-qualification"
+            and record.get("session_id") == "continuous-closeout-session"
+            and record.get("source_commit") == source_commit
+            and isinstance(record.get("model_identity"), Mapping)
+            and bool(record.get("model_identity"))
+            and isinstance(record.get("codex_identity"), Mapping)
+            and bool(record.get("codex_identity"))
+            and record.get("parent_identity_verified") is True
+            and record.get("runtime_state_root") == str(runtime_state_root)
+            and record.get("exit_reason") == "task-closeout"
+            for record in records
+        )
+        isolation = {
+            "task_home": str(task_home),
+            "codex_config_root": str(codex_config_root),
+            "runtime_state_root": str(runtime_state_root),
+            "lifecycle_root": str(lifecycle_root),
+            "global_codex_state_used": False,
+        }
+        isolation_verified = all(
+            path.is_relative_to(qualification_root)
+            for path in (
+                task_home,
+                codex_config_root,
+                runtime_state_root,
+                lifecycle_root,
+            )
+        ) and len(
+            {
+                task_home,
+                codex_config_root,
+                runtime_state_root,
+                lifecycle_root,
+            }
+        ) == 4
     return {
         "status": (
             "passed"
             if completed.returncode == 0
-            and summary["live_processes"] == 0
-            and summary["active_requests"] == 0
+            and identity_records_valid
+            and isolation_verified
+            and all(closeout_checks.values())
             else "failed"
         ),
         "returncode": completed.returncode,
         "failure_tail": completed.stderr.strip()[-2000:],
-        "task_closeout_ready": (
-            summary["live_processes"] == 0 and summary["active_requests"] == 0
-        ),
+        "task_closeout_ready": identity_records_valid
+        and all(closeout_checks.values()),
+        "identity_records_valid": identity_records_valid,
+        "isolation_verified": isolation_verified,
         "task_ids": sorted(
             {
                 str(record.get("task_id", ""))
@@ -570,7 +642,10 @@ def _mcp_closeout_snapshot() -> dict[str, object]:
                 if record.get("session_id")
             }
         ),
+        "records": records,
         "summary": summary,
+        "closeout_checks": closeout_checks,
+        "isolation": isolation,
     }
 
 
@@ -618,7 +693,7 @@ def qualify(
         name: _run_tests(tests, cwd=RUNTIME_ROOT)
         for name, tests in MCP_LIFECYCLE_TESTS.items()
     }
-    lifecycle_closeout = _mcp_closeout_snapshot()
+    lifecycle_closeout = _mcp_closeout_snapshot(selected_source_commit)
     projection_tests = _run_tests(PROJECTION_TESTS, cwd=RUNTIME_ROOT)
     task_matrix = {
         name: _run_task_group(dimensions)
@@ -732,6 +807,8 @@ def qualify(
             "reference_bytes": int(repeated_projection.get("reference_bytes", 0)),
             "saved_bytes": int(repeated_projection.get("saved_bytes", 0)),
             "blocks_promotability": False,
+            "operator_projection_covered": projection_tests.get("status")
+            == "passed",
             "tests": projection_tests,
         },
         "task_matrix": {
