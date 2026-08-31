@@ -26,6 +26,7 @@ from scripts.evidence_report import (  # noqa: E402
 )
 from scripts.formal_identity import (  # noqa: E402
     identity_argument,
+    normalize_codex_identity,
     normalize_identity,
 )
 from scripts.codex_adoption_contract import product_client_failures  # noqa: E402
@@ -631,9 +632,8 @@ def qualify(
         label="model identity",
         required_message=required_identity,
     )
-    selected_codex_identity = normalize_identity(
+    selected_codex_identity = normalize_codex_identity(
         codex_identity,
-        label="Codex identity",
         required_message=required_identity,
     )
     workflow = _workflow_metadata()

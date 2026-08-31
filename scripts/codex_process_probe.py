@@ -14,8 +14,14 @@ import subprocess
 import threading
 import time
 
+from scripts.formal_identity import (
+    PINNED_CODEX_VERSION,
+    normalize_codex_identity,
+)
 
-CODEX_VERSION = "codex-cli 0.151.0"
+CODEX_VERSION = PINNED_CODEX_VERSION
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -206,6 +212,10 @@ def probe_codex_runtime(
     task_id: str,
     session_id: str,
 ) -> dict[str, object]:
+    selected_codex_identity = normalize_codex_identity(codex_identity)
+    selected_model = str(model_identity.get("model", "")).strip()
+    if not selected_model:
+        raise ValueError("formal model identity must include a non-empty model")
     executable = pinned_codex_executable(repository_root)
     server = _ResponsesServer()
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -226,7 +236,7 @@ def probe_codex_runtime(
                 dict(model_identity), ensure_ascii=True, sort_keys=True
             ),
             "OPENUBMC_MCP_CODEX_IDENTITY": json.dumps(
-                dict(codex_identity), ensure_ascii=True, sort_keys=True
+                selected_codex_identity, ensure_ascii=True, sort_keys=True
             ),
             "OPENUBMC_MCP_SOURCE_COMMIT": source_commit,
             "OPENUBMC_MCP_FORMAL_RUN": "1",
@@ -244,7 +254,7 @@ def probe_codex_runtime(
             "--color",
             "never",
             "--model",
-            "openubmc-lifecycle-probe",
+            selected_model,
             "-C",
             str(qualification_root),
             "-c",
@@ -270,7 +280,7 @@ def probe_codex_runtime(
                 dict(model_identity), ensure_ascii=True, sort_keys=True
             ),
             "OPENUBMC_MCP_CODEX_IDENTITY": json.dumps(
-                dict(codex_identity), ensure_ascii=True, sort_keys=True
+                selected_codex_identity, ensure_ascii=True, sort_keys=True
             ),
             "OPENUBMC_MCP_SOURCE_COMMIT": source_commit,
             "OPENUBMC_MCP_FORMAL_RUN": "1",
@@ -290,6 +300,7 @@ def probe_codex_runtime(
         command.append("Return exactly OK without calling a tool.")
         for _ in range(2):
             before = len(_lifecycle_records(lifecycle_root))
+            request_start = len(server.requests)
             process = subprocess.Popen(
                 command,
                 text=True,
@@ -357,6 +368,12 @@ def probe_codex_runtime(
                     "executable": str(executable),
                     "executable_sha256": "sha256:" + _sha256(executable),
                     "version": CODEX_VERSION,
+                    "requested_model": selected_model,
+                    "captured_request_models": [
+                        str(request.get("model", ""))
+                        for request in server.requests[request_start:]
+                        if isinstance(request.get("model"), str)
+                    ],
                     "returncode": process.returncode,
                 }
             )

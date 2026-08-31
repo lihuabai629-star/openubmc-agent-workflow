@@ -947,7 +947,7 @@ def main(argv: list[str] | None = None) -> int:
             "--model-identity",
             '{"model":"codex-product-client-qualification"}',
             "--codex-identity",
-            '{"client_info_name":"codex-adoption-qualification","client_info_version":"1"}',
+            '{"version":"codex-cli 0.151.0"}',
         ],
         stage="Codex Adoption Qualification",
     )

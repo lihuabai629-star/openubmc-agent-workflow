@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from scripts.evidence_report import evidence_fingerprint
+from scripts.formal_identity import PINNED_CODEX_VERSION
 
 
 SCHEMA = "openubmc-agent-workflow.codex-adoption-qualification.v1"
@@ -209,6 +210,8 @@ def _mcp_lifecycle_failures(
         and bool(record.get("model_identity"))
         and isinstance(record.get("codex_identity"), Mapping)
         and bool(record.get("codex_identity"))
+        and _mapping(record.get("codex_identity")).get("version")
+        == PINNED_CODEX_VERSION
         and record.get("parent_identity_verified") is True
         and isinstance(record.get("parent_identity_currently_verified"), bool)
         and isinstance(record.get("start_time"), str)
@@ -254,6 +257,17 @@ def _codex_process_failures(
     }
     bindings: set[tuple[int, str]] = set()
     executable_identities: set[tuple[str, str, str]] = set()
+    declared_models = {
+        str(_mapping(record.get("model_identity")).get("model", "")).strip()
+        for record in records
+        if isinstance(record, Mapping)
+    }
+    declared_codex_versions = {
+        str(_mapping(record.get("codex_identity")).get("version", "")).strip()
+        for record in records
+        if isinstance(record, Mapping)
+    }
+    expected_model = next(iter(declared_models)) if len(declared_models) == 1 else ""
     valid_runs = len(runs) == 2
     for run in runs:
         if not isinstance(run, Mapping):
@@ -261,6 +275,10 @@ def _codex_process_failures(
             continue
         process_id = run.get("process_id")
         process_identity = str(run.get("process_identity", ""))
+        request_models = run.get("captured_request_models")
+        normalized_request_models = (
+            request_models if isinstance(request_models, list) else []
+        )
         valid = all(
             (
                 isinstance(process_id, int),
@@ -271,7 +289,15 @@ def _codex_process_failures(
                 run.get("parent_identity") == process_identity,
                 Path(str(run.get("executable", ""))).is_absolute(),
                 _sha256(run.get("executable_sha256")),
-                run.get("version") == "codex-cli 0.151.0",
+                run.get("version") == PINNED_CODEX_VERSION,
+                declared_codex_versions == {PINNED_CODEX_VERSION},
+                bool(expected_model),
+                run.get("requested_model") == expected_model,
+                isinstance(request_models, list),
+                bool(normalized_request_models),
+                all(
+                    model == expected_model for model in normalized_request_models
+                ),
                 run.get("returncode") == 0,
             )
         )

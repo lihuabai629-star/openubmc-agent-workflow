@@ -9,10 +9,7 @@ from scripts.evidence_report import evidence_fingerprint
 
 
 FORMAL_MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
-FORMAL_CODEX_IDENTITY = {
-    "client_info_name": "codex-adoption-qualification",
-    "client_info_version": "1",
-}
+FORMAL_CODEX_IDENTITY = {"version": "codex-cli 0.151.0"}
 
 
 def qualify(**kwargs: object) -> dict[str, object]:
@@ -124,6 +121,10 @@ def closeout_report() -> dict[str, object]:
                             "executable": "/isolated/codex",
                             "executable_sha256": "sha256:" + "9" * 64,
                             "version": "codex-cli 0.151.0",
+                            "requested_model": "codex-product-client-qualification",
+                            "captured_request_models": [
+                                "codex-product-client-qualification"
+                            ],
                             "returncode": 0,
                         },
                         {
@@ -134,6 +135,10 @@ def closeout_report() -> dict[str, object]:
                             "executable": "/isolated/codex",
                             "executable_sha256": "sha256:" + "9" * 64,
                             "version": "codex-cli 0.151.0",
+                            "requested_model": "codex-product-client-qualification",
+                            "captured_request_models": [
+                                "codex-product-client-qualification"
+                            ],
                             "returncode": 0,
                         },
                     ],
@@ -216,10 +221,7 @@ def closeout_report() -> dict[str, object]:
                             "model_identity": {
                                 "model": "codex-product-client-qualification"
                             },
-                            "codex_identity": {
-                                "client_info_name": "codex-adoption-qualification",
-                                "client_info_version": "1",
-                            },
+                            "codex_identity": FORMAL_CODEX_IDENTITY,
                             "parent_pid": 123,
                             "parent_identity": "parent-identity",
                             "parent_identity_verified": True,
@@ -332,6 +334,15 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "formal model and Codex identity"):
             adoption.qualify()
 
+    def test_qualification_rejects_a_codex_version_other_than_the_pinned_process(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "codex-cli 0.151.0"):
+            adoption.qualify(
+                model_identity=FORMAL_MODEL_IDENTITY,
+                codex_identity={"version": "codex-cli 0.150.0"},
+            )
+
     def test_one_report_combines_identity_codex_runtime_tasks_and_provenance(
         self,
     ) -> None:
@@ -341,7 +352,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             "reasoning_effort": "high",
         }
         codex_identity = {
-            "version": "codex-cli 0.150.0",
+            "version": "codex-cli 0.151.0",
             "sha256": "1" * 64,
         }
         closeout = closeout_report()
@@ -350,6 +361,11 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         ]:
             lifecycle["model_identity"] = model_identity
             lifecycle["codex_identity"] = codex_identity
+        for process_run in closeout["client_matrix"]["runs"]["codex"][
+            "codex_process_runs"
+        ]:
+            process_run["requested_model"] = model_identity["model"]
+            process_run["captured_request_models"] = [model_identity["model"]]
         with (
             mock.patch.object(
                 adoption, "qualify_closeout", return_value=closeout
@@ -417,7 +433,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         )
         self.assertEqual(
             report["provenance"]["codex"]["version"],
-            "codex-cli 0.150.0",
+            "codex-cli 0.151.0",
         )
         self.assertFalse(report["external_evaluation"]["blocking"])
         self.assertEqual(report["external_evaluation"]["harnesses"], ["dsh"])
@@ -439,7 +455,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         ):
             report = adoption.qualify(
                 model_identity={"model": "gpt-5.6-sol"},
-                codex_identity={"version": "codex-cli 0.150.0"},
+                codex_identity={"version": "codex-cli 0.151.0"},
             )
 
         self.assertFalse(report["qualified"])
@@ -678,6 +694,31 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             report["dimensions"]["codex_mcp"]["failure_codes"],
         )
 
+    def test_real_codex_request_model_must_match_formal_model_identity(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["codex_process_runs"][0]["captured_request_models"] = [
+            "different-model"
+        ]
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
     def test_closeout_requires_operator_status_evidence(self) -> None:
         closeout = closeout_report()
         codex = closeout["client_matrix"]["runs"]["codex"]
@@ -810,10 +851,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         closeout.assert_called_once_with(
             source_commit="a" * 40,
             model_identity={"model": "codex-product-client-qualification"},
-            codex_identity={
-                "client_info_name": "codex-adoption-qualification",
-                "client_info_version": "1",
-            },
+            codex_identity={"version": "codex-cli 0.151.0"},
         )
 
 

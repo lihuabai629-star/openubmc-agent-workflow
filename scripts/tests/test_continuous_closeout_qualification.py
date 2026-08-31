@@ -14,7 +14,7 @@ from scripts import continuous_closeout_qualification as qualification
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "continuous_closeout_qualification.py"
-MODEL_IDENTITY = {"model": "gpt-5.6-sol"}
+MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
 CODEX_IDENTITY = {"version": "codex-cli 0.151.0"}
 
 
@@ -29,10 +29,7 @@ def passed_lifecycle_record() -> dict[str, object]:
         "source_commit": "a" * 40,
         "formal_run": True,
         "model_identity": {"model": "codex-product-client-qualification"},
-        "codex_identity": {
-            "client_info_name": "codex-adoption-qualification",
-            "client_info_version": "1",
-        },
+        "codex_identity": CODEX_IDENTITY,
         "parent_pid": 123,
         "parent_identity": "parent-identity",
         "parent_identity_verified": True,
@@ -199,6 +196,10 @@ def passed_product_client_run(name: str) -> dict[str, object]:
                 "executable": "/isolated/codex",
                 "executable_sha256": "sha256:" + "9" * 64,
                 "version": "codex-cli 0.151.0",
+                "requested_model": "codex-product-client-qualification",
+                "captured_request_models": [
+                    "codex-product-client-qualification"
+                ],
                 "returncode": 0,
             },
             {
@@ -209,6 +210,10 @@ def passed_product_client_run(name: str) -> dict[str, object]:
                 "executable": "/isolated/codex",
                 "executable_sha256": "sha256:" + "9" * 64,
                 "version": "codex-cli 0.151.0",
+                "requested_model": "codex-product-client-qualification",
+                "captured_request_models": [
+                    "codex-product-client-qualification"
+                ],
                 "returncode": 0,
             },
         ],
@@ -245,10 +250,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             passed_product_client_run("codex"),
             source_commit="a" * 40,
             model_identity={"model": "codex-product-client-qualification"},
-            codex_identity={
-                "client_info_name": "codex-adoption-qualification",
-                "client_info_version": "1",
-            },
+            codex_identity=CODEX_IDENTITY,
         )
 
         self.assertEqual(report["status"], "passed", report)
@@ -258,10 +260,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         )
         self.assertEqual(
             report["records"][0]["codex_identity"],
-            {
-                "client_info_name": "codex-adoption-qualification",
-                "client_info_version": "1",
-            },
+            CODEX_IDENTITY,
         )
 
     def test_candidate_release_commit_is_deterministic(self) -> None:

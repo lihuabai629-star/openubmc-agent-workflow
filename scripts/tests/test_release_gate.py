@@ -24,10 +24,7 @@ SPEC.loader.exec_module(release_gate)
 SOURCE_COMMIT = "a" * 40
 RELEASE_COMMIT = "b" * 40
 MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
-CODEX_IDENTITY = {
-    "client_info_name": "codex-adoption-qualification",
-    "client_info_version": "1",
-}
+CODEX_IDENTITY = {"version": "codex-cli 0.151.0"}
 
 
 def execute_release_gate(**kwargs: object) -> dict[str, object]:
@@ -121,6 +118,10 @@ def codex_adoption_report(
                         "executable": "/isolated/codex",
                         "executable_sha256": "sha256:" + "9" * 64,
                         "version": "codex-cli 0.151.0",
+                        "requested_model": "codex-product-client-qualification",
+                        "captured_request_models": [
+                            "codex-product-client-qualification"
+                        ],
                         "returncode": 0,
                     },
                     {
@@ -131,6 +132,10 @@ def codex_adoption_report(
                         "executable": "/isolated/codex",
                         "executable_sha256": "sha256:" + "9" * 64,
                         "version": "codex-cli 0.151.0",
+                        "requested_model": "codex-product-client-qualification",
+                        "captured_request_models": [
+                            "codex-product-client-qualification"
+                        ],
                         "returncode": 0,
                     },
                 ],

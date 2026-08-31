@@ -511,12 +511,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             ),
             "OPENUBMC_MCP_CODEX_IDENTITY": os.environ.get(
                 "OPENUBMC_PRODUCT_CLIENT_CODEX_IDENTITY",
-                json.dumps(
-                    {
-                        "client_info_name": "codex-adoption-qualification",
-                        "client_info_version": "1",
-                    }
-                ),
+                json.dumps({"version": "codex-cli 0.151.0"}),
             ),
             "OPENUBMC_MCP_FORMAL_RUN": "0",
             "OPENUBMC_MCP_LIFECYCLE_DIR": str(harness_lifecycle_root),

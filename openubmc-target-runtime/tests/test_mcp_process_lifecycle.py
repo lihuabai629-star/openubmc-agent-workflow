@@ -917,47 +917,49 @@ class McpProcessLifecycleTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             lifecycle_root = Path(raw) / "mcp-processes"
+            started_path = Path(raw) / "request-started"
             child_program = textwrap.dedent(
                 """
                 import os
                 from pathlib import Path
                 import sys
-                import threading
                 import time
 
-                from openubmc_target_runtime import McpProcessLifecycle, StdioMcpServer
+                from openubmc_target_runtime import (
+                    JsonRpcMcpEndpoint,
+                    McpProcessLifecycle,
+                    OrchestratedMcpBackend,
+                    RuntimeMcpService,
+                    StdioMcpServer,
+                )
 
-                barrier = threading.Barrier(2)
+                class Task:
+                    def __init__(self, task_id):
+                        self.task_id = task_id
 
-                class Service:
-                    def cancel_operation(self, *_args):
+                class Backend:
+                    def open_task(self, task_id):
+                        return Task(task_id)
+
+                    def close_task(self, _task):
                         pass
 
-                    def close(self):
-                        pass
+                    def maintain_task(self, _task):
+                        return 0
 
-                class Endpoint:
-                    session_task_id = "closeout-session"
+                    def task_status(self, task):
+                        return {"task_id": task.task_id}
 
-                    def __init__(self):
-                        self.service = Service()
-
-                    def task_id_for_params(self, _params):
-                        return "closeout-task"
-
-                    def operation_id_for_params(self, _params, request_id):
-                        return str(request_id)
-
-                    def handle(self, message):
-                        if message.get("method") == "tools/call":
-                            barrier.wait(timeout=2)
-                            time.sleep(0.1)
-                        if "id" not in message:
-                            return None
+                    def debug_run(self, task, _arguments, context):
+                        Path(sys.argv[2]).write_text("started", encoding="utf-8")
+                        time.sleep(0.2)
+                        context.raise_if_stopped()
                         return {
-                            "jsonrpc": "2.0",
-                            "id": message["id"],
-                            "result": {"completed": True},
+                            "schema": "openubmc-debug.v1",
+                            "task": task.task_id,
+                            "root_cause": "drained",
+                            "observed_at": "2026-09-01T00:00:00Z",
+                            "freshness": {"status": "fresh"},
                         }
 
                 root = Path(sys.argv[1])
@@ -972,8 +974,14 @@ class McpProcessLifecycleTests(unittest.TestCase):
                     lifecycle_root=root,
                     idle_timeout_seconds=30,
                 )
+                service = RuntimeMcpService(
+                    OrchestratedMcpBackend({"debug_run": Backend()}),
+                )
                 StdioMcpServer(
-                    Endpoint(),
+                    JsonRpcMcpEndpoint(
+                        service,
+                        session_task_id="closeout-task",
+                    ),
                     max_workers=4,
                     process_lifecycle=lifecycle,
                     lifecycle_poll_seconds=0.01,
@@ -981,43 +989,72 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 """
             )
             child = subprocess.Popen(
-                [sys.executable, "-c", child_program, str(lifecycle_root)],
+                [
+                    sys.executable,
+                    "-c",
+                    child_program,
+                    str(lifecycle_root),
+                    str(started_path),
+                ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env={**os.environ, "PYTHONPATH": str(RUNTIME_ROOT)},
                 text=True,
             )
-            requests = "\n".join(
-                json.dumps(message, separators=(",", ":"))
-                for message in (
+            assert child.stdin is not None
+            child.stdin.write(
+                json.dumps(
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
                         "method": "tools/call",
-                        "params": {"name": "execute", "arguments": {}},
+                        "params": {
+                            "name": "execute",
+                            "arguments": {
+                                "kind": "start",
+                                "target": "192.0.2.10",
+                                "intent": "diagnosis-only",
+                                "entry_operation": "debug_run",
+                                "entry_arguments": {},
+                                "deadline": 2,
+                            },
+                        },
                     },
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "tools/call",
-                        "params": {"name": "execute", "arguments": {}},
-                    },
-                    {
-                        "jsonrpc": "2.0",
-                        "method": "notifications/openubmc-task-complete",
-                        "params": {},
-                    },
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 3,
-                        "method": "tools/list",
-                        "params": {},
-                    },
+                    separators=(",", ":"),
                 )
-            ) + "\n"
+                + "\n"
+            )
+            child.stdin.flush()
+            deadline = time.monotonic() + 2
+            while not started_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if not started_path.exists():
+                child.terminate()
+                stdout, stderr = child.communicate(timeout=5)
+                self.fail(
+                    "real Runtime service did not start the request: "
+                    f"stdout={stdout!r}, stderr={stderr!r}"
+                )
+            for message in (
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/openubmc-task-complete",
+                    "params": {},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/list",
+                    "params": {},
+                },
+            ):
+                child.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+            child.stdin.flush()
+            child.stdin.close()
+            child.stdin = None
 
-            stdout, stderr = child.communicate(requests, timeout=5)
+            stdout, stderr = child.communicate(timeout=5)
             responses = {
                 document["id"]: document
                 for document in (
@@ -1026,9 +1063,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
             }
             records = sorted(lifecycle_root.glob("*.json"))
             self.assertEqual(child.returncode, 0, stderr)
-            self.assertEqual(set(responses), {1, 2, 3})
-            self.assertEqual(responses[1]["result"], {"completed": True})
-            self.assertEqual(responses[2]["result"], {"completed": True})
+            self.assertEqual(set(responses), {1, 3})
+            self.assertFalse(responses[1]["result"]["isError"], responses[1])
             self.assertEqual(responses[3]["error"]["code"], -32000)
             self.assertEqual(len(records), 1)
             recorded = json.loads(records[0].read_text(encoding="utf-8"))

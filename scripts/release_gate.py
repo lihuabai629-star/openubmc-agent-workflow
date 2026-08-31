@@ -31,6 +31,7 @@ from scripts.codex_adoption_contract import (  # noqa: E402
 )
 from scripts.formal_identity import (  # noqa: E402
     identity_argument,
+    normalize_codex_identity,
     normalize_identity,
 )
 
@@ -455,10 +456,7 @@ def execute_release_gate(
         model_identity,
         label="model identity",
     )
-    selected_codex_identity = normalize_identity(
-        codex_identity,
-        label="Codex identity",
-    )
+    selected_codex_identity = normalize_codex_identity(codex_identity)
     clean_home = work_root / "clean-install-home"
     lifecycle_home = work_root / "lifecycle-home"
     results: list[dict[str, object]] = []

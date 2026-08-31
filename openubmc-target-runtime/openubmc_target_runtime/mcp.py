@@ -2207,7 +2207,12 @@ class RuntimeMcpService:
         return self._runtime.agent.semantic_runtime
 
     def _close_task_resource(self, task: TaskT) -> None:
-        self.backend.close_task(task)
+        task_id = str(getattr(task, "task_id", "")).strip()
+        try:
+            self.backend.close_task(task)
+        finally:
+            if task_id:
+                self._runtime.operator.unbind_task(task_id)
 
     def _maintain_context_if_due(self) -> None:
         now = time.monotonic()
@@ -3349,7 +3354,8 @@ class RuntimeMcpService:
 
     def complete_task(self, task_id: str) -> bool:
         completed = self.registry.complete(task_id)
-        self._runtime.operator.unbind_task(task_id)
+        if not completed:
+            self._runtime.operator.unbind_task(task_id)
         return completed
 
     def error_result(

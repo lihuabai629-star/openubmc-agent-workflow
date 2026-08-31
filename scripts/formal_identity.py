@@ -7,6 +7,9 @@ from collections.abc import Mapping
 import json
 
 
+PINNED_CODEX_VERSION = "codex-cli 0.151.0"
+
+
 def normalize_identity(
     value: Mapping[str, object] | None,
     *,
@@ -24,6 +27,24 @@ def normalize_identity(
     if not isinstance(decoded, dict) or not decoded:
         raise ValueError(required_message or f"{label} must be a non-empty object")
     return decoded
+
+
+def normalize_codex_identity(
+    value: Mapping[str, object] | None,
+    *,
+    required_message: str | None = None,
+) -> dict[str, object]:
+    identity = normalize_identity(
+        value,
+        label="Codex identity",
+        required_message=required_message,
+    )
+    if identity.get("version") != PINNED_CODEX_VERSION:
+        raise ValueError(
+            "Codex identity version must match the pinned process: "
+            f"{PINNED_CODEX_VERSION}"
+        )
+    return identity
 
 
 def identity_argument(value: str) -> dict[str, object]:
