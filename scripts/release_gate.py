@@ -26,6 +26,9 @@ from scripts.release_gate_contract import (  # noqa: E402
     evidence_fingerprint,
     verify_release_gate_report,
 )
+from scripts.codex_adoption_contract import (  # noqa: E402
+    verify_codex_adoption_report,
+)
 
 from openubmc_target_runtime.release import (  # noqa: E402
     ReleaseLockError,
@@ -112,6 +115,27 @@ def _artifact(path: Path) -> dict[str, object] | None:
         "sha256": hashlib.sha256(content).hexdigest(),
         "size_bytes": len(content),
     }
+
+
+def _load_codex_adoption_evidence(
+    path: Path,
+    *,
+    expected_source_commit: str,
+) -> dict[str, object]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"Codex Adoption Qualification evidence is unavailable: {error}"
+        ) from error
+    if not isinstance(document, dict):
+        raise ValueError("Codex Adoption Qualification evidence must be an object")
+    verify_codex_adoption_report(
+        document,
+        expected_source_commit=expected_source_commit,
+        require_ready=True,
+    )
+    return document
 
 
 def _resolve_commit(workspace: Path, ref: str) -> str:
@@ -260,6 +284,7 @@ def gate_commands(
     current_upgrade = tuple(_install_command(current_ref, lifecycle_home))
     installer = str(_installed_installer(lifecycle_home))
     qualification_output = lifecycle_home.parent / "runtime-qualification.json"
+    adoption_output = lifecycle_home.parent / "codex-adoption-qualification.json"
     selected_ab_evidence = (
         ab_evidence
         if ab_evidence is not None
@@ -357,6 +382,19 @@ def gate_commands(
             ),
         ),
         (
+            "codex_adoption_qualification",
+            (
+                (
+                    sys.executable,
+                    str(ROOT / "scripts" / "codex_adoption_qualification.py"),
+                    "--source-commit",
+                    source_commit,
+                    "--output",
+                    str(adoption_output),
+                ),
+            ),
+        ),
+        (
             "agent_gateway_ab_evidence",
             (
                 (
@@ -392,6 +430,7 @@ def execute_release_gate(
     lifecycle_home = work_root / "lifecycle-home"
     results: list[dict[str, object]] = []
     blocked = False
+    adoption_document: dict[str, object] | None = None
     candidate = _resolve_release_candidate(workspace, current_ref)
     resolved_source_commit = candidate.source_commit
     resolved_release_commit = candidate.release_commit
@@ -465,6 +504,16 @@ def execute_release_gate(
             if completed.returncode:
                 blocked = True
                 break
+        if not blocked and name == "codex_adoption_qualification":
+            try:
+                adoption_document = _load_codex_adoption_evidence(
+                    work_root / "codex-adoption-qualification.json",
+                    expected_source_commit=resolved_source_commit,
+                )
+            except ValueError as error:
+                blocked = True
+                if command_results:
+                    command_results[-1]["stderr_tail"] = _tail(str(error))
         results.append(
             {
                 "name": name,
@@ -480,6 +529,20 @@ def execute_release_gate(
     qualification_artifact = _artifact(qualification_path)
     if qualification_artifact is not None:
         artifacts["runtime_qualification"] = qualification_artifact
+    adoption_artifact = _artifact(work_root / "codex-adoption-qualification.json")
+    if adoption_artifact is not None and adoption_document is not None:
+        adoption_artifact.update(
+            {
+                "schema": adoption_document["schema"],
+                "source_commit": adoption_document["source_commit"],
+                "evidence_digest": adoption_document["evidence_digest"],
+                "qualified": adoption_document["qualified"],
+                "maintenance_checkpoint_ready": adoption_document[
+                    "maintenance_checkpoint_ready"
+                ],
+            }
+        )
+        artifacts["codex_adoption_qualification"] = adoption_artifact
     github_ci_artifact = _artifact(work_root / "github-ci-evidence.json")
     if github_ci_artifact is not None:
         artifacts["github_ci"] = github_ci_artifact
@@ -502,7 +565,12 @@ def execute_release_gate(
         "artifacts": artifacts,
     }
     report["evidence_digest"] = evidence_fingerprint(report)
-    verify_release_gate_report(report)
+    verify_release_gate_report(
+        report,
+        required_artifacts=("codex_adoption_qualification",)
+        if promotable
+        else (),
+    )
     return report
 
 

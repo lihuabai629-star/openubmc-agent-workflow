@@ -63,7 +63,8 @@ are maintained in the following records:
 - [Domain Pack authoring contract](docs/domain-pack-authoring.md)
 - [Runtime-internal model planning prototype](docs/model-planning-prototype.md)
 - [Product closeout qualification](docs/product-closeout-qualification.md)
-- [Continuous closeout qualification](docs/continuous-closeout-qualification.md)
+- [Codex Adoption Qualification](docs/codex-adoption-qualification.md)
+- [Continuous closeout evidence collector](docs/continuous-closeout-qualification.md)
 
 ## Credentials
 

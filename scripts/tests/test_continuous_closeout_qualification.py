@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -16,6 +17,13 @@ SCRIPT = ROOT / "scripts" / "continuous_closeout_qualification.py"
 
 
 def passed_product_client_run(name: str) -> dict[str, object]:
+    launcher_identity = {
+        "schema": "openubmc-agent-workflow.codex-launcher-identity.v1",
+        "runtime_api": "openubmc.target-runtime.v1",
+        "runtime_content_digest": "sha256:" + "f" * 64,
+        "source_commit": "a" * 40,
+        "entrypoint": "openubmc-debug/scripts/target_runtime_mcp.py",
+    }
     return {
         "status": "passed",
         "client": name,
@@ -27,13 +35,165 @@ def passed_product_client_run(name: str) -> dict[str, object]:
         "declared_mcp": True,
         "mcp_registration_verified": True,
         "runtime_launcher_verified": True,
+        "launcher_state_verified": True,
+        "launcher_identity": launcher_identity,
+        "launcher_identity_digest": qualification.evidence_fingerprint(
+            launcher_identity
+        ),
         "runtime_invocation": "client-configured-mcp-command",
-        "protocol_exchange": ["initialize", "tools/list"],
+        "protocol_exchange": [
+            "initialize",
+            "tools/list",
+            "tools/call:execute",
+        ],
         "tools": ["execute", "observe"],
+        "source_commit": "a" * 40,
+        "installation": {
+            "ok": True,
+            "clients": ["codex"],
+            "operational_ready": True,
+            "release_identity_verified": True,
+            "evaluation_ready": True,
+            "source": {
+                "mode": "managed",
+                "ref_kind": "commit",
+                "requested_ref": "3" * 40,
+                "resolved_commit": "3" * 40,
+                "current_commit": "3" * 40,
+                "dirty": False,
+            },
+            "release": {
+                "schema": "openubmc-agent-workflow.release-lock.v1",
+                "immutable": True,
+                "verified": True,
+                "trust_mode": "verified-immutable-source",
+                "release_version": "2.0.2",
+                "source_commit": "a" * 40,
+                "lock_digest": "sha256:" + "c" * 64,
+                "source_tree_digest": "sha256:" + "d" * 64,
+                "workflow_digest": "sha256:" + "e" * 64,
+                "skill_digests": {
+                    "openubmc-debug": "sha256:" + "1" * 64,
+                },
+                "runtime": {
+                    "api_version": "openubmc.target-runtime.v1",
+                    "content_digest": "sha256:" + "f" * 64,
+                },
+            },
+        },
+        "runtime_api": "openubmc.target-runtime.v1",
+        "runtime_content_digest": "sha256:" + "f" * 64,
+        "workflow_exchange": {
+            "tool": "execute",
+            "state": "preflight_failed",
+            "classification": "preflight_failure",
+            "error_field": "run_id",
+            "canonical_retry": {
+                "kind": "resume",
+                "run_id": "<current Run ID>",
+            },
+            "is_error": True,
+        },
     }
 
 
 class ContinuousCloseoutQualificationTests(unittest.TestCase):
+    def test_candidate_release_commit_is_deterministic(self) -> None:
+        source_commit = qualification.resolve_source_commit(ROOT)
+        with (
+            tempfile.TemporaryDirectory() as first_raw,
+            tempfile.TemporaryDirectory() as second_raw,
+        ):
+            first = qualification._prepare_candidate_release(
+                Path(first_raw), source_commit
+            )
+            second = qualification._prepare_candidate_release(
+                Path(second_raw), source_commit
+            )
+
+        self.assertEqual(first.release_commit, second.release_commit)
+        self.assertEqual(first.release, second.release)
+
+    def test_candidate_release_does_not_depend_on_github_remote_name(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as clone_raw,
+            tempfile.TemporaryDirectory() as qualification_raw,
+        ):
+            isolated = Path(clone_raw) / "repository"
+            subprocess.run(
+                ["git", "clone", "--quiet", "--no-local", str(ROOT), str(isolated)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            github_refs = subprocess.run(
+                ["git", "for-each-ref", "--format=%(refname)", "refs/remotes/github"],
+                cwd=isolated,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(github_refs, "")
+            tree = subprocess.run(
+                ["git", "rev-parse", "HEAD^{tree}"],
+                cwd=isolated,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            commit_environment = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Qualification Test",
+                "GIT_AUTHOR_EMAIL": "qualification@example.invalid",
+                "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
+                "GIT_COMMITTER_NAME": "Qualification Test",
+                "GIT_COMMITTER_EMAIL": "qualification@example.invalid",
+                "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
+            }
+            historical_commit = subprocess.run(
+                ["git", "commit-tree", tree],
+                cwd=isolated,
+                check=True,
+                input="remote-only historical evidence\n",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=commit_environment,
+            ).stdout.strip()
+            subprocess.run(
+                [
+                    "git",
+                    "update-ref",
+                    "refs/remotes/origin/historical-evidence",
+                    historical_commit,
+                ],
+                cwd=isolated,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            source_commit = qualification.resolve_source_commit(isolated)
+
+            with mock.patch.object(qualification, "ROOT", isolated):
+                candidate = qualification._prepare_candidate_release(
+                    Path(qualification_raw),
+                    source_commit,
+                )
+            bundle_heads = subprocess.run(
+                ["git", "bundle", "list-heads", str(candidate.bundle)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout
+
+        self.assertEqual(candidate.release["source_commit"], source_commit)
+        self.assertIn(historical_commit, bundle_heads)
+
     def test_qualification_integrates_product_client_isolation_lifecycle_and_projection(
         self,
     ) -> None:
@@ -79,9 +239,19 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             run["runtime_invocation"], "client-configured-mcp-command"
         )
         self.assertEqual(
-            run["protocol_exchange"], ["initialize", "tools/list"]
+            run["protocol_exchange"],
+            ["initialize", "tools/list", "tools/call:execute"],
+        )
+        self.assertEqual(
+            run["workflow_exchange"]["state"], "preflight_failed"
         )
         self.assertEqual(run["tools"], ["execute", "observe"])
+        self.assertTrue(run["installation"]["evaluation_ready"])
+        self.assertTrue(run["installation"]["release_identity_verified"])
+        self.assertEqual(
+            run["installation"]["release"]["trust_mode"],
+            "verified-immutable-source",
+        )
         self.assertTrue(
             any("codex_product_client" in item for item in run["tests"])
         )
@@ -128,9 +298,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                             "mcp": True,
                         }
                     },
-                    "evaluation_harnesses": {
-                        "dsh": {"role": "evaluation-harness"}
-                    },
+                    "evaluation_harnesses": {},
                 },
             ),
             mock.patch.object(
@@ -141,9 +309,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_product_client_run",
-                side_effect=lambda name, tests, contract: passed_product_client_run(
-                    name
-                ),
+                side_effect=lambda name, tests, contract, source_commit: passed_product_client_run(name),
             ),
             mock.patch.object(
                 qualification,
@@ -180,6 +346,8 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             report = qualification.qualify()
 
         self.assertTrue(report["qualified"])
+        self.assertEqual(report["client_matrix"]["status"], "passed")
+        self.assertEqual(report["client_matrix"]["evaluation_harnesses"], [])
         run = report["client_matrix"]["runs"]["codex"]
         self.assertEqual(run["client"], "codex")
         self.assertTrue(run["adapter_available"])
@@ -256,9 +424,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             mock.patch.object(
                 qualification,
                 "_product_client_run",
-                side_effect=lambda name, tests, contract: passed_product_client_run(
-                    name
-                ),
+                side_effect=lambda name, tests, contract, source_commit: passed_product_client_run(name),
             ),
             mock.patch.object(
                 qualification,

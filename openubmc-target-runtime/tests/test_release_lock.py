@@ -106,6 +106,7 @@ class ReleaseLockTests(unittest.TestCase):
             identity["runtime"]["content_digest"],
             lock["runtime"]["content_digest"],
         )
+        self.assertEqual(identity["workflow_digest"], lock["workflow_digest"])
         self.assertEqual(len(identity["skill_digests"]), 11)
 
     def test_incompatible_or_tampered_lock_fails_before_install(self) -> None:

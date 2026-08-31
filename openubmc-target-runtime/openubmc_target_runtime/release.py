@@ -377,6 +377,7 @@ def verify_release_lock(
         "release_version": document["release_version"],
         "source_commit": source_commit,
         "source_tree_digest": document["source_tree_digest"],
+        "workflow_digest": document["workflow_digest"],
         "lock_digest": document["lock_digest"],
         "runtime": dict(document["runtime"]),
         "schemas": dict(document["schemas"]),

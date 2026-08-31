@@ -25,6 +25,138 @@ SOURCE_COMMIT = "a" * 40
 RELEASE_COMMIT = "b" * 40
 
 
+def codex_adoption_report(
+    source_commit: str = SOURCE_COMMIT,
+) -> dict[str, object]:
+    launcher_identity = {
+        "schema": "openubmc-agent-workflow.codex-launcher-identity.v1",
+        "runtime_api": "openubmc.target-runtime.v1",
+        "runtime_content_digest": "sha256:" + "5" * 64,
+        "source_commit": source_commit,
+        "entrypoint": "openubmc-debug/scripts/target_runtime_mcp.py",
+    }
+    report: dict[str, object] = {
+        "schema": "openubmc-agent-workflow.codex-adoption-qualification.v1",
+        "source_commit": source_commit,
+        "qualified": True,
+        "maintenance_checkpoint_ready": True,
+        "maintenance_checkpoint_blockers": [],
+        "failed_dimensions": [],
+        "dimensions": {
+            "installation_identity": {
+                "status": "passed",
+                "failure_codes": [],
+                "source_clean": True,
+                "release_version": "2.0.2",
+                "source_commit": source_commit,
+                "release_commit": RELEASE_COMMIT,
+                "lock_digest": "sha256:" + "1" * 64,
+                "source_tree_digest": "sha256:" + "2" * 64,
+                "workflow_digest": "sha256:" + "3" * 64,
+                "clients": ["codex"],
+                "source_mode": "managed",
+                "trust_mode": "verified-immutable-source",
+                "operational_ready": True,
+                "release_identity_verified": True,
+                "evaluation_ready": True,
+                "skill_digests": {
+                    "openubmc-debug": "sha256:" + "4" * 64,
+                },
+                "runtime_api": "openubmc.target-runtime.v1",
+                "runtime_content_digest": "sha256:" + "5" * 64,
+            },
+            "codex_mcp": {
+                "status": "passed",
+                "failure_codes": [],
+                "configured": True,
+                "registration_verified": True,
+                "runtime_launcher_verified": True,
+                "runtime_invocation": "client-configured-mcp-command",
+                "protocol_exchange": [
+                    "initialize",
+                    "tools/list",
+                    "tools/call:execute",
+                ],
+                "tools": ["execute", "observe"],
+                "identity_bound": True,
+                "installed_source_commit": source_commit,
+                "runtime_api": "openubmc.target-runtime.v1",
+                "runtime_content_digest": "sha256:" + "5" * 64,
+                "launcher_state_verified": True,
+                "launcher_identity": launcher_identity,
+                "launcher_identity_digest": release_gate.evidence_fingerprint(
+                    launcher_identity
+                ),
+                "workflow_exchange": {
+                    "tool": "execute",
+                    "state": "preflight_failed",
+                    "classification": "preflight_failure",
+                    "error_field": "run_id",
+                    "canonical_retry": {
+                        "kind": "resume",
+                        "run_id": "<current Run ID>",
+                    },
+                    "is_error": True,
+                },
+            },
+            "product_contract": {
+                "status": "passed",
+                "returncode": 0,
+                "tests": ["qualification.product"],
+            },
+            "task_matrix": {
+                "status": "passed",
+                "correctness_primary": True,
+                "completion_primary": True,
+                "terminal_contract_primary": True,
+                "groups": {"source_only": {"status": "passed"}},
+            },
+            "projection": {
+                "status": "passed",
+                "correctness_primary": True,
+                "repeated_reference": True,
+                "full_bytes": 2,
+                "reference_bytes": 1,
+                "saved_bytes": 1,
+            },
+            "lifecycle": {
+                "status": "passed",
+                "closeout": {
+                    "status": "passed",
+                    "task_closeout_ready": True,
+                    "summary": {
+                        "active_requests": 0,
+                        "live_processes": 0,
+                        "confirmed_live_orphans": 0,
+                        "unattributed_live_processes": 0,
+                    },
+                },
+            },
+        },
+        "provenance": {
+            "source": {
+                "commit": source_commit,
+                "qualification_commit": source_commit,
+                "continuous_closeout_digest": "sha256:" + "7" * 64,
+            },
+            "model": None,
+            "codex": None,
+        },
+        "external_evaluation": {
+            "blocking": False,
+            "harnesses": ["dsh"],
+            "isolation": {"status": "failed"},
+            "required_for_maintenance_checkpoint": False,
+        },
+        "release_gate": {
+            "evidence_type": "codex-adoption-qualification",
+            "eligible": True,
+        },
+    }
+    report["evidence_digest"] = release_gate.evidence_fingerprint(report)
+    return report
+
+
 @contextmanager
 def resolved_candidate(
     requested_ref: str,
@@ -151,6 +283,13 @@ class ReleaseGateTests(unittest.TestCase):
         def succeed(command, *, cwd):
             self.assertTrue(cwd.is_dir())
             calls.append(tuple(command))
+            if "codex_adoption_qualification.py" in " ".join(command):
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(codex_adoption_report()),
+                    encoding="utf-8",
+                )
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
@@ -181,11 +320,12 @@ class ReleaseGateTests(unittest.TestCase):
                 "old_schema_compatibility",
                 "domain_pack_conformance",
                 "runtime_safety_qualification",
+                "codex_adoption_qualification",
                 "agent_gateway_ab_evidence",
             ],
         )
         self.assertTrue(all(item["status"] == "passed" for item in report["gates"]))
-        self.assertEqual(len(calls), 14)
+        self.assertEqual(len(calls), 15)
         github_ci = calls[0]
         self.assertIn("github_ci_evidence.py", github_ci[1])
         self.assertEqual(
@@ -222,7 +362,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertFalse(report["promotable"])
         self.assertEqual(
             [item["status"] for item in report["gates"]],
-            ["passed", "passed", "failed"] + ["skipped"] * 10,
+            ["passed", "passed", "failed"] + ["skipped"] * 11,
         )
         self.assertEqual(call_count, 4)
 
@@ -250,6 +390,13 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("--output", qualification)
         self.assertEqual(
             qualification[qualification.index("--source-commit") + 1],
+            "a" * 40,
+        )
+        adoption = gates["codex_adoption_qualification"][0]
+        self.assertIn("codex_adoption_qualification.py", adoption[1])
+        self.assertIn("--output", adoption)
+        self.assertEqual(
+            adoption[adoption.index("--source-commit") + 1],
             "a" * 40,
         )
         ab_evidence = gates["agent_gateway_ab_evidence"][0]
@@ -519,13 +666,20 @@ class ReleaseGateTests(unittest.TestCase):
                     "release-ref",
                 )
 
-    def test_release_report_digests_runtime_qualification_evidence(self) -> None:
+    def test_release_report_digests_qualification_evidence(self) -> None:
         def succeed(command, *, cwd):
             if "runtime_qualification.py" in " ".join(command):
                 output = Path(command[command.index("--output") + 1])
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(
                     json.dumps({"promotable": True, "violations": {}}),
+                    encoding="utf-8",
+                )
+            if "codex_adoption_qualification.py" in " ".join(command):
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(codex_adoption_report()),
                     encoding="utf-8",
                 )
             return subprocess.CompletedProcess(command, 0, "ok", "")
@@ -541,9 +695,132 @@ class ReleaseGateTests(unittest.TestCase):
                 executor=succeed,
             )
 
-        artifact = report["artifacts"]["runtime_qualification"]
-        self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
-        self.assertGreater(artifact["size_bytes"], 0)
+        for name in ("runtime_qualification", "codex_adoption_qualification"):
+            with self.subTest(name=name):
+                artifact = report["artifacts"][name]
+                self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
+                self.assertGreater(artifact["size_bytes"], 0)
+
+        adoption_artifact = report["artifacts"]["codex_adoption_qualification"]
+        self.assertEqual(
+            adoption_artifact["schema"],
+            "openubmc-agent-workflow.codex-adoption-qualification.v1",
+        )
+        self.assertEqual(adoption_artifact["source_commit"], SOURCE_COMMIT)
+        self.assertTrue(adoption_artifact["qualified"])
+        self.assertTrue(adoption_artifact["maintenance_checkpoint_ready"])
+        self.assertEqual(
+            adoption_artifact["evidence_digest"],
+            codex_adoption_report()["evidence_digest"],
+        )
+
+    def test_release_gate_rejects_malformed_codex_adoption_evidence(self) -> None:
+        def succeed(command, *, cwd):
+            if "codex_adoption_qualification.py" in " ".join(command):
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(
+                        {
+                            "qualified": True,
+                            "maintenance_checkpoint_ready": True,
+                            "failed_dimensions": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "HEAD"
+        ):
+            report = release_gate.execute_release_gate(
+                current_ref="HEAD",
+                previous_ref="v1.1.1",
+                workspace=Path.cwd(),
+                work_root=Path(directory),
+                executor=succeed,
+            )
+
+        gates = {item["name"]: item for item in report["gates"]}
+        self.assertFalse(report["promotable"])
+        self.assertEqual(
+            gates["codex_adoption_qualification"]["status"], "failed"
+        )
+        self.assertIn(
+            "schema",
+            gates["codex_adoption_qualification"]["commands"][0][
+                "stderr_tail"
+            ],
+        )
+
+    def test_release_gate_rejects_digest_valid_skeletal_adoption_report(
+        self,
+    ) -> None:
+        skeletal = {
+            "schema": "openubmc-agent-workflow.codex-adoption-qualification.v1",
+            "source_commit": SOURCE_COMMIT,
+            "qualified": True,
+            "maintenance_checkpoint_ready": True,
+            "maintenance_checkpoint_blockers": [],
+            "failed_dimensions": [],
+            "dimensions": {
+                name: {"status": "passed"}
+                for name in (
+                    "installation_identity",
+                    "codex_mcp",
+                    "product_contract",
+                    "task_matrix",
+                    "projection",
+                    "lifecycle",
+                )
+            },
+            "release_gate": {
+                "evidence_type": "codex-adoption-qualification",
+                "eligible": True,
+            },
+        }
+        skeletal["evidence_digest"] = release_gate.evidence_fingerprint(
+            skeletal
+        )
+
+        with self.assertRaisesRegex(ValueError, "installation identity"):
+            release_gate.verify_codex_adoption_report(
+                skeletal,
+                expected_source_commit=SOURCE_COMMIT,
+                require_ready=True,
+            )
+
+    def test_adoption_verifier_rejects_failed_dimension_missing_from_checkpoint_blockers(
+        self,
+    ) -> None:
+        report = codex_adoption_report()
+        report["dimensions"]["codex_mcp"]["status"] = "failed"
+        report["dimensions"]["codex_mcp"]["failure_codes"] = [
+            "agent_tools_invalid"
+        ]
+        report["failed_dimensions"] = ["codex_mcp"]
+        report["qualified"] = False
+        report["evidence_digest"] = release_gate.evidence_fingerprint(
+            {key: value for key, value in report.items() if key != "evidence_digest"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "checkpoint blockers"):
+            release_gate.verify_codex_adoption_report(report)
+
+    def test_adoption_verifier_reuses_launcher_identity_contract(self) -> None:
+        report = codex_adoption_report()
+        launcher = report["dimensions"]["codex_mcp"]["launcher_identity"]
+        launcher["schema"] = "invalid-launcher-schema"
+        report["dimensions"]["codex_mcp"]["launcher_identity_digest"] = (
+            release_gate.evidence_fingerprint(launcher)
+        )
+        report["evidence_digest"] = release_gate.evidence_fingerprint(
+            {key: value for key, value in report.items() if key != "evidence_digest"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "MCP evidence"):
+            release_gate.verify_codex_adoption_report(report)
 
     def test_new_reports_require_identity_while_v2_evidence_remains_readable(
         self,
@@ -704,6 +981,7 @@ class ReleaseGateTests(unittest.TestCase):
                 "${{ runner.temp }}/release-gate.json",
                 "${{ runner.temp }}/release-gate-work/github-ci-evidence.json",
                 "${{ runner.temp }}/release-gate-work/runtime-qualification.json",
+                "${{ runner.temp }}/release-gate-work/codex-adoption-qualification.json",
             },
         )
         self.assertEqual(

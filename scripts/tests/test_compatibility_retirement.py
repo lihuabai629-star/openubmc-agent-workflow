@@ -69,6 +69,7 @@ def release_gate(source_commit: str) -> dict[str, object]:
         "old_schema_compatibility",
         "domain_pack_conformance",
         "runtime_safety_qualification",
+        "codex_adoption_qualification",
         "agent_gateway_ab_evidence",
     ]
     environment = {
@@ -108,11 +109,21 @@ def release_gate(source_commit: str) -> dict[str, object]:
             }
             for name, character in (
                 ("runtime_qualification", "a"),
-                ("github_ci", "b"),
-                ("agent_gateway_ab", "c"),
+                ("codex_adoption_qualification", "b"),
+                ("github_ci", "c"),
+                ("agent_gateway_ab", "d"),
             )
         },
     }
+    report["artifacts"]["codex_adoption_qualification"].update(
+        {
+            "schema": "openubmc-agent-workflow.codex-adoption-qualification.v1",
+            "source_commit": source_commit,
+            "evidence_digest": "sha256:" + "e" * 64,
+            "qualified": True,
+            "maintenance_checkpoint_ready": True,
+        }
+    )
     report["evidence_digest"] = digest(report)
     return report
 

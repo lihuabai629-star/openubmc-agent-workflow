@@ -211,7 +211,7 @@ class WorkflowStageReportingTests(unittest.TestCase):
                 "Python compile",
                 "Node dependencies: openubmc-kb-mcp",
                 "Runtime diagnosis chain qualification",
-                "Continuous closeout qualification",
+                "Codex Adoption Qualification",
                 "Python tests: alpha/tests",
                 "Python tests: beta/tests",
                 "Node tests: openubmc-kb-mcp",

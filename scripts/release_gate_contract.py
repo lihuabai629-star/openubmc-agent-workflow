@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 from scripts.evidence_report import evidence_fingerprint
+from scripts.codex_adoption_contract import SCHEMA as CODEX_ADOPTION_SCHEMA
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,10 +33,12 @@ REQUIRED_RELEASE_GATES = (
     "old_schema_compatibility",
     "domain_pack_conformance",
     "runtime_safety_qualification",
+    "codex_adoption_qualification",
     "agent_gateway_ab_evidence",
 )
 RETIREMENT_RELEASE_ARTIFACTS = (
     "runtime_qualification",
+    "codex_adoption_qualification",
     "github_ci",
     "agent_gateway_ab",
 )
@@ -55,6 +58,31 @@ def _verify_artifact(name: str, value: object) -> None:
         or size_bytes <= 0
     ):
         raise ValueError(f"Release Gate {name} evidence is incomplete")
+
+
+def _verify_codex_adoption_artifact(
+    value: object,
+    *,
+    expected_source_commit: str,
+) -> None:
+    if not isinstance(value, Mapping):
+        raise ValueError("Release Gate lacks codex_adoption_qualification evidence")
+    evidence_digest = str(value.get("evidence_digest", ""))
+    if (
+        value.get("schema") != CODEX_ADOPTION_SCHEMA
+        or value.get("source_commit") != expected_source_commit
+        or len(evidence_digest) != 71
+        or not evidence_digest.startswith("sha256:")
+        or any(
+            character not in "0123456789abcdef"
+            for character in evidence_digest[7:]
+        )
+        or value.get("qualified") is not True
+        or value.get("maintenance_checkpoint_ready") is not True
+    ):
+        raise ValueError(
+            "Release Gate codex_adoption_qualification binding is invalid"
+        )
 
 
 def _verify_command(name: str, value: object, *, passed: bool) -> None:
@@ -124,6 +152,12 @@ def verify_release_gate_report(
         raise ValueError("Release Gate artifacts are unavailable")
     for artifact_name, artifact in artifacts.items():
         _verify_artifact(str(artifact_name), artifact)
+    adoption_artifact = artifacts.get("codex_adoption_qualification")
+    if adoption_artifact is not None:
+        _verify_codex_adoption_artifact(
+            adoption_artifact,
+            expected_source_commit=source_commit,
+        )
     for artifact_name in required_artifacts:
         if artifact_name not in artifacts:
             raise ValueError(f"Release Gate lacks {artifact_name} evidence")
@@ -159,6 +193,11 @@ def verify_release_gate_report(
     missing = [name for name in required_gates if name not in gates]
     if missing:
         raise ValueError("Release Gate is incomplete: " + ", ".join(missing))
+    if (
+        gates.get("codex_adoption_qualification") == "passed"
+        and "codex_adoption_qualification" not in artifacts
+    ):
+        raise ValueError("Release Gate lacks codex_adoption_qualification evidence")
     if require_promotable:
         failed = [name for name, status in gates.items() if status != "passed"]
         if failed:
