@@ -130,6 +130,7 @@ jobs:
             ${{ runner.temp }}/release-gate.json
             ${{ runner.temp }}/release-gate-work/github-ci-evidence.json
             ${{ runner.temp }}/release-gate-work/runtime-qualification.json
+            ${{ runner.temp }}/release-gate-work/codex-adoption-qualification.json
           if-no-files-found: error
 
   promote:

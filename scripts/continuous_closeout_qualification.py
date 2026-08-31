@@ -23,6 +23,7 @@ from scripts.evidence_report import (  # noqa: E402
     evidence_fingerprint,
     resolve_source_commit,
 )
+from scripts.codex_adoption_contract import product_client_failures  # noqa: E402
 from scripts.product_closeout_qualification import (  # noqa: E402
     qualify as qualify_product_closeout,
 )
@@ -31,7 +32,10 @@ from scripts.product_closeout_ingestion import (  # noqa: E402
 )
 from scripts.mcp_process_lifecycle import summarize as summarize_mcp_records  # noqa: E402
 from scripts.runtime_stability import qualify_dual_projection  # noqa: E402
-from openubmc_target_runtime import inspect_mcp_process_records  # noqa: E402
+from openubmc_target_runtime import (  # noqa: E402
+    build_release_lock,
+    inspect_mcp_process_records,
+)
 
 
 SCHEMA = "openubmc-agent-workflow.continuous-closeout-qualification.v1"
@@ -269,13 +273,128 @@ def _product_client_run(
     contract: Mapping[str, object],
 ) -> dict[str, object]:
     with tempfile.TemporaryDirectory() as raw:
-        evidence_path = Path(raw) / f"{name}-product-client.json"
+        qualification_root = Path(raw)
+        evidence_path = qualification_root / f"{name}-product-client.json"
+        source_commit = resolve_source_commit(ROOT)
+        candidate_repository = qualification_root / "candidate-release"
+        try:
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--quiet",
+                    "--no-checkout",
+                    "--no-hardlinks",
+                    str(ROOT),
+                    str(candidate_repository),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "fetch",
+                    "--quiet",
+                    str(ROOT),
+                    "+refs/remotes/github/*:refs/remotes/github/*",
+                    "+refs/tags/*:refs/tags/*",
+                ],
+                cwd=candidate_repository,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for command in (
+                ("git", "checkout", "--quiet", "--detach", source_commit),
+                ("git", "config", "user.name", "Workflow Qualification"),
+                (
+                    "git",
+                    "config",
+                    "user.email",
+                    "workflow-qualification@example.invalid",
+                ),
+            ):
+                subprocess.run(
+                    command,
+                    cwd=candidate_repository,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            release = build_release_lock(
+                candidate_repository,
+                source_commit=source_commit,
+            )
+            (candidate_repository / "release-lock.json").write_text(
+                json.dumps(release, ensure_ascii=True, indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "add", "release-lock.json"],
+                cwd=candidate_repository,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "--quiet", "-m", "qualification release lock"],
+                cwd=candidate_repository,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            release_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=candidate_repository,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                [
+                    "git",
+                    "update-ref",
+                    "refs/heads/qualification-release",
+                    release_commit,
+                ],
+                cwd=candidate_repository,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            candidate_bundle = qualification_root / "candidate-release.bundle"
+            subprocess.run(
+                ["git", "bundle", "create", str(candidate_bundle), "--all"],
+                cwd=candidate_repository,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError, ValueError) as error:
+            return {
+                "status": "failed",
+                "client": name,
+                "tests": list(tests),
+                "failure_tail": f"candidate release is unavailable: {error}",
+            }
         result = _run_tests(
             tests,
             cwd=ROOT,
             environment={
                 "OPENUBMC_PRODUCT_CLIENT_EVIDENCE": str(evidence_path),
-                "OPENUBMC_PRODUCT_CLIENT_SOURCE_COMMIT": resolve_source_commit(ROOT),
+                "OPENUBMC_PRODUCT_CLIENT_REPO_URL": str(candidate_bundle),
+                "OPENUBMC_PRODUCT_CLIENT_RELEASE_COMMIT": release_commit,
             },
         )
         if result.get("status") != "passed":
@@ -298,49 +417,22 @@ def _product_client_run(
             "tests": list(tests),
             "failure_tail": "product client evidence identity is invalid",
         }
-    declared_mcp = contract.get("mcp") is True
-    adapter_available = evidence.get("adapter_available") is True
-    registration_verified = evidence.get("mcp_registration_verified") is True
-    tools = evidence.get("tools")
-    workflow_exchange = evidence.get("workflow_exchange")
-    launcher_sha256 = str(evidence.get("launcher_sha256", ""))
-    evidence_valid = all(
-        (
-            adapter_available == declared_mcp,
-            evidence.get("support_mode")
-            == (
-                "skills-and-runtime-mcp"
-                if declared_mcp
-                else "skills-only"
-            ),
-            registration_verified == declared_mcp,
-            evidence.get("runtime_launcher_verified") is True,
-            evidence.get("launcher_state_verified") is True,
-            len(launcher_sha256) == 64,
-            all(character in "0123456789abcdef" for character in launcher_sha256),
-            evidence.get("protocol_exchange")
-            == ["initialize", "tools/list", "tools/call:execute"],
-            tools == ["execute", "observe"],
-            isinstance(evidence.get("source_commit"), str),
-            len(str(evidence.get("source_commit", ""))) == 40,
-            evidence.get("runtime_api") == "openubmc.target-runtime.v1",
-            isinstance(evidence.get("runtime_content_digest"), str),
-            isinstance(workflow_exchange, Mapping),
-            workflow_exchange.get("tool") == "execute",
-            workflow_exchange.get("state") == "completed",
-            workflow_exchange.get("outcome") == "completed",
-            workflow_exchange.get("is_error") is False,
-        )
+    failures = product_client_failures(
+        evidence,
+        contract=contract,
+        expected_source_commit=source_commit,
+        expected_release=release,
     )
     return {
         **result,
         **dict(evidence),
-        "status": "passed" if evidence_valid else "failed",
+        "status": "passed" if not failures else "failed",
         "tests": list(tests),
-        "declared_mcp": declared_mcp,
+        "declared_mcp": contract.get("mcp") is True,
+        "failure_codes": failures,
         "failure_tail": (
             ""
-            if evidence_valid
+            if not failures
             else "product client evidence contradicts its contract"
         ),
     }

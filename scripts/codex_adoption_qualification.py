@@ -17,23 +17,19 @@ for search_root in (ROOT, RUNTIME_ROOT):
         sys.path.insert(0, str(search_root))
 
 from openubmc_target_runtime import build_release_lock  # noqa: E402
+from scripts.codex_adoption_contract import (  # noqa: E402
+    DIMENSION_ORDER,
+    SCHEMA,
+    codex_mcp_failures,
+    installation_identity_failures,
+    verify_codex_adoption_report,
+)
 from scripts.continuous_closeout_qualification import (  # noqa: E402
     qualify as qualify_closeout,
 )
 from scripts.evidence_report import (  # noqa: E402
     evidence_fingerprint,
     source_commit as bind_source_commit,
-)
-
-
-SCHEMA = "openubmc-agent-workflow.codex-adoption-qualification.v1"
-DIMENSION_ORDER = (
-    "installation_identity",
-    "codex_mcp",
-    "product_contract",
-    "task_matrix",
-    "projection",
-    "lifecycle",
 )
 
 
@@ -73,75 +69,77 @@ def qualify(
     release_clients = _mapping(compatibility.get("clients"))
     runtime = _mapping(release.get("runtime"))
     source_clean = closeout.get("source_clean") is True
-    installation_passed = all(
-        (
-            source_clean,
-            release.get("source_commit") == selected_source_commit,
-            list(release_clients) == ["codex"],
-            isinstance(release.get("lock_digest"), str),
-            isinstance(release.get("source_tree_digest"), str),
-            isinstance(release.get("workflow_digest"), str),
-            runtime.get("api_version") == "openubmc.target-runtime.v1",
-            isinstance(runtime.get("content_digest"), str),
-        )
-    )
-    installation_identity = {
-        "status": "passed" if installation_passed else "failed",
-        "source_clean": source_clean,
-        "release_version": str(release.get("release_version", "")),
-        "source_commit": selected_source_commit,
-        "lock_digest": str(release.get("lock_digest", "")),
-        "source_tree_digest": str(release.get("source_tree_digest", "")),
-        "workflow_digest": str(release.get("workflow_digest", "")),
-        "clients": list(release_clients),
-        "runtime_api": str(runtime.get("api_version", "")),
-        "runtime_content_digest": str(runtime.get("content_digest", "")),
-    }
 
     client_matrix = _mapping(closeout.get("client_matrix"))
     runs = _mapping(client_matrix.get("runs"))
     codex_run = _mapping(runs.get("codex"))
     workflow_exchange = _mapping(codex_run.get("workflow_exchange"))
+    installed = _mapping(codex_run.get("installation"))
+    installed_source = _mapping(installed.get("source"))
+    installed_release = _mapping(installed.get("release"))
+    installation_failures = installation_identity_failures(
+        codex_run,
+        expected_source_commit=selected_source_commit,
+        expected_release=release,
+    )
+    if not source_clean:
+        installation_failures.insert(0, "qualification_source_dirty")
+    if list(release_clients) != ["codex"]:
+        installation_failures.append("product_client_matrix_invalid")
+    installation_identity = {
+        "status": "passed" if not installation_failures else "failed",
+        "failure_codes": installation_failures,
+        "source_clean": source_clean,
+        "release_version": str(installed_release.get("release_version", "")),
+        "source_commit": str(installed_release.get("source_commit", "")),
+        "release_commit": str(installed_source.get("current_commit", "")),
+        "lock_digest": str(installed_release.get("lock_digest", "")),
+        "source_tree_digest": str(
+            installed_release.get("source_tree_digest", "")
+        ),
+        "workflow_digest": str(installed_release.get("workflow_digest", "")),
+        "clients": list(release_clients),
+        "source_mode": str(installed_source.get("mode", "")),
+        "trust_mode": str(installed_release.get("trust_mode", "")),
+        "operational_ready": installed.get("operational_ready") is True,
+        "release_identity_verified": installed.get("release_identity_verified")
+        is True,
+        "evaluation_ready": installed.get("evaluation_ready") is True,
+        "skill_digests": _mapping(installed_release.get("skill_digests")),
+        "runtime_api": str(runtime.get("api_version", "")),
+        "runtime_content_digest": str(runtime.get("content_digest", "")),
+    }
+
     launcher_sha256 = str(codex_run.get("launcher_sha256", ""))
     installed_source_commit = str(codex_run.get("source_commit", ""))
+    mcp_failures = codex_mcp_failures(
+        codex_run,
+        contract={"mcp": True},
+        expected_source_commit=selected_source_commit,
+        expected_runtime=runtime,
+    )
     identity_bound = all(
         (
-            installed_source_commit
-            in {selected_source_commit, qualification_commit},
+            installed_source_commit == selected_source_commit,
             codex_run.get("runtime_api") == runtime.get("api_version"),
-            codex_run.get("runtime_content_digest")
-            == runtime.get("content_digest"),
+            codex_run.get("runtime_content_digest") == runtime.get("content_digest"),
             codex_run.get("launcher_state_verified") is True,
             len(launcher_sha256) == 64,
             all(character in "0123456789abcdef" for character in launcher_sha256),
         )
     )
-    codex_mcp_passed = all(
-        (
-            client_matrix.get("status") == "passed",
-            client_matrix.get("product_clients") == ["codex"],
-            client_matrix.get("overlap") == [],
-            codex_run.get("status") == "passed",
-            codex_run.get("client") == "codex",
-            codex_run.get("adapter_available") is True,
-            codex_run.get("support_mode") == "skills-and-runtime-mcp",
-            codex_run.get("declared_mcp") is True,
-            codex_run.get("mcp_registration_verified") is True,
-            codex_run.get("runtime_launcher_verified") is True,
-            codex_run.get("runtime_invocation")
-            == "client-configured-mcp-command",
-            codex_run.get("protocol_exchange")
-            == ["initialize", "tools/list", "tools/call:execute"],
-            codex_run.get("tools") == ["execute", "observe"],
-            identity_bound,
-            workflow_exchange.get("tool") == "execute",
-            workflow_exchange.get("state") == "completed",
-            workflow_exchange.get("outcome") == "completed",
-            workflow_exchange.get("is_error") is False,
-        )
-    )
+    if client_matrix.get("status") != "passed":
+        mcp_failures.append("client_matrix_failed")
+    if client_matrix.get("product_clients") != ["codex"]:
+        mcp_failures.append("product_clients_invalid")
+    if client_matrix.get("overlap") != []:
+        mcp_failures.append("client_harness_overlap")
+    if codex_run.get("status") != "passed":
+        mcp_failures.append("product_client_run_failed")
+    codex_mcp_passed = not mcp_failures
     codex_mcp = {
         "status": "passed" if codex_mcp_passed else "failed",
+        "failure_codes": mcp_failures,
         "configured": codex_run.get("declared_mcp") is True,
         "registration_verified": codex_run.get("mcp_registration_verified")
         is True,
@@ -264,6 +262,7 @@ def qualify(
         },
     }
     report["evidence_digest"] = evidence_fingerprint(report)
+    verify_codex_adoption_report(report)
     return report
 
 

@@ -37,13 +37,51 @@ def passed_product_client_run(name: str) -> dict[str, object]:
         ],
         "tools": ["execute", "observe"],
         "source_commit": "a" * 40,
+        "installation": {
+            "ok": True,
+            "clients": ["codex"],
+            "operational_ready": True,
+            "release_identity_verified": True,
+            "evaluation_ready": True,
+            "source": {
+                "mode": "managed",
+                "ref_kind": "commit",
+                "requested_ref": "3" * 40,
+                "resolved_commit": "3" * 40,
+                "current_commit": "3" * 40,
+                "dirty": False,
+            },
+            "release": {
+                "schema": "openubmc-agent-workflow.release-lock.v1",
+                "immutable": True,
+                "verified": True,
+                "trust_mode": "verified-immutable-source",
+                "release_version": "2.0.2",
+                "source_commit": "a" * 40,
+                "lock_digest": "sha256:" + "c" * 64,
+                "source_tree_digest": "sha256:" + "d" * 64,
+                "workflow_digest": "sha256:" + "e" * 64,
+                "skill_digests": {
+                    "openubmc-debug": "sha256:" + "1" * 64,
+                },
+                "runtime": {
+                    "api_version": "openubmc.target-runtime.v1",
+                    "content_digest": "sha256:" + "f" * 64,
+                },
+            },
+        },
         "runtime_api": "openubmc.target-runtime.v1",
         "runtime_content_digest": "sha256:" + "f" * 64,
         "workflow_exchange": {
             "tool": "execute",
-            "state": "completed",
-            "outcome": "completed",
-            "is_error": False,
+            "state": "preflight_failed",
+            "classification": "preflight_failure",
+            "error_field": "run_id",
+            "canonical_retry": {
+                "kind": "resume",
+                "run_id": "<current Run ID>",
+            },
+            "is_error": True,
         },
     }
 
@@ -97,8 +135,16 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             run["protocol_exchange"],
             ["initialize", "tools/list", "tools/call:execute"],
         )
-        self.assertEqual(run["workflow_exchange"]["state"], "completed")
+        self.assertEqual(
+            run["workflow_exchange"]["state"], "preflight_failed"
+        )
         self.assertEqual(run["tools"], ["execute", "observe"])
+        self.assertTrue(run["installation"]["evaluation_ready"])
+        self.assertTrue(run["installation"]["release_identity_verified"])
+        self.assertEqual(
+            run["installation"]["release"]["trust_mode"],
+            "verified-immutable-source",
+        )
         self.assertTrue(
             any("codex_product_client" in item for item in run["tests"])
         )

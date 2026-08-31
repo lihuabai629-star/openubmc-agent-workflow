@@ -25,6 +25,36 @@ SOURCE_COMMIT = "a" * 40
 RELEASE_COMMIT = "b" * 40
 
 
+def codex_adoption_report(
+    source_commit: str = SOURCE_COMMIT,
+) -> dict[str, object]:
+    report: dict[str, object] = {
+        "schema": "openubmc-agent-workflow.codex-adoption-qualification.v1",
+        "source_commit": source_commit,
+        "qualified": True,
+        "maintenance_checkpoint_ready": True,
+        "maintenance_checkpoint_blockers": [],
+        "failed_dimensions": [],
+        "dimensions": {
+            name: {"status": "passed"}
+            for name in (
+                "installation_identity",
+                "codex_mcp",
+                "product_contract",
+                "task_matrix",
+                "projection",
+                "lifecycle",
+            )
+        },
+        "release_gate": {
+            "evidence_type": "codex-adoption-qualification",
+            "eligible": True,
+        },
+    }
+    report["evidence_digest"] = release_gate.evidence_fingerprint(report)
+    return report
+
+
 @contextmanager
 def resolved_candidate(
     requested_ref: str,
@@ -151,6 +181,13 @@ class ReleaseGateTests(unittest.TestCase):
         def succeed(command, *, cwd):
             self.assertTrue(cwd.is_dir())
             calls.append(tuple(command))
+            if "codex_adoption_qualification.py" in " ".join(command):
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(codex_adoption_report()),
+                    encoding="utf-8",
+                )
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
@@ -540,6 +577,47 @@ class ReleaseGateTests(unittest.TestCase):
                 output = Path(command[command.index("--output") + 1])
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(
+                    json.dumps(codex_adoption_report()),
+                    encoding="utf-8",
+                )
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        with tempfile.TemporaryDirectory() as directory, resolved_candidate(
+            "HEAD"
+        ):
+            report = release_gate.execute_release_gate(
+                current_ref="HEAD",
+                previous_ref="v1.1.1",
+                workspace=Path.cwd(),
+                work_root=Path(directory),
+                executor=succeed,
+            )
+
+        for name in ("runtime_qualification", "codex_adoption_qualification"):
+            with self.subTest(name=name):
+                artifact = report["artifacts"][name]
+                self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
+                self.assertGreater(artifact["size_bytes"], 0)
+
+        adoption_artifact = report["artifacts"]["codex_adoption_qualification"]
+        self.assertEqual(
+            adoption_artifact["schema"],
+            "openubmc-agent-workflow.codex-adoption-qualification.v1",
+        )
+        self.assertEqual(adoption_artifact["source_commit"], SOURCE_COMMIT)
+        self.assertTrue(adoption_artifact["qualified"])
+        self.assertTrue(adoption_artifact["maintenance_checkpoint_ready"])
+        self.assertEqual(
+            adoption_artifact["evidence_digest"],
+            codex_adoption_report()["evidence_digest"],
+        )
+
+    def test_release_gate_rejects_malformed_codex_adoption_evidence(self) -> None:
+        def succeed(command, *, cwd):
+            if "codex_adoption_qualification.py" in " ".join(command):
+                output = Path(command[command.index("--output") + 1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
                     json.dumps(
                         {
                             "qualified": True,
@@ -562,11 +640,17 @@ class ReleaseGateTests(unittest.TestCase):
                 executor=succeed,
             )
 
-        for name in ("runtime_qualification", "codex_adoption_qualification"):
-            with self.subTest(name=name):
-                artifact = report["artifacts"][name]
-                self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
-                self.assertGreater(artifact["size_bytes"], 0)
+        gates = {item["name"]: item for item in report["gates"]}
+        self.assertFalse(report["promotable"])
+        self.assertEqual(
+            gates["codex_adoption_qualification"]["status"], "failed"
+        )
+        self.assertIn(
+            "schema",
+            gates["codex_adoption_qualification"]["commands"][0][
+                "stderr_tail"
+            ],
+        )
 
     def test_new_reports_require_identity_while_v2_evidence_remains_readable(
         self,
@@ -727,6 +811,7 @@ class ReleaseGateTests(unittest.TestCase):
                 "${{ runner.temp }}/release-gate.json",
                 "${{ runner.temp }}/release-gate-work/github-ci-evidence.json",
                 "${{ runner.temp }}/release-gate-work/runtime-qualification.json",
+                "${{ runner.temp }}/release-gate-work/codex-adoption-qualification.json",
             },
         )
         self.assertEqual(

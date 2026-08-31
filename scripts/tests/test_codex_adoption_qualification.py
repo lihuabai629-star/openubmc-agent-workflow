@@ -39,13 +39,51 @@ def closeout_report() -> dict[str, object]:
                     ],
                     "tools": ["execute", "observe"],
                     "source_commit": "a" * 40,
+                    "installation": {
+                        "ok": True,
+                        "clients": ["codex"],
+                        "operational_ready": True,
+                        "release_identity_verified": True,
+                        "evaluation_ready": True,
+                        "source": {
+                            "mode": "managed",
+                            "ref_kind": "commit",
+                            "requested_ref": "3" * 40,
+                            "resolved_commit": "3" * 40,
+                            "current_commit": "3" * 40,
+                            "dirty": False,
+                        },
+                        "release": {
+                            "schema": "openubmc-agent-workflow.release-lock.v1",
+                            "immutable": True,
+                            "verified": True,
+                            "trust_mode": "verified-immutable-source",
+                            "release_version": "2.0.2",
+                            "source_commit": "a" * 40,
+                            "lock_digest": "sha256:" + "c" * 64,
+                            "source_tree_digest": "sha256:" + "d" * 64,
+                            "workflow_digest": "sha256:" + "e" * 64,
+                            "skill_digests": {
+                                "openubmc-debug": "sha256:" + "1" * 64,
+                            },
+                            "runtime": {
+                                "api_version": "openubmc.target-runtime.v1",
+                                "content_digest": "sha256:" + "f" * 64,
+                            },
+                        },
+                    },
                     "runtime_api": "openubmc.target-runtime.v1",
                     "runtime_content_digest": "sha256:" + "f" * 64,
                     "workflow_exchange": {
                         "tool": "execute",
-                        "state": "completed",
-                        "outcome": "completed",
-                        "is_error": False,
+                        "state": "preflight_failed",
+                        "classification": "preflight_failure",
+                        "error_field": "run_id",
+                        "canonical_retry": {
+                            "kind": "resume",
+                            "run_id": "<current Run ID>",
+                        },
+                        "is_error": True,
                     },
                 }
             },
@@ -94,6 +132,12 @@ def release_identity() -> dict[str, object]:
             "api_version": "openubmc.target-runtime.v1",
             "content_digest": "sha256:" + "f" * 64,
         },
+        "skills": [
+            {
+                "name": "openubmc-debug",
+                "digest": "sha256:" + "1" * 64,
+            }
+        ],
     }
 
 
@@ -149,7 +193,7 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         self.assertTrue(report["dimensions"]["codex_mcp"]["identity_bound"])
         self.assertEqual(
             report["dimensions"]["codex_mcp"]["workflow_exchange"]["state"],
-            "completed",
+            "preflight_failed",
         )
         self.assertEqual(
             report["dimensions"]["installation_identity"]["runtime_api"],
@@ -276,6 +320,42 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         self.assertFalse(report["qualified"])
         self.assertEqual(report["failed_dimensions"], ["codex_mcp"])
         self.assertFalse(report["dimensions"]["codex_mcp"]["identity_bound"])
+
+    def test_linked_development_install_cannot_pass_release_qualification(
+        self,
+    ) -> None:
+        closeout = closeout_report()
+        installation = closeout["client_matrix"]["runs"]["codex"][
+            "installation"
+        ]
+        installation["release_identity_verified"] = False
+        installation["evaluation_ready"] = False
+        installation["source"]["mode"] = "linked"
+        installation["source"]["ref_kind"] = "linked"
+        installation["release"]["immutable"] = False
+        installation["release"]["verified"] = False
+        installation["release"]["trust_mode"] = "linked-development"
+
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = adoption.qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertFalse(report["maintenance_checkpoint_ready"])
+        self.assertEqual(report["failed_dimensions"], ["installation_identity"])
+        self.assertEqual(
+            report["dimensions"]["installation_identity"]["status"],
+            "failed",
+        )
 
     def test_requested_source_commit_is_verified_before_qualification(self) -> None:
         with mock.patch.object(

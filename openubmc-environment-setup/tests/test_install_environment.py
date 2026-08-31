@@ -350,17 +350,70 @@ class EnvironmentSetupTests(unittest.TestCase):
         client: str,
     ) -> tuple[dict[str, object], Path]:
         self.prepare_credentials()
-        result, output = self.install("--clients", client)
+        repository = os.environ.get("OPENUBMC_PRODUCT_CLIENT_REPO_URL", "")
+        release_commit = os.environ.get(
+            "OPENUBMC_PRODUCT_CLIENT_RELEASE_COMMIT", ""
+        )
+        if repository and release_commit:
+            output_stream = io.StringIO()
+            args = installer.parse_args(
+                [
+                    "install",
+                    "--home",
+                    str(self.home),
+                    "--source-mode",
+                    "managed",
+                    "--repo-url",
+                    repository,
+                    "--ref",
+                    release_commit,
+                    "--clients",
+                    client,
+                    "--non-interactive",
+                ]
+            )
+            with (
+                mock.patch.object(
+                    installer,
+                    "resolve_tool_dirs",
+                    return_value=([str(self.bin_dir)], []),
+                ),
+                mock.patch.object(
+                    installer,
+                    "knowledge_http_health",
+                    return_value=(True, "ok"),
+                ),
+                mock.patch.object(
+                    installer,
+                    "knowledge_mcp_health",
+                    return_value=(
+                        True,
+                        "ok",
+                        [
+                            "openubmc_kb_query",
+                            "openubmc_kb_status",
+                            "openubmc_kb_list",
+                        ],
+                        False,
+                    ),
+                ),
+                redirect_stdout(output_stream),
+            ):
+                result = installer.perform_install(args)
+            output = output_stream.getvalue()
+        else:
+            result, output = self.install("--clients", client)
         self.assertEqual(result, 0, output)
+        state = installer.load_state(self.home)
+        installed_source = Path(str(state["source_root"]))
         skills_dir = installer.client_skills_dir(self.home, client)
         for canonical, relative in EXPECTED_BUNDLE:
             self.assertTrue(
                 installer.same_target(
                     skills_dir / canonical,
-                    self.source / relative,
+                    installed_source / relative,
                 )
             )
-        state = installer.load_state(self.home)
         launcher = Path(state["runtime"]["launcher_path"])
         return state, launcher
 
@@ -412,10 +465,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                     "params": {
                         "name": "execute",
                         "arguments": {
-                            "kind": "start",
-                            "target": "qualification.invalid",
-                            "intent": "diagnosis-only",
-                            "entry_operation": "debug_run",
+                            "kind": "resume",
                         },
                         "_meta": {"codex/taskId": "codex-adoption-probe"},
                     },
@@ -443,9 +493,14 @@ class EnvironmentSetupTests(unittest.TestCase):
         }
         workflow_result = responses[3]["result"]
         structured = workflow_result["structuredContent"]
-        self.assertFalse(workflow_result["isError"])
-        self.assertEqual(structured["state"], "completed")
-        self.assertEqual(structured["outcome"]["status"], "completed")
+        self.assertTrue(workflow_result["isError"])
+        self.assertEqual(
+            structured["interaction_telemetry"]["classification"],
+            "preflight_failure",
+            structured,
+        )
+        self.assertEqual(structured["error"]["field"], "run_id")
+        self.assertTrue(structured["error"]["example"]["run_id"])
         state = installer.load_state(self.home)
         runtime = state["runtime"]
         launcher_state_verified = command.read_text(encoding="utf-8") == (
@@ -455,6 +510,31 @@ class EnvironmentSetupTests(unittest.TestCase):
         evidence_path = os.environ.get("OPENUBMC_PRODUCT_CLIENT_EVIDENCE", "")
         if not evidence_path:
             return
+        check_args = installer.parse_args(
+            ["check", "--home", str(self.home), "--deep"]
+        )
+        with (
+            mock.patch.object(
+                installer, "knowledge_http_health", return_value=(True, "ok")
+            ),
+            mock.patch.object(
+                installer,
+                "knowledge_mcp_health",
+                return_value=(
+                    True,
+                    "ok",
+                    [
+                        "openubmc_kb_query",
+                        "openubmc_kb_status",
+                        "openubmc_kb_list",
+                    ],
+                    False,
+                ),
+            ),
+        ):
+            check_report = installer.collect_check_report(check_args)
+        check_report.pop("_messages", None)
+        release = check_report.get("release", {})
         Path(evidence_path).write_text(
             json.dumps(
                 {
@@ -480,16 +560,30 @@ class EnvironmentSetupTests(unittest.TestCase):
                         "tools/call:execute",
                     ],
                     "tools": tools,
-                    "source_commit": os.environ.get(
-                        "OPENUBMC_PRODUCT_CLIENT_SOURCE_COMMIT",
-                        "",
-                    ),
+                    "source_commit": release.get("source_commit", ""),
+                    "installation": {
+                        "ok": check_report["ok"],
+                        "clients": check_report["clients"],
+                        "operational_ready": check_report[
+                            "operational_ready"
+                        ],
+                        "release_identity_verified": check_report[
+                            "release_identity_verified"
+                        ],
+                        "evaluation_ready": check_report["evaluation_ready"],
+                        "source": check_report["source"],
+                        "release": release,
+                    },
                     "runtime_api": runtime["api_version"],
                     "runtime_content_digest": runtime["content_digest"],
                     "workflow_exchange": {
                         "tool": "execute",
-                        "state": structured["state"],
-                        "outcome": structured["outcome"]["status"],
+                        "state": "preflight_failed",
+                        "classification": structured[
+                            "interaction_telemetry"
+                        ]["classification"],
+                        "error_field": structured["error"]["field"],
+                        "canonical_retry": structured["error"]["example"],
                         "is_error": workflow_result["isError"],
                     },
                 },
