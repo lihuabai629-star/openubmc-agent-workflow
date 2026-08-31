@@ -36,7 +36,7 @@ function required(value, name) {
 }
 
 
-function identity(value, name) {
+function normalizedJsonObject(value, name) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${name} must be an object`);
   }
@@ -117,8 +117,8 @@ export class McpProcessLifecycle {
     this.taskId = required(taskId, "taskId");
     this.sessionId = required(sessionId, "sessionId");
     this.sourceCommit = required(sourceCommit, "sourceCommit");
-    this.modelIdentity = identity(modelIdentity, "modelIdentity");
-    this.codexIdentity = identity(codexIdentity, "codexIdentity");
+    this.modelIdentity = normalizedJsonObject(modelIdentity, "modelIdentity");
+    this.codexIdentity = normalizedJsonObject(codexIdentity, "codexIdentity");
     if (typeof formalRun !== "boolean") {
       throw new Error("formalRun must be a boolean");
     }

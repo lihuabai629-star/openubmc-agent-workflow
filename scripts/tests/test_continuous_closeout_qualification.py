@@ -53,6 +53,7 @@ def passed_mcp_closeout() -> dict[str, object]:
         "task_closeout_ready": True,
         "identity_records_valid": True,
         "isolation_verified": True,
+        "restart_verified": True,
         "records": [
             {
                 **passed_lifecycle_record(),
@@ -62,6 +63,7 @@ def passed_mcp_closeout() -> dict[str, object]:
             }
         ],
         "summary": {
+            "record_count": 2,
             "live_processes": 0,
             "active_requests": 0,
             "confirmed_live_orphans": 0,
@@ -73,6 +75,15 @@ def passed_mcp_closeout() -> dict[str, object]:
             "confirmed_live_orphans_zero": True,
             "unattributed_live_processes_zero": True,
             "owned_live_processes_zero": True,
+        },
+        "isolation": {
+            "qualification_root": "/isolated",
+            "task_home": "/isolated/home",
+            "codex_config_root": "/isolated/codex",
+            "runtime_state_root": "/isolated/runtime-state",
+            "lifecycle_root": "/isolated/mcp-processes",
+            "global_codex_state_used": False,
+            "configured_client_invocation": True,
         },
     }
 
@@ -155,26 +166,38 @@ def passed_product_client_run(name: str) -> dict[str, object]:
             },
             "is_error": True,
         },
-        "mcp_lifecycle_records": [passed_lifecycle_record()],
+        "restart_verified": True,
+        "mcp_closeout": passed_mcp_closeout(),
+        "mcp_lifecycle_records": [
+            passed_lifecycle_record(),
+            {**passed_lifecycle_record(), "process_id": 457},
+        ],
     }
 
 
 class ContinuousCloseoutQualificationTests(unittest.TestCase):
     def test_mcp_closeout_binds_requested_formal_identities(self) -> None:
         report = qualification._mcp_closeout_snapshot(
-            "a" * 40,
-            model_identity={"model": "gpt-5.6-sol"},
-            codex_identity={"version": "codex-cli 0.150.0"},
+            passed_product_client_run("codex"),
+            source_commit="a" * 40,
+            model_identity={"model": "codex-product-client-qualification"},
+            codex_identity={
+                "client_info_name": "codex-adoption-qualification",
+                "client_info_version": "1",
+            },
         )
 
         self.assertEqual(report["status"], "passed", report)
         self.assertEqual(
             report["records"][0]["model_identity"],
-            {"model": "gpt-5.6-sol"},
+            {"model": "codex-product-client-qualification"},
         )
         self.assertEqual(
             report["records"][0]["codex_identity"],
-            {"version": "codex-cli 0.150.0"},
+            {
+                "client_info_name": "codex-adoption-qualification",
+                "client_info_version": "1",
+            },
         )
 
     def test_candidate_release_commit_is_deterministic(self) -> None:
@@ -347,6 +370,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertTrue(report["mcp_lifecycle"]["active_request_drain_covered"])
         self.assertTrue(report["mcp_lifecycle"]["cleanup_covered"])
         self.assertTrue(report["mcp_lifecycle"]["zero_live_orphans_covered"])
+        self.assertTrue(report["mcp_lifecycle"]["restart_closeout_covered"])
         closeout = report["mcp_lifecycle"]["closeout"]
         self.assertTrue(closeout["task_closeout_ready"])
         self.assertTrue(closeout["identity_records_valid"])
@@ -357,8 +381,8 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(closeout["summary"]["unattributed_live_processes"], 0)
         self.assertEqual(closeout["summary"]["owned_live_processes"], 0)
         self.assertTrue(all(closeout["closeout_checks"].values()))
-        self.assertEqual(closeout["task_ids"], ["continuous-closeout-qualification"])
-        self.assertEqual(closeout["session_ids"], ["continuous-closeout-session"])
+        self.assertEqual(closeout["task_ids"], ["codex-adoption-probe"])
+        self.assertEqual(closeout["session_ids"], ["codex-adoption-session"])
         self.assertEqual(closeout["records"][0]["client"], "codex")
         self.assertEqual(closeout["records"][0]["source_commit"], report["source_commit"])
         self.assertEqual(closeout["records"][0]["exit_reason"], "task-closeout")

@@ -1500,6 +1500,20 @@ def project_case(
     return projection
 
 
+def _walk_projection_values(
+    value: object,
+    *,
+    field_name: str = "",
+) -> Iterable[tuple[str, object]]:
+    yield field_name, value
+    if isinstance(value, Mapping):
+        for name, nested in value.items():
+            yield from _walk_projection_values(nested, field_name=str(name))
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _walk_projection_values(nested)
+
+
 def _operator_artifact_refs(
     projection: Mapping[str, object],
     *,
@@ -1508,12 +1522,16 @@ def _operator_artifact_refs(
     references: list[dict[str, object]] = []
     seen: set[str] = set()
 
-    def visit(value: object, *, artifact_key: bool = False) -> None:
+    def visit(value: object) -> None:
         if len(references) >= limit:
             return
-        if isinstance(value, Mapping):
-            candidate = dict(value)
-            is_reference = artifact_key or all(
+        for field_name, candidate_value in _walk_projection_values(value):
+            if len(references) >= limit:
+                return
+            if not isinstance(candidate_value, Mapping):
+                continue
+            candidate = dict(candidate_value)
+            is_reference = field_name == "artifact_ref" or all(
                 name in candidate
                 for name in ("handle", "digest", "kind", "size", "run_id")
             )
@@ -1527,13 +1545,6 @@ def _operator_artifact_refs(
                 if identity not in seen:
                     seen.add(identity)
                     references.append(candidate)
-                    if len(references) >= limit:
-                        return
-            for name, nested in candidate.items():
-                visit(nested, artifact_key=name == "artifact_ref")
-        elif isinstance(value, list):
-            for nested in value:
-                visit(nested)
 
     visit(projection.get("operations", []))
     visit(projection.get("workflow_phase_values", {}))
@@ -1545,22 +1556,6 @@ def _operator_artifact_refs(
 def _operator_target_epoch(projection: Mapping[str, object]) -> int:
     epochs: list[int] = []
 
-    def collect(value: object) -> None:
-        if isinstance(value, Mapping):
-            for name, nested in value.items():
-                if (
-                    name == "target_epoch"
-                    and isinstance(nested, int)
-                    and not isinstance(nested, bool)
-                    and nested >= 0
-                ):
-                    epochs.append(nested)
-                else:
-                    collect(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                collect(nested)
-
     for value in (
         projection.get("targets", []),
         projection.get("operations", []),
@@ -1568,7 +1563,14 @@ def _operator_target_epoch(projection: Mapping[str, object]) -> int:
         projection.get("current_turn", {}),
         projection.get("run_outcome", {}),
     ):
-        collect(value)
+        epochs.extend(
+            nested
+            for name, nested in _walk_projection_values(value)
+            if name == "target_epoch"
+            and isinstance(nested, int)
+            and not isinstance(nested, bool)
+            and nested >= 0
+        )
     return max(epochs, default=0)
 
 
@@ -1630,6 +1632,7 @@ def operator_run_projection(projection: Mapping[str, object]) -> dict[str, objec
         "revision": int(projection.get("revision", 0)),
         "run_state": run_state,
         "turn_state": turn_state,
+        "current_turn": turn or None,
         "interaction_classification": interaction_classification,
         "retry_count": retry_count,
         "recovery": {

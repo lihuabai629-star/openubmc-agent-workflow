@@ -129,23 +129,47 @@ function createProcessLifecycle(path) {
   ) {
     startupError = "formal MCP run requires model and Codex identity";
   }
+  if (startupError === null && formalRun.value) {
+    const requirements = [];
+    if (client !== "codex") requirements.push("Codex client identity");
+    if (!configuredTask) requirements.push("task ID");
+    if (!configuredSession) requirements.push("session ID");
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceCommit)) {
+      requirements.push("full source commit");
+    }
+    if (!runtimeStateRoot) requirements.push("Runtime state root");
+    if (!process.env.OPENUBMC_MCP_LIFECYCLE_DIR?.trim()) {
+      requirements.push("lifecycle root");
+    }
+    if (requirements.length > 0) {
+      startupError = `formal MCP run requires ${requirements.join(", ")}`;
+    }
+  }
+  const lifecycle = new McpProcessLifecycle({
+    component: "knowledge-mcp",
+    version: "1.3.0",
+    client,
+    taskId,
+    sessionId,
+    sourceCommit,
+    modelIdentity: modelIdentity.value,
+    codexIdentity: codexIdentity.value,
+    formalRun: formalRun.value,
+    parentPid,
+    statePath,
+    runtimeStateRoot,
+    lifecycleRoot,
+    idleTimeoutSeconds
+  });
+  if (
+    startupError === null
+    && formalRun.value
+    && lifecycle.status().parent_identity_verified !== true
+  ) {
+    startupError = "formal MCP run requires verified parent identity";
+  }
   return {
-    lifecycle: new McpProcessLifecycle({
-      component: "knowledge-mcp",
-      version: "1.3.0",
-      client,
-      taskId,
-      sessionId,
-      sourceCommit,
-      modelIdentity: modelIdentity.value,
-      codexIdentity: codexIdentity.value,
-      formalRun: formalRun.value,
-      parentPid,
-      statePath,
-      runtimeStateRoot,
-      lifecycleRoot,
-      idleTimeoutSeconds
-    }),
+    lifecycle,
     startupError
   };
 }

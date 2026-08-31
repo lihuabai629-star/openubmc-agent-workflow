@@ -114,6 +114,36 @@ def closeout_report() -> dict[str, object]:
                         },
                         "is_error": True,
                     },
+                    "restart_verified": True,
+                    "mcp_closeout": {
+                        "status": "passed",
+                        "task_closeout_ready": True,
+                        "identity_records_valid": True,
+                        "isolation_verified": True,
+                        "summary": {
+                            "record_count": 2,
+                            "live_processes": 0,
+                            "active_requests": 0,
+                            "confirmed_live_orphans": 0,
+                            "unattributed_live_processes": 0,
+                            "owned_live_processes": 0,
+                        },
+                        "closeout_checks": {
+                            "active_requests_zero": True,
+                            "confirmed_live_orphans_zero": True,
+                            "unattributed_live_processes_zero": True,
+                            "owned_live_processes_zero": True,
+                        },
+                        "isolation": {
+                            "qualification_root": "/isolated",
+                            "task_home": "/isolated/home",
+                            "codex_config_root": "/isolated/codex",
+                            "runtime_state_root": "/isolated/runtime-state",
+                            "lifecycle_root": "/isolated/mcp-processes",
+                            "global_codex_state_used": False,
+                            "configured_client_invocation": True,
+                        },
+                    },
                     "mcp_lifecycle_records": [
                         {
                             "schema": "openubmc.mcp-process-lifecycle.v1",
@@ -142,7 +172,30 @@ def closeout_report() -> dict[str, object]:
                             "lifecycle_state": "stopped",
                             "active_requests": 0,
                             "exit_reason": "task-closeout",
-                        }
+                        },
+                        {
+                            "schema": "openubmc.mcp-process-lifecycle.v1",
+                            "component": "target-runtime",
+                            "version": "openubmc.target-runtime.v1",
+                            "client": "codex",
+                            "task_id": "codex-adoption-probe",
+                            "session_id": "codex-adoption-session",
+                            "source_commit": "a" * 40,
+                            "formal_run": True,
+                            "model_identity": FORMAL_MODEL_IDENTITY,
+                            "codex_identity": FORMAL_CODEX_IDENTITY,
+                            "parent_pid": 123,
+                            "parent_identity": "parent-identity",
+                            "parent_identity_verified": True,
+                            "parent_identity_currently_verified": True,
+                            "process_id": 457,
+                            "process_identity": "process-identity-2",
+                            "start_time": "2026-08-31T00:00:01Z",
+                            "runtime_state_root": "/isolated/runtime-state",
+                            "lifecycle_state": "stopped",
+                            "active_requests": 0,
+                            "exit_reason": "task-closeout",
+                        },
                     ],
                 }
             },
@@ -233,11 +286,11 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             "sha256": "1" * 64,
         }
         closeout = closeout_report()
-        lifecycle = closeout["client_matrix"]["runs"]["codex"][
+        for lifecycle in closeout["client_matrix"]["runs"]["codex"][
             "mcp_lifecycle_records"
-        ][0]
-        lifecycle["model_identity"] = model_identity
-        lifecycle["codex_identity"] = codex_identity
+        ]:
+            lifecycle["model_identity"] = model_identity
+            lifecycle["codex_identity"] = codex_identity
         with (
             mock.patch.object(
                 adoption, "qualify_closeout", return_value=closeout
@@ -492,6 +545,28 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             "mcp_lifecycle_identity_invalid",
             report["dimensions"]["codex_mcp"]["failure_codes"],
         )
+
+    def test_missing_restart_closeout_evidence_fails_mcp_dimension(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["restart_verified"] = False
+        codex["mcp_closeout"]["isolation"]["global_codex_state_used"] = True
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        failures = report["dimensions"]["codex_mcp"]["failure_codes"]
+        self.assertIn("restart_unverified", failures)
+        self.assertIn("mcp_closeout_invalid", failures)
 
     def test_missing_owned_process_zero_proof_fails_lifecycle_dimension(self) -> None:
         closeout = closeout_report()

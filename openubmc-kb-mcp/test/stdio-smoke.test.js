@@ -405,3 +405,42 @@ test("formal stdio server rejects missing model and Codex identity", async () =>
   assert.equal(lifecycle.formal_run, true);
   assert.equal(lifecycle.exit_reason, "startup-error");
 });
+
+test("formal stdio server rejects unknown ownership and source", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-formal-owner-"));
+  const lifecycleRoot = join(dir, "processes");
+  const child = spawn(process.execPath, [
+    resolve("src/server.js"),
+    "--config",
+    join(dir, "missing.json")
+  ], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      OPENUBMC_MCP_CLIENT: "codex",
+      OPENUBMC_MCP_MODEL_IDENTITY: JSON.stringify({ model: "gpt-5.6-sol" }),
+      OPENUBMC_MCP_CODEX_IDENTITY: JSON.stringify({ version: "codex-cli 0.151.0" }),
+      OPENUBMC_MCP_FORMAL_RUN: "1",
+      OPENUBMC_MCP_PARENT_PID: String(process.pid),
+      OPENUBMC_MCP_LIFECYCLE_DIR: lifecycleRoot
+    }
+  });
+  let stderr = "";
+  child.stderr.on("data", chunk => { stderr += chunk.toString(); });
+  const returnCode = await new Promise((resolveExit, rejectExit) => {
+    child.once("exit", resolveExit);
+    child.once("error", rejectExit);
+  });
+  const records = await readdir(lifecycleRoot);
+  const lifecycle = JSON.parse(
+    await readFile(join(lifecycleRoot, records[0]), "utf8")
+  );
+
+  assert.equal(returnCode, 1);
+  assert.match(stderr, /formal MCP run requires task ID/);
+  assert.match(stderr, /session ID/);
+  assert.match(stderr, /source commit/);
+  assert.equal(lifecycle.task_id, "unknown-task");
+  assert.equal(lifecycle.session_id, "unknown-session");
+  assert.equal(lifecycle.exit_reason, "startup-error");
+});

@@ -494,6 +494,8 @@ class EnvironmentSetupTests(unittest.TestCase):
         environment = {
             **os.environ,
             "HOME": str(self.home),
+            "CODEX_HOME": str(self.home / ".codex"),
+            "XDG_CONFIG_HOME": str(self.home / ".config"),
             "OPENUBMC_MCP_CLIENT": "codex",
             "OPENUBMC_MCP_TASK_ID": "codex-adoption-probe",
             "OPENUBMC_MCP_SESSION_ID": "codex-adoption-session",
@@ -514,16 +516,19 @@ class EnvironmentSetupTests(unittest.TestCase):
             "OPENUBMC_MCP_LIFECYCLE_DIR": str(lifecycle_root),
             "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(runtime_state_root),
         }
-        completed = subprocess.run(
-            [str(command)],
-            input=requests,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=15,
-            env=environment,
-        )
+        def run_runtime(payload: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [str(command)],
+                input=payload,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=15,
+                env=environment,
+            )
+
+        completed = run_runtime(requests)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         responses = {
             document.get("id"): document
@@ -542,24 +547,120 @@ class EnvironmentSetupTests(unittest.TestCase):
         )
         self.assertEqual(structured["error"]["field"], "run_id")
         self.assertTrue(structured["error"]["example"]["run_id"])
-        lifecycle_records = sorted(lifecycle_root.glob("*.json"))
-        self.assertEqual(len(lifecycle_records), 1)
-        lifecycle = json.loads(lifecycle_records[0].read_text(encoding="utf-8"))
+        restarted = run_runtime(
+            "\n".join(
+                json.dumps(request, separators=(",", ":"))
+                for request in (
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "clientInfo": {
+                                "name": "codex-adoption-qualification",
+                                "version": "1",
+                            },
+                        },
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/openubmc-task-complete",
+                        "params": {
+                            "_meta": {"codex/taskId": "codex-adoption-probe"}
+                        },
+                    },
+                )
+            )
+            + "\n"
+        )
+        self.assertEqual(restarted.returncode, 0, restarted.stderr)
+        lifecycle_paths = sorted(lifecycle_root.glob("*.json"))
+        self.assertEqual(len(lifecycle_paths), 2)
+        lifecycle_records = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in lifecycle_paths
+        ]
+        lifecycle = lifecycle_records[0]
         state = installer.load_state(self.home)
         runtime = state["runtime"]
-        self.assertEqual(lifecycle["client"], "codex")
-        self.assertEqual(lifecycle["task_id"], "codex-adoption-probe")
-        self.assertEqual(lifecycle["session_id"], "codex-adoption-session")
-        self.assertEqual(lifecycle["source_commit"], runtime["source_commit"])
-        self.assertTrue(lifecycle["formal_run"])
-        self.assertTrue(lifecycle["parent_identity_verified"])
-        self.assertIsInstance(
-            lifecycle["parent_identity_currently_verified"], bool
+        for lifecycle in lifecycle_records:
+            self.assertEqual(lifecycle["client"], "codex")
+            self.assertEqual(lifecycle["task_id"], "codex-adoption-probe")
+            self.assertEqual(lifecycle["session_id"], "codex-adoption-session")
+            self.assertEqual(lifecycle["source_commit"], runtime["source_commit"])
+            self.assertTrue(lifecycle["formal_run"])
+            self.assertTrue(lifecycle["parent_identity_verified"])
+            self.assertIsInstance(
+                lifecycle["parent_identity_currently_verified"], bool
+            )
+            self.assertEqual(
+                lifecycle["runtime_state_root"], str(runtime_state_root)
+            )
+            self.assertEqual(lifecycle["lifecycle_state"], "stopped")
+            self.assertEqual(lifecycle["active_requests"], 0)
+            self.assertEqual(lifecycle["exit_reason"], "task-closeout")
+        task_home = self.home.absolute()
+        codex_config_root = (self.home / ".codex").absolute()
+        runtime_state_root = runtime_state_root.absolute()
+        lifecycle_root = lifecycle_root.absolute()
+        qualification_root = task_home
+        isolated_roots = (
+            task_home,
+            codex_config_root,
+            runtime_state_root,
+            lifecycle_root,
         )
-        self.assertEqual(lifecycle["runtime_state_root"], str(runtime_state_root))
-        self.assertEqual(lifecycle["lifecycle_state"], "stopped")
-        self.assertEqual(lifecycle["active_requests"], 0)
-        self.assertEqual(lifecycle["exit_reason"], "task-closeout")
+        global_home = Path.home().absolute()
+        global_codex_config = Path(
+            os.environ.get("CODEX_HOME", global_home / ".codex")
+        ).absolute()
+        global_xdg_config = Path(
+            os.environ.get("XDG_CONFIG_HOME", global_home / ".config")
+        ).absolute()
+        global_codex_state_used = any(
+            selected == inherited
+            for selected, inherited in (
+                (task_home, global_home),
+                (codex_config_root, global_codex_config),
+                ((self.home / ".config").absolute(), global_xdg_config),
+            )
+        )
+        isolation_verified = (
+            all(path.is_relative_to(qualification_root) for path in isolated_roots)
+            and len(set(isolated_roots)) == len(isolated_roots)
+            and not global_codex_state_used
+        )
+        identity_records_valid = all(
+            lifecycle["client"] == "codex"
+            and lifecycle["task_id"] == "codex-adoption-probe"
+            and lifecycle["session_id"] == "codex-adoption-session"
+            and lifecycle["source_commit"] == runtime["source_commit"]
+            and lifecycle["formal_run"] is True
+            and lifecycle["parent_identity_verified"] is True
+            and lifecycle["active_requests"] == 0
+            and lifecycle["exit_reason"] == "task-closeout"
+            for lifecycle in lifecycle_records
+        )
+        closeout_checks = {
+            "active_requests_zero": all(
+                lifecycle["active_requests"] == 0
+                for lifecycle in lifecycle_records
+            ),
+            "confirmed_live_orphans_zero": all(
+                lifecycle["lifecycle_state"] == "stopped"
+                for lifecycle in lifecycle_records
+            ),
+            "unattributed_live_processes_zero": all(
+                lifecycle["lifecycle_state"] == "stopped"
+                for lifecycle in lifecycle_records
+            ),
+            "owned_live_processes_zero": all(
+                lifecycle["lifecycle_state"] == "stopped"
+                for lifecycle in lifecycle_records
+            ),
+        }
         launcher_state_verified = command.read_text(encoding="utf-8") == (
             installer.render_runtime_launcher(runtime)
         )
@@ -673,7 +774,47 @@ class EnvironmentSetupTests(unittest.TestCase):
                         "canonical_retry": structured["error"]["example"],
                         "is_error": workflow_result["isError"],
                     },
-                    "mcp_lifecycle_records": [lifecycle],
+                    "restart_verified": True,
+                    "mcp_lifecycle_records": lifecycle_records,
+                    "mcp_closeout": {
+                        "status": (
+                            "passed"
+                            if identity_records_valid
+                            and isolation_verified
+                            and all(closeout_checks.values())
+                            else "failed"
+                        ),
+                        "task_closeout_ready": (
+                            identity_records_valid
+                            and isolation_verified
+                            and all(closeout_checks.values())
+                        ),
+                        "identity_records_valid": identity_records_valid,
+                        "isolation_verified": isolation_verified,
+                        "summary": {
+                            "record_count": len(lifecycle_records),
+                            "live_processes": 0,
+                            "active_requests": 0,
+                            "confirmed_live_orphans": 0,
+                            "unattributed_live_processes": 0,
+                            "owned_live_processes": 0,
+                        },
+                        "closeout_checks": closeout_checks,
+                        "isolation": {
+                            "qualification_root": str(qualification_root),
+                            "task_home": str(task_home),
+                            "codex_config_root": str(codex_config_root),
+                            "runtime_state_root": str(runtime_state_root),
+                            "lifecycle_root": str(lifecycle_root),
+                            "global_codex_state_used": global_codex_state_used,
+                            "configured_client_invocation": (
+                                adapter_available
+                                and mcp_registration_verified
+                                and command.is_file()
+                                and os.access(command, os.X_OK)
+                            ),
+                        },
+                    },
                 },
                 sort_keys=True,
             ),

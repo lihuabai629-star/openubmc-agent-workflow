@@ -446,6 +446,20 @@ class RuntimeMcpServiceTests(unittest.TestCase):
                         "upgrade-2",
                     ),
                     PendingCaseEvent(
+                        "RunDecisionCommitted",
+                        {
+                            "schema": (
+                                "openubmc.target-runtime.v1/run-decision-v1"
+                            ),
+                            "version": 1,
+                            "turn": {
+                                "turn_id": "turn-upgrade-2",
+                                "state": "incident",
+                            }
+                        },
+                        "decision-upgrade-2",
+                    ),
+                    PendingCaseEvent(
                         "RunIncidentRaised",
                         {
                             "incident": {
@@ -488,6 +502,10 @@ class RuntimeMcpServiceTests(unittest.TestCase):
         self.assertEqual(projection["current_run"]["run_id"], run_id)
         self.assertEqual(projection["current_run"]["run_state"], "incident")
         self.assertEqual(projection["current_run"]["turn_state"], "incident")
+        self.assertEqual(
+            projection["current_run"]["current_turn"],
+            {"turn_id": "turn-upgrade-2", "state": "incident"},
+        )
         self.assertEqual(
             projection["current_run"]["interaction_classification"], "incident"
         )

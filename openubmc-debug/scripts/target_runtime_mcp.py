@@ -1488,6 +1488,19 @@ def main() -> int:
             / "openubmc-agent-workflow"
             / "mcp-processes"
         )
+    if formal_run:
+        if client != "codex":
+            identity_errors.append("formal MCP run requires Codex client identity")
+        if not configured_task:
+            identity_errors.append("formal MCP run requires task ID")
+        if not configured_session:
+            identity_errors.append("formal MCP run requires session ID")
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_commit) is None:
+            identity_errors.append("formal MCP run requires full source commit")
+        if not os.environ.get("OPENUBMC_TARGET_RUNTIME_STATE_DIR", "").strip():
+            identity_errors.append("formal MCP run requires Runtime state root")
+        if not configured_lifecycle_root:
+            identity_errors.append("formal MCP run requires lifecycle root")
     idle_timeout_error: SystemExit | None = None
     try:
         mcp_idle_timeout_seconds = _positive_env_float(
@@ -1517,6 +1530,9 @@ def main() -> int:
     if identity_errors:
         process_lifecycle.record_exit("startup-error")
         raise SystemExit("; ".join(identity_errors))
+    if formal_run and not process_lifecycle.status()["parent_identity_verified"]:
+        process_lifecycle.record_exit("startup-error")
+        raise SystemExit("formal MCP run requires verified parent identity")
     if idle_timeout_error is not None:
         process_lifecycle.record_exit("startup-error")
         raise idle_timeout_error

@@ -33,20 +33,14 @@ from scripts.evidence_report import (  # noqa: E402
     evidence_fingerprint,
     source_commit as bind_source_commit,
 )
+from scripts.formal_identity import (  # noqa: E402
+    identity_argument,
+    normalize_identity,
+)
 
 
 def _mapping(value: object) -> dict[str, object]:
     return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _normalized_identity(value: Mapping[str, object] | None) -> dict[str, object] | None:
-    if value is None:
-        return None
-    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True)
-    decoded = json.loads(encoded)
-    if not isinstance(decoded, dict):
-        raise ValueError("identity must be a JSON object")
-    return decoded
 
 
 def _passed(value: Mapping[str, object]) -> bool:
@@ -59,10 +53,17 @@ def qualify(
     model_identity: Mapping[str, object] | None = None,
     codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    selected_model_identity = _normalized_identity(model_identity)
-    selected_codex_identity = _normalized_identity(codex_identity)
-    if not selected_model_identity or not selected_codex_identity:
-        raise ValueError("formal model and Codex identity are required")
+    required_identity = "formal model and Codex identity are required"
+    selected_model_identity = normalize_identity(
+        model_identity,
+        label="model identity",
+        required_message=required_identity,
+    )
+    selected_codex_identity = normalize_identity(
+        codex_identity,
+        label="Codex identity",
+        required_message=required_identity,
+    )
     selected_source_commit = bind_source_commit(
         source_commit or "",
         workspace=ROOT,
@@ -202,6 +203,8 @@ def qualify(
         "launcher_identity_digest": launcher_identity_digest,
         "workflow_exchange": workflow_exchange,
         "mcp_lifecycle_records": mcp_lifecycle_records,
+        "restart_verified": codex_run.get("restart_verified") is True,
+        "mcp_closeout": _mapping(codex_run.get("mcp_closeout")),
     }
     mcp_failures.extend(
         failure
@@ -332,26 +335,16 @@ def qualify(
     return report
 
 
-def _identity_argument(value: str) -> dict[str, object]:
-    try:
-        document = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError("identity must be valid JSON") from exc
-    if not isinstance(document, dict):
-        raise argparse.ArgumentTypeError("identity must be a JSON object")
-    return document
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model-identity",
-        type=_identity_argument,
+        type=identity_argument,
         required=True,
     )
     parser.add_argument(
         "--codex-identity",
-        type=_identity_argument,
+        type=identity_argument,
         required=True,
     )
     parser.add_argument("--source-commit")

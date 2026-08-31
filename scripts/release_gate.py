@@ -29,6 +29,10 @@ from scripts.release_gate_contract import (  # noqa: E402
 from scripts.codex_adoption_contract import (  # noqa: E402
     verify_codex_adoption_report,
 )
+from scripts.formal_identity import (  # noqa: E402
+    identity_argument,
+    normalize_identity,
+)
 
 from openubmc_target_runtime.release import (  # noqa: E402
     ReleaseLockError,
@@ -145,18 +149,6 @@ def _load_codex_adoption_evidence(
     if provenance.get("codex") != dict(expected_codex_identity):
         raise ValueError("Codex Adoption Qualification Codex identity mismatch")
     return document
-
-
-def _normalized_identity(
-    value: Mapping[str, object],
-    *,
-    label: str,
-) -> dict[str, object]:
-    encoded = json.dumps(dict(value), ensure_ascii=True, sort_keys=True)
-    decoded = json.loads(encoded)
-    if not isinstance(decoded, dict) or not decoded:
-        raise ValueError(f"{label} must be a non-empty JSON object")
-    return decoded
 
 
 def _resolve_commit(workspace: Path, ref: str) -> str:
@@ -459,11 +451,11 @@ def execute_release_gate(
     ab_attestation_public_key: Path | None = None,
     release_tag: str | None = None,
 ) -> dict[str, object]:
-    selected_model_identity = _normalized_identity(
+    selected_model_identity = normalize_identity(
         model_identity,
         label="model identity",
     )
-    selected_codex_identity = _normalized_identity(
+    selected_codex_identity = normalize_identity(
         codex_identity,
         label="Codex identity",
     )
@@ -623,30 +615,18 @@ def execute_release_gate(
     return report
 
 
-def _identity_argument(value: str) -> dict[str, object]:
-    try:
-        document = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError("identity must be valid JSON") from exc
-    if not isinstance(document, dict) or not document:
-        raise argparse.ArgumentTypeError(
-            "identity must be a non-empty JSON object"
-        )
-    return document
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--current-ref", required=True)
     parser.add_argument("--previous-ref", required=True)
     parser.add_argument(
         "--model-identity",
-        type=_identity_argument,
+        type=identity_argument,
         required=True,
     )
     parser.add_argument(
         "--codex-identity",
-        type=_identity_argument,
+        type=identity_argument,
         required=True,
     )
     parser.add_argument("--release-tag")

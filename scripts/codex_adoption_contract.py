@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
 from scripts.evidence_report import evidence_fingerprint
 
@@ -224,6 +225,74 @@ def _mcp_lifecycle_failures(
     return [] if valid else ["mcp_lifecycle_identity_invalid"]
 
 
+def _mcp_closeout_failures(value: object, records_value: object) -> list[str]:
+    closeout = _mapping(value)
+    records = records_value if isinstance(records_value, list) else []
+    summary = _mapping(closeout.get("summary"))
+    checks = _mapping(closeout.get("closeout_checks"))
+    isolation = _mapping(closeout.get("isolation"))
+    try:
+        qualification_root = Path(
+            str(isolation.get("qualification_root", ""))
+        ).absolute()
+        isolated_roots = tuple(
+            Path(str(isolation.get(name, ""))).absolute()
+            for name in (
+                "task_home",
+                "codex_config_root",
+                "runtime_state_root",
+                "lifecycle_root",
+            )
+        )
+        roots_isolated = (
+            bool(str(isolation.get("qualification_root", "")).strip())
+            and all(
+                bool(str(isolation.get(name, "")).strip())
+                for name in (
+                    "task_home",
+                    "codex_config_root",
+                    "runtime_state_root",
+                    "lifecycle_root",
+                )
+            )
+            and all(path.is_relative_to(qualification_root) for path in isolated_roots)
+            and len(set(isolated_roots)) == len(isolated_roots)
+        )
+    except (OSError, RuntimeError, ValueError):
+        roots_isolated = False
+    zero_fields = (
+        "live_processes",
+        "active_requests",
+        "confirmed_live_orphans",
+        "unattributed_live_processes",
+        "owned_live_processes",
+    )
+    check_fields = (
+        "active_requests_zero",
+        "confirmed_live_orphans_zero",
+        "unattributed_live_processes_zero",
+        "owned_live_processes_zero",
+    )
+    valid = all(
+        (
+            closeout.get("status") == "passed",
+            closeout.get("task_closeout_ready") is True,
+            closeout.get("identity_records_valid") is True,
+            closeout.get("isolation_verified") is True,
+            isinstance(summary.get("record_count"), int),
+            not isinstance(summary.get("record_count"), bool),
+            int(summary.get("record_count", 0)) >= 2,
+            summary.get("record_count") == len(records),
+            all(summary.get(name) == 0 for name in zero_fields),
+            all(checks.get(name) is True for name in check_fields),
+            roots_isolated,
+            isolation.get("global_codex_state_used") is False,
+            isolation.get("configured_client_invocation") is True,
+        )
+    )
+    return [] if valid else ["mcp_closeout_invalid"]
+
+
 def codex_mcp_failures(
     evidence: Mapping[str, object],
     *,
@@ -281,12 +350,17 @@ def codex_mcp_failures(
             evidence.get("runtime_content_digest")
             == expected_runtime.get("content_digest"),
         ),
+        ("restart_unverified", evidence.get("restart_verified") is True),
     )
     return [
         *[name for name, passed in checks if not passed],
         *_mcp_lifecycle_failures(
             evidence.get("mcp_lifecycle_records"),
             expected_source_commit=expected_source_commit,
+        ),
+        *_mcp_closeout_failures(
+            evidence.get("mcp_closeout"),
+            evidence.get("mcp_lifecycle_records"),
         ),
         *_launcher_identity_failures(
             launcher_identity,
@@ -409,12 +483,17 @@ def codex_mcp_dimension_failures(
             "launcher_state_unverified",
             codex_mcp.get("launcher_state_verified") is True,
         ),
+        ("restart_unverified", codex_mcp.get("restart_verified") is True),
     )
     return [
         *[name for name, passed in checks if not passed],
         *_mcp_lifecycle_failures(
             codex_mcp.get("mcp_lifecycle_records"),
             expected_source_commit=expected_source_commit,
+        ),
+        *_mcp_closeout_failures(
+            codex_mcp.get("mcp_closeout"),
+            codex_mcp.get("mcp_lifecycle_records"),
         ),
         *_launcher_identity_failures(
             launcher_identity,

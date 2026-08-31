@@ -24,6 +24,10 @@ from scripts.evidence_report import (  # noqa: E402
     evidence_fingerprint,
     resolve_source_commit,
 )
+from scripts.formal_identity import (  # noqa: E402
+    identity_argument,
+    normalize_identity,
+)
 from scripts.codex_adoption_contract import product_client_failures  # noqa: E402
 from scripts.product_closeout_qualification import (  # noqa: E402
     qualify as qualify_product_closeout,
@@ -31,12 +35,8 @@ from scripts.product_closeout_qualification import (  # noqa: E402
 from scripts.product_closeout_ingestion import (  # noqa: E402
     assemble_manifest as assemble_product_manifest,
 )
-from scripts.mcp_process_lifecycle import summarize as summarize_mcp_records  # noqa: E402
 from scripts.runtime_stability import qualify_dual_projection  # noqa: E402
-from openubmc_target_runtime import (  # noqa: E402
-    build_release_lock,
-    inspect_mcp_process_records,
-)
+from openubmc_target_runtime import build_release_lock  # noqa: E402
 
 
 SCHEMA = "openubmc-agent-workflow.continuous-closeout-qualification.v1"
@@ -53,18 +53,6 @@ class CandidateRelease(NamedTuple):
     bundle: Path
     release_commit: str
     release: dict[str, object]
-
-
-def _normalized_identity(
-    value: Mapping[str, object] | None,
-) -> dict[str, object]:
-    if value is None:
-        raise ValueError("formal model and Codex identity are required")
-    encoded = json.dumps(dict(value), ensure_ascii=True, sort_keys=True)
-    decoded = json.loads(encoded)
-    if not isinstance(decoded, dict) or not decoded:
-        raise ValueError("formal model and Codex identity are required")
-    return decoded
 
 
 PRODUCT_CONTRACT_TESTS = (
@@ -550,132 +538,62 @@ def _product_evidence(
 
 
 def _mcp_closeout_snapshot(
-    source_commit: str,
+    product_run: Mapping[str, object],
     *,
+    source_commit: str,
     model_identity: Mapping[str, object],
     codex_identity: Mapping[str, object],
 ) -> dict[str, object]:
-    with tempfile.TemporaryDirectory() as raw:
-        qualification_root = Path(raw)
-        task_home = qualification_root / "task-home"
-        codex_config_root = qualification_root / "codex-config"
-        runtime_state_root = qualification_root / "runtime-state"
-        lifecycle_root = qualification_root / "mcp-processes"
-        for path in (task_home, codex_config_root, runtime_state_root, lifecycle_root):
-            path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        child_source = "\n".join(
-            (
-                "import os",
-                "import sys",
-                "from pathlib import Path",
-                f"sys.path.insert(0, {str(RUNTIME_ROOT)!r})",
-                "from openubmc_target_runtime.mcp_lifecycle import McpProcessLifecycle",
-                f"root = Path({str(lifecycle_root)!r})",
-                "lifecycle = McpProcessLifecycle(",
-                "    component='continuous-closeout-mcp',",
-                "    version='1',",
-                "    client='codex',",
-                "    task_id='continuous-closeout-qualification',",
-                "    session_id='continuous-closeout-session',",
-                f"    source_commit={source_commit!r},",
-                f"    model_identity={dict(model_identity)!r},",
-                f"    codex_identity={dict(codex_identity)!r},",
-                "    formal_run=True,",
-                "    parent_pid=os.getppid(),",
-                f"    state_path=Path({str(runtime_state_root)!r}),",
-                "    lifecycle_root=root,",
-                "    idle_timeout_seconds=300,",
-                ")",
-                "lifecycle.begin_request()",
-                "lifecycle.request_task_closeout()",
-                "if lifecycle.exit_reason_if_due() is not None:",
-                "    raise RuntimeError('task closeout interrupted an active request')",
-                "lifecycle.end_request()",
-                "if lifecycle.exit_reason_if_due() != 'task-closeout':",
-                "    raise RuntimeError('task closeout did not become terminal')",
-            )
-        )
-        environment = {
-            **os.environ,
-            "HOME": str(task_home),
-            "CODEX_HOME": str(codex_config_root),
-            "XDG_CONFIG_HOME": str(codex_config_root),
-            "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(runtime_state_root),
-            "OPENUBMC_MCP_LIFECYCLE_DIR": str(lifecycle_root),
-        }
-        completed = subprocess.run(
-            [sys.executable, "-c", child_source],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            env=environment,
-        )
-        records = inspect_mcp_process_records(lifecycle_root)
-        summary = summarize_mcp_records(records)
-        closeout_checks = {
-            "active_requests_zero": summary["active_requests"] == 0,
-            "confirmed_live_orphans_zero": summary["confirmed_live_orphans"] == 0,
-            "unattributed_live_processes_zero": (
-                summary["unattributed_live_processes"] == 0
-            ),
-            "owned_live_processes_zero": summary["owned_live_processes"] == 0,
-        }
-        identity_records_valid = bool(records) and all(
-            record.get("client") == "codex"
-            and record.get("task_id") == "continuous-closeout-qualification"
-            and record.get("session_id") == "continuous-closeout-session"
-            and record.get("source_commit") == source_commit
-            and record.get("formal_run") is True
-            and isinstance(record.get("model_identity"), Mapping)
-            and record.get("model_identity") == dict(model_identity)
-            and isinstance(record.get("codex_identity"), Mapping)
-            and record.get("codex_identity") == dict(codex_identity)
-            and record.get("parent_identity_verified") is True
-            and isinstance(record.get("parent_identity_currently_verified"), bool)
-            and record.get("runtime_state_root") == str(runtime_state_root)
-            and record.get("exit_reason") == "task-closeout"
-            for record in records
-        )
-        isolation = {
-            "task_home": str(task_home),
-            "codex_config_root": str(codex_config_root),
-            "runtime_state_root": str(runtime_state_root),
-            "lifecycle_root": str(lifecycle_root),
-            "global_codex_state_used": False,
-        }
-        isolation_verified = all(
-            path.is_relative_to(qualification_root)
-            for path in (
-                task_home,
-                codex_config_root,
-                runtime_state_root,
-                lifecycle_root,
-            )
-        ) and len(
-            {
-                task_home,
-                codex_config_root,
-                runtime_state_root,
-                lifecycle_root,
-            }
-        ) == 4
+    raw_records = product_run.get("mcp_lifecycle_records", [])
+    records = [
+        dict(record) for record in raw_records if isinstance(record, Mapping)
+    ] if isinstance(raw_records, list) else []
+    raw_closeout = product_run.get("mcp_closeout", {})
+    closeout = dict(raw_closeout) if isinstance(raw_closeout, Mapping) else {}
+    summary = closeout.get("summary", {})
+    normalized_summary = dict(summary) if isinstance(summary, Mapping) else {}
+    checks = closeout.get("closeout_checks", {})
+    closeout_checks = dict(checks) if isinstance(checks, Mapping) else {}
+    isolation = closeout.get("isolation", {})
+    normalized_isolation = (
+        dict(isolation) if isinstance(isolation, Mapping) else {}
+    )
+    identity_records_valid = bool(records) and all(
+        record.get("client") == "codex"
+        and not str(record.get("task_id", "")).startswith("unknown-")
+        and not str(record.get("session_id", "")).startswith("unknown-")
+        and record.get("source_commit") == source_commit
+        and record.get("formal_run") is True
+        and record.get("model_identity") == dict(model_identity)
+        and record.get("codex_identity") == dict(codex_identity)
+        and record.get("parent_identity_verified") is True
+        and isinstance(record.get("parent_identity_currently_verified"), bool)
+        and record.get("exit_reason") == "task-closeout"
+        for record in records
+    )
+    isolation_verified = (
+        closeout.get("isolation_verified") is True
+        and normalized_isolation.get("global_codex_state_used") is False
+        and normalized_isolation.get("configured_client_invocation") is True
+    )
     return {
         "status": (
             "passed"
-            if completed.returncode == 0
+            if product_run.get("status") == "passed"
+            and product_run.get("restart_verified") is True
+            and closeout.get("status") == "passed"
             and identity_records_valid
             and isolation_verified
             and all(closeout_checks.values())
             else "failed"
         ),
-        "returncode": completed.returncode,
-        "failure_tail": completed.stderr.strip()[-2000:],
+        "returncode": int(product_run.get("returncode", 1)),
+        "failure_tail": str(product_run.get("failure_tail", ""))[-2000:],
         "task_closeout_ready": identity_records_valid
         and all(closeout_checks.values()),
         "identity_records_valid": identity_records_valid,
         "isolation_verified": isolation_verified,
+        "restart_verified": product_run.get("restart_verified") is True,
         "task_ids": sorted(
             {
                 str(record.get("task_id", ""))
@@ -691,9 +609,9 @@ def _mcp_closeout_snapshot(
             }
         ),
         "records": records,
-        "summary": summary,
+        "summary": normalized_summary,
         "closeout_checks": closeout_checks,
-        "isolation": isolation,
+        "isolation": normalized_isolation,
     }
 
 
@@ -707,8 +625,17 @@ def qualify(
     codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     selected_source_commit = source_commit or resolve_source_commit(ROOT)
-    selected_model_identity = _normalized_identity(model_identity)
-    selected_codex_identity = _normalized_identity(codex_identity)
+    required_identity = "formal model and Codex identity are required"
+    selected_model_identity = normalize_identity(
+        model_identity,
+        label="model identity",
+        required_message=required_identity,
+    )
+    selected_codex_identity = normalize_identity(
+        codex_identity,
+        label="Codex identity",
+        required_message=required_identity,
+    )
     workflow = _workflow_metadata()
     raw_clients = workflow.get("clients", {})
     clients = raw_clients if isinstance(raw_clients, Mapping) else {}
@@ -748,7 +675,8 @@ def qualify(
         for name, tests in MCP_LIFECYCLE_TESTS.items()
     }
     lifecycle_closeout = _mcp_closeout_snapshot(
-        selected_source_commit,
+        client_runs.get("codex", {}),
+        source_commit=selected_source_commit,
         model_identity=selected_model_identity,
         codex_identity=selected_codex_identity,
     )
@@ -857,6 +785,10 @@ def qualify(
                 "status"
             ]
             == "passed",
+            "restart_closeout_covered": lifecycle_closeout.get(
+                "restart_verified"
+            )
+            is True,
             "groups": lifecycle_results,
             "closeout": lifecycle_closeout,
         },
@@ -889,28 +821,16 @@ def qualify(
     return report
 
 
-def _identity_argument(value: str) -> dict[str, object]:
-    try:
-        document = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError("identity must be valid JSON") from exc
-    if not isinstance(document, dict) or not document:
-        raise argparse.ArgumentTypeError(
-            "identity must be a non-empty JSON object"
-        )
-    return document
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model-identity",
-        type=_identity_argument,
+        type=identity_argument,
         required=True,
     )
     parser.add_argument(
         "--codex-identity",
-        type=_identity_argument,
+        type=identity_argument,
         required=True,
     )
     parser.add_argument("--product-manifest", type=Path)
