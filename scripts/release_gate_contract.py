@@ -103,6 +103,20 @@ def _verify_command(name: str, value: object, *, passed: bool) -> None:
         raise ValueError(f"Release Gate {name} command evidence is invalid")
 
 
+def _verify_formal_identity(value: object) -> None:
+    if not isinstance(value, Mapping):
+        raise ValueError("Release Gate formal identity is invalid")
+    model = value.get("model")
+    codex = value.get("codex")
+    if (
+        not isinstance(model, Mapping)
+        or not model
+        or not isinstance(codex, Mapping)
+        or not codex
+    ):
+        raise ValueError("Release Gate formal identity is invalid")
+
+
 def verify_release_gate_report(
     report: Mapping[str, object],
     *,
@@ -142,6 +156,7 @@ def verify_release_gate_report(
             or release_commit == source_commit
         ):
             raise ValueError("Release Gate candidate identity is invalid")
+        _verify_formal_identity(report.get("formal_identity"))
     environment = report.get("environment")
     if not isinstance(environment, Mapping) or not environment:
         raise ValueError("Release Gate lacks complete environment evidence")

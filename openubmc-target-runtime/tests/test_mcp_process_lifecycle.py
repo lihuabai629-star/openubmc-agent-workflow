@@ -468,6 +468,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 open_pidfd.return_value = 17
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
+                    task_id="task-100",
+                    session_id="session-100",
                     process_alive=lambda pid: pid in alive,
                     process_identity=lambda pid: f"process-{pid}-start",
                 )
@@ -503,6 +505,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
             ):
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
+                    task_id="task-100",
+                    session_id="session-100",
                     process_alive=lambda pid: pid == 1201,
                     process_identity=lambda pid: f"process-{pid}-start",
                 )
@@ -582,6 +586,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
+                    task_id="task-100",
+                    session_id="session-100",
                     process_alive=lambda pid: pid in alive,
                     process_identity=lambda pid: f"process-{pid}-start",
                 )
@@ -619,6 +625,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
             ):
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
+                    task_id="task-100",
+                    session_id="session-100",
                     process_alive=lambda pid: pid in alive,
                     process_identity=lambda pid: f"process-{pid}-start",
                 )
@@ -654,6 +662,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
+                    task_id="task-100",
+                    session_id="session-100",
                     process_alive=lambda pid: pid in alive,
                     process_identity=lambda _pid: next(identities),
                 )
@@ -691,6 +701,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
             ):
                 cleaned = cleanup_confirmed_orphaned_mcp_processes(
                     lifecycle.lifecycle_root,
+                    task_id="task-100",
+                    session_id="session-100",
                     process_alive=lambda pid: pid in alive,
                     process_identity=lambda pid: f"process-{pid}-start",
                 )

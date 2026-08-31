@@ -57,13 +57,13 @@ class CandidateRelease(NamedTuple):
 
 def _normalized_identity(
     value: Mapping[str, object] | None,
-    fallback: Mapping[str, object],
 ) -> dict[str, object]:
-    selected = fallback if value is None else value
-    encoded = json.dumps(dict(selected), ensure_ascii=True, sort_keys=True)
+    if value is None:
+        raise ValueError("formal model and Codex identity are required")
+    encoded = json.dumps(dict(value), ensure_ascii=True, sort_keys=True)
     decoded = json.loads(encoded)
     if not isinstance(decoded, dict) or not decoded:
-        raise ValueError("formal identity must be a non-empty JSON object")
+        raise ValueError("formal model and Codex identity are required")
     return decoded
 
 
@@ -707,14 +707,8 @@ def qualify(
     codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     selected_source_commit = source_commit or resolve_source_commit(ROOT)
-    selected_model_identity = _normalized_identity(
-        model_identity,
-        {"model": "continuous-closeout-qualification"},
-    )
-    selected_codex_identity = _normalized_identity(
-        codex_identity,
-        {"client": "codex", "qualification": "continuous-closeout"},
-    )
+    selected_model_identity = _normalized_identity(model_identity)
+    selected_codex_identity = _normalized_identity(codex_identity)
     workflow = _workflow_metadata()
     raw_clients = workflow.get("clients", {})
     clients = raw_clients if isinstance(raw_clients, Mapping) else {}
@@ -895,8 +889,30 @@ def qualify(
     return report
 
 
+def _identity_argument(value: str) -> dict[str, object]:
+    try:
+        document = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError("identity must be valid JSON") from exc
+    if not isinstance(document, dict) or not document:
+        raise argparse.ArgumentTypeError(
+            "identity must be a non-empty JSON object"
+        )
+    return document
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--model-identity",
+        type=_identity_argument,
+        required=True,
+    )
+    parser.add_argument(
+        "--codex-identity",
+        type=_identity_argument,
+        required=True,
+    )
     parser.add_argument("--product-manifest", type=Path)
     parser.add_argument("--product-ingestion", type=Path)
     parser.add_argument("--runtime-repository", type=Path)
@@ -909,6 +925,8 @@ def main(argv: list[str] | None = None) -> int:
             product_ingestion=args.product_ingestion,
             runtime_repository=args.runtime_repository,
             source_commit=args.source_commit,
+            model_identity=args.model_identity,
+            codex_identity=args.codex_identity,
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)

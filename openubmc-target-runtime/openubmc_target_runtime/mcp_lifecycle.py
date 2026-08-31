@@ -499,8 +499,8 @@ def inspect_mcp_process_records(
 def cleanup_confirmed_orphaned_mcp_processes(
     lifecycle_root: Path,
     *,
-    task_id: str | None = None,
-    session_id: str | None = None,
+    task_id: str,
+    session_id: str,
     process_alive: Callable[[int], bool] = _default_process_alive,
     process_identity: Callable[[int], str] = _default_process_identity,
 ) -> list[int]:
@@ -514,8 +514,8 @@ def cleanup_confirmed_orphaned_mcp_processes(
     ):
         process_id = int(status["process_id"])
         if (
-            (task_id is not None and status.get("task_id") != task_id)
-            or (session_id is not None and status.get("session_id") != session_id)
+            status.get("task_id") != task_id
+            or status.get("session_id") != session_id
             or process_id == os.getpid()
             or status["lifecycle_state"] != "orphaned"
             or status["identity_verified"] is not True

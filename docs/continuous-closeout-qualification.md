@@ -9,6 +9,8 @@ It can still be run directly for diagnostics or product-closeout evidence assemb
 
 ```bash
 python3 scripts/continuous_closeout_qualification.py \
+  --model-identity '{"provider":"openai","model":"gpt-5.6-sol"}' \
+  --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --product-manifest /path/to/product-evidence.json \
   --runtime-repository /trusted/runtime-state/runtime.sqlite3 \
   --output continuous-closeout-report.json
@@ -18,6 +20,8 @@ The same checkpoint can assemble the manifest from trusted Operator / CI inputs:
 
 ```bash
 python3 scripts/continuous_closeout_qualification.py \
+  --model-identity '{"provider":"openai","model":"gpt-5.6-sol"}' \
+  --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --product-ingestion /path/to/product-ingestion.json \
   --runtime-repository /trusted/runtime-state/runtime.sqlite3 \
   --output continuous-closeout-report.json
@@ -27,6 +31,10 @@ python3 scripts/continuous_closeout_qualification.py \
 target, terminal Outcome, source, and artifact identity from the Runtime ledger, clean Git
 repositories, and adjacent artifact metadata before the existing closeout verifier evaluates the
 result.
+
+`--model-identity` and `--codex-identity` are required non-empty JSON objects. The collector
+records and verifies these caller-supplied identities; it never substitutes qualification
+defaults for a formal run.
 
 Without `--product-manifest`, the hermetic repository checkpoint still runs and reports the fresh
 product evidence as an external blocker. When a manifest is supplied, the product evidence is

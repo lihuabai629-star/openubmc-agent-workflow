@@ -14,6 +14,8 @@ from scripts import continuous_closeout_qualification as qualification
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "continuous_closeout_qualification.py"
+MODEL_IDENTITY = {"model": "gpt-5.6-sol"}
+CODEX_IDENTITY = {"version": "codex-cli 0.151.0"}
 
 
 def passed_lifecycle_record() -> dict[str, object]:
@@ -275,7 +277,14 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self,
     ) -> None:
         completed = subprocess.run(
-            [sys.executable, str(SCRIPT)],
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--model-identity",
+                json.dumps(MODEL_IDENTITY),
+                "--codex-identity",
+                json.dumps(CODEX_IDENTITY),
+            ],
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -434,7 +443,10 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 return_value="a" * 40,
             ),
         ):
-            report = qualification.qualify()
+            report = qualification.qualify(
+                model_identity=MODEL_IDENTITY,
+                codex_identity=CODEX_IDENTITY,
+            )
 
         self.assertTrue(report["qualified"])
         self.assertEqual(report["client_matrix"]["status"], "passed")
@@ -571,6 +583,8 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             report = qualification.qualify(
                 product_ingestion=descriptor,
                 runtime_repository=runtime_repository,
+                model_identity=MODEL_IDENTITY,
+                codex_identity=CODEX_IDENTITY,
             )
 
         load_ingestion.assert_called_once_with(descriptor)
@@ -583,6 +597,13 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         )
         self.assertTrue(report["fresh_product_promotable"])
         self.assertEqual(report["external_blockers"], [])
+
+    def test_qualification_requires_explicit_formal_identity(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal model and Codex identity are required",
+        ):
+            qualification.qualify()
 
 
 if __name__ == "__main__":

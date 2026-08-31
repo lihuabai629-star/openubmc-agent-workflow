@@ -344,8 +344,16 @@ def _identity_argument(value: str) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-identity", type=_identity_argument)
-    parser.add_argument("--codex-identity", type=_identity_argument)
+    parser.add_argument(
+        "--model-identity",
+        type=_identity_argument,
+        required=True,
+    )
+    parser.add_argument(
+        "--codex-identity",
+        type=_identity_argument,
+        required=True,
+    )
     parser.add_argument("--source-commit")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)

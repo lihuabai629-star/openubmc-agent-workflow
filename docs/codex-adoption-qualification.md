@@ -6,11 +6,13 @@ qualification matrix:
 
 ```bash
 python3 scripts/codex_adoption_qualification.py \
+  --model-identity '{"provider":"openai","model":"gpt-5.6-sol"}' \
+  --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --source-commit "$(git rev-parse HEAD)" \
   --output codex-adoption-qualification.json
 ```
 
-Optional model and Codex provenance can be supplied as JSON objects:
+Model and Codex provenance are required non-empty JSON objects:
 
 ```bash
 python3 scripts/codex_adoption_qualification.py \

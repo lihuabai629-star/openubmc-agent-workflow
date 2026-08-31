@@ -178,6 +178,8 @@ Before promotion, run the execute A/B qualification described in
 python3 scripts/release_gate.py \
   --current-ref v2.0.2 \
   --previous-ref v2.0.1 \
+  --model-identity '{"provider":"openai","model":"gpt-5.6-sol"}' \
+  --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --ab-evidence /path/to/qualification-results/summary.json \
   --ab-attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \
   --output release-gate.json
@@ -194,6 +196,9 @@ The gate requires clean installation, previous-to-current upgrade, rollback, Age
 contracts, and deterministic Case Replay smoke in that order. A failed gate skips all later gates
 and prevents promotion. The GitHub Release workflow applies the same ordering and publishes the
 prepared draft release only after the gate job succeeds.
+
+Formal model and Codex identities are required at the Release Gate boundary, propagated into
+Codex Adoption Qualification, and checked against the returned provenance before promotion.
 
 ## Session Outcome governance
 
