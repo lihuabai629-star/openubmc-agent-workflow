@@ -114,6 +114,42 @@ def closeout_report() -> dict[str, object]:
                         },
                         "is_error": True,
                     },
+                    "codex_process_invocation": True,
+                    "codex_process_runs": [
+                        {
+                            "process_id": 123,
+                            "process_identity": "parent-identity",
+                            "parent_pid": 123,
+                            "parent_identity": "parent-identity",
+                            "executable": "/isolated/codex",
+                            "executable_sha256": "sha256:" + "9" * 64,
+                            "version": "codex-cli 0.151.0",
+                            "returncode": 0,
+                        },
+                        {
+                            "process_id": 124,
+                            "process_identity": "parent-identity-2",
+                            "parent_pid": 124,
+                            "parent_identity": "parent-identity-2",
+                            "executable": "/isolated/codex",
+                            "executable_sha256": "sha256:" + "9" * 64,
+                            "version": "codex-cli 0.151.0",
+                            "returncode": 0,
+                        },
+                    ],
+                    "captured_model_tools": [
+                        "mcp__openubmc_target_runtime",
+                    ],
+                    "captured_runtime_tool_contracts": [
+                        {
+                            "name": "mcp__openubmc_target_runtime",
+                            "type": "namespace",
+                            "tools": [
+                                {"name": "execute"},
+                                {"name": "observe"},
+                            ],
+                        }
+                    ],
                     "restart_verified": True,
                     "mcp_closeout": {
                         "status": "passed",
@@ -171,7 +207,7 @@ def closeout_report() -> dict[str, object]:
                             "runtime_state_root": "/isolated/runtime-state",
                             "lifecycle_state": "stopped",
                             "active_requests": 0,
-                            "exit_reason": "task-closeout",
+                            "exit_reason": "client-terminated",
                         },
                         {
                             "schema": "openubmc.mcp-process-lifecycle.v1",
@@ -184,8 +220,8 @@ def closeout_report() -> dict[str, object]:
                             "formal_run": True,
                             "model_identity": FORMAL_MODEL_IDENTITY,
                             "codex_identity": FORMAL_CODEX_IDENTITY,
-                            "parent_pid": 123,
-                            "parent_identity": "parent-identity",
+                            "parent_pid": 124,
+                            "parent_identity": "parent-identity-2",
                             "parent_identity_verified": True,
                             "parent_identity_currently_verified": True,
                             "process_id": 457,
@@ -194,7 +230,7 @@ def closeout_report() -> dict[str, object]:
                             "runtime_state_root": "/isolated/runtime-state",
                             "lifecycle_state": "stopped",
                             "active_requests": 0,
-                            "exit_reason": "task-closeout",
+                            "exit_reason": "client-terminated",
                         },
                     ],
                 }
@@ -567,6 +603,32 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         failures = report["dimensions"]["codex_mcp"]["failure_codes"]
         self.assertIn("restart_unverified", failures)
         self.assertIn("mcp_closeout_invalid", failures)
+
+    def test_launcher_protocol_without_a_real_codex_process_fails_mcp_dimension(
+        self,
+    ) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["codex_process_invocation"] = False
+        codex["codex_process_runs"] = []
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
 
     def test_missing_owned_process_zero_proof_fails_lifecycle_dimension(self) -> None:
         closeout = closeout_report()

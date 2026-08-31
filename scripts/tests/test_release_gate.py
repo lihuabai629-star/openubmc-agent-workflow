@@ -111,6 +111,40 @@ def codex_adoption_report(
                     },
                     "is_error": True,
                 },
+                "codex_process_invocation": True,
+                "codex_process_runs": [
+                    {
+                        "process_id": 123,
+                        "process_identity": "parent-identity",
+                        "parent_pid": 123,
+                        "parent_identity": "parent-identity",
+                        "executable": "/isolated/codex",
+                        "executable_sha256": "sha256:" + "9" * 64,
+                        "version": "codex-cli 0.151.0",
+                        "returncode": 0,
+                    },
+                    {
+                        "process_id": 124,
+                        "process_identity": "parent-identity-2",
+                        "parent_pid": 124,
+                        "parent_identity": "parent-identity-2",
+                        "executable": "/isolated/codex",
+                        "executable_sha256": "sha256:" + "9" * 64,
+                        "version": "codex-cli 0.151.0",
+                        "returncode": 0,
+                    },
+                ],
+                "captured_model_tools": ["mcp__openubmc_target_runtime"],
+                "captured_runtime_tool_contracts": [
+                    {
+                        "name": "mcp__openubmc_target_runtime",
+                        "type": "namespace",
+                        "tools": [
+                            {"name": "execute"},
+                            {"name": "observe"},
+                        ],
+                    }
+                ],
                 "restart_verified": True,
                 "mcp_closeout": {
                     "status": "passed",
@@ -163,7 +197,7 @@ def codex_adoption_report(
                         "runtime_state_root": "/isolated/runtime-state",
                         "lifecycle_state": "stopped",
                         "active_requests": 0,
-                        "exit_reason": "task-closeout",
+                        "exit_reason": "client-terminated",
                     },
                     {
                         "schema": "openubmc.mcp-process-lifecycle.v1",
@@ -176,8 +210,8 @@ def codex_adoption_report(
                         "formal_run": True,
                         "model_identity": MODEL_IDENTITY,
                         "codex_identity": CODEX_IDENTITY,
-                        "parent_pid": 123,
-                        "parent_identity": "parent-identity",
+                        "parent_pid": 124,
+                        "parent_identity": "parent-identity-2",
                         "parent_identity_verified": True,
                         "parent_identity_currently_verified": True,
                         "process_id": 457,
@@ -186,7 +220,7 @@ def codex_adoption_report(
                         "runtime_state_root": "/isolated/runtime-state",
                         "lifecycle_state": "stopped",
                         "active_requests": 0,
-                        "exit_reason": "task-closeout",
+                        "exit_reason": "client-terminated",
                     },
                 ],
             },
@@ -1082,6 +1116,14 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(
             steps["actions/setup-python@v7"]["with"]["python-version"],
             "3.12.13",
+        )
+        self.assertEqual(
+            steps["actions/setup-node@v7"]["with"]["node-version"],
+            "22.23.2",
+        )
+        self.assertEqual(
+            steps["Install locked Node validation dependencies"]["run"],
+            "npm ci --no-audit --no-fund --prefix openubmc-kb-mcp",
         )
         self.assertEqual(
             steps["Upload release evidence"]["uses"],

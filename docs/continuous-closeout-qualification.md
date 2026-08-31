@@ -45,7 +45,8 @@ the Operator / CI Plane independently of manifest-authored paths.
 The checkpoint verifies:
 
 - Codex installs a working Runtime MCP registration whose configured stdio command completes
-  `initialize` and `tools/list`;
+  `initialize` and `tools/list`, while two pinned real Codex processes prove direct Runtime parent
+  ownership, restart, namespace registration, and process closeout;
 - DSH remains a disjoint, task-owned evaluation harness with isolated home, configuration,
   Runtime state, session, and MCP lifecycle roots;
 - MCP lifecycle tests cover parent loss, active-request drain, identity-bound orphan cleanup, and

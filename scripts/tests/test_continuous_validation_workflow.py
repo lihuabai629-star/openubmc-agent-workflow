@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import unittest
 
 import yaml
@@ -10,6 +11,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "validate.yml"
 PYTHON_LOCK = REPO_ROOT / "requirements-ci.lock"
+NODE_PACKAGE = REPO_ROOT / "openubmc-kb-mcp" / "package.json"
+NODE_LOCK = REPO_ROOT / "openubmc-kb-mcp" / "package-lock.json"
 
 
 class ContinuousValidationWorkflowTests(unittest.TestCase):
@@ -107,6 +110,20 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
                 if step.get("name") == "Check out repository"
             )
             self.assertEqual(checkout["with"]["fetch-depth"], "0")
+
+    def test_codex_process_probe_dependency_is_locked(self) -> None:
+        package = json.loads(NODE_PACKAGE.read_text(encoding="utf-8"))
+        lock = json.loads(NODE_LOCK.read_text(encoding="utf-8"))
+
+        self.assertEqual(package["devDependencies"]["@openai/codex"], "0.151.0")
+        self.assertEqual(
+            lock["packages"][""]["devDependencies"]["@openai/codex"],
+            "0.151.0",
+        )
+        self.assertEqual(
+            lock["packages"]["node_modules/@openai/codex"]["version"],
+            "0.151.0",
+        )
 
     def test_validation_does_not_request_credentials_or_private_targets(self) -> None:
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})

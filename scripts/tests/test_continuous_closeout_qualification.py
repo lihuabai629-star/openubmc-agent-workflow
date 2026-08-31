@@ -43,7 +43,7 @@ def passed_lifecycle_record() -> dict[str, object]:
         "runtime_state_root": "/isolated/runtime-state",
         "lifecycle_state": "stopped",
         "active_requests": 0,
-        "exit_reason": "task-closeout",
+        "exit_reason": "client-terminated",
     }
 
 
@@ -166,11 +166,52 @@ def passed_product_client_run(name: str) -> dict[str, object]:
             },
             "is_error": True,
         },
+        "codex_process_invocation": True,
+        "codex_process_runs": [
+            {
+                "process_id": 123,
+                "process_identity": "parent-identity",
+                "parent_pid": 123,
+                "parent_identity": "parent-identity",
+                "executable": "/isolated/codex",
+                "executable_sha256": "sha256:" + "9" * 64,
+                "version": "codex-cli 0.151.0",
+                "returncode": 0,
+            },
+            {
+                "process_id": 124,
+                "process_identity": "parent-identity-2",
+                "parent_pid": 124,
+                "parent_identity": "parent-identity-2",
+                "executable": "/isolated/codex",
+                "executable_sha256": "sha256:" + "9" * 64,
+                "version": "codex-cli 0.151.0",
+                "returncode": 0,
+            },
+        ],
+        "captured_model_tools": [
+            "mcp__openubmc_target_runtime",
+        ],
+        "captured_runtime_tool_contracts": [
+            {
+                "name": "mcp__openubmc_target_runtime",
+                "type": "namespace",
+                "tools": [
+                    {"name": "execute"},
+                    {"name": "observe"},
+                ],
+            }
+        ],
         "restart_verified": True,
         "mcp_closeout": passed_mcp_closeout(),
         "mcp_lifecycle_records": [
             passed_lifecycle_record(),
-            {**passed_lifecycle_record(), "process_id": 457},
+            {
+                **passed_lifecycle_record(),
+                "parent_pid": 124,
+                "parent_identity": "parent-identity-2",
+                "process_id": 457,
+            },
         ],
     }
 
@@ -347,6 +388,21 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(
             run["runtime_invocation"], "installed-runtime-launcher-protocol"
         )
+        self.assertTrue(run["codex_process_invocation"])
+        self.assertEqual(len(run["codex_process_runs"]), 2)
+        self.assertTrue(
+            all(item["version"] == "codex-cli 0.151.0" for item in run["codex_process_runs"])
+        )
+        self.assertEqual(
+            {item["process_id"] for item in run["codex_process_runs"]},
+            {item["parent_pid"] for item in run["mcp_lifecycle_records"]},
+        )
+        runtime_contract = run["captured_runtime_tool_contracts"][0]
+        self.assertEqual(runtime_contract["name"], "mcp__openubmc_target_runtime")
+        self.assertEqual(
+            {tool["name"] for tool in runtime_contract["tools"]},
+            {"execute", "observe"},
+        )
         self.assertEqual(
             run["protocol_exchange"],
             ["initialize", "tools/list", "tools/call:execute"],
@@ -385,7 +441,7 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
         self.assertEqual(closeout["session_ids"], ["codex-adoption-session"])
         self.assertEqual(closeout["records"][0]["client"], "codex")
         self.assertEqual(closeout["records"][0]["source_commit"], report["source_commit"])
-        self.assertEqual(closeout["records"][0]["exit_reason"], "task-closeout")
+        self.assertEqual(closeout["records"][0]["exit_reason"], "client-terminated")
         self.assertTrue(closeout["records"][0]["parent_identity_verified"])
         self.assertTrue(closeout["records"][0]["model_identity"])
         self.assertTrue(closeout["records"][0]["codex_identity"])

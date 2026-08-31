@@ -202,6 +202,17 @@ def qualify(
         "launcher_identity": launcher_identity,
         "launcher_identity_digest": launcher_identity_digest,
         "workflow_exchange": workflow_exchange,
+        "codex_process_invocation": codex_run.get(
+            "codex_process_invocation"
+        )
+        is True,
+        "codex_process_runs": list(codex_run.get("codex_process_runs", [])),
+        "captured_model_tools": list(
+            codex_run.get("captured_model_tools", [])
+        ),
+        "captured_runtime_tool_contracts": list(
+            codex_run.get("captured_runtime_tool_contracts", [])
+        ),
         "mcp_lifecycle_records": mcp_lifecycle_records,
         "restart_verified": codex_run.get("restart_verified") is True,
         "mcp_closeout": _mapping(codex_run.get("mcp_closeout")),

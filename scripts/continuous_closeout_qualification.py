@@ -568,7 +568,7 @@ def _mcp_closeout_snapshot(
         and record.get("codex_identity") == dict(codex_identity)
         and record.get("parent_identity_verified") is True
         and isinstance(record.get("parent_identity_currently_verified"), bool)
-        and record.get("exit_reason") == "task-closeout"
+        and record.get("exit_reason") == "client-terminated"
         for record in records
     )
     isolation_verified = (

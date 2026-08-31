@@ -219,10 +219,86 @@ def _mcp_lifecycle_failures(
         and isinstance(record.get("active_requests"), int)
         and not isinstance(record.get("active_requests"), bool)
         and record.get("active_requests") == 0
-        and record.get("exit_reason") == "task-closeout"
+        and record.get("exit_reason") in {"client-terminated", "task-closeout"}
         for record in records
     )
     return [] if valid else ["mcp_lifecycle_identity_invalid"]
+
+
+def _codex_process_failures(
+    evidence: Mapping[str, object],
+) -> list[str]:
+    raw_runs = evidence.get("codex_process_runs")
+    runs = raw_runs if isinstance(raw_runs, list) else []
+    raw_records = evidence.get("mcp_lifecycle_records")
+    records = raw_records if isinstance(raw_records, list) else []
+    captured_tools = evidence.get("captured_model_tools")
+    raw_contracts = evidence.get("captured_runtime_tool_contracts")
+    contracts = raw_contracts if isinstance(raw_contracts, list) else []
+    runtime_contracts = [
+        contract
+        for contract in contracts
+        if isinstance(contract, Mapping)
+        and contract.get("name") == "mcp__openubmc_target_runtime"
+        and contract.get("type") == "namespace"
+    ]
+    nested_tool_names = {
+        str(tool.get("name"))
+        for contract in runtime_contracts
+        for tool in (
+            contract.get("tools")
+            if isinstance(contract.get("tools"), list)
+            else []
+        )
+        if isinstance(tool, Mapping)
+    }
+    bindings: set[tuple[int, str]] = set()
+    valid_runs = len(runs) == 2
+    for run in runs:
+        if not isinstance(run, Mapping):
+            valid_runs = False
+            continue
+        process_id = run.get("process_id")
+        process_identity = str(run.get("process_identity", ""))
+        valid = all(
+            (
+                isinstance(process_id, int),
+                not isinstance(process_id, bool),
+                int(process_id or 0) > 1,
+                process_identity not in {"", "unknown"},
+                run.get("parent_pid") == process_id,
+                run.get("parent_identity") == process_identity,
+                Path(str(run.get("executable", ""))).is_absolute(),
+                _sha256(run.get("executable_sha256")),
+                run.get("version") == "codex-cli 0.151.0",
+                run.get("returncode") == 0,
+            )
+        )
+        valid_runs = valid_runs and valid
+        if valid and isinstance(process_id, int):
+            bindings.add((process_id, process_identity))
+    record_bindings = {
+        (record.get("parent_pid"), str(record.get("parent_identity", "")))
+        for record in records
+        if isinstance(record, Mapping)
+    }
+    valid = all(
+        (
+            evidence.get("codex_process_invocation") is True,
+            valid_runs,
+            len(bindings) == 2,
+            record_bindings == bindings,
+            isinstance(captured_tools, list),
+            "mcp__openubmc_target_runtime" in (
+                {str(item) for item in captured_tools}
+                if isinstance(captured_tools, list)
+                else set()
+            ),
+            nested_tool_names == {"execute", "observe"},
+            evidence.get("restart_verified") is True,
+        )
+    )
+    return [] if valid else ["codex_process_unverified"]
 
 
 def _mcp_closeout_failures(value: object, records_value: object) -> list[str]:
@@ -355,6 +431,7 @@ def codex_mcp_failures(
     )
     return [
         *[name for name, passed in checks if not passed],
+        *_codex_process_failures(evidence),
         *_mcp_lifecycle_failures(
             evidence.get("mcp_lifecycle_records"),
             expected_source_commit=expected_source_commit,
@@ -488,6 +565,7 @@ def codex_mcp_dimension_failures(
     )
     return [
         *[name for name, passed in checks if not passed],
+        *_codex_process_failures(codex_mcp),
         *_mcp_lifecycle_failures(
             codex_mcp.get("mcp_lifecycle_records"),
             expected_source_commit=expected_source_commit,
