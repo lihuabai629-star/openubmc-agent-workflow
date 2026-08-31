@@ -25,6 +25,7 @@ def passed_lifecycle_record() -> dict[str, object]:
         "task_id": "codex-adoption-probe",
         "session_id": "codex-adoption-session",
         "source_commit": "a" * 40,
+        "formal_run": True,
         "model_identity": {"model": "codex-product-client-qualification"},
         "codex_identity": {
             "client_info_name": "codex-adoption-qualification",

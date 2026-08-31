@@ -25,6 +25,7 @@ test("records ownership and never expires while a request is active", async () =
       version: "codex-cli 0.150.0",
       executable_sha256: `sha256:${"b".repeat(64)}`
     },
+    formalRun: true,
     parentPid: 1200,
     processId: 1201,
     statePath: join(root, "kb-state"),
@@ -50,6 +51,7 @@ test("records ownership and never expires while a request is active", async () =
   assert.equal(recorded.task_id, "kb-task");
   assert.equal(recorded.session_id, "kb-session");
   assert.equal(recorded.source_commit, "a".repeat(40));
+  assert.equal(recorded.formal_run, true);
   assert.deepEqual(recorded.model_identity, { model: "gpt-5.6-sol" });
   assert.deepEqual(recorded.codex_identity, {
     version: "codex-cli 0.150.0",

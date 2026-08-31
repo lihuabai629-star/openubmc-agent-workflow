@@ -40,6 +40,8 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("operation", choices=("status", "cleanup"))
     command.add_argument("--root", type=Path, default=default_lifecycle_root())
     command.add_argument("--dry-run", action="store_true")
+    command.add_argument("--task-id")
+    command.add_argument("--session-id")
     return command
 
 
@@ -79,6 +81,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     root = args.root.expanduser().absolute()
     records = inspect_mcp_process_records(root)
+    records = [
+        record
+        for record in records
+        if (args.task_id is None or record.get("task_id") == args.task_id)
+        and (args.session_id is None or record.get("session_id") == args.session_id)
+    ]
     records_before_cleanup = list(records)
     confirmed = sorted(
         int(record["process_id"])
@@ -90,8 +98,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     cleaned: list[int] = []
     if args.operation == "cleanup" and not args.dry_run:
-        cleaned = cleanup_confirmed_orphaned_mcp_processes(root)
-        records = inspect_mcp_process_records(root)
+        cleaned = cleanup_confirmed_orphaned_mcp_processes(
+            root,
+            task_id=args.task_id,
+            session_id=args.session_id,
+        )
+        records = [
+            record
+            for record in inspect_mcp_process_records(root)
+            if (args.task_id is None or record.get("task_id") == args.task_id)
+            and (args.session_id is None or record.get("session_id") == args.session_id)
+        ]
     summary = summarize(records)
     closeout_checks = {
         "active_requests_zero": summary["active_requests"] == 0,

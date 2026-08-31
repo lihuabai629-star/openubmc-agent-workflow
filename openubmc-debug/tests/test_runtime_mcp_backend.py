@@ -1992,6 +1992,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                     "OPENUBMC_MCP_CODEX_IDENTITY": json.dumps(
                         {"version": "codex-cli 0.150.0"}
                     ),
+                    "OPENUBMC_MCP_FORMAL_RUN": "1",
                     "OPENUBMC_MCP_PARENT_PID": str(os.getpid()),
                     "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
                     "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
@@ -2007,6 +2008,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
         self.assertEqual(lifecycle["session_id"], "lifecycle-session")
         self.assertEqual(lifecycle["source_commit"], "a" * 40)
         self.assertEqual(lifecycle["model_identity"], {"model": "gpt-5.6-sol"})
+        self.assertTrue(lifecycle["formal_run"])
         self.assertEqual(
             lifecycle["codex_identity"], {"version": "codex-cli 0.150.0"}
         )
@@ -2113,6 +2115,34 @@ class RuntimeMcpBackendTests(unittest.TestCase):
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("OPENUBMC_MCP_MODEL_IDENTITY must be a JSON object", completed.stderr)
+        self.assertEqual(lifecycle["exit_reason"], "startup-error")
+
+    def test_formal_stdio_entrypoint_requires_model_and_codex_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "target_runtime_mcp.py")],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "OPENUBMC_MCP_CLIENT": "codex",
+                    "OPENUBMC_MCP_TASK_ID": "formal-identity-task",
+                    "OPENUBMC_MCP_SESSION_ID": "formal-identity-session",
+                    "OPENUBMC_MCP_FORMAL_RUN": "1",
+                    "OPENUBMC_MCP_LIFECYCLE_DIR": str(root / "processes"),
+                    "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(root / "runtime-state"),
+                },
+            )
+            records = list((root / "processes").glob("*.json"))
+            lifecycle = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn(
+            "formal MCP run requires model and Codex identity", completed.stderr
+        )
+        self.assertTrue(lifecycle["formal_run"])
         self.assertEqual(lifecycle["exit_reason"], "startup-error")
 
     def test_stdio_validation_failure_returns_an_error_and_keeps_serving(self) -> None:

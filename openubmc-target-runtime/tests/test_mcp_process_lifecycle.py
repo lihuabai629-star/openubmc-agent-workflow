@@ -67,6 +67,7 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 "version": "codex-cli 0.150.0",
                 "executable_sha256": "sha256:" + "b" * 64,
             },
+            formal_run=True,
             parent_pid=1200,
             process_id=1201,
             state_path=Path(raw) / "runtime-state",
@@ -96,6 +97,7 @@ class McpProcessLifecycleTests(unittest.TestCase):
         self.assertEqual(recorded["task_id"], "task-100")
         self.assertEqual(recorded["session_id"], "session-100")
         self.assertEqual(recorded["source_commit"], "a" * 40)
+        self.assertTrue(recorded["formal_run"])
         self.assertEqual(recorded["model_identity"], {"model": "gpt-5.6-sol"})
         self.assertEqual(
             recorded["codex_identity"],
@@ -508,6 +510,52 @@ class McpProcessLifecycleTests(unittest.TestCase):
         self.assertEqual(cleaned, [])
         open_pidfd.assert_not_called()
         send_signal.assert_not_called()
+
+    def test_cleanup_scopes_owned_orphans_to_one_task_and_session(self) -> None:
+        clock = FakeClock()
+        alive = {1200, 1201, 1301}
+        with tempfile.TemporaryDirectory() as raw:
+            lifecycle = self.make_lifecycle(
+                raw,
+                clock,
+                process_alive=lambda pid: pid in alive,
+            )
+            second = {
+                **lifecycle.status(),
+                "task_id": "task-200",
+                "session_id": "session-200",
+                "process_id": 1301,
+                "process_identity": "process-1301-start",
+            }
+            (lifecycle.lifecycle_root / "target-runtime-1301.json").write_text(
+                json.dumps(second), encoding="utf-8"
+            )
+            alive.remove(1200)
+            with (
+                mock.patch(
+                    "openubmc_target_runtime.mcp_lifecycle.os.pidfd_open",
+                    return_value=17,
+                ) as open_pidfd,
+                mock.patch(
+                    "openubmc_target_runtime.mcp_lifecycle.signal.pidfd_send_signal"
+                ) as send_signal,
+                mock.patch(
+                    "openubmc_target_runtime.mcp_lifecycle.select.poll",
+                    return_value=ExitedPidfdPoll(),
+                ),
+                mock.patch("openubmc_target_runtime.mcp_lifecycle.os.close"),
+            ):
+                cleaned = cleanup_confirmed_orphaned_mcp_processes(
+                    lifecycle.lifecycle_root,
+                    task_id="task-100",
+                    session_id="session-100",
+                    process_alive=lambda pid: pid in alive,
+                    process_identity=lambda pid: f"process-{pid}-start",
+                )
+
+        self.assertEqual(cleaned, [1201])
+        open_pidfd.assert_called_once_with(1201, 0)
+        send_signal.assert_called_once_with(17, signal.SIGTERM)
 
     def test_cleanup_signals_the_identity_bound_process_handle(self) -> None:
         clock = FakeClock()

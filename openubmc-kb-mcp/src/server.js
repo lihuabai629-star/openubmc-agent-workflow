@@ -62,6 +62,15 @@ function identityEnvironment(name) {
 }
 
 
+function formalRunEnvironment() {
+  const raw = process.env.OPENUBMC_MCP_FORMAL_RUN?.trim().toLowerCase();
+  if (!raw) return { value: false, error: null };
+  if (["1", "true", "yes"].includes(raw)) return { value: true, error: null };
+  if (["0", "false", "no"].includes(raw)) return { value: false, error: null };
+  return { value: false, error: "OPENUBMC_MCP_FORMAL_RUN must be boolean" };
+}
+
+
 function createProcessLifecycle(path) {
   const configuredTask = process.env.OPENUBMC_MCP_TASK_ID?.trim()
     || process.env.CODEX_TASK_ID?.trim()
@@ -77,6 +86,7 @@ function createProcessLifecycle(path) {
     || "unknown-source-commit";
   const modelIdentity = identityEnvironment("OPENUBMC_MCP_MODEL_IDENTITY");
   const codexIdentity = identityEnvironment("OPENUBMC_MCP_CODEX_IDENTITY");
+  const formalRun = formalRunEnvironment();
   const configuredParentPid = process.env.OPENUBMC_MCP_PARENT_PID?.trim();
   let parentPid = configuredParentPid ? Number(configuredParentPid) : process.ppid;
   let startupError = null;
@@ -108,7 +118,17 @@ function createProcessLifecycle(path) {
   } catch (error) {
     startupError ||= error.message;
   }
-  startupError ||= modelIdentity.error || codexIdentity.error;
+  startupError ||= modelIdentity.error || codexIdentity.error || formalRun.error;
+  if (
+    startupError === null
+    && formalRun.value
+    && (
+      Object.keys(modelIdentity.value).length === 0
+      || Object.keys(codexIdentity.value).length === 0
+    )
+  ) {
+    startupError = "formal MCP run requires model and Codex identity";
+  }
   return {
     lifecycle: new McpProcessLifecycle({
       component: "knowledge-mcp",
@@ -119,6 +139,7 @@ function createProcessLifecycle(path) {
       sourceCommit,
       modelIdentity: modelIdentity.value,
       codexIdentity: codexIdentity.value,
+      formalRun: formalRun.value,
       parentPid,
       statePath,
       runtimeStateRoot,

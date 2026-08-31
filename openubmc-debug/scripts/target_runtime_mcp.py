@@ -1461,6 +1461,16 @@ def main() -> int:
 
     model_identity = identity_environment("OPENUBMC_MCP_MODEL_IDENTITY")
     codex_identity = identity_environment("OPENUBMC_MCP_CODEX_IDENTITY")
+    formal_run_raw = os.environ.get("OPENUBMC_MCP_FORMAL_RUN", "").strip().lower()
+    if formal_run_raw in {"", "0", "false", "no"}:
+        formal_run = False
+    elif formal_run_raw in {"1", "true", "yes"}:
+        formal_run = True
+    else:
+        formal_run = False
+        identity_errors.append("OPENUBMC_MCP_FORMAL_RUN must be boolean")
+    if formal_run and (not model_identity or not codex_identity):
+        identity_errors.append("formal MCP run requires model and Codex identity")
     parent_pid, parent_pid_error = _parent_pid_environment()
     state_dir = _runtime_state_dir()
     configured_lifecycle_root = os.environ.get(
@@ -1495,6 +1505,7 @@ def main() -> int:
         source_commit=source_commit,
         model_identity=model_identity,
         codex_identity=codex_identity,
+        formal_run=formal_run,
         parent_pid=parent_pid,
         state_path=state_dir,
         lifecycle_root=lifecycle_root,

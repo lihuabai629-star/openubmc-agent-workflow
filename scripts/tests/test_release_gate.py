@@ -107,6 +107,7 @@ def codex_adoption_report(
                         "task_id": "codex-adoption-probe",
                         "session_id": "codex-adoption-session",
                         "source_commit": source_commit,
+                        "formal_run": True,
                         "model_identity": {
                             "model": "codex-product-client-qualification"
                         },

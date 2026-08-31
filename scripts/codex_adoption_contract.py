@@ -203,6 +203,7 @@ def _mcp_lifecycle_failures(
         and bool(str(record.get("session_id", "")).strip())
         and not str(record.get("session_id", "")).startswith("unknown-")
         and record.get("source_commit") == expected_source_commit
+        and record.get("formal_run") is True
         and isinstance(record.get("model_identity"), Mapping)
         and bool(record.get("model_identity"))
         and isinstance(record.get("codex_identity"), Mapping)

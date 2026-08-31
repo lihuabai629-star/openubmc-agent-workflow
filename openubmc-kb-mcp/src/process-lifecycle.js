@@ -99,6 +99,7 @@ export class McpProcessLifecycle {
     sourceCommit = "unknown-source-commit",
     modelIdentity = {},
     codexIdentity = {},
+    formalRun = false,
     parentPid,
     statePath,
     lifecycleRoot,
@@ -118,6 +119,10 @@ export class McpProcessLifecycle {
     this.sourceCommit = required(sourceCommit, "sourceCommit");
     this.modelIdentity = identity(modelIdentity, "modelIdentity");
     this.codexIdentity = identity(codexIdentity, "codexIdentity");
+    if (typeof formalRun !== "boolean") {
+      throw new Error("formalRun must be a boolean");
+    }
+    this.formalRun = formalRun;
     this.parentPid = Number(parentPid);
     this.processId = Number(processId);
     if (!Number.isInteger(this.parentPid) || this.parentPid < 0) {
@@ -219,6 +224,7 @@ export class McpProcessLifecycle {
       source_commit: this.sourceCommit,
       model_identity: { ...this.modelIdentity },
       codex_identity: { ...this.codexIdentity },
+      formal_run: this.formalRun,
       parent_pid: this.parentPid,
       parent_identity: this.parentIdentity,
       parent_identity_verified: this.parentIdentityVerifiedEver,

@@ -132,6 +132,7 @@ class EnvironmentSetupTests(unittest.TestCase):
             "    source_commit=os.environ.get('OPENUBMC_MCP_SOURCE_COMMIT', 'unknown-source-commit'),\n"
             "    model_identity=json.loads(os.environ.get('OPENUBMC_MCP_MODEL_IDENTITY', '{}')),\n"
             "    codex_identity=json.loads(os.environ.get('OPENUBMC_MCP_CODEX_IDENTITY', '{}')),\n"
+            "    formal_run=os.environ.get('OPENUBMC_MCP_FORMAL_RUN') == '1',\n"
             "    parent_pid=os.getppid(), state_path=state_root,\n"
             "    lifecycle_root=lifecycle_root,\n"
             "    idle_timeout_seconds=30,\n"
@@ -502,6 +503,7 @@ class EnvironmentSetupTests(unittest.TestCase):
                     }
                 ),
             ),
+            "OPENUBMC_MCP_FORMAL_RUN": "1",
             "OPENUBMC_MCP_LIFECYCLE_DIR": str(lifecycle_root),
             "OPENUBMC_TARGET_RUNTIME_STATE_DIR": str(runtime_state_root),
         }
@@ -542,6 +544,7 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(lifecycle["task_id"], "codex-adoption-probe")
         self.assertEqual(lifecycle["session_id"], "codex-adoption-session")
         self.assertEqual(lifecycle["source_commit"], runtime["source_commit"])
+        self.assertTrue(lifecycle["formal_run"])
         self.assertTrue(lifecycle["parent_identity_verified"])
         self.assertIsInstance(
             lifecycle["parent_identity_currently_verified"], bool

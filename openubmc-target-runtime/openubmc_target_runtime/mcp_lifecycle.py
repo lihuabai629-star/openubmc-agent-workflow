@@ -71,6 +71,7 @@ class McpProcessLifecycle:
         source_commit: str = "unknown-source-commit",
         model_identity: Mapping[str, object] | None = None,
         codex_identity: Mapping[str, object] | None = None,
+        formal_run: bool = False,
         parent_pid: int,
         state_path: Path,
         lifecycle_root: Path,
@@ -89,6 +90,9 @@ class McpProcessLifecycle:
         self.source_commit = self._required(source_commit, "source_commit")
         self.model_identity = self._identity(model_identity, "model_identity")
         self.codex_identity = self._identity(codex_identity, "codex_identity")
+        if not isinstance(formal_run, bool):
+            raise ValueError("formal_run must be a boolean")
+        self.formal_run = formal_run
         if isinstance(parent_pid, bool) or not isinstance(parent_pid, int) or parent_pid < 0:
             raise ValueError("parent_pid must be a non-negative integer")
         resolved_process_id = os.getpid() if process_id is None else process_id
@@ -237,6 +241,7 @@ class McpProcessLifecycle:
                 "source_commit": self.source_commit,
                 "model_identity": dict(self.model_identity),
                 "codex_identity": dict(self.codex_identity),
+                "formal_run": self.formal_run,
                 "parent_pid": self.parent_pid,
                 "parent_identity": self.parent_identity,
                 "parent_identity_verified": self._parent_identity_verified_ever,
@@ -494,6 +499,8 @@ def inspect_mcp_process_records(
 def cleanup_confirmed_orphaned_mcp_processes(
     lifecycle_root: Path,
     *,
+    task_id: str | None = None,
+    session_id: str | None = None,
     process_alive: Callable[[int], bool] = _default_process_alive,
     process_identity: Callable[[int], str] = _default_process_identity,
 ) -> list[int]:
@@ -507,7 +514,9 @@ def cleanup_confirmed_orphaned_mcp_processes(
     ):
         process_id = int(status["process_id"])
         if (
-            process_id == os.getpid()
+            (task_id is not None and status.get("task_id") != task_id)
+            or (session_id is not None and status.get("session_id") != session_id)
+            or process_id == os.getpid()
             or status["lifecycle_state"] != "orphaned"
             or status["identity_verified"] is not True
             or status["ownership_identity_bound"] is not True

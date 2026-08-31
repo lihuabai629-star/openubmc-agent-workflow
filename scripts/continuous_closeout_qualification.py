@@ -580,6 +580,7 @@ def _mcp_closeout_snapshot(
                 f"    source_commit={source_commit!r},",
                 f"    model_identity={dict(model_identity)!r},",
                 f"    codex_identity={dict(codex_identity)!r},",
+                "    formal_run=True,",
                 "    parent_pid=os.getppid(),",
                 f"    state_path=Path({str(runtime_state_root)!r}),",
                 "    lifecycle_root=root,",
@@ -626,6 +627,7 @@ def _mcp_closeout_snapshot(
             and record.get("task_id") == "continuous-closeout-qualification"
             and record.get("session_id") == "continuous-closeout-session"
             and record.get("source_commit") == source_commit
+            and record.get("formal_run") is True
             and isinstance(record.get("model_identity"), Mapping)
             and record.get("model_identity") == dict(model_identity)
             and isinstance(record.get("codex_identity"), Mapping)

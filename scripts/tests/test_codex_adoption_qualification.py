@@ -108,6 +108,7 @@ def closeout_report() -> dict[str, object]:
                             "task_id": "codex-adoption-probe",
                             "session_id": "codex-adoption-session",
                             "source_commit": "a" * 40,
+                            "formal_run": True,
                             "model_identity": {
                                 "model": "codex-product-client-qualification"
                             },
@@ -446,6 +447,30 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         self.assertFalse(report["qualified"])
         self.assertIn(
             "mcp_lifecycle_records_missing",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_non_formal_lifecycle_identity_fails_mcp_dimension(self) -> None:
+        closeout = closeout_report()
+        closeout["client_matrix"]["runs"]["codex"]["mcp_lifecycle_records"][0][
+            "formal_run"
+        ] = False
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = adoption.qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "mcp_lifecycle_identity_invalid",
             report["dimensions"]["codex_mcp"]["failure_codes"],
         )
 

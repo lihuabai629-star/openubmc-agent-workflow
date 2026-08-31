@@ -91,6 +91,7 @@ test("stdio server records task-scoped lifecycle ownership", async () => {
       OPENUBMC_MCP_SOURCE_COMMIT: "a".repeat(40),
       OPENUBMC_MCP_MODEL_IDENTITY: JSON.stringify({ model: "gpt-5.6-sol" }),
       OPENUBMC_MCP_CODEX_IDENTITY: JSON.stringify({ version: "codex-cli 0.150.0" }),
+      OPENUBMC_MCP_FORMAL_RUN: "1",
       OPENUBMC_MCP_PARENT_PID: String(process.pid),
       OPENUBMC_MCP_LIFECYCLE_DIR: lifecycleRoot,
       OPENUBMC_KB_STATE_PATH: join(dir, "kb-state"),
@@ -114,6 +115,7 @@ test("stdio server records task-scoped lifecycle ownership", async () => {
   assert.equal(lifecycle.task_id, "kb-lifecycle-task");
   assert.equal(lifecycle.session_id, "kb-lifecycle-session");
   assert.equal(lifecycle.source_commit, "a".repeat(40));
+  assert.equal(lifecycle.formal_run, true);
   assert.deepEqual(lifecycle.model_identity, { model: "gpt-5.6-sol" });
   assert.deepEqual(lifecycle.codex_identity, { version: "codex-cli 0.150.0" });
   assert.equal(lifecycle.parent_pid, process.pid);
@@ -366,5 +368,40 @@ test("stdio server records invalid identity environment as startup-error", async
   );
   assert.equal(returnCode, 1);
   assert.match(stderr, /OPENUBMC_MCP_MODEL_IDENTITY must be a JSON object/);
+  assert.equal(lifecycle.exit_reason, "startup-error");
+});
+
+test("formal stdio server rejects missing model and Codex identity", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-formal-identity-"));
+  const lifecycleRoot = join(dir, "processes");
+  const child = spawn(process.execPath, [
+    resolve("src/server.js"),
+    "--config",
+    join(dir, "missing.json")
+  ], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      OPENUBMC_MCP_CLIENT: "codex",
+      OPENUBMC_MCP_TASK_ID: "formal-missing-identity",
+      OPENUBMC_MCP_SESSION_ID: "formal-missing-identity",
+      OPENUBMC_MCP_FORMAL_RUN: "1",
+      OPENUBMC_MCP_LIFECYCLE_DIR: lifecycleRoot
+    }
+  });
+  let stderr = "";
+  child.stderr.on("data", chunk => { stderr += chunk.toString(); });
+  const returnCode = await new Promise((resolveExit, rejectExit) => {
+    child.once("exit", resolveExit);
+    child.once("error", rejectExit);
+  });
+  const records = await readdir(lifecycleRoot);
+  const lifecycle = JSON.parse(
+    await readFile(join(lifecycleRoot, records[0]), "utf8")
+  );
+
+  assert.equal(returnCode, 1);
+  assert.match(stderr, /formal MCP run requires model and Codex identity/);
+  assert.equal(lifecycle.formal_run, true);
   assert.equal(lifecycle.exit_reason, "startup-error");
 });
