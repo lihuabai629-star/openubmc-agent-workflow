@@ -506,7 +506,9 @@ checkpoint pair count, schedule digest, scenario, immutable baseline, and exact 
 top-level batch must be completed with exactly twice the requested pair count. An interrupted,
 partial, truncated, appended, or cross-batch result cannot be promoted.
 
-Every run record carries its tested source commit and a unique execution identity. The runner
+The batch and attribution contract is emitted as Agent Gateway evidence schema v4; this version
+change prevents older v3 evidence from being mistaken for a batch-bound qualification. Every run
+record carries its tested source commit and a unique execution identity. The runner
 signs that record with the qualification key; verification uses a public key held outside the
 candidate checkout. The GitHub Release workflow restores that trust root from the
 `AB_ATTESTATION_PUBLIC_KEY_BASE64` repository variable managed outside source control, so editing

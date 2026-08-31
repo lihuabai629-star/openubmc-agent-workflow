@@ -282,6 +282,20 @@ def codex_adoption_report(
                         "wrong_target_or_artifact_mutations": 0,
                         "lifecycle_leaks": 0,
                     },
+                    "tests": {
+                        name: {
+                            "status": "passed",
+                            "returncode": 0,
+                            "tests": [f"qualification.{name}"],
+                        }
+                        for name in (
+                            "false_successes",
+                            "duplicate_dangerous_effects",
+                            "unknown_new_identity_retries",
+                            "wrong_target_or_artifact_mutations",
+                            "lifecycle_leaks",
+                        )
+                    },
                 },
             },
             "projection": {
@@ -1064,6 +1078,26 @@ class ReleaseGateTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "MCP evidence"):
+            release_gate.verify_codex_adoption_report(report)
+
+    def test_adoption_verifier_rejects_forged_risk_control_keys_and_booleans(
+        self,
+    ) -> None:
+        report = codex_adoption_report()
+        risk_controls = report["dimensions"]["task_matrix"]["risk_controls"]
+        risk_controls["violations"] = {"unrelated_dummy": False}
+        risk_controls["tests"] = {
+            "unrelated_dummy": {
+                "status": "passed",
+                "returncode": 0,
+                "tests": ["unrelated.test"],
+            }
+        }
+        report["evidence_digest"] = release_gate.evidence_fingerprint(
+            {key: value for key, value in report.items() if key != "evidence_digest"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "task matrix evidence"):
             release_gate.verify_codex_adoption_report(report)
 
     def test_new_reports_require_identity_while_v2_evidence_remains_readable(

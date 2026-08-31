@@ -36,9 +36,9 @@ from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
 )
 
 
-SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v3"
-RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v2"
-RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v2"
+SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v4"
+RUN_EVIDENCE_SCHEMA = f"{SCHEMA}/run-evidence-v1"
+RUN_ATTESTATION_SCHEMA = f"{RUN_EVIDENCE_SCHEMA}/ssh-signature-v1"
 RUN_ATTESTATION_IDENTITY = "openubmc-agent-workflow-qualification"
 RUN_ATTESTATION_NAMESPACE = "openubmc-agent-gateway-ab"
 DEFAULT_BASELINE_REF = "c3139d21190900ebd052cc22471050ef56fcfee9"
@@ -166,6 +166,17 @@ def _tool_output_source(item: Mapping[str, object]) -> str:
     if item.get("type") == "mcp_tool_call":
         return f"mcp:{str(item.get('tool', '')).strip() or 'unknown'}"
     return "other"
+
+
+def _usage_count(usage: Mapping[str, object], field: str) -> int | None:
+    value = usage.get(field)
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 0
+    ):
+        return None
+    return value
 
 
 def observe_scope_acceptance(
@@ -919,15 +930,11 @@ def _actionable_elapsed(
             continue
         if scenario == "execute-source-only":
             structured = _structured_tool_result(item)
-            if arm == "B":
-                if item.get("tool") != "execute":
-                    continue
+            if item.get("tool") == "execute":
                 state = str(structured.get("state", ""))
                 if state not in {"waiting_response", "incident", "running", "completed", "failed"}:
                     continue
-            else:
-                if item.get("tool") not in {"workflow.advance", "workflow.next"}:
-                    continue
+            elif item.get("tool") in {"workflow.advance", "workflow.next"}:
                 if structured.get("status") not in {
                     "waiting_phase_record",
                     "completed",
@@ -936,6 +943,8 @@ def _actionable_elapsed(
                     "mutation_outcome_unknown",
                 }:
                     continue
+            else:
+                continue
         elapsed = event.get("observed_elapsed_seconds")
         if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
             return round(float(elapsed), 3)
@@ -1065,9 +1074,31 @@ class RunEvidenceRecord:
             if item.get("type") == "mcp_tool_call":
                 name = str(item.get("tool", ""))
                 mcp_tools[name] = mcp_tools.get(name, 0) + 1
-        input_tokens = int(usage.get("input_tokens", 0) or 0)
-        cached_tokens = int(usage.get("cached_input_tokens", 0) or 0)
-        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        input_tokens = _usage_count(usage, "input_tokens")
+        cached_tokens = _usage_count(usage, "cached_input_tokens")
+        output_tokens = _usage_count(usage, "output_tokens")
+        noncached_input_tokens = (
+            input_tokens - cached_tokens
+            if input_tokens is not None
+            and cached_tokens is not None
+            and cached_tokens <= input_tokens
+            else None
+        )
+        total_tokens = (
+            input_tokens + output_tokens
+            if input_tokens is not None and output_tokens is not None
+            else None
+        )
+        noncached_input_plus_output = (
+            noncached_input_tokens + output_tokens
+            if noncached_input_tokens is not None and output_tokens is not None
+            else None
+        )
+        usage_complete = (
+            noncached_input_tokens is not None
+            and total_tokens is not None
+            and total_tokens > 0
+        )
         tool_output_breakdown: dict[str, int] = {}
         for item in tools:
             source = _tool_output_source(item)
@@ -1083,7 +1114,7 @@ class RunEvidenceRecord:
                 else None
             ),
         )
-        if self.scenario == "skill-disclosure":
+        if self.scenario in {"observation", "skill-disclosure"}:
             scope_validation = observe_scope_acceptance(
                 tools, scenario=self.scenario
             )
@@ -1098,8 +1129,6 @@ class RunEvidenceRecord:
                 if legacy_baseline
                 else candidate_execute_acceptance(tools)
             )
-        elif self.arm == "B":
-            scope_validation = observe_scope_acceptance(tools)
         else:
             scope_validation = {"passed": True, "errors": []}
         scope_ok = bool(scope_validation["passed"])
@@ -1120,13 +1149,14 @@ class RunEvidenceRecord:
             "duration_seconds": round(self.duration_seconds, 3),
             "input_tokens": input_tokens,
             "cached_input_tokens": cached_tokens,
-            "noncached_input_tokens": input_tokens - cached_tokens,
+            "noncached_input_tokens": noncached_input_tokens,
             "output_tokens": output_tokens,
+            "usage_complete": usage_complete,
             "reasoning_output_tokens": int(
                 usage.get("reasoning_output_tokens", 0) or 0
             ),
-            "total_tokens": input_tokens + output_tokens,
-            "noncached_input_plus_output": input_tokens - cached_tokens + output_tokens,
+            "total_tokens": total_tokens,
+            "noncached_input_plus_output": noncached_input_plus_output,
             "tool_events": len(tools),
             "command_events": sum(
                 item.get("type") == "command_execution" for item in tools
@@ -1156,7 +1186,7 @@ class RunEvidenceRecord:
             "scope_validation": scope_validation,
             "valid": (
                 self.exit_code == 0
-                and input_tokens + output_tokens > 0
+                and int(input_tokens or 0) + int(output_tokens or 0) > 0
                 and acceptance["passed"]
                 and scope_ok
             ),
@@ -3178,6 +3208,11 @@ def verify_summary(
                     )
                 )
             recomputed_metrics = metrics_from_run_evidence(run_evidence_value)
+            if any(
+                item.get("usage_complete") is not True
+                for item in recomputed_metrics
+            ):
+                errors.append("AB token usage measurement is incomplete")
         except (
             OSError,
             UnicodeDecodeError,

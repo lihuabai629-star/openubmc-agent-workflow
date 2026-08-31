@@ -29,7 +29,10 @@ from scripts.formal_identity import (  # noqa: E402
     normalize_codex_identity,
     normalize_model_identity,
 )
-from scripts.codex_adoption_contract import product_client_failures  # noqa: E402
+from scripts.codex_adoption_contract import (  # noqa: E402
+    RISK_CONTROL_NAMES,
+    product_client_failures,
+)
 from scripts.product_closeout_qualification import (  # noqa: E402
     qualify as qualify_product_closeout,
 )
@@ -218,16 +221,18 @@ RISK_CONTROL_TESTS = {
         "tests.test_mutation_recovery.MutationRecoveryTests.test_sigkill_crash_cuts_preserve_identity_and_never_repeat_the_mutation",
     ),
     "unknown_new_identity_retries": (
-        "tests.test_model_planning.PlanResolverTests.test_unknown_retry_reconciles_the_same_identity_without_reinvocation",
+        "tests.test_agent_gateway.AgentGatewayTests.test_automatic_reconcile_returns_running_at_the_caller_deadline",
     ),
     "wrong_target_or_artifact_mutations": (
-        "tests.test_domain_pack_conformance.DomainPackConformanceTests.test_mutation_verifier_rejects_wrong_modern_identity_and_artifact_binding",
+        "tests.test_agent_gateway.AgentGatewayTests.test_artifact_ref_is_bound_to_content_kind_target_run_and_provenance",
     ),
     "lifecycle_leaks": (
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_terminates_only_confirmed_orphaned_processes",
         "tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_cleanup_preserves_orphan_without_verified_ownership_binding",
     ),
 }
+if tuple(RISK_CONTROL_TESTS) != RISK_CONTROL_NAMES:
+    raise RuntimeError("risk control qualification set drifted")
 
 
 def _workflow_metadata() -> dict[str, object]:

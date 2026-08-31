@@ -25,6 +25,7 @@ from scripts.codex_adoption_contract import (  # noqa: E402
     installation_dimension_failures,
     installation_identity_failures,
     projection_dimension_failures,
+    risk_controls_valid,
     verify_codex_adoption_report,
 )
 from scripts.continuous_closeout_qualification import (  # noqa: E402
@@ -232,12 +233,7 @@ def qualify(
     product_contract = _mapping(closeout.get("product_contract"))
     task_matrix = _mapping(closeout.get("task_matrix"))
     task_risk_controls = _mapping(task_matrix.get("risk_controls"))
-    task_risk_violations = _mapping(task_risk_controls.get("violations"))
-    task_risks_passed = (
-        task_risk_controls.get("passed") is True
-        and bool(task_risk_violations)
-        and all(value == 0 for value in task_risk_violations.values())
-    )
+    task_risks_passed = risk_controls_valid(task_risk_controls)
     projection = _mapping(closeout.get("execute_projection"))
     projection_failures = projection_dimension_failures(projection)
     lifecycle = _mapping(closeout.get("mcp_lifecycle"))

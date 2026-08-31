@@ -2325,6 +2325,96 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(metric["model_turns"], 1)
         self.assertEqual(metric["time_to_next_actionable_turn_seconds"], 2)
 
+    def test_metric_parser_requires_baseline_to_use_the_same_observe_interface(
+        self,
+    ) -> None:
+        events = [
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 20,
+                    "output_tokens": 10,
+                },
+            },
+        ]
+        final = (
+            "SSH Telnet MDBCTL BUSCTL Name Protocol ResourceId SlotNumber Presence "
+            "TemperatureCelsius Type SocketId Health，不能证明 ResourceId 异常。"
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            events_path = root / "events.jsonl"
+            events_path.write_text(
+                "\n".join(json.dumps(item) for item in events) + "\n",
+                encoding="utf-8",
+            )
+            final_path = root / "final.md"
+            final_path.write_text(final, encoding="utf-8")
+            metric = module.metric_from_run(
+                arm="A",
+                pair=1,
+                order=1,
+                events_path=events_path,
+                final_path=final_path,
+                exit_code=0,
+                duration_seconds=2,
+                scenario="observation",
+            )
+
+        self.assertFalse(metric["valid"], metric)
+        self.assertFalse(metric["scope_validation"]["passed"])
+
+    def test_baseline_agent_execute_records_the_first_actionable_turn(self) -> None:
+        events = [
+            candidate_execute_event(
+                "start",
+                "waiting_response",
+                elapsed=0.5,
+                gate="diagnosis",
+            ),
+            candidate_execute_event(
+                "respond",
+                "waiting_response",
+                elapsed=1.0,
+                gate="diagnosis",
+            ),
+            candidate_execute_event("respond", "completed", elapsed=1.5),
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 20,
+                    "output_tokens": 10,
+                },
+            },
+        ]
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            events_path = root / "events.jsonl"
+            events_path.write_text(
+                "\n".join(json.dumps(item) for item in events) + "\n",
+                encoding="utf-8",
+            )
+            final_path = root / "final.md"
+            final_path.write_text(
+                "source-only Runtime Outcome completed",
+                encoding="utf-8",
+            )
+            metric = module.metric_from_run(
+                arm="A",
+                pair=1,
+                order=1,
+                events_path=events_path,
+                final_path=final_path,
+                exit_code=0,
+                duration_seconds=4,
+                scenario="execute-source-only",
+            )
+
+        self.assertTrue(metric["valid"], metric)
+        self.assertEqual(metric["time_to_next_actionable_turn_seconds"], 0.5)
+
     def test_metric_parser_rejects_wrong_scope_or_incomplete_receipt(self) -> None:
         final = (
             "SSH Telnet MDBCTL BUSCTL Name Protocol ResourceId SlotNumber Presence "
@@ -3118,6 +3208,35 @@ class AgentGatewayAbTests(unittest.TestCase):
 
         self.assertFalse(verified["promotable"], verified)
         self.assertIn("AB efficiency evidence is incomplete", verified["errors"])
+
+    def test_verify_rejects_each_missing_token_measurement_field(self) -> None:
+        for field in ("input_tokens", "cached_input_tokens", "output_tokens"):
+            with self.subTest(field=field):
+                schedule = module.balanced_schedule(10, seed=7)
+                run_evidence = passing_execute_run_evidence(schedule)
+                candidate = next(
+                    run for run in run_evidence["runs"] if run["arm"] == "B"
+                )
+                completed = next(
+                    event
+                    for event in candidate["events"]
+                    if event.get("type") == "turn.completed"
+                )
+                completed["usage"].pop(field)
+
+                verified = verify_run_evidence_summary(
+                    scenario="execute-source-only",
+                    schedule=schedule,
+                    run_evidence=run_evidence,
+                    candidate_commit="a" * 40,
+                    baseline_commit=module.DEFAULT_BASELINE_REF,
+                )
+
+                self.assertFalse(verified["promotable"], verified)
+                self.assertTrue(
+                    any("measurement" in error for error in verified["errors"]),
+                    verified,
+                )
 
     def test_verify_rejects_missing_terminal_p95_with_one_invalid_pair(self) -> None:
         def remove_p95(analysis):

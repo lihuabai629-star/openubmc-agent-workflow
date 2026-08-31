@@ -515,6 +515,18 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
                 "lifecycle_leaks": 0,
             },
         )
+        self.assertEqual(
+            risk_controls["tests"]["unknown_new_identity_retries"]["tests"],
+            [
+                "tests.test_agent_gateway.AgentGatewayTests.test_automatic_reconcile_returns_running_at_the_caller_deadline"
+            ],
+        )
+        self.assertEqual(
+            risk_controls["tests"]["wrong_target_or_artifact_mutations"]["tests"],
+            [
+                "tests.test_agent_gateway.AgentGatewayTests.test_artifact_ref_is_bound_to_content_kind_target_run_and_provenance"
+            ],
+        )
         self.assertIn(
             "fresh_runtime_product_evidence_required",
             report["external_blockers"],

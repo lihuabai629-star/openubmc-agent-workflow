@@ -327,7 +327,20 @@ def closeout_report() -> dict[str, object]:
                     "wrong_target_or_artifact_mutations": 0,
                     "lifecycle_leaks": 0,
                 },
-                "tests": {},
+                "tests": {
+                    name: {
+                        "status": "passed",
+                        "returncode": 0,
+                        "tests": [f"qualification.{name}"],
+                    }
+                    for name in (
+                        "false_successes",
+                        "duplicate_dangerous_effects",
+                        "unknown_new_identity_retries",
+                        "wrong_target_or_artifact_mutations",
+                        "lifecycle_leaks",
+                    )
+                },
             },
         },
     }
@@ -551,6 +564,33 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
 
         self.assertFalse(report["qualified"])
         self.assertEqual(report["failed_dimensions"], ["task_matrix"])
+
+    def test_task_matrix_requires_the_exact_integer_risk_control_set(self) -> None:
+        invalid_sets = (
+            {"false_successes": 0},
+            {"unrelated_dummy": False},
+        )
+        for violations in invalid_sets:
+            with self.subTest(violations=violations):
+                closeout = closeout_report()
+                closeout["task_matrix"]["risk_controls"]["violations"] = violations
+                with (
+                    mock.patch.object(
+                        adoption, "qualify_closeout", return_value=closeout
+                    ),
+                    mock.patch.object(
+                        adoption,
+                        "build_release_lock",
+                        return_value=release_identity(),
+                    ),
+                    mock.patch.object(
+                        adoption, "bind_source_commit", return_value="a" * 40
+                    ),
+                ):
+                    report = qualify()
+
+                self.assertFalse(report["qualified"])
+                self.assertEqual(report["failed_dimensions"], ["task_matrix"])
 
     def test_report_is_deterministic_for_the_same_inputs(self) -> None:
         with (
