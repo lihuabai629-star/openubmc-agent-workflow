@@ -3869,6 +3869,7 @@ class StdioMcpServer:
         inflight_lock = threading.Lock()
         executor = ThreadPoolExecutor(max_workers=self.max_workers)
         futures: set[Future[dict[str, object] | None]] = set()
+        futures_condition = threading.Condition()
         inflight: dict[str, tuple[str, str]] = {}
         exit_reason = "server-error"
         original_signal_handlers: dict[int, object] = {}
@@ -3930,6 +3931,11 @@ class StdioMcpServer:
                 output_stream.write(encoded + "\n")
                 output_stream.flush()
 
+        def drain_accepted_tool_calls() -> None:
+            with futures_condition:
+                while futures:
+                    futures_condition.wait()
+
         def read_frame() -> tuple[str, bool] | None:
             fragment = input_stream.readline(self.max_frame_bytes + 1)
             if fragment == "":
@@ -3972,21 +3978,31 @@ class StdioMcpServer:
                 if self.process_lifecycle is not None:
                     due_reason = self.process_lifecycle.exit_reason_if_due()
                     if due_reason is not None:
-                        exit_reason = due_reason
-                        break
+                        assert reader_queue is not None
+                        try:
+                            frame, read_error = reader_queue.get_nowait()
+                        except queue.Empty:
+                            exit_reason = due_reason
+                            break
+                        if read_error is not None:
+                            raise read_error
+                        if frame is None:
+                            exit_reason = due_reason
+                            break
                     assert reader_queue is not None
-                    try:
-                        frame, read_error = reader_queue.get(
-                            timeout=self.lifecycle_poll_seconds
-                        )
-                    except queue.Empty:
-                        continue
-                    if read_error is not None:
-                        raise read_error
-                    due_reason = self.process_lifecycle.exit_reason_if_due()
-                    if due_reason is not None:
-                        exit_reason = due_reason
-                        break
+                    if due_reason is None:
+                        try:
+                            frame, read_error = reader_queue.get(
+                                timeout=self.lifecycle_poll_seconds
+                            )
+                        except queue.Empty:
+                            continue
+                        if read_error is not None:
+                            raise read_error
+                        due_reason = self.process_lifecycle.exit_reason_if_due()
+                        if due_reason is not None:
+                            exit_reason = due_reason
+                            break
                 else:
                     frame = read_frame()
                 if frame is None:
@@ -4076,7 +4092,8 @@ class StdioMcpServer:
                     except Exception:
                         end_request()
                         raise
-                    futures.add(future)
+                    with futures_condition:
+                        futures.add(future)
 
                     def completed(
                         item: Future[dict[str, object] | None],
@@ -4084,7 +4101,6 @@ class StdioMcpServer:
                         request_id: object = message.get("id"),
                         tracked_request_key: str = request_key,
                     ) -> None:
-                        futures.discard(item)
                         with inflight_lock:
                             inflight.pop(tracked_request_key, None)
                         try:
@@ -4099,6 +4115,9 @@ class StdioMcpServer:
                             )
                         finally:
                             end_request()
+                            with futures_condition:
+                                futures.discard(item)
+                                futures_condition.notify_all()
 
                     future.add_done_callback(completed)
                 else:
@@ -4114,13 +4133,15 @@ class StdioMcpServer:
                         )
                         continue
                     try:
-                        write_response(self.endpoint.handle(message))
-                        if (
-                            self.process_lifecycle is not None
-                            and message.get("method")
+                        task_closeout = (
+                            message.get("method")
                             == "notifications/openubmc-task-complete"
-                        ):
-                            self.process_lifecycle.request_task_closeout()
+                        )
+                        if task_closeout:
+                            if self.process_lifecycle is not None:
+                                self.process_lifecycle.request_task_closeout()
+                            drain_accepted_tool_calls()
+                        write_response(self.endpoint.handle(message))
                     finally:
                         end_request()
         finally:

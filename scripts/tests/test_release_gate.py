@@ -122,6 +122,11 @@ def codex_adoption_report(
                         "captured_request_models": [
                             "codex-product-client-qualification"
                         ],
+                        "transport_provenance": {
+                            "provider": "local-hermetic-responses",
+                            "wire_api": "responses",
+                            "network_scope": "loopback",
+                        },
                         "returncode": 0,
                     },
                     {
@@ -136,6 +141,11 @@ def codex_adoption_report(
                         "captured_request_models": [
                             "codex-product-client-qualification"
                         ],
+                        "transport_provenance": {
+                            "provider": "local-hermetic-responses",
+                            "wire_api": "responses",
+                            "network_scope": "loopback",
+                        },
                         "returncode": 0,
                     },
                 ],

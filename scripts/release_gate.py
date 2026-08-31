@@ -32,7 +32,7 @@ from scripts.codex_adoption_contract import (  # noqa: E402
 from scripts.formal_identity import (  # noqa: E402
     identity_argument,
     normalize_codex_identity,
-    normalize_identity,
+    normalize_model_identity,
 )
 
 from openubmc_target_runtime.release import (  # noqa: E402
@@ -452,10 +452,7 @@ def execute_release_gate(
     ab_attestation_public_key: Path | None = None,
     release_tag: str | None = None,
 ) -> dict[str, object]:
-    selected_model_identity = normalize_identity(
-        model_identity,
-        label="model identity",
-    )
+    selected_model_identity = normalize_model_identity(model_identity)
     selected_codex_identity = normalize_codex_identity(codex_identity)
     clean_home = work_root / "clean-install-home"
     lifecycle_home = work_root / "lifecycle-home"

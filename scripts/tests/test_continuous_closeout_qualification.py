@@ -200,6 +200,11 @@ def passed_product_client_run(name: str) -> dict[str, object]:
                 "captured_request_models": [
                     "codex-product-client-qualification"
                 ],
+                "transport_provenance": {
+                    "provider": "local-hermetic-responses",
+                    "wire_api": "responses",
+                    "network_scope": "loopback",
+                },
                 "returncode": 0,
             },
             {
@@ -214,6 +219,11 @@ def passed_product_client_run(name: str) -> dict[str, object]:
                 "captured_request_models": [
                     "codex-product-client-qualification"
                 ],
+                "transport_provenance": {
+                    "provider": "local-hermetic-responses",
+                    "wire_api": "responses",
+                    "network_scope": "loopback",
+                },
                 "returncode": 0,
             },
         ],

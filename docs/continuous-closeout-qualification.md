@@ -9,7 +9,7 @@ It can still be run directly for diagnostics or product-closeout evidence assemb
 
 ```bash
 python3 scripts/continuous_closeout_qualification.py \
-  --model-identity '{"provider":"openai","model":"gpt-5.6-sol"}' \
+  --model-identity '{"model":"gpt-5.6-sol"}' \
   --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --product-manifest /path/to/product-evidence.json \
   --runtime-repository /trusted/runtime-state/runtime.sqlite3 \
@@ -20,7 +20,7 @@ The same checkpoint can assemble the manifest from trusted Operator / CI inputs:
 
 ```bash
 python3 scripts/continuous_closeout_qualification.py \
-  --model-identity '{"provider":"openai","model":"gpt-5.6-sol"}' \
+  --model-identity '{"model":"gpt-5.6-sol"}' \
   --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --product-ingestion /path/to/product-ingestion.json \
   --runtime-repository /trusted/runtime-state/runtime.sqlite3 \

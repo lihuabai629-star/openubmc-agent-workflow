@@ -125,6 +125,11 @@ def closeout_report() -> dict[str, object]:
                             "captured_request_models": [
                                 "codex-product-client-qualification"
                             ],
+                            "transport_provenance": {
+                                "provider": "local-hermetic-responses",
+                                "wire_api": "responses",
+                                "network_scope": "loopback",
+                            },
                             "returncode": 0,
                         },
                         {
@@ -139,6 +144,11 @@ def closeout_report() -> dict[str, object]:
                             "captured_request_models": [
                                 "codex-product-client-qualification"
                             ],
+                            "transport_provenance": {
+                                "provider": "local-hermetic-responses",
+                                "wire_api": "responses",
+                                "network_scope": "loopback",
+                            },
                             "returncode": 0,
                         },
                     ],
@@ -343,18 +353,31 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
                 codex_identity={"version": "codex-cli 0.150.0"},
             )
 
+    def test_qualification_rejects_unverifiable_formal_identity_fields(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only contain model"):
+            adoption.qualify(
+                model_identity={
+                    "model": "codex-product-client-qualification",
+                    "provider": "openai",
+                },
+                codex_identity=FORMAL_CODEX_IDENTITY,
+            )
+        with self.assertRaisesRegex(ValueError, "only contain version"):
+            adoption.qualify(
+                model_identity=FORMAL_MODEL_IDENTITY,
+                codex_identity={
+                    "version": "codex-cli 0.151.0",
+                    "sha256": "1" * 64,
+                },
+            )
+
     def test_one_report_combines_identity_codex_runtime_tasks_and_provenance(
         self,
     ) -> None:
         model_identity = {
-            "provider": "openai",
             "model": "gpt-5.6-sol",
-            "reasoning_effort": "high",
         }
-        codex_identity = {
-            "version": "codex-cli 0.151.0",
-            "sha256": "1" * 64,
-        }
+        codex_identity = {"version": "codex-cli 0.151.0"}
         closeout = closeout_report()
         for lifecycle in closeout["client_matrix"]["runs"]["codex"][
             "mcp_lifecycle_records"
@@ -700,6 +723,31 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         codex["codex_process_runs"][0]["captured_request_models"] = [
             "different-model"
         ]
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_real_codex_transport_provenance_must_be_hermetic(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["codex_process_runs"][0]["transport_provenance"]["network_scope"] = (
+            "external"
+        )
         with (
             mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
             mock.patch.object(

@@ -17,6 +17,7 @@ import time
 from scripts.formal_identity import (
     PINNED_CODEX_VERSION,
     normalize_codex_identity,
+    normalize_model_identity,
 )
 
 CODEX_VERSION = PINNED_CODEX_VERSION
@@ -213,9 +214,8 @@ def probe_codex_runtime(
     session_id: str,
 ) -> dict[str, object]:
     selected_codex_identity = normalize_codex_identity(codex_identity)
-    selected_model = str(model_identity.get("model", "")).strip()
-    if not selected_model:
-        raise ValueError("formal model identity must include a non-empty model")
+    selected_model_identity = normalize_model_identity(model_identity)
+    selected_model = str(selected_model_identity["model"])
     executable = pinned_codex_executable(repository_root)
     server = _ResponsesServer()
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -233,7 +233,7 @@ def probe_codex_runtime(
             "OPENUBMC_MCP_TASK_ID": task_id,
             "OPENUBMC_MCP_SESSION_ID": session_id,
             "OPENUBMC_MCP_MODEL_IDENTITY": json.dumps(
-                dict(model_identity), ensure_ascii=True, sort_keys=True
+                selected_model_identity, ensure_ascii=True, sort_keys=True
             ),
             "OPENUBMC_MCP_CODEX_IDENTITY": json.dumps(
                 selected_codex_identity, ensure_ascii=True, sort_keys=True
@@ -277,7 +277,7 @@ def probe_codex_runtime(
             "OPENUBMC_MCP_TASK_ID": task_id,
             "OPENUBMC_MCP_SESSION_ID": session_id,
             "OPENUBMC_MCP_MODEL_IDENTITY": json.dumps(
-                dict(model_identity), ensure_ascii=True, sort_keys=True
+                selected_model_identity, ensure_ascii=True, sort_keys=True
             ),
             "OPENUBMC_MCP_CODEX_IDENTITY": json.dumps(
                 selected_codex_identity, ensure_ascii=True, sort_keys=True
@@ -374,6 +374,11 @@ def probe_codex_runtime(
                         for request in server.requests[request_start:]
                         if isinstance(request.get("model"), str)
                     ],
+                    "transport_provenance": {
+                        "provider": "local-hermetic-responses",
+                        "wire_api": "responses",
+                        "network_scope": "loopback",
+                    },
                     "returncode": process.returncode,
                 }
             )

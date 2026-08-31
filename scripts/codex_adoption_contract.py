@@ -276,6 +276,7 @@ def _codex_process_failures(
         process_id = run.get("process_id")
         process_identity = str(run.get("process_identity", ""))
         request_models = run.get("captured_request_models")
+        transport_provenance = _mapping(run.get("transport_provenance"))
         normalized_request_models = (
             request_models if isinstance(request_models, list) else []
         )
@@ -298,6 +299,12 @@ def _codex_process_failures(
                 all(
                     model == expected_model for model in normalized_request_models
                 ),
+                transport_provenance
+                == {
+                    "provider": "local-hermetic-responses",
+                    "wire_api": "responses",
+                    "network_scope": "loopback",
+                },
                 run.get("returncode") == 0,
             )
         )

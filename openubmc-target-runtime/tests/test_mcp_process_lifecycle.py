@@ -918,6 +918,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             lifecycle_root = Path(raw) / "mcp-processes"
             started_path = Path(raw) / "request-started"
+            release_path = Path(raw) / "release-request"
+            resource_count_path = Path(raw) / "resource-count"
             child_program = textwrap.dedent(
                 """
                 import os
@@ -928,18 +930,24 @@ class McpProcessLifecycleTests(unittest.TestCase):
                 from openubmc_target_runtime import (
                     JsonRpcMcpEndpoint,
                     McpProcessLifecycle,
-                    OrchestratedMcpBackend,
                     RuntimeMcpService,
                     StdioMcpServer,
                 )
 
                 class Task:
-                    def __init__(self, task_id):
+                    def __init__(self, task_id, generation):
                         self.task_id = task_id
+                        self.generation = generation
 
                 class Backend:
+                    created = 0
+
                     def open_task(self, task_id):
-                        return Task(task_id)
+                        type(self).created += 1
+                        Path(sys.argv[4]).write_text(
+                            str(type(self).created), encoding="utf-8"
+                        )
+                        return Task(task_id, type(self).created)
 
                     def close_task(self, _task):
                         pass
@@ -952,15 +960,35 @@ class McpProcessLifecycleTests(unittest.TestCase):
 
                     def debug_run(self, task, _arguments, context):
                         Path(sys.argv[2]).write_text("started", encoding="utf-8")
-                        time.sleep(0.2)
+                        deadline = time.monotonic() + 2
+                        while not Path(sys.argv[3]).exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
                         context.raise_if_stopped()
                         return {
                             "schema": "openubmc-debug.v1",
                             "task": task.task_id,
-                            "root_cause": "drained",
+                            "root_cause": f"drained-{task.generation}",
                             "observed_at": "2026-09-01T00:00:00Z",
                             "freshness": {"status": "fresh"},
                         }
+
+                class Service(RuntimeMcpService):
+                    def call_exposed_tool(
+                        self,
+                        _name,
+                        arguments,
+                        *,
+                        task_id,
+                        operation_id,
+                    ):
+                        return self.registry.execute(
+                            task_id=task_id,
+                            operation_id=operation_id,
+                            timeout_seconds=2,
+                            callback=lambda task, context: self.backend.debug_run(
+                                task, arguments, context
+                            ),
+                        )
 
                 root = Path(sys.argv[1])
                 lifecycle = McpProcessLifecycle(
@@ -974,15 +1002,13 @@ class McpProcessLifecycleTests(unittest.TestCase):
                     lifecycle_root=root,
                     idle_timeout_seconds=30,
                 )
-                service = RuntimeMcpService(
-                    OrchestratedMcpBackend({"debug_run": Backend()}),
-                )
+                service = Service(Backend())
                 StdioMcpServer(
                     JsonRpcMcpEndpoint(
                         service,
                         session_task_id="closeout-task",
                     ),
-                    max_workers=4,
+                    max_workers=1,
                     process_lifecycle=lifecycle,
                     lifecycle_poll_seconds=0.01,
                 ).serve()
@@ -995,6 +1021,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
                     child_program,
                     str(lifecycle_root),
                     str(started_path),
+                    str(release_path),
+                    str(resource_count_path),
                 ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -1039,6 +1067,22 @@ class McpProcessLifecycleTests(unittest.TestCase):
             for message in (
                 {
                     "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "execute",
+                        "arguments": {
+                            "kind": "start",
+                            "target": "192.0.2.10",
+                            "intent": "diagnosis-only",
+                            "entry_operation": "debug_run",
+                            "entry_arguments": {},
+                            "deadline": 2,
+                        },
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
                     "method": "notifications/openubmc-task-complete",
                     "params": {},
                 },
@@ -1051,6 +1095,8 @@ class McpProcessLifecycleTests(unittest.TestCase):
             ):
                 child.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
             child.stdin.flush()
+            time.sleep(0.1)
+            release_path.write_text("release", encoding="utf-8")
             child.stdin.close()
             child.stdin = None
 
@@ -1063,9 +1109,15 @@ class McpProcessLifecycleTests(unittest.TestCase):
             }
             records = sorted(lifecycle_root.glob("*.json"))
             self.assertEqual(child.returncode, 0, stderr)
-            self.assertEqual(set(responses), {1, 3})
+            self.assertEqual(set(responses), {1, 2, 3})
             self.assertFalse(responses[1]["result"]["isError"], responses[1])
+            self.assertFalse(responses[2]["result"]["isError"], responses[2])
             self.assertEqual(responses[3]["error"]["code"], -32000)
+            self.assertEqual(
+                resource_count_path.read_text(encoding="utf-8"),
+                "1",
+                responses,
+            )
             self.assertEqual(len(records), 1)
             recorded = json.loads(records[0].read_text(encoding="utf-8"))
 

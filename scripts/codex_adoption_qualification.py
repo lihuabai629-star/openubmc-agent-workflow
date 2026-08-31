@@ -36,7 +36,7 @@ from scripts.evidence_report import (  # noqa: E402
 from scripts.formal_identity import (  # noqa: E402
     identity_argument,
     normalize_codex_identity,
-    normalize_identity,
+    normalize_model_identity,
 )
 
 
@@ -55,9 +55,8 @@ def qualify(
     codex_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     required_identity = "formal model and Codex identity are required"
-    selected_model_identity = normalize_identity(
+    selected_model_identity = normalize_model_identity(
         model_identity,
-        label="model identity",
         required_message=required_identity,
     )
     selected_codex_identity = normalize_codex_identity(

@@ -178,7 +178,7 @@ Before promotion, run the execute A/B qualification described in
 python3 scripts/release_gate.py \
   --current-ref v2.0.2 \
   --previous-ref v2.0.1 \
-  --model-identity '{"provider":"openai","model":"gpt-5.6-sol"}' \
+  --model-identity '{"model":"gpt-5.6-sol"}' \
   --codex-identity '{"version":"codex-cli 0.151.0"}' \
   --ab-evidence /path/to/qualification-results/summary.json \
   --ab-attestation-public-key /path/to/trusted/ab-evidence-signing-key.pub \

@@ -27,7 +27,7 @@ from scripts.evidence_report import (  # noqa: E402
 from scripts.formal_identity import (  # noqa: E402
     identity_argument,
     normalize_codex_identity,
-    normalize_identity,
+    normalize_model_identity,
 )
 from scripts.codex_adoption_contract import product_client_failures  # noqa: E402
 from scripts.product_closeout_qualification import (  # noqa: E402
@@ -627,9 +627,8 @@ def qualify(
 ) -> dict[str, object]:
     selected_source_commit = source_commit or resolve_source_commit(ROOT)
     required_identity = "formal model and Codex identity are required"
-    selected_model_identity = normalize_identity(
+    selected_model_identity = normalize_model_identity(
         model_identity,
-        label="model identity",
         required_message=required_identity,
     )
     selected_codex_identity = normalize_codex_identity(
