@@ -122,6 +122,20 @@ def codex_adoption_report(
                         "captured_request_models": [
                             "codex-product-client-qualification"
                         ],
+                        "captured_model_tools": [
+                            "mcp__openubmc_target_runtime"
+                        ],
+                        "captured_runtime_tool_contracts": [
+                            {
+                                "name": "mcp__openubmc_target_runtime",
+                                "type": "namespace",
+                                "tools": [
+                                    {"name": "execute"},
+                                    {"name": "observe"},
+                                ],
+                            }
+                        ],
+                        "captured_orchestrator_tool_contracts": [],
                         "transport_provenance": {
                             "provider": "local-hermetic-responses",
                             "wire_api": "responses",
@@ -141,6 +155,20 @@ def codex_adoption_report(
                         "captured_request_models": [
                             "codex-product-client-qualification"
                         ],
+                        "captured_model_tools": [
+                            "mcp__openubmc_target_runtime"
+                        ],
+                        "captured_runtime_tool_contracts": [
+                            {
+                                "name": "mcp__openubmc_target_runtime",
+                                "type": "namespace",
+                                "tools": [
+                                    {"name": "execute"},
+                                    {"name": "observe"},
+                                ],
+                            }
+                        ],
+                        "captured_orchestrator_tool_contracts": [],
                         "transport_provenance": {
                             "provider": "local-hermetic-responses",
                             "wire_api": "responses",
