@@ -13,6 +13,7 @@ import platform
 import subprocess
 import threading
 import time
+from typing import Callable
 
 from scripts.formal_identity import (
     PINNED_CODEX_VERSION,
@@ -142,31 +143,40 @@ class _ResponsesHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
+def _request_tools(request: Mapping[str, object]) -> list[object]:
+    tools: list[object] = []
+    top_level = request.get("tools")
+    if isinstance(top_level, list):
+        tools.extend(top_level)
+    input_items = request.get("input")
+    if isinstance(input_items, list):
+        for item in input_items:
+            if not isinstance(item, Mapping) or item.get("type") != "additional_tools":
+                continue
+            additional = item.get("tools")
+            if isinstance(additional, list):
+                tools.extend(additional)
+    return tools
+
+
 def _tool_names(requests: list[dict[str, object]]) -> list[str]:
     names: set[str] = set()
     for request in requests:
-        tools = request.get("tools")
-        if not isinstance(tools, list):
-            continue
-        for tool in tools:
+        for tool in _request_tools(request):
             if isinstance(tool, Mapping) and isinstance(tool.get("name"), str):
                 names.add(str(tool["name"]))
     return sorted(names)
 
 
-def _runtime_tool_contracts(
+def _namespace_tool_contracts(
     requests: list[dict[str, object]],
+    *,
+    selected: Callable[[Mapping[str, object]], bool],
 ) -> list[dict[str, object]]:
     contracts: list[dict[str, object]] = []
     for request in requests:
-        tools = request.get("tools")
-        if not isinstance(tools, list):
-            continue
-        for tool in tools:
-            if (
-                isinstance(tool, Mapping)
-                and "openubmc_target_runtime" in str(tool.get("name", ""))
-            ):
+        for tool in _request_tools(request):
+            if isinstance(tool, Mapping) and selected(tool):
                 nested_tools = tool.get("tools")
                 normalized = {
                     "name": str(tool.get("name", "")),
@@ -186,6 +196,26 @@ def _runtime_tool_contracts(
                 if normalized not in contracts:
                     contracts.append(normalized)
     return contracts
+
+
+def _runtime_tool_contracts(
+    requests: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return _namespace_tool_contracts(
+        requests,
+        selected=lambda tool: "openubmc_target_runtime"
+        in str(tool.get("name", "")),
+    )
+
+
+def _orchestrator_tool_contracts(
+    requests: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return _namespace_tool_contracts(
+        requests,
+        selected=lambda tool: tool.get("name") == "functions"
+        and tool.get("type") == "namespace",
+    )
 
 
 def _lifecycle_records(root: Path) -> list[dict[str, object]]:
@@ -393,6 +423,9 @@ def probe_codex_runtime(
         "codex_process_runs": process_runs,
         "captured_model_tools": captured_tools,
         "captured_runtime_tool_contracts": _runtime_tool_contracts(
+            server.requests
+        ),
+        "captured_orchestrator_tool_contracts": _orchestrator_tool_contracts(
             server.requests
         ),
         "restart_verified": len(process_runs) == 2,

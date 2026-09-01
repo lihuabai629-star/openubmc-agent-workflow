@@ -278,6 +278,14 @@ def _codex_process_failures(
     captured_tools = evidence.get("captured_model_tools")
     raw_contracts = evidence.get("captured_runtime_tool_contracts")
     contracts = raw_contracts if isinstance(raw_contracts, list) else []
+    raw_orchestrator_contracts = evidence.get(
+        "captured_orchestrator_tool_contracts"
+    )
+    orchestrator_contracts = (
+        raw_orchestrator_contracts
+        if isinstance(raw_orchestrator_contracts, list)
+        else []
+    )
     runtime_contracts = [
         contract
         for contract in contracts
@@ -288,6 +296,23 @@ def _codex_process_failures(
     nested_tool_names = {
         str(tool.get("name"))
         for contract in runtime_contracts
+        for tool in (
+            contract.get("tools")
+            if isinstance(contract.get("tools"), list)
+            else []
+        )
+        if isinstance(tool, Mapping)
+    }
+    functions_contracts = [
+        contract
+        for contract in orchestrator_contracts
+        if isinstance(contract, Mapping)
+        and contract.get("name") == "functions"
+        and contract.get("type") == "namespace"
+    ]
+    orchestrator_tool_names = {
+        str(tool.get("name"))
+        for contract in functions_contracts
         for tool in (
             contract.get("tools")
             if isinstance(contract.get("tools"), list)
@@ -376,12 +401,18 @@ def _codex_process_failures(
                 for record in records
             ),
             isinstance(captured_tools, list),
-            "mcp__openubmc_target_runtime" in (
-                {str(item) for item in captured_tools}
-                if isinstance(captured_tools, list)
-                else set()
+            (
+                (
+                    "mcp__openubmc_target_runtime"
+                    in {str(item) for item in captured_tools}
+                    and nested_tool_names == {"execute", "observe"}
+                )
+                or (
+                    "functions" in {str(item) for item in captured_tools}
+                    and len(functions_contracts) == 1
+                    and "exec" in orchestrator_tool_names
+                )
             ),
-            nested_tool_names == {"execute", "observe"},
             evidence.get("restart_verified") is True,
         )
     )

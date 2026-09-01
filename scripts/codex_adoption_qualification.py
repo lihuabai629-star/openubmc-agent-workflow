@@ -214,6 +214,9 @@ def qualify(
         "captured_runtime_tool_contracts": list(
             codex_run.get("captured_runtime_tool_contracts", [])
         ),
+        "captured_orchestrator_tool_contracts": list(
+            codex_run.get("captured_orchestrator_tool_contracts", [])
+        ),
         "mcp_lifecycle_records": mcp_lifecycle_records,
         "restart_verified": codex_run.get("restart_verified") is True,
         "mcp_closeout": _mapping(codex_run.get("mcp_closeout")),

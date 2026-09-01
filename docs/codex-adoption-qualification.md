@@ -34,13 +34,17 @@ The installed-launcher exchange verifies `initialize`, `tools/list`, the exact `
 actionable preflight request so it cannot touch a BMC or credentials. That protocol harness is
 non-formal. Formal lifecycle evidence comes from two pinned Codex 0.151.0 processes using an
 isolated local Responses endpoint; each process must start the installed Runtime launcher as its
-direct child, expose the Runtime namespace containing exactly `observe` and `execute`, and leave a
-stopped `client-terminated` lifecycle record. Restart evidence is derived from those two process
-runs. Active-request drain and explicit task closeout remain independently covered by hermetic
-Runtime lifecycle tests. Successful workflow completion is proven by the representative task
-matrix. A requested source commit must match the clean workspace `HEAD` or the verified
-release-lock parent. This allows a lock-only child to qualify its exact Final-source parent without
-accidentally qualifying the child as source code.
+direct child and leave a stopped `client-terminated` lifecycle record. The installed launcher
+protocol separately proves that the Runtime exposes exactly `observe` and `execute`. Codex 0.151
+defers MCP tools behind its `functions.exec` orchestration namespace, so the model request must
+expose that namespace and `exec`; legacy direct Runtime namespace requests remain accepted. This
+combination binds the real Codex parent process, deferred model-tool route, and exact Runtime MCP
+contract without requiring a real BMC. Restart evidence is derived from those two process runs.
+Active-request drain and explicit task closeout remain independently covered by hermetic Runtime
+lifecycle tests. Successful workflow completion is proven by the representative task matrix. A
+requested source commit must match the clean workspace `HEAD` or the verified release-lock parent.
+This allows a lock-only child to qualify its exact Final-source parent without accidentally
+qualifying the child as source code.
 
 It emits an ordered `failed_dimensions` list for Codex product qualification. Maintenance
 checkpoint readiness requires those Codex-owned dimensions. External harness identity, presence,

@@ -764,6 +764,42 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
             report["dimensions"]["codex_mcp"]["failure_codes"],
         )
 
+    def test_deferred_runtime_tools_qualify_through_codex_functions_exec(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["captured_model_tools"] = ["collaboration", "functions"]
+        codex["captured_runtime_tool_contracts"] = []
+        codex["captured_orchestrator_tool_contracts"] = [
+            {
+                "name": "functions",
+                "type": "namespace",
+                "tools": [
+                    {"name": "exec"},
+                    {"name": "wait"},
+                ],
+            }
+        ]
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertTrue(report["qualified"])
+        self.assertEqual(
+            report["dimensions"]["codex_mcp"][
+                "captured_orchestrator_tool_contracts"
+            ],
+            codex["captured_orchestrator_tool_contracts"],
+        )
+
     def test_codex_restart_must_use_one_pinned_executable_identity(self) -> None:
         closeout = closeout_report()
         codex = closeout["client_matrix"]["runs"]["codex"]
