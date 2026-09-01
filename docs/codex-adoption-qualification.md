@@ -39,7 +39,9 @@ protocol separately proves that the Runtime exposes exactly `observe` and `execu
 defers MCP tools behind its `functions.exec` orchestration namespace, so the model request must
 expose that namespace and `exec`; legacy direct Runtime namespace requests remain accepted. This
 combination binds the real Codex parent process, deferred model-tool route, and exact Runtime MCP
-contract without requiring a real BMC. Restart evidence is derived from those two process runs.
+contract without requiring a real BMC. Every process in the restart pair must independently expose
+an accepted route; evidence from one process cannot satisfy the other process's contract. Restart
+evidence is derived from those two process runs.
 Active-request drain and explicit task closeout remain independently covered by hermetic Runtime
 lifecycle tests. Successful workflow completion is proven by the representative task matrix. A
 requested source commit must match the clean workspace `HEAD` or the verified release-lock parent.

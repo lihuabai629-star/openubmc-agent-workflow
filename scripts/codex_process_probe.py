@@ -389,6 +389,7 @@ def probe_codex_runtime(
                     f"config={config_text[-2000:]}, "
                     f"mcp_tools={[tool for request in server.requests for tool in request.get('tools', []) if isinstance(tool, Mapping) and 'openubmc_target_runtime' in str(tool.get('name', ''))]}"
                 )
+            process_requests = server.requests[request_start:]
             process_runs.append(
                 {
                     "process_id": process.pid,
@@ -401,9 +402,16 @@ def probe_codex_runtime(
                     "requested_model": selected_model,
                     "captured_request_models": [
                         str(request.get("model", ""))
-                        for request in server.requests[request_start:]
+                        for request in process_requests
                         if isinstance(request.get("model"), str)
                     ],
+                    "captured_model_tools": _tool_names(process_requests),
+                    "captured_runtime_tool_contracts": _runtime_tool_contracts(
+                        process_requests
+                    ),
+                    "captured_orchestrator_tool_contracts": (
+                        _orchestrator_tool_contracts(process_requests)
+                    ),
                     "transport_provenance": {
                         "provider": "local-hermetic-responses",
                         "wire_api": "responses",

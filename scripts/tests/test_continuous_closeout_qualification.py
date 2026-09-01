@@ -429,6 +429,21 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             {item["process_id"] for item in run["codex_process_runs"]},
             {item["parent_pid"] for item in run["mcp_lifecycle_records"]},
         )
+        self.assertTrue(
+            all(
+                item["captured_model_tools"]
+                for item in run["codex_process_runs"]
+            )
+        )
+        self.assertTrue(
+            all(
+                (
+                    item["captured_runtime_tool_contracts"]
+                    or item["captured_orchestrator_tool_contracts"]
+                )
+                for item in run["codex_process_runs"]
+            )
+        )
         if run["captured_runtime_tool_contracts"]:
             runtime_contract = run["captured_runtime_tool_contracts"][0]
             self.assertEqual(

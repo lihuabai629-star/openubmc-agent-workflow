@@ -268,6 +268,60 @@ def _mcp_lifecycle_failures(
     return [] if valid else ["mcp_lifecycle_identity_invalid"]
 
 
+def _namespace_tool_names(
+    evidence: Mapping[str, object],
+    *,
+    evidence_field: str,
+    namespace: str,
+) -> tuple[int, set[str]]:
+    raw_contracts = evidence.get(evidence_field)
+    contracts = raw_contracts if isinstance(raw_contracts, list) else []
+    selected = [
+        contract
+        for contract in contracts
+        if isinstance(contract, Mapping)
+        and contract.get("name") == namespace
+        and contract.get("type") == "namespace"
+    ]
+    names = {
+        str(tool.get("name"))
+        for contract in selected
+        for tool in (
+            contract.get("tools")
+            if isinstance(contract.get("tools"), list)
+            else []
+        )
+        if isinstance(tool, Mapping)
+    }
+    return len(selected), names
+
+
+def _codex_tool_route_valid(evidence: Mapping[str, object]) -> bool:
+    captured_tools = evidence.get("captured_model_tools")
+    if not isinstance(captured_tools, list):
+        return False
+    tool_names = {str(item) for item in captured_tools}
+    runtime_count, runtime_tools = _namespace_tool_names(
+        evidence,
+        evidence_field="captured_runtime_tool_contracts",
+        namespace="mcp__openubmc_target_runtime",
+    )
+    functions_count, orchestrator_tools = _namespace_tool_names(
+        evidence,
+        evidence_field="captured_orchestrator_tool_contracts",
+        namespace="functions",
+    )
+    return (
+        "mcp__openubmc_target_runtime" in tool_names
+        and runtime_count == 1
+        and runtime_tools == {"execute", "observe"}
+    ) or (
+        "functions" in tool_names
+        and functions_count == 1
+        and "exec" in orchestrator_tools
+    )
+
+
 def _codex_process_failures(
     evidence: Mapping[str, object],
 ) -> list[str]:
@@ -275,51 +329,6 @@ def _codex_process_failures(
     runs = raw_runs if isinstance(raw_runs, list) else []
     raw_records = evidence.get("mcp_lifecycle_records")
     records = raw_records if isinstance(raw_records, list) else []
-    captured_tools = evidence.get("captured_model_tools")
-    raw_contracts = evidence.get("captured_runtime_tool_contracts")
-    contracts = raw_contracts if isinstance(raw_contracts, list) else []
-    raw_orchestrator_contracts = evidence.get(
-        "captured_orchestrator_tool_contracts"
-    )
-    orchestrator_contracts = (
-        raw_orchestrator_contracts
-        if isinstance(raw_orchestrator_contracts, list)
-        else []
-    )
-    runtime_contracts = [
-        contract
-        for contract in contracts
-        if isinstance(contract, Mapping)
-        and contract.get("name") == "mcp__openubmc_target_runtime"
-        and contract.get("type") == "namespace"
-    ]
-    nested_tool_names = {
-        str(tool.get("name"))
-        for contract in runtime_contracts
-        for tool in (
-            contract.get("tools")
-            if isinstance(contract.get("tools"), list)
-            else []
-        )
-        if isinstance(tool, Mapping)
-    }
-    functions_contracts = [
-        contract
-        for contract in orchestrator_contracts
-        if isinstance(contract, Mapping)
-        and contract.get("name") == "functions"
-        and contract.get("type") == "namespace"
-    ]
-    orchestrator_tool_names = {
-        str(tool.get("name"))
-        for contract in functions_contracts
-        for tool in (
-            contract.get("tools")
-            if isinstance(contract.get("tools"), list)
-            else []
-        )
-        if isinstance(tool, Mapping)
-    }
     bindings: set[tuple[int, str]] = set()
     executable_identities: set[tuple[str, str, str]] = set()
     declared_models = {
@@ -370,6 +379,7 @@ def _codex_process_failures(
                     "wire_api": "responses",
                     "network_scope": "loopback",
                 },
+                _codex_tool_route_valid(run),
                 run.get("returncode") == 0,
             )
         )
@@ -400,19 +410,7 @@ def _codex_process_failures(
                 and record.get("exit_reason") == "client-terminated"
                 for record in records
             ),
-            isinstance(captured_tools, list),
-            (
-                (
-                    "mcp__openubmc_target_runtime"
-                    in {str(item) for item in captured_tools}
-                    and nested_tool_names == {"execute", "observe"}
-                )
-                or (
-                    "functions" in {str(item) for item in captured_tools}
-                    and len(functions_contracts) == 1
-                    and "exec" in orchestrator_tool_names
-                )
-            ),
+            _codex_tool_route_valid(evidence),
             evidence.get("restart_verified") is True,
         )
     )
