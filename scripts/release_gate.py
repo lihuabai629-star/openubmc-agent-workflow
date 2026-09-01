@@ -208,6 +208,45 @@ def _parsed_release_tag(value: str, *, label: str) -> ReleaseVersion:
         ) from exc
 
 
+def require_latest_published_release(
+    previous_ref: str,
+    github_repository: str,
+) -> None:
+    """Require the baseline to be the repository's latest non-draft release."""
+
+    repository = github_repository.strip()
+    if not repository:
+        raise ValueError("GitHub repository is required for previous release lookup")
+    completed = subprocess.run(
+        [
+            "gh",
+            "api",
+            f"repos/{repository}/releases/latest",
+            "--repo",
+            repository,
+            "--jq",
+            ".tag_name",
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        suffix = f": {_tail(detail)}" if detail else ""
+        raise ValueError(
+            "unable to determine the latest published release "
+            f"from GitHub repository {github_repository}{suffix}"
+        )
+    latest_tag = completed.stdout.strip()
+    if latest_tag != previous_ref:
+        raise ValueError(
+            "previous release ref must be the latest published release "
+            f"({latest_tag or 'unknown'})"
+        )
+
+
 def require_published_candidate(
     release_commit: str,
     github_repository: str,
@@ -491,11 +530,11 @@ def execute_release_gate(
     if (
         current_version.major != previous_version.major
         or current_version.minor != previous_version.minor
-        or current_version.patch != previous_version.patch + 1
     ):
         raise ValueError(
-            "previous release ref must be the immediate maintenance predecessor"
+            "maintenance release must use the same major and minor as previous release"
         )
+    require_latest_published_release(previous_ref, github_repository)
     require_published_candidate(resolved_release_commit, github_repository)
     for name, commands in gate_commands(
         current_ref=resolved_release_commit,
