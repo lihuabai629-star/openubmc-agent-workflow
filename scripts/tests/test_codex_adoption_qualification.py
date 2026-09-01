@@ -6,6 +6,7 @@ import unittest
 
 from scripts import codex_adoption_qualification as adoption
 from scripts.evidence_report import evidence_fingerprint
+from scripts.tests.codex_evidence_fixtures import direct_runtime_route_evidence
 
 
 FORMAL_MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
@@ -125,6 +126,7 @@ def closeout_report() -> dict[str, object]:
                             "captured_request_models": [
                                 "codex-product-client-qualification"
                             ],
+                            **direct_runtime_route_evidence(),
                             "transport_provenance": {
                                 "provider": "local-hermetic-responses",
                                 "wire_api": "responses",
@@ -144,6 +146,7 @@ def closeout_report() -> dict[str, object]:
                             "captured_request_models": [
                                 "codex-product-client-qualification"
                             ],
+                            **direct_runtime_route_evidence(),
                             "transport_provenance": {
                                 "provider": "local-hermetic-responses",
                                 "wire_api": "responses",
@@ -152,19 +155,7 @@ def closeout_report() -> dict[str, object]:
                             "returncode": 0,
                         },
                     ],
-                    "captured_model_tools": [
-                        "mcp__openubmc_target_runtime",
-                    ],
-                    "captured_runtime_tool_contracts": [
-                        {
-                            "name": "mcp__openubmc_target_runtime",
-                            "type": "namespace",
-                            "tools": [
-                                {"name": "execute"},
-                                {"name": "observe"},
-                            ],
-                        }
-                    ],
+                    **direct_runtime_route_evidence(),
                     "restart_verified": True,
                     "mcp_closeout": {
                         "status": "passed",
@@ -745,6 +736,142 @@ class CodexAdoptionQualificationTests(unittest.TestCase):
         codex = closeout["client_matrix"]["runs"]["codex"]
         codex["codex_process_invocation"] = False
         codex["codex_process_runs"] = []
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_deferred_runtime_tools_qualify_through_codex_functions_exec(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["captured_model_tools"] = ["collaboration", "functions"]
+        codex["captured_runtime_tool_contracts"] = []
+        codex["captured_orchestrator_tool_contracts"] = [
+            {
+                "name": "functions",
+                "type": "namespace",
+                "tools": [
+                    {"name": "exec"},
+                    {"name": "wait"},
+                ],
+            }
+        ]
+        for run in codex["codex_process_runs"]:
+            run["captured_model_tools"] = ["collaboration", "functions"]
+            run["captured_runtime_tool_contracts"] = []
+            run["captured_orchestrator_tool_contracts"] = [
+                {
+                    "name": "functions",
+                    "type": "namespace",
+                    "tools": [
+                        {"name": "exec"},
+                        {"name": "wait"},
+                    ],
+                }
+            ]
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertTrue(report["qualified"])
+        self.assertEqual(
+            report["dimensions"]["codex_mcp"][
+                "captured_orchestrator_tool_contracts"
+            ],
+            codex["captured_orchestrator_tool_contracts"],
+        )
+
+    def test_deferred_runtime_route_must_survive_codex_restart(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        codex["captured_model_tools"] = ["collaboration", "functions"]
+        codex["captured_runtime_tool_contracts"] = []
+        codex["captured_orchestrator_tool_contracts"] = [
+            {
+                "name": "functions",
+                "type": "namespace",
+                "tools": [{"name": "exec"}],
+            }
+        ]
+        first, second = codex["codex_process_runs"]
+        first["captured_model_tools"] = ["collaboration", "functions"]
+        first["captured_runtime_tool_contracts"] = []
+        first["captured_orchestrator_tool_contracts"] = [
+            {
+                "name": "functions",
+                "type": "namespace",
+                "tools": [{"name": "exec"}],
+            }
+        ]
+        second["captured_model_tools"] = ["collaboration"]
+        second["captured_runtime_tool_contracts"] = []
+        second["captured_orchestrator_tool_contracts"] = []
+
+        with (
+            mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
+            mock.patch.object(
+                adoption, "build_release_lock", return_value=release_identity()
+            ),
+            mock.patch.object(
+                adoption,
+                "bind_source_commit",
+                return_value="a" * 40,
+            ),
+        ):
+            report = qualify()
+
+        self.assertFalse(report["qualified"])
+        self.assertIn(
+            "codex_process_unverified",
+            report["dimensions"]["codex_mcp"]["failure_codes"],
+        )
+
+    def test_direct_runtime_contract_must_be_one_exact_namespace(self) -> None:
+        closeout = closeout_report()
+        codex = closeout["client_matrix"]["runs"]["codex"]
+        split_contracts = [
+            {
+                "name": "mcp__openubmc_target_runtime",
+                "type": "namespace",
+                "tools": [{"name": "execute"}],
+            },
+            {
+                "name": "mcp__openubmc_target_runtime",
+                "type": "namespace",
+                "tools": [{"name": "observe"}],
+            },
+        ]
+        codex["captured_model_tools"] = ["mcp__openubmc_target_runtime"]
+        codex["captured_runtime_tool_contracts"] = split_contracts
+        codex["captured_orchestrator_tool_contracts"] = []
+        for run in codex["codex_process_runs"]:
+            run["captured_model_tools"] = ["mcp__openubmc_target_runtime"]
+            run["captured_runtime_tool_contracts"] = split_contracts
+            run["captured_orchestrator_tool_contracts"] = []
+
         with (
             mock.patch.object(adoption, "qualify_closeout", return_value=closeout),
             mock.patch.object(

@@ -798,6 +798,9 @@ class EnvironmentSetupTests(unittest.TestCase):
                     "captured_runtime_tool_contracts": codex_probe[
                         "captured_runtime_tool_contracts"
                     ],
+                    "captured_orchestrator_tool_contracts": codex_probe[
+                        "captured_orchestrator_tool_contracts"
+                    ],
                     "restart_verified": codex_probe["restart_verified"],
                     "mcp_lifecycle_records": lifecycle_records,
                     "mcp_closeout": {

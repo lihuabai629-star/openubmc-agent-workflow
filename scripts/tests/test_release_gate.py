@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 import yaml
 
+from scripts.tests.codex_evidence_fixtures import direct_runtime_route_evidence
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "release_gate.py"
 SPEC = importlib.util.spec_from_file_location("openubmc_release_gate", SCRIPT)
@@ -122,6 +124,7 @@ def codex_adoption_report(
                         "captured_request_models": [
                             "codex-product-client-qualification"
                         ],
+                        **direct_runtime_route_evidence(),
                         "transport_provenance": {
                             "provider": "local-hermetic-responses",
                             "wire_api": "responses",
@@ -141,6 +144,7 @@ def codex_adoption_report(
                         "captured_request_models": [
                             "codex-product-client-qualification"
                         ],
+                        **direct_runtime_route_evidence(),
                         "transport_provenance": {
                             "provider": "local-hermetic-responses",
                             "wire_api": "responses",
@@ -149,17 +153,7 @@ def codex_adoption_report(
                         "returncode": 0,
                     },
                 ],
-                "captured_model_tools": ["mcp__openubmc_target_runtime"],
-                "captured_runtime_tool_contracts": [
-                    {
-                        "name": "mcp__openubmc_target_runtime",
-                        "type": "namespace",
-                        "tools": [
-                            {"name": "execute"},
-                            {"name": "observe"},
-                        ],
-                    }
-                ],
+                **direct_runtime_route_evidence(),
                 "restart_verified": True,
                 "mcp_closeout": {
                     "status": "passed",

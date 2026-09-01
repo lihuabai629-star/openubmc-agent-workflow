@@ -429,12 +429,37 @@ class ContinuousCloseoutQualificationTests(unittest.TestCase):
             {item["process_id"] for item in run["codex_process_runs"]},
             {item["parent_pid"] for item in run["mcp_lifecycle_records"]},
         )
-        runtime_contract = run["captured_runtime_tool_contracts"][0]
-        self.assertEqual(runtime_contract["name"], "mcp__openubmc_target_runtime")
-        self.assertEqual(
-            {tool["name"] for tool in runtime_contract["tools"]},
-            {"execute", "observe"},
+        self.assertTrue(
+            all(
+                item["captured_model_tools"]
+                for item in run["codex_process_runs"]
+            )
         )
+        self.assertTrue(
+            all(
+                (
+                    item["captured_runtime_tool_contracts"]
+                    or item["captured_orchestrator_tool_contracts"]
+                )
+                for item in run["codex_process_runs"]
+            )
+        )
+        if run["captured_runtime_tool_contracts"]:
+            runtime_contract = run["captured_runtime_tool_contracts"][0]
+            self.assertEqual(
+                runtime_contract["name"], "mcp__openubmc_target_runtime"
+            )
+            self.assertEqual(
+                {tool["name"] for tool in runtime_contract["tools"]},
+                {"execute", "observe"},
+            )
+        else:
+            orchestrator_contract = run["captured_orchestrator_tool_contracts"][0]
+            self.assertEqual(orchestrator_contract["name"], "functions")
+            self.assertIn(
+                "exec",
+                {tool["name"] for tool in orchestrator_contract["tools"]},
+            )
         self.assertEqual(
             run["protocol_exchange"],
             ["initialize", "tools/list", "tools/call:execute"],
