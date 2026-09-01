@@ -369,6 +369,9 @@ def resolved_candidate(
             source_commit=source_commit,
             release_version=release_version,
         ),
+    ), patch.object(
+        release_gate,
+        "require_latest_published_release",
     ), patch.object(release_gate, "require_published_candidate"):
         yield
 
@@ -385,6 +388,9 @@ class ReleaseGateTests(unittest.TestCase):
             release_gate,
             "_resolve_release_candidate",
             return_value=candidate,
+        ), patch.object(
+            release_gate,
+            "require_latest_published_release",
         ), patch.object(release_gate, "require_published_candidate"):
             with self.assertRaisesRegex(ValueError, pattern):
                 execute_release_gate(
@@ -426,17 +432,17 @@ class ReleaseGateTests(unittest.TestCase):
             pattern="must be newer",
         )
 
-    def test_maintenance_release_requires_the_immediate_patch_predecessor(self) -> None:
+    def test_maintenance_release_rejects_a_cross_minor_baseline(self) -> None:
         candidate = SimpleNamespace(
-            requested_ref="v2.0.2",
+            requested_ref="v2.1.0",
             release_commit=RELEASE_COMMIT,
             source_commit=SOURCE_COMMIT,
-            release_version="2.0.2",
+            release_version="2.1.0",
         )
         self.assert_release_candidate_rejected(
             candidate,
-            previous_ref="v2.0.0",
-            pattern="immediate maintenance predecessor",
+            previous_ref="v2.0.2",
+            pattern="same major and minor",
         )
 
     def test_symbolic_release_ref_must_be_a_strict_version_tag(self) -> None:
@@ -488,12 +494,13 @@ class ReleaseGateTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "ok", "")
 
         with tempfile.TemporaryDirectory() as directory, resolved_candidate(
-            "v1.1.2"
+            "v2.0.5",
+            release_version="2.0.5",
         ):
             root = Path(directory)
             report = execute_release_gate(
-                current_ref="v1.1.2",
-                previous_ref="v1.1.1",
+                current_ref="v2.0.5",
+                previous_ref="v2.0.2",
                 workspace=Path.cwd(),
                 work_root=root,
                 executor=succeed,
@@ -675,6 +682,9 @@ class ReleaseGateTests(unittest.TestCase):
                 },
             ), patch.object(
                 release_gate,
+                "require_latest_published_release",
+            ), patch.object(
+                release_gate,
                 "require_published_candidate",
             ):
                 reports = []
@@ -777,6 +787,9 @@ class ReleaseGateTests(unittest.TestCase):
             ),
         ), patch.object(
             release_gate,
+            "require_latest_published_release",
+        ), patch.object(
+            release_gate,
             "require_published_candidate",
             side_effect=ValueError(
                 "release candidate is not published or reachable from GitHub; "
@@ -861,6 +874,45 @@ class ReleaseGateTests(unittest.TestCase):
             self.assertIn("repos/owner/repository/commits/" + "b" * 40, argv)
             self.assertNotIn("HTTP Error 404", str(raised.exception))
             self.assertNotIn("HTTP 422", str(raised.exception))
+
+    def test_previous_ref_must_match_the_latest_published_release(self) -> None:
+        with patch.object(
+            release_gate.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                ["gh", "api"],
+                0,
+                "v2.0.2\n",
+                "",
+            ),
+        ) as run:
+            with self.assertRaisesRegex(ValueError, "latest published release"):
+                release_gate.require_latest_published_release(
+                    "v2.0.1",
+                    "owner/repository",
+                )
+
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[argv.index("--repo") + 1], "owner/repository")
+
+    def test_latest_published_release_is_accepted_as_previous_ref(self) -> None:
+        with patch.object(
+            release_gate.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                ["gh", "api"],
+                0,
+                "v2.0.2\n",
+                "",
+            ),
+        ) as run:
+            release_gate.require_latest_published_release(
+                "v2.0.2",
+                "owner/repository",
+            )
+
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[argv.index("--repo") + 1], "owner/repository")
 
     def test_self_referencing_release_lock_is_rejected(self) -> None:
         release_commit = "c" * 40
