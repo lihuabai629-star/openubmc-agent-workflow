@@ -893,7 +893,11 @@ class ReleaseGateTests(unittest.TestCase):
                 )
 
             argv = run.call_args.args[0]
-            self.assertEqual(argv[argv.index("--repo") + 1], "owner/repository")
+            self.assertEqual(
+                argv[2],
+                "repos/owner/repository/releases/latest",
+            )
+            self.assertNotIn("--repo", argv)
 
     def test_latest_published_release_is_accepted_as_previous_ref(self) -> None:
         with patch.object(
@@ -912,7 +916,11 @@ class ReleaseGateTests(unittest.TestCase):
             )
 
             argv = run.call_args.args[0]
-            self.assertEqual(argv[argv.index("--repo") + 1], "owner/repository")
+            self.assertEqual(
+                argv[2],
+                "repos/owner/repository/releases/latest",
+            )
+            self.assertNotIn("--repo", argv)
 
     def test_self_referencing_release_lock_is_rejected(self) -> None:
         release_commit = "c" * 40

@@ -222,8 +222,6 @@ def require_latest_published_release(
             "gh",
             "api",
             f"repos/{repository}/releases/latest",
-            "--repo",
-            repository,
             "--jq",
             ".tag_name",
         ],

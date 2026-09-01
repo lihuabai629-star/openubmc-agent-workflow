@@ -9,7 +9,9 @@ across GitHub and GitLab.
 
 Use the `gh` CLI for issue-tracker operations. Because the GitHub remote is named
 `github` rather than `origin`, pass `--repo lihuabai629-star/openubmc-agent-workflow`
-explicitly to every `gh issue`, `gh pr`, and repository-scoped `gh api` command.
+explicitly to every `gh issue` and `gh pr` command. `gh api` does not accept a
+`--repo` flag; encode the repository in REST endpoints as
+`repos/lihuabai629-star/openubmc-agent-workflow/...`.
 
 ## Conventions
 
