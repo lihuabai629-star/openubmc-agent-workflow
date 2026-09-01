@@ -218,6 +218,18 @@ def _orchestrator_tool_contracts(
     )
 
 
+def _tool_route_evidence(
+    requests: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "captured_model_tools": _tool_names(requests),
+        "captured_runtime_tool_contracts": _runtime_tool_contracts(requests),
+        "captured_orchestrator_tool_contracts": _orchestrator_tool_contracts(
+            requests
+        ),
+    }
+
+
 def _lifecycle_records(root: Path) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     for path in sorted(root.glob("*.json")):
@@ -405,13 +417,7 @@ def probe_codex_runtime(
                         for request in process_requests
                         if isinstance(request.get("model"), str)
                     ],
-                    "captured_model_tools": _tool_names(process_requests),
-                    "captured_runtime_tool_contracts": _runtime_tool_contracts(
-                        process_requests
-                    ),
-                    "captured_orchestrator_tool_contracts": (
-                        _orchestrator_tool_contracts(process_requests)
-                    ),
+                    **_tool_route_evidence(process_requests),
                     "transport_provenance": {
                         "provider": "local-hermetic-responses",
                         "wire_api": "responses",
@@ -425,17 +431,10 @@ def probe_codex_runtime(
         server.server_close()
         server_thread.join(timeout=5)
 
-    captured_tools = _tool_names(server.requests)
     return {
         "codex_process_invocation": len(process_runs) == 2,
         "codex_process_runs": process_runs,
-        "captured_model_tools": captured_tools,
-        "captured_runtime_tool_contracts": _runtime_tool_contracts(
-            server.requests
-        ),
-        "captured_orchestrator_tool_contracts": _orchestrator_tool_contracts(
-            server.requests
-        ),
+        **_tool_route_evidence(server.requests),
         "restart_verified": len(process_runs) == 2,
         "mcp_lifecycle_records": _lifecycle_records(lifecycle_root),
     }

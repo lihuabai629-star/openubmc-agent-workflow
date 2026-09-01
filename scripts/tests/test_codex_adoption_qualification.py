@@ -6,6 +6,7 @@ import unittest
 
 from scripts import codex_adoption_qualification as adoption
 from scripts.evidence_report import evidence_fingerprint
+from scripts.tests.codex_evidence_fixtures import direct_runtime_route_evidence
 
 
 FORMAL_MODEL_IDENTITY = {"model": "codex-product-client-qualification"}
@@ -125,20 +126,7 @@ def closeout_report() -> dict[str, object]:
                             "captured_request_models": [
                                 "codex-product-client-qualification"
                             ],
-                            "captured_model_tools": [
-                                "mcp__openubmc_target_runtime",
-                            ],
-                            "captured_runtime_tool_contracts": [
-                                {
-                                    "name": "mcp__openubmc_target_runtime",
-                                    "type": "namespace",
-                                    "tools": [
-                                        {"name": "execute"},
-                                        {"name": "observe"},
-                                    ],
-                                }
-                            ],
-                            "captured_orchestrator_tool_contracts": [],
+                            **direct_runtime_route_evidence(),
                             "transport_provenance": {
                                 "provider": "local-hermetic-responses",
                                 "wire_api": "responses",
@@ -158,20 +146,7 @@ def closeout_report() -> dict[str, object]:
                             "captured_request_models": [
                                 "codex-product-client-qualification"
                             ],
-                            "captured_model_tools": [
-                                "mcp__openubmc_target_runtime",
-                            ],
-                            "captured_runtime_tool_contracts": [
-                                {
-                                    "name": "mcp__openubmc_target_runtime",
-                                    "type": "namespace",
-                                    "tools": [
-                                        {"name": "execute"},
-                                        {"name": "observe"},
-                                    ],
-                                }
-                            ],
-                            "captured_orchestrator_tool_contracts": [],
+                            **direct_runtime_route_evidence(),
                             "transport_provenance": {
                                 "provider": "local-hermetic-responses",
                                 "wire_api": "responses",
@@ -180,19 +155,7 @@ def closeout_report() -> dict[str, object]:
                             "returncode": 0,
                         },
                     ],
-                    "captured_model_tools": [
-                        "mcp__openubmc_target_runtime",
-                    ],
-                    "captured_runtime_tool_contracts": [
-                        {
-                            "name": "mcp__openubmc_target_runtime",
-                            "type": "namespace",
-                            "tools": [
-                                {"name": "execute"},
-                                {"name": "observe"},
-                            ],
-                        }
-                    ],
+                    **direct_runtime_route_evidence(),
                     "restart_verified": True,
                     "mcp_closeout": {
                         "status": "passed",
