@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "openubmc-target-runtime": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "-I",
+        "${PLUGIN_ROOT}/scripts/pluginctl.py",
+        "runtime"
+      ],
+      "cwd": "${PLUGIN_ROOT}",
+      "startup_timeout_sec": 120,
+      "tool_timeout_sec": 900
+    },
+    "openubmc-kb": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "-I",
+        "${PLUGIN_ROOT}/scripts/pluginctl.py",
+        "kb"
+      ],
+      "cwd": "${PLUGIN_ROOT}",
+      "startup_timeout_sec": 120,
+      "tool_timeout_sec": 900
+    }
+  }
+}
