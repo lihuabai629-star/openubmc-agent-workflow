@@ -1553,6 +1553,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         transport: UncertainUpgradeTransport,
         task_id: str,
         remove_artifact: bool = True,
+        version_poll_interval: float = 0.001,
     ) -> tuple[object, MutationJournalStore]:
         store = MutationJournalStore(root / "journals")
         backend = UpgradeMcpBackend(
@@ -1567,7 +1568,7 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
         )
         arguments = {
             **self.arguments(artifact, digest),
-            "version_poll_interval": 0.001,
+            "version_poll_interval": version_poll_interval,
         }
         first = RuntimeMcpService(backend)
         try:
@@ -3045,13 +3046,14 @@ class UpgradeRuntimeBackendTests(unittest.TestCase):
             transport = UncertainUpgradeTransport(
                 manager_versions=("2.0.0",), active_version="2.0.0",
             )
-            arguments = {**self.arguments(artifact, digest), "deadline": 0.05}
-            with mock.patch.object(self, "arguments", return_value=arguments):
-                with self.assertRaisesRegex(ValueError, "fresh activation boundary"):
-                    self.run_uncertain_then_recover(
-                        root=root, artifact=artifact, digest=digest,
-                        transport=transport, task_id="same-version-no-activation",
-                    )
+            # Enter the final observation directly without racing a 50 ms
+            # wall-clock deadline against scheduler latency during polling.
+            with self.assertRaisesRegex(ValueError, "fresh activation boundary"):
+                self.run_uncertain_then_recover(
+                    root=root, artifact=artifact, digest=digest,
+                    transport=transport, task_id="same-version-no-activation",
+                    version_poll_interval=TEST_DEADLINE_SECONDS,
+                )
             journal = MutationJournalStore(root / "journals").load(
                 "same-version-no-activation", "upgrade-recovery",
             )
