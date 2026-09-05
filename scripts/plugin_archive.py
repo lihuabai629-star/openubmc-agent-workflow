@@ -29,6 +29,8 @@ def verify_content(files: dict[str, bytes]) -> dict:
     manifest = json.loads(files['.codex-plugin/plugin.json'])
     if manifest.get('version') != lock.get('version') or manifest.get('name') != lock.get('name'):
         raise ValueError('plugin manifest identity mismatch')
+    if lock.get('manifest_digest') != hashlib.sha256(files['.codex-plugin/plugin.json']).hexdigest():
+        raise ValueError('plugin manifest digest mismatch')
     return lock
 
 

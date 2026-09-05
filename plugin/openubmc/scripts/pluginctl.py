@@ -47,6 +47,8 @@ def verify(root: Path = ROOT) -> tuple[dict, dict[str, bytes]]:
     manifest = json.loads(content['.codex-plugin/plugin.json'])
     if manifest['version'] != lock['version'] or manifest['name'] != lock['name']:
         raise ValueError('plugin manifest identity mismatch')
+    if lock.get('manifest_digest') != hashlib.sha256(content['.codex-plugin/plugin.json']).hexdigest():
+        raise ValueError('plugin manifest digest mismatch')
     return lock, content
 
 

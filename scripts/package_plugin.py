@@ -112,7 +112,8 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
     inventory = {name: hashlib.sha256(content).hexdigest() for name, content in sorted(payload.items())}
     lock = {'schema': 'openubmc.codex-plugin.v1', 'name': 'openubmc', 'version': workflow['version'],
             'source_commit': commit, 'skills': sorted(skill_names), 'files': inventory,
-            'manifest_digest': hashlib.sha256(payload['.codex-plugin/plugin.json']).hexdigest()}
+            'manifest_digest': hashlib.sha256(payload['.codex-plugin/plugin.json']).hexdigest(),
+            'qualification_refs': ['docs/runtime-stability-qualification.md', 'docs/codex-adoption-qualification.md']}
     lock['content_digest'] = hashlib.sha256(canonical(lock)).hexdigest()
     payload['plugin-lock.json'] = canonical(lock)
     return payload
