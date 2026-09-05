@@ -16,6 +16,7 @@
         "OPENUBMC_CREDENTIALS_FILE",
         "OPENUBMC_TARGET_RUNTIME_STATE_DIR",
         "OPENUBMC_MCP_FORMAL_RUN",
+        "OPENUBMC_MCP_CLIENT",
         "OPENUBMC_MCP_TASK_ID",
         "OPENUBMC_MCP_SESSION_ID",
         "OPENUBMC_MCP_MODEL_IDENTITY",
@@ -24,7 +25,8 @@
         "OPENUBMC_MCP_LIFECYCLE_DIR"
       ],
       "startup_timeout_sec": 120,
-      "tool_timeout_sec": 900
+      "tool_timeout_sec": 900,
+      "required": true
     },
     "openubmc-kb": {
       "type": "stdio",
@@ -42,7 +44,8 @@
         "OPENUBMC_CREDENTIALS_FILE"
       ],
       "startup_timeout_sec": 120,
-      "tool_timeout_sec": 900
+      "tool_timeout_sec": 900,
+      "required": true
     }
   }
 }

@@ -37,10 +37,23 @@ def main() -> int:
         # write and its terminal journal write.
         for record in records:
             transaction = transactions.get(record.get('transaction'))
-            if transaction and transaction.get('status') in {'rolled_back', 'committed'}:
+            if transaction and transaction.get('content_digest') == record.get('content_digest'):
                 record.update(status=transaction['status'])
-        print(json.dumps({'schema': 'openubmc.codex-plugin.audit.v1', 'releases': records}, sort_keys=True))
-        return 0
+        codex = (args.codex_home or home/'.codex').resolve()
+        listing = subprocess.run(['codex','plugin','list','--json'], env=dict(os.environ, CODEX_HOME=str(codex)),
+                                 capture_output=True, text=True, check=True, timeout=30)
+        active_rows = [row for row in json.loads(listing.stdout)['installed'] if row['name'] == 'openubmc']
+        active = {'installed': bool(active_rows), 'consistent': True}
+        if active_rows:
+            source = verify_directory(home/'plugins/openubmc')
+            active['source_commit'] = source['source_commit']
+            active['content_digest'] = source['content_digest']
+            active['versions'] = [row['version'] for row in active_rows]
+            active['consistent'] = len(active_rows) == 1 and all(
+                verify_directory(codex/'plugins/cache'/row['marketplaceName']/'openubmc'/row['version']) == source
+                for row in active_rows)
+        print(json.dumps({'schema': 'openubmc.codex-plugin.audit.v1', 'releases': records, 'active': active}, sort_keys=True))
+        return 0 if active['consistent'] else 2
     destination = home/'plugins/openubmc'
     current = verify_directory(destination)
     market_path = home/'.agents/plugins/marketplace.json'

@@ -175,6 +175,22 @@ m.activate(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]), Path(sys.argv[5]))
                 pending = [path for path in (self.home/'.local/share/openubmc/plugin-store/transactions').glob('*/transaction.json') if json.loads(path.read_bytes())['status'] not in {'committed','rolled_back'}]
                 self.assertEqual(len(pending), 1)
                 record = json.loads(pending[0].read_bytes())
+                if boundary == 'audit':
+                    recovery = """
+import os,sys,json
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import install_plugin as m
+journal=Path(sys.argv[2])
+original=m.write
+def cut(path,data):
+ original(path,data)
+ if path.parent.name == 'install-audits': os._exit(78)
+m.write=cut
+m.compensate(journal,json.loads((journal/'transaction.json').read_bytes()))
+"""
+                    interrupted = subprocess.run([sys.executable,'-c',recovery,str(ROOT/'scripts'),str(pending[0].parent)],capture_output=True,text=True)
+                    self.assertEqual(interrupted.returncode,78,interrupted.stderr)
                 # Recovery is safe to call twice, including after it restored
                 # the prior source while another restoration was interrupted.
                 installer.compensate(pending[0].parent, record)

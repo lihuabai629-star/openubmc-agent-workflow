@@ -42,19 +42,9 @@ unrelated client configuration.
 
 ## Codex plugin distribution
 
-Stable releases also publish `openubmc-<tag>-codex.tar.gz` and its SHA-256 file. Verify the
-published digest, then install the archive into an isolated home with the distribution entrypoint:
-
-```bash
-python3 scripts/install_plugin.py openubmc-vX.Y.Z-codex.tar.gz \
-  --sha256 "$(cut -d' ' -f1 openubmc-vX.Y.Z-codex.sha256)"
-python3 scripts/plugin_admin.py audit
-```
-
-The installer prepares locked Python and Node dependencies outside the archive, verifies both MCP
-servers through Codex, and records the source commit, plugin digest, archive digest, and transaction
-identity. `plugin_admin.py rollback --release VERSION-DIGEST16` reuses the recorded archive; `uninstall`
-removes the Codex registration while retaining credentials, Runtime state, and the audit record.
+The Codex plugin packages the eleven Skills and both MCP launchers under one verified release
+identity. See [plugin installation and lifecycle](docs/codex-plugin.md) for archive verification,
+migration, health checks, update, rollback, and audit commands.
 
 The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
 queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,

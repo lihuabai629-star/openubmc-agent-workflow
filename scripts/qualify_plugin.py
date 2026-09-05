@@ -7,11 +7,13 @@ import hashlib
 import http.server
 import json
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 
 from package_plugin import build
 from plugin_archive import canonical, verify_directory
@@ -47,7 +49,7 @@ class _ResponsesHandler(http.server.BaseHTTPRequestHandler):
         if len(self.server.requests) % 2:
             events.append({'type':'response.output_item.done', 'output_index':0,
                            'item':{'type':'custom_tool_call','call_id':'plugin-check','name':'exec',
-                                   'input':"text(ALL_TOOLS.filter(t => /openubmc/.test(t.name)));"}})
+                                   'input':"text({tool_names:ALL_TOOLS.filter(t => /openubmc/.test(t.name)).map(t => t.name)}); text({observe:await tools.mcp__openubmc_target_runtime__observe({})}); text({execute:await tools.mcp__openubmc_target_runtime__execute({})});"}})
         events.append({'type':'response.completed','response':{'id':'plugin-probe',
                        'usage':{'input_tokens':0,'output_tokens':0,'total_tokens':0}}})
         body = ''.join('event: '+event['type']+'\ndata: '+json.dumps(event)+'\n\n' for event in events).encode()
@@ -61,40 +63,83 @@ class _ResponsesHandler(http.server.BaseHTTPRequestHandler):
 
 
 def native_exec_probe(env: dict[str, str], root: Path, source_commit: str) -> dict:
+    machine = platform.machine().lower()
+    arch, target = ('arm64', 'aarch64') if machine in {'arm64','aarch64'} else ('x64','x86_64')
+    executable = ROOT/f'plugin/host/node_modules/@openai/codex-linux-{arch}/vendor/{target}-unknown-linux-musl/bin/codex'
+    if not executable.is_file():
+        raise ValueError('run npm ci --prefix plugin/host before plugin qualification')
+    if subprocess.check_output([str(executable), '--version'], text=True).strip() != 'codex-cli 0.153.4':
+        raise ValueError('native probe Codex version mismatch')
     server = _Responses()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    env = dict(env, OPENUBMC_MCP_FORMAL_RUN='1', OPENUBMC_MCP_TASK_ID='plugin-qualification',
-               OPENUBMC_MCP_SESSION_ID='plugin-qualification-session', OPENUBMC_MCP_SOURCE_COMMIT=source_commit,
-               OPENUBMC_MCP_LIFECYCLE_DIR=str(root/'lifecycle'), OPENUBMC_TARGET_RUNTIME_STATE_DIR=str(root/'runtime-state'),
-               OPENUBMC_CODEX_PROBE_API_KEY='local-probe',
-               OPENUBMC_MCP_MODEL_IDENTITY=json.dumps({'model':'local-plugin-probe'}),
+    session = uuid.uuid4().hex
+    env = dict(env, OPENUBMC_MCP_FORMAL_RUN='1', OPENUBMC_MCP_CLIENT='codex',
+               OPENUBMC_MCP_TASK_ID='plugin-qualification', OPENUBMC_MCP_SESSION_ID=session,
+               OPENUBMC_MCP_SOURCE_COMMIT=source_commit, OPENUBMC_MCP_LIFECYCLE_DIR=str(root/'lifecycle'),
+               OPENUBMC_TARGET_RUNTIME_STATE_DIR=str(root/'runtime-state'), OPENUBMC_CODEX_PROBE_API_KEY='local-probe',
+               OPENUBMC_MCP_MODEL_IDENTITY=json.dumps({'model':'gpt-5.6-sol'}),
                OPENUBMC_MCP_CODEX_IDENTITY=json.dumps({'version':'codex-cli 0.153.4'}))
-    command = ['codex', 'exec', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only',
-               '--color', 'never', '--model', 'gpt-5.6-sol', '-C', str(root),
-               '-c', 'features.plugins=true',
-               '-c', 'model_provider="openubmc_plugin_probe"',
-               '-c', 'model_providers.openubmc_plugin_probe.name="OpenUBMC plugin probe"',
-               '-c', f'model_providers.openubmc_plugin_probe.base_url="http://127.0.0.1:{server.server_port}/v1"',
-               '-c', 'model_providers.openubmc_plugin_probe.env_key="OPENUBMC_CODEX_PROBE_API_KEY"',
-               '-c', 'model_providers.openubmc_plugin_probe.wire_api="responses"',
-               '-c', 'model_providers.openubmc_plugin_probe.supports_websockets=false',
-               'Return exactly OK without calling a tool.']
+    argv = [str(executable), 'exec', '--ephemeral', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+            '--color', 'never', '--model', 'gpt-5.6-sol', '-C', str(root),
+            '-c', 'features.plugins=true', '-c', 'model_provider="openubmc_plugin_probe"',
+            '-c', 'model_providers.openubmc_plugin_probe.name="OpenUBMC plugin probe"',
+            '-c', f'model_providers.openubmc_plugin_probe.base_url="http://127.0.0.1:{server.server_port}/v1"',
+            '-c', 'model_providers.openubmc_plugin_probe.env_key="OPENUBMC_CODEX_PROBE_API_KEY"',
+            '-c', 'model_providers.openubmc_plugin_probe.wire_api="responses"',
+            '-c', 'model_providers.openubmc_plugin_probe.supports_websockets=false',
+            'Exercise the local Runtime request validation boundary without contacting a target.']
     runs = []
     try:
         for _ in range(2):
-            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180)
-            if result.returncode:
-                raise ValueError('native Codex plugin exec failed: '+(result.stderr or result.stdout)[-2000:])
-            runs.append({'returncode':result.returncode, 'stdout':result.stdout[-500:]})
+            start = len(server.requests)
+            process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                stdout, stderr = process.communicate(timeout=180)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise ValueError('native Codex plugin exec timed out')
+            if process.returncode:
+                raise ValueError('native Codex plugin exec failed: '+(stderr or stdout)[-2000:])
+            outputs = {}
+            for request in server.requests[start:]:
+                for item in request.get('input', []):
+                    if item.get('type') != 'custom_tool_call_output':
+                        continue
+                    for part in item.get('output', []):
+                        try:
+                            value = json.loads(part.get('text', ''))
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(value, dict):
+                            outputs.update(value)
+            names = outputs.get('tool_names', [])
+            if not {'mcp__openubmc_target_runtime__observe', 'mcp__openubmc_target_runtime__execute'} <= set(names):
+                raise ValueError('native Codex did not discover the packaged Runtime tools')
+            for name in ('observe', 'execute'):
+                result = outputs.get(name, {})
+                if not result.get('isError') or not isinstance(result.get('structuredContent'), dict):
+                    raise ValueError('native Codex did not receive Runtime validation for '+name+': '+str(result)[:1000])
+            records = [json.loads(path.read_bytes()) for path in (root/'lifecycle').glob('*.json')]
+            matched = [item for item in records if item.get('parent_pid') == process.pid and item.get('session_id') == session]
+            if len(matched) != 1:
+                raise ValueError('native Codex did not directly own exactly one Runtime process')
+            lifecycle = matched[0]
+            if lifecycle.get('source_commit') != source_commit or lifecycle.get('client') != 'codex' or not lifecycle.get('formal_run') or lifecycle.get('active_requests') != 0 or lifecycle.get('lifecycle_state') != 'stopped' or lifecycle.get('exit_reason') != 'client-terminated' or not lifecycle.get('parent_identity_verified'):
+                raise ValueError('native Runtime lifecycle failed to close with the selected source identity')
+            if Path('/proc').joinpath(str(lifecycle['process_id'])).exists():
+                raise ValueError('Runtime process survived its Codex parent')
+            runs.append({'codex_pid':process.pid, 'runtime_pid':lifecycle['process_id'],
+                         'source_commit':source_commit, 'session_id':session, 'exit_reason':lifecycle['exit_reason'],
+                         'active_requests':0, 'tool_names':names, 'validated_calls':['observe','execute']})
     finally:
-        server.shutdown(); server.server_close(); thread.join(timeout=5)
-    tool_names = sorted({str(tool.get('name')) for request in server.requests
-                         for tool in request.get('tools', []) if isinstance(tool, dict) and tool.get('name')})
-    if not any('openubmc_target_runtime' in name for name in tool_names):
-        raise ValueError('native Codex exec did not advertise the packaged Runtime MCP: '+json.dumps({'tools':tool_names, 'stderr':result.stderr[-3500:], 'request_tools':[r.get('tools',[]) for r in server.requests], 'requests':server.requests},ensure_ascii=False))
-    return {'invocations':len(runs), 'restart_verified':len(runs) == 2,
-            'captured_tool_names':tool_names, 'requests':len(server.requests), 'runs':runs}
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    return {'invocations':len(runs), 'restart_verified':len(runs) == 2, 'runs':runs,
+            'executable_sha256':hashlib.sha256(executable.read_bytes()).hexdigest(),
+            'transport':'local-hermetic-responses', 'network_scope':'loopback'}
 
 
 def qualify(source: Path, ref: str, archive: Path) -> dict:
