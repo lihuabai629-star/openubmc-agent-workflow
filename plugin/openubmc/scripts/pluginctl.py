@@ -181,9 +181,14 @@ def probe_server(command: str, content: dict[str, bytes], lock: dict) -> dict[st
     request = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
                           'params': {'protocolVersion': '2024-11-05', 'capabilities': {},
                                      'clientInfo': {'name': 'openubmc-plugin-doctor', 'version': lock['version']}}}) + '\n'
+    request += json.dumps({'jsonrpc':'2.0','method':'notifications/initialized'})+'\n'
+    request += json.dumps({'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}})+'\n'
+    probe_env = node_environment()
+    probe_env['OPENUBMC_MCP_FORMAL_RUN'] = '0'
+    probe_env['OPENUBMC_MCP_PARENT_PID'] = str(os.getpid())
     process = subprocess.Popen([sys.executable, '-I', str(ROOT/'scripts/pluginctl.py'), command],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, env=node_environment())
+                               text=True, env=probe_env)
     try:
         stdout, stderr = process.communicate(request, timeout=12)
     except subprocess.TimeoutExpired:
@@ -197,7 +202,11 @@ def probe_server(command: str, content: dict[str, bytes], lock: dict) -> dict[st
         if isinstance(value, dict): messages.append(value)
     initialized = any(value.get('id') == 1 and isinstance(value.get('result'), dict) for value in messages)
     server = next((value['result'].get('serverInfo') for value in messages if value.get('id') == 1 and isinstance(value.get('result'), dict)), {})
-    return {'ok': initialized, 'server': server, 'stderr': stderr[-1000:] if not initialized else ''}
+    names = {tool.get('name') for value in messages if value.get('id') == 2
+             for tool in value.get('result', {}).get('tools', [])}
+    expected = {'observe', 'execute'} if command == 'runtime' else {'openubmc_kb_query', 'openubmc_kb_status', 'openubmc_kb_list'}
+    ok = initialized and names == expected and process.returncode == 0
+    return {'ok': ok, 'server': server, 'tools': sorted(names), 'stderr': stderr[-1000:] if not ok else ''}
 
 
 def launch(command: str, content: dict[str, bytes], lock: dict) -> int:
