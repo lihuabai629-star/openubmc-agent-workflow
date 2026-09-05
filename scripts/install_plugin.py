@@ -122,6 +122,11 @@ def compensate(journal: Path, record: dict) -> None:
         if before is not None and current != before and backup_identity != before:
             raise ValueError('activation is missing its previous '+key)
         directories.append((key, path, current, before, backup))
+    for item in record.get('cache_old', []):
+        current, saved = identity(Path(item['path'])), identity(Path(item['saved']))
+        expected = item['content_digest']
+        if (current, saved) not in {(expected, None), (None, expected)}:
+            raise ValueError('cannot compensate a changed previous Codex cache')
     validate_links(record)
     # Every operation accepts the already-restored state after interruption.
     for key, path, current, before, backup in directories:
@@ -131,6 +136,10 @@ def compensate(journal: Path, record: dict) -> None:
             rename(path, journal/('failed-'+key))
         if before is not None:
             rename(backup, path)
+    for item in record.get('cache_old', []):
+        old_path, saved_path = Path(item['path']), Path(item['saved'])
+        if not old_path.exists() and saved_path.exists():
+            rename(saved_path, old_path)
     for key, path, current, before in file_states:
         if current != record[key+'_before']:
             if record[key+'_existed']:
@@ -146,6 +155,11 @@ def compensate(journal: Path, record: dict) -> None:
             sync_directory(path.parent)
     record['status'] = 'rolled_back'
     write(journal/'transaction.json', canonical(record))
+    audit_path = journal.parent.parent/'install-audits'/(record.get('content_digest', '')[:16]+'.json')
+    if audit_path.is_file():
+        audit = json.loads(audit_path.read_bytes())
+        if audit.get('transaction') == record.get('transaction'):
+            write(audit_path, canonical(record))
 
 
 def replace_directory(journal: Path, record: dict, key: str, candidate: Path) -> None:
@@ -223,7 +237,7 @@ def activate(archive: Path, archive_sha: str, home: Path, codex: Path) -> dict:
         journal = store/'transactions'/uuid.uuid4().hex
         journal.mkdir(parents=True, mode=0o700)
         record = {'schema':'openubmc.plugin-activation.v2','status':'prepared','home':str(home),'codex_home':str(codex),
-                  'source':str(source),'market':str(market),'config':str(config),
+                  'transaction':journal.name, 'source':str(source),'market':str(market),'config':str(config),
                   'source_commit':lock['source_commit'],'version':lock['version'],'content_digest':lock['content_digest'],
                   'archive_sha256':archive_sha,'release_path':str(release),'source_before':old['content_digest'] if old else None,
                   'legacy_links':plan['links']}
@@ -257,6 +271,21 @@ def activate(archive: Path, archive_sha: str, home: Path, codex: Path) -> dict:
             if cache_before not in {None, lock['content_digest']}:
                 raise ValueError('existing Codex plugin cache has different content')
             record.update(cache=str(cache), cache_before=cache_before)
+            cache_root = cache.parent
+            old_caches = []
+            saved_root = journal/'cache-old'
+            for old_path in sorted(cache_root.glob('*')) if cache_root.exists() else []:
+                if old_path.is_dir() and old_path != cache:
+                    old_identity = identity(old_path)
+                    owner = store/'install-audits'/(old_identity[:16]+'.json')
+                    if not owner.is_file() or json.loads(owner.read_bytes()).get('content_digest') != old_identity:
+                        raise ValueError('previous Codex cache is not owned by this installer')
+                    saved = saved_root/old_path.name
+                    old_caches.append({'path':str(old_path), 'saved':str(saved), 'content_digest':old_identity})
+            record['cache_old'] = old_caches
+            write(journal/'transaction.json', canonical(record))
+            for item in old_caches:
+                rename(Path(item['path']), Path(item['saved']))
             replace_directory(journal, record, 'cache', stage_cache)
             record['config_after'], record['config_written'] = digest(after), True
             write(journal/'config-after', after)
@@ -272,6 +301,10 @@ def activate(archive: Path, archive_sha: str, home: Path, codex: Path) -> dict:
                 if path.is_symlink():
                     path.unlink()
                     sync_directory(path.parent)
+            selected = json.loads(command(['codex','plugin','list','--json'], env))
+            active = [row for row in selected['installed'] if row['pluginId'] == 'openubmc@'+name]
+            if len(active) != 1 or active[0]['version'] != lock['version'] or not active[0]['enabled']:
+                raise ValueError('Codex selected a different active plugin version')
             installed['installedPath'] = str(cache)
             record['codex_install'] = installed
             # Recovery materials precede the commit marker.

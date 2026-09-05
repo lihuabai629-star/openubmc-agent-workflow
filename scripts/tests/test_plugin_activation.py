@@ -119,6 +119,8 @@ class ActivationTests(unittest.TestCase):
         self.assertEqual(second['version'], '2.0.8')
         restored = self.activate()
         self.assertEqual(restored['version'], '2.0.7')
+        native_list = json.loads(self.native(['codex','plugin','list','--json'], dict(os.environ, CODEX_HOME=str(self.codex))))
+        self.assertEqual(native_list['installed'][0]['version'], '2.0.7')
         self.assertIn('model="before"', (self.codex/'config.toml').read_text())
         self.assertEqual(installer.identity(self.home/'plugins/openubmc'), first['content_digest'])
         store = self.home/'.local/share/openubmc/plugin-store'
@@ -179,3 +181,6 @@ m.activate(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]), Path(sys.argv[5]))
                 installer.compensate(pending[0].parent, record)
                 self.assertEqual(installer.identity(self.home/'plugins/openubmc'), initial)
                 self.assertIn('model="before"', (self.codex/'config.toml').read_text())
+                if boundary == 'audit':
+                    audit = self.home/'.local/share/openubmc/plugin-store/install-audits'/(record['content_digest'][:16]+'.json')
+                    self.assertEqual(json.loads(audit.read_bytes())['status'], 'rolled_back')

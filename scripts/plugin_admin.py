@@ -57,9 +57,6 @@ def main() -> int:
     record = json.loads(audit.read_bytes())
     if record.get('content_digest') != selected['content_digest'] or record.get('source_commit') != selected['source_commit']:
         raise ValueError('release audit identity mismatch')
-    if current['content_digest'] == selected['content_digest']:
-        print(json.dumps({'ok': True, 'changed': False, 'release': args.release}))
-        return 0
     archive_sha = record.get('archive_sha256', '')
     if not re.fullmatch(r'[0-9a-f]{64}', archive_sha):
         raise ValueError('release audit has no valid archive digest')
