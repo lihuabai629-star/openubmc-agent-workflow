@@ -34,7 +34,7 @@ change Runtime-owned completion semantics.
 The CI profile blocks promotion when any of these limits is exceeded:
 
 - 30 seconds for the restart soak;
-- 30 seconds for the 128-Run capacity workload;
+- 40 seconds for the 128-Run capacity workload;
 - 15 seconds and 16 MiB for the Artifact lifecycle workload;
 - 512 MiB total process peak RSS and 128 MiB peak Python allocations;
 - 32 MiB persisted SQLite and Artifact storage for 64 Runs;

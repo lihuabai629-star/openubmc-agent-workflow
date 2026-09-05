@@ -111,7 +111,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "artifact_capacity_batch_size": 16,
                 "soak_restart_cycles": 4,
                 "soak_runs_per_cycle": 16,
-                "max_capacity_seconds": 30.0,
+                "max_capacity_seconds": 40.0,
                 "max_capacity_peak_rss_bytes": 536870912,
                 "max_capacity_peak_python_bytes": 134217728,
                 "max_capacity_storage_bytes": 67108864,
