@@ -40,6 +40,22 @@ Codex receives the managed Skill links and stdio MCP entries. Repair, update, ro
 uninstall can retire workflow-owned entries from older multi-client installations without touching
 unrelated client configuration.
 
+## Codex plugin distribution
+
+Stable releases also publish `openubmc-<tag>-codex.tar.gz` and its SHA-256 file. Verify the
+published digest, then install the archive into an isolated home with the distribution entrypoint:
+
+```bash
+python3 scripts/install_plugin.py openubmc-vX.Y.Z-codex.tar.gz \
+  --sha256 "$(cut -d' ' -f1 openubmc-vX.Y.Z-codex.sha256)"
+python3 scripts/plugin_admin.py audit
+```
+
+The installer prepares locked Python and Node dependencies outside the archive, verifies both MCP
+servers through Codex, and records the source commit, plugin digest, archive digest, and transaction
+identity. `plugin_admin.py rollback --release VERSION-DIGEST16` reuses the recorded archive; `uninstall`
+removes the Codex registration while retaining credentials, Runtime state, and the audit record.
+
 The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
 queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,
 Case lifecycle, and Runtime status are available only through the explicit `operator` profile.
