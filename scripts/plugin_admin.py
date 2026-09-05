@@ -40,9 +40,11 @@ def main() -> int:
             if transaction and transaction.get('content_digest') == record.get('content_digest'):
                 record.update(status=transaction['status'])
         codex = (args.codex_home or home/'.codex').resolve()
-        listing = subprocess.run(['codex','plugin','list','--json'], env=dict(os.environ, CODEX_HOME=str(codex)),
+        listing = subprocess.run(['codex','plugin','list','--json'], env=dict(os.environ, CODEX_HOME=str(codex),
+                                 XDG_CONFIG_HOME=str(home/'.config'), XDG_DATA_HOME=str(home/'.local/share'), XDG_CACHE_HOME=str(home/'.cache')),
                                  capture_output=True, text=True, check=True, timeout=30)
-        active_rows = [row for row in json.loads(listing.stdout)['installed'] if row['name'] == 'openubmc']
+        active_rows = [row for row in json.loads(listing.stdout)['installed']
+                       if row.get('name') == 'openubmc' or str(row.get('pluginId', '')).split('@', 1)[0] == 'openubmc']
         active = {'installed': bool(active_rows), 'consistent': True}
         if active_rows:
             source = verify_directory(home/'plugins/openubmc')
