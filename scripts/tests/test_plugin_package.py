@@ -82,3 +82,35 @@ class PluginPackageTests(unittest.TestCase):
             self.assertNotEqual(check.returncode, 0)
             self.assertIn('prepare', check.stderr)
             self.assertEqual(check.stdout, '')
+
+    @unittest.skipUnless(shutil.which('codex'), 'Codex executable is required')
+    def test_codex_installs_and_resolves_plugin_mcp_launchers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            result = subprocess.run([sys.executable, str(BUILDER), 'build', '--source', str(self.source), '--output', str(base/'bundle.tar.gz')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            marketplace = base/'marketplace'
+            (marketplace/'plugins').mkdir(parents=True)
+            with tarfile.open(base/'bundle.tar.gz') as archive:
+                archive.extractall(marketplace/'plugins', filter='data')
+            path = marketplace/'.agents/plugins/marketplace.json'
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({'name': 'runtime-test', 'plugins': [{'name': 'openubmc', 'source': {'source': 'local', 'path': './plugins/openubmc'}, 'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'}, 'category': 'Productivity'}]}))
+            codex_home = base/'codex'
+            codex_home.mkdir()
+            env = dict(os.environ, CODEX_HOME=str(codex_home))
+            for command in (['plugin', 'marketplace', 'add', str(marketplace)], ['plugin', 'add', 'openubmc@runtime-test', '--json']):
+                result = subprocess.run(['codex', *command], env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run(['codex', 'mcp', 'list', '--json'], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            servers = {item['name']: item for item in json.loads(result.stdout)}
+            for name in ('openubmc-target-runtime', 'openubmc-kb'):
+                server = servers[name]
+                transport = server['transport']
+                launch = Path(transport['cwd'])/transport['args'][1]
+                self.assertTrue(launch.is_file(), str(launch))
+                check = subprocess.run([transport['command'], '-I', str(launch), 'verify'], capture_output=True, text=True)
+                self.assertEqual(check.returncode, 0, check.stderr)
+            result = subprocess.run(['codex', 'plugin', 'remove', 'openubmc@runtime-test'], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
