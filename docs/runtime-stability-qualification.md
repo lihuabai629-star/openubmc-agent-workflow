@@ -42,6 +42,12 @@ The CI profile blocks promotion when any of these limits is exceeded:
 - any duplicate Outcome, open Incident, incomplete operation, or same-key/different-input
   acceptance.
 
+The capacity scenario includes 128 starts and 128 diagnosis acceptance submissions. Its 40-second
+limit covers all 256 calls with allocation tracing and durable SQLite writes enabled. The earlier
+30-second limit originated with a single-call diagnosis workload. Run count, event-growth,
+memory, storage, and correctness limits remain separate gates; a larger wall-time allowance
+does not change their acceptance criteria.
+
 ## Evidence
 
 The report records the source commit, Python and platform fingerprint, all workload parameters,

@@ -32,6 +32,9 @@ ARTIFACT_CAPACITY_RECORDS = 64
 ARTIFACT_CAPACITY_BATCH_SIZE = 16
 SOAK_RESTART_CYCLES = 4
 SOAK_RUNS_PER_CYCLE = 16
+# Diagnosis acceptance adds a second execute call to each of the 128 Runs.
+# Keep a wall-time bound for all 256 calls, including traced allocations and
+# durable SQLite writes on the supported shared CI runner.
 MAX_CAPACITY_SECONDS = 40.0
 MAX_CAPACITY_PEAK_RSS_BYTES = 512 * 1024 * 1024
 MAX_CAPACITY_PEAK_PYTHON_BYTES = 128 * 1024 * 1024
