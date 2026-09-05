@@ -14,6 +14,7 @@ import tempfile
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -50,7 +51,7 @@ def verify(root: Path = ROOT) -> tuple[dict, dict[str, bytes]]:
 
 
 def dependency_root(content: dict[str, bytes]) -> Path:
-    node = subprocess.run(['node', '--version'], check=True, capture_output=True, text=True).stdout.strip()
+    node = subprocess.run(['node', '--version'], env=node_environment(), check=True, capture_output=True, text=True).stdout.strip()
     if int(node.removeprefix('v').split('.')[0]) < 20:
         raise ValueError('Node 20 or newer is required')
     identity = {'schema': 'isolated-target.v1', 'python': sys.version, 'machine': platform.machine(), 'platform': sys.platform, 'node': node,
@@ -107,7 +108,7 @@ def prepare_dependencies(content: dict[str, bytes], repair: bool) -> Path:
         knowledge.mkdir()
         for name in ('package.json', 'package-lock.json'):
             (knowledge/name).write_bytes(content['openubmc-kb-mcp/'+name])
-        env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
+        env = node_environment()
         commands = [
             [sys.executable, '-I', '-B', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-compile', '--only-binary=:all:', '--require-hashes', '--target', str(root/'python-packages'), '-r', str(root/'requirements.lock')],
             ['npm', 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--prefix', str(knowledge)],
@@ -124,55 +125,77 @@ def prepare_dependencies(content: dict[str, bytes], repair: bool) -> Path:
     return root
 
 
-def launch_locked(command: str, content: dict[str, bytes], dependencies: Path) -> int:
-    check_dependencies(dependencies)
-    # Freeze the verified package bytes before executing a path-based entrypoint.
-    # Runtime's existing launcher then verifies and freezes its composition.
-    with tempfile.TemporaryDirectory(prefix='openubmc-plugin-execution-') as temporary:
-        snapshot = Path(temporary)
-        for name, data in content.items():
-            path = snapshot/name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
-            path.chmod(0o500 if name.endswith('.sh') else 0o400)
-        env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
-        if command == 'runtime':
-            packages = snapshot/'python-packages'
-            shutil.copytree(dependencies/'python-packages', packages, symlinks=True)
-            expected = json.loads((dependencies/'receipt.json').read_bytes())['files']
-            copied = {'python-packages/'+key: value for key, value in dependency_inventory(packages).items()}
-            if copied != {key: value for key, value in expected.items() if key.startswith('python-packages/')}:
-                raise ValueError('Dependency cache changed during startup')
-            argv = [sys.executable, '-I', '-B', '-c',
-                    'import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_path(sys.argv[2],run_name="__main__")',
-                    str(packages), str(snapshot/'scripts/launch_runtime.py')]
+def execution_snapshot(content: dict[str, bytes], lock: dict, dependencies: Path) -> Path:
+    record = check_dependencies(dependencies)
+    expected = {name: {'sha256': hashlib.sha256(data).hexdigest(), 'mode': 0o500 if name.endswith('.sh') else 0o400}
+                for name, data in content.items()}
+    dependency_paths = {}
+    for name, identity in record['files'].items():
+        if name.startswith('python-packages/'):
+            destination = name
+        elif name.startswith('knowledge/node_modules/'):
+            destination = 'openubmc-kb-mcp/'+name.removeprefix('knowledge/')
         else:
-            # Source and installed dependency content are individually verified.
-            knowledge = snapshot/'openubmc-kb-mcp'
-            shutil.copytree(dependencies/'knowledge/node_modules', knowledge/'node_modules', symlinks=True)
-            expected = json.loads((dependencies/'receipt.json').read_bytes())['files']
-            copied = {'knowledge/'+key: value for key, value in dependency_inventory(knowledge).items() if key.startswith('node_modules/')}
-            if copied != {key: value for key, value in expected.items() if key.startswith('knowledge/node_modules/')}:
-                raise ValueError('Dependency cache changed during startup')
-            argv = ['node', str(knowledge/'src/server.js')]
-        process = subprocess.Popen(argv, env=env)
-        import signal
-        previous = {}
-        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            previous[signum] = signal.signal(signum, lambda signum, frame: process.send_signal(signum))
-        try:
-            return process.wait()
-        finally:
-            for signum, handler in previous.items():
-                signal.signal(signum, handler)
+            continue
+        expected[destination] = identity
+        dependency_paths[destination] = name
+    key = hashlib.sha256(canonical({'plugin': lock['content_digest'], 'files': expected})).hexdigest()
+    cache = Path(os.environ.get('XDG_CACHE_HOME') or Path.home()/'.cache')/'openubmc/plugin-executions'
+    cache.mkdir(parents=True, exist_ok=True)
+    snapshot = cache/key
+    with (cache/(key+'.lock')).open('a') as mutex:
+        fcntl.flock(mutex, fcntl.LOCK_EX)
+        if not snapshot.exists():
+            with tempfile.TemporaryDirectory(prefix='.prepare-', dir=cache) as temporary:
+                stage = Path(temporary)/'snapshot'
+                stage.mkdir()
+                for name, identity in expected.items():
+                    path = stage/name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    if 'link' in identity:
+                        path.symlink_to(identity['link'])
+                    else:
+                        data = content[name] if name in content else (dependencies/dependency_paths[name]).read_bytes()
+                        if hashlib.sha256(data).hexdigest() != identity['sha256']:
+                            raise ValueError('Dependency cache changed during snapshot creation')
+                        path.write_bytes(data)
+                        path.chmod(identity['mode'])
+                if dependency_inventory(stage) != expected:
+                    raise ValueError('Execution snapshot inventory mismatch')
+                stage.rename(snapshot)
+        if snapshot.is_symlink() or dependency_inventory(snapshot) != expected:
+            raise ValueError('Execution snapshot drift; remove the damaged execution cache and retry')
+    return snapshot
 
 
-def launch(command: str, content: dict[str, bytes], dependencies: Path) -> int:
+def node_environment() -> dict[str, str]:
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
+    for key in tuple(env):
+        if key.upper() in {'NODE_OPTIONS', 'NODE_PATH', 'NPM_CONFIG_NODE_OPTIONS'}:
+            env.pop(key)
+    return env
+
+
+def launch(command: str, content: dict[str, bytes], lock: dict) -> int:
+    dependencies = dependency_root(content)
     if not (dependencies/'receipt.json').is_file():
         raise ValueError('Dependencies are not prepared; run pluginctl.py prepare')
     with (dependencies.parent/(dependencies.name+'.lock')).open('a') as mutex:
         fcntl.flock(mutex, fcntl.LOCK_SH)
-        return launch_locked(command, content, dependencies)
+        snapshot = execution_snapshot(content, lock, dependencies)
+    env = node_environment()
+    env['OPENUBMC_MCP_SOURCE_COMMIT'] = lock['source_commit']
+    env['OPENUBMC_PLUGIN_CONTENT_DIGEST'] = lock['content_digest']
+    if command == 'runtime':
+        argv = [sys.executable, '-I', '-B', '-c',
+                'import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_path(sys.argv[2],run_name="__main__")',
+                str(snapshot/'python-packages'), str(snapshot/'scripts/launch_runtime.py')]
+    else:
+        argv = ['node', str(snapshot/'openubmc-kb-mcp/src/server.js')]
+    # Preserve the direct Codex parent across launch. Execution caches contain
+    # only verified release/dependency bytes and persist independently of state.
+    os.execvpe(argv[0], argv, env)
+    return 0
 
 
 def main() -> int:
@@ -187,17 +210,17 @@ def main() -> int:
         report = {'ok': True, 'source_commit': lock['source_commit'], 'version': lock['version'],
                   'content_digest': lock['content_digest'], 'skills': lock['skills']}
         if args.command in ('migrate', 'restore-legacy'):
-            import importlib.util
-            module_path = ROOT/'scripts/plugin_install.py'
-            spec = importlib.util.spec_from_file_location('openubmc_plugin_install', module_path)
-            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-            result = module.migrate(args.home) if args.command == 'migrate' else module.restore(args.home, args.transaction)
+            import types
+            module = types.ModuleType('openubmc_plugin_install')
+            exec(compile(content['scripts/plugin_install.py'], '<verified-plugin-install>', 'exec'), module.__dict__)
+            skill_paths = [item['path'] for item in json.loads(content['workflow.json'])['skills']]
+            result = module.migrate(args.home, skill_paths) if args.command == 'migrate' else module.restore(args.home, args.transaction)
             print(json.dumps(result, sort_keys=True)); return 0
         if args.command == 'prepare':
             root = prepare_dependencies(content, args.repair)
             report['dependencies'] = str(root)
         elif args.command in ('runtime', 'kb'):
-            return launch(args.command, content, dependency_root(content))
+            return launch(args.command, content, lock)
         elif args.command == 'doctor':
             report['package_integrity'] = True
             try:

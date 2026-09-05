@@ -123,7 +123,7 @@ def build(source: Path, ref: str, output: Path) -> dict:
                 for name, content in sorted(files.items()):
                     info = tarfile.TarInfo('openubmc/' + name)
                     info.size = len(content)
-                    info.mode = 0o644
+                    info.mode = 0o755 if name.startswith('scripts/') or name.endswith('.sh') else 0o644
                     archive.addfile(info, io.BytesIO(content))
         buffer.seek(0)
         data = buffer.read()
