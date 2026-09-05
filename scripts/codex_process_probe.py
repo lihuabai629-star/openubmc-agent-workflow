@@ -339,6 +339,19 @@ def probe_codex_runtime(
                     + json.dumps(value),
                 )
             )
+        # The installed Runtime launcher verifies and snapshots the complete
+        # composition before serving MCP. Give the real Codex client enough
+        # startup time to observe that registration on the first process too;
+        # otherwise a fast model response can finish before the namespace is
+        # advertised, producing a false missing-tool qualification.
+        command.extend(
+            (
+                "-c",
+                "mcp_servers.openubmc-target-runtime.startup_timeout_sec=120",
+                "-c",
+                "mcp_servers.openubmc-target-runtime.tool_timeout_sec=900",
+            )
+        )
         command.append("Return exactly OK without calling a tool.")
         for _ in range(2):
             before = len(_lifecycle_records(lifecycle_root))
