@@ -5768,10 +5768,12 @@ class ContextRuntime:
                 if remaining_bytes <= 0:
                     return None
                 max_bytes = min(MAX_OBSERVATION_SOURCE_BYTES, remaining_bytes - 1)
+                request_bytes = max_bytes + 1
+                remaining_bytes -= request_bytes
                 body = read_bounded(blob_id, max_bytes=max_bytes)
                 if body is None:
                     return None
-                remaining_bytes -= len(body) + 1
+                remaining_bytes += request_bytes - (len(body) + 1)
                 value = json.loads(body.decode("utf-8"))
                 if not isinstance(value, Mapping) or value.get("schema") != OBSERVATION_SOURCE_SCHEMA:
                     continue

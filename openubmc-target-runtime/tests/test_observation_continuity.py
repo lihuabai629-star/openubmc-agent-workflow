@@ -164,6 +164,29 @@ class ObservationContinuityTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_corrupt_blob_consumes_budget_and_cannot_seed_reuse(self):
+        backend = ScopedBackend()
+        service = RuntimeMcpService(backend)
+        try:
+            observe(service)
+            repository = service._test.context_runtime.blob_repository
+            corrupt_id = repository.put(b"valid-but-corrupted")
+            repository._blobs[corrupt_id] = b"tampered"
+            requests = []
+            original_bounded = repository.read_bounded
+
+            def counted_bounded(blob_id, *, max_bytes):
+                requests.append(max_bytes + 1)
+                return original_bounded(blob_id, max_bytes=max_bytes)
+
+            repository.read_bounded = counted_bounded
+            turn = start(service)
+            self.assertIn("observation_ref", turn)
+            self.assertEqual(backend.calls[-1][0], "debug_collect")
+            self.assertLessEqual(sum(requests), 32 * 1024 * 1024)
+        finally:
+            service.close()
+
     def test_filesystem_bounded_blob_read_stops_after_limit(self):
         with tempfile.TemporaryDirectory() as raw:
             repository = FilesystemBlobRepository(Path(raw))
