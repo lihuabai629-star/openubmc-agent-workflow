@@ -78,8 +78,9 @@ def migration_config(text: str, servers: set[str], targets: set[str]) -> str:
     return after
 
 
-def plan(home: Path, skill_paths: list[str]) -> tuple[dict, bytes, bytes]:
-    config = home/'.codex/config.toml'
+def plan(home: Path, skill_paths: list[str], codex_home: Path | None = None) -> tuple[dict, bytes, bytes]:
+    codex_root = (codex_home or home/'.codex').resolve()
+    config = codex_root/'config.toml'
     state_path = home/'.config/openubmc/environment-state.json'
     if config.is_symlink() or state_path.is_symlink():
         raise ValueError('managed configuration files must not be symbolic links')
@@ -100,7 +101,7 @@ def plan(home: Path, skill_paths: list[str]) -> tuple[dict, bytes, bytes]:
     if source:
         targets.update(str(Path(source)/name) for name in skill_paths)
     links = []
-    roots = [home/'.codex/skills', home/'.agents/skills', home/'.local/share/openubmc/codex-skill-links']
+    roots = [codex_root/'skills', home/'.agents/skills', home/'.local/share/openubmc/codex-skill-links']
     for root in roots:
         if root.is_symlink():
             raise ValueError('Skill installation root is a symbolic link: '+str(root))
@@ -110,13 +111,13 @@ def plan(home: Path, skill_paths: list[str]) -> tuple[dict, bytes, bytes]:
             if path.is_symlink() and str(path.resolve()) in targets:
                 links.append({'path': str(path), 'target': os.readlink(path)})
     after = migration_config(before.decode(), owned_servers, targets).encode()
-    record = {'schema': 'openubmc.plugin-migration.v1', 'home': str(home),
+    record = {'schema': 'openubmc.plugin-migration.v1', 'home': str(home), 'codex_home': str(codex_root),
               'before_digest': digest(before), 'after_digest': digest(after), 'links': sorted(links, key=lambda item:item['path']),
               'config_existed': config.is_file(), 'status': 'prepared'}
     return record, before, after
 
 
-def migrate(home: Path, skill_paths: list[str]) -> dict:
+def migrate(home: Path, skill_paths: list[str], codex_home: Path | None = None) -> dict:
     home = home.resolve()
     journals = journal_root(home)
     journals.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -133,7 +134,7 @@ def migrate(home: Path, skill_paths: list[str]) -> dict:
             root, record = pending[0]
             before, after = (root/'before.toml').read_bytes(), (root/'after.toml').read_bytes()
         else:
-            record, before, after = plan(home, skill_paths)
+            record, before, after = plan(home, skill_paths, codex_home)
             if before == after and not record['links']:
                 return {'ok': True, 'changed': False}
             transaction = uuid.uuid4().hex
@@ -143,7 +144,7 @@ def migrate(home: Path, skill_paths: list[str]) -> dict:
             write_atomic(root/'before.toml', before)
             write_atomic(root/'after.toml', after)
             save(root/'transaction.json', record)
-        config = home/'.codex/config.toml'
+        config = (codex_home or home/'.codex').resolve()/'config.toml'
         current = config.read_bytes() if config.is_file() else b''
         if digest(current) not in {record['before_digest'], record['after_digest']}:
             raise ValueError('Codex configuration changed during migration')
@@ -162,7 +163,7 @@ def migrate(home: Path, skill_paths: list[str]) -> dict:
         return {'ok': True, 'changed': True, 'transaction': record['transaction'], 'removed_links': len(record['links'])}
 
 
-def restore(home: Path, transaction: str) -> dict:
+def restore(home: Path, transaction: str, codex_home: Path | None = None) -> dict:
     if not re.fullmatch(r'[0-9a-f]{32}', transaction):
         raise ValueError('transaction must be a lowercase 32-character id')
     home = home.resolve()
@@ -173,9 +174,9 @@ def restore(home: Path, transaction: str) -> dict:
     with (journals/'migration.lock').open('a') as mutex:
         fcntl.flock(mutex, fcntl.LOCK_EX)
         record = json.loads((root/'transaction.json').read_bytes())
-        if record.get('transaction') != transaction or record.get('home') != str(home) or record.get('schema') != 'openubmc.plugin-migration.v1':
+        if record.get('transaction') != transaction or record.get('home') != str(home) or record.get('codex_home') != str((codex_home or home/'.codex').resolve()) or record.get('schema') != 'openubmc.plugin-migration.v1':
             raise ValueError('migration journal identity mismatch')
-        config = home/'.codex/config.toml'
+        config = (codex_home or home/'.codex').resolve()/'config.toml'
         if config.is_symlink():
             raise ValueError('Codex configuration was replaced by a symlink')
         before = (root/'before.toml').read_bytes()
@@ -184,7 +185,8 @@ def restore(home: Path, transaction: str) -> dict:
         current = config.read_bytes() if config.is_file() else b''
         if digest(current) not in {record['before_digest'], record['after_digest']}:
             raise ValueError('restore would overwrite subsequent Codex configuration changes')
-        allowed_roots = {home/'.codex/skills', home/'.agents/skills', home/'.local/share/openubmc/codex-skill-links'}
+        codex_root = (codex_home or home/'.codex').resolve()
+        allowed_roots = {codex_root/'skills', home/'.agents/skills', home/'.local/share/openubmc/codex-skill-links'}
         for item in record['links']:
             path = Path(item['path'])
             if path.parent not in allowed_roots or path.parent.is_symlink():

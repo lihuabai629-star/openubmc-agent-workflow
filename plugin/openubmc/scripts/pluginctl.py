@@ -226,6 +226,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'migrate', 'restore-legacy'])
     parser.add_argument('--home', type=Path, default=Path.home())
+    parser.add_argument('--codex-home', type=Path)
     parser.add_argument('--transaction', default='')
     parser.add_argument('--repair', action='store_true', help='Recreate a damaged dependency cache')
     args = parser.parse_args()
@@ -238,7 +239,7 @@ def main() -> int:
             module = types.ModuleType('openubmc_plugin_install')
             exec(compile(content['scripts/plugin_install.py'], '<verified-plugin-install>', 'exec'), module.__dict__)
             skill_paths = [item['path'] for item in json.loads(content['workflow.json'])['skills']]
-            result = module.migrate(args.home, skill_paths) if args.command == 'migrate' else module.restore(args.home, args.transaction)
+            result = module.migrate(args.home, skill_paths, args.codex_home) if args.command == 'migrate' else module.restore(args.home, args.transaction, args.codex_home)
             print(json.dumps(result, sort_keys=True)); return 0
         if args.command == 'prepare':
             root = prepare_dependencies(content, args.repair)
