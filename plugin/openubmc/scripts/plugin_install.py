@@ -127,6 +127,17 @@ def migrate(home: Path, skill_paths: list[str], codex_home: Path | None = None) 
         for path in journals.glob('*/transaction.json'):
             record = json.loads(path.read_bytes())
             if record.get('status') == 'prepared':
+                # A pending journal is bound to the Codex home selected when
+                # it was created.  Never replay another installation's
+                # configuration or links into this invocation's home.
+                if record.get('schema') != 'openubmc.plugin-migration.v1':
+                    raise ValueError('invalid migration journal schema')
+                if record.get('home') != str(home) or record.get('codex_home') != str((codex_home or home/'.codex').resolve()):
+                    raise ValueError('incomplete migration journal belongs to another home')
+                root = path.parent
+                before_path, after_path = root/'before.toml', root/'after.toml'
+                if not before_path.is_file() or not after_path.is_file() or digest(before_path.read_bytes()) != record.get('before_digest') or digest(after_path.read_bytes()) != record.get('after_digest'):
+                    raise ValueError('incomplete migration journal snapshot is invalid')
                 pending.append((path.parent, record))
         if len(pending) > 1:
             raise ValueError('multiple incomplete migration journals require reconciliation')
