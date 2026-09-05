@@ -36,6 +36,7 @@ SOAK_RUNS_PER_CYCLE = 16
 # Keep a wall-time bound for all 256 calls, including traced allocations and
 # durable SQLite writes on the supported shared CI runner.
 MAX_CAPACITY_SECONDS = 40.0
+LEGACY_V1_MAX_CAPACITY_SECONDS = 30.0
 MAX_CAPACITY_PEAK_RSS_BYTES = 512 * 1024 * 1024
 MAX_CAPACITY_PEAK_PYTHON_BYTES = 128 * 1024 * 1024
 MAX_CAPACITY_STORAGE_BYTES = 64 * 1024 * 1024
@@ -220,6 +221,8 @@ def _verify_runtime_stability_report(
         raise ValueError("Runtime stability environment fingerprint is invalid")
     parameters = report.get("parameters")
     expected_parameters = ci_parameters()
+    if schema == SCHEMA_V1:
+        expected_parameters["max_capacity_seconds"] = LEGACY_V1_MAX_CAPACITY_SECONDS
     if parameters != expected_parameters:
         raise ValueError("Runtime stability parameters do not match the CI profile")
 
@@ -375,7 +378,7 @@ def _verify_runtime_stability_report(
             )
             <= MAX_CAPACITY_PEAK_PYTHON_BYTES,
             _number(capacity.get("elapsed_seconds"), "capacity elapsed seconds")
-            <= MAX_CAPACITY_SECONDS,
+            <= expected_parameters["max_capacity_seconds"],
         )
     ):
         raise ValueError("Runtime stability capacity exceeded a hard threshold")

@@ -231,28 +231,32 @@ class RuntimeQualificationTests(unittest.TestCase):
         return json.dumps(report)
 
     def test_legacy_v1_stability_evidence_remains_verifiable(self) -> None:
-        report = json.loads(self.stability_report(SOURCE_COMMIT))
-        report["schema"] = "openubmc-agent-workflow.runtime-stability.v1"
-        report["scenarios"].pop("dual_projection")
-        report["scenarios"]["duplicate_storm"]["execute_calls"] = 18
-        report["scenarios"]["gate_concurrency"]["execute_calls"] = 9
-        report["scenarios"]["gate_concurrency"]["gate_submissions"] = 1
-        report["scenarios"]["capacity"]["execute_calls"] = 128
-        report["scenarios"]["restart_soak"]["execute_calls"] = 128
-        report.pop("evidence_digest")
-        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+        fixture = Path(__file__).resolve().parents[2] / (
+            "docs/qualification/p2-runtime-stability-20260826.json"
+        )
+        report = json.loads(fixture.read_text())
+        source_commit = report["source_commit"]
 
         with self.assertRaisesRegex(ValueError, "legacy"):
             qualification.verify_runtime_stability_report(
                 report,
-                expected_source_commit=SOURCE_COMMIT,
+                expected_source_commit=source_commit,
                 require_promotable=True,
             )
         verify_legacy_runtime_stability_report(
             report,
-            expected_source_commit=SOURCE_COMMIT,
+            expected_source_commit=source_commit,
             require_promotable=True,
         )
+
+        # A current capacity allowance cannot retroactively qualify a v1 run.
+        report["scenarios"]["capacity"]["elapsed_seconds"] = 31.0
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+        with self.assertRaisesRegex(ValueError, "capacity exceeded"):
+            verify_legacy_runtime_stability_report(
+                report, expected_source_commit=source_commit, require_promotable=True,
+            )
 
     def test_dual_projection_verifier_recomputes_reported_bytes(self) -> None:
         report = json.loads(self.stability_report(SOURCE_COMMIT))
