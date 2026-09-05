@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import sys
 from pathlib import Path
+import tempfile
 
 
 def read_text_preserve_newlines(path: Path) -> str:
@@ -14,7 +17,23 @@ def read_text_preserve_newlines(path: Path) -> str:
 
 
 def write_text_preserve_newlines(path: Path, text: str) -> None:
-    path.write_bytes(text.encode("utf-8"))
+    mode = path.stat().st_mode & 0o777
+    descriptor, raw_temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        dir=path.parent,
+        text=False,
+    )
+    temporary = Path(raw_temporary)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(text.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def iter_manifest_files(manifest_root: Path, stage: str | None) -> list[Path]:
@@ -64,6 +83,57 @@ def replace_refs(matches: list[tuple[Path, int, str]], component: str, new_ref: 
     return changed
 
 
+def exact_target(
+    manifest_root: Path,
+    exact_file: Path,
+    component: str,
+    expected_old_ref: str,
+    new_ref: str,
+    write: bool,
+) -> dict[str, object]:
+    root = manifest_root.resolve(strict=True)
+    path = exact_file.resolve(strict=True)
+    subsys_root = (root / "build" / "subsys").resolve(strict=True)
+    try:
+        path.relative_to(subsys_root)
+    except ValueError as exc:
+        raise ValueError(f"exact file must be below {subsys_root}: {path}") from exc
+    matches = find_refs([path], component)
+    if not matches:
+        raise ValueError(f"no existing refs for {component} in {path}")
+    current_refs = sorted({old_ref for _path, _line, old_ref in matches})
+    if current_refs == [new_ref]:
+        return {
+            "path": str(path),
+            "component": component,
+            "expected_old_ref": expected_old_ref,
+            "new_ref": new_ref,
+            "changed": False,
+            "written": False,
+            "match_count": len(matches),
+        }
+    unexpected = [ref for ref in current_refs if ref != expected_old_ref]
+    if unexpected:
+        raise RuntimeError(
+            "[manifest_ref_conflict] "
+            f"{path}: expected {expected_old_ref} or target {new_ref}; "
+            f"found {', '.join(unexpected)}"
+        )
+    changed = False
+    if write:
+        replaced = replace_refs(matches, component, new_ref)
+        changed = bool(replaced)
+    return {
+        "path": str(path),
+        "component": component,
+        "expected_old_ref": expected_old_ref,
+        "new_ref": new_ref,
+        "changed": True,
+        "written": changed,
+        "match_count": len(matches),
+    }
+
+
 def product_contains_component(product_manifest: Path, component: str) -> bool:
     if not product_manifest.is_file():
         raise ValueError(f"product manifest not found: {product_manifest}")
@@ -75,6 +145,8 @@ def main() -> int:
     parser.add_argument("--manifest-root", required=True, help="manifest workspace root")
     parser.add_argument("--component", required=True, help="component/package name, e.g. general_hardware")
     parser.add_argument("--new-ref", required=True, help="new Conan ref, e.g. component/1.2.3@openubmc/stable")
+    parser.add_argument("--expected-old-ref", help="required compare-and-set source ref when writing")
+    parser.add_argument("--exact-file", help="single build/subsys file allowed to change")
     parser.add_argument("--stage", help="limit search to build/subsys/<stage>/... path component")
     parser.add_argument("--product-manifest", help="optional product manifest.yml to check dependency presence")
     parser.add_argument("--write", action="store_true", help="write replacements; default is dry-run")
@@ -85,6 +157,22 @@ def main() -> int:
         return 1
 
     try:
+        if args.write and (not args.expected_old_ref or not args.exact_file):
+            parser.error("--write requires --expected-old-ref and --exact-file")
+        if args.exact_file:
+            if not args.expected_old_ref:
+                parser.error("--exact-file requires --expected-old-ref")
+            result = exact_target(
+                Path(args.manifest_root),
+                Path(args.exact_file),
+                args.component,
+                args.expected_old_ref,
+                args.new_ref,
+                args.write,
+            )
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+
         files = iter_manifest_files(Path(args.manifest_root), args.stage)
         matches = find_refs(files, args.component)
         if not matches:
@@ -92,26 +180,21 @@ def main() -> int:
             print("if this is a new component, add the correct product/subsystem dependency explicitly")
             return 2
 
-        print(f"found {len(matches)} ref(s) for {args.component}:")
-        for path, line, old_ref in matches:
-            print(f"  {path}:{line}: {old_ref} -> {args.new_ref}")
+        result: dict[str, object] = {
+            "component": args.component,
+            "new_ref": args.new_ref,
+            "changed": False,
+            "written": False,
+            "matches": [
+                {"path": str(path), "line": line, "current_ref": old_ref}
+                for path, line, old_ref in matches
+            ],
+        }
 
         if args.product_manifest:
             present = product_contains_component(Path(args.product_manifest), args.component)
-            status = "present" if present else "not found"
-            print(f"product manifest component text check: {status}: {args.product_manifest}")
-            if not present:
-                print(
-                    "component may be selected through an existing subsystem; "
-                    "only new components require product/subsystem dependency wiring"
-                )
-
-        if args.write:
-            changed = replace_refs(matches, args.component, args.new_ref)
-            for path, count in changed.items():
-                print(f"updated {count} ref(s): {path}")
-        else:
-            print("dry-run only; pass --write to update files")
+            result["product_manifest_contains_component"] = present
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     except Exception as exc:  # noqa: BLE001 - command-line helper should print concise errors.
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -1360,6 +1360,7 @@ def create_service():
     upgrade_backend = _load_upgrade_backend(journal_store)
     if upgrade_backend is not None:
         tool_backends["upgrade_run"] = upgrade_backend
+        tool_backends["upgrade_batch"] = upgrade_backend
     task_context_store = runtime.TaskContextStore(
         state_dir / "task-contexts",
         ttl_seconds=_positive_env_int(

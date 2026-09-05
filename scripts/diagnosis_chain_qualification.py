@@ -403,6 +403,8 @@ def qualification_violations(report: Mapping[str, object]) -> list[str]:
         violations.append("developer Gate binding is incomplete")
     if recovery.get("accepted_receipt_present") is not True:
         violations.append("accepted diagnosis receipt identity is missing")
+    if recovery.get("typed_diagnosis_verified") is not True:
+        violations.append("accepted diagnosis lacks a verified typed DiagnosisRecord")
     if recovery.get("accepted_diagnosis_survived_restart") is not True:
         violations.append("accepted diagnosis did not survive restart and replay")
     if recovery.get("outcome") != "completed":
@@ -564,7 +566,14 @@ def _worker_accept_diagnosis(
                     "payload": {
                         "root_cause": "fixture drive identity uses the wrong scope",
                         "evidence_ids": evidence_ids,
-                        "known_gaps": ["representative NVMe hardware is pending"],
+                        "causal_chain": [
+                            "the fixture identifies a drive outside its slot scope",
+                            "the source then selects the wrong drive identity",
+                        ],
+                        "code_owner": "src/qualification.lua",
+                        "contradictions": [],
+                        "remaining_gaps": ["representative NVMe hardware is pending"],
+                        "verification_status": "verified",
                     },
                 },
             },
@@ -583,6 +592,7 @@ def _worker_accept_diagnosis(
         "development_gate": _gate_name(development),
         "development_gate_binding": _gate_binding(development),
         "accepted_receipt_id": _diagnostic_receipt_id(development),
+        "diagnosis_record": development.get("diagnosis_record"),
     }
 
 
@@ -725,6 +735,15 @@ def _worker_complete_development(
             )
         _, SQLiteRuntimeRepository, _ = runtime_types
         case = SQLiteRuntimeRepository(database).load(final["run_id"]) or {}
+        from openubmc_target_runtime.diagnosis_record import accepted_diagnosis_record
+
+        typed_record = accepted_diagnosis_record(case)
+        typed_diagnosis_verified = bool(
+            typed_record is not None
+            and typed_record.accepted
+            and typed_record.to_public_dict() == final.get("diagnosis_record")
+            and typed_record.to_public_dict() == replayed.get("diagnosis_record")
+        )
         closeout = case.get("closeout")
         closeout = closeout if isinstance(closeout, Mapping) else {}
         validation_readiness = _validation_readiness_projection(final, closeout)
@@ -739,6 +758,8 @@ def _worker_complete_development(
         "replayed_gate": _gate_name(replayed),
         "replayed_gate_binding": _gate_binding(replayed),
         "replayed_receipt_id": _diagnostic_receipt_id(replayed),
+        "replayed_diagnosis_record": replayed.get("diagnosis_record"),
+        "typed_diagnosis_verified": typed_diagnosis_verified,
         "outcome": outcome.get("status", ""),
         "acceptance": _acceptance(outcome),
         "validation_readiness": validation_readiness,
@@ -1031,7 +1052,11 @@ def qualify_diagnosis_chain(
                     and bool(str(completed["replayed_receipt_id"]).strip())
                     and completed["replayed_receipt_id"]
                     == accepted["accepted_receipt_id"]
+                    and bool(accepted["diagnosis_record"])
+                    and completed["replayed_diagnosis_record"]
+                    == accepted["diagnosis_record"]
                 ),
+                "typed_diagnosis_verified": completed["typed_diagnosis_verified"],
                 "outcome": completed["outcome"],
                 "acceptance": completed["acceptance"],
             }

@@ -13,5 +13,6 @@ documents; ADRs define the decisions implementation must preserve.
 | [ADR-0005](0005-retire-compatibility-writers-and-profile.md) | Accepted | Retire compatibility writers and profile after the same-source evidence gate, while preserving historical telemetry and old-event upcasters. |
 | [ADR-0006](0006-isolate-model-planning-until-leverage-is-proven.md) | Proposed | Keep model planning isolated until real-task evidence proves leverage over pinned static workflows. |
 | [ADR-0007](0007-soft-agent-projection-budget.md) | Accepted | Treat 4/8 KiB as soft Agent display targets without rewriting Runtime-owned semantics. |
+| [ADR-0008](0008-bounded-observation-continuity.md) | Accepted | Permit bounded same-task ObservationRef continuity with durable rediscovery, scope probes, and strict selector/epoch checks. |
 
 New ADRs supersede earlier decisions explicitly; they do not silently reinterpret them.

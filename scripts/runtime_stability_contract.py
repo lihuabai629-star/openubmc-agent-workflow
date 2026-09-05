@@ -224,7 +224,7 @@ def _verify_runtime_stability_report(
     if not all(
         (
             _integer(storm.get("execute_calls"), "storm execute calls")
-            == STORM_WORKERS + 2,
+            == STORM_WORKERS + (2 if schema == SCHEMA_V1 else 3),
             _integer(storm.get("failed_calls"), "storm failed calls") == 0,
             _integer(storm.get("unique_runs"), "storm unique runs") == 1,
             _integer(storm.get("operation_count"), "storm operation count") == 1,
@@ -241,10 +241,11 @@ def _verify_runtime_stability_report(
     if not all(
         (
             _integer(gate.get("execute_calls"), "gate execute calls")
-            == GATE_WORKERS + 1,
+            == GATE_WORKERS + (1 if schema == SCHEMA_V1 else 3),
             _integer(gate.get("failed_calls"), "gate failed calls") == 0,
             _integer(gate.get("unique_runs"), "gate unique runs") == 1,
-            _integer(gate.get("gate_submissions"), "gate submissions") == 1,
+            _integer(gate.get("gate_submissions"), "gate submissions")
+            == (1 if schema == SCHEMA_V1 else 2),
             _integer(gate.get("outcome_events"), "gate outcome events") == 1,
             _integer(gate.get("open_incidents"), "gate open incidents") == 0,
             _integer(gate.get("unique_turns"), "gate unique Turns") == 1,
@@ -315,7 +316,7 @@ def _verify_runtime_stability_report(
     if not all(
         (
             _integer(capacity.get("execute_calls"), "capacity execute calls")
-            == CAPACITY_RUNS,
+            == CAPACITY_RUNS * (1 if schema == SCHEMA_V1 else 2),
             _integer(capacity.get("failed_calls"), "capacity failed calls") == 0,
             _integer(capacity.get("completed_turns"), "capacity completed turns")
             == CAPACITY_RUNS,
@@ -901,7 +902,7 @@ def _verify_runtime_stability_report(
 
     soak = _scenario(report, "restart_soak")
     expected_runs = SOAK_RESTART_CYCLES * SOAK_RUNS_PER_CYCLE
-    expected_calls = expected_runs * 2
+    expected_calls = expected_runs * (2 if schema == SCHEMA_V1 else 3)
     total_events = _integer(soak.get("total_events"), "soak total events", minimum=1)
     events_per_cycle = soak.get("events_per_cycle")
     cumulative_events = soak.get("cumulative_events_by_cycle")
@@ -948,7 +949,7 @@ def _verify_runtime_stability_report(
             == expected_calls,
             _integer(soak.get("failed_calls"), "soak failed calls") == 0,
             _integer(soak.get("completed_turns"), "soak completed turns")
-            == expected_calls,
+            == expected_runs * 2,
             _integer(soak.get("completed_runs"), "soak completed runs")
             == expected_runs,
             _integer(soak.get("replay_mismatches"), "soak replay mismatches")

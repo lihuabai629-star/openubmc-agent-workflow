@@ -70,6 +70,9 @@ from openubmc_target_runtime.agent_gateway import (  # noqa: E402
 from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
     DiagnosticReceipt,
 )
+from openubmc_target_runtime.diagnosis_record import (  # noqa: E402
+    DiagnosisRecord,
+)
 from openubmc_target_runtime.mcp import (  # noqa: E402
     JsonRpcMcpEndpoint,
     RuntimeMcpService,
@@ -128,6 +131,54 @@ class _HermeticBackend:
             "observed_at": "2026-08-25T00:00:00Z",
             "freshness": {"status": "fresh"},
         }
+
+
+def _diagnosis_response(turn: Mapping[str, object]) -> dict[str, object]:
+    gate = turn.get("gate")
+    if not isinstance(gate, Mapping) or gate.get("name") != "diagnosis.acceptance":
+        raise RuntimeError("diagnostic collection must expose diagnosis.acceptance")
+    receipt = turn.get("diagnostic_receipt")
+    if not isinstance(receipt, Mapping):
+        raise RuntimeError("diagnostic collection lacks its Runtime receipt")
+    evidence_ids = [item["evidence_id"] for item in receipt.get("evidence", [])]
+    return {
+        "kind": "respond", "run_id": turn["run_id"],
+        "gate_id": gate["gate_id"], "gate_version": gate["gate_version"],
+        "schema_digest": gate["schema_digest"],
+        "response": {
+            "status": "completed", "summary": "hermetic diagnosis verified",
+            "payload": {
+                "root_cause": "the fixture component consumed an outdated state",
+                "evidence_ids": evidence_ids,
+                "causal_chain": ["fixture state was outdated", "component consumed that state"],
+                "code_owner": "fixture/component.lua", "contradictions": [],
+                "remaining_gaps": [], "verification_status": "verified",
+            },
+        },
+    }
+
+
+def _accept_diagnosis(agent, turn: Mapping[str, object], operation_id: str):
+    accepted = agent.call_exposed_tool(
+        "execute", _diagnosis_response(turn),
+        task_id=operation_id, operation_id=operation_id,
+    )
+    record = DiagnosisRecord.from_mapping(accepted.get("diagnosis_record", {}))
+    if not record.accepted or not record.record_id:
+        raise RuntimeError("diagnosis Gate did not persist a verified DiagnosisRecord")
+    return accepted
+
+
+def _control_semantics(turn: Mapping[str, object]) -> dict[str, object]:
+    stable = dict(turn)
+    progress = stable.get("progress")
+    if (
+        isinstance(progress, Mapping)
+        and progress.get("reason") == "unchanged_command_replayed"
+    ):
+        stable.pop("progress", None)
+        stable.pop("interaction_telemetry", None)
+    return stable
 
 
 DUAL_PROJECTION_TEXT_TARGET_BYTES = EXECUTE_TEXT_PROJECTION_TARGET_BYTES
@@ -684,6 +735,9 @@ def _duplicate_storm(root: Path) -> dict[str, object]:
             task_id="duplicate-storm-final",
             operation_id="duplicate-storm-start",
         )
+        final_turn = _accept_diagnosis(
+            final_agent, final_turn, "duplicate-storm-accept-diagnosis",
+        )
         conflicting = dict(action)
         conflicting["target"] = "192.0.2.92"
         conflict_rejected = False
@@ -719,7 +773,7 @@ def _duplicate_storm(root: Path) -> dict[str, object]:
         (
             len(run_ids | {run_id}) == 1,
             not errors,
-            set(states).issubset({"running", "completed"}),
+            set(states).issubset({"running", "waiting_response"}),
             final_turn["state"] == "completed",
             conflict_rejected,
             projection["operation_count"] == 1,
@@ -730,7 +784,7 @@ def _duplicate_storm(root: Path) -> dict[str, object]:
     )
     return {
         "status": "passed" if passed else "failed",
-        "execute_calls": STORM_WORKERS + 2,
+        "execute_calls": STORM_WORKERS + 3,
         "failed_calls": len(errors),
         "errors": errors,
         "concurrent_workers": STORM_WORKERS,
@@ -761,6 +815,9 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
             },
             task_id="gate-concurrency-start",
             operation_id="gate-concurrency-start",
+        )
+        waiting = _accept_diagnosis(
+            starter, waiting, "gate-concurrency-accept-diagnosis",
         )
     finally:
         starter.close()
@@ -829,20 +886,9 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
     unique_turns = len({evidence_fingerprint(turn) for turn in turns})
     turn_states = Counter(str(turn["state"]) for turn in turns)
 
-    def control_semantics(turn: Mapping[str, object]) -> dict[str, object]:
-        stable = dict(turn)
-        progress = stable.get("progress")
-        if (
-            isinstance(progress, Mapping)
-            and progress.get("reason") == "unchanged_command_replayed"
-        ):
-            stable.pop("progress", None)
-            stable.pop("interaction_telemetry", None)
-        return stable
-
     canonical_turn_matches = all(
-        evidence_fingerprint(control_semantics(turn))
-        == evidence_fingerprint(control_semantics(canonical_turn))
+        evidence_fingerprint(_control_semantics(turn))
+        == evidence_fingerprint(_control_semantics(canonical_turn))
         for turn in turns
     )
     gate_submissions = len(projection["gate_submissions"])
@@ -858,7 +904,7 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
             canonical_turn["state"] == "completed",
             canonical_turn_matches,
             canonical_backend.calls == 0,
-            gate_submissions == 1,
+            gate_submissions == 2,
             outcome_events == 1,
             projection["run_outcome"].get("status") == "completed",
             projection["incidents"] == [],
@@ -866,7 +912,7 @@ def _gate_concurrency(root: Path) -> dict[str, object]:
     )
     return {
         "status": "passed" if passed else "failed",
-        "execute_calls": GATE_WORKERS + 1,
+        "execute_calls": GATE_WORKERS + 3,
         "failed_calls": len(errors),
         "errors": errors,
         "unique_runs": len(run_ids),
@@ -915,6 +961,10 @@ def _capacity(root: Path) -> dict[str, object]:
                             },
                             task_id=operation_id,
                             operation_id=operation_id,
+                        )
+                        execute_calls += 1
+                        turn = _accept_diagnosis(
+                            agent, turn, f"{operation_id}-accept-diagnosis",
                         )
                     except Exception:  # pragma: no cover - counted as evidence
                         failed_calls += 1
@@ -966,6 +1016,10 @@ def _capacity(root: Path) -> dict[str, object]:
         )
 
     storage_bytes = _storage_bytes(repository, blobs)
+    # Closing the service may checkpoint SQLite and release WAL/SHM files.
+    # Finish the final batch at that durable boundary, matching the final total.
+    if storage_bytes_by_batch:
+        storage_bytes_by_batch[-1] = storage_bytes
     storage_growth_by_batch = [
         current - previous
         for previous, current in zip(
@@ -979,7 +1033,7 @@ def _capacity(root: Path) -> dict[str, object]:
     )
     passed = all(
         (
-            execute_calls == CAPACITY_RUNS,
+            execute_calls == CAPACITY_RUNS * 2,
             failed_calls == 0,
             completed_turns == CAPACITY_RUNS,
             len(set(run_ids)) == CAPACITY_RUNS,
@@ -1235,6 +1289,10 @@ def _restart_soak(root: Path) -> dict[str, object]:
                             task_id=operation_id,
                             operation_id=operation_id,
                         )
+                        action = _diagnosis_response(first)
+                        operation_id = f"{operation_id}-accept-diagnosis"
+                        execute_calls += 1
+                        first = _accept_diagnosis(agent, first, operation_id)
                     except Exception:  # pragma: no cover - counted as evidence
                         failed_calls += 1
                         continue
@@ -1260,7 +1318,9 @@ def _restart_soak(root: Path) -> dict[str, object]:
                         failed_calls += 1
                         continue
                     completed_turns += int(replayed["state"] == "completed")
-                    replay_mismatches += int(first != replayed)
+                    replay_mismatches += int(
+                        _control_semantics(first) != _control_semantics(replayed)
+                    )
             finally:
                 replay_backend_calls += replay_backend.calls
                 replay_agent.close()
@@ -1313,7 +1373,7 @@ def _restart_soak(root: Path) -> dict[str, object]:
             int(repository_status["case_count"]) == expected_runs,
             open_incidents == 0,
             incomplete_operations == 0,
-            execute_calls == expected_runs * 2,
+            execute_calls == expected_runs * 3,
             failed_calls == 0,
             completed_turns == expected_runs * 2,
             replay_mismatches == 0,

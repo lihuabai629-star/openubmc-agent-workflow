@@ -25,6 +25,9 @@ from openubmc_target_runtime import (  # noqa: E402
 )
 
 
+from diagnosis_fixtures import persist_terminal_diagnosis
+
+
 class _Task:
     def __init__(self, task_id: str) -> None:
         self.task_id = task_id
@@ -81,6 +84,10 @@ def _create_public_run(
         )
         run_id = str(turn["run_id"])
         if terminal:
+            turn = _accept_diagnosis(
+                service, turn, task_id=f"public-run-{target}",
+                operation_id=f"public-run-{target}-diagnosis",
+            )
             gate = turn["gate"]
             assert isinstance(gate, dict)
             turn = service.call_exposed_tool(
@@ -109,6 +116,31 @@ def _create_public_run(
         return run_id
     finally:
         service.close()
+
+
+def _accept_diagnosis(service, turn: dict[str, object], *, task_id: str, operation_id: str) -> dict[str, object]:
+    gate = turn.get("gate")
+    assert isinstance(gate, dict) and gate.get("name") == "diagnosis.acceptance"
+    receipt = turn.get("diagnostic_receipt") or {}
+    evidence_ids = [str(item["evidence_id"]) for item in receipt.get("evidence", [])]
+    return service.call_exposed_tool(
+        "execute",
+        {
+            "kind": "respond", "run_id": turn["run_id"],
+            "gate_id": gate["gate_id"], "gate_version": gate["gate_version"],
+            "schema_digest": gate["schema_digest"],
+            "response": {
+                "status": "completed", "summary": "typed diagnosis accepted",
+                "payload": {
+                    "root_cause": "bounded test diagnosis",
+                    "evidence_ids": evidence_ids,
+                    "causal_chain": ["probe", "diagnosis"],
+                    "code_owner": "test-owner", "contradictions": [],
+                    "remaining_gaps": [], "verification_status": "verified",
+                },
+            },
+        }, task_id=task_id, operation_id=operation_id,
+    )
 
 
 class EvidenceIndexTests(unittest.TestCase):
@@ -371,6 +403,7 @@ class EvidenceIndexTests(unittest.TestCase):
                     task_id="terminal-evidence-operator",
                     operation_id="terminal-evidence-attach",
                 )
+                turn = _accept_diagnosis(agent, turn, task_id="terminal-evidence-run", operation_id="terminal-evidence-run-diagnosis")
                 gate = turn["gate"]
                 terminal = agent.call_exposed_tool(
                     "execute",
@@ -473,6 +506,7 @@ class EvidenceIndexTests(unittest.TestCase):
                     task_id="terminal-recovery-operator",
                     operation_id="terminal-recovery-attach",
                 )
+                turn = _accept_diagnosis(agent, turn, task_id="terminal-recovery-run", operation_id="terminal-recovery-run-diagnosis")
                 gate = turn["gate"]
                 terminal = agent.call_exposed_tool(
                     "execute",
@@ -973,6 +1007,9 @@ class EvidenceIndexTests(unittest.TestCase):
             first_ref = first.envelope["evidence_refs"][0]
             second_ref = second.envelope["evidence_refs"][0]
             self.assertEqual(first_ref["blob_id"], second_ref["blob_id"])
+
+            for result in (first, second):
+                persist_terminal_diagnosis(service._test.context_runtime.repository, result.envelope["case_id"])
 
             first_forget = service.call_tool(
                 "case_forget",

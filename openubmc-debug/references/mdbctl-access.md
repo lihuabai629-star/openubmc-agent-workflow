@@ -55,9 +55,11 @@ printf 'lsclass\n' | /opt/bmc/skynet/lua /opt/bmc/apps/mdbctl/service/mdbctl.lua
 | `mdbctl: command not found` | 非交互 SSH 未加载 alias 或 profile | 改用 `sh -lc '. /etc/profile >/dev/null 2>&1; mdbctl ...'` |
 | 命令无输出或一直卡住 | 进入了交互模式、stdout 未返回、服务未就绪 | 只用单条命令模式；避免交互会话；必要时切 direct skynet |
 | `ServiceUnknown` | mdb 服务未注册、DBUS 环境异常、服务仍在启动 | 不要盲重试 raw skynet；优先切 `python "$HOME/.agents/skills/openubmc-debug/scripts/busctl_remote.py" ...` 验证服务和对象树 |
-| `Failed: Object does not exist.` / `Object not found.` | 对象路径、class 或当前镜像接口版本不匹配 | 视为 `object-not-found`；切 `busctl_remote.py introspect` 获取不含属性值的 XML 接口元数据 |
+| `Failed: Object does not exist.` / `Object not found.` | 当前查询对象不存在 | 对已审查的 `lsprop` / `getprop` / `lsmethod`，仅在 SSH 成功、stdout 明确且完整、无 stderr 错误时返回 `observed_absent` 事实；不重复 fallback。`lsclass` / `lsobj` 或 transport、权限、ServiceUnknown 错误仍为失败 |
 | 同一命令在交互 SSH 成功、非交互失败 | shell 环境差异 | 统一改成 `sh -lc '. /etc/profile >/dev/null 2>&1; mdbctl ...'` 或 direct skynet |
 | 对象或属性查不到，但服务存在 | 路径、class、interface 不确定 | 先 `mdbctl lsclass`、`lsobj` 缩小范围；再切 `busctl introspect` / `get-property` 做交叉验证 |
+
+`observed_absent` 的 `result.fact` 绑定原查询和对象身份。Runtime 将它作为可评估的 AVAILABLE 结果，事实值仍是“对象不存在”；它不等于未采集、transport 不可用或属性值为空。
 
 推荐排障顺序：
 

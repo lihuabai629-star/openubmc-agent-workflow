@@ -1,24 +1,28 @@
 # Redfish Upgrade Handoff
 
-Build does not connect to a BMC or execute an upgrade. Use this reference only to prepare the typed
-artifact result consumed by `openubmc-upgrade` when the selected delivery strategy is
+Build does not connect to a BMC or execute an upgrade. Use this reference to decide whether a typed
+artifact result is eligible for handoff to `openubmc-upgrade` when the selected delivery strategy is
 `build-upgrade`.
 
-Return all of the following from the completed product build:
+The current product finalizer returns local evidence in this shape:
 
 ```yaml
 build_result:
   artifact_path: /absolute/path/to/openubmc.hpm
   artifact_sha256: <64 lowercase hex characters>
-  product_version: <expected installed version>
+  product_version: <version verified inside the final rootfs image>
+  package_binding: package_binding_unverified
+  upgrade_eligible: false
   evidence_ids:
     - <build evidence ID>
 ```
 
-The artifact must come from a completed build with a successful checked log, a package timestamp
-newer than the build start, and metadata or package references matching the intended components.
-Re-hash the final file after it reaches its handoff path. Do not return an HPM left by a failed,
-interrupted, or timed-out build.
+The artifact must have `accepted_local_only` Plan-bound finalization and fresh
+`<hpm>.metadata.json` generated from that verification. Include the Plan,
+Attempt, dependency, permission, and verification evidence in `evidence_ids`.
+Do not return an HPM left by a failed, interrupted, rejected, or stale Attempt.
+
+The current finalizer reports `package_binding_unverified` and `upgrade_eligible: false` because it has not proved that the HPM contains the inspected final image. That result is valid local build evidence but must not be handed automatically to `openubmc-upgrade`. Continue only after a product-specific containment proof produces an explicitly eligible typed result.
 
 Pass target identity, Redfish credential selectors, rollback requirements, and runtime acceptance
 checks separately through the task context. Never place credentials in the Build result.

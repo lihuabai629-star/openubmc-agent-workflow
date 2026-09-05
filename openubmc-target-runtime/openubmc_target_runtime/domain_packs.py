@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
 
 from .capability import (
     ArtifactContract,
@@ -74,6 +75,34 @@ def _artifact_ref(kind: str, *, target: str, run_id: str) -> dict[str, object]:
         "target": target,
         "run_id": run_id,
     }
+
+
+def _batch_conformance_example() -> DomainPackConformanceExample:
+    operation_id = "effect-conformance-upgrade_batch"
+    target_id, host = "target-1", "conformance-target"
+    suffix = hashlib.sha256(f"{target_id}\0{host}\0{443}".encode()).hexdigest()[:20]
+    child_id = f"{operation_id}:target-{suffix}"
+    journal = {
+        "schema": "openubmc.target-runtime.v1/mutation-journal",
+        "task_id": "conformance-upgrade_batch", "operation_id": child_id,
+        "operation_fingerprint": "a" * 64, "target_fingerprint": "b" * 64,
+        "action": "upgrade", "stage": "verified", "effects_started": True,
+        "expected_checksum": "e" * 64,
+    }
+    return DomainPackConformanceExample(
+        arguments={"targets": [{"target_id": target_id, "ip": host}],
+                   "artifact_path": "/conformance/product.hpm", "artifact_sha256": "e" * 64,
+                   "product_version": "1.0.0"},
+        receipt=DomainReceipt(operation="upgrade_batch", status="succeeded", value={
+            "batch_operation_id": operation_id, "status": "completed", "ok": True,
+            "outcome_status": "succeeded", "target_epochs": {target_id: 1}, "epoch_after": 1,
+            "total": 1, "succeeded": 1, "failed": 0, "unknown": 0, "skipped": 0,
+            "targets": [{"target_id": target_id, "ip": host, "redfish_port": 443,
+                         "operation_id": child_id, "requested_operation_id": child_id,
+                         "epoch_after": 1,
+                         "target_fingerprint": "b" * 64, "status": "completed", "journal": journal}],
+        }),
+    )
 
 
 def _artifact_stage_conformance_example(
@@ -157,6 +186,20 @@ def builtin_domain_pack_contracts(
         },
     }
     contracts: list[DomainPackAuthorContract] = []
+    # Batch upgrade uses the same mutation journal contract as the single
+    # target operation; the backend creates one child operation per target.
+    try:
+        registry.require("upgrade_batch")
+        has_upgrade_batch = "upgrade_batch" in adapters
+    except ValueError:
+        has_upgrade_batch = False
+    if has_upgrade_batch:
+        definitions["upgrade_batch"] = {
+            **definitions["upgrade_run"],
+            "name": "upgrade-batch",
+            "artifact_phase": "",
+            "conformance_example": _batch_conformance_example(),
+        }
     for operation, definition in definitions.items():
         adapter = adapters.get(operation)
         if adapter is None:

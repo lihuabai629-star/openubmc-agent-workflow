@@ -11,7 +11,7 @@ python scripts/diagnosis_chain_qualification.py
 The command requires no BMC, credentials, Conan remote, or private network. It proves that a
 complete live ObservationRef whose diagnostic content is not visible yields a durable
 `diagnosis.acceptance` Gate, survives resume and subprocess restart through shared SQLite/blob
-storage, accepts a grounded diagnosis, opens `developer.change`, and reaches one durably recorded
+storage, accepts a grounded `DiagnosisRecord`, opens `developer.change`, and reaches one durably recorded
 source-only terminal Outcome. Failed and cancelled diagnosis responses must terminate without any
 Developer Gate or submission in their event ledgers. The historical source timestamp remains in
 the fixture for traceability; each run generates a current qualification timestamp for live
@@ -28,6 +28,13 @@ hardware success.
 
 Correctness determines the exit code. Runtime calls and elapsed time are reported as secondary
 evidence and never compensate for an incomplete Outcome or a false validation claim.
+
+When a complete source is available for the same task and target, Runtime may discover its
+`ObservationRef` automatically after a bounded identity and epoch probe. Ambiguous, stale, or
+cross-task sources are not selected automatically. An extended observation plan may reuse exact selector
+values and collect only missing selectors; the merged evidence must retain requested order, target
+identity, epoch, and completion window. These continuity paths remain subject to the same typed
+diagnosis acceptance gate.
 
 The historical regression can be reproduced from a local v2.0.1 source tree:
 

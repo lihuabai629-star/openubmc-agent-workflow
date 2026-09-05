@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+import os
 import re
 import threading
+import time
 
 from .capability import EffectClass
 from .contracts import RUNTIME_API_VERSION
@@ -95,6 +97,7 @@ class EffectExecution:
     future: Future[Mapping[str, object]]
     mode: EffectRunMode
     settlement_generation: int
+    admitted_at: float = field(default_factory=time.time)
 
 
 class LocalEffectRunner:
@@ -167,6 +170,43 @@ class LocalEffectRunner:
     def has_seen(self, intent: EffectIntent) -> bool:
         with self._lock:
             return (intent.run_id, intent.effect_id) in self._history
+
+    def has_execution(self, intent: EffectIntent) -> bool:
+        """Whether this process still owns a queued, running, or settled future."""
+        with self._lock:
+            return (intent.run_id, intent.effect_id) in self._executions
+
+    def activity(self, intent: EffectIntent) -> dict[str, object]:
+        """Observe local ownership without claiming remote/domain progress.
+
+        This heartbeat is emitted by the supervisor when it is queried. It
+        does not update the durable last-progress timestamp, and disappears
+        on process restart so recovery cannot mistake a stale PID for a live
+        worker.
+        """
+        with self._lock:
+            execution = self._executions.get((intent.run_id, intent.effect_id))
+            if execution is None:
+                return {}
+            future = execution.future
+            return {
+                "scope": "local-supervisor",
+                "observed_at": time.time(),
+                "owner_pid": os.getpid(),
+                "admitted_at": execution.admitted_at,
+                "worker_state": (
+                    "settled" if future.done()
+                    else "running" if future.running()
+                    else "queued"
+                ),
+                "mode": execution.mode.value,
+                "settlement_generation": execution.settlement_generation,
+            }
+
+    def has_settled(self, intent: EffectIntent) -> bool:
+        with self._lock:
+            execution = self._executions.get((intent.run_id, intent.effect_id))
+            return execution is not None and execution.future.done()
 
     def acknowledge(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import Future
 import hashlib
 import io
 import json
@@ -104,6 +105,46 @@ def gate_binding(turn: dict[str, object]) -> dict[str, object]:
     }
 
 
+def accepted_diagnosis_payload(
+    evidence_ids: list[str],
+    *,
+    root_cause: str = "the drive identity uses the wrong socket-local slot scope",
+    remaining_gaps: list[str] | None = None,
+) -> dict[str, object]:
+    """An explicit fixture conclusion for downstream workflow tests."""
+    return {
+        "root_cause": root_cause,
+        "evidence_ids": evidence_ids,
+        "causal_chain": [
+            "the collected drive identity is socket-local",
+            "the component interprets the identity as a global drive slot",
+        ],
+        "code_owner": "general_hardware/src/lualib/drive.lua",
+        "contradictions": [],
+        "remaining_gaps": list(remaining_gaps or []),
+        "verification_status": "verified",
+    }
+
+
+def accept_diagnosis(service, turn: dict[str, object], *, task_id: str) -> dict[str, object]:
+    """Answer the diagnosis Gate before testing a subsequent workflow boundary."""
+    if turn.get("gate", {}).get("name") != "diagnosis.acceptance":
+        raise AssertionError("fixture must explicitly reach diagnosis.acceptance")
+    evidence_ids = [item["evidence_id"] for item in turn["diagnostic_receipt"]["evidence"]]
+    return service.call_exposed_tool(
+        "execute",
+        {
+            "kind": "respond", "run_id": turn["run_id"], **gate_binding(turn),
+            "response": {
+                "status": "completed", "summary": "fixture source diagnosis verified",
+                "payload": accepted_diagnosis_payload(evidence_ids),
+            },
+        },
+        task_id=task_id,
+        operation_id=f"{turn['gate']['gate_id']}-accept-diagnosis",
+    )
+
+
 def diagnostic_receipt_fixture(receipt_id: str) -> dict[str, object]:
     return {
         "receipt_id": receipt_id,
@@ -190,6 +231,9 @@ def artifact_ref(
 def compiled_validation_payload(identity: str) -> dict[str, object]:
     readiness_id = f"{identity}-readiness"
     return {
+        "package_binding": "package_binding_verified",
+        "upgrade_eligible": True,
+        "evidence_ids": [f"{identity}-artifact-checksum"],
         "dependency_readiness": {
             "readiness_id": readiness_id,
             "status": "ready",
@@ -1351,7 +1395,7 @@ class DormantEffectRunner:
         self.intents.append((intent, mode, settlement_generation))
         return SimpleNamespace(
             mode=mode,
-            future=object(),
+            future=Future(),
             settlement_generation=settlement_generation,
         )
 
@@ -2467,6 +2511,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id=scenario,
                 operation_id=f"{scenario}-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id=scenario)
             transactions = service._test.context_runtime.repository
             original_stage = transactions.stage
 
@@ -3155,6 +3200,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="stale-gate-binding",
             operation_id="stale-gate-binding-start",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id='stale-gate-binding')
         endpoint = JsonRpcMcpEndpoint(
             self.service,
             session_task_id="stale-gate-binding",
@@ -3670,6 +3716,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="reconcile-preflight",
             operation_id="reconcile-preflight-start",
         )
+        terminal = accept_diagnosis(self.service, terminal, task_id="reconcile-preflight")
         before = self.service._test.context_runtime.read_case(terminal["run_id"])
         call_count = len(self.backend.calls)
         endpoint = JsonRpcMcpEndpoint(
@@ -3886,6 +3933,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="artifact-preflight",
             operation_id="artifact-preflight-start",
         )
+        developer = accept_diagnosis(self.service, developer, task_id='artifact-preflight')
         build_gate = self.service.call_exposed_tool(
             "execute",
             {
@@ -3951,6 +3999,9 @@ class AgentGatewayTests(unittest.TestCase):
                             "summary": "build completed",
                             "payload": {
                                 "source_revision": "artifact-preflight-source",
+                                "package_binding": "package_binding_verified",
+                                "upgrade_eligible": True,
+                                "evidence_ids": ["build-artifact-checksum"],
                                 "artifact_ref": {
                                     "handle": "/tmp/product.hpm",
                                     "digest": "sha256:" + "a" * 64,
@@ -3983,6 +4034,9 @@ class AgentGatewayTests(unittest.TestCase):
                             "summary": "build completed",
                             "payload": {
                                 "source_revision": "artifact-preflight-source",
+                                "package_binding": "package_binding_verified",
+                                "upgrade_eligible": True,
+                                "evidence_ids": ["build-artifact-checksum"],
                                 "artifact_ref": {
                                     "handle": "/tmp/product.hpm",
                                     "digest": "sha256:" + "a" * 64,
@@ -4018,6 +4072,9 @@ class AgentGatewayTests(unittest.TestCase):
                                 "summary": "build completed",
                                 "payload": {
                                     "source_revision": "artifact-preflight-source",
+                                    "package_binding": "package_binding_verified",
+                                    "upgrade_eligible": True,
+                                    "evidence_ids": ["build-artifact-checksum"],
                                     "component_versions": ["storage=1.2.3"],
                                     "build_commands": ["bmcgo build"],
                                     "build_logs": ["build.log"],
@@ -4137,6 +4194,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="live-patch-artifact-preflight",
             operation_id="live-patch-artifact-start",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id='live-patch-artifact-preflight')
         endpoint = JsonRpcMcpEndpoint(
             self.service,
             session_task_id="live-patch-artifact-preflight",
@@ -5858,6 +5916,8 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="execute-task",
             operation_id="execute-1",
         )
+        self.assertEqual(first["gate"]["name"], "diagnosis.acceptance")
+        first = accept_diagnosis(self.service, first, task_id="execute-task")
         self.assertEqual(first["state"], "waiting_response")
         self.assertEqual(first["gate"]["name"], "developer.change")
         self.assertTrue(
@@ -5962,12 +6022,8 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertFalse(receipt["content_complete"])
         self.assertIn("diagnostic_result_not_visible", receipt["gaps"])
         self.assertIn("diagnostic_result_not_visible", turn["gaps"])
-        diagnosis = next(
-            check
-            for check in turn["outcome"]["acceptance"]
-            if check["requirement_id"] == "stage.diagnosis"
-        )
-        self.assertEqual(diagnosis["status"], "blocked")
+        self.assertIsNone(turn["outcome"])
+        self.assertEqual(turn["gate"]["name"], "diagnosis.acceptance")
 
     def test_execute_projects_bounded_results_and_truncation_metadata(self) -> None:
         service = RuntimeMcpService(BoundedDiagnosticBackend())
@@ -6077,7 +6133,8 @@ class AgentGatewayTests(unittest.TestCase):
             "mctpd request timeout",
         )
         self.assertIn(f"receipt_id={receipt['receipt_id']}", text)
-        self.assertIn("Outcome status=failed", text)
+        self.assertNotIn("Outcome status=completed", text)
+        self.assertIn("diagnosis.acceptance", text)
         self.assertIn("result_ids:", text)
         for result_id in ("target-clock", "logs", "service", "mdb-1"):
             self.assertIn(result_id, text)
@@ -6405,7 +6462,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIn('["nvme","missing"]', text)
         self.assertIn("plain-gap", text)
 
-    def test_execute_completes_when_all_bounded_result_kinds_are_evaluable(self) -> None:
+    def test_complete_bounded_collection_waits_for_diagnosis_record(self) -> None:
         service = RuntimeMcpService(CompleteBoundedDiagnosticBackend())
         try:
             turn = service.call_exposed_tool(
@@ -6428,7 +6485,9 @@ class AgentGatewayTests(unittest.TestCase):
             service.close()
 
         receipt = turn["diagnostic_receipt"]
-        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(turn["state"], "waiting_response")
+        self.assertEqual(turn["gate"]["name"], "diagnosis.acceptance")
+        self.assertIsNone(turn["outcome"])
         self.assertEqual(receipt["status"], "complete")
         self.assertTrue(receipt["coverage"]["complete"])
         self.assertTrue(receipt["content_complete"])
@@ -6496,7 +6555,8 @@ class AgentGatewayTests(unittest.TestCase):
             service.close()
 
         receipt = turn["diagnostic_receipt"]
-        self.assertEqual(turn["state"], "failed")
+        self.assertEqual(turn["state"], "waiting_response")
+        self.assertIsNone(turn["outcome"])
         self.assertEqual(receipt["agent_acceptance"], "blocked")
         self.assertEqual(receipt["status"], "blocked")
         self.assertEqual(receipt["coverage"]["evaluable"], 0)
@@ -6549,7 +6609,8 @@ class AgentGatewayTests(unittest.TestCase):
             service.close()
 
         receipt = turn["diagnostic_receipt"]
-        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(turn["state"], "waiting_response")
+        self.assertIsNone(turn["outcome"])
         self.assertEqual(receipt["status"], "complete")
         self.assertFalse(receipt["truncated"])
         self.assertTrue(receipt["content_complete"])
@@ -6599,7 +6660,8 @@ class AgentGatewayTests(unittest.TestCase):
             service.close()
 
         receipt = turn["diagnostic_receipt"]
-        self.assertEqual(turn["state"], "failed")
+        self.assertEqual(turn["state"], "waiting_response")
+        self.assertIsNone(turn["outcome"])
         self.assertEqual(receipt["status"], "partial")
         self.assertEqual(receipt["freshness"]["status"], "unknown")
         self.assertIn("freshness_unknown", receipt["gaps"])
@@ -6911,11 +6973,18 @@ class AgentGatewayTests(unittest.TestCase):
         results = {item["result_id"]: item for item in receipt["results"]}
         self.assertEqual(receipt["status"], "partial")
         self.assertEqual(receipt["coverage"]["requested"], 3)
-        self.assertEqual(receipt["coverage"]["evaluable"], 2)
+        self.assertEqual(receipt["coverage"]["evaluable"], 1)
+        self.assertEqual(receipt["coverage"]["unavailable"], 1)
         self.assertEqual(receipt["coverage"]["not_checked"], 1)
         self.assertEqual(results["target-1-version"]["status"], "not_checked")
         self.assertEqual(results["target-1-version"]["gap"], "result_not_visible")
         self.assertEqual(results["target-2-version"]["status"], "available")
+        self.assertEqual(results["comparison"]["status"], "unavailable")
+        self.assertEqual(results["comparison"]["value"]["conclusion"], "inconclusive")
+        self.assertIn(
+            "reference:missing",
+            results["comparison"]["value"]["incomparable_reasons"],
+        )
 
     def test_execute_reconciles_symmetric_dual_target_identities(self) -> None:
         service = RuntimeMcpService(SymmetricMultiTargetDiagnosticBackend())
@@ -7019,7 +7088,15 @@ class AgentGatewayTests(unittest.TestCase):
             service.close()
 
         receipt = turn["diagnostic_receipt"]
-        self.assertEqual(receipt["coverage"]["evaluable"], 3)
+        self.assertEqual(receipt["coverage"]["evaluable"], 2)
+        self.assertEqual(receipt["coverage"]["unavailable"], 1)
+        results = {item["result_id"]: item for item in receipt["results"]}
+        self.assertEqual(results["comparison"]["status"], "unavailable")
+        self.assertEqual(results["comparison"]["value"]["conclusion"], "inconclusive")
+        self.assertIn(
+            "candidate:freshness_unverified",
+            results["comparison"]["value"]["incomparable_reasons"],
+        )
         self.assertEqual(receipt["freshness"]["status"], "partial")
         self.assertEqual(receipt["status"], "partial")
         self.assertIn("freshness_partial", receipt["gaps"])
@@ -7342,6 +7419,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="run-session-outcome-authority",
             operation_id="run-session-outcome-start",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id='run-session-outcome-authority')
 
         final = self.service.call_exposed_tool(
             "execute",
@@ -7464,6 +7542,11 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="typed-normalized-start",
             operation_id="typed-normalized-start",
         )
+        waiting = RunTurn.from_public_dict(
+            accept_diagnosis(
+                self.service, waiting.to_public_dict(), task_id="typed-normalized-start"
+            )
+        )
         self.assertIsInstance(waiting, RunTurn)
         assert waiting.gate is not None
         gate = waiting.gate
@@ -7535,6 +7618,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="duplicate-respond",
             operation_id="duplicate-respond-start",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id='duplicate-respond')
         response = {
             "kind": "respond",
             "run_id": waiting["run_id"],
@@ -7591,6 +7675,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="current-turn-start",
             operation_id="current-turn-start-command",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id="current-turn-start")
         final = self.service.call_exposed_tool(
             "execute",
             {
@@ -7636,6 +7721,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="native-source-phase",
             operation_id="native-source-phase-start",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id='native-source-phase')
 
         self.service.call_exposed_tool(
             "execute",
@@ -7660,7 +7746,9 @@ class AgentGatewayTests(unittest.TestCase):
 
         events = self.service._test.context_runtime.repository.events(waiting["run_id"])
         submission = next(
-            event for event in events if event["kind"] == "RunGateSubmitted"
+            event
+            for event in reversed(events)
+            if event["kind"] == "RunGateSubmitted"
         )
         self.assertEqual(submission["payload"]["actor"], "openubmc-developer")
         self.assertEqual(
@@ -7711,6 +7799,7 @@ class AgentGatewayTests(unittest.TestCase):
                         task_id=f"atomic-source-{response_status}",
                         operation_id=f"atomic-source-{response_status}-start",
                     )
+                    waiting = accept_diagnosis(service, waiting, task_id=f'atomic-source-{response_status}')
                     payload = (
                         {
                             "source_revision": f"atomic-{response_status}",
@@ -7851,6 +7940,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="atomic-build-gate",
             operation_id="atomic-build-start",
         )
+        developer_gate = accept_diagnosis(self.service, developer_gate, task_id='atomic-build-gate')
 
         build_gate = self.service.call_exposed_tool(
             "execute",
@@ -7898,6 +7988,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="atomic-live-patch",
             operation_id="atomic-live-patch-start",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id='atomic-live-patch')
         patch_file = self.artifact_root / "atomic-live-patch.lua"
         patch_file.write_bytes(b"return 'atomic-live-patch'\n")
         response = {
@@ -8032,6 +8123,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="atomic-reconcile",
                 operation_id="atomic-reconcile-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='atomic-reconcile')
             incident = service.call_exposed_tool(
                 "execute",
                 {
@@ -9511,6 +9603,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="gate-restart",
                     operation_id="gate-restart-start",
                 )
+                waiting = accept_diagnosis(first, waiting, task_id='gate-restart')
             finally:
                 first.close()
 
@@ -9636,6 +9729,8 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="gate-concurrent-commit",
                 operation_id="gate-concurrent-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='gate-concurrent-commit')
+            repository.conflicted = False
             final = service.call_exposed_tool(
                 "execute",
                 {
@@ -9664,6 +9759,7 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(
             sum(
                 event["kind"] == "RunGateSubmitted"
+                and event["payload"].get("gate_id") == waiting["gate"]["gate_id"]
                 for event in repository.events(waiting["run_id"])
             ),
             1,
@@ -9683,6 +9779,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="gate-race-window",
                 operation_id="gate-race-window-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='gate-race-window')
             response = {
                 "kind": "respond",
                 "run_id": waiting["run_id"],
@@ -9710,7 +9807,11 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertEqual(final["state"], "completed")
         self.assertEqual(
-            sum(event["kind"] == "RunGateSubmitted" for event in events),
+            sum(
+                event["kind"] == "RunGateSubmitted"
+                and event["payload"].get("gate_id") == waiting["gate"]["gate_id"]
+                for event in events
+            ),
             1,
         )
 
@@ -9770,6 +9871,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="outcome-concurrent-commit",
                 operation_id="outcome-concurrent-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='outcome-concurrent-commit')
             final = service.call_exposed_tool(
                 "execute",
                 {
@@ -9922,6 +10024,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="artifact-ref-validation",
             operation_id="artifact-ref-start",
         )
+        developer_gate = accept_diagnosis(self.service, developer_gate, task_id='artifact-ref-validation')
         build_gate = self.service.call_exposed_tool(
             "execute",
             {
@@ -10058,6 +10161,9 @@ class AgentGatewayTests(unittest.TestCase):
                                 "summary": "artifact built",
                                 "payload": {
                                     "source_revision": "artifact-ref-source",
+                                    "package_binding": "package_binding_verified",
+                                    "upgrade_eligible": True,
+                                    "evidence_ids": ["build-artifact-checksum"],
                                     "artifact_ref": reference,
                                 },
                             },
@@ -10106,6 +10212,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="artifact-file-uri",
             operation_id="artifact-file-uri-start",
         )
+        developer_gate = accept_diagnosis(self.service, developer_gate, task_id='artifact-file-uri')
         build_gate = self.service.call_exposed_tool(
             "execute",
             {
@@ -10185,6 +10292,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="artifact-dispatch-boundary",
                 operation_id="artifact-dispatch-boundary-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='artifact-dispatch-boundary')
             transactions = service._test.context_runtime.repository
             original = transactions.stage
 
@@ -10404,6 +10512,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="resume-domain-incident",
                 operation_id="resume-domain-incident-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='resume-domain-incident')
             driver = service._test.run_engine.driver
             original_prepare = driver.prepare_step
             prepared_operations: list[str] = []
@@ -10628,13 +10737,7 @@ class AgentGatewayTests(unittest.TestCase):
                 "response": {
                     "status": "completed",
                     "summary": "the drive identity is derived from the wrong scope",
-                    "payload": {
-                        "root_cause": (
-                            "socket-local SlotID was treated as a global drive slot"
-                        ),
-                        "evidence_ids": evidence_ids,
-                        "known_gaps": ["NVMe hardware verification is pending"],
-                    },
+                    "payload": accepted_diagnosis_payload(evidence_ids, root_cause='socket-local SlotID was treated as a global drive slot', remaining_gaps=['NVMe hardware verification is pending']),
                 },
             },
             task_id="diagnosis-response-run",
@@ -10643,8 +10746,10 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertEqual(development["state"], "waiting_response")
         self.assertEqual(development["gate"]["name"], "developer.change")
-        self.assertEqual(development["diagnostic_receipt"]["status"], "complete")
-        self.assertEqual(development["diagnostic_receipt"]["gaps"], [])
+        self.assertIn("diagnosis_record", development)
+        self.assertEqual(
+            development["diagnosis_record"]["verification_status"], "verified"
+        )
 
         final = self.service.call_exposed_tool(
             "execute",
@@ -10728,6 +10833,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id=f"validation-classification-{index}",
                     operation_id=f"validation-classification-{index}-start",
                 )
+                waiting = accept_diagnosis(self.service, waiting, task_id=f'validation-classification-{index}')
                 readiness_id = f"dependency-check-{index}"
                 final = self.service.call_exposed_tool(
                     "execute",
@@ -10797,6 +10903,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="source-only-unreported-validation",
             operation_id="source-only-unreported-validation-start",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id='source-only-unreported-validation')
         final = self.service.call_exposed_tool(
             "execute",
             {
@@ -10852,6 +10959,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="source-only-validation-gaps",
             operation_id="source-only-validation-gaps-start",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id='source-only-validation-gaps')
         readiness_id = "dependency-check-storage"
         hardware_evidence_ids = [
             item["evidence_id"]
@@ -11138,6 +11246,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="hardware-evidence-semantics",
             operation_id="hardware-evidence-semantics-start",
         )
+        waiting = accept_diagnosis(self.service, waiting, task_id='hardware-evidence-semantics')
         evidence_id = waiting["diagnostic_receipt"]["evidence"][0]["evidence_id"]
 
         with self.assertRaisesRegex(
@@ -11185,6 +11294,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="failed-build-does-not-upgrade",
             operation_id="failed-build-does-not-upgrade-start",
         )
+        developer_gate = accept_diagnosis(self.service, developer_gate, task_id='failed-build-does-not-upgrade')
         build_gate = self.service.call_exposed_tool(
             "execute",
             {
@@ -11219,6 +11329,9 @@ class AgentGatewayTests(unittest.TestCase):
                         "summary": "compile failed",
                         "payload": {
                             "source_revision": "failed-build-source",
+                            "package_binding": "package_binding_verified",
+                            "upgrade_eligible": True,
+                            "evidence_ids": ["build-artifact-checksum"],
                             "artifact_ref": artifact_ref(
                                 product,
                                 kind="openubmc-hpm",
@@ -11332,6 +11445,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="validation-closeout-merge",
             operation_id="validation-closeout-merge-start",
         )
+        developer_gate = accept_diagnosis(self.service, developer_gate, task_id='validation-closeout-merge')
         build_gate = self.service.call_exposed_tool(
             "execute",
             {
@@ -11391,6 +11505,9 @@ class AgentGatewayTests(unittest.TestCase):
                     "summary": "firmware compiled",
                     "payload": {
                         "source_revision": "validation-closeout-source",
+                        "package_binding": "package_binding_verified",
+                        "upgrade_eligible": True,
+                        "evidence_ids": ["build-log", "build-dependency-log"],
                         "artifact_ref": artifact_ref(
                             product,
                             kind="openubmc-hpm",
@@ -11552,9 +11669,11 @@ class AgentGatewayTests(unittest.TestCase):
                         "status": "completed",
                         "summary": "diagnosis is grounded",
                         "payload": {
-                            "root_cause": "wrong slot scope",
-                            "evidence_ids": ["evidence-not-in-this-run"],
-                            "known_gaps": [],
+                            **accepted_diagnosis_payload(
+                                ["evidence-not-in-this-run"],
+                                root_cause="wrong slot scope",
+                                remaining_gaps=[],
+                            )
                         },
                     },
                 },
@@ -11669,13 +11788,7 @@ class AgentGatewayTests(unittest.TestCase):
                             "response": {
                                 "status": "completed",
                                 "summary": "an unrelated record is not diagnosis proof",
-                                "payload": {
-                                    "root_cause": "wrong slot scope",
-                                    "evidence_ids": [
-                                        unrelated["evidence"]["evidence_id"]
-                                    ],
-                                    "known_gaps": [],
-                                },
+                                "payload": accepted_diagnosis_payload([unrelated['evidence']['evidence_id']], root_cause='wrong slot scope', remaining_gaps=[]),
                             },
                         },
                         task_id="diagnosis-attachment-run",
@@ -11691,13 +11804,7 @@ class AgentGatewayTests(unittest.TestCase):
                         "response": {
                             "status": "completed",
                             "summary": "the drive identity mismatch is diagnosed",
-                            "payload": {
-                                "root_cause": (
-                                    "component-global slot was compared with a local slot"
-                                ),
-                                "evidence_ids": evidence_ids,
-                                "known_gaps": [],
-                            },
+                            "payload": accepted_diagnosis_payload(evidence_ids, root_cause='component-global slot was compared with a local slot', remaining_gaps=[]),
                         },
                     },
                     task_id="diagnosis-attachment-run",
@@ -11708,10 +11815,7 @@ class AgentGatewayTests(unittest.TestCase):
 
         self.assertEqual(development["gate"]["name"], "developer.change")
         self.assertEqual(
-            [
-                item["evidence_id"]
-                for item in development["diagnostic_receipt"]["evidence"]
-            ],
+            development["diagnosis_record"]["evidence_ids"],
             evidence_ids,
         )
 
@@ -11736,7 +11840,7 @@ class AgentGatewayTests(unittest.TestCase):
                 for item in waiting["diagnostic_receipt"]["evidence"]
             ]
 
-            with self.assertRaisesRegex(GateConflict, "complete evaluable"):
+            with self.assertRaisesRegex(GateConflict, "fresh Runtime-bound evidence"):
                 service.call_exposed_tool(
                     "execute",
                     {
@@ -11747,9 +11851,11 @@ class AgentGatewayTests(unittest.TestCase):
                             "status": "completed",
                             "summary": "the connector timeout was localized",
                             "payload": {
-                                "root_cause": "connector timeout",
-                                "evidence_ids": evidence_ids,
-                                "known_gaps": ["fresh target evidence is required"],
+                                **accepted_diagnosis_payload(
+                                    evidence_ids,
+                                    root_cause="connector timeout",
+                                    remaining_gaps=["fresh target evidence is required"],
+                                )
                             },
                         },
                     },
@@ -11791,7 +11897,7 @@ class AgentGatewayTests(unittest.TestCase):
                 for item in waiting["diagnostic_receipt"]["evidence"]
             ]
 
-            with self.assertRaisesRegex(GateConflict, "complete evaluable"):
+            with self.assertRaisesRegex(GateConflict, "fresh Runtime-bound evidence"):
                 service.call_exposed_tool(
                     "execute",
                     {
@@ -11802,9 +11908,11 @@ class AgentGatewayTests(unittest.TestCase):
                             "status": "completed",
                             "summary": "the timeout path was localized",
                             "payload": {
-                                "root_cause": "the request waits on incomplete data",
-                                "evidence_ids": evidence_ids,
-                                "known_gaps": ["active alarm evidence is incomplete"],
+                                **accepted_diagnosis_payload(
+                                    evidence_ids,
+                                    root_cause="the request waits on incomplete data",
+                                    remaining_gaps=["active alarm evidence is incomplete"],
+                                )
                             },
                         },
                     },
@@ -12192,6 +12300,7 @@ class AgentGatewayTests(unittest.TestCase):
             task_id="execute-live-patch",
             operation_id="live-patch-start",
         )
+        first = accept_diagnosis(self.service, first, task_id='execute-live-patch')
         self.assertEqual(first["state"], "waiting_response")
         self.assertEqual(first["gate"]["name"], "developer.change")
         patch_file = self.artifact_root / "execute-live-patch-fix.lua"
@@ -12291,6 +12400,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="incomplete-live-patch-acceptance",
                 operation_id="incomplete-live-patch-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='incomplete-live-patch-acceptance')
             final = service.call_exposed_tool(
                 "execute",
                 {
@@ -12367,6 +12477,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="missing-fresh-epoch",
                 operation_id="missing-fresh-epoch-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='missing-fresh-epoch')
             final = service.call_exposed_tool(
                 "execute",
                 {
@@ -12429,6 +12540,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="conflicting-acceptance",
                 operation_id="conflicting-acceptance-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='conflicting-acceptance')
             final = service.call_exposed_tool(
                 "execute",
                 {
@@ -12503,9 +12615,11 @@ class AgentGatewayTests(unittest.TestCase):
                     "status": "completed",
                     "summary": "Drive evidence defines the repair scope",
                     "payload": {
-                        "root_cause": "Drive state requires a source repair",
-                        "evidence_ids": evidence_ids,
-                        "known_gaps": [],
+                        **accepted_diagnosis_payload(
+                            evidence_ids,
+                            root_cause="Drive state requires a source repair",
+                            remaining_gaps=[],
+                        )
                     },
                 },
             },
@@ -12635,9 +12749,11 @@ class AgentGatewayTests(unittest.TestCase):
                         "status": "completed",
                         "summary": "Drive evidence defines the repair scope",
                         "payload": {
-                            "root_cause": "Drive state requires a source repair",
-                            "evidence_ids": evidence_ids,
-                            "known_gaps": [],
+                            **accepted_diagnosis_payload(
+                                evidence_ids,
+                                root_cause="Drive state requires a source repair",
+                                remaining_gaps=[],
+                            )
                         },
                     },
                 },
@@ -12762,6 +12878,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="adapter-projection-build-upgrade",
                 operation_id="adapter-projection-start",
             )
+            developer_gate = accept_diagnosis(service, developer_gate, task_id='adapter-projection-build-upgrade')
             build_gate = service.call_exposed_tool(
                 "execute",
                 {
@@ -12880,6 +12997,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="deferred-build-upgrade",
                     operation_id="deferred-build-upgrade-start",
                 )
+                developer_gate = accept_diagnosis(first_service, developer_gate, task_id='deferred-build-upgrade')
                 build_gate = first_service.call_exposed_tool(
                     "execute",
                     {
@@ -13084,6 +13202,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="execute-reconcile",
                 operation_id="reconcile-start",
             )
+            first = accept_diagnosis(service, first, task_id='execute-reconcile')
             build_gate = service.call_exposed_tool(
                 "execute",
                 {
@@ -13156,6 +13275,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="bounded-reconcile",
                 operation_id="bounded-reconcile-start",
             )
+            developer_gate = accept_diagnosis(service, developer_gate, task_id='bounded-reconcile')
             build_gate = service.call_exposed_tool(
                 "execute",
                 {
@@ -13246,6 +13366,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="running-upgrade",
                 operation_id="running-upgrade-start",
             )
+            developer_gate = accept_diagnosis(service, developer_gate, task_id='running-upgrade')
             build_gate = service.call_exposed_tool(
                 "execute",
                 {
@@ -13324,6 +13445,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="bounded-live-patch",
                 operation_id="bounded-live-patch-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='bounded-live-patch')
 
             def persisted(effect_id: str) -> bool:
                 for event in service._test.context_runtime.repository.events(
@@ -13576,6 +13698,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="mutation-restart",
                     operation_id="mutation-restart-start",
                 )
+                waiting = accept_diagnosis(first, waiting, task_id='mutation-restart')
                 first._test.effect_runner.close()
                 dormant = DormantEffectRunner()
                 first._test.effect_runner = dormant
@@ -13663,6 +13786,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="missing-journal",
                     operation_id="missing-journal-start",
                 )
+                waiting = accept_diagnosis(first, waiting, task_id='missing-journal')
                 first._test.effect_runner.close()
                 dormant = DormantEffectRunner()
                 first._test.effect_runner = dormant
@@ -13750,6 +13874,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="explicit-reconcile",
                 operation_id="explicit-reconcile-start",
             )
+            waiting = accept_diagnosis(service, waiting, task_id='explicit-reconcile')
             incident = service.call_exposed_tool(
                 "execute",
                 {
@@ -13839,6 +13964,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="recovery-race",
                     operation_id="recovery-race-start",
                 )
+                waiting = accept_diagnosis(first, waiting, task_id='recovery-race')
                 first._test.effect_runner.close()
                 dormant = DormantEffectRunner()
                 first._test.effect_runner = dormant
@@ -13955,6 +14081,7 @@ class AgentGatewayTests(unittest.TestCase):
                 task_id="deferred-verification",
                 operation_id="deferred-verification-start",
             )
+            developer_gate = accept_diagnosis(service, developer_gate, task_id='deferred-verification')
             running = service.call_exposed_tool(
                 "execute",
                 {
@@ -14040,6 +14167,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="restart-source",
                     operation_id="restart-source-start",
                 )
+                source_gate = accept_diagnosis(source_first, source_gate, task_id='restart-source')
             finally:
                 source_first.close()
             source_second = RuntimeMcpService(
@@ -14090,6 +14218,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="restart-live",
                     operation_id="restart-live-start",
                 )
+                live_gate = accept_diagnosis(live_first, live_gate, task_id='restart-live')
             finally:
                 live_first.close()
             live_second = RuntimeMcpService(
@@ -14150,6 +14279,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="restart-build",
                     operation_id="restart-build-start",
                 )
+                build_developer = accept_diagnosis(build_first, build_developer, task_id='restart-build')
                 build_gate = build_first.call_exposed_tool(
                     "execute",
                     {
@@ -14230,6 +14360,7 @@ class AgentGatewayTests(unittest.TestCase):
                     task_id="restart-live-failure",
                     operation_id="restart-live-failure-start",
                 )
+                gate = accept_diagnosis(first, gate, task_id='restart-live-failure')
                 patch = root / "restart-live-failure-fix.lua"
                 patch.write_bytes(b"return 'unknown-outcome'\n")
                 blocked = first.call_exposed_tool(

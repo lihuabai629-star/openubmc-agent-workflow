@@ -126,7 +126,7 @@ class RuntimeQualificationTests(unittest.TestCase):
             "scenarios": {
                 "duplicate_storm": {
                     "status": "passed",
-                    "execute_calls": 18,
+                    "execute_calls": 19,
                     "failed_calls": 0,
                     "unique_runs": 1,
                     "operation_count": 1,
@@ -137,7 +137,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                 },
                 "gate_concurrency": {
                     "status": "passed",
-                    "execute_calls": 9,
+                    "execute_calls": 11,
                     "failed_calls": 0,
                     "unique_runs": 1,
                     "unique_turns": 1,
@@ -145,13 +145,13 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "canonical_turn_state": "completed",
                     "canonical_turn_matches": True,
                     "canonical_reattach_backend_calls": 0,
-                    "gate_submissions": 1,
+                    "gate_submissions": 2,
                     "outcome_events": 1,
                     "open_incidents": 0,
                 },
                 "capacity": {
                     "status": "passed",
-                    "execute_calls": 128,
+                    "execute_calls": 256,
                     "failed_calls": 0,
                     "completed_turns": 128,
                     "completed_runs": 128,
@@ -172,7 +172,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                 },
                 "restart_soak": {
                     "status": "passed",
-                    "execute_calls": 128,
+                    "execute_calls": 192,
                     "failed_calls": 0,
                     "completed_turns": 128,
                     "completed_runs": 64,
@@ -234,6 +234,11 @@ class RuntimeQualificationTests(unittest.TestCase):
         report = json.loads(self.stability_report(SOURCE_COMMIT))
         report["schema"] = "openubmc-agent-workflow.runtime-stability.v1"
         report["scenarios"].pop("dual_projection")
+        report["scenarios"]["duplicate_storm"]["execute_calls"] = 18
+        report["scenarios"]["gate_concurrency"]["execute_calls"] = 9
+        report["scenarios"]["gate_concurrency"]["gate_submissions"] = 1
+        report["scenarios"]["capacity"]["execute_calls"] = 128
+        report["scenarios"]["restart_soak"]["execute_calls"] = 128
         report.pop("evidence_digest")
         report["evidence_digest"] = qualification.evidence_fingerprint(report)
 

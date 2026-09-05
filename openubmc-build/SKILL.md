@@ -1,206 +1,199 @@
 ---
 name: openubmc-build
-description: Build openUBMC components and products, including bmcgo gen/build, Conan package refs, changed-component detection, manifest inclusion, HPM/rootfs output, product version bumping, verified artifact handoff, and build/package failure diagnosis. Use when source changes need compilation or the user requests a package or firmware artifact. Do not use for live target diagnosis, target connections, firmware upload, or runtime file replacement.
+description: Validate or package openUBMC components and products with bmcgo, immutable build plans, checked attempts, and locally finalized Conan/HPM evidence. Use for local compile/gen/test, component Conan packages, product HPM builds, or build-failure diagnosis. Do not use for live-target diagnosis, firmware upload, activation, or runtime file replacement.
 ---
 
 # openUBMC Build
 
-## Overview
+## Boundary
 
-This skill owns the post-code-change build loop: normalize the caller's changed-component context, regenerate MDS output when needed, build component Conan packages, wire those packages into manifest, bump product version, build product output, and return a verified artifact identity for any later deployment.
+Own the local build lifecycle: select one build mode, bind the chosen checkout and exact command, execute checked attempts, and return locally finalized build evidence.
 
-Use `bmcgo` as the command-line tool for generation, component package builds, manifest product builds, and package publication.
+Build never reads target credentials or opens SSH, Telnet, or Redfish sessions. `openubmc-upgrade` owns firmware upload and activation; `openubmc-debug` owns fresh runtime verification.
 
-Requirements: openUBMC component or manifest workspace, `bmcgo`, Conan, and Python. Build never reads target credentials or opens SSH, Telnet, or Redfish sessions.
+Resolve every helper path relative to this `SKILL.md`. In examples, `<skill-dir>` means the directory containing this file. Never copy an installation-specific absolute Skill path into a command or document.
 
-Important validation rule: `bmcgo` can return exit code 0 even when the log contains failed tasks. For non-trivial `gen` or `build` runs, prefer `scripts/run_bmcgo_checked.py -- bmcgo ...` or explicitly scan the captured log for strong failure signals such as `ERROR`, `Traceback`, `执行失败`, `构建失败`, and unresolved package errors before declaring success. Do not treat generic words like `Failed validating` as build failure without context.
+## Route First
 
-## Main Flow
+Choose one mode before any persistent write:
 
-1. **Identify changed components**
-   - Primary source is the current conversation: components/files just changed by the agent, user-named components, or a structured handoff from any upstream workflow.
-   - When `execute` returns a `waiting_response` Turn whose Gate is `build.artifact` and owned by `openubmc-build`, load this Skill immediately. Preserve the Turn's Run and Gate binding and use the Gate input schema as the exact result contract; do not ask the user to restate the build request.
-   - Prefer the structured handoff in `references/handoff-contract.md`; do not assume the caller is only `openubmc-developer` or `openubmc-debug`.
-   - Use git status only as a fallback candidate scan because dirty worktrees may contain unrelated old files; filter it against the active task before building.
-   - When file paths are known, map them directly:
+| Mode | Use when | Default persistent writes |
+| --- | --- | --- |
+| `validate` | Compile, generate code, run UT, or execute a user-supplied validation command | Tool outputs only; versions and Manifest remain unchanged |
+| `component-package` | Create a Conan package for an explicitly identified source identity | Planned component version and package output |
+| `product-artifact` | Build a rootfs/HPM from a selected Manifest checkout | Planned Manifest/product writes and build outputs |
+| `diagnose` | Explain an existing build/package failure | None |
+| `publish` | Upload an already planned package to a named remote | Explicit remote publication only |
 
-```bash
-/root/.agents/skills/openubmc-build/scripts/detect_changed_components.py --root /home/workspace/source --path general_hardware/src/lualib/foo.lua
+A request to “compile”, “gen”, or “test” routes to `validate` unless the supplied command is already known to produce a product rootfs/HPM. A Manifest `bmcgo build` with a board target is explicit `product-artifact` intent by command effect; never execute it under `validate`. If its product inputs are incomplete, stop before execution instead of weakening the mode. A request to inspect a failed log routes to `diagnose`. Publishing must be explicit and independently authorized.
+
+Read only the selected mode reference:
+
+- `validate`: [references/modes/validate.md](references/modes/validate.md)
+- `component-package`: [references/modes/component-package.md](references/modes/component-package.md)
+- `product-artifact`: [references/modes/product-artifact.md](references/modes/product-artifact.md)
+- `diagnose`: [references/modes/diagnose.md](references/modes/diagnose.md)
+- `publish`: [references/modes/publish.md](references/modes/publish.md)
+
+## Shared Contract
+
+### Preserve the command
+
+Command precedence:
+
+1. A complete user-provided argv.
+2. A complete structured-handoff argv.
+3. A generated candidate only when no complete command exists.
+
+Store argv as an array and execute it unchanged. A wrapper may add logging and state capture around the command, but it does not append `-t`, `--stage`, `-r`, `-v`, or any other `bmcgo` argument.
+
+Treat `build_type`, `stage`, `target`, `remote`, and `version` as independent inputs. Derive one from another only when the selected repository contains an explicit policy requiring it.
+
+### Reuse the selected checkout
+
+Use the checkout already selected by the user, handoff, or active task. Record its canonical root, Git HEAD, concrete git dir/common dir, and dirty-content fingerprint in the Build Plan.
+
+The default new-worktree budget is zero. Use another checkout only when the user or handoff selected it, or after showing a concrete Git-ref or write-conflict isolation need and receiving user confirmation. A dirty tree by itself is not such a conflict. A retry uses the Plan checkout; changing checkout creates a new Plan.
+
+Worktree is not a cache, log, version, or retry-isolation mechanism.
+
+### Make planned writes idempotent
+
+`validate` and `diagnose` do not change component versions, product versions, or Manifest refs.
+
+For packaging modes, determine explicit expected and target values once, then use compare-and-set helpers before freezing the Plan:
+
+- Current value equals target: success, no-op.
+- Current value equals expected: atomically write target.
+- Any other value: stop with a drift conflict.
+
+A retry never recalculates or increments a version.
+
+### One Plan, one exact command
+
+A Build Plan binds one semantic command. `bmcgo gen`, a component package build, and a product HPM build are separate Plans when each must run.
+
+Create the Plan with `scripts/create_build_plan.py`. It records:
+
+- mode and exact argv;
+- selected checkout identities and dirty-content hashes;
+- cwd and semantic environment such as `umask` and community;
+- product lock identity when applicable;
+- expected versions, artifact identity, and allowed dependency changes;
+- execution-contract digest enforced at Attempt and finalization time, plus a full Skill digest recorded only as Plan-creation provenance;
+- same-host output resources that must not be written concurrently.
+
+`runner.execution_contract_sha256` is the runtime Skill-code invariant. `runner.skill_sha256` is an audit snapshot from Plan creation; later changes limited to documentation, references, tests, or other files outside the execution-contract set do not invalidate the Plan or require a new one.
+
+Read [references/build-plan.md](references/build-plan.md) before creating or retrying a Plan.
+
+### Retry as an Attempt
+
+Execute only through `scripts/run_build_attempt.py --plan <plan.json> --run-root <run-root>`.
+
+An Attempt has the state sequence:
+
+```text
+prepared → running → succeeded | failed | cancelled | interrupted
 ```
 
-   - When the conversation lacks enough context, run the fallback scan and filter it against the current task:
+`succeeded` means the exact command returned zero, the checked log contains no terminal failure signal, and frozen checkout/input identities still match after execution. It does not mean a product artifact is accepted.
 
-```bash
-/root/.agents/skills/openubmc-build/scripts/detect_changed_components.py --root /home/workspace/source
-```
+Retrying creates another Attempt under the same Plan. It does not accept a replacement argv, checkout, version, or dependency policy.
 
-2. **For each changed component**
-   - When component upload or dependency resolution needs remotes, verify Conan auth first. See `references/conan-auth.md`.
-   - Before official UT or compilation, check dependency readiness once and reuse that evidence. Report an unavailable external dependency as `blocked_external`; Do not fabricate or vendor it to force a green result.
-   - Increment `mds/service.json` `version` every time before building.
-   - Prefer the version helper for dry-run and write:
+### Verify before metadata
 
-```bash
-/root/.agents/skills/openubmc-build/scripts/bump_openubmc_versions.py --component-root <component-root> [--write]
-```
+For `product-artifact`, an accepted result requires all Plan gates:
 
-   - If MDS/interface/model/property files changed, run generation with `bmcgo`:
+- successful Attempt with explicit rc;
+- HPM, complete built resolved lock, and final ext4 rootfs image each absent before the Attempt or carrying a different SHA-256 afterward; mtime, ctime, or inode churn with identical bytes is stale evidence;
+- version read from `/etc/version.json` inside the Plan-bound final image equals the Plan;
+- dependency delta is within the Plan allowlist;
+- each planned non-root service can traverse its own mapped image paths.
 
-```bash
-/root/.agents/skills/openubmc-build/scripts/run_bmcgo_checked.py -- bmcgo gen
-```
+Run `scripts/finalize_product_attempt.py` after a successful product Attempt. It reacquires the Plan, checkout, and product-output locks and recomputes dependency, image-access, verification, and metadata evidence in one lock cycle. Standalone gate reports are diagnostic evidence, not acceptance tokens. Read [references/artifact-verification.md](references/artifact-verification.md).
 
-   - After a generation error, inspect the worktree before continuing; `bmcgo gen` may delete or partially rewrite `gen/` outputs before failing. Restore partial generated deletions unless they are part of the intended successful generation.
-   - Build the component package:
+When a deterministic retry may reproduce identical bytes, preserve and move aside the old HPM, final ext4 image, and built resolved lock before starting the new Attempt so each planned output begins absent.
 
-```bash
-/root/.agents/skills/openubmc-build/scripts/run_bmcgo_checked.py -- bmcgo build -bt debug --stage dev
-/root/.agents/skills/openubmc-build/scripts/run_bmcgo_checked.py -- bmcgo build -bt release --stage stable
-```
+Until HPM containment of the inspected image is proved, final verification and metadata remain `package_binding_unverified` with `upgrade_eligible: false`.
 
-3. **Put the component package into manifest**
-   - Replace the matching Conan reference in the owning `build/subsys/<stage>/*.yml`.
-   - Prefer the manifest ref helper for dry-run and write:
+## Runtime Handoff
 
-```bash
-/root/.agents/skills/openubmc-build/scripts/update_manifest_conan_ref.py --manifest-root <manifest-root> --component <name> --new-ref <conan-ref> --stage <dev|stable> [--write]
-```
+After local product finalization, return the typed Build result with `artifact_path`, `artifact_sha256`, `product_version`, `package_binding`, `upgrade_eligible`, and `evidence_ids`. An accepted local result remains `package_binding_unverified` and `upgrade_eligible: false` until the finalizer proves that the HPM contains the inspected image.
 
-   - Add product `manifest.yml` dependency only when a new component must enter the product.
-   - Keep channel/stage consistent with the intended package.
-
-4. **Bump product version**
-   - Update product `base.version` in `build/product/<board>/manifest.yml`.
-   - Every package build increments the version by `+1` or `+2`.
-   - Last segment parity is policy: even = debug package, odd = release package.
-   - Prefer the version helper so parity is checked before writing:
-
-```bash
-/root/.agents/skills/openubmc-build/scripts/bump_openubmc_versions.py --product-manifest <manifest.yml> --build-type <debug|release> [--write]
-```
-
-   - Do not sync `build/rootfs/etc/version.json`, `build/version.yml`, or SDK manifest for this routine package bump unless the user asks or repo policy says so.
-
-5. **Build product output**
-   - From the manifest root, use `bmcgo` and current repo help/config.
-   - Watch for `.bmcgo/config` tool constraints before running manifest build commands; help/build can trigger upgrade checks.
-   - Run `scripts/preflight_build_env.sh --board <board>` from the manifest root before long builds; fix empty required manufacture files such as `pme_profile_en.dat` and `datatocheck_upgrade.dat` first.
-   - For remote dependency, online signing, `umask`, and rootfs permission pitfalls, see `references/product-build-pitfalls.md`.
-   - Do not use a short outer timeout for product rootfs/HPM builds; if a timeout wrapper kills `bmcgo`, treat the output as incomplete and restore Conan remotes before retrying.
-   - For long product builds, start a background run that records `pid`, `log`, `rc`, and `meta`; a missing `rc` file means the build wrapper was interrupted and the output is not trustworthy.
-   - Typical command shape after confirming local help:
-
-```bash
-/root/.agents/skills/openubmc-build/scripts/run_bmcgo_checked.py -- \
-  bmcgo build -t personal -b <board> -bt <debug|release> --stage <dev|stable>
-```
-
-   - Background command shape:
-
-```bash
-RUN_DIR=/tmp/openubmc-build PREFIX=product \
-  /root/.agents/skills/openubmc-build/scripts/run_bmcgo_background.sh -- \
-  /root/.agents/skills/openubmc-build/scripts/run_bmcgo_checked.py -- \
-  bmcgo build -t personal -b <board> -bt <debug|release> --stage <dev|stable>
-```
-
-   - Verify output package path and package metadata include the new component versions.
-   - Classify the actual build boundary as `compiled`, `compile_failed`, or `dependency_graph_blocked`; dependency-graph failure before compiler execution is not a compile result.
-
-6. **Return artifact identity and route delivery**
-   - After the final HPM hash and product version are known, run `scripts/write_artifact_metadata.py --path <hpm> --product-version <version> --provenance openubmc-build` so Runtime can bind the declared version and producer provenance to those exact bytes before Upgrade.
-   - Keep the generated metadata adjacent to the HPM as `<hpm>.metadata.json`; it is Runtime-owned validation material and does not enter the Agent-facing typed Build payload.
-   - Return the absolute HPM path, SHA-256, product version, and build evidence IDs as the typed Build result.
-   - When the task carries a Runtime Turn, convert the verified HPM identity into the Gate's
-     `ArtifactRef` and submit it through `execute(kind=respond)` using the exact `run_id`, `gate_id`,
-     `gate_version`, and `schema_digest`. Use the Run-bound target identity; do not copy credentials
-     into the reference. Put only fields declared by the returned Gate schema in `response.payload`:
+For a `build-upgrade` Run, use `execute(kind=respond)` only after the result is upgrade-eligible. Copy the Run ID and GateBinding from the current `build.artifact` Gate; use its schema for the response. Map the finalized artifact identity into `artifact_ref`:
 
 ```yaml
-kind: respond
-run_id: <current Run ID>
-gate_id: <current Gate ID>
-gate_version: <current Gate version>
-schema_digest: <current Gate schema digest>
-response:
-  status: <completed|failed|cancelled>
-  summary: <concise build result>
-  payload:
-    source_revision: <source revision built>
-    artifact_ref:
-      handle: <absolute HPM path; required when completed>
-      digest: sha256:<64 lowercase hex characters>
-      kind: openubmc-hpm
-      size: <HPM byte size>
-      provenance: openubmc-build
-      retention_hint: run-lifetime
-      version: <built product version>
-      target: <target bound to the current Run>
-      run_id: <current Run ID>
-    component_versions: [<component and Conan package identities>]
-    build_commands: [<exact commands executed>]
-    build_logs: [<absolute log paths or build evidence IDs>]
-    dependency_readiness:
-      readiness_id: <stable preflight identity>
-      status: ready
-      resolution: available
-      summary: <dependency result>
-      check_commands: [<single preflight command>]
-      evidence_ids: [<dependency evidence ID>]
-      attempt_count: 1
-      reused_by: [build]
-    validation_results:
-      - kind: build
-        status: compiled
-        summary: <compiler result>
-        commands: [<exact build command>]
-        evidence_ids: [<build evidence ID>]
-        dependency_readiness_id: <same readiness identity>
-    known_gaps: [<remaining validation gaps>]
+execute:
+  kind: respond
+  run_id: <current Run ID>
+  gate_id: <current Gate ID>
+  gate_version: <current Gate version>
+  schema_digest: <current Gate schema digest>
+  response:
+    status: completed
+    summary: product artifact finalized
+    payload:
+      source_revision: <frozen source revision>
+      artifact_ref:
+        handle: <absolute HPM path>
+        digest: sha256:<64 lowercase hex characters>
+        kind: openubmc-hpm
+        size: <artifact byte count>
+        provenance: openubmc-build
+        retention_hint: run-lifetime
+        version: <verified product version>
+        target: <Run target>
+        run_id: <current Run ID>
+      package_binding: package_binding_verified
+      upgrade_eligible: true
+      evidence_ids:
+        - <plan evidence ID>
+        - <attempt evidence ID>
+        - <verification evidence ID>
+      dependency_readiness:
+        readiness_id: <dependency readiness ID>
+        status: ready
+        resolution: available
+        summary: build dependencies resolved
+        check_commands: [<completed dependency check command>]
+        evidence_ids: [<dependency evidence ID>]
+        attempt_count: 1
+        reused_by: [build]
+      validation_results:
+        - kind: build
+          status: compiled
+          summary: product compilation completed
+          commands: [<exact Plan command>]
+          evidence_ids: [<checked build log evidence ID>]
+          dependency_readiness_id: <dependency readiness ID>
 ```
 
-   - `status=completed` requires `validation_results.build.status=compiled`. Return `status=failed` for `compile_failed` or `dependency_graph_blocked`, retaining `dependency_readiness` and the classified Build result; preserve logs and known gaps instead of publishing a stale artifact. A running build remains local work until it can return a terminal response or the caller deadline yields control.
-   - `openubmc-upgrade` owns any selected `build-upgrade` next step; do not upload from Build or acquire a target lease.
-   - After Upgrade, route acceptance checks to `openubmc-debug` for fresh evidence from the new target epoch.
-   - With a bound Run, bare “继续” or “continue” means call `execute(kind=resume)` before rebuilding anything. After returning a terminal `build.artifact` Gate response, use the returned Turn directly; do not issue an extra polling call. Target Runtime owns downstream routing and authorization, so Build must not re-evaluate or reconfirm them.
-   - When the Run reaches a terminal state, report the terminal Outcome. Closeout documents, phase evidence, build logs, and HPM identity remain available through the Operator / CI Plane.
+`package_binding_verified`, `upgrade_eligible: true`, and at least one evidence ID are required for a completed product Gate. If containment proof is unavailable, return the local-only result and report the missing proof; leave the Build Gate pending. A failed build submission must classify `validation_results` as `compile_failed` or `dependency_graph_blocked` with dependency-readiness evidence. It closes the Run; local Attempt retries should finish before submitting the final Gate response.
 
-## Quick Commands
+Resume an interrupted continuation with `execute(kind=resume)` and the current `run_id`. A completed Gate cannot be reopened to replace its artifact; start a new Run for another delivery. Runtime owns the Upgrade continuation. Do not upload from Build or acquire a target lease. Do not perform an upgrade from Build.
 
-Component help confirmed locally:
+## Supporting References
 
-```bash
-bmcgo gen -h
-bmcgo build -h
-```
+Read only when the selected branch requires them:
 
-Component build options include `-bt debug|release`, `--stage dev|pre|rc|stable`, `-u`, `-r <remote>`, `--conan2`, `-o`, and `--user`.
+- [references/handoff-contract.md](references/handoff-contract.md): structured upstream inputs and typed result.
+- [references/conan-auth.md](references/conan-auth.md): remote authentication and missing binaries.
+- [references/product-build-pitfalls.md](references/product-build-pitfalls.md): signing, cache, umask, and rootfs concerns.
+- [references/2630-wsl-profile.md](references/2630-wsl-profile.md): optional local dual-WSL profile.
+- [references/redfish-upgrade.md](references/redfish-upgrade.md): Build-to-Upgrade boundary.
 
-## Guardrails
+## Helper Inventory
 
-- Always know which components changed before building; prefer session context over git status, and do not build random modules from unrelated dirty files.
-- Do not skip component version increment; the user expects every component build to bump `mds/service.json`.
-- Do not upload with `-u` unless publish intent, remote, and stage are explicit.
-- Do not use `bingo` as the build/generation command path in this skill; `bingo` may appear only as an internal config/version section reported by `bmcgo`.
-- Do not hard-code board names or manifest paths beyond examples; discover them in the current manifest.
-- Do not trust command exit code alone for `bmcgo`; check logs or use the bundled checker.
-- Do not treat an HPM file left behind by a failed, interrupted, or timed-out build as valid; success requires `rc=0`, clean log completion, a package timestamp newer than build start, and metadata/package refs that include the new component versions.
-- Do not replace missing product dependencies with local source packages unless the user explicitly approves a local workaround.
-- Do not hand-edit `temp/build.../tmp_root` as a durable fix.
-- Do not perform an upgrade from Build; `openubmc-upgrade` owns Redfish mutation, pre-version checks, version verification, and recovery assessment.
-- Do not treat a missing structured handoff as permission to trust noisy git state; reconstruct changed components from the active session first and pause only when multiple materially different candidates remain.
-
-## References
-
-- `references/build-flow.md`: detailed closed-loop workflow.
-- `references/conan-auth.md`: Conan remote authentication, missing binary, and proxy checks.
-- `references/handoff-contract.md`: structured inputs expected from debug/developer skills.
-- `references/product-build-pitfalls.md`: product package signing, `umask`, and rootfs permission pitfalls.
-- `references/redfish-upgrade.md`: typed artifact handoff to the separately owned Upgrade lane.
-- `references/2630-wsl-profile.md`: optional local ubmc/2630 profile only.
-- `scripts/preflight_build_env.sh`: read-only environment check.
-- `scripts/detect_changed_components.py`: changed component inventory.
-- `scripts/bump_openubmc_versions.py`: service/product version bump with dry-run.
-- `scripts/update_manifest_conan_ref.py`: manifest Conan ref locator/updater with dry-run.
-- `scripts/run_bmcgo_checked.py`: run `bmcgo` and fail on failure-looking log lines even when exit code is 0.
-- `scripts/run_bmcgo_background.sh`: launch long builds with durable `pid/log/rc/meta` artifacts.
+- `scripts/create_build_plan.py`: immutable Plan creation and checkout binding.
+- `scripts/run_build_attempt.py`: exact-argv execution, locking, log checks, and Attempt state.
+- `scripts/finalize_product_attempt.py`: single-lock product gates, verification, and metadata finalization.
+- `scripts/ensure_planned_version.py`: component/product version compare-and-set.
+- `scripts/update_manifest_conan_ref.py`: exact-file Manifest ref compare-and-set.
+- `scripts/check_dependency_delta.py`: finalizer-owned Conan lock gate; standalone use is diagnostic only.
+- `scripts/check_rootfs_access.py`: finalizer-owned service-path gate; standalone use is diagnostic only.
+- `scripts/verify_product_artifact.py`: finalizer-owned Plan/Attempt/artifact/gate verification.
+- `scripts/write_artifact_metadata.py`: finalizer-owned accepted-verification metadata writer.
+- `scripts/detect_changed_components.py`: read-only changed-component candidates.
+- `scripts/preflight_build_env.sh`: read-only environment diagnostics.
+- `scripts/run_bmcgo_checked.py`: shared checked-log semantics.

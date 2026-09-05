@@ -280,18 +280,19 @@ journal reconciliation.
 - `build-upgrade`: Debug -> diagnosis acceptance -> Developer -> externally supplied Build result
   -> Upgrade -> fresh Debug.
 
-The diagnosis acceptance step may be automatic only when Runtime already has a complete evaluable
-DiagnosticReceipt. Otherwise `execute` returns a durable `diagnosis.acceptance` Gate. Respond with
-the returned Gate binding and a grounded `root_cause`, current-receipt `evidence_ids`, and
-`known_gaps`. Repeated `execute(kind=resume)` only reattaches that same Gate; it never substitutes
-for a Gate response and must not open Developer work.
+The diagnosis acceptance step is explicit, including when Runtime already has a complete
+DiagnosticReceipt. Respond with the returned Gate binding and a grounded `root_cause`,
+current-receipt `evidence_ids`, `causal_chain`, `code_owner`, `contradictions`, `remaining_gaps`,
+and `verification_status=verified`. Acceptance requires empty contradictions. Repeated
+`execute(kind=resume)` only reattaches that same Gate; it never substitutes for a Gate response.
 
 The MCP layer infers the strategy from typed workflow sections or from the mutation domain invoked
 later in the same task. It must not default every fix to Live Patch or ask for an intent already
 carried by the task. Build is an external typed result and never acquires a target lease.
 
-Every workflow request recollects Debug diagnosis and verification evidence, including an exact
-repeat in the same task. Mutation identity is computed separately from verification parameters and
+Every workflow request uses fresh Debug diagnosis and verification evidence unless Runtime safely
+reuses one unique, unexpired same-task ObservationRef after its bounded scope probe; an exact
+repeat in the same task reattaches the original Run. Mutation identity is computed separately from verification parameters and
 includes the target plus mutation arguments; for Live Patch it also includes the local file
 SHA-256. Reusing the same mutation returns the prior outcome without applying it again, while the
 surrounding Debug phases still run with fresh evidence. The stable mutation operation ID is also

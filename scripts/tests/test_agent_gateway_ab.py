@@ -481,7 +481,11 @@ def candidate_execute_event(
                     "payload": {
                         "root_cause": "qualification source defect",
                         "evidence_ids": ["evidence-qualified"],
-                        "known_gaps": [],
+                        "causal_chain": ["qualification input has an outdated identity", "source selects that identity"],
+                        "code_owner": "src/qualification.lua",
+                        "contradictions": [],
+                        "remaining_gaps": [],
+                        "verification_status": "verified",
                     },
                 },
             }
@@ -494,8 +498,13 @@ def candidate_execute_event(
             "owner": "openubmc-developer",
         }
         structured["diagnostic_receipt"] = complete_candidate_diagnostic_receipt(
-            operation="diagnosis.acceptance"
+            operation="debug_run"
         )
+        structured["diagnosis_record"] = {
+            "schema": "openubmc.target-runtime.v1/diagnosis-record-v1",
+            "record_id": "diagnosis-qualified",
+            **arguments["response"]["payload"],
+        }
     else:
         arguments.update(
             {
@@ -515,6 +524,11 @@ def candidate_execute_event(
             }
         )
         structured["outcome"] = {"status": "completed"}
+        structured["diagnosis_record"] = {
+            "schema": "openubmc.target-runtime.v1/diagnosis-record-v1",
+            "record_id": "diagnosis-qualified",
+            **module._qualification_diagnosis_receipt(["evidence-qualified"])["payload"],
+        }
     return {
         "type": "item.completed",
         "observed_elapsed_seconds": elapsed,
@@ -1331,7 +1345,9 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertIn("不得提交空字符串或尖括号占位符", prompt)
         self.assertIn("diagnosis.acceptance Gate", prompt)
         self.assertIn("diagnostic_receipt.evidence", prompt)
-        self.assertIn('"known_gaps":[]', prompt)
+        self.assertIn('"remaining_gaps":[]', prompt)
+        self.assertIn('"contradictions":[]', prompt)
+        self.assertIn('"verification_status":"verified"', prompt)
         self.assertIn(
             '"kind":"respond","run_id":"<structured_content.run_id>",'
             '"gate_id":"<structured_content.gate.gate_id>",'
@@ -1975,6 +1991,26 @@ class AgentGatewayAbTests(unittest.TestCase):
         self.assertEqual(accepted["gate_roundtrips"], 2)
         self.assertEqual(accepted["resume_calls"], 0)
 
+        # A diagnosis conclusion does not rewrite the collection receipt.
+        original = calls[0]["result"]["structured_content"]["diagnostic_receipt"]
+        original.update({"status": "blocked", "agent_acceptance": "blocked"})
+        calls[1]["result"]["structured_content"]["diagnostic_receipt"] = dict(original)
+        self.assertTrue(module.candidate_execute_acceptance(calls)["passed"])
+
+        for field, value in (
+            ("verification_status", "unverified"),
+            ("record_id", ""),
+            ("contradictions", ["unresolved evidence"]),
+        ):
+            with self.subTest(field=field):
+                changed = json.loads(json.dumps(calls))
+                for index in (1, 2):
+                    changed[index]["result"]["structured_content"]["diagnosis_record"][field] = value
+                self.assertFalse(module.candidate_execute_acceptance(changed)["passed"])
+
+        calls[-1]["result"]["structured_content"].pop("diagnosis_record")
+        self.assertFalse(module.candidate_execute_acceptance(calls)["passed"])
+
     def test_candidate_execute_acceptance_rejects_diagnosis_bypass(self) -> None:
         for mutation, expected in (
             (
@@ -2109,15 +2145,15 @@ class AgentGatewayAbTests(unittest.TestCase):
                 elapsed=3,
             )["item"],
         ]
-        calls[1]["result"]["structured_content"]["diagnostic_receipt"][
-            "results"
-        ][0]["value"]["root_cause"] = "a different diagnosis"
+        calls[1]["result"]["structured_content"]["diagnosis_record"][
+            "root_cause"
+        ] = "a different diagnosis"
 
         accepted = module.candidate_execute_acceptance(calls)
 
         self.assertFalse(accepted["passed"], accepted)
         self.assertIn(
-            "diagnosis response must return a complete evaluable receipt",
+            "diagnosis response must return a verified grounded DiagnosisRecord",
             accepted["errors"],
         )
 
@@ -2156,8 +2192,8 @@ class AgentGatewayAbTests(unittest.TestCase):
                     )["item"],
                 ]
                 value = calls[1]["result"]["structured_content"][
-                    "diagnostic_receipt"
-                ]["results"][0]["value"]
+                    "diagnosis_record"
+                ]
                 value["root_cause"] = "a different diagnosis"
                 value.update(unrelated)
 
@@ -2165,7 +2201,7 @@ class AgentGatewayAbTests(unittest.TestCase):
 
                 self.assertFalse(accepted["passed"], accepted)
                 self.assertIn(
-                    "diagnosis response must return a complete evaluable receipt",
+                    "diagnosis response must return a verified grounded DiagnosisRecord",
                     accepted["errors"],
                 )
 
@@ -2191,15 +2227,15 @@ class AgentGatewayAbTests(unittest.TestCase):
                 elapsed=3,
             )["item"],
         ]
-        calls[1]["result"]["structured_content"]["diagnostic_receipt"][
-            "results"
-        ][0]["evidence_ids"] = ["evidence-from-another-run"]
+        calls[1]["result"]["structured_content"]["diagnosis_record"][
+            "evidence_ids"
+        ] = ["evidence-from-another-run"]
 
         accepted = module.candidate_execute_acceptance(calls)
 
         self.assertFalse(accepted["passed"], accepted)
         self.assertIn(
-            "diagnosis response must return a complete evaluable receipt",
+            "diagnosis response must return a verified grounded DiagnosisRecord",
             accepted["errors"],
         )
 

@@ -3481,6 +3481,140 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertIn("repair", result.stderr.lower())
         self.assertFalse(marker.exists())
 
+    def test_launcher_rejects_mcp_entrypoint_drift_before_startup(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        runtime = state["runtime"]
+        marker = self.root / "entrypoint-drift-ran"
+        source_entrypoint = Path(runtime["mcp_entrypoint"])
+        source_entrypoint.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [runtime["launcher_path"]],
+            input="",
+            text=True,
+            capture_output=True,
+            check=False,
+            env={**os.environ, "HOME": str(self.home)},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mcp entrypoint content digest mismatch", result.stderr.lower())
+        self.assertFalse(marker.exists())
+        self.assertFalse(installer.inspect_runtime_installation(state)["healthy"])
+
+    def test_inspection_reports_corrupt_launcher_as_unhealthy(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        launcher = Path(state["runtime"]["launcher_path"])
+        launcher.write_bytes(b"\xff\xfe\x80")
+        corrupt = installer.inspect_runtime_installation(state)
+        self.assertFalse(corrupt["healthy"])
+        self.assertIn("repair", corrupt["detail"])
+        launcher.unlink()
+        missing = installer.inspect_runtime_installation(state)
+        self.assertFalse(missing["matches_installed_state"])
+        self.assertIn("repair", missing["detail"])
+
+    def test_launcher_binds_instructions_for_every_installer_skill(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        runtime = state["runtime"]
+        for _name, relative in installer.SKILL_BUNDLE:
+            with self.subTest(skill=relative):
+                skill = Path(runtime["composition_source"]) / relative / "SKILL.md"
+                original = skill.read_bytes()
+                try:
+                    skill.write_bytes(original + b"\nchanged instructions\n")
+                    self.assertFalse(installer.inspect_runtime_installation(state)["healthy"])
+                    result = subprocess.run(
+                        [runtime["launcher_path"]], input="", text=True,
+                        capture_output=True, check=False,
+                        env={**os.environ, "HOME": str(self.home)},
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("composition mismatch", result.stderr)
+                    self.assertIn(relative + "/SKILL.md", result.stderr)
+                finally:
+                    skill.write_bytes(original)
+        self.assertTrue(installer.inspect_runtime_installation(state)["healthy"])
+
+    def test_launcher_rejects_an_added_native_extension(self) -> None:
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        runtime = state["runtime"]
+        (Path(runtime["package_path"]) / "runtime.so").write_bytes(b"unbound extension")
+        result = subprocess.run(
+            [runtime["launcher_path"]], input="", text=True,
+            capture_output=True, check=False,
+            env={**os.environ, "HOME": str(self.home)},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unbound executable", result.stderr)
+        self.assertFalse(installer.inspect_runtime_installation(state)["healthy"])
+
+    def test_launcher_ignores_preexisting_timestamp_valid_bytecode(self) -> None:
+        import py_compile
+
+        self.prepare_credentials()
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        state = installer.load_state(self.home)
+        runtime = state["runtime"]
+        source = Path(runtime["package_path"]) / "__init__.py"
+        clean = source.read_bytes()
+        original = source.stat()
+        malicious = b"raise RuntimeError('stale-bytecode-executed')\n"
+        self.assertGreater(len(clean), len(malicious))
+        source.write_bytes(malicious.ljust(len(clean), b" "))
+        os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+        py_compile.compile(str(source), doraise=True)
+        source.write_bytes(clean)
+        os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+        healthy, detail, tools = installer.runtime_mcp_health(
+            Path(runtime["launcher_path"]), self.home,
+        )
+        self.assertTrue(healthy, detail)
+        self.assertEqual(tools, ["execute", "observe"])
+
+    def test_launcher_keeps_verified_helpers_after_source_changes_during_execution(self) -> None:
+        self.prepare_credentials()
+        scripts = self.source / "openubmc-debug" / "scripts"
+        entrypoint = scripts / "target_runtime_mcp.py"
+        helper = scripts / "late_helper.py"
+        helper.write_text("VALUE = 'verified bytes'\n", encoding="utf-8")
+        entrypoint.write_text(
+            "print('ready', flush=True)\n"
+            "input()\n"
+            "from late_helper import VALUE\n"
+            "print(VALUE, flush=True)\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.install("--clients", "codex")[0], 0)
+        runtime = installer.load_state(self.home)["runtime"]
+        child = subprocess.Popen(
+            [runtime["launcher_path"]], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "HOME": str(self.home)},
+        )
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "ready")
+            helper.write_text("VALUE = 'drifted bytes'\n", encoding="utf-8")
+            stdout, stderr = child.communicate("continue\n", timeout=5)
+            self.assertEqual(child.returncode, 0, stderr)
+            self.assertEqual(stdout.strip(), "verified bytes")
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
+
     def test_real_repository_launcher_initializes_and_lists_domain_tools(self) -> None:
         args = installer.parse_args(
             [

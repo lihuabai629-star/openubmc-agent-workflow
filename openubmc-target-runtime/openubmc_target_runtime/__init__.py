@@ -73,6 +73,12 @@ from .capability import (
     require_effect_recovery_journal,
 )
 from .comparison_targets import comparison_target_identities
+from .comparison_receipt import (
+    COMPARISON_RECEIPT_SCHEMA,
+    ComparisonReceipt,
+    ComparisonSource,
+    build_comparison_receipt,
+)
 from .mdb_query import (
     is_read_only_mdb_query,
 )
@@ -161,6 +167,11 @@ from .diagnostic_receipt import (
     DIAGNOSTIC_RECEIPT_MAX_BYTES,
     DIAGNOSTIC_RECEIPT_SCHEMA,
     DiagnosticReceipt,
+)
+from .diagnosis_record import (
+    DiagnosisRecord,
+    accepted_diagnosis_record,
+    parse_diagnosis_record,
 )
 from .runtime import (
     CredentialResolver,
@@ -633,6 +644,9 @@ __all__ = [
     "ObservationQuery",
     "ObservationRef",
     "ObservationResult",
+    "DiagnosisRecord",
+    "accepted_diagnosis_record",
+    "parse_diagnosis_record",
     "Outcome",
     "ReconcileRun",
     "ReferenceViolation",

@@ -283,7 +283,9 @@ class OrchestrationContractTests(unittest.TestCase):
             {"debug": debug, "live_patch": live_patch}
         )
 
-        self.assertTrue(result.completed)
+        self.assertFalse(result.completed)
+        self.assertEqual(result.next_action, "debug:accept")
+        self.assertEqual(result.phase_states["debug:accept"], "not_executed")
         self.assertEqual(calls, ["diagnosis"])
         self.assertEqual(result.executions[0].status, "succeeded")
         self.assertEqual(context.intent.authorization.allowed_actions, frozenset())

@@ -7,7 +7,8 @@ import copy
 from datetime import datetime
 
 from .capabilities import CAPABILITY_ALIASES
-from .semantic_runtime import ObservationQuery
+from .semantic_runtime import ObservationQuery, ObservationSelector
+from dataclasses import replace
 
 
 OBSERVATION_TIMING_FIELD = "observation_timing"
@@ -43,7 +44,10 @@ def _target_scope_fact(raw: Mapping[str, object]) -> dict[str, object] | None:
         return None
     detail = _mapping(targets[0])
     target = _mapping(detail.get("target"))
-    identity = _mapping(detail.get("identity"))
+    identity = {
+        key: value for key, value in _mapping(detail.get("identity")).items()
+        if key not in {"schema", "target_clock"}
+    }
     epochs = _mapping(detail.get("epochs"))
     if not target and not identity and "target_epoch" not in epochs:
         return None
@@ -61,6 +65,82 @@ def observation_target_scope_matches(
     """Return whether an assured partition stayed on its fast target scope."""
 
     return _target_scope_fact(baseline) == _target_scope_fact(candidate)
+
+
+def observation_target_scope_known(raw: Mapping[str, object]) -> bool:
+    """Automatic reuse needs a positive target identity and an explicit epoch."""
+    fact = _target_scope_fact(raw)
+    if fact is None:
+        return False
+    epoch = fact.get("target_epoch")
+    return (
+        bool(_text(_mapping(fact.get("target")).get("fingerprint")))
+        and any(isinstance(value, str) and value.strip() for value in _mapping(fact.get("identity")).values())
+        and isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 0
+    )
+
+
+def observation_completion_window_matches(*observations: Mapping[str, object]) -> bool:
+    completions = [
+        _instant(_mapping(item).get("completed_at"))
+        for raw in observations
+        for item in _mapping(raw.get(OBSERVATION_TIMING_FIELD)).get("selectors", [])
+    ]
+    if not completions or any(value is None for value in completions):
+        return False
+    return (max(completions) - min(completions)).total_seconds() <= OBSERVATION_MAX_SELECTOR_SKEW_SECONDS
+
+
+def reusable_selector_fragments(
+    query: ObservationQuery,
+    prior_query: ObservationQuery,
+    prior: Mapping[str, object],
+) -> tuple[tuple[tuple[ObservationQuery, Mapping[str, object]], ...], tuple[ObservationSelector, ...]]:
+    """Partition an evidence plan into exact reusable values and missing values."""
+    prior_selectors = {(item.selector_id, item.kind): item for item in prior_query.selectors}
+    lanes = _mapping(_mapping(_mapping(prior.get("result")).get("lanes")).get("ssh"))
+    prior_mdb = {}
+    index = 0
+    for selector in prior_query.selectors:
+        for value in selector.mdb_queries:
+            name = "mdbctl" if index == 0 else f"mdbctl_{index + 1}"
+            prior_mdb[(selector.selector_id, value)] = lanes.get(name)
+            index += 1
+    fragments: list[tuple[ObservationQuery, Mapping[str, object]]] = []
+    missing: list[ObservationSelector] = []
+    for selector in query.selectors:
+        old = prior_selectors.get((selector.selector_id, selector.kind))
+        values = tuple(value for value in selector.values if old is not None and value in old.values)
+        absent = tuple(value for value in selector.values if value not in values)
+        if absent:
+            missing.append(selector.with_values(absent))
+        if not values:
+            continue
+        narrowed = selector.with_values(values)
+        fragment_query = replace(query, selectors=(narrowed,))
+        fragment = copy.deepcopy(dict(prior))
+        result = dict(_mapping(fragment.get("result")))
+        if selector.kind == "mdb":
+            ssh = {
+                ("mdbctl" if i == 0 else f"mdbctl_{i + 1}"): copy.deepcopy(prior_mdb[(selector.selector_id, value)])
+                for i, value in enumerate(values)
+            }
+            result["lanes"] = {"ssh": ssh}
+            result["capabilities"] = {}
+        else:
+            capabilities = _mapping(result.get("capabilities"))
+            result["capabilities"] = {CAPABILITY_ALIASES[name]: capabilities[CAPABILITY_ALIASES[name]] for name in values if CAPABILITY_ALIASES[name] in capabilities}
+            result["lanes"] = {"ssh": {}}
+        result.pop("collection_partitions", None)
+        fragment["result"] = result
+        timing = dict(_mapping(fragment.get(OBSERVATION_TIMING_FIELD)))
+        timing["selectors"] = [
+            copy.deepcopy(item) for item in timing.get("selectors", [])
+            if _mapping(item).get("selector_id") == selector.selector_id
+        ]
+        fragment[OBSERVATION_TIMING_FIELD] = timing
+        fragments.append((fragment_query, fragment))
+    return tuple(fragments), tuple(missing)
 
 
 def capability_selector_complete(

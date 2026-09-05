@@ -992,6 +992,12 @@ def _phase_receipt(
             "build_logs",
             "known_gaps",
             "root_cause",
+            "causal_chain",
+            "code_owner",
+            "contradictions",
+            "remaining_gaps",
+            "verification_status",
+            "diagnosis_record",
             "supersedes_diagnostic_receipt_id",
             "remote_path",
             "restart_scope",
@@ -1666,6 +1672,86 @@ def aggregate_case_closeout(
             _text_from(value, "summary", "root_cause")
             or str(operation.get("summary", ""))
         )
+        # A batch mutation is one durable operation with independent target
+        # receipts. Project each child into the normal stage model so identity
+        # and freshness checks never compare one target with another target's
+        # epoch or collapse the aggregate into a partial stage.
+        if stage == "upgrade" and operation_name == "upgrade_batch":
+            raw_targets = value.get("targets")
+            requested_targets = inputs.get("targets")
+            expected_ids = [
+                str(target.get("target_id", ""))
+                for target in (
+                    requested_targets if isinstance(requested_targets, list)
+                    else projection.get("targets", [])
+                )
+                if isinstance(target, Mapping)
+            ]
+            returned_ids = [
+                str(target.get("target_id", ""))
+                for target in raw_targets if isinstance(target, Mapping)
+            ] if isinstance(raw_targets, list) else []
+            if (
+                expected_ids
+                and expected_ids == returned_ids
+                and len(set(expected_ids)) == len(expected_ids)
+                and len(raw_targets) == len(returned_ids)
+            ):
+                for raw_target in raw_targets:
+                    if not isinstance(raw_target, Mapping):
+                        continue
+                    child_value = dict(raw_target)
+                    child_result = _mapping(raw_target.get("result"))
+                    child_value.update(child_result)
+                    for name in ("artifact_path", "artifact_sha256", "product_version"):
+                        if name in value and name not in child_value:
+                            child_value[name] = value[name]
+                    child_inputs = dict(inputs)
+                    child_inputs["target_id"] = str(raw_target.get("target_id", ""))
+                    child_receipt = StageReceipt.create(
+                        stage="upgrade",
+                        producer=operation_name,
+                        status="skipped" if raw_target.get("status") == "skipped" else _operation_status(
+                            {
+                                **operation,
+                                "status": (
+                                    "mutation_outcome_unknown"
+                                    if raw_target.get("status") == "unknown"
+                                    else raw_target.get("status", "partial")
+                                ),
+                                "inputs": child_inputs,
+                            },
+                            "upgrade",
+                            child_value,
+                            evidence_loaded=evidence_loaded,
+                        ),
+                        summary=str(raw_target.get("message", summary)),
+                        operation_id=str(
+                            raw_target.get(
+                                "operation_id",
+                                raw_target.get("requested_operation_id", operation.get("operation_id", "")),
+                            )
+                        ),
+                        evidence_ids=operation_evidence_ids,
+                        facts=_selected_facts("upgrade", child_value, child_inputs),
+                        artifacts=_operation_artifacts("upgrade", child_value, child_inputs),
+                        target_epoch=_target_epoch(child_value, raw_target),
+                    )
+                    child_target_key = str(child_receipt.facts.get("target_id", "")).strip()
+                    child_order = max(
+                            int(operation.get(name, 0) or 0)
+                            for name in (
+                                "terminal_revision",
+                                "reconciled_revision",
+                                "started_revision",
+                                "accepted_revision",
+                            )
+                        )
+                    child_key = ("upgrade", child_target_key or "__default__")
+                    previous = operation_receipts.get(child_key)
+                    if previous is None or child_order >= previous[0]:
+                        operation_receipts[child_key] = (child_order, child_receipt)
+                continue
         facts = _selected_facts(stage, value, inputs)
         raw_diagnostic_receipt = operation.get("diagnostic_receipt")
         if stage == "diagnosis" and isinstance(raw_diagnostic_receipt, Mapping):

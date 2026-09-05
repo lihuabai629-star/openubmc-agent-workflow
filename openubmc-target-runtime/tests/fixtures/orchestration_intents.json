@@ -5,7 +5,7 @@
       "id": "diagnosis-only",
       "intent": "diagnosis-only",
       "entry_domain": "debug",
-      "expected_steps": ["debug:diagnosis"]
+      "expected_steps": ["debug:diagnosis", "debug:accept"]
     },
     {
       "id": "diagnose-and-fix",
@@ -60,7 +60,8 @@
       "entry_domain": "log_analyzer",
       "expected_steps": [
         "log_analyzer:bundle",
-        "debug:diagnosis"
+        "debug:diagnosis",
+        "debug:accept"
       ]
     }
   ]

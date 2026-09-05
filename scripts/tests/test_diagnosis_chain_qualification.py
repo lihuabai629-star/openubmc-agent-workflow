@@ -68,6 +68,7 @@ class DiagnosisChainQualificationTests(unittest.TestCase):
         self.assertEqual(report["recovery_path"]["gate"], "developer.change")
         self.assertTrue(report["recovery_path"]["gate_binding_complete"])
         self.assertTrue(report["recovery_path"]["accepted_receipt_present"])
+        self.assertTrue(report["recovery_path"]["typed_diagnosis_verified"])
         self.assertEqual(report["recovery_path"]["outcome"], "completed")
         self.assertEqual(
             report["recovery_path"]["acceptance"],

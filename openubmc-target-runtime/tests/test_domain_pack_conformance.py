@@ -598,6 +598,8 @@ class DomainPackConformanceTests(unittest.TestCase):
             executor.artifact_metadata_for_phase("build.artifact"),
             {
                 "mutation": True,
+                "owner_skill": "test-domain-pack",
+                "timeout_seconds": 10,
                 "closeout_stage": "upgrade",
                 "artifact_phase": "build.artifact",
                 "artifact_kind": "openubmc-hpm",
@@ -1343,7 +1345,8 @@ class DomainPackConformanceTests(unittest.TestCase):
             service.close()
             operator.close()
 
-        self.assertEqual(completed["state"], "completed", completed)
+        self.assertEqual(completed["state"], "waiting_response", completed)
+        self.assertEqual(completed["gate"]["name"], "diagnosis.acceptance")
         self.assertEqual(len(calls), 1)
         self.assertEqual(registered, {"debug_run", "live_patch_run"})
         self.assertTrue(conformance["valid"])
@@ -1457,7 +1460,8 @@ class DomainPackConformanceTests(unittest.TestCase):
         }
         self.assertIn("fake_health", capabilities)
         self.assertIn("fake_health", status["domain_pack_conformance"]["operations"])
-        self.assertEqual(completed["state"], "completed", completed)
+        self.assertEqual(completed["state"], "waiting_response", completed)
+        self.assertEqual(completed["gate"]["name"], "diagnosis.acceptance")
         self.assertEqual(
             completed["diagnostic_receipt"]["operation"],
             "fake_health",

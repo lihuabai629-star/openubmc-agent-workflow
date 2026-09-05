@@ -30,9 +30,12 @@ class WorkflowKernelTests(unittest.TestCase):
         self.assertEqual(tuple(required), descriptor.required_fields)
         self.assertEqual(
             descriptor.required_fields,
-            ("root_cause", "evidence_ids", "known_gaps"),
+            (
+                "root_cause", "evidence_ids", "causal_chain", "code_owner",
+                "contradictions", "remaining_gaps", "verification_status",
+            ),
         )
-        self.assertEqual(descriptor.allow_empty_list_fields, ("known_gaps",))
+        self.assertEqual(descriptor.allow_empty_list_fields, ("contradictions", "remaining_gaps"))
         self.assertEqual(
             DEFAULT_PHASE_REGISTRY.validate_receipt(
                 "diagnosis.acceptance",
@@ -40,25 +43,33 @@ class WorkflowKernelTests(unittest.TestCase):
                 receipt={
                     "root_cause": "bounded root cause",
                     "evidence_ids": ["evidence-1"],
-                    "known_gaps": [],
+                    "causal_chain": ["the fixture component maps the wrong slot"],
+                    "code_owner": "general_hardware",
+                    "contradictions": [],
+                    "remaining_gaps": [],
+                    "verification_status": "verified",
                 },
             ),
             descriptor,
         )
         for invalid in (None, "", ()):
-            with self.subTest(invalid_known_gaps=invalid):
-                with self.assertRaisesRegex(ValueError, "known_gaps"):
+            with self.subTest(invalid_remaining_gaps=invalid):
+                with self.assertRaisesRegex(ValueError, "remaining_gaps"):
                     DEFAULT_PHASE_REGISTRY.validate_receipt(
                         "diagnosis.acceptance",
                         producer="openubmc-debug",
                         receipt={
                             "root_cause": "bounded root cause",
                             "evidence_ids": ["evidence-1"],
-                            "known_gaps": invalid,
+                            "causal_chain": ["the fixture component maps the wrong slot"],
+                            "code_owner": "general_hardware",
+                            "contradictions": [],
+                            "remaining_gaps": invalid,
+                            "verification_status": "verified",
                         },
                     )
 
-    def test_narrow_debug_collect_is_one_versioned_step(self) -> None:
+    def test_narrow_debug_collect_requires_explicit_diagnosis_acceptance(self) -> None:
         projection = {
             "intent": "diagnosis-only",
             "entry_domain": "debug",
@@ -69,11 +80,14 @@ class WorkflowKernelTests(unittest.TestCase):
 
         definition = DEFAULT_WORKFLOW_KERNEL.definition_for(projection)
 
-        self.assertEqual(definition.version, 2)
+        self.assertEqual(definition.version, 3)
         self.assertEqual(definition.definition_id, "diagnosis-only.debug-collect")
         self.assertEqual(
             [(step.kind, step.name, step.owner) for step in definition.steps],
-            [("operation", "debug_collect", "openubmc-debug")],
+            [
+                ("operation", "debug_collect", "openubmc-debug"),
+                ("phase", "diagnosis.acceptance", "openubmc-debug"),
+            ],
         )
         self.assertEqual(
             WorkflowDefinition.from_public_dict(
@@ -124,7 +138,7 @@ class WorkflowKernelTests(unittest.TestCase):
         }
 
         pinned = DEFAULT_WORKFLOW_KERNEL.definition_for(projection)
-        self.assertEqual([step.name for step in pinned.steps], ["debug_collect"])
+        self.assertEqual([step.name for step in pinned.steps], ["debug_collect", "diagnosis.acceptance"])
 
         current["steps"][0]["name"] = "debug_run"
         with self.assertRaisesRegex(ValueError, "fingerprint mismatch"):

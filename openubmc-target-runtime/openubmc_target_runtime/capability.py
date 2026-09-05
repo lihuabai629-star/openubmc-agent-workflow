@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 import hashlib
+import ipaddress
 import json
 from pathlib import Path
 import re
@@ -17,7 +18,7 @@ from .catalog import (
     validate_json_schema,
 )
 from .contracts import RUNTIME_API_VERSION
-from .mutation import MutationJournal, MutationRecoveryDisposition
+from .mutation import MutationJournal, MutationRecoveryDisposition, mutation_journal_operation_status
 from .semantic_runtime import ArtifactRef
 
 
@@ -209,6 +210,9 @@ class DomainReceipt:
     evidence_ids: tuple[str, ...] = ()
     suggested_events: tuple[Mapping[str, object], ...] = ()
     outcome: Mapping[str, object] | None = None
+    # Process-local attestations populated by an adapter's journal-store
+    # authenticator. Mapping/JSON receipts cannot provide these bindings.
+    authenticated_journal_bindings: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in _OUTCOME_STATUSES:
@@ -576,6 +580,153 @@ def _mutation_journal_receipt_valid(
     return True
 
 
+def _batch_target_identity(raw: Mapping[str, object], common: Mapping[str, object],
+                           index: int) -> tuple[str, str, int, str]:
+    target_id = raw.get("target_id", f"target-{index}")
+    host = raw.get("ip", common.get("ip", ""))
+    port = raw.get("redfish_port", common.get("redfish_port", 443))
+    if not isinstance(target_id, (str, int)) or isinstance(target_id, bool):
+        raise ValueError("invalid batch target ID")
+    target_id = str(target_id).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", target_id):
+        raise ValueError("invalid batch target ID")
+    if not isinstance(host, (str, int)) or isinstance(host, bool):
+        raise ValueError("invalid batch target host")
+    host = str(host).strip()
+    candidate = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        canonical_host = ipaddress.ip_address(candidate).compressed.lower()
+    except ValueError:
+        canonical_host = candidate.rstrip(".").lower()
+    if not canonical_host or type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("invalid batch target endpoint")
+    suffix = hashlib.sha256(f"{target_id}\0{canonical_host}\0{port}".encode()).hexdigest()[:20]
+    return target_id, canonical_host, port, suffix
+
+
+def _batch_mutation_receipt_valid(action: DomainAction, receipt: DomainReceipt,
+                                  digest: str) -> bool:
+    requested = action.arguments.get("targets")
+    returned = receipt.value.get("targets")
+    if not isinstance(requested, list) or not requested or not isinstance(returned, list):
+        return False
+    if len(requested) != len(returned) or len(requested) > 128:
+        return False
+    if receipt.value.get("batch_operation_id") != action.context.operation_id:
+        return False
+    seen_ids: set[str] = set()
+    seen_endpoints: set[tuple[str, int]] = set()
+    seen_journals: set[str] = set()
+    counts = {name: 0 for name in ("completed", "failed", "unknown", "skipped")}
+    expected_epochs: dict[str, int] = {}
+    for index, (raw, item) in enumerate(zip(requested, returned, strict=True), start=1):
+        if not isinstance(raw, Mapping) or not isinstance(item, Mapping):
+            return False
+        try:
+            target_id, host, port, suffix = _batch_target_identity(raw, action.arguments, index)
+            returned_id, returned_host, returned_port, _ = _batch_target_identity(item, {}, index)
+        except ValueError:
+            return False
+        if target_id in seen_ids or (host, port) in seen_endpoints:
+            return False
+        seen_ids.add(target_id)
+        seen_endpoints.add((host, port))
+        if (returned_id, returned_host, returned_port) != (target_id, host, port):
+            return False
+        status = item.get("status")
+        if not isinstance(status, str) or status not in counts:
+            return False
+        counts[status] += 1
+        expected_id = f"{action.context.operation_id}:target-{suffix}"
+        if len(expected_id) > 128:
+            expected_id = f"{action.context.operation_id[:80]}:target-{suffix}"
+        if item.get("requested_operation_id", item.get("operation_id")) != expected_id:
+            return False
+        result = item.get("result")
+        if status == "completed":
+            epoch = result.get("epoch_after") if isinstance(result, Mapping) else item.get("epoch_after")
+            if type(epoch) is not int or epoch < 1:
+                return False
+            expected_epochs[target_id] = epoch
+        candidate = result.get("journal") if isinstance(result, Mapping) else item.get("journal")
+        if isinstance(result, Mapping) and item.get("journal") != candidate:
+            return False
+        if not isinstance(candidate, Mapping):
+            if status not in {"failed", "unknown", "skipped"} or item.get("operation_id") != expected_id:
+                return False
+            continue
+        journal_id = str(candidate.get("operation_id", ""))
+        # Run Effects keep their frozen child identity across recovery. A
+        # backend's direct batch API may reconcile an older rollout, but its
+        # self-reported journal ID cannot authenticate this Run's Effect.
+        if journal_id != expected_id:
+            if (expected_id, journal_id) not in receipt.authenticated_journal_bindings:
+                return False
+        if item.get("operation_id") != journal_id:
+            return False
+        if journal_id in seen_journals:
+            return False
+        seen_journals.add(journal_id)
+        if not _mutation_journal_receipt_valid(
+            candidate, expected_operation_id=journal_id, expected_action="upgrade",
+            expected_task_id=action.context.task_id, expected_artifact_digest=digest,
+        ):
+            return False
+        if candidate.get("schema") != f"{RUNTIME_API_VERSION}/mutation-journal":
+            return False
+        if candidate.get("target_fingerprint") != item.get("target_fingerprint"):
+            return False
+        if isinstance(result, Mapping) and (
+            result.get("operation_id") != journal_id
+            or result.get("target_fingerprint") != item.get("target_fingerprint")
+            or (
+                result.get("artifact_sha256") is not None
+                and str(result.get("artifact_sha256")).lower().removeprefix("sha256:")
+                != digest
+            )
+            or (
+                result.get("product_version") is not None
+                and str(result.get("product_version"))
+                != str(action.arguments.get("product_version", ""))
+            )
+        ):
+            return False
+        journal_status = mutation_journal_operation_status(candidate, action="upgrade")
+        expected_status = (
+            "completed" if journal_status == "completed" else "failed" if journal_status == "failed"
+            else "unknown" if candidate.get("effects_started") is True else "failed"
+        )
+        if status != "skipped" and status != expected_status:
+            return False
+    expected_counts = {"total": len(returned), "succeeded": counts["completed"],
+                       "failed": counts["failed"], "unknown": counts["unknown"],
+                       "skipped": counts["skipped"]}
+    if any(type(receipt.value.get(k)) is not int or receipt.value.get(k) != v
+           for k, v in expected_counts.items()):
+        return False
+    epochs = receipt.value.get("target_epochs")
+    if (
+        not isinstance(epochs, Mapping)
+        or any(type(epoch) is not int for epoch in epochs.values())
+        or dict(epochs) != expected_epochs
+        or type(receipt.value.get("epoch_after")) is not int
+        or receipt.value.get("epoch_after") != max(expected_epochs.values(), default=0)
+    ):
+        return False
+    expected_status = (
+        "completed" if counts["completed"] == len(returned)
+        else "unknown" if counts["unknown"] == len(returned)
+        else "failed" if counts["failed"] == len(returned) else "partial"
+    )
+    expected_receipt_status = "succeeded" if expected_status == "completed" else (
+        "mutation_outcome_unknown" if counts["unknown"] else "failed"
+    )
+    return (receipt.value.get("status") == expected_status
+            and receipt.value.get("ok") is (expected_status == "completed")
+            and receipt.value.get("outcome_status") == expected_receipt_status
+            and receipt.status == expected_receipt_status)
+
+
 def mutation_receipt_verifier(
     action: DomainAction,
     receipt: DomainReceipt,
@@ -593,6 +744,8 @@ def mutation_receipt_verifier(
         .lower()
         .removeprefix("sha256:")
     )
+    if action.operation == "upgrade_batch":
+        return _batch_mutation_receipt_valid(action, receipt, expected_artifact_digest)
     if not isinstance(journal, Mapping):
         executions = receipt.value.get("executions")
         if (
@@ -1323,6 +1476,8 @@ class DomainExecutor:
             return {}
         return {
             "mutation": pack.effect_class is EffectClass.RECONCILABLE_MUTATION,
+            "owner_skill": pack.descriptor.owner_skill,
+            "timeout_seconds": pack.descriptor.timeout_seconds,
             "closeout_stage": pack.closeout_stage,
             "artifact_phase": pack.artifact_phase,
             "artifact_kind": (

@@ -9,6 +9,7 @@ import hashlib
 import json
 
 from .capabilities import CAPABILITY_ALIASES
+from .comparison_receipt import build_comparison_receipt
 from .comparison_targets import comparison_target_identities
 from .contracts import RUNTIME_API_VERSION
 from .diagnostic_request import DiagnosticRequestPlan
@@ -1872,12 +1873,27 @@ def _comparison_results(
             )
     comparison = _mapping(value.get("comparison"))
     if comparison:
-        comparison_status = str(comparison.get("status", "")).strip().lower()
-        comparison_value = dict(comparison)
-        comparison_value.setdefault(
-            "content_complete",
-            comparison_status in {"complete", "passed", "ok"},
+        if not expected_targets:
+            return [{
+                "result_id": "target-scope",
+                "kind": "diagnostic-target-scope",
+                "request": "Runtime-owned multi-target scope",
+                "status": "not_checked",
+                "gap": "runtime_target_scope_not_visible",
+                "evidence_ids": evidence_ids,
+            }]
+        comparison_receipt = build_comparison_receipt(
+            value,
+            arguments,
+            evidence_ids,
+            source_results_complete=bool(results) and all(
+                item.get("status") == "available"
+                and _diagnostic_result_content_complete(item)
+                for item in results
+            ),
         )
+        comparison_value = comparison_receipt.to_public_dict()
+        comparison_value["content_complete"] = comparison_receipt.status == "complete"
         result = _plain_result(
             result_id="comparison",
             kind="diagnostic-comparison",
@@ -1886,12 +1902,9 @@ def _comparison_results(
             observed_at=value.get("observed_at"),
             evidence_ids=evidence_ids,
         )
-        if comparison_status not in {"complete", "passed", "ok"}:
+        if comparison_receipt.status != "complete":
             result["status"] = "unavailable"
-            result["gap"] = _bounded_text(
-                value.get("error") or f"comparison_{comparison_status or 'incomplete'}",
-                192,
-            )
+            result["gap"] = f"comparison_{comparison_receipt.status}"
         results.append(result)
     elif len(expected_targets) >= 2:
         results.append(

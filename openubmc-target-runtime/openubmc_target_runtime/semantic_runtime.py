@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .effect_activity import operation_activity
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -20,6 +22,7 @@ from .diagnostic_receipt import (
     latest_diagnostic_receipt,
 )
 from .diagnostic_request import DiagnosticRequestPlan
+from .diagnosis_record import DiagnosisRecord, accepted_diagnosis_record
 from .incident import incident_recovery_policy
 from .mdb_query import MDB_QUERY_CORRECTION, is_read_only_mdb_query
 
@@ -1989,6 +1992,7 @@ class RunTurn:
     observation_ref: ObservationRef | None = None
     outcome_recorded: bool = False
     diagnostic_receipt: DiagnosticReceipt | None = None
+    diagnosis_record: DiagnosisRecord | None = None
     response_required: bool = False
     progress: Mapping[str, object] = field(default_factory=dict)
 
@@ -2047,6 +2051,11 @@ class RunTurn:
                 if isinstance(raw_diagnostic_receipt, Mapping)
                 else None
             ),
+            diagnosis_record=(
+                DiagnosisRecord.from_mapping(value["diagnosis_record"])
+                if isinstance(value.get("diagnosis_record"), Mapping)
+                else None
+            ),
             response_required=bool(value.get("response_required", False)),
             progress=(
                 dict(value.get("progress", {}))
@@ -2085,6 +2094,8 @@ class RunTurn:
             result["diagnostic_receipt"] = (
                 self.diagnostic_receipt.to_public_dict()
             )
+        if self.diagnosis_record is not None:
+            result["diagnosis_record"] = self.diagnosis_record.to_public_dict()
         if self.response_required:
             result["response_required"] = True
         if self.progress:
@@ -2217,6 +2228,8 @@ def project_run_turn(
             or (base_turn.outcome_recorded if base_turn is not None else False)
         ),
         diagnostic_receipt=diagnostic_receipt,
+        diagnosis_record=accepted_diagnosis_record(projection),
+        progress=operation_activity(projection),
     )
 
 

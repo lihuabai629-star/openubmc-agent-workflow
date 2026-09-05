@@ -64,7 +64,7 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertTrue(storm["same_key_different_hash_rejected"])
         gate = report["scenarios"]["gate_concurrency"]
         self.assertEqual(gate["status"], "passed")
-        self.assertEqual(gate["gate_submissions"], 1)
+        self.assertEqual(gate["gate_submissions"], 2)
         self.assertEqual(gate["outcome_events"], 1)
         self.assertEqual(gate["unique_turns"], 1)
         self.assertEqual(gate["turn_states"], {"completed": 8})

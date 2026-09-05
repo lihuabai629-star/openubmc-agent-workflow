@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import re
@@ -13,7 +13,7 @@ from .operation_contracts import DEFAULT_OPERATION_CONTRACTS
 
 
 WORKFLOW_DEFINITION_SCHEMA = f"{RUNTIME_API_VERSION}/workflow-definition-v1"
-WORKFLOW_DEFINITION_VERSION = 2
+WORKFLOW_DEFINITION_VERSION = 3
 _STEP_KINDS = frozenset({"operation", "phase"})
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
@@ -172,6 +172,7 @@ class WorkflowStepDefinition:
     name: str
     owner: str
     receipt_schema: str = ""
+    target_id: str = ""
 
     def __post_init__(self) -> None:
         if not _SAFE_ID.fullmatch(self.step_id):
@@ -184,6 +185,8 @@ class WorkflowStepDefinition:
             raise ValueError("workflow step owner must be a safe identifier")
         if self.kind == "phase" and not self.receipt_schema:
             raise ValueError("phase workflow steps require a receipt schema")
+        if self.target_id and not _SAFE_ID.fullmatch(self.target_id):
+            raise ValueError("workflow step target_id must be a safe identifier")
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -192,6 +195,7 @@ class WorkflowStepDefinition:
             "name": self.name,
             "owner": self.owner,
             "receipt_schema": self.receipt_schema,
+            **({"target_id": self.target_id} if self.target_id else {}),
         }
 
     @classmethod
@@ -204,6 +208,7 @@ class WorkflowStepDefinition:
             name=str(value.get("name", "")),
             owner=str(value.get("owner", "")),
             receipt_schema=str(value.get("receipt_schema", "")),
+            target_id=str(value.get("target_id", "")),
         )
 
 
@@ -439,6 +444,8 @@ class WorkflowRegistry:
                 ).steps
             elif normalized_intent == "diagnosis-only":
                 raw = (("operation", operation),)
+                if domain != "log_analyzer" and "diagnosis.acceptance" in self.phases.names():
+                    raw += (("phase", "diagnosis.acceptance"),)
             elif operation in self.strict_entry_operations:
                 raise ValueError(
                     "workflow entry operation has no typed route: " + operation
@@ -639,6 +646,29 @@ class WorkflowDefinitions:
     def __init__(self, registry: WorkflowRegistry) -> None:
         self.registry = registry
 
+    @staticmethod
+    def bind_target_scope(definition: WorkflowDefinition,
+                          targets: Sequence[Mapping[str, object]]) -> WorkflowDefinition:
+        """Freeze one rollout and distinct fresh verification for every target."""
+        if definition.intent != "upgrade-and-verify" or definition.entry_operation != "upgrade_batch" or len(targets) < 2:
+            return definition
+        if not any(step.name in {"upgrade_run", "upgrade_batch"} for step in definition.steps):
+            return definition
+        steps: list[WorkflowStepDefinition] = []
+        upgraded = False
+        for step in definition.steps:
+            if step.name in {"upgrade_run", "upgrade_batch"}:
+                step = replace(step, name="upgrade_batch")
+                upgraded = True
+            if step.name == "debug_collect" and upgraded:
+                for target in targets:
+                    target_id = str(target.get("target_id", ""))
+                    steps.append(replace(step, target_id=target_id,
+                                         step_id=f"step-{len(steps) + 1:02d}-debug_collect"))
+            else:
+                steps.append(replace(step, step_id=f"step-{len(steps) + 1:02d}-{step.name}"))
+        return replace(definition, definition_id=definition.definition_id + ".batch", steps=tuple(steps))
+
     def definition_for(self, projection: Mapping[str, object]) -> WorkflowDefinition:
         recorded = projection.get("workflow_definition")
         if isinstance(recorded, Mapping) and recorded:
@@ -647,12 +677,14 @@ class WorkflowDefinitions:
         normalized_intent = intent.strip().lower().replace("_", "-")
         if normalized_intent in {"", "diagnosis-only"}:
             intent = self.registry.infer_legacy_intent(projection) or intent
-        return self.registry.resolve(
+        definition = self.registry.resolve(
             intent=intent,
             entry_domain=str(projection.get("entry_domain", "")),
             entry_operation=str(projection.get("entry_operation", "")),
             delivery_strategy=str(projection.get("delivery_strategy", "")),
         )
+        targets = projection.get("targets", [])
+        return self.bind_target_scope(definition, targets if isinstance(targets, list) else [])
 
     def step_identity(
         self,
@@ -708,13 +740,16 @@ DEFAULT_PHASE_REGISTRY = PhaseRegistry(
             "diagnosis.acceptance",
             "openubmc-debug",
             f"{RUNTIME_API_VERSION}/diagnosis-acceptance-receipt-v1",
-            ("root_cause", "evidence_ids", "known_gaps"),
+            (
+                "root_cause", "evidence_ids", "causal_chain", "code_owner",
+                "contradictions", "remaining_gaps", "verification_status",
+            ),
             "debug",
             "accept",
             "diagnosis",
             ("diagnosis", "diagnosis.result"),
             ("openubmc-debug-skill",),
-            ("known_gaps",),
+            ("contradictions", "remaining_gaps"),
         ),
         PhaseDescriptor(
             "developer.change",
@@ -753,7 +788,10 @@ DEFAULT_WORKFLOW_REGISTRY = WorkflowRegistry(
     routes=(
         WorkflowRoute(
             "bundle-and-diagnose",
-            (("operation", "log_bundle_collect"), ("operation", "debug_run")),
+            (
+                ("operation", "log_bundle_collect"), ("operation", "debug_run"),
+                ("phase", "diagnosis.acceptance"),
+            ),
             legacy_operations=frozenset({"log_bundle_collect", "debug_run"}),
         ),
         WorkflowRoute(
@@ -771,6 +809,11 @@ DEFAULT_WORKFLOW_REGISTRY = WorkflowRegistry(
             "upgrade-and-verify",
             (("operation", "upgrade_run"), ("operation", "debug_collect")),
             legacy_operations=frozenset({"upgrade_run"}),
+        ),
+        WorkflowRoute(
+            "upgrade-and-verify",
+            (("operation", "upgrade_batch"), ("operation", "debug_collect")),
+            entry_operation="upgrade_batch",
         ),
         WorkflowRoute(
             "diagnose-and-fix",
@@ -811,7 +854,7 @@ DEFAULT_WORKFLOW_REGISTRY = WorkflowRegistry(
         ),
         WorkflowRoute(
             "diagnosis-only",
-            (("operation", "debug_run"),),
+            (("operation", "debug_run"), ("phase", "diagnosis.acceptance")),
         ),
     ),
 )

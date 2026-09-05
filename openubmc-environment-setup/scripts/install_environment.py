@@ -955,7 +955,7 @@ def iter_runtime_source_files(package_root: Path):
     if not root.is_dir() or not (root / "__init__.py").is_file():
         raise SetupError(f"canonical Target Runtime is unavailable: {root}")
     found = False
-    for path in sorted(root.rglob("*.py")):
+    for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
         if "__pycache__" in relative.parts:
             continue
@@ -963,6 +963,10 @@ def iter_runtime_source_files(package_root: Path):
             raise SetupError(
                 f"Target Runtime source must not contain symbolic links: {relative}"
             )
+        if path.is_file() and path.suffix in {".pyc", ".pyo", ".so", ".pyd", ".dll"}:
+            raise SetupError(f"Target Runtime contains an unbound executable: {relative}")
+        if path.suffix != ".py":
+            continue
         if path.is_file():
             found = True
             yield path, relative
@@ -980,6 +984,46 @@ def runtime_content_digest(package_root: Path) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return f"sha256:{digest.hexdigest()}"
+
+
+def file_content_digest(path: Path, *, domain: bytes = _RUNTIME_DIGEST_DOMAIN) -> str:
+    """Return a stable digest for one release-owned source file."""
+    if path.is_symlink() or not path.is_file():
+        raise SetupError(f"release source file is unavailable: {path}")
+    digest = hashlib.sha256(domain)
+    relative = path.name.encode("utf-8")
+    content = path.read_bytes()
+    digest.update(len(relative).to_bytes(8, "big"))
+    digest.update(relative)
+    digest.update(len(content).to_bytes(8, "big"))
+    digest.update(content)
+    return f"sha256:{digest.hexdigest()}"
+
+
+_COMPOSITION_ROOTS = (
+    "openubmc-target-runtime", *(path for _name, path in SKILL_BUNDLE),
+)
+_COMPOSITION_IGNORED = frozenset({"__pycache__", "tests", "node_modules", ".git"})
+
+
+def runtime_composition_files(source: Path) -> dict[str, str]:
+    """Bind the Python loaders, domain implementations and Skill instructions."""
+    files: dict[str, str] = {}
+    for name in _COMPOSITION_ROOTS:
+        root = source / name
+        if root.is_symlink():
+            raise SetupError(f"Runtime composition contains a symlink: {name}")
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(source)
+            if _COMPOSITION_IGNORED.intersection(relative.parts):
+                continue
+            if path.is_symlink():
+                raise SetupError(f"Runtime composition contains a symlink: {relative}")
+            # Bind every release-owned file. Python may load sourceless bytecode
+            # or an ABI extension before a same-named source module.
+            if path.is_file():
+                files[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return files
 
 
 def read_runtime_api_version(package_root: Path) -> str:
@@ -1035,6 +1079,13 @@ def build_runtime_plan(
         "launcher_path": str(runtime_launcher_path(home)),
         "manifest_path": str(runtime_manifest_path(home)),
         "mcp_entrypoint": str(mcp_entrypoint),
+        "mcp_entrypoint_digest": (
+            "planned"
+            if allow_missing_source and not source.exists()
+            else file_content_digest(mcp_entrypoint, domain=b"openubmc-mcp-entrypoint-v1" + bytes([0]))
+        ),
+        "composition_source": str(source),
+        "composition_files": runtime_composition_files(source),
     }
 
 
@@ -1053,13 +1104,20 @@ import os
 from pathlib import Path
 import runpy
 import sys
+import tempfile
 
 PACKAGE_ROOT = Path({package})
 MCP_ENTRYPOINT = Path({entrypoint})
 EXPECTED_API = {expected_api}
 EXPECTED_DIGEST = {expected_digest}
+EXPECTED_ENTRYPOINT_DIGEST = {json.dumps(plan.get("mcp_entrypoint_digest", "planned"))}
+COMPOSITION_SOURCE = Path({json.dumps(plan.get("composition_source", ""))})
+COMPOSITION_FILES = {repr(dict(sorted(plan.get("composition_files", {}).items())))}
+COMPOSITION_ROOTS = {repr(_COMPOSITION_ROOTS)}
 SOURCE_COMMIT = {source_commit}
 DIGEST_DOMAIN = b"openubmc-target-runtime-content-v1\\0"
+RUNTIME_CONTENT = {{}}
+ENTRYPOINT_CONTENT = b""
 
 
 def fail(reason: str) -> None:
@@ -1092,6 +1150,14 @@ def runtime_digest() -> str:
     if not PACKAGE_ROOT.is_dir() or not (PACKAGE_ROOT / "__init__.py").is_file():
         fail("Runtime package is missing")
     digest = hashlib.sha256(DIGEST_DOMAIN)
+    for path in PACKAGE_ROOT.rglob("*"):
+        relative = path.relative_to(PACKAGE_ROOT)
+        if "__pycache__" in relative.parts:
+            continue
+        if path.is_symlink():
+            fail("Runtime package contains a symbolic link")
+        if path.is_file() and path.suffix in {{".pyc", ".pyo", ".so", ".pyd", ".dll"}}:
+            fail("Runtime package contains an unbound executable: " + str(relative))
     files = [
         path for path in sorted(PACKAGE_ROOT.rglob("*.py"))
         if "__pycache__" not in path.relative_to(PACKAGE_ROOT).parts
@@ -1103,6 +1169,7 @@ def runtime_digest() -> str:
             fail("Runtime package contains an invalid source path")
         relative = path.relative_to(PACKAGE_ROOT).as_posix().encode("utf-8")
         content = path.read_bytes()
+        RUNTIME_CONTENT[path.relative_to(PACKAGE_ROOT).as_posix()] = content
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
         digest.update(len(content).to_bytes(8, "big"))
@@ -1110,12 +1177,84 @@ def runtime_digest() -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def entrypoint_digest() -> str:
+    global ENTRYPOINT_CONTENT
+    if MCP_ENTRYPOINT.is_symlink() or not MCP_ENTRYPOINT.is_file():
+        fail("MCP entrypoint is missing")
+    digest = hashlib.sha256(b"openubmc-mcp-entrypoint-v1\\0")
+    relative = MCP_ENTRYPOINT.name.encode("utf-8")
+    content = MCP_ENTRYPOINT.read_bytes()
+    ENTRYPOINT_CONTENT = content
+    digest.update(len(relative).to_bytes(8, "big"))
+    digest.update(relative)
+    digest.update(len(content).to_bytes(8, "big"))
+    digest.update(content)
+    return "sha256:" + digest.hexdigest()
+
+
 if runtime_api() != EXPECTED_API:
     fail("Runtime API mismatch")
 if runtime_digest() != EXPECTED_DIGEST:
     fail("Runtime content digest mismatch")
-if not MCP_ENTRYPOINT.is_file():
-    fail("MCP entrypoint is missing")
+actual_entrypoint_digest = entrypoint_digest()
+if EXPECTED_ENTRYPOINT_DIGEST != "planned" and actual_entrypoint_digest != EXPECTED_ENTRYPOINT_DIGEST:
+    fail("MCP entrypoint content digest mismatch")
+actual_composition = {{}}
+composition_content = {{}}
+for name in COMPOSITION_ROOTS:
+    root = COMPOSITION_SOURCE / name
+    if root.is_symlink():
+        fail("Runtime composition contains a symlink: " + name)
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(COMPOSITION_SOURCE)
+        if {{"__pycache__", "tests", "node_modules", ".git"}}.intersection(relative.parts):
+            continue
+        if path.is_symlink():
+            fail("Runtime composition contains a symlink: " + str(relative))
+        if path.is_file():
+            content = path.read_bytes()
+            composition_content[relative.as_posix()] = content
+            actual_composition[relative.as_posix()] = hashlib.sha256(content).hexdigest()
+if actual_composition != COMPOSITION_FILES:
+    changed = sorted(key for key in set(actual_composition) | set(COMPOSITION_FILES)
+                     if actual_composition.get(key) != COMPOSITION_FILES.get(key))
+    fail("Runtime composition mismatch: " + ", ".join(changed[:8]))
+
+# Execute only the exact bytes that passed the checks above. Helpers loaded
+# later by path or subprocess must use the same snapshot as the MCP entrypoint.
+# Re-reading the original paths after validation would reopen a drift window.
+_composition_snapshot = tempfile.TemporaryDirectory(prefix="openubmc-runtime-composition-")
+snapshot_root = Path(_composition_snapshot.name)
+for relative, content in composition_content.items():
+    destination = snapshot_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(content)
+    destination.chmod(0o500)
+snapshot_package = snapshot_root / "installed-runtime" / "openubmc_target_runtime"
+for relative, content in RUNTIME_CONTENT.items():
+    destination = snapshot_package / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(content)
+    destination.chmod(0o400)
+try:
+    entrypoint_relative = MCP_ENTRYPOINT.relative_to(COMPOSITION_SOURCE)
+except ValueError:
+    entrypoint_relative = Path("entrypoint") / MCP_ENTRYPOINT.name
+snapshot_entrypoint = snapshot_root / entrypoint_relative
+snapshot_entrypoint.parent.mkdir(parents=True, exist_ok=True)
+if snapshot_entrypoint.exists():
+    if snapshot_entrypoint.read_bytes() != ENTRYPOINT_CONTENT:
+        fail("MCP entrypoint changed during composition validation")
+else:
+    snapshot_entrypoint.write_bytes(ENTRYPOINT_CONTENT)
+snapshot_entrypoint.chmod(0o400)
+PACKAGE_ROOT = snapshot_package
+MCP_ENTRYPOINT = snapshot_entrypoint
+
+# Never import stale sourceless bytecode from a release source tree.
+sys.dont_write_bytecode = True
+_fresh_pycache_root = tempfile.TemporaryDirectory(prefix="openubmc-runtime-pycache-")
+sys.pycache_prefix = _fresh_pycache_root.name
 
 os.environ["OPENUBMC_MCP_SOURCE_COMMIT"] = SOURCE_COMMIT
 
@@ -4409,7 +4548,15 @@ def inspect_runtime_installation(state: dict[str, object]) -> dict[str, object]:
     try:
         actual_api = read_runtime_api_version(package)
         actual_digest = runtime_content_digest(package)
+        actual_entrypoint_digest = file_content_digest(
+            Path(str(recorded.get("mcp_entrypoint", ""))),
+            domain=b"openubmc-mcp-entrypoint-v1" + bytes([0]),
+        )
         manifest_document = json.loads(manifest.read_text(encoding="utf-8"))
+        actual_composition = runtime_composition_files(
+            Path(str(recorded.get("composition_source", "")))
+        )
+        launcher_content = launcher.read_text(encoding="utf-8")
     except (SetupError, OSError, UnicodeError, json.JSONDecodeError) as error:
         return {
             "healthy": False,
@@ -4429,6 +4576,9 @@ def inspect_runtime_installation(state: dict[str, object]) -> dict[str, object]:
             "package_path",
             "launcher_path",
             "mcp_entrypoint",
+            "mcp_entrypoint_digest",
+            "composition_source",
+            "composition_files",
         )
     )
     launcher_ready = launcher.is_file() and not launcher.is_symlink() and os.access(
@@ -4438,8 +4588,11 @@ def inspect_runtime_installation(state: dict[str, object]) -> dict[str, object]:
         expected_api == TARGET_RUNTIME_API_VERSION
         and actual_api == expected_api
         and actual_digest == expected_digest
+        and actual_entrypoint_digest == str(recorded.get("mcp_entrypoint_digest", ""))
         and manifest_matches
         and launcher_ready
+        and launcher_content == render_runtime_launcher(recorded)
+        and actual_composition == recorded.get("composition_files")
     )
     detail = (
         "ok"
@@ -4452,6 +4605,7 @@ def inspect_runtime_installation(state: dict[str, object]) -> dict[str, object]:
         "matches_installed_state": matches,
         "api_version": actual_api,
         "content_digest": actual_digest,
+        "mcp_entrypoint_digest": actual_entrypoint_digest,
         "expected_api_version": expected_api,
         "expected_content_digest": expected_digest,
         "package_path": str(package),

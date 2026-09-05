@@ -24,6 +24,9 @@ from openubmc_target_runtime import (  # noqa: E402
 )
 
 
+from diagnosis_fixtures import persist_terminal_diagnosis
+
+
 class _Task:
     def __init__(self, task_id: str) -> None:
         self.task_id = task_id
@@ -173,7 +176,8 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertEqual(resumed["ip"], "192.0.2.62")
         self.assertEqual(backend.calls[-1][0], "debug_run")
         self.assertEqual(backend.calls[-1][1]["ip"], "192.0.2.62")
-        self.assertTrue(resumed.envelope["continuation"]["workflow_complete"])
+        self.assertFalse(resumed.envelope["continuation"]["workflow_complete"])
+        self.assertEqual(resumed.envelope["continuation"]["required_phase_type"], "diagnosis.acceptance")
 
 
 
@@ -219,7 +223,8 @@ class WorkflowRegressionTests(unittest.TestCase):
             operations[0]["workflow_execution_id"],
             operations[1]["workflow_execution_id"],
         )
-        self.assertTrue(second.envelope["continuation"]["workflow_complete"])
+        self.assertFalse(second.envelope["continuation"]["workflow_complete"])
+        self.assertEqual(second.envelope["continuation"]["required_phase_type"], "diagnosis.acceptance")
 
 
 
@@ -711,12 +716,23 @@ class WorkflowRegressionTests(unittest.TestCase):
                         {
                             "status": "completed",
                             "summary": "done",
+                            "diagnostic_receipt": {"receipt_id": "retention-fixture-receipt"},
                             "case_status": "terminal",
                         },
                         "debug",
                     ),
                 ),
             )
+            persisted = first.load("stale-binding-case")
+            first.commit(
+                "stale-binding-case", expected_revision=persisted["revision"],
+                events=(PendingCaseEvent("EvidenceAttached", {"evidence": {
+                    "evidence_id": "retention-fixture-evidence",
+                    "blob_id": "a" * 64, "media_type": "application/json",
+                    "byte_count": 2, "target_id": "target-1", "observed_at": 0.0,
+                }}),),
+            )
+            persist_terminal_diagnosis(first, "stale-binding-case")
             first.bind_task("dead-task", "stale-binding-case")
 
             second = SQLiteRuntimeRepository(
