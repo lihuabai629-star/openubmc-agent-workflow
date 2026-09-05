@@ -79,8 +79,7 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
             destination = root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(content)
-        installer_path = root/'installer.py'
-        installer_path.write_bytes(source_content['openubmc-environment-setup/scripts/install_environment.py'])
+        installer_path = root/'skills/openubmc-environment-setup/scripts/install_environment.py'
         spec = importlib.util.spec_from_file_location('plugin_installer_recipe', installer_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module

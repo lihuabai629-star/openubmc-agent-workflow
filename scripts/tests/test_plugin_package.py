@@ -31,3 +31,21 @@ class PluginPackageTests(unittest.TestCase):
             self.assertEqual(len(report['source_commit']), 40)
             self.assertNotIn(str(ROOT).encode(), (plugin/'scripts/launch_runtime.py').read_bytes())
             self.assertFalse(any(p.name == '.git' for p in plugin.rglob('*')))
+
+    def test_verify_rejects_added_or_changed_plugin_code(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            result = subprocess.run([sys.executable, str(BUILDER), 'build', '--output', str(base/'bundle.tar.gz')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with tarfile.open(base/'bundle.tar.gz') as archive:
+                archive.extractall(base, filter='data')
+            plugin = base/'openubmc'
+            extra = plugin/'skills/openubmc-debug/scripts/sitecustomize.py'
+            extra.write_text('raise RuntimeError("unmanaged code")\n')
+            check = subprocess.run([sys.executable, '-I', str(plugin/'scripts/pluginctl.py'), 'verify'], capture_output=True, text=True)
+            self.assertNotEqual(check.returncode, 0)
+            extra.unlink()
+            target = plugin/'skills/openubmc-build/SKILL.md'
+            target.write_text(target.read_text()+'\nUnexpected instructions\n')
+            check = subprocess.run([sys.executable, '-I', str(plugin/'scripts/pluginctl.py'), 'verify'], capture_output=True, text=True)
+            self.assertNotEqual(check.returncode, 0)
