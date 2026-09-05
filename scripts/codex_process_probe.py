@@ -347,6 +347,8 @@ def probe_codex_runtime(
         command.extend(
             (
                 "-c",
+                "mcp_servers.openubmc-target-runtime.required=true",
+                "-c",
                 "mcp_servers.openubmc-target-runtime.startup_timeout_sec=120",
                 "-c",
                 "mcp_servers.openubmc-target-runtime.tool_timeout_sec=900",
@@ -365,7 +367,7 @@ def probe_codex_runtime(
             )
             identity = _process_identity(process.pid)
             try:
-                stdout, stderr = process.communicate(timeout=30)
+                stdout, stderr = process.communicate(timeout=150)
             except subprocess.TimeoutExpired as error:
                 process.terminate()
                 try:
