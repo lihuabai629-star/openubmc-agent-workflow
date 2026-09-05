@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-live-patch"))
 
+from live_patch_diagnosis import accept_diagnosis  # noqa: E402
 from openubmc_live_patch.runtime_backend import LivePatchMcpBackend  # noqa: E402
 from openubmc_target_runtime import (  # noqa: E402
     FilesystemBlobRepository,
@@ -346,6 +347,10 @@ def crash(root: Path, cut: str) -> None:
         },
         task_id=f"backend-crash-{cut}",
         operation_id=f"backend-crash-{cut}-start",
+    )
+    waiting = accept_diagnosis(
+        runtime, waiting, task_id=f"backend-crash-{cut}",
+        operation_id=f"backend-crash-{cut}-diagnosis",
     )
     (root / "run-id").write_text(str(waiting["run_id"]), encoding="utf-8")
     runtime.call_exposed_tool(

@@ -42,6 +42,9 @@ from openubmc_live_patch.runtime_backend import (  # noqa: E402
 )
 
 
+from helpers.live_patch_diagnosis import accept_diagnosis  # noqa: E402
+
+
 TEST_DEADLINE_SECONDS = 30
 
 
@@ -77,6 +80,7 @@ def gate_binding(turn: Mapping[str, object]) -> dict[str, object]:
         "gate_version": gate["gate_version"],
         "schema_digest": gate["schema_digest"],
     }
+
 
 
 class WorkflowDebugBackend:
@@ -755,6 +759,10 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     task_id="live-patch-terminal",
                     operation_id="live-patch-terminal-start",
                 )
+                waiting = accept_diagnosis(
+                    first, waiting, task_id="live-patch-terminal",
+                    operation_id="live-patch-terminal-diagnosis",
+                )
                 running = first.call_exposed_tool(
                     "execute",
                     {
@@ -864,6 +872,10 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     task_id="live-patch-dispatch",
                     operation_id="live-patch-dispatch-start",
                 )
+                waiting = accept_diagnosis(
+                    first, waiting, task_id="live-patch-dispatch",
+                    operation_id="live-patch-dispatch-diagnosis",
+                )
                 running = first.call_exposed_tool(
                     "execute",
                     {
@@ -971,6 +983,10 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     },
                     task_id=f"live-patch-{cut}",
                     operation_id=f"live-patch-{cut}-start",
+                )
+                waiting = accept_diagnosis(
+                    first, waiting, task_id=f"live-patch-{cut}",
+                    operation_id=f"live-patch-{cut}-diagnosis",
                 )
                 running = first.call_exposed_tool(
                     "execute",
@@ -1176,6 +1192,10 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     task_id="public-live-patch",
                     operation_id="public-live-patch-start",
                 )
+                waiting = accept_diagnosis(
+                    service, waiting, task_id="public-live-patch",
+                    operation_id="public-live-patch-diagnosis",
+                )
                 final = service.call_exposed_tool(
                     "execute",
                     {
@@ -1257,6 +1277,10 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                     },
                     task_id="lost-install-response",
                     operation_id="lost-install-response-start",
+                )
+                waiting = accept_diagnosis(
+                    first, waiting, task_id="lost-install-response",
+                    operation_id="lost-install-response-diagnosis",
                 )
                 running = first.call_exposed_tool(
                     "execute",
