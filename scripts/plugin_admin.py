@@ -27,6 +27,18 @@ def main() -> int:
     store = home/'.local/share/openubmc/plugin-store'
     if args.command == 'audit':
         records = [json.loads(path.read_bytes()) for path in sorted((store/'install-audits').glob('*.json'))]
+        transactions = {}
+        for path in sorted((store/'transactions').glob('*/transaction.json')):
+            transaction = json.loads(path.read_bytes())
+            if transaction.get('transaction'):
+                transactions[transaction['transaction']] = transaction
+        # The activation journal is the transaction truth.  This also makes
+        # audit output correct if a process died between compensation's audit
+        # write and its terminal journal write.
+        for record in records:
+            transaction = transactions.get(record.get('transaction'))
+            if transaction and transaction.get('status') in {'rolled_back', 'committed'}:
+                record.update(status=transaction['status'])
         print(json.dumps({'schema': 'openubmc.codex-plugin.audit.v1', 'releases': records}, sort_keys=True))
         return 0
     destination = home/'plugins/openubmc'

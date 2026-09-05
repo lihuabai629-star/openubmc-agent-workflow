@@ -154,12 +154,15 @@ def compensate(journal: Path, record: dict) -> None:
             path.symlink_to(item['target'])
             sync_directory(path.parent)
     record['status'] = 'rolled_back'
-    write(journal/'transaction.json', canonical(record))
     audit_path = journal.parent.parent/'install-audits'/(record.get('content_digest', '')[:16]+'.json')
     if audit_path.is_file():
         audit = json.loads(audit_path.read_bytes())
         if audit.get('transaction') == record.get('transaction'):
             write(audit_path, canonical(record))
+    # The audit is made truthful before the terminal transaction marker.  If
+    # recovery is interrupted between these writes, the next activation sees
+    # the still-pending journal and repeats the same idempotent reconciliation.
+    write(journal/'transaction.json', canonical(record))
 
 
 def replace_directory(journal: Path, record: dict, key: str, candidate: Path) -> None:
