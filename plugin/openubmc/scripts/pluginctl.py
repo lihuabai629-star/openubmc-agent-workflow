@@ -177,13 +177,22 @@ def launch(command: str, content: dict[str, bytes], dependencies: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb'])
+    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'migrate', 'restore-legacy'])
+    parser.add_argument('--home', type=Path, default=Path.home())
+    parser.add_argument('--transaction', default='')
     parser.add_argument('--repair', action='store_true', help='Recreate a damaged dependency cache')
     args = parser.parse_args()
     try:
         lock, content = verify()
         report = {'ok': True, 'source_commit': lock['source_commit'], 'version': lock['version'],
                   'content_digest': lock['content_digest'], 'skills': lock['skills']}
+        if args.command in ('migrate', 'restore-legacy'):
+            import importlib.util
+            module_path = ROOT/'scripts/plugin_install.py'
+            spec = importlib.util.spec_from_file_location('openubmc_plugin_install', module_path)
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            result = module.migrate(args.home) if args.command == 'migrate' else module.restore(args.home, args.transaction)
+            print(json.dumps(result, sort_keys=True)); return 0
         if args.command == 'prepare':
             root = prepare_dependencies(content, args.repair)
             report['dependencies'] = str(root)

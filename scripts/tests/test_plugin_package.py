@@ -114,3 +114,40 @@ class PluginPackageTests(unittest.TestCase):
                 self.assertEqual(check.returncode, 0, check.stderr)
             result = subprocess.run(['codex', 'plugin', 'remove', 'openubmc@runtime-test'], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_legacy_migration_is_reversible_and_preserves_unrelated_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            subprocess.run([sys.executable, str(BUILDER), 'build', '--source', str(self.source), '--output', str(base/'bundle.tar.gz')], check=True, capture_output=True)
+            with tarfile.open(base/'bundle.tar.gz') as archive:
+                archive.extractall(base, filter='data')
+            home = base/'home'
+            codex = home/'.codex'
+            (codex/'skills').mkdir(parents=True)
+            config = codex/'config.toml'
+            launcher = str(home/'.local/share/openubmc/target-runtime/openubmc-target-runtime-mcp')
+            source = base/'legacy/openubmc-build'
+            source.mkdir(parents=True)
+            link = codex/'skills/openubmc-build'
+            link.symlink_to(source)
+            original = f'model = "test"\n[mcp_servers.openubmc-target-runtime]\ncommand = {json.dumps(launcher)}\nargs = []\n[mcp_servers.unrelated]\ncommand = "keep"\n[[skills.config]]\npath = {json.dumps(str(source))}\nenabled = true\n'
+            config.write_text(original)
+            state = home/'.config/openubmc/environment-state.json'
+            state.parent.mkdir(parents=True)
+            state.write_text(json.dumps({'source_root': str(source.parent), 'links': {str(link): str(source)}, 'runtime_mcp': {'codex': {'command': launcher, 'args': [], 'created_entry': True}}, 'codex_skill_center': {'targets': [str(source)]}}))
+            credentials = state.with_name('credentials.env')
+            credentials.write_bytes(b'preserved-private-configuration')
+            env = dict(os.environ, XDG_CONFIG_HOME=str(home/'.config'), XDG_DATA_HOME=str(home/'.local/share'), CODEX_HOME=str(codex))
+            cli = [sys.executable, '-I', str(base/'openubmc/scripts/pluginctl.py')]
+            result = subprocess.run([*cli, 'migrate', '--home', str(home)], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertIn('transaction', report)
+            self.assertNotIn('openubmc-target-runtime', config.read_text())
+            self.assertIn('command = "keep"', config.read_text())
+            self.assertFalse(link.is_symlink())
+            self.assertEqual(credentials.read_bytes(), b'preserved-private-configuration')
+            result = subprocess.run([*cli, 'restore-legacy', '--home', str(home), '--transaction', report['transaction']], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(config.read_text(), original)
+            self.assertEqual(link.resolve(), source)
