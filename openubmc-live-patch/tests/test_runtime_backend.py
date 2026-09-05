@@ -19,6 +19,7 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "openubmc-target-runtime"))
 sys.path.insert(0, str(REPO_ROOT / "openubmc-live-patch"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "helpers"))
 
 from openubmc_target_runtime import (  # noqa: E402
     CancellationToken,
@@ -42,7 +43,7 @@ from openubmc_live_patch.runtime_backend import (  # noqa: E402
 )
 
 
-from helpers.live_patch_diagnosis import accept_diagnosis  # noqa: E402
+from live_patch_diagnosis import accept_diagnosis  # noqa: E402
 
 
 TEST_DEADLINE_SECONDS = 30
