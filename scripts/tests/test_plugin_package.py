@@ -151,3 +151,15 @@ class PluginPackageTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(config.read_text(), original)
             self.assertEqual(link.resolve(), source)
+
+    def test_install_rejects_archive_digest_before_configuration_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            subprocess.run([sys.executable, str(BUILDER), 'build', '--source', str(self.source), '--output', str(base/'bundle.tar.gz')], check=True, capture_output=True)
+            with tarfile.open(base/'bundle.tar.gz') as archive:
+                archive.extractall(base, filter='data')
+            home = base/'home'
+            result = subprocess.run([sys.executable, '-I', str(ROOT/'scripts/install_plugin.py'), str(base/'bundle.tar.gz'), '--home', str(home), '--sha256', '0'*64], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('archive digest', result.stderr)
+            self.assertFalse((home/'.codex/config.toml').exists())

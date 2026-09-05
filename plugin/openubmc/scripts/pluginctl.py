@@ -176,6 +176,30 @@ def node_environment() -> dict[str, str]:
     return env
 
 
+def probe_server(command: str, content: dict[str, bytes], lock: dict) -> dict[str, object]:
+    """Perform a bounded MCP initialize/tools/list probe through the public launcher."""
+    request = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                          'params': {'protocolVersion': '2024-11-05', 'capabilities': {},
+                                     'clientInfo': {'name': 'openubmc-plugin-doctor', 'version': lock['version']}}}) + '\n'
+    process = subprocess.Popen([sys.executable, '-I', str(ROOT/'scripts/pluginctl.py'), command],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, env=node_environment())
+    try:
+        stdout, stderr = process.communicate(request, timeout=12)
+    except subprocess.TimeoutExpired:
+        process.kill(); stdout, stderr = process.communicate()
+    messages = []
+    for line in stdout.splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict): messages.append(value)
+    initialized = any(value.get('id') == 1 and isinstance(value.get('result'), dict) for value in messages)
+    server = next((value['result'].get('serverInfo') for value in messages if value.get('id') == 1 and isinstance(value.get('result'), dict)), {})
+    return {'ok': initialized, 'server': server, 'stderr': stderr[-1000:] if not initialized else ''}
+
+
 def launch(command: str, content: dict[str, bytes], lock: dict) -> int:
     dependencies = dependency_root(content)
     if not (dependencies/'receipt.json').is_file():
@@ -229,8 +253,13 @@ def main() -> int:
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 report['dependencies_ready'] = False
                 report['error'] = str(error)
-            report['operational_ready'] = report['dependencies_ready']
-            report['ok'] = report['operational_ready']
+            if report['dependencies_ready']:
+                report['mcp_health'] = {name: probe_server(name, content, lock) for name in ('runtime', 'kb')}
+            else:
+                report['mcp_health'] = {'runtime': {'ok': False, 'error': 'dependencies unavailable'}, 'kb': {'ok': False, 'error': 'dependencies unavailable'}}
+            report['credentials_configured'] = bool(os.environ.get('OPENUBMC_CREDENTIALS_FILE') or (Path(os.environ.get('XDG_CONFIG_HOME') or Path.home()/'.config')/'openubmc/credentials.env').is_file())
+            report['startup_ready'] = report['dependencies_ready'] and all(item.get('ok') for item in report['mcp_health'].values())
+            report['ok'] = report['startup_ready']
         print(json.dumps(report, sort_keys=True))
         return 0 if report['ok'] else 2
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:

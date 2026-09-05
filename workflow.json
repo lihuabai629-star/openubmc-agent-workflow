@@ -1,6 +1,6 @@
 {
   "schema_version": "openubmc-agent-workflow.v1",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "integrated_baseline": "ceb46e8ca5542a4273128b1a4aa8606b2f5eaee0",
   "profiles": {
     "full": [
@@ -27,17 +27,50 @@
     ]
   },
   "skills": [
-    {"name": "openubmc-environment-setup", "path": "openubmc-environment-setup"},
-    {"name": "openubmc-debug", "path": "openubmc-debug"},
-    {"name": "openubmc-log-analyzer", "path": "openubmc-log-analyzer"},
-    {"name": "openubmc-developer", "path": "openubmc-developer"},
-    {"name": "openubmc-build", "path": "openubmc-build"},
-    {"name": "openubmc-upgrade", "path": "openubmc-upgrade"},
-    {"name": "openubmc-live-patch", "path": "openubmc-live-patch"},
-    {"name": "openubmc-dt-testing", "path": "testing"},
-    {"name": "openubmc-publish", "path": "openubmc-publish"},
-    {"name": "openubmc-lua-component", "path": "lua-component"},
-    {"name": "openubmc-qemu-testing", "path": "qemu-testing"}
+    {
+      "name": "openubmc-environment-setup",
+      "path": "openubmc-environment-setup"
+    },
+    {
+      "name": "openubmc-debug",
+      "path": "openubmc-debug"
+    },
+    {
+      "name": "openubmc-log-analyzer",
+      "path": "openubmc-log-analyzer"
+    },
+    {
+      "name": "openubmc-developer",
+      "path": "openubmc-developer"
+    },
+    {
+      "name": "openubmc-build",
+      "path": "openubmc-build"
+    },
+    {
+      "name": "openubmc-upgrade",
+      "path": "openubmc-upgrade"
+    },
+    {
+      "name": "openubmc-live-patch",
+      "path": "openubmc-live-patch"
+    },
+    {
+      "name": "openubmc-dt-testing",
+      "path": "testing"
+    },
+    {
+      "name": "openubmc-publish",
+      "path": "openubmc-publish"
+    },
+    {
+      "name": "openubmc-lua-component",
+      "path": "lua-component"
+    },
+    {
+      "name": "openubmc-qemu-testing",
+      "path": "qemu-testing"
+    }
   ],
   "components": {
     "target_runtime_api": "openubmc.target-runtime.v1",
@@ -59,14 +92,20 @@
       "executable": {
         "command": "dsh",
         "package": "@deepseek-ai/dsh",
-        "version_args": ["--version"],
+        "version_args": [
+          "--version"
+        ],
         "minimum_version": "0.1.0-rc.7",
         "maximum_version_exclusive": "0.2.0"
       },
       "runtime_requirements": {
         "node": "^22.19.0 || >=24.0.0"
       },
-      "model_identity_fields": ["provider", "model", "reasoning_effort"],
+      "model_identity_fields": [
+        "provider",
+        "model",
+        "reasoning_effort"
+      ],
       "scenarios": [
         {
           "name": "mcp-structured-content",

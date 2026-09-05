@@ -64,6 +64,7 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
             payload[name.removeprefix('plugin/openubmc/')] = content
     payload['requirements.lock'] = source_content['requirements-ci.lock']
     payload['workflow.json'] = source_content['workflow.json']
+    payload['skills/openubmc-environment-setup/SKILL.md'] += b'''\n\n## Codex plugin ownership\n\nWhen this Skill is loaded from the OpenUBMC Codex plugin, the plugin package is the authority for Codex Skill and MCP delivery. Use the installed plugin's `scripts/pluginctl.py doctor`, `prepare`, `migrate`, `install`, `rollback`, and `uninstall` commands for plugin lifecycle changes. Do not use the loose-installation bootstrap commands to create a second Codex Runtime or MCP registration. Credentials and Runtime state remain external and are preserved by plugin lifecycle operations.\n'''
     # The support directory retains the canonical sibling layout required by
     # existing public Skill helpers. Its descriptor is generated from the recipe.
     payload['skills/openubmc-target-runtime/SKILL.md'] = source_content['plugin/runtime-support.md']
@@ -108,7 +109,9 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
         payload['scripts/launch_runtime.py'] = launcher.encode()
     inventory = {name: hashlib.sha256(content).hexdigest() for name, content in sorted(payload.items())}
     lock = {'schema': 'openubmc.codex-plugin.v1', 'name': 'openubmc', 'version': workflow['version'],
-            'source_commit': commit, 'skills': sorted(skill_names), 'files': inventory}
+            'source_commit': commit, 'skills': sorted(skill_names), 'files': inventory,
+            'manifest_digest': hashlib.sha256(payload['.codex-plugin/plugin.json']).hexdigest(),
+            'qualification_refs': ['docs/runtime-stability-qualification.md', 'docs/codex-adoption-qualification.md']}
     lock['content_digest'] = hashlib.sha256(canonical(lock)).hexdigest()
     payload['plugin-lock.json'] = canonical(lock)
     return payload

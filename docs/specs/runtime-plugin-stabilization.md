@@ -29,7 +29,7 @@ Deliver one relocatable, content-addressed Codex plugin containing the supported
 - Runtime startup verifies API version, composition file digests, source identity, and absence of unmanaged executable artifacts before importing a verified snapshot.
 - Knowledge-base dependencies are prepared from the production lockfile into an external dependency cache with content verification before startup. Installation never writes the plugin payload.
 - Credentials, Runtime state, and configuration remain outside the plugin payload and are not copied into archives.
-- Package metadata contains a source commit, package version, manifest digest, file digest map, archive digest, and qualification references.
+- Package metadata contains a source commit, package version, manifest digest, file digest map, and qualification references; the release audit records the archive digest alongside the package lock.
 - Existing Runtime state ownership remains unchanged: RunEngine and MutationJournal remain the sole durable authorities.
 
 ## Testing Decisions
