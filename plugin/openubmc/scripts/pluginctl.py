@@ -53,7 +53,7 @@ def dependency_root(content: dict[str, bytes]) -> Path:
     node = subprocess.run(['node', '--version'], check=True, capture_output=True, text=True).stdout.strip()
     if int(node.removeprefix('v').split('.')[0]) < 20:
         raise ValueError('Node 20 or newer is required')
-    identity = {'python': sys.version, 'machine': platform.machine(), 'platform': sys.platform, 'node': node,
+    identity = {'schema': 'isolated-target.v1', 'python': sys.version, 'machine': platform.machine(), 'platform': sys.platform, 'node': node,
                 'python_lock': hashlib.sha256(content['requirements.lock']).hexdigest(),
                 'node_lock': hashlib.sha256(content['openubmc-kb-mcp/package-lock.json']).hexdigest()}
     key = hashlib.sha256(canonical(identity)).hexdigest()
@@ -109,8 +109,7 @@ def prepare_dependencies(content: dict[str, bytes], repair: bool) -> Path:
             (knowledge/name).write_bytes(content['openubmc-kb-mcp/'+name])
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
         commands = [
-            [sys.executable, '-I', '-B', '-m', 'venv', '--copies', str(root/'python')],
-            [str(root/'python/bin/python'), '-I', '-B', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-compile', '--only-binary=:all:', '--require-hashes', '-r', str(root/'requirements.lock')],
+            [sys.executable, '-I', '-B', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-compile', '--only-binary=:all:', '--require-hashes', '--target', str(root/'python-packages'), '-r', str(root/'requirements.lock')],
             ['npm', 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--prefix', str(knowledge)],
         ]
         for command in commands:
@@ -138,7 +137,15 @@ def launch_locked(command: str, content: dict[str, bytes], dependencies: Path) -
             path.chmod(0o500 if name.endswith('.sh') else 0o400)
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
         if command == 'runtime':
-            argv = [str(dependencies/'python/bin/python'), '-I', '-B', str(snapshot/'scripts/launch_runtime.py')]
+            packages = snapshot/'python-packages'
+            shutil.copytree(dependencies/'python-packages', packages, symlinks=True)
+            expected = json.loads((dependencies/'receipt.json').read_bytes())['files']
+            copied = {'python-packages/'+key: value for key, value in dependency_inventory(packages).items()}
+            if copied != {key: value for key, value in expected.items() if key.startswith('python-packages/')}:
+                raise ValueError('Dependency cache changed during startup')
+            argv = [sys.executable, '-I', '-B', '-c',
+                    'import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_path(sys.argv[2],run_name="__main__")',
+                    str(packages), str(snapshot/'scripts/launch_runtime.py')]
         else:
             # Source and installed dependency content are individually verified.
             knowledge = snapshot/'openubmc-kb-mcp'
