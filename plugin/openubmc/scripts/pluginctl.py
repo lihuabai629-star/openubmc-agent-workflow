@@ -117,9 +117,10 @@ def _prepare_timeout(command: list[str]) -> float:
 
 def _run_dependency_command(command: list[str], env: dict[str, str], *, timeout: float, stage: str, mutex_fd: int) -> None:
     """Stop the complete owned process group before cache cleanup or retry."""
-    print(json.dumps({'stage': stage, 'status': 'started'}, sort_keys=True), file=sys.stderr, flush=True)
+    started=time.monotonic()
     process = subprocess.Popen(command, env=env, stdout=sys.stderr, stderr=sys.stderr,
                                start_new_session=True, pass_fds=(mutex_fd,))
+    print(json.dumps({'stage':stage,'status':'started','pid':process.pid,'timeout_seconds':timeout}),file=sys.stderr,flush=True)
     try:
         try:
             return_code = process.wait(timeout=timeout)
@@ -129,7 +130,7 @@ def _run_dependency_command(command: list[str], env: dict[str, str], *, timeout:
         if return_code:
             print(json.dumps({'stage': stage, 'status': 'failed', 'exit_code': return_code}, sort_keys=True), file=sys.stderr, flush=True)
             raise ValueError('Dependency preparation failed in ' + command[0] + ' (exit ' + str(return_code) + ')')
-        print(json.dumps({'stage': stage, 'status': 'completed'}, sort_keys=True), file=sys.stderr, flush=True)
+        print(json.dumps({'stage': stage, 'status': 'completed', 'pid':process.pid, 'elapsed_seconds':time.monotonic()-started}, sort_keys=True), file=sys.stderr, flush=True)
     finally:
         # Even a successfully reaped parent can leave descendants holding pipes.
         try:

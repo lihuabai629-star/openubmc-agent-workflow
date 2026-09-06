@@ -13,6 +13,7 @@ class ModelMeasurementTests(unittest.TestCase):
     def test_provider_errors_are_transport_failures_even_after_a_gate(self):
         self.assertEqual(classify_failure(False,[{'status':500}],[],True),('transport','provider_http_500'))
         self.assertEqual(classify_failure(False,[{'status':200,'error_class':'TimeoutError'}],[],False),('transport','provider_TimeoutError'))
+        self.assertEqual(classify_failure(False,[{'status':200,'stream_completed':False}],[],True),('transport','incomplete_provider_stream'))
 
     def test_model_invalid_input_and_runtime_invariant_are_distinct(self):
         self.assertEqual(classify_failure(False,[{'status':200}],['AgentPreflightError'],True),('model','invalid_request'))

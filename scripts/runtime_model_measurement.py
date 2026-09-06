@@ -38,6 +38,8 @@ def classify_failure(completed, provider_requests, turn_errors, mcp_initialized)
             return 'transport', 'provider_http_'+str(status)
         if request.get('error_class'):
             return 'transport', 'provider_'+request['error_class']
+        if request.get('stream_completed') is False:
+            return 'transport', 'incomplete_provider_stream'
     if any(code not in MODEL_REQUEST_ERRORS for code in turn_errors):
         return 'runtime', next(code for code in turn_errors if code not in MODEL_REQUEST_ERRORS)
     if turn_errors:
@@ -77,6 +79,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type',response.getheader('Content-Type','text/event-stream'))
             self.send_header('Connection','close');self.end_headers();self.close_connection=True
             pending=b''
+            record['stream_completed']=False
             while True:
                 chunk=response.read1(65536)
                 if not chunk: break
@@ -88,6 +91,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if not line.startswith(b'data:'): continue
                     try: event=json.loads(line[5:].strip())
                     except (ValueError,UnicodeDecodeError): continue
+                    if event.get('type')=='response.completed':record['stream_completed']=True
+                    if event.get('type') in {'response.failed','error'}:record['error_class']='ProviderResponseFailed'
                     data=event.get('response',{})
                     if data.get('model'): record['response_model']=data['model']
                     if data.get('usage'):
