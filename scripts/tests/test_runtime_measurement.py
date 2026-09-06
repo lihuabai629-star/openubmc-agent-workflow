@@ -33,6 +33,8 @@ class RuntimeMeasurementTests(unittest.TestCase):
             self.assertEqual(item["failure_class"], None)
         self.assertEqual(report["attempted"], 8)
         self.assertEqual(report["valid"], 8)
+        initial = report["examples"]["start"]["result"]["structuredContent"]["run_id"]
+        self.assertEqual(report["records"][1]["runtime_run_id"], initial)
 
 
 if __name__ == "__main__":

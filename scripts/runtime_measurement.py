@@ -68,7 +68,8 @@ def source_identity(source):
     return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--untracked-files=normal")),
             "runtime_tree_sha256": hashlib.sha256(b"".join(
                 str(path.relative_to(source)).encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest()
-                for path in sorted((source/"openubmc-target-runtime/openubmc_target_runtime").glob("*.py")))).hexdigest()}
+                for path in sorted((source/"openubmc-target-runtime/openubmc_target_runtime").rglob("*.py"))
+                if "__pycache__" not in path.parts)).hexdigest()}
 
 
 def aggregate(records):

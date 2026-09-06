@@ -53,6 +53,37 @@ An interrupted activation is reconciled before the next install. Recovery checks
 planned digests before restoring anything. When a user edit conflicts, keep the journal and reconcile
 that edit before retrying; the installer does not overwrite it.
 
+## Dependency recovery
+
+Preparation prints one JSON progress event per pip/npm stage to stderr. Default deadlines are
+300 seconds for pip, 180 seconds for npm, and 30 seconds for the dependency cache lock. Additional
+attempts are opt-in and bounded to three per stage:
+
+```bash
+python3 -I ~/plugins/openubmc/scripts/pluginctl.py prepare --repair \
+  --pip-timeout 300 --npm-timeout 180 --lock-timeout 30 --retries 1
+```
+
+A failed repair retains the previous verified cache. Cancellation stops the installer process group
+before removing its incomplete stage. After a force-killed parent, a surviving installer keeps the
+cache lock until it exits; a competing prepare reports a lock timeout. Retry preparation after that
+worker exits. Interrupted directory publication is reconciled before reuse or another installation.
+
+Offline installation requires the Python wheels and npm package tarballs to be available locally:
+
+```bash
+PIP_FIND_LINKS=/absolute/wheelhouse npm_config_cache=/absolute/npm-cache \
+  python3 -I ~/plugins/openubmc/scripts/pluginctl.py prepare --offline
+```
+
+Python wheels still require the hashes in the release lock; npm still validates its lockfile
+integrity. A partial or tampered cache never receives an installation receipt. Normal MCP startup
+performs verification without package downloads.
+
+For startup diagnosis, `runtime --timings /absolute/new-trace.jsonl` or `kb --timings ...` records
+verification, dependency identity/lock and execution snapshot durations separately from MCP stdout.
+The timing path must be new and outside the plugin directory.
+
 ## Build and qualify
 
 ```bash
