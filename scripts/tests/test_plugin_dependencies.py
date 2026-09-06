@@ -194,5 +194,13 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         stages=[json.loads(line)['stage'] for line in timings.read_text().splitlines()]
         self.assertEqual(stages,['verify','dependency_identity'])
 
+    def test_timing_output_cannot_be_created_inside_immutable_plugin(self):
+        path=self.plugin/'timings.jsonl'
+        result=subprocess.run([*self.cli[:-1],'verify','--timings',str(path)],env=self.env,capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse(path.exists())
+        verified=subprocess.run([*self.cli[:-1],'verify'],env=self.env,capture_output=True,text=True)
+        self.assertEqual(verified.returncode,0,verified.stderr)
+
 
 if __name__=='__main__': unittest.main()

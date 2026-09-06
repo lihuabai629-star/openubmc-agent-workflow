@@ -29,6 +29,7 @@ def receive(process, expected, deadline, pending):
 
 
 def probe(plugin,command,env,root,window,timings_supported):
+    env=dict(env, XDG_CACHE_HOME=str(root/f'cache-{command}'))
     timing=root/f'{window}-{command}.jsonl';argv=[sys.executable,'-I',str(plugin/'scripts/pluginctl.py'),command]
     if timings_supported: argv+=['--timings',str(timing)]
     snapshot_root=Path(env['XDG_CACHE_HOME'])/'openubmc/plugin-executions'
@@ -75,6 +76,17 @@ def probe(plugin,command,env,root,window,timings_supported):
     return row
 
 
+def owned_processes(pid):
+    result=[]
+    children=Path(f'/proc/{pid}/task/{pid}/children')
+    try: child_ids=[int(value) for value in children.read_text().split()]
+    except FileNotFoundError: child_ids=[]
+    for child in child_ids:
+        result.extend(owned_processes(child))
+    result.append(pid)
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plugin',type=Path,required=True)
@@ -87,19 +99,34 @@ def main():
     if args.output.exists(): parser.error('output already exists')
     lock=json.loads((plugin/'plugin-lock.json').read_text())
     report={'schema':'openubmc.plugin-measurement.v1','source_commit':lock['source_commit'],'content_digest':lock['content_digest'],
-            'version':lock['version'],'cold_scope':'empty plugin dependency and snapshot caches; download cache may be shared',
+            'version':lock['version'], 'harness_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'python':sys.version,'node':subprocess.check_output(['node','--version'],text=True).strip(),
+            'cold_scope':'empty plugin dependency and snapshot caches; download cache may be shared',
             'records':[]}
     with tempfile.TemporaryDirectory(prefix='openubmc-plugin-measurement-') as temporary:
         root=Path(temporary)
         env=dict(os.environ,XDG_DATA_HOME=str(root/'data'),XDG_CACHE_HOME=str(root/'cache'),
                  OPENUBMC_MCP_FORMAL_RUN='0',OPENUBMC_TARGET_RUNTIME_STATE_DIR=str(root/'state'),OPENUBMC_MCP_LIFECYCLE_DIR=str(root/'lifecycle'))
         started=time.monotonic()
-        prepared=subprocess.run([sys.executable,'-I',str(plugin/'scripts/pluginctl.py'),'prepare'],env=env,capture_output=True,text=True,timeout=540)
+        prepare_process=subprocess.Popen([sys.executable,'-I',str(plugin/'scripts/pluginctl.py'),'prepare'],env=env,
+                                         stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+        try:
+            prepare_stdout, prepare_stderr=prepare_process.communicate(timeout=540)
+            prepared_returncode=prepare_process.returncode
+        except subprocess.TimeoutExpired:
+            # Installers own independent sessions. Snapshot descendants before
+            # terminating their parent so old plugin versions cannot orphan them.
+            for pid in owned_processes(prepare_process.pid):
+                try: os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError: pass
+            prepare_stdout, prepare_stderr=prepare_process.communicate()
+            prepared_returncode=124
+            prepare_stderr += '\nDependency preparation deadline exceeded by measurement harness\n'
         report['dependency_prepare_seconds']=time.monotonic()-started
-        report['dependency_prepare_ok']=prepared.returncode==0
-        report['prepare_stages']=[json.loads(line) for line in prepared.stderr.splitlines() if line.startswith('{')]
-        if prepared.returncode:
-            report['prepare_error']=prepared.stderr[-1500:]
+        report['dependency_prepare_ok']=prepared_returncode==0
+        report['prepare_stages']=[json.loads(line) for line in prepare_stderr.splitlines() if line.startswith('{')]
+        if prepared_returncode:
+            report['prepare_error']=prepare_stderr[-1500:]
         else:
             timing_supported='--timings' in (plugin/'scripts/pluginctl.py').read_text()
             for window in range(args.windows):

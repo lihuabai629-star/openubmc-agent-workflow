@@ -18,11 +18,33 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from urllib.parse import urlsplit
 
 from runtime_measurement import encoded, source_identity
 
 PROMPT = '''Exercise the local openubmc-target-runtime fixture using execute only. Its Domain Adapter is deterministic and has no target connection. Start with exactly this execute argument object: {"kind":"start","intent":"diagnose-and-fix","delivery_strategy":"source-only","target":"198.51.100.10","purpose":"validate fixture state refresh"}. The field is intent, not workflow. Respond to diagnosis.acceptance with the evidence IDs in the returned diagnostic_receipt, root_cause "fixture state was outdated", causal_chain ["fixture state was outdated", "component consumed that state"], code_owner "fixture/component.lua", contradictions [], remaining_gaps [], verification_status "verified". Then respond to developer.change with source_revision "fixture-revision", authored_files ["fixture/component.lua"], verification_plan ["test fixture state refresh"]. Use each returned Gate binding exactly, and response status completed and summary "fixture phase complete". Do not observe, use shell, edit files, or contact a target. Stop only after Runtime reports state completed and outcome_recorded true, and report the terminal Run ID. Tool discovery through exec/ALL_TOOLS is allowed.'''
+
+
+MODEL_REQUEST_ERRORS = {'AgentPreflightError','AgentGatewayError','GateConflict','ReferenceViolation','AgentRequestTooLarge'}
+
+
+def classify_failure(completed, provider_requests, turn_errors, mcp_initialized):
+    if completed:
+        return None, None
+    for request in provider_requests:
+        status=request.get('status')
+        if status is not None and status>=400:
+            return 'transport', 'provider_http_'+str(status)
+        if request.get('error_class'):
+            return 'transport', 'provider_'+request['error_class']
+    if any(code not in MODEL_REQUEST_ERRORS for code in turn_errors):
+        return 'runtime', next(code for code in turn_errors if code not in MODEL_REQUEST_ERRORS)
+    if turn_errors:
+        return 'model', 'invalid_request'
+    if not mcp_initialized:
+        return 'plugin', 'mcp_not_initialized'
+    return 'model', 'incomplete_workflow'
 
 
 class Relay(http.server.ThreadingHTTPServer):
@@ -78,8 +100,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             connection.close()
 
 
-def attempt(args, output, relay, model, pair, arm, ordinal):
-    root=output/f'{model}-{pair:02d}-{arm}';root.mkdir()
+def _attempt(args, output, relay, model, pair, arm, ordinal):
+    root=output/f'{model}-{pair:02d}-{arm}'
     home=root/'home';home.mkdir();codex_home=home/'.codex';codex_home.mkdir()
     trace=root/'mcp.jsonl';events=root/'events.jsonl'
     env=dict(os.environ, HOME=str(home),CODEX_HOME=str(codex_home),PYTHONDONTWRITEBYTECODE='1')
@@ -116,17 +138,36 @@ def attempt(args, output, relay, model, pair, arm, ordinal):
     completed=bool(successful and successful[-1].get('state')=='completed' and successful[-1].get('outcome_recorded') is True)
     valid=code==0 and completed and 'diagnosis.acceptance' in gates and 'developer.change' in gates
     request_errors=[turn.get('error',{}).get('code') for turn in turns if turn.get('state')=='failed']
+    reason='client_deadline' if failure else None
     if not valid and failure is None:
-        failure=('model' if request_errors or not tools else 'runtime' if not completed else 'transport')
+        failure,reason=classify_failure(valid,provider,request_errors,any(row['request']['method']=='tools/list' for row in calls))
     clean_flow=valid and len(turns)==3 and not request_errors
     row={'model':model,'pair':pair,'arm':arm,'ordinal':ordinal,'exit_code':code,'valid':bool(valid),'failure_class':failure,
-         'duration_seconds':elapsed,'runtime_seconds':sum(row['runtime_wall_seconds'] for row in tools),
+         'failure_reason':reason,'duration_seconds':elapsed,'runtime_seconds':sum(row['runtime_wall_seconds'] for row in tools),
          'tool_output_bytes':sum(len(encoded(row['response'].get('result',{}))) for row in tools),
          'provider_requests':provider,'provider_seconds':sum(row.get('duration_seconds') or 0 for row in provider),
-         'completed':completed,'clean_flow':bool(clean_flow),'model_request_errors':request_errors,'mcp_calls':len(tools),'events_sha256':hashlib.sha256(events.read_bytes()).hexdigest(),
+         'completed':completed,'clean_flow':bool(clean_flow),'model_request_errors':[code for code in request_errors if code in MODEL_REQUEST_ERRORS],'mcp_calls':len(tools),'events_sha256':hashlib.sha256(events.read_bytes()).hexdigest(),
          'trace_sha256':hashlib.sha256(trace.read_bytes()).hexdigest() if trace.exists() else None}
-    (root/'result.json').write_text(json.dumps(row,indent=2)+'\n')
     return row
+
+
+def attempt(args, output, relay, model, pair, arm, ordinal):
+    root=output/f'{model}-{pair:02d}-{arm}';root.mkdir()
+    identity={'attempt_id':str(uuid.uuid4()),'model':model,'pair':pair,'arm':arm,'ordinal':ordinal,'started_at':time.time()}
+    (root/'started.json').write_text(json.dumps(identity,indent=2)+'\n')
+    row={**identity,'valid':False,'failure_class':'harness','failure_reason':'interrupted','mcp_calls':0,'duration_seconds':None}
+    try:
+        row.update(_attempt(args,output,relay,model,pair,arm,ordinal))
+    except Exception as error:
+        row.update(failure_reason=type(error).__name__)
+    finally:
+        with (root/'result.json').open('x') as result:
+            json.dump(row,result,indent=2);result.write('\n')
+    return row
+
+
+def cancelled(_signum,_frame):
+    raise KeyboardInterrupt('measurement interrupted')
 
 
 def main():
@@ -152,10 +193,12 @@ def main():
               'codex':subprocess.check_output([args.codex,'--version'],text=True).strip(),
               'reasoning_effort':'low','schedule':schedule,'cache':'isolated client homes; provider cache uncontrolled; usage retained',
               'wait_scope':'provider round-trip includes network, queue, model and streaming; excludes Runtime calls',
-              'reruns':0,'status':'running'}
+              'reruns':0,'status':'running',
+              'harness_files':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ['runtime_model_measurement.py','runtime_measurement_server.py','runtime_measurement.py']}}
     (args.output/'condition.json').write_text(json.dumps(identity,indent=2)+'\n')
     relay=Relay(args.upstream,args.env_key);thread=threading.Thread(target=relay.serve_forever,daemon=True);thread.start()
     rows=[]
+    signal.signal(signal.SIGTERM,cancelled)
     try:
         for ordinal,(model,pair,arm) in enumerate(schedule):
             row=attempt(args,args.output,relay,model,pair,arm,ordinal);rows.append(row)
@@ -163,8 +206,10 @@ def main():
             print(json.dumps({key:row[key] for key in ['model','pair','arm','valid','failure_class','duration_seconds','mcp_calls']}),flush=True)
     finally:
         relay.shutdown();relay.server_close();thread.join(timeout=5)
-        identity.update(status='complete' if len(rows)==len(schedule) else 'interrupted',attempted=len(rows),valid=sum(row['valid'] for row in rows),
-                        failure_counts=dict(Counter(row['failure_class'] for row in rows if row['failure_class'])))
+        attempted=len(list(args.output.glob('*/started.json')))
+        retained=[json.loads(path.read_text()) for path in args.output.glob('*/result.json')]
+        identity.update(status='complete' if len(rows)==len(schedule) else 'interrupted',attempted=attempted,valid=sum(row['valid'] for row in retained),
+                        failure_counts=dict(Counter(row['failure_class'] for row in retained if row['failure_class'])))
         (args.output/'condition.json').write_text(json.dumps(identity,indent=2)+'\n')
     return int(identity['valid']!=len(schedule))
 

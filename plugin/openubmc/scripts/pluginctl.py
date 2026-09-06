@@ -372,6 +372,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.timings is not None:
+            if args.timings.resolve().is_relative_to(ROOT.resolve()):
+                raise ValueError('Timing output must be outside the immutable plugin')
             args.timings.open('x').close()
         started = time.monotonic()
         lock, content = verify()
