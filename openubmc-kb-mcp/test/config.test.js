@@ -71,11 +71,27 @@ test("uses the managed user configuration path by default", async () => {
   }
 });
 
-test("uses the bundled desktop OAuth client registration when secret is omitted", async () => {
+test("requires an external OAuth client secret and starts unconfigured without it", async () => {
   const { clientSecret, ...withoutSecret } = valid;
-  const config = await loadConfig(await configFile(withoutSecret));
-  assert.equal(typeof config.clientSecret, "string");
-  assert.ok(config.clientSecret.length > 20);
+  const path = await configFile(withoutSecret);
+  await assert.rejects(() => loadConfig(path), /clientSecret/);
+  const config = await loadConfig(path, { allowMissingCredentials: true });
+  assert.equal(config.clientSecret, "");
+  assert.equal(config.credentialsConfigured, false);
+});
+
+test("uses a private environment client secret without writing it to configuration", async () => {
+  const previous = process.env.OPENUBMC_KB_CLIENT_SECRET;
+  process.env.OPENUBMC_KB_CLIENT_SECRET = "external-test-client-secret";
+  try {
+    const { clientSecret, ...withoutSecret } = valid;
+    const config = await loadConfig(await configFile(withoutSecret));
+    assert.equal(config.clientSecret, "external-test-client-secret");
+    assert.equal(config.credentialsConfigured, true);
+  } finally {
+    if (previous === undefined) delete process.env.OPENUBMC_KB_CLIENT_SECRET;
+    else process.env.OPENUBMC_KB_CLIENT_SECRET = previous;
+  }
 });
 
 test("rejects insecure non-loopback LightRAG URLs", async () => {

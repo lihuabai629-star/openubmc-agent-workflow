@@ -364,6 +364,7 @@ def main() -> int:
     parser.add_argument('--codex-home', type=Path)
     parser.add_argument('--transaction', default='')
     parser.add_argument('--repair', action='store_true', help='Recreate a damaged dependency cache')
+    parser.add_argument('--prepare-on-start', action='store_true', help='Prepare locked dependencies before the first MCP startup')
     parser.add_argument('--offline', action='store_true', help='Disable package index access')
     parser.add_argument('--retries', type=int, choices=range(4), default=0, help='Additional bounded attempts per stage')
     parser.add_argument('--pip-timeout', type=positive_timeout, help='pip stage deadline in seconds (default 300)')
@@ -394,6 +395,10 @@ def main() -> int:
             root = prepare_dependencies(content, args.repair, offline=args.offline, retries=args.retries, pip_timeout=args.pip_timeout, npm_timeout=args.npm_timeout, lock_timeout=args.lock_timeout)
             report['dependencies'] = str(root)
         elif args.command in ('runtime', 'kb'):
+            if args.prepare_on_start and not (dependency_root(content)/'receipt.json').is_file():
+                signal.signal(signal.SIGTERM, _cancel_dependency_process)
+                signal.signal(signal.SIGINT, _cancel_dependency_process)
+                prepare_dependencies(content, False, lock_timeout=540)
             return launch(args.command, content, lock, args.timings)
         elif args.command == 'doctor':
             report['package_integrity'] = True

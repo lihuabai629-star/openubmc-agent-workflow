@@ -6,6 +6,10 @@ The supported qualification host is Codex CLI 0.153.4 on Linux, Python 3.12, and
 
 ## Install a release
 
+The public marketplace distribution is documented in [the marketplace README](../plugin/marketplace-readme.md).
+Its MCP entries opt into `--prepare-on-start`, which prepares verified dependencies on first use.
+The archive installation below remains the ownership-aware migration path for a previous loose installation.
+
 Download the archive and checksum from the same release. Run these commands in a new directory:
 
 ```bash

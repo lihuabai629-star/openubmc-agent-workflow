@@ -6,7 +6,8 @@
       "args": [
         "-I",
         "./scripts/pluginctl.py",
-        "runtime"
+        "runtime",
+        "--prepare-on-start"
       ],
       "cwd": "./",
       "env_vars": [
@@ -24,7 +25,7 @@
         "OPENUBMC_MCP_SOURCE_COMMIT",
         "OPENUBMC_MCP_LIFECYCLE_DIR"
       ],
-      "startup_timeout_sec": 120,
+      "startup_timeout_sec": 600,
       "tool_timeout_sec": 900,
       "required": true
     },
@@ -34,16 +35,21 @@
       "args": [
         "-I",
         "./scripts/pluginctl.py",
-        "kb"
+        "kb",
+        "--prepare-on-start"
       ],
       "cwd": "./",
       "env_vars": [
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "XDG_CACHE_HOME",
-        "OPENUBMC_CREDENTIALS_FILE"
+        "OPENUBMC_CREDENTIALS_FILE",
+        "OPENUBMC_KB_CONFIG",
+        "OPENUBMC_KB_USERNAME",
+        "OPENUBMC_KB_PASSWORD",
+        "OPENUBMC_KB_CLIENT_SECRET"
       ],
-      "startup_timeout_sec": 120,
+      "startup_timeout_sec": 600,
       "tool_timeout_sec": 900,
       "required": true
     }

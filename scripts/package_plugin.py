@@ -66,7 +66,7 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
     payload['workflow.json'] = source_content['workflow.json']
     for name in ('install_plugin.py', 'plugin_admin.py', 'plugin_archive.py'):
         payload['scripts/'+name] = source_content['scripts/'+name]
-    payload['skills/openubmc-environment-setup/SKILL.md'] += b'''\n\n## Codex plugin ownership\n\nWhen this Skill is loaded from the OpenUBMC Codex plugin, the plugin package is the authority for Codex Skill and MCP delivery. Use the installed plugin's `scripts/pluginctl.py doctor`, `prepare`, and `migrate` checks for Runtime lifecycle diagnostics. The distribution installer and administration entry points perform activation, rollback, and removal. Do not use loose-installation bootstrap commands to create a second Codex Runtime or MCP registration. Credentials and Runtime state remain external and are preserved by plugin lifecycle operations.\n'''
+    payload['skills/openubmc-environment-setup/SKILL.md'] = source_content['plugin/environment-support.md']
     # The support directory retains the canonical sibling layout required by
     # existing public Skill helpers. Its descriptor is generated from the recipe.
     payload['skills/openubmc-target-runtime/SKILL.md'] = source_content['plugin/runtime-support.md']

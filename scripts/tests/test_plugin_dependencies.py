@@ -23,6 +23,7 @@ class DependencyPreparationTests(unittest.TestCase):
                  'requirements.lock': b'',
                  'openubmc-kb-mcp/package.json': b'{"name":"fixture","version":"0.0.0"}',
                  'openubmc-kb-mcp/package-lock.json': b'{}',
+                 'scripts/launch_runtime.py': b'print("MCP_FIXTURE_READY", flush=True)\n',
                  'scripts/pluginctl.py': (ROOT/'plugin/openubmc/scripts/pluginctl.py').read_bytes()}
         for name, data in files.items():
             path = self.plugin/name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
@@ -56,6 +57,7 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         npm.chmod(0o755)
         self.env = dict(os.environ, PATH=str(bin_dir)+os.pathsep+os.environ['PATH'],
                         XDG_DATA_HOME=str(self.root/'data'), PIP_NO_INDEX='1', FIXTURE_ROOT=str(self.root))
+        self.env['XDG_CACHE_HOME'] = str(self.root/'cache')
         self.cli = [sys.executable,'-I',str(self.plugin/'scripts/pluginctl.py'),'prepare']
 
     def prepare(self, *args):
@@ -63,6 +65,34 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
 
     def mode(self, value):
         (self.root/'mode').write_text(value)
+
+    def test_first_start_prepares_dependencies_and_warm_start_does_not_download(self):
+        argv = [sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'), 'runtime', '--prepare-on-start']
+        first = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stdout, 'MCP_FIXTURE_READY\n')
+        self.assertIn('"stage": "publish"', first.stderr)
+        self.mode('fail')
+        warm = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(warm.returncode, 0, warm.stderr)
+        self.assertEqual(warm.stdout, 'MCP_FIXTURE_READY\n')
+        self.assertNotIn('"stage"', warm.stderr)
+        dependency = next((self.root/'data').rglob('fixture.js'))
+        dependency.write_text('unverified dependency')
+        damaged = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(damaged.returncode, 0)
+        self.assertEqual(damaged.stdout, '')
+        self.assertIn('cache drift', damaged.stderr)
+
+    def test_first_start_rejects_modified_package_before_dependency_download(self):
+        (self.plugin/'scripts/launch_runtime.py').write_text('print("modified")\n')
+        result = subprocess.run([sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'),
+                                 'runtime', '--prepare-on-start'], env=self.env,
+                                capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('inventory mismatch', result.stderr)
+        self.assertFalse((self.root/'npm-args').exists())
 
     def test_failed_repair_preserves_verified_cache_and_offline_reuse(self):
         prepared=self.prepare('--offline')
