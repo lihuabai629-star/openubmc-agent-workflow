@@ -9,12 +9,12 @@ The supported qualification host is Codex CLI 0.153.4 on Linux, Python 3.12, and
 Download the archive and checksum from the same release. Run these commands in a new directory:
 
 ```bash
-gh release download v2.0.9 --repo lihuabai629-star/openubmc-agent-workflow \
-  --pattern openubmc-v2.0.9-codex.tar.gz --pattern openubmc-v2.0.9-codex.sha256
-sha256sum --check openubmc-v2.0.9-codex.sha256
-tar -xzf openubmc-v2.0.9-codex.tar.gz
-python3 -I openubmc/scripts/install_plugin.py openubmc-v2.0.9-codex.tar.gz \
-  --sha256 "$(cut -d' ' -f1 openubmc-v2.0.9-codex.sha256)"
+gh release download v2.0.10 --repo lihuabai629-star/openubmc-agent-workflow \
+  --pattern openubmc-v2.0.10-codex.tar.gz --pattern openubmc-v2.0.10-codex.sha256
+sha256sum --check openubmc-v2.0.10-codex.sha256
+tar -xzf openubmc-v2.0.10-codex.tar.gz
+python3 -I openubmc/scripts/install_plugin.py openubmc-v2.0.10-codex.tar.gz \
+  --sha256 "$(cut -d' ' -f1 openubmc-v2.0.10-codex.sha256)"
 ```
 
 Installation prepares hash-locked dependencies outside the package and checks both MCP servers.
