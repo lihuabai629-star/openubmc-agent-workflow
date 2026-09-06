@@ -1,6 +1,6 @@
 {
   "name": "openubmc",
-  "version": "2.0.8",
+  "version": "2.0.9",
   "description": "OpenUBMC Runtime and operational skills for Codex",
   "author": {
     "name": "OpenUBMC Team"
