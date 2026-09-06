@@ -96,6 +96,8 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
             process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
                 stdout, stderr = process.communicate(timeout=timeout)
+                (root/f'native-{len(runs)+1}.stdout').write_text(stdout)
+                (root/f'native-{len(runs)+1}.stderr').write_text(stderr)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.communicate()

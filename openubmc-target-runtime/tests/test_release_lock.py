@@ -85,12 +85,12 @@ class ReleaseLockTests(unittest.TestCase):
             lock["evaluation_harnesses"],
         )
 
-    def test_workflow_declares_the_v2_0_9_version(self) -> None:
+    def test_workflow_declares_the_v2_0_11_version(self) -> None:
         workflow = json.loads(
             (REPO_ROOT / "workflow.json").read_text(encoding="utf-8")
         )
 
-        self.assertEqual(workflow["version"], "2.0.10")
+        self.assertEqual(workflow["version"], "2.0.11")
 
     def test_lock_verification_reports_the_immutable_release_identity(self) -> None:
         lock = build_release_lock(REPO_ROOT, source_commit=self.commit)
