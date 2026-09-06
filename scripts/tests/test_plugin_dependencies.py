@@ -94,6 +94,36 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.assertIn('inventory mismatch', result.stderr)
         self.assertFalse((self.root/'npm-args').exists())
 
+    def test_first_start_parent_loss_stops_downloader_and_releases_cache_lock(self):
+        self.mode('hang')
+        child_script = 'import subprocess,sys,time; subprocess.Popen(sys.argv[1:]); time.sleep(120)'
+        argv = [sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'), 'runtime', '--prepare-on-start']
+        with (self.root/'parent.stdout').open('w') as stdout, (self.root/'parent.stderr').open('w') as stderr:
+            parent = subprocess.Popen([sys.executable, '-c', child_script, *argv], env=self.env,
+                                      stdout=stdout, stderr=stderr)
+            try:
+                deadline = time.monotonic()+8
+                while not (self.root/'pids').exists() and time.monotonic()<deadline:
+                    time.sleep(.05)
+                self.assertTrue((self.root/'pids').exists())
+                pids = [int(value) for value in (self.root/'pids').read_text().split()]
+                parent.kill()
+                parent.wait(timeout=3)
+                deadline = time.monotonic()+5
+                while list((self.root/'data').rglob('*.staging')) and time.monotonic()<deadline:
+                    time.sleep(.05)
+                for pid in pids:
+                    stat = Path('/proc')/str(pid)/'stat'
+                    self.assertTrue(not stat.exists() or stat.read_text().split()[2]=='Z')
+                self.assertFalse(list((self.root/'data').rglob('*.staging')))
+                self.mode('success')
+                result = self.prepare('--offline', '--lock-timeout', '1')
+                self.assertEqual(result.returncode, 0, result.stderr)
+            finally:
+                if parent.poll() is None:
+                    parent.kill()
+                parent.wait()
+
     def test_failed_repair_preserves_verified_cache_and_offline_reuse(self):
         prepared=self.prepare('--offline')
         self.assertEqual(prepared.returncode,0,prepared.stderr)
