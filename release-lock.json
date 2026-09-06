@@ -1,10 +1,10 @@
 {
   "schema": "openubmc-agent-workflow.release-lock.v1",
   "lock_version": 1,
-  "release_version": "2.0.9",
-  "source_commit": "117ffcc580a98e2754c2cc998fa3cd4ce427d7c6",
+  "release_version": "2.0.10",
+  "source_commit": "37e53dd854f5b3edd4888a0523b99108ecee5a8a",
   "source_commit_policy": "lock-finalization-parent-v1",
-  "workflow_digest": "sha256:f25d3c1962f437b399f99742e3b6bc4ccc8d5973bb6e1b19302a9f83996505d0",
+  "workflow_digest": "sha256:941cc27e97ab658d7b0bfbe5b71963fab757505cc36584bd97090564bd8ccb42",
   "skills": [
     {
       "name": "openubmc-environment-setup",
@@ -194,6 +194,6 @@
       "openubmc-live-patch"
     ]
   },
-  "source_tree_digest": "sha256:ea3b6837d613499ad724c347ad014bdf7dd67547762de512fa44df2d63f720b0",
-  "lock_digest": "sha256:e70c66f85c3478760d405d43af134bcc39824d617bd19b0a6905fa1a2cb6374b"
+  "source_tree_digest": "sha256:5eee9237fde1b17f86d62ab8bca49fb910e370e796351313bb821ccb273451ec",
+  "lock_digest": "sha256:99d3209f43d0c1a9c2247f71447ecf4b28f986f84155e7802d830eac1885fde3"
 }
