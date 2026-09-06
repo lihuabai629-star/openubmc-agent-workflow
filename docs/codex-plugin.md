@@ -9,12 +9,12 @@ The supported qualification host is Codex CLI 0.153.4 on Linux, Python 3.12, and
 Download the archive and checksum from the same release. Run these commands in a new directory:
 
 ```bash
-gh release download v2.0.9 --repo lihuabai629-star/openubmc-agent-workflow \
-  --pattern openubmc-v2.0.9-codex.tar.gz --pattern openubmc-v2.0.9-codex.sha256
-sha256sum --check openubmc-v2.0.9-codex.sha256
-tar -xzf openubmc-v2.0.9-codex.tar.gz
-python3 -I openubmc/scripts/install_plugin.py openubmc-v2.0.9-codex.tar.gz \
-  --sha256 "$(cut -d' ' -f1 openubmc-v2.0.9-codex.sha256)"
+gh release download v2.0.10 --repo lihuabai629-star/openubmc-agent-workflow \
+  --pattern openubmc-v2.0.10-codex.tar.gz --pattern openubmc-v2.0.10-codex.sha256
+sha256sum --check openubmc-v2.0.10-codex.sha256
+tar -xzf openubmc-v2.0.10-codex.tar.gz
+python3 -I openubmc/scripts/install_plugin.py openubmc-v2.0.10-codex.tar.gz \
+  --sha256 "$(cut -d' ' -f1 openubmc-v2.0.10-codex.sha256)"
 ```
 
 Installation prepares hash-locked dependencies outside the package and checks both MCP servers.
@@ -52,6 +52,37 @@ and failed package directories as recovery evidence; they are outside the active
 An interrupted activation is reconciled before the next install. Recovery checks the previous and
 planned digests before restoring anything. When a user edit conflicts, keep the journal and reconcile
 that edit before retrying; the installer does not overwrite it.
+
+## Dependency recovery
+
+Preparation prints one JSON progress event per pip/npm stage to stderr. Default deadlines are
+300 seconds for pip, 180 seconds for npm, and 30 seconds for the dependency cache lock. Additional
+attempts are opt-in and bounded to three per stage:
+
+```bash
+python3 -I ~/plugins/openubmc/scripts/pluginctl.py prepare --repair \
+  --pip-timeout 300 --npm-timeout 180 --lock-timeout 30 --retries 1
+```
+
+A failed repair retains the previous verified cache. Cancellation stops the installer process group
+before removing its incomplete stage. After a force-killed parent, a surviving installer keeps the
+cache lock until it exits; a competing prepare reports a lock timeout. Retry preparation after that
+worker exits. Interrupted directory publication is reconciled before reuse or another installation.
+
+Offline installation requires the Python wheels and npm package tarballs to be available locally:
+
+```bash
+PIP_FIND_LINKS=/absolute/wheelhouse npm_config_cache=/absolute/npm-cache \
+  python3 -I ~/plugins/openubmc/scripts/pluginctl.py prepare --offline
+```
+
+Python wheels still require the hashes in the release lock; npm still validates its lockfile
+integrity. A partial or tampered cache never receives an installation receipt. Normal MCP startup
+performs verification without package downloads.
+
+For startup diagnosis, `runtime --timings /absolute/new-trace.jsonl` or `kb --timings ...` records
+verification, dependency identity/lock and execution snapshot durations separately from MCP stdout.
+The timing path must be new and outside the plugin directory.
 
 ## Build and qualify
 
