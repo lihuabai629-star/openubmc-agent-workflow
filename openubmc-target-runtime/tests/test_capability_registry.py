@@ -144,7 +144,8 @@ class CapabilityRegistryTests(unittest.TestCase):
         )
         self.assertEqual(descriptor["owner_skill"], "openubmc-debug")
         self.assertEqual(descriptor["runtime_api_version"], RUNTIME_API_VERSION)
-        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["state"], "waiting_response")
+        self.assertEqual(result["gate"]["name"], "diagnosis.acceptance")
         self.assertEqual(backend.calls, 1)
         self.assertEqual(descriptor["capability"], "openubmc.debug.diagnose")
 

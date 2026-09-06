@@ -34,6 +34,7 @@ if str(TARGET_RUNTIME_ROOT) not in sys.path:
 from openubmc_target_runtime.diagnostic_receipt import (  # noqa: E402
     diagnostic_result_value_evaluable,
 )
+from openubmc_target_runtime.diagnosis_record import DiagnosisRecord  # noqa: E402
 
 
 SCHEMA = "openubmc-agent-workflow.agent-gateway-ab.v4"
@@ -393,7 +394,11 @@ def _qualification_diagnosis_receipt(
         "payload": {
             "root_cause": "qualification source defect",
             "evidence_ids": list(evidence_ids),
-            "known_gaps": [],
+            "causal_chain": ["qualification input has an outdated identity", "source selects that identity"],
+            "code_owner": "src/qualification.lua",
+            "contradictions": [],
+            "remaining_gaps": [],
+            "verification_status": "verified",
         },
     }
 
@@ -415,6 +420,20 @@ def _qualification_diagnosis_respond_template() -> str:
     ).replace(
         '"gate_version":"<structured_content.gate.gate_version>"',
         '"gate_version":<structured_content.gate.gate_version>',
+    )
+
+
+def _verified_diagnosis_record(value: Mapping[str, object], evidence_ids: Iterable[str]) -> bool:
+    if value.get("schema") != "openubmc.target-runtime.v1/diagnosis-record-v1":
+        return False
+    try:
+        record = DiagnosisRecord.from_mapping(value)
+    except ValueError:
+        return False
+    expected = _qualification_diagnosis_receipt(evidence_ids)["payload"]
+    return bool(
+        record.accepted and record.record_id
+        and all(record.to_public_dict().get(key) == item for key, item in expected.items())
     )
 
 
@@ -734,21 +753,11 @@ def candidate_execute_acceptance(
                     errors.append(
                         "diagnosis response must return the Developer Gate"
                     )
-                if not _complete_diagnostic_receipt(
-                    _json_object(current_result.get("diagnostic_receipt")),
-                    expected_operation="diagnosis.acceptance",
-                    expected_evidence_ids=evidence_ids,
-                    expected_root_cause=str(
-                        _json_object(
-                            _json_object(diagnosis_arguments.get("response")).get(
-                                "payload"
-                            )
-                        ).get("root_cause")
-                        or ""
-                    ).strip(),
+                if not _verified_diagnosis_record(
+                    _json_object(current_result.get("diagnosis_record")), evidence_ids,
                 ):
                     errors.append(
-                        "diagnosis response must return a complete evaluable receipt"
+                        "diagnosis response must return a verified grounded DiagnosisRecord"
                     )
                 response_index = 2
         elif current_gate.get("owner") != "openubmc-developer":
@@ -761,7 +770,7 @@ def candidate_execute_acceptance(
             current_gate.get("name") != "developer.change"
         ):
             errors.append("Developer-owned Gate must be developer.change")
-        if current_gate.get("owner") == "openubmc-developer" and (
+        if current_gate.get("owner") == "openubmc-developer" and response_index == 1 and (
             not _complete_diagnostic_receipt(
                 _json_object(current_result.get("diagnostic_receipt")),
                 expected_operation=(
@@ -790,6 +799,10 @@ def candidate_execute_acceptance(
         outcome = _json_object(final_result.get("outcome"))
         if final_result.get("state") != "completed" or outcome.get("status") != "completed":
             errors.append("Gate response must return a completed Runtime Outcome")
+        if response_index == 2 and (
+            final_result.get("diagnosis_record") != current_result.get("diagnosis_record")
+        ):
+            errors.append("terminal Outcome must preserve the accepted DiagnosisRecord")
     return {
         "passed": not errors,
         "errors": errors,

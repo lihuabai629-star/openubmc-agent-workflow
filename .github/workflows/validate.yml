@@ -94,3 +94,25 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
         run: python scripts/validate_workflow.py
+
+      - name: Install locked Codex plugin host
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --prefix plugin/host
+          echo "$PWD/plugin/host/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Test plugin activation recovery with native Codex
+        run: python -m unittest scripts.tests.test_plugin_package scripts.tests.test_plugin_activation
+
+      - name: Qualify immutable Codex plugin
+        run: >-
+          python scripts/qualify_plugin.py
+          --archive "$RUNNER_TEMP/openubmc-plugin.tar.gz"
+          --output "$RUNNER_TEMP/plugin-qualification.json"
+
+      - name: Upload plugin qualification
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-plugin-qualification
+          path: ${{ runner.temp }}/plugin-qualification.json
+          if-no-files-found: error

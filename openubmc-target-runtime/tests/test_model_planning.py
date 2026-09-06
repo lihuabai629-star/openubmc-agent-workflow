@@ -39,6 +39,7 @@ from test_agent_gateway import (  # noqa: E402
     SemanticBackend,
     artifact_ref,
     gate_binding,
+    accept_diagnosis,
 )
 
 
@@ -1324,6 +1325,7 @@ class PlanResolverTests(unittest.TestCase):
                 self.assertEqual(after["gate"]["gate_id"], before["gate"]["gate_id"])
                 self.assertIsNone(after["outcome"])
 
+                before = accept_diagnosis(service, before, task_id="model-plan-authority")
                 patch_file = Path(raw) / "model-planning-authority.lua"
                 patch_file.write_bytes(b"return 'authority-proof'\n")
                 final = service.call_exposed_tool(

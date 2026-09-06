@@ -23,6 +23,9 @@ from openubmc_target_runtime import (  # noqa: E402
 )
 
 
+from test_agent_gateway import accepted_diagnosis_payload
+
+
 class FakeTask:
     def __init__(self, task_id: str) -> None:
         self.task_id = task_id
@@ -1060,6 +1063,21 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
                 },
             )["structuredContent"]
             case_id = first["run_id"]
+            first = self._rpc_call(
+                endpoint, 10, "execute",
+                {
+                    "kind": "respond", "run_id": case_id,
+                    "gate_id": first["gate"]["gate_id"],
+                    "gate_version": first["gate"]["gate_version"],
+                    "schema_digest": first["gate"]["schema_digest"],
+                    "response": {
+                        "status": "completed", "summary": "source diagnosis verified",
+                        "payload": accepted_diagnosis_payload([
+                            item["evidence_id"] for item in first["diagnostic_receipt"]["evidence"]
+                        ]),
+                    },
+                },
+            )["structuredContent"]
             terminal_result = self._rpc_call(
                 endpoint,
                 2,

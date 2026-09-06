@@ -367,7 +367,11 @@ def _build_public_runtime_ledger(
                     "payload": {
                         "root_cause": "global and local slot identity mismatch",
                         "evidence_ids": evidence_ids,
-                        "known_gaps": [],
+                        "causal_chain": ["global slot identity entered a local lookup", "lookup selected the wrong drive"],
+                        "code_owner": "fix.lua",
+                        "contradictions": [],
+                        "remaining_gaps": [],
+                        "verification_status": "verified",
                     },
                 },
             },
@@ -446,6 +450,9 @@ def _build_public_runtime_ledger(
                     "summary": "firmware artifact completed",
                     "payload": {
                         "source_revision": manifest["artifact"]["source_revision"],
+                        "package_binding": "package_binding_verified",
+                        "upgrade_eligible": True,
+                        "evidence_ids": evidence_ids,
                         "artifact_ref": {
                             "handle": str(artifact_path),
                             "digest": "sha256:" + manifest["artifact"]["sha256"],

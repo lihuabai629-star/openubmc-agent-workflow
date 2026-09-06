@@ -34,6 +34,9 @@ from openubmc_target_runtime.effect_runner import (  # noqa: E402
 )
 
 
+from diagnosis_fixtures import persist_terminal_diagnosis
+
+
 class FakeTask:
     def __init__(self, task_id: str) -> None:
         self.task_id = task_id
@@ -1035,6 +1038,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 task_id="shared-task",
                 operation_id="old-debug",
             )
+            persist_terminal_diagnosis(repository, "case-old")
             first_ref = first.envelope["evidence_refs"][0]
             size_after_one = service._test.context_runtime.status()["storage_bytes"]
             now[0] = 2.0
@@ -1049,6 +1053,7 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                 task_id="shared-task",
                 operation_id="new-debug",
             )
+            persist_terminal_diagnosis(repository, "case-new")
             second_ref = second.envelope["evidence_refs"][0]
             self.assertEqual(first_ref["blob_id"], second_ref["blob_id"])
             self.assertNotEqual(first_ref["evidence_id"], second_ref["evidence_id"])

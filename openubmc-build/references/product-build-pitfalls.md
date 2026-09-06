@@ -1,38 +1,47 @@
 # Product Build Pitfalls
 
-Use this when building full openUBMC product packages or validating an HPM/rootfs output.
+Read this only for `product-artifact` or `publish`.
 
-## Remote Dependencies
+## Remote dependencies
 
-If dependency resolution reports a missing binary, first verify Conan auth and remote availability in `conan-auth.md`. Do not replace a stable remote dependency with a local source package unless the user explicitly approves that workaround.
+If dependency resolution reports a missing binary, first verify Conan authentication and remote availability using [conan-auth.md](conan-auth.md). A stable product dependency is not silently replaced with a local source package.
 
-## Online Signing
+Record the selected community, Conan home, PATH, executable identity, and product lock hash in the Plan. Preserve remote/profile preflight output as supplemental evidence; the current Plan does not fully attest Conan profiles, remotes, or a Python package behind a launcher. When `build/<community>.lock` is absent but another community lock exists, stop at Plan creation.
 
-When the environment uses online signing:
+## Online signing
 
-```bash
-signing-agent-service status
-signing-agent-service start
-```
+Prove the configured signing service is available before a long product Attempt. Missing signing resources are product/signing failures, not evidence that component source must be rebuilt.
 
-Some Codex/automation environments clean detached background processes. If the signer disappears during long builds, keep it alive in an active terminal/session and prove it is listening before the build. Missing `sign_img.xml` or failed signer contact is a late HPM/signing failure, not a source-package problem.
+If the host cleans detached services, keep the signer in a managed live session and preserve its status as Attempt evidence.
 
-## Umask And Rootfs Permissions
+## Umask and cached payloads
 
-Run product builds with a normal file creation mask:
+The Attempt runner applies the Plan `umask` to the child process. Use `022` for ordinary product packaging unless the selected repository has an explicit different policy.
 
-```bash
-umask 022
-/root/.agents/skills/openubmc-build/scripts/run_bmcgo_checked.py -- \
-  bmcgo build -t personal -b <board> -bt <debug|release> --stage <dev|stable>
-```
+A safe umask protects newly created directories; it does not repair an existing Conan payload whose shared ancestors are already `0700`. Inspect packages in the resolved graph before packaging. Reacquire or repair only the affected package identities.
 
-A restrictive caller `umask` can be inherited by rootfs staging and produce directories such as `/opt` or `/opt/bmc` with mode `700`, which can make Web/Redfish content inaccessible after an otherwise successful upgrade.
+## Rootfs access
 
-After packaging, spot-check staging or extracted rootfs permissions when Web/Redfish content matters:
+A mode-only spot check of `/opt` or `/opt/bmc` is insufficient. Before creating the immutable Plan:
 
-```bash
-stat -c '%a %U %G %n' <tmp_root>/opt <tmp_root>/opt/bmc
-```
+1. identify every non-root service identity;
+2. enumerate its `ExecStart`, `WorkingDirectory`, runtime libraries, and data paths;
+3. freeze those per-service mappings in the Plan, including shared paths such as `/opt/bmc/apps` and `/opt/bmc/drivers`.
 
-Expected mode is normally `755 root root`.
+After the Attempt, let the locked finalizer check `/` and every required ancestor in the final ext4 image and create the authoritative `rootfs-access` gate report.
+
+Private paths unrelated to a planned service may remain `0700`. The gate evaluates actual service reachability, not a global ban on restrictive permissions.
+
+The helper checks classic mode-bit traversal from final-image inode metadata only. File read/execute permissions, ACLs, runtime overlays, and service startup require additional product-specific evidence.
+
+## Concurrent output
+
+An Attempt and its finalizer separately acquire the same canonical same-host resource locks for the HPM, final ext4 image, and resolved lock. The locks are not held continuously between those phases; the finalizer rejects any intervening change through the Attempt snapshot comparison. Reuse the selected checkout when those resources are free. A lock collision is a reason to wait or choose genuinely separate output paths, not an automatic reason to create a worktree.
+
+## Stale output
+
+A filename in `output/` is not evidence of a successful Attempt. Locked finalization requires the HPM, final ext4 image, and built resolved lock each to be absent before the successful Attempt or have a different SHA-256 afterward, together with the matching product version, recomputed dependency and permission gates, and fresh metadata. mtime, ctime, or inode-only changes are rejected. When a deterministic retry is expected to reproduce identical bytes, preserve and move all three old outputs aside before starting it.
+
+## Package binding
+
+Image inspection does not by itself prove that the HPM contains that exact image. Until a product-specific containment parser establishes that relation, preserve `package_binding_unverified` and `upgrade_eligible: false` in verification, metadata, and the Build result. Do not auto-route the HPM to Upgrade.

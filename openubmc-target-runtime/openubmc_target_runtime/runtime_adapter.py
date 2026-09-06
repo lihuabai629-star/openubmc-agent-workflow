@@ -7,8 +7,21 @@ from typing import Protocol
 from .agent_gateway import ResultProjector
 from .capability import DomainExecutor, EffectClass
 from .catalog import OperationCatalog
-from .context_runtime import ContextRuntime, IdempotencyConflict
+from .context_runtime import (
+    AUTOMATIC_OBSERVATION_REUSE_MAX_AGE_SECONDS,
+    ContextRuntime,
+    EvidenceUnavailable,
+    IdempotencyConflict,
+)
 from .effect_runner import EffectIntent, EffectSettlementMode, PreparedEffect
+from .observation import (
+    observation_completion_window_matches,
+    observation_reusable,
+    observation_target_scope_known,
+    observation_target_scope_matches,
+    qualify_observation,
+    selected_scope_complete,
+)
 from .run_engine import RunTransition
 from .semantic_runtime import (
     CancelRun,
@@ -16,6 +29,7 @@ from .semantic_runtime import (
     Gate,
     GateConflict,
     ObservationQuery,
+    ObservationRef,
     StartRun,
     SubmitGate,
     run_command_semantic_input,
@@ -145,11 +159,13 @@ class RuntimeSemanticAdapter:
         *,
         query: ObservationQuery,
         assurance: str,
+        task_id: str = "",
     ) -> Mapping[str, object]:
         return self.context_runtime.persist_observation(
             raw,
             scope=query.to_public_dict(),
             assurance=assurance,
+            task_id=task_id,
         )
 
     def start_run(
@@ -191,14 +207,30 @@ class RuntimeSemanticAdapter:
             ]
         else:
             arguments["ip"] = command.target
-        if command.entry_operation:
-            arguments["_context_entry_operation"] = command.entry_operation
+        selected_entry = command.entry_operation
+        if command.intent == "upgrade-and-verify" and len(command.targets) > 1:
+            if selected_entry not in {"", "upgrade_run", "upgrade_batch"}:
+                raise ValueError("multi-target upgrade requires the Upgrade batch Domain Pack")
+            self.domain_executor.policy_for("upgrade_batch")
+            selected_entry = "upgrade_batch"
+        if selected_entry:
+            arguments["_context_entry_operation"] = selected_entry
             arguments["entry_arguments"] = dict(command.entry_arguments or {})
         if command.delivery_strategy:
             arguments["delivery_strategy"] = command.delivery_strategy
         seeded_raw: Mapping[str, object] | None = None
-        if command.observation_ref is not None:
-            source = command.observation_ref.to_source_dict()
+        selected_ref = command.observation_ref
+        if (
+            selected_ref is None and not command.targets
+            and command.intent in {"diagnosis-only", "diagnose-and-fix"}
+            and command.entry_operation in {"", "debug_run"}
+            and not command.entry_arguments
+        ):
+            selected_ref = self.reusable_observation_ref(
+                target=command.target, task_id=task_id, operation_id=operation_id,
+            )
+        if selected_ref is not None:
+            source = selected_ref.to_source_dict()
             stored = self.context_runtime.load_observation(source)
             if stored.get("reusable", True) is not True:
                 raise ValueError(
@@ -217,7 +249,7 @@ class RuntimeSemanticAdapter:
             query = ObservationQuery.from_query(stored_scope)
             if query.target != command.target:
                 raise ValueError("ObservationRef target does not match the Run target")
-            if command.observation_ref.target != command.target:
+            if selected_ref.target != command.target:
                 raise ValueError(
                     "ObservationRef target metadata does not match the Run"
                 )
@@ -231,6 +263,9 @@ class RuntimeSemanticAdapter:
             if expected.get("status") != "complete":
                 raise ValueError("only a complete ObservationRef can seed a Run")
             seeded_raw = raw
+            # This Runtime selection is persisted separately from the original
+            # caller digest, so a replay never selects a different observation.
+            start_input["observation_ref"] = selected_ref.to_public_dict()
 
         try:
             projection = self.context_runtime.open_semantic_run(
@@ -263,6 +298,61 @@ class RuntimeSemanticAdapter:
                 executor=lambda: seeded_raw,
             )
         return self.run_snapshot(run_id)
+
+    def reusable_observation_ref(
+        self, *, target: str, task_id: str, operation_id: str,
+        require_temporal_match: bool = False,
+    ) -> ObservationRef | None:
+        source = self.context_runtime.find_reusable_observation(task_id=task_id, target=target)
+        if source is None:
+            return None
+        try:
+            stored = self.context_runtime.load_observation(source)
+            raw = _mapping_or_empty(stored.get("raw"))
+            query = ObservationQuery.from_query(_mapping_or_empty(stored.get("scope")))
+            if not observation_target_scope_known(raw) or not selected_scope_complete(raw, query):
+                return None
+            projected = self.agent_projector.observation(
+                raw, query, assurance=str(stored.get("assurance", "fast")), source=source,
+            )
+            if projected.get("status") != "complete":
+                return None
+            probe_query = ObservationQuery.from_query({
+                "target": target,
+                "selectors": [{"id": "runtime-scope", "kind": "capability", "names": ["ssh"]}],
+            })
+            probe = self.observe_once(
+                probe_query, assured=False, task_id=task_id,
+                operation_id=f"{operation_id}-observation-scope",
+            )
+            probe = qualify_observation(probe, probe_query, scope_complete=selected_scope_complete(probe, probe_query))
+            if (
+                not observation_reusable(probe)
+                or not observation_target_scope_known(probe)
+                or not observation_target_scope_matches(raw, probe)
+                or (require_temporal_match and not observation_completion_window_matches(raw, probe))
+                or stored.get("fresh_until", 0) < self.context_runtime.clock()
+                or not 0 <= self.context_runtime.clock() - stored.get("persisted_at", 0) <= AUTOMATIC_OBSERVATION_REUSE_MAX_AGE_SECONDS
+            ):
+                return None
+            return ObservationRef.from_public_dict(source)
+        except (EvidenceUnavailable, ConnectionError, OSError, TimeoutError, ValueError, TypeError):
+            return None
+
+    def reusable_observation(
+        self, *, target: str, task_id: str, operation_id: str
+    ) -> Mapping[str, object] | None:
+        reference = self.reusable_observation_ref(
+            target=target, task_id=task_id, operation_id=operation_id,
+            require_temporal_match=True,
+        )
+        if reference is None:
+            return None
+        source = reference.to_source_dict()
+        try:
+            return {**self.context_runtime.load_observation(source), "source": reference.to_public_dict()}
+        except (EvidenceUnavailable, OSError, ValueError):
+            return None
 
     def derive_closeout(
         self,

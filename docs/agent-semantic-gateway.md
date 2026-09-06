@@ -114,6 +114,19 @@ process restart. Validation also binds the persisted scope digest, observation t
 metadata, and 15-minute reuse window before a Run is opened. Full ObservationReceipts are not
 accepted as `execute` input; callers pass the Receipt's verified `ObservationRef`.
 
+For a single-target debug diagnosis without an explicit reference, Runtime may select the same
+task's unique complete source automatically. Selection has a 30-second age limit and requires a
+fresh capability probe that confirms non-empty target identity and the same epoch. Ambiguous,
+expired, changed, or cross-task sources trigger fresh collection. The chosen reference is frozen in
+the original start decision; replay does not discover another source. Extended observation plans
+reuse exact selector values and collect only missing values when the combined result preserves
+target identity, epoch, requested order, and the five-second completion window. Otherwise the whole
+scope is collected again. See [ADR-0008](adr/0008-bounded-observation-continuity.md).
+
+An explicit object-not-found response from a complete, successful reviewed MDB read is represented
+as an available result containing the typed fact `observed_absent`. Authentication errors, timeouts,
+truncation, and missing responses remain collection gaps and cannot establish object absence.
+
 ## Execution contract
 
 `execute` accepts four action kinds:
@@ -175,6 +188,9 @@ freshness gaps identify the affected Runtime-owned target ID.
 Requested coverage is derived from Runtime-owned operation arguments and reconciled with the
 Adapter result, so an omitted echoed request or skipped collector cannot shrink the acceptance
 scope. Multi-target diagnosis projects each target result plus the bounded comparison result.
+The comparison result is a Runtime-derived `ComparisonReceipt` binding target identities, source
+digests, Evidence IDs, requested scope, freshness, differences, and incomparability reasons.
+Incomplete, stale, truncated, or unmatched source facts yield an inconclusive comparison.
 Closeout derives Agent acceptance from both the source receipt status and `visible_*` coverage.
 Source-complete Evidence remains complete after compaction, but `stage.diagnosis` is partial or
 blocked when the persisted Agent-visible receipt is only partially evaluable or not evaluable.
@@ -182,18 +198,21 @@ A generic operation summary therefore cannot satisfy `stage.diagnosis`.
 
 Reusable observation evidence and accepted diagnosis are distinct Runtime facts. Passing an
 `ObservationRef` to `execute(start)` avoids recollecting that evidence, but it does not assert a
-root cause. In `diagnose-and-fix`, a complete evaluable Runtime DiagnosticReceipt may satisfy the
-diagnosis step automatically. A partial or blocked receipt instead yields a durable
-`diagnosis.acceptance` Gate before `developer.change`; development cannot open while that Gate is
-unanswered.
+root cause. Current diagnosis workflows yield a durable `diagnosis.acceptance` Gate even when the
+Runtime DiagnosticReceipt is complete. In `diagnose-and-fix`, this Gate precedes `developer.change`;
+development cannot open while it is unanswered. Historical Runs retain their pinned workflow
+definitions for readback.
 
 A completed `diagnosis.acceptance` response is bound by `run_id`, `gate_id`, `gate_version`, and
-`schema_digest` and supplies `root_cause`, non-empty `evidence_ids`, and `known_gaps`. Evidence may
-come from the current Runtime DiagnosticReceipt or from a `workflow-diagnosis-record` attached by
-the Operator plane to the same Run, target, and workflow cycle. The Runtime resolves attachments
-from its durable Evidence index, rejects unrelated types and Evidence IDs from another Run or
-cycle, and derives observation time and freshness from the persisted ObservationRef and
-DiagnosticReceipt.
+`schema_digest` and supplies a typed `DiagnosisRecord`: `root_cause`, non-empty `evidence_ids`,
+`causal_chain`, `code_owner`, `contradictions`, `remaining_gaps`, and `verification_status`.
+Evidence may come from the current Runtime DiagnosticReceipt or from a `workflow-diagnosis-record`
+attached by the Operator plane to the same Run, target, and workflow cycle. The Runtime resolves
+attachments from its durable Evidence index, rejects unrelated types and Evidence IDs from another
+Run or cycle, and derives observation time and freshness from the persisted ObservationRef and
+DiagnosticReceipt. A record is accepted only when it is `verified`, has no contradictions, carries
+a non-empty record identity, and points to the current receipt lineage; collection completion alone
+never closes diagnosis.
 `execute(kind=resume)` only reattaches the same unanswered Gate, so repeated resume calls cannot
 repair missing diagnosis input or advance the workflow. A failed or cancelled diagnosis becomes a
 terminal Run before any development phase.

@@ -37,6 +37,7 @@ from .diagnostic_receipt import (
     build_diagnostic_receipt,
     latest_diagnostic_receipt,
 )
+from .diagnosis_record import accepted_diagnosis_record
 from .effect_runner import EffectIntent, EffectSettlementMode, PreparedEffect
 from .evidence_store import EvidenceQuery
 from .mutation import (
@@ -78,7 +79,10 @@ MAX_PROJECTED_PHASE_RECORDS = 32
 MAX_PROJECTED_EVIDENCE_REFS = 256
 MAX_OPERATOR_PROJECTED_RUNS = 16
 MAX_OBSERVATION_SOURCE_BYTES = 8 * 1024 * 1024
+MAX_AUTOMATIC_OBSERVATION_SCAN_BLOBS = 256
+MAX_AUTOMATIC_OBSERVATION_SCAN_BYTES = 32 * 1024 * 1024
 OBSERVATION_REUSE_MAX_AGE_SECONDS = 15 * 60
+AUTOMATIC_OBSERVATION_REUSE_MAX_AGE_SECONDS = 30
 
 
 def _diagnostic_receipt_event_fields(
@@ -449,7 +453,7 @@ def _effective_case_intent(projection: Mapping[str, object]) -> str:
         if isinstance(item, Mapping)
     ]
     names = {str(item.get("operation", "")) for item in operations}
-    if "upgrade_run" in names:
+    if "upgrade_run" in names or "upgrade_batch" in names:
         return "upgrade-and-verify"
     if "live_patch_run" in names:
         rollback = any(
@@ -574,6 +578,8 @@ class BlobRepository(Protocol):
 
     def read(self, blob_id: str, *, offset: int, limit: int) -> bytes: ...
 
+    def read_bounded(self, blob_id: str, *, max_bytes: int) -> bytes | None: ...
+
     def delete(self, blob_id: str) -> bool: ...
 
     def size_bytes(self) -> int: ...
@@ -604,6 +610,19 @@ class InMemoryBlobRepository:
             raise EvidenceUnavailable(f"blob {blob_id} failed hash verification")
         end = None if limit < 0 else offset + limit
         return body[offset:end]
+
+    def read_bounded(self, blob_id: str, *, max_bytes: int) -> bytes | None:
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError("max_bytes must be a non-negative integer")
+        with self._lock:
+            body = self._blobs.get(blob_id)
+        if body is None:
+            raise EvidenceUnavailable(f"blob {blob_id} is unavailable")
+        if len(body) > max_bytes:
+            return None
+        if hashlib.sha256(body).hexdigest() != blob_id:
+            raise EvidenceUnavailable(f"blob {blob_id} failed hash verification")
+        return body
 
     def delete(self, blob_id: str) -> bool:
         with self._lock:
@@ -670,6 +689,21 @@ class FilesystemBlobRepository:
             raise EvidenceUnavailable(f"blob {blob_id} failed hash verification")
         end = None if limit < 0 else offset + limit
         return body[offset:end]
+
+    def read_bounded(self, blob_id: str, *, max_bytes: int) -> bytes | None:
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError("max_bytes must be a non-negative integer")
+        path = self._path(blob_id)
+        try:
+            with gzip.open(path, "rb") as archive:
+                body = archive.read(max_bytes + 1)
+        except (OSError, EOFError) as exc:
+            raise EvidenceUnavailable(f"blob {blob_id} is unavailable") from exc
+        if len(body) > max_bytes:
+            return None
+        if hashlib.sha256(body).hexdigest() != blob_id:
+            raise EvidenceUnavailable(f"blob {blob_id} failed hash verification")
+        return body
 
     def delete(self, blob_id: str) -> bool:
         path = self._path(blob_id)
@@ -1031,6 +1065,8 @@ def project_case(
             )
             operation["status"] = "running"
             operation["started_revision"] = revision
+            operation.setdefault("started_at", created_at)
+            operation["last_progress_at"] = created_at
         elif kind == "EvidenceAttached":
             reference = payload.get("evidence")
             if isinstance(reference, Mapping):
@@ -1043,6 +1079,7 @@ def project_case(
                     operation = operations.get(operation_id)
                     if operation is not None:
                         operation.setdefault("evidence_ids", []).append(evidence_id)
+                        operation["last_progress_at"] = created_at
         elif kind == "OperationProgressed":
             operation = operations.setdefault(
                 operation_id,
@@ -1050,10 +1087,26 @@ def project_case(
             )
             if "status" in payload:
                 operation["status"] = str(payload["status"])
+            for name in (
+                "owner",
+                "phase",
+                "started_at",
+                "retry_generation",
+                "reconcile_attempt",
+                "last_error",
+                "deadline_at",
+            ):
+                if name in payload:
+                    operation[name] = payload[name]
             if "evidence_retry_generation" in payload:
                 operation["evidence_retry_generation"] = int(
                     payload["evidence_retry_generation"]
                 )
+                operation["retry_requested_at"] = created_at
+            # `last_progress_at` is an event-derived timestamp. A payload may
+            # describe domain progress, but it cannot spoof the event time or
+            # a supervisor heartbeat into durable progress.
+            operation["last_progress_at"] = created_at
             if "next_actions" in payload:
                 projection["next_actions"] = list(payload["next_actions"])
             if "case_status" in payload:
@@ -1159,6 +1212,8 @@ def project_case(
                 if name and name not in _WORKFLOW_CONTROL_OPERATIONS:
                     completed_counts[name] = completed_counts.get(name, 0) + 1
             operation["terminal_revision"] = revision
+            operation["settled_at"] = created_at
+            operation["last_progress_at"] = created_at
             operation["summary"] = str(payload.get("summary", ""))
             if isinstance(payload.get("diagnostic_receipt"), Mapping):
                 operation["diagnostic_receipt"] = dict(
@@ -1166,6 +1221,8 @@ def project_case(
                 )
             if "target_epoch" in payload:
                 operation["target_epoch"] = payload["target_epoch"]
+            if isinstance(payload.get("target_epochs"), Mapping):
+                operation["target_epochs"] = dict(payload["target_epochs"])
             if operation["status"] == "mutation_outcome_unknown":
                 unknown_mutations[operation_id] = {
                     "operation_id": operation_id,
@@ -1361,6 +1418,10 @@ def project_case(
             raw_effect_intent = decision.get("effect_intent")
             if isinstance(raw_effect_intent, Mapping) and raw_effect_intent:
                 effect_intents.append(dict(raw_effect_intent))
+                if str(decision.get("command_id", "")).startswith("recover-"):
+                    operation = operations.get(str(raw_effect_intent.get("effect_id", "")))
+                    if operation is not None:
+                        operation["reconcile_requested_at"] = created_at
         elif kind == "RunVerificationDeferred":
             step_id = str(payload.get("workflow_step_id", ""))
             state = workflow_step_states.get(step_id)
@@ -1389,6 +1450,9 @@ def project_case(
                 if name and name not in _WORKFLOW_CONTROL_OPERATIONS:
                     completed_counts[name] = completed_counts.get(name, 0) + 1
             operation["reconciled_revision"] = revision
+            operation["reconciled_at"] = created_at
+            operation["last_progress_at"] = created_at
+            operation["reconcile_count"] = operation.get("reconcile_count", 0) + 1
             operation["summary"] = str(payload.get("summary", ""))
             if isinstance(payload.get("diagnostic_receipt"), Mapping):
                 operation["diagnostic_receipt"] = dict(
@@ -1396,6 +1460,8 @@ def project_case(
                 )
             if "target_epoch" in payload:
                 operation["target_epoch"] = payload["target_epoch"]
+            if isinstance(payload.get("target_epochs"), Mapping):
+                operation["target_epochs"] = dict(payload["target_epochs"])
             if operation["status"] == "mutation_outcome_unknown":
                 unknown_mutations[operation_id] = {
                     "operation_id": operation_id,
@@ -3824,6 +3890,17 @@ class ContextRuntime:
                 opened_arguments.get("delivery_strategy", "")
             ),
         )
+        workflow_definition = self.workflow_definitions.bind_target_scope(
+            workflow_definition, self._targets(opened_arguments)
+        )
+        # Resolve the entry domain before the first Effect fingerprint is made.
+        # Inferring it only after OperationAccepted changes resume identity.
+        selected_entry_domain = workflow_definition.entry_domain or next(
+            (_OPERATION_ENTRY_DOMAINS.get(step.name, "") for step in workflow_definition.steps if step.kind == "operation"),
+            "",
+        )
+        if selected_entry_domain:
+            opened_arguments["entry_domain"] = selected_entry_domain
         event = PendingCaseEvent(
             "CaseOpened",
             {
@@ -4616,6 +4693,7 @@ class ContextRuntime:
                     else "live-patch"
                 ),
                 "upgrade_run": "upgrade-and-verify",
+                "upgrade_batch": "upgrade-and-verify",
                 "log_bundle_collect": "bundle-and-diagnose",
             }.get(descriptor.name, "diagnosis-only")
             case_arguments["intent"] = inferred_intent
@@ -4709,6 +4787,7 @@ class ContextRuntime:
             self.repository.abandon_idempotency(case_id, idempotency_key)
             raise
         execution_target_id = (
+            "" if descriptor.name == "upgrade_batch" else
             self._preferred_target_id(projection, arguments)
             if descriptor.mutation or descriptor.name == "debug_collect"
             else self._selected_target_id(projection, arguments)
@@ -5065,6 +5144,7 @@ class ContextRuntime:
                         value,
                         target_id=execution_target_id,
                     ),
+                    **self._batch_target_epoch_fields(descriptor.name, value),
                     **_diagnostic_receipt_event_fields(
                         descriptor.name,
                         value,
@@ -5149,7 +5229,10 @@ class ContextRuntime:
         }
         if evidence is None:
             receipt["legacy_value"] = self._bounded_legacy_value(value)
-        if operation_status == "mutation_outcome_unknown":
+        if (
+            operation_status == "mutation_outcome_unknown"
+            and descriptor.name != "upgrade_batch"
+        ):
             self.repository.abandon_idempotency(case_id, idempotency_key)
             raise MutationOutcomeUnknown(
                 "mutation returned without a terminal journal stage"
@@ -5324,6 +5407,16 @@ class ContextRuntime:
         return public
 
 
+
+    @staticmethod
+    def _batch_target_epoch_fields(
+        operation: str,
+        value: Mapping[str, object],
+    ) -> dict[str, object]:
+        epochs = value.get("target_epochs")
+        if operation != "upgrade_batch" or not isinstance(epochs, Mapping):
+            return {}
+        return {"target_epochs": dict(epochs)}
 
     @staticmethod
     def _observed_target_epoch(
@@ -5511,6 +5604,14 @@ class ContextRuntime:
                 continue
             epoch = operation.get("target_epoch")
             operation_target_version = int(operation.get("target_version", 0))
+            epochs = operation.get("target_epochs")
+            if (
+                operation.get("operation") == "upgrade_batch"
+                and isinstance(epochs, Mapping)
+                and operation_target_version == target_version
+            ):
+                for target_id, target_epoch in epochs.items():
+                    retain_epoch(target_id, target_epoch)
             if (
                 isinstance(epoch, int)
                 and not isinstance(epoch, bool)
@@ -5561,6 +5662,7 @@ class ContextRuntime:
         *,
         scope: Mapping[str, object],
         assurance: str,
+        task_id: str = "",
     ) -> dict[str, object]:
         """Persist redacted observation evidence without opening a Case."""
 
@@ -5597,6 +5699,7 @@ class ContextRuntime:
         document = {
             "schema": OBSERVATION_SOURCE_SCHEMA,
             "scope": _sanitize(scope),
+            "task_id": str(task_id),
             "scope_digest": scope_digest,
             "assurance": str(assurance),
             "target": str(scope.get("target", "")),
@@ -5635,6 +5738,80 @@ class ContextRuntime:
             "target_epoch": document["target_epoch"],
             "reusable": reusable,
         }
+
+    def find_reusable_observation(
+        self, *, task_id: str, target: str
+    ) -> dict[str, object] | None:
+        """Rebuild the bounded observation index from durable content-addressed blobs."""
+        if not task_id or not target:
+            return None
+        read_bounded = getattr(self.blob_repository, "read_bounded", None)
+        if not callable(read_bounded):
+            return None
+        candidates: list[dict[str, object]] = []
+        blob_ids = self.blob_repository.blob_ids()
+        # Selection is valid only after inspecting the full candidate set.
+        # An incomplete scan must not hide another possible source.
+        if len(blob_ids) > MAX_AUTOMATIC_OBSERVATION_SCAN_BLOBS:
+            return None
+        remaining_bytes = MAX_AUTOMATIC_OBSERVATION_SCAN_BYTES
+        for blob_id in blob_ids:
+            try:
+                source = {
+                    "blob_id": blob_id,
+                    "sha256": blob_id,
+                    "uri": f"blob://{blob_id}",
+                    "kind": "observation",
+                    "provenance": "runtime-observation",
+                    "retention_hint": "run-lifetime",
+                }
+                if remaining_bytes <= 0:
+                    return None
+                max_bytes = min(MAX_OBSERVATION_SOURCE_BYTES, remaining_bytes - 1)
+                request_bytes = max_bytes + 1
+                remaining_bytes -= request_bytes
+                body = read_bounded(blob_id, max_bytes=max_bytes)
+                if body is None:
+                    return None
+                remaining_bytes += request_bytes - (len(body) + 1)
+                value = json.loads(body.decode("utf-8"))
+                if not isinstance(value, Mapping) or value.get("schema") != OBSERVATION_SOURCE_SCHEMA:
+                    continue
+                if value.get("task_id") != task_id or value.get("target") != target:
+                    continue
+                if value.get("reusable") is not True:
+                    continue
+                persisted_at = value.get("persisted_at")
+                if (
+                    isinstance(persisted_at, bool) or not isinstance(persisted_at, (int, float))
+                    or not 0 <= self.clock() - persisted_at <= AUTOMATIC_OBSERVATION_REUSE_MAX_AGE_SECONDS
+                ):
+                    continue
+                fresh_until = value.get("fresh_until", 0)
+                if isinstance(fresh_until, bool) or not isinstance(fresh_until, (int, float)) or fresh_until < self.clock():
+                    continue
+                scope = value.get("scope")
+                raw = value.get("raw")
+                if not isinstance(scope, Mapping) or not isinstance(raw, Mapping):
+                    continue
+                source.update({
+                    "byte_count": len(body),
+                    "target": value.get("target", ""),
+                    "scope_digest": value.get("scope_digest", ""),
+                    "observed_at": value.get("observed_at", ""),
+                    "target_fingerprint": value.get("target_fingerprint", ""),
+                    "target_epoch": value.get("target_epoch", 0),
+                })
+                if not source["target_fingerprint"]:
+                    continue
+                source["fresh_until"] = fresh_until
+                source["reusable"] = True
+                candidates.append(source)
+            except (EvidenceUnavailable, OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+        if len(candidates) != 1:
+            return None
+        return candidates[0]
 
     def load_observation(
         self,
@@ -5738,6 +5915,10 @@ class ContextRuntime:
     ) -> str:
         if kind != "operation":
             return ""
+        definition = DEFAULT_WORKFLOW_DEFINITIONS.definition_for(projection)
+        for step in definition.steps:
+            if step.step_id == step_id and getattr(step, "target_id", ""):
+                return step.target_id
         states = projection.get("workflow_step_states", {})
         state = states.get(step_id) if isinstance(states, Mapping) else None
         if (
@@ -5759,6 +5940,7 @@ class ContextRuntime:
                 if prior_kind != "operation" or prior_name not in {
                     "live_patch_run",
                     "upgrade_run",
+                    "upgrade_batch",
                 }:
                     continue
                 prior_state = (
@@ -5772,6 +5954,8 @@ class ContextRuntime:
                     == int(projection.get("target_version", 1))
                 ):
                     return str(prior_state.get("target_id", ""))
+        if name == "upgrade_batch":
+            return ""
         if name in {"live_patch_run", "upgrade_run", "debug_collect"}:
             return cls._preferred_target_id(projection)
         return cls._selected_target_id(projection)
@@ -5786,6 +5970,8 @@ class ContextRuntime:
         step_id: str,
         target_id: str | None = None,
     ) -> bool:
+        if kind == "phase" and name == "diagnosis.acceptance":
+            return accepted_diagnosis_record(projection) is not None
         states = projection.get("workflow_step_states", {})
         state = states.get(step_id) if isinstance(states, Mapping) else None
         if not isinstance(state, Mapping):
@@ -5794,14 +5980,7 @@ class ContextRuntime:
                 record = current.get(name) if isinstance(current, Mapping) else None
                 if isinstance(record, Mapping):
                     return str(record.get("status", "")) == "completed"
-                if name != "diagnosis.acceptance":
-                    return False
-                receipt = latest_diagnostic_receipt(projection)
-                return (
-                    receipt is not None
-                    and receipt.status_for_agent_acceptance()
-                    is DiagnosticStatus.COMPLETE
-                )
+                return False
             expected_target_id = (
                 cls._workflow_step_target_id(
                     projection,
@@ -6028,7 +6207,7 @@ class ContextRuntime:
                     name=name,
                     step_id=step_id,
                 )
-                if operation in {"live_patch_run", "upgrade_run"}:
+                if operation in {"live_patch_run", "upgrade_run", "upgrade_batch"}:
                     expected_target_id = execution_target_id or expected_target_id
                 if expected_target_id and execution_target_id != expected_target_id:
                     return {}
@@ -6048,6 +6227,11 @@ class ContextRuntime:
         descriptor: OperationDescriptor,
         value: Mapping[str, object],
     ) -> str:
+        if (
+            descriptor.name == "upgrade_batch"
+            and value.get("outcome_status") == "mutation_outcome_unknown"
+        ):
+            return "mutation_outcome_unknown"
         if descriptor.mutation:
             classified = ContextRuntime._domain_operation_status(
                 descriptor, value
@@ -6275,6 +6459,7 @@ class ContextRuntime:
             "log_bundle_collect": "log_analyzer",
             "live_patch_run": "live_patch",
             "upgrade_run": "upgrade",
+            "upgrade_batch": "upgrade",
         }.get(operation, "")
         if isinstance(workflow, Mapping):
             section = (
@@ -6304,9 +6489,16 @@ class ContextRuntime:
         arguments[CONTEXT_WORKFLOW_STEP_ARGUMENT] = True
         arguments.update(frozen_arguments)
         targets = projection.get("targets", [])
+        if operation == "upgrade_batch":
+            arguments["targets"] = [
+                {"target_id": str(target.get("target_id", "")), "ip": str(target.get("address", ""))}
+                for target in targets if isinstance(target, Mapping)
+            ]
+            arguments.pop("ip", None)
+            arguments.pop("target_id", None)
         if "ip" not in arguments and isinstance(targets, list) and targets:
             first = targets[0]
-            if isinstance(first, Mapping) and first.get("address"):
+            if operation != "upgrade_batch" and isinstance(first, Mapping) and first.get("address"):
                 arguments["ip"] = first["address"]
         if operation in {"debug_run", "debug_collect"}:
             arguments = {
@@ -6350,13 +6542,16 @@ class ContextRuntime:
                     if source == "artifact_sha256" and not str(value).strip():
                         continue
                     arguments[destination] = value
-        if operation == "upgrade_run":
+        if operation in {"upgrade_run", "upgrade_batch"}:
             build = completed_phases.get("build.artifact", {})
             artifact_ref = build.get("artifact_ref")
             if isinstance(artifact_ref, Mapping) and artifact_ref:
                 arguments["artifact_ref"] = dict(artifact_ref)
             for name in ("artifact_path", "artifact_sha256", "product_version"):
                 if name in build and "artifact_ref" not in arguments:
+                    arguments[name] = build[name]
+            for name in ("package_binding", "upgrade_eligible", "evidence_ids"):
+                if name in build:
                     arguments[name] = build[name]
         return arguments
 
@@ -6383,24 +6578,34 @@ class ContextRuntime:
                 ):
                     arguments["ip"] = str(target["address"])
                     break
-        return _fingerprint(
-            {
-                "operation": operation,
-                "arguments": _sanitize(
-                    {
-                        key: value
-                        for key, value in arguments.items()
-                        if key
-                        not in {
-                            "case_id",
-                            "expected_revision",
-                            "idempotency_key",
-                        }
-                        and not str(key).startswith("_")
-                    }
-                ),
-            }
-        )
+        normalized = {
+            key: value for key, value in arguments.items()
+            if key not in {"case_id", "expected_revision", "idempotency_key"}
+            and not str(key).startswith("_")
+        }
+        def digest(values: Mapping[str, object]) -> str:
+            return _fingerprint({"operation": operation, "arguments": _sanitize(values)})
+        current_fingerprint = digest(normalized)
+        # Before entry-domain pinning, a default diagnosis Run omitted that
+        # field from its first Effect. Match the exact historical argument set;
+        # no other changed input may reuse the old Effect identity.
+        workflow_inputs = projection.get("workflow_inputs", {})
+        if isinstance(workflow_inputs, Mapping) and not str(workflow_inputs.get("entry_domain", "")).strip():
+            legacy_arguments = {key: value for key, value in normalized.items() if key != "entry_domain"}
+            legacy_fingerprint = digest(legacy_arguments)
+            if any(
+                isinstance(item, Mapping)
+                and item.get("operation") == operation
+                and item.get("workflow_cycle_id") == projection.get("workflow_cycle_id", "cycle-1")
+                and item.get("target_id") == target_id
+                and item.get("target_version") == projection.get("target_version", 1)
+                and item.get("status") in {"accepted", "running"}
+                and item.get("workflow_input_fingerprint") == legacy_fingerprint
+                for item in projection.get("operations", [])
+            ):
+                return legacy_fingerprint
+        return current_fingerprint
+
 
     def prepare_semantic_run_operation(
         self,
@@ -6447,6 +6652,14 @@ class ContextRuntime:
             and self.catalog.require(preceding_operation.name).mutation
             else None
         )
+        if operation == "debug_collect" and definition.steps[step_index].target_id:
+            preceding_mutation = next(
+                (
+                    step for step in reversed(definition.steps[:step_index])
+                    if step.kind == "operation" and self.catalog.require(step.name).mutation
+                ),
+                None,
+            )
         if not operation_is_mutation and preceding_mutation is not None:
             raw_states = projection.get("workflow_step_states", {})
             prior_state = (
@@ -6456,6 +6669,7 @@ class ContextRuntime:
             )
             if (
                 isinstance(prior_state, Mapping)
+                and not definition.steps[step_index].target_id
                 and str(prior_state.get("status", ""))
                 in {"completed", "verified", "succeeded"}
                 and str(prior_state.get("target_id", "")).strip()
@@ -6484,6 +6698,8 @@ class ContextRuntime:
         )
         if operation_is_mutation:
             domain_arguments["_minimum_target_epoch"] = target_epoch_floor
+            if operation == "upgrade_batch":
+                domain_arguments["_minimum_target_epochs"] = self._target_epoch_floors(projection)
         if verification_after_mutation and target_epoch_floor:
             domain_arguments["_minimum_target_epoch"] = target_epoch_floor
         cycle_id = str(projection.get("workflow_cycle_id", "cycle-1"))
@@ -6737,6 +6953,7 @@ class ContextRuntime:
 
         arguments = dict(intent.arguments)
         target_id = (
+            "" if intent.operation == "upgrade_batch" else
             self._preferred_target_id(projection, arguments)
             if descriptor.mutation or intent.operation == "debug_collect"
             else self._selected_target_id(projection, arguments)
@@ -6877,6 +7094,7 @@ class ContextRuntime:
                         value,
                         target_id=target_id,
                     ),
+                    **self._batch_target_epoch_fields(intent.operation, value),
                     **_diagnostic_receipt_event_fields(
                         intent.operation,
                         value,
@@ -7394,6 +7612,18 @@ class ContextRuntime:
                 if self.repository.blob_reference_count(blob_id) > 0:
                     retained.append(blob_id)
                     continue
+                # Standalone observations have no Case yet. Keep their durable
+                # index source until the advertised explicit-reference window ends.
+                try:
+                    body = self.blob_repository.read(blob_id, offset=0, limit=-1)
+                    document = json.loads(body.decode("utf-8")) if len(body) <= MAX_OBSERVATION_SOURCE_BYTES else None
+                except (EvidenceUnavailable, ValueError, UnicodeError):
+                    document = None
+                if isinstance(document, Mapping) and document.get("schema") == OBSERVATION_SOURCE_SCHEMA:
+                    fresh_until = document.get("fresh_until", 0)
+                    if isinstance(fresh_until, (int, float)) and not isinstance(fresh_until, bool) and fresh_until >= self.clock():
+                        retained.append(blob_id)
+                        continue
                 if self.blob_repository.delete(blob_id):
                     deleted.append(blob_id)
             except Exception as exc:

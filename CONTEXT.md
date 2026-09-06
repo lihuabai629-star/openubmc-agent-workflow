@@ -31,6 +31,8 @@ operation identities, retry safety, target fencing, or terminal success.
 | **ObservationReceipt** | A bounded Agent projection of an ObservationResult. It is not Run state or mutation evidence. |
 | **ObservationRef** | A stable handle and digest that lets the Runtime reconstruct and validate persisted observation content. |
 | **DiagnosticRequestPlan** | One Runtime-internal normalized representation of accepted diagnostic result identities, shared by scope validation and durable receipt materialization. |
+| **DiagnosticReceipt** | Runtime-owned collection coverage, source content, freshness, and Evidence references. Complete collection is not an accepted diagnosis. |
+| **DiagnosisRecord** | A typed diagnosis conclusion with root cause, Evidence IDs, causal chain, code/component owner, contradictions, remaining gaps, and verification status. RunEngine accepts it through the diagnosis Gate and binds it to the Run, workflow cycle, target version, and source receipt; only a verified record without contradictions permits diagnostic completion. |
 | **ArtifactRef** | A bounded handle, digest, type, size, provenance, retention, target, and Run binding for content stored outside Run state. |
 | **Recovery Artifact** | An independently identified firmware package available before a target Mutation starts. Its absolute path, digest, size, and version are bound to Run Evidence; it is not applied automatically. |
 | **Run** | One durable execution of a pinned workflow definition for a target and intent. |
@@ -70,6 +72,8 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Maintenance checkpoint** | A repository-level qualification decision covering Runtime correctness, supported clients, evaluation isolation, and MCP lifecycle closeout. It does not imply a Fresh Runtime product closeout. |
 | **Formal Codex run** | A Codex-owned qualification or release run whose task, session, direct parent process, immutable source, model/Codex identity, Runtime state root, and lifecycle root are explicit and auditable. Its MCP lifecycle evidence is promotable only after task closeout proves no active request or owned process remains live. |
 | **DiagnosticReceiptRef** | A digest-bound terminal projection for an unchanged complete DiagnosticReceipt already shown within the same task. The durable full receipt remains Runtime-owned and reconstructable. |
+| **Observed absent** | An evaluable MDB object-read fact bound to its query and object identity after complete, successful transport reports explicit absence. It remains an AVAILABLE diagnostic result; transport failures and uncollected facts never imply absence. |
+| **ComparisonReceipt** | Runtime-owned derived Evidence binding compared target identities and source digests to the requested scope, freshness window, differences, and reasons for incomparability. Missing or partial source facts yield an inconclusive comparison. |
 
 ## Ownership rules
 
@@ -86,6 +90,7 @@ historical event upcasters are read paths and cannot commit new Run transitions.
 | Artifact bytes, digest verification, retention, and access policy | `ArtifactStore` |
 | Diagnostic Evidence sanitization, completion semantics, and durable `DiagnosticReceipt` formation | Runtime Core |
 | Diagnostic result identity planning and accepted-scope counting | `DiagnosticRequestPlan` |
+| DiagnosisRecord validation, Evidence binding, and acceptance | `RunEngine` |
 | Validation Readiness and Hardware Coverage normalization | `RunEngine` |
 | Final Agent projection and soft display-budget compaction | `AgentGateway` |
 | Product-closeout evidence verification and maintenance checkpoint aggregation | Operator / CI Plane |

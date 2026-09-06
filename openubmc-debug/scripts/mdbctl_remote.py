@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
+import re
 import shlex
 import sys
 import subprocess
@@ -226,6 +227,7 @@ def build_json_payload(
     attempts: list[dict[str, object]],
     hint: str,
     transport: dict[str, object] | None = None,
+    fact: dict[str, object] | None = None,
 ) -> dict[str, object]:
     transport_warnings = list((transport or {}).get("warnings", []))
     payload = build_common_json_payload(
@@ -249,6 +251,7 @@ def build_json_payload(
             "attempts": attempts,
             "hint": hint,
             "transport": transport or {},
+            **({"fact": fact} if fact is not None else {}),
         },
     )
     if args.compact_json:
@@ -268,6 +271,7 @@ def build_json_payload(
         "attempts": attempts,
         "hint": hint,
         "transport": transport or {},
+        **({"fact": fact} if fact is not None else {}),
     })
     return payload
 
@@ -288,6 +292,47 @@ class MdbExecutionResult:
     hint: str
     transport: dict[str, object]
     warning_lines: tuple[str, ...] = ()
+    fact: dict[str, object] | None = None
+
+
+_ABSENT_OBJECT_COMMANDS = frozenset({"lsprop", "getprop", "lsmethod"})
+_ABSENT_OBJECT_RESPONSE = re.compile(
+    r"(?:(?:Failed|Error):\s*)?"
+    r"(?:org\.freedesktop\.DBus\.Error\.UnknownObject:\s*)?"
+    r"Object (?:does not exist|not found)\.?",
+    re.IGNORECASE,
+)
+
+
+def observed_absent_fact(
+    command: list[str],
+    *,
+    classification: str,
+    completed: subprocess.CompletedProcess[str],
+    stdout: str,
+    stderr: str,
+) -> dict[str, object] | None:
+    """Return typed absence evidence only for a bounded object read."""
+
+    if (
+        classification != "object-not-found"
+        or completed.returncode not in {0, 1}
+        or ssh_transport_failure_code(completed)
+        or getattr(completed, "timed_out", False)
+        or stderr.strip()
+        or len(command) < 2
+        or command[0] not in _ABSENT_OBJECT_COMMANDS
+        or not is_read_only_command(command)
+    ):
+        return None
+    if _ABSENT_OBJECT_RESPONSE.fullmatch(stdout.strip()) is None:
+        return None
+    return {
+        "status": "observed_absent",
+        "query": " ".join(command),
+        "object": command[1],
+        "command_parts": list(command),
+    }
 
 
 def execute_mdb_query(
@@ -345,6 +390,15 @@ def execute_mdb_query(
             stderr = sanitize_remote_text(cp.stderr or "")
         success = is_success(cp, stdout, stderr, allow_empty=False)
         classification = "ok" if success else classify_failure(cp, stdout, stderr)
+        fact = observed_absent_fact(
+            command,
+            classification=classification,
+            completed=cp,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        if fact is not None:
+            classification = "observed_absent"
         attempt_results.append(
             build_attempt(
                 mode,
@@ -353,10 +407,10 @@ def execute_mdb_query(
                 transport if transport_code else None,
             )
         )
-        if success:
+        if success or fact is not None:
             return MdbExecutionResult(
                 ok=True,
-                code="ok",
+                code=classification,
                 returncode=0,
                 selected_mode=mode,
                 stdout=stdout,
@@ -365,6 +419,7 @@ def execute_mdb_query(
                 hint="",
                 transport=transport,
                 warning_lines=tuple(warning_lines),
+                fact=fact,
             )
         failures.append((classification, cp, stdout, stderr))
         detail = (
@@ -443,6 +498,7 @@ def emit_execution_result(
                 attempts=list(result.attempts),
                 hint=result.hint,
                 transport=result.transport,
+                fact=result.fact,
             )
         )
         return result.returncode

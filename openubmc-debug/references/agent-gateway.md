@@ -28,9 +28,11 @@ Return control to the user only for a terminal Outcome or a concrete blocker req
 new authority, an unavailable external capability, or unresolved mutation reconciliation.
 
 For `diagnose-and-fix`, reusable Observation Evidence and accepted diagnosis are separate facts.
-If the Runtime cannot form a complete evaluable DiagnosticReceipt automatically, it returns a
-`diagnosis.acceptance` Gate before `developer.change`. Complete that Gate with a grounded
-`root_cause`, non-empty `evidence_ids` drawn from the current DiagnosticReceipt, and `known_gaps`.
+The Runtime always returns a `diagnosis.acceptance` Gate before `developer.change`, even when the
+DiagnosticReceipt is complete. Complete that Gate with a grounded `root_cause`, non-empty
+`evidence_ids` drawn from the current DiagnosticReceipt, `causal_chain`, `code_owner`,
+`contradictions`, `remaining_gaps`, and `verification_status=verified`. Acceptance requires empty
+contradictions.
 The Runtime owns observation time and freshness. A plain `resume` reattaches the same unanswered
 Gate and cannot make diagnosis acceptable; a failed or cancelled diagnosis terminates before
 development.

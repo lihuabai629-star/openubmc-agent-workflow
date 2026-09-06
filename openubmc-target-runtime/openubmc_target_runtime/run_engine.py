@@ -7,10 +7,12 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import Enum
 import json
+import math
 import time
 from typing import Protocol
 
 from .artifact_store import LocalArtifactStore
+from .effect_activity import active_operation
 from .semantic_runtime import (
     AgentPreflightError,
     ArtifactRef,
@@ -60,18 +62,27 @@ from .effect_runner import (
     PreparedEffect,
 )
 from .capability import EffectClass
+from .comparison_receipt import COMPARISON_RECEIPT_SCHEMA
 from .diagnostic_receipt import (
+    DiagnosticItemStatus,
     DiagnosticStatus,
     build_diagnostic_receipt,
     latest_diagnostic_receipt,
 )
+from .diagnosis_record import (
+    accepted_diagnosis_record,
+    parse_diagnosis_record,
+    requires_diagnosis_record,
+)
 from .observation import (
     aggregate_observation_partitions,
     observation_consistency,
+    observation_completion_window_matches,
     observation_improves,
     observation_reusable,
     observation_target_scope_matches,
     qualify_observation,
+    reusable_selector_fragments,
     selected_scope_complete,
 )
 from .workflow import (
@@ -409,12 +420,21 @@ def gate_input_schema(
                 "minItems": 1,
                 "items": {"type": "string", "minLength": 1},
             },
-            "known_gaps": _string_array_schema(),
+            "causal_chain": {**_string_array_schema(), "minItems": 1},
+            "code_owner": _string_schema(),
+            "contradictions": _string_array_schema(),
+            "remaining_gaps": _string_array_schema(),
+            "verification_status": _string_schema(
+                enum=["verified", "partial", "unverified", "blocked"],
+            ),
         }
-        completed_required = ["root_cause", "evidence_ids", "known_gaps"]
+        completed_required = list(descriptor.required_fields)
     elif phase_type == "build.artifact":
         payload_properties = {
             "source_revision": _string_schema(),
+            "package_binding": _string_schema(enum=["package_binding_verified"]),
+            "upgrade_eligible": {"type": "boolean", "enum": [True]},
+            "evidence_ids": {**_string_array_schema(), "minItems": 1},
             "component_versions": {"type": "array"},
             "build_commands": _string_array_schema(),
             "build_logs": _string_array_schema(),
@@ -426,7 +446,13 @@ def gate_input_schema(
                 "build-upgrade delivery requires a registered artifact Domain Pack"
             )
         payload_properties["artifact_ref"] = artifact_schema
-        completed_required = ["source_revision", "artifact_ref"]
+        completed_required = [
+            "source_revision",
+            "artifact_ref",
+            "package_binding",
+            "upgrade_eligible",
+            "evidence_ids",
+        ]
     else:
         raise GateConflict(f"unsupported Agent Gate phase: {phase_type}")
     schema = {
@@ -477,6 +503,7 @@ class ObservationDriver(Protocol):
         *,
         query: ObservationQuery,
         assurance: str,
+        task_id: str = "",
     ) -> Mapping[str, object]: ...
 
 
@@ -561,6 +588,54 @@ class ObservationEngine:
             or _text(result.get("started_at"))
         )
 
+    def _reuse_selector_scope(
+        self, query: ObservationQuery, *, task_id: str, operation_id: str
+    ) -> Mapping[str, object] | None:
+        lookup = getattr(self.driver, "reusable_observation", None)
+        if not callable(lookup):
+            return None
+        prior = lookup(target=query.target, task_id=task_id, operation_id=operation_id)
+        if not isinstance(prior, Mapping):
+            return None
+        prior_query = ObservationQuery.from_query(_mapping(prior.get("scope")))
+        fragments, missing = reusable_selector_fragments(query, prior_query, _mapping(prior.get("raw")))
+        if not fragments:
+            return None
+        collected = list(fragments)
+        if missing:
+            missing_query = replace(query, selectors=missing)
+            for index, partition in enumerate(missing_query.collection_partitions(), start=1):
+                part = self.driver.observe_once(
+                    partition, assured=False, task_id=task_id,
+                    operation_id=f"{operation_id}-missing-{index}",
+                )
+                collected.append((partition, part))
+        # Reconstruct in the requested value order; aggregation never lets a
+        # cached value migrate to a different selector or MDB query position.
+        ordered = []
+        for selector in query.selectors:
+            for value in selector.values:
+                for part_query, part in collected:
+                    selected = next((item for item in part_query.selectors if item.selector_id == selector.selector_id and item.kind == selector.kind and value in item.values), None)
+                    if selected is None:
+                        continue
+                    single_query = replace(query, selectors=(selector.with_values((value,)),))
+                    pieces, _ = reusable_selector_fragments(single_query, part_query, part)
+                    ordered.extend(pieces)
+                    break
+        if not observation_completion_window_matches(*(raw for _part, raw in ordered)):
+            return None
+        combined = aggregate_observation_partitions(query, tuple(ordered))
+        combined = qualify_observation(combined, query, scope_complete=selected_scope_complete(combined, query))
+        if not observation_reusable(combined):
+            return None
+        combined["evidence_plan"] = {
+            "source_observation_ref": dict(_mapping(prior.get("source"))),
+            "reused_selectors": [item.to_public_dict() for part, _raw in fragments for item in part.selectors],
+            "collected_selectors": [item.to_public_dict() for item in missing],
+        }
+        return combined
+
     def observe(
         self,
         query: ObservationQuery,
@@ -568,6 +643,15 @@ class ObservationEngine:
         task_id: str,
         operation_id: str,
     ) -> ObservationResult:
+        reused = self._reuse_selector_scope(query, task_id=task_id, operation_id=operation_id)
+        if reused is not None:
+            source = self.driver.persist_observation(
+                reused, query=query, assurance="reused", task_id=task_id,
+            )
+            return ObservationResult(
+                query=query, raw=dict(reused), assurance="reused",
+                observation_ref=ObservationRef.from_public_dict(source), source=dict(source),
+            )
         partitions = query.collection_partitions()
 
         def collect(
@@ -664,6 +748,7 @@ class ObservationEngine:
             raw,
             query=query,
             assurance=assurance,
+            task_id=task_id,
         )
         return ObservationResult(
             query=query,
@@ -1186,6 +1271,7 @@ class RunEngine:
             "array": isinstance(value, list),
             "string": isinstance(value, str),
             "integer": isinstance(value, int) and not isinstance(value, bool),
+            "boolean": isinstance(value, bool),
         }.get(str(expected_type), True)
         if not valid_type:
             raise GateSchemaViolation(
@@ -1387,6 +1473,20 @@ class RunEngine:
                     + ", ".join(missing)
                 )
         payload = dict(raw_payload)
+        if gate.name == "build.artifact" and status == "completed":
+            if (
+                payload.get("package_binding") != "package_binding_verified"
+                or payload.get("upgrade_eligible") is not True
+            ):
+                raise GateConflict(
+                    "completed build.artifact requires verified package binding "
+                    "and upgrade_eligible=true"
+                )
+            if not all(
+                isinstance(item, str) and item.strip()
+                for item in payload.get("evidence_ids", [])
+            ):
+                raise GateConflict("build.artifact evidence_ids must not be blank")
         raw_artifact_ref = payload.get("artifact_ref")
         if isinstance(raw_artifact_ref, Mapping):
             artifact_path = "response.payload.artifact_ref"
@@ -1646,16 +1746,39 @@ class RunEngine:
             **payload,
         }
         if gate.name == "diagnosis.acceptance" and record["status"] == "completed":
+            try:
+                diagnosis = parse_diagnosis_record(payload)
+            except ValueError as exc:
+                raise GateConflict(str(exc)) from exc
+            if not diagnosis.accepted:
+                raise GateConflict(
+                    "completed diagnosis acceptance requires verified DiagnosisRecord"
+                )
             prior = latest_diagnostic_receipt(projection)
             if prior is None:
                 raise GateConflict(
                     "diagnosis acceptance requires a Runtime diagnostic receipt"
                 )
-            requested_evidence_ids = tuple(
-                str(item)
-                for item in payload.get("evidence_ids", [])
-                if isinstance(item, str) and item
-            )
+            for item in prior.results:
+                comparison = _mapping(item.value)
+                if not (
+                    item.result_id == "comparison"
+                    or item.kind == "diagnostic-comparison"
+                    or comparison.get("schema") == COMPARISON_RECEIPT_SCHEMA
+                ):
+                    continue
+                if (
+                    item.status is not DiagnosticItemStatus.AVAILABLE
+                    or comparison.get("status") != "complete"
+                    or comparison.get("conclusion") not in ("same", "different")
+                    or comparison.get("content_complete") is not True
+                    or comparison.get("incomparable_reasons")
+                ):
+                    raise GateConflict(
+                        "diagnosis acceptance requires an evaluable comparison; "
+                        "collect complete target evidence before verifying the comparison"
+                    )
+            requested_evidence_ids = diagnosis.evidence_ids
             available_evidence = {
                 item.evidence_id: item.to_public_dict() for item in prior.evidence
             }
@@ -1719,39 +1842,33 @@ class RunEngine:
             ):
                 runtime_freshness = {"status": "fresh", "complete": True}
             record["supersedes_diagnostic_receipt_id"] = prior.receipt_id
-            accepted = build_diagnostic_receipt(
-                "diagnosis.acceptance",
-                {
-                    "summary": record["summary"],
-                    "root_cause": payload.get("root_cause", ""),
-                    "observed_at": observed_at,
-                    "freshness": runtime_freshness,
-                },
-                {"evidence_ids": list(requested_evidence_ids)},
-                tuple(
-                    available_evidence[evidence_id]
-                    for evidence_id in requested_evidence_ids
-                ),
-                closeout_stage="diagnosis",
-            )
             if (
-                accepted is None
-                or accepted.status_for_agent_acceptance()
-                is not DiagnosticStatus.COMPLETE
+                runtime_freshness.get("status") not in {"fresh", "complete"}
+                or runtime_freshness.get("complete") is False
+                or any(runtime_freshness.get(field) for field in (
+                    "unavailable_dimensions", "lost_dimensions", "stale_evidence",
+                ))
             ):
                 raise GateConflict(
-                    "diagnosis response did not form a complete evaluable receipt"
+                    "diagnosis response requires fresh Runtime-bound evidence"
                 )
-            record["diagnostic_receipt"] = accepted.to_public_dict()
+            diagnosis = replace(diagnosis, record_id="diagnosis-" + input_digest[:32])
+            record["diagnosis_record"] = {
+                **diagnosis.to_public_dict(),
+                "run_id": command.run_id,
+                "workflow_cycle_id": cycle_id,
+                "target_version": projection.get("target_version", 1),
+                "observed_at": observed_at,
+                "source_receipt_id": prior.receipt_id,
+            }
+            # Historical Closeout readers consume these fields; the typed record
+            # remains authoritative, and collection coverage is never rewritten.
+            record["known_gaps"] = list(diagnosis.remaining_gaps)
         return record
 
     @classmethod
     def _diagnosis_accepted(cls, projection: Mapping[str, object]) -> bool:
-        receipt = latest_diagnostic_receipt(projection)
-        return (
-            receipt is not None
-            and receipt.status_for_agent_acceptance() is DiagnosticStatus.COMPLETE
-        )
+        return accepted_diagnosis_record(projection) is not None
 
     @staticmethod
     def _current_incident(projection: Mapping[str, object]) -> Incident | None:
@@ -1919,7 +2036,7 @@ class RunEngine:
         next_action: str = "",
     ) -> RunTurn:
         projection = _projection(snapshot)
-        return project_run_turn(
+        turn = project_run_turn(
             projection,
             run_id=self._run_id(snapshot),
             gate=gate,
@@ -1932,6 +2049,18 @@ class RunEngine:
                 else ()
             ),
         )
+        if self.effect_runner is not None and turn.progress:
+            raw_intent = self._active_effect_intent(projection)
+            if isinstance(raw_intent, Mapping):
+                activity = getattr(self.effect_runner, "activity", None)
+                heartbeat = (
+                    activity(EffectIntent.from_mapping(raw_intent))
+                    if callable(activity)
+                    else {}
+                )
+                if heartbeat:
+                    turn = replace(turn, progress={**turn.progress, "heartbeat": heartbeat})
+        return turn
 
     def _record_incident(
         self,
@@ -2120,6 +2249,15 @@ class RunEngine:
                 continue
             continuation = _continuation(snapshot)
             if bool(continuation.get("workflow_complete")):
+                if requires_diagnosis_record(projection) and not self._diagnosis_accepted(projection):
+                    snapshot = self._record_incident(
+                        snapshot,
+                        code="diagnosis_not_accepted",
+                        message="terminal diagnosis requires a verified DiagnosisRecord",
+                        effect_id="debug_run",
+                        operation_id=f"{operation_id}-diagnosis-incident",
+                    )
+                    return self._turn(snapshot, state="incident")
                 snapshot = self._apply_transition(
                     self._run_id(snapshot),
                     RunTransitionKind.OUTCOME_RECORDED,
@@ -2189,6 +2327,41 @@ class RunEngine:
                         task_id=task_id,
                     )
                     if prepared is not None:
+                        effect_started_at = time.time()
+                        domain_metadata = self.driver.domain_metadata(
+                            required_operation
+                        )
+                        effect_owner = _text(
+                            continuation.get("required_skill")
+                        ) or _text(domain_metadata.get("owner_skill"))
+                        if not effect_owner:
+                            workflow = _mapping(
+                                _projection(snapshot).get("workflow_definition")
+                            )
+                            steps = workflow.get("steps", [])
+                            if isinstance(steps, list):
+                                effect_owner = next(
+                                    (
+                                        _text(item.get("owner"))
+                                        for item in steps
+                                        if isinstance(item, Mapping)
+                                        and _text(item.get("step_id"))
+                                        == workflow_step_id
+                                        and _text(item.get("owner"))
+                                    ),
+                                    "",
+                                )
+                        effect_timeout = prepared.intent.arguments.get(
+                            "deadline",
+                            domain_metadata.get("timeout_seconds", 600),
+                        )
+                        if (
+                            isinstance(effect_timeout, bool)
+                            or not isinstance(effect_timeout, (int, float))
+                            or not math.isfinite(effect_timeout)
+                            or effect_timeout <= 0
+                        ):
+                            raise ValueError("Effect deadline must be a positive finite number")
                         self._stage(
                             (
                                 RunEvent(
@@ -2205,6 +2378,10 @@ class RunEngine:
                                     "OperationProgressed",
                                     {
                                         "status": "running",
+                                        "owner": effect_owner,
+                                        "phase": workflow_step_id,
+                                        "started_at": effect_started_at,
+                                        "deadline_at": effect_started_at + effect_timeout,
                                         "next_actions": [
                                             "reattach to the same durable Effect identity"
                                         ],
@@ -2598,6 +2775,10 @@ class RunEngine:
         if (
             committed.turn.state == "incident"
             and not self.effect_runner.has_seen(intent)
+            and not (
+                committed.turn.incident is not None
+                and committed.turn.incident.code == "effect_deadline_exceeded"
+            )
         ):
             return committed.turn
         unknown = self._unknown_mutation(projection)
@@ -2621,6 +2802,29 @@ class RunEngine:
         while True:
             latest_snapshot = self.driver.run_snapshot(intent.run_id)
             latest_projection = _projection(latest_snapshot)
+            if latest_projection.get("run_outcome"):
+                return self._turn(latest_snapshot)
+            current_incident = _mapping(latest_projection.get("current_incident"))
+            if current_incident.get("code") == "effect_deadline_exceeded":
+                has_execution = getattr(self.effect_runner, "has_execution", None)
+                if callable(has_execution) and not has_execution(intent):
+                    # A deadline never authorizes another mutation dispatch.
+                    # With no local result to attach, inspect the same journal;
+                    # read-only Effects may safely repeat under the same ID.
+                    mode = EffectRunMode.RECOVER
+            operation = active_operation(latest_projection)
+            effect_deadline = operation.get("deadline_at")
+            if (
+                isinstance(effect_deadline, (int, float))
+                and not isinstance(effect_deadline, bool)
+                and effect_deadline <= time.time()
+                and not bool(
+                    getattr(self.effect_runner, "has_settled", lambda _intent: False)(intent)
+                )
+                and mode is not EffectRunMode.RECOVER
+                and operation.get("operation_id") == intent.effect_id
+            ):
+                return self._commit_deadline_incident(intent)
             latest_active = self._active_effect_intent(latest_projection)
             if not (
                 isinstance(latest_active, Mapping)
@@ -2698,6 +2902,17 @@ class RunEngine:
                     and _text(claimed_active.get("effect_id")) == intent.effect_id
                 ):
                     return False
+                if claimed_projection.get("run_outcome"):
+                    return False
+                claimed_operation = active_operation(claimed_projection)
+                claimed_deadline = claimed_operation.get("deadline_at")
+                if (
+                    mode is not EffectRunMode.RECOVER
+                    and isinstance(claimed_deadline, (int, float))
+                    and not isinstance(claimed_deadline, bool)
+                    and claimed_deadline <= time.time()
+                ):
+                    return False
                 if intent.effect_class is not EffectClass.READ_ONLY:
                     claimed_unknown = self._unknown_mutation(claimed_projection)
                     if (
@@ -2736,7 +2951,23 @@ class RunEngine:
                 and intent.effect_class is not EffectClass.READ_ONLY
             )
             remaining = deadline_at - time.monotonic()
-            if remaining <= 0:
+            settled = bool(
+                getattr(self.effect_runner, "has_settled", lambda _: False)(intent)
+            )
+            if (
+                not settled and mode is not EffectRunMode.RECOVER
+                and isinstance(effect_deadline, (int, float))
+                and not isinstance(effect_deadline, bool)
+            ):
+                remaining = min(remaining, effect_deadline - time.time())
+            if remaining <= 0 and not settled:
+                if (
+                    mode is not EffectRunMode.RECOVER
+                    and isinstance(effect_deadline, (int, float))
+                    and not isinstance(effect_deadline, bool)
+                    and effect_deadline <= time.time()
+                ):
+                    return self._commit_deadline_incident(intent)
                 snapshot = self.driver.run_snapshot(intent.run_id)
                 return self._turn(
                     snapshot,
@@ -2744,6 +2975,13 @@ class RunEngine:
                     next_action="resume the Run to reattach to the current Effect",
                 )
             if not self.effect_runner.wait(execution, remaining):
+                if (
+                    mode is not EffectRunMode.RECOVER
+                    and isinstance(effect_deadline, (int, float))
+                    and not isinstance(effect_deadline, bool)
+                    and effect_deadline <= time.time()
+                ):
+                    return self._commit_deadline_incident(intent)
                 snapshot = self.driver.run_snapshot(intent.run_id)
                 return self._turn(
                     snapshot,
@@ -2829,6 +3067,57 @@ class RunEngine:
                 operation_id=resume_operation_id,
             )
 
+    def _commit_deadline_incident(self, intent: EffectIntent) -> RunTurn:
+        command_id = "effect-deadline-" + fingerprint(
+            {"run_id": intent.run_id, "effect_id": intent.effect_id}
+        )[:32]
+        input_digest = fingerprint({"effect_id": intent.effect_id, "reason": "deadline"})
+
+        def build(transaction: RunDecisionDraft) -> RunDecision | None:
+            snapshot = self.driver.run_snapshot(intent.run_id)
+            projection = _projection(snapshot)
+            current = self._active_effect_intent(projection)
+            incident = _mapping(projection.get("current_incident"))
+            operation = active_operation(projection)
+            effect_deadline = operation.get("deadline_at")
+            if (
+                projection.get("run_outcome")
+                or not isinstance(current, Mapping)
+                or current.get("effect_id") != intent.effect_id
+                or operation.get("operation_id") != intent.effect_id
+                or not isinstance(effect_deadline, (int, float))
+                or isinstance(effect_deadline, bool)
+                or effect_deadline > time.time()
+                or (incident and incident.get("code") != "effect_deadline_exceeded")
+                or bool(getattr(self.effect_runner, "has_settled", lambda _: False)(intent))
+            ):
+                return None
+            snapshot = self._record_incident(
+                snapshot,
+                code="effect_deadline_exceeded",
+                message=(
+                    "Effect exceeded its durable deadline; no replacement execution is admitted. "
+                    "Resume to inspect the existing result; an uncertain mutation requires "
+                    "read-only reconciliation of the same MutationJournal."
+                ),
+                effect_id=intent.effect_id,
+                operation_id=command_id,
+            )
+            return RunDecision(
+                run_id=intent.run_id, command_id=command_id,
+                input_digest=input_digest, expected_revision=transaction.expected_revision,
+                events=transaction.events, turn=self._turn(snapshot, state="incident"),
+            )
+
+        committed = self._commit_run_decision(
+            run_id=intent.run_id, command_id=command_id, input_digest=input_digest,
+            build=build, retry_conflicts=True,
+            exhausted_message="Effect deadline Incident could not converge",
+        )
+        if committed is None:
+            return self._turn(self.driver.run_snapshot(intent.run_id))
+        return committed.turn
+
     def _commit_effect_result(
         self,
         intent: EffectIntent,
@@ -2877,6 +3166,8 @@ class RunEngine:
         input_digest = fingerprint(outcome_identity)
         command_id = "effect-result-" + input_digest[:32]
         def build(transaction: RunDecisionDraft) -> RunDecision:
+            current = _projection(self.driver.run_snapshot(intent.run_id))
+            incident = _mapping(current.get("current_incident"))
             transition = self.driver.effect_transition(
                 intent,
                 result=result,
@@ -2884,6 +3175,24 @@ class RunEngine:
                 settlement_mode=settlement_mode,
             )
             self._stage(transition.events)
+            settled = any(
+                event.kind in {"OperationTerminal", "OperationReconciled"}
+                and _text(event.payload.get("status")) not in EFFECT_SETTLEMENT_STATUSES
+                for event in transition.events
+            )
+            if (
+                incident.get("code") == "effect_deadline_exceeded"
+                and incident.get("effect_id") == intent.effect_id
+                and settled
+            ):
+                self._stage((RunEvent(
+                    "RunIncidentResolved",
+                    {
+                        "incident_id": incident.get("incident_id"),
+                        "resolution": "existing Effect settled",
+                    },
+                    intent.effect_id,
+                ),))
             snapshot = self.driver.run_snapshot(intent.run_id)
             return RunDecision(
                 run_id=intent.run_id,

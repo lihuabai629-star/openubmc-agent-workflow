@@ -63,6 +63,9 @@ class UpgradeArtifact:
     path: str
     sha256: str
     product_version: str
+    package_binding: str = ""
+    upgrade_eligible: bool | None = None
+    evidence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         artifact_path = Path(self.path)
@@ -73,6 +76,12 @@ class UpgradeArtifact:
             raise ValueError("upgrade artifact SHA-256 must be 64 hexadecimal characters")
         if not self.product_version.strip():
             raise ValueError("upgrade artifact product_version must not be empty")
+        if self.upgrade_eligible is not None and not isinstance(self.upgrade_eligible, bool):
+            raise ValueError("upgrade artifact eligibility must be a boolean")
+        if self.upgrade_eligible is False:
+            raise ValueError("upgrade artifact is not eligible for Upgrade")
+        if self.package_binding and self.package_binding != "package_binding_verified":
+            raise ValueError("upgrade artifact package binding is not verified")
         object.__setattr__(self, "path", str(artifact_path))
         object.__setattr__(self, "sha256", normalized_digest)
 
@@ -81,6 +90,9 @@ class UpgradeArtifact:
             "path": self.path,
             "sha256": self.sha256,
             "product_version": self.product_version,
+            "package_binding": self.package_binding,
+            "upgrade_eligible": self.upgrade_eligible,
+            "evidence_ids": list(self.evidence_ids),
         }
 
 
@@ -211,52 +223,50 @@ class UpgradeRuntimeAdapter(Generic[MutationValueT, DebugValueT]):
                     return candidate
         raise ValueError("fresh Upgrade verification did not return an installed version")
 
-    def _verify_installed_version(
-        self,
-        fresh: FreshVerificationContext,
+    @staticmethod
+    def _verification_mode(
+        mutation_options: Mapping[str, object] | None,
+    ) -> str:
+        value = (mutation_options or {}).get("verification_mode", "manager-version")
+        mode = str(value).strip().lower()
+        if mode not in {"auto", "manager-version", "task-completion"}:
+            raise ValueError("unsupported Upgrade verification mode")
+        return mode
+
+    @classmethod
+    def _verify_remote_result(
+        cls,
+        value: object,
         *,
-        operation_id: str,
         artifact: UpgradeArtifact,
-        read_installed_version: Callable[[UpgradeVerificationContext], object],
-        debug_verify: Callable[[FreshVerificationContext], DebugValueT] | None,
-    ) -> dict[str, object]:
-        version_request = RemoteReadRequest.create(
-            request_id=(
-                f"{operation_id}:installed-version:"
-                f"attempt-{fresh.verification_attempt}"
-            ),
-            target=self.target,
-            credential_selector=self.redfish_selector,
-            collector_name="upgrade-installed-version",
-            operation={"expected_version": artifact.product_version},
-        )
-
-        def collect_version(read_context):
-            return read_installed_version(
-                UpgradeVerificationContext(
-                    task_id=self.task_run.task_id,
-                    target=self.target,
-                    credentials=read_context.credentials,
-                    redfish_lane=self._redfish_lane(),
-                    artifact=artifact,
+        mode: str,
+    ) -> tuple[str | None, str]:
+        if mode == "auto":
+            mode = (
+                "task-completion"
+                if isinstance(value, Mapping) and value.get("completed") is True
+                else "manager-version"
+            )
+        if mode == "manager-version":
+            installed_version = cls._installed_version(value)
+            if installed_version != artifact.product_version:
+                raise ValueError(
+                    "target installed version does not match the upgrade artifact: "
+                    f"expected {artifact.product_version}, found {installed_version}"
                 )
-            )
-
-        version_result = fresh.run_read(version_request, collect_version)
-        installed_version = self._installed_version(version_result.value)
-        if installed_version != artifact.product_version:
+            return installed_version, mode
+        if not isinstance(value, Mapping) or value.get("completed") is not True:
             raise ValueError(
-                "target installed version does not match the upgrade artifact: "
-                f"expected {artifact.product_version}, found {installed_version}"
+                "fresh Upgrade verification did not confirm task completion"
             )
-        debug_value = debug_verify(fresh) if debug_verify is not None else None
-        return {
-            "installed_version": installed_version,
-            "version": version_result.value,
-            "debug": debug_value,
-            "target_epoch": version_result.target_epoch,
-            "redfish_epoch": version_result.lane_epochs["redfish"],
-        }
+        observed_file = value.get("artifact_file_name")
+        if (
+            isinstance(observed_file, str)
+            and observed_file
+            and Path(observed_file).name != Path(artifact.path).name
+        ):
+            raise ValueError("fresh Upgrade task verification matched another artifact")
+        return None, mode
 
     def run(
         self,
@@ -271,6 +281,7 @@ class UpgradeRuntimeAdapter(Generic[MutationValueT, DebugValueT]):
         operation_context: object | None = None,
     ) -> MutationTransactionResult[MutationValueT, dict[str, object]]:
         authorization.require("upgrade")
+        verification_mode = self._verification_mode(mutation_options)
         request = self.mutation_request(
             operation_id=operation_id,
             artifact=artifact,
@@ -288,13 +299,47 @@ class UpgradeRuntimeAdapter(Generic[MutationValueT, DebugValueT]):
             )
 
         def verify_upgrade(fresh: FreshVerificationContext) -> dict[str, object]:
-            return self._verify_installed_version(
-                fresh,
-                operation_id=operation_id,
-                artifact=artifact,
-                read_installed_version=read_installed_version,
-                debug_verify=debug_verify,
+            version_request = RemoteReadRequest.create(
+                request_id=f"{operation_id}:installed-version",
+                target=self.target,
+                credential_selector=self.redfish_selector,
+                collector_name=(
+                    "upgrade-installed-version"
+                    if verification_mode == "manager-version"
+                    else "upgrade-task-completion"
+                ),
+                operation={
+                    "expected_version": artifact.product_version,
+                    "verification_mode": verification_mode,
+                },
             )
+
+            def collect_version(_read_context):
+                return read_installed_version(
+                    UpgradeVerificationContext(
+                        task_id=self.task_run.task_id,
+                        target=self.target,
+                        credentials=_read_context.credentials,
+                        redfish_lane=self._redfish_lane(),
+                        artifact=artifact,
+                    )
+                )
+
+            version_result = fresh.run_read(version_request, collect_version)
+            installed_version, effective_mode = self._verify_remote_result(
+                version_result.value,
+                artifact=artifact,
+                mode=verification_mode,
+            )
+            debug_value = debug_verify(fresh) if debug_verify is not None else None
+            return {
+                "installed_version": installed_version,
+                "verification_mode": effective_mode,
+                "version": version_result.value,
+                "debug": debug_value,
+                "target_epoch": version_result.target_epoch,
+                "redfish_epoch": version_result.lane_epochs["redfish"],
+            }
 
         return self.task_run.run_mutation(
             request,
@@ -317,6 +362,8 @@ class UpgradeRuntimeAdapter(Generic[MutationValueT, DebugValueT]):
     ):
         """Resume only verification for one durably uncertain Upgrade."""
 
+        verification_mode = self._verification_mode(mutation_options)
+
         request = self.mutation_request(
             operation_id=operation_id,
             artifact=artifact,
@@ -324,13 +371,46 @@ class UpgradeRuntimeAdapter(Generic[MutationValueT, DebugValueT]):
         )
 
         def verify_upgrade(fresh: FreshVerificationContext) -> dict[str, object]:
-            return self._verify_installed_version(
-                fresh,
-                operation_id=operation_id,
-                artifact=artifact,
-                read_installed_version=read_installed_version,
-                debug_verify=None,
+            version_request = RemoteReadRequest.create(
+                request_id=f"{operation_id}:installed-version",
+                target=self.target,
+                credential_selector=self.redfish_selector,
+                collector_name=(
+                    "upgrade-installed-version"
+                    if verification_mode == "manager-version"
+                    else "upgrade-task-completion"
+                ),
+                operation={
+                    "expected_version": artifact.product_version,
+                    "verification_mode": verification_mode,
+                },
             )
+
+            def collect_version(_read_context):
+                return read_installed_version(
+                    UpgradeVerificationContext(
+                        task_id=self.task_run.task_id,
+                        target=self.target,
+                        credentials=_read_context.credentials,
+                        redfish_lane=self._redfish_lane(),
+                        artifact=artifact,
+                    )
+                )
+
+            version_result = fresh.run_read(version_request, collect_version)
+            installed_version, effective_mode = self._verify_remote_result(
+                version_result.value,
+                artifact=artifact,
+                mode=verification_mode,
+            )
+            return {
+                "installed_version": installed_version,
+                "verification_mode": effective_mode,
+                "version": version_result.value,
+                "debug": None,
+                "target_epoch": version_result.target_epoch,
+                "redfish_epoch": version_result.lane_epochs["redfish"],
+            }
 
         return self.task_run.recover_mutation(
             request,

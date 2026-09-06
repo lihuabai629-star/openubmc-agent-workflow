@@ -42,6 +42,7 @@ from .capability import (
     CallableDomainAdapter,
     CapabilityRegistry,
     DomainPackAuthorContract,
+    DomainReceipt,
     RUNTIME_EFFECT_RECOVERY_ARGUMENT,
     RuntimeSDKContext,
 )
@@ -2735,6 +2736,26 @@ class RuntimeMcpService:
                     },
                 }
             )
+        if callable(getattr(self.backend, "upgrade_batch", None)):
+            definitions.append({
+                "name": "upgrade_batch",
+                "description": "Upgrade an identified HPM on a bounded set of targets with per-target journals.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "targets": {"type": "array", "minItems": 1, "maxItems": 128,
+                                    "items": {"type": "object", "required": ["ip"],
+                                              "properties": {"ip": common_target}}},
+                        "artifact_path": {"type": "string", "minLength": 1},
+                        "artifact_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+                        "product_version": {"type": "string", "minLength": 1},
+                        "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 32},
+                        "deadline": deadline,
+                    },
+                    "required": ["targets", "artifact_path", "artifact_sha256", "product_version"],
+                    "additionalProperties": True,
+                },
+            })
         definitions.extend(
             [
                 {
@@ -3101,15 +3122,29 @@ class RuntimeMcpService:
             raise RuntimeError(
                 f"operation catalog handler became unavailable: {descriptor.name}"
             )
+        def invoke_and_authenticate(task, context):
+            raw = callback(task, bounded_arguments, context)
+            if operation != "upgrade_batch" or not isinstance(raw, Mapping):
+                return raw
+            backend, resource = (
+                task.resource_for(operation)
+                if isinstance(self.backend, OrchestratedMcpBackend)
+                else (self.backend, task)
+            )
+            authenticate = getattr(backend, "authenticate_batch_journals", None)
+            if not callable(authenticate):
+                return raw
+            bindings = authenticate(resource, bounded_arguments, context, raw)
+            return replace(
+                DomainReceipt.from_value(operation, raw),
+                authenticated_journal_bindings=tuple(bindings),
+            )
+
         value = self.registry.execute(
             task_id=sdk_context.task_id,
             operation_id=sdk_context.operation_id,
             timeout_seconds=sdk_context.timeout_seconds,
-            callback=lambda task, context: callback(
-                task,
-                bounded_arguments,
-                context,
-            ),
+            callback=invoke_and_authenticate,
         )
         return value
 

@@ -49,6 +49,15 @@ INCIDENT_RECOVERY_POLICIES = {
             ),
         ),
         IncidentRecoveryPolicy(
+            code="effect_deadline_exceeded",
+            recovery_path="inspect_existing_effect",
+            allowed_commands=("resume", "cancel"),
+            operator_action=(
+                "resume to inspect the existing Effect result; retain its MutationJournal "
+                "and do not admit a replacement mutation"
+            ),
+        ),
+        IncidentRecoveryPolicy(
             code="domain_execution_failed",
             recovery_path="retry_resume",
             allowed_commands=("resume", "cancel"),

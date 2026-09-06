@@ -111,7 +111,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                 "artifact_capacity_batch_size": 16,
                 "soak_restart_cycles": 4,
                 "soak_runs_per_cycle": 16,
-                "max_capacity_seconds": 30.0,
+                "max_capacity_seconds": 40.0,
                 "max_capacity_peak_rss_bytes": 536870912,
                 "max_capacity_peak_python_bytes": 134217728,
                 "max_capacity_storage_bytes": 67108864,
@@ -126,7 +126,7 @@ class RuntimeQualificationTests(unittest.TestCase):
             "scenarios": {
                 "duplicate_storm": {
                     "status": "passed",
-                    "execute_calls": 18,
+                    "execute_calls": 19,
                     "failed_calls": 0,
                     "unique_runs": 1,
                     "operation_count": 1,
@@ -137,7 +137,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                 },
                 "gate_concurrency": {
                     "status": "passed",
-                    "execute_calls": 9,
+                    "execute_calls": 11,
                     "failed_calls": 0,
                     "unique_runs": 1,
                     "unique_turns": 1,
@@ -145,13 +145,13 @@ class RuntimeQualificationTests(unittest.TestCase):
                     "canonical_turn_state": "completed",
                     "canonical_turn_matches": True,
                     "canonical_reattach_backend_calls": 0,
-                    "gate_submissions": 1,
+                    "gate_submissions": 2,
                     "outcome_events": 1,
                     "open_incidents": 0,
                 },
                 "capacity": {
                     "status": "passed",
-                    "execute_calls": 128,
+                    "execute_calls": 256,
                     "failed_calls": 0,
                     "completed_turns": 128,
                     "completed_runs": 128,
@@ -172,7 +172,7 @@ class RuntimeQualificationTests(unittest.TestCase):
                 },
                 "restart_soak": {
                     "status": "passed",
-                    "execute_calls": 128,
+                    "execute_calls": 192,
                     "failed_calls": 0,
                     "completed_turns": 128,
                     "completed_runs": 64,
@@ -231,23 +231,32 @@ class RuntimeQualificationTests(unittest.TestCase):
         return json.dumps(report)
 
     def test_legacy_v1_stability_evidence_remains_verifiable(self) -> None:
-        report = json.loads(self.stability_report(SOURCE_COMMIT))
-        report["schema"] = "openubmc-agent-workflow.runtime-stability.v1"
-        report["scenarios"].pop("dual_projection")
-        report.pop("evidence_digest")
-        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+        fixture = Path(__file__).resolve().parents[2] / (
+            "docs/qualification/p2-runtime-stability-20260826.json"
+        )
+        report = json.loads(fixture.read_text())
+        source_commit = report["source_commit"]
 
         with self.assertRaisesRegex(ValueError, "legacy"):
             qualification.verify_runtime_stability_report(
                 report,
-                expected_source_commit=SOURCE_COMMIT,
+                expected_source_commit=source_commit,
                 require_promotable=True,
             )
         verify_legacy_runtime_stability_report(
             report,
-            expected_source_commit=SOURCE_COMMIT,
+            expected_source_commit=source_commit,
             require_promotable=True,
         )
+
+        # A current capacity allowance cannot retroactively qualify a v1 run.
+        report["scenarios"]["capacity"]["elapsed_seconds"] = 31.0
+        report.pop("evidence_digest")
+        report["evidence_digest"] = qualification.evidence_fingerprint(report)
+        with self.assertRaisesRegex(ValueError, "capacity exceeded"):
+            verify_legacy_runtime_stability_report(
+                report, expected_source_commit=source_commit, require_promotable=True,
+            )
 
     def test_dual_projection_verifier_recomputes_reported_bytes(self) -> None:
         report = json.loads(self.stability_report(SOURCE_COMMIT))

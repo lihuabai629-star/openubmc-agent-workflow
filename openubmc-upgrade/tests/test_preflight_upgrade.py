@@ -90,6 +90,35 @@ class UpgradePreflightTests(unittest.TestCase):
             [],
         )
 
+    def test_upload_plan_selects_legacy_multipart_staging(self) -> None:
+        self.assertEqual(
+            MODULE.upload_plan(
+                {
+                    "HttpPushUri": "/redfish/v1/UpdateService/FirmwareInventory",
+                    "Actions": {
+                        "#UpdateService.SimpleUpdate": {"target": "/simple"}
+                    },
+                }
+            ),
+            {
+                "method": "HttpPushUri",
+                "encoding": "multipart/form-data",
+                "compatibility_mode": "legacy-http-push-multipart",
+                "staged_activation_required": True,
+            },
+        )
+
+    def test_upload_plan_keeps_standard_http_push_binary(self) -> None:
+        self.assertEqual(
+            MODULE.upload_plan({"HttpPushUri": "/redfish/v1/UpdateService/upload"}),
+            {
+                "method": "HttpPushUri",
+                "encoding": "application/octet-stream",
+                "compatibility_mode": "",
+                "staged_activation_required": False,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

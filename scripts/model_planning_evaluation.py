@@ -159,7 +159,7 @@ def semantic_proposal(
 
 
 def paired_corpus() -> tuple[EvaluationCase, ...]:
-    diagnosis = ("debug_run",)
+    diagnosis = ("debug_run", "diagnosis.acceptance")
     source_change = (
         "debug_run",
         "diagnosis.acceptance",
@@ -181,7 +181,7 @@ def paired_corpus() -> tuple[EvaluationCase, ...]:
         "debug_collect",
     )
     upgrade_only = ("upgrade_run", "debug_collect")
-    bundle_diagnosis = ("log_bundle_collect", "debug_run")
+    bundle_diagnosis = ("log_bundle_collect", "debug_run", "diagnosis.acceptance")
     return (
         EvaluationCase(
             "diagnosis-only",
@@ -334,6 +334,7 @@ def plan_for_objective(objective: str) -> Mapping[str, object]:
         steps = (
             ("action", "log_bundle_collect"),
             ("action", "debug_run"),
+            ("gate", DIAGNOSIS_ACCEPTANCE_GATE),
         )
         return semantic_proposal(steps)
     if "source-only" in selected or "source only" in selected:
@@ -372,7 +373,9 @@ def plan_for_objective(objective: str) -> Mapping[str, object]:
         )
         return semantic_proposal(steps)
     if "diagnosis" in selected and "evidence" in selected:
-        return semantic_proposal((("action", "debug_run"),))
+        return semantic_proposal(
+            (("action", "debug_run"), ("gate", DIAGNOSIS_ACCEPTANCE_GATE))
+        )
     return semantic_proposal((("action", "unsupported.objective"),))
 
 

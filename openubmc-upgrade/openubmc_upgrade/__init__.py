@@ -5,9 +5,13 @@ from .runtime_backend import (
     UpgradeActivationReverted,
     UpgradeMcpBackend,
 )
+from .webui import WebUiHttpError, WebUiHttpSession, WebUiTransportError
 
 __all__ = [
     "RedfishResponse",
     "UpgradeActivationReverted",
     "UpgradeMcpBackend",
+    "WebUiHttpError",
+    "WebUiHttpSession",
+    "WebUiTransportError",
 ]

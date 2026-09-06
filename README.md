@@ -40,6 +40,12 @@ Codex receives the managed Skill links and stdio MCP entries. Repair, update, ro
 uninstall can retire workflow-owned entries from older multi-client installations without touching
 unrelated client configuration.
 
+## Codex plugin distribution
+
+The Codex plugin packages the eleven Skills and both MCP launchers under one verified release
+identity. See [plugin installation and lifecycle](docs/codex-plugin.md) for archive verification,
+migration, health checks, update, rollback, and audit commands.
+
 The Target Runtime MCP defaults to the two-operation Agent Interface: `observe` for bounded live
 queries and `execute` for stateful workflows. Raw Evidence, Replay, Session Outcome governance,
 Case lifecycle, and Runtime status are available only through the explicit `operator` profile.

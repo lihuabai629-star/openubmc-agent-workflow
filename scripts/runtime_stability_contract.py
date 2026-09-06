@@ -32,7 +32,11 @@ ARTIFACT_CAPACITY_RECORDS = 64
 ARTIFACT_CAPACITY_BATCH_SIZE = 16
 SOAK_RESTART_CYCLES = 4
 SOAK_RUNS_PER_CYCLE = 16
-MAX_CAPACITY_SECONDS = 30.0
+# Diagnosis acceptance adds a second execute call to each of the 128 Runs.
+# Keep a wall-time bound for all 256 calls, including traced allocations and
+# durable SQLite writes on the supported shared CI runner.
+MAX_CAPACITY_SECONDS = 40.0
+LEGACY_V1_MAX_CAPACITY_SECONDS = 30.0
 MAX_CAPACITY_PEAK_RSS_BYTES = 512 * 1024 * 1024
 MAX_CAPACITY_PEAK_PYTHON_BYTES = 128 * 1024 * 1024
 MAX_CAPACITY_STORAGE_BYTES = 64 * 1024 * 1024
@@ -217,6 +221,8 @@ def _verify_runtime_stability_report(
         raise ValueError("Runtime stability environment fingerprint is invalid")
     parameters = report.get("parameters")
     expected_parameters = ci_parameters()
+    if schema == SCHEMA_V1:
+        expected_parameters["max_capacity_seconds"] = LEGACY_V1_MAX_CAPACITY_SECONDS
     if parameters != expected_parameters:
         raise ValueError("Runtime stability parameters do not match the CI profile")
 
@@ -224,7 +230,7 @@ def _verify_runtime_stability_report(
     if not all(
         (
             _integer(storm.get("execute_calls"), "storm execute calls")
-            == STORM_WORKERS + 2,
+            == STORM_WORKERS + (2 if schema == SCHEMA_V1 else 3),
             _integer(storm.get("failed_calls"), "storm failed calls") == 0,
             _integer(storm.get("unique_runs"), "storm unique runs") == 1,
             _integer(storm.get("operation_count"), "storm operation count") == 1,
@@ -241,10 +247,11 @@ def _verify_runtime_stability_report(
     if not all(
         (
             _integer(gate.get("execute_calls"), "gate execute calls")
-            == GATE_WORKERS + 1,
+            == GATE_WORKERS + (1 if schema == SCHEMA_V1 else 3),
             _integer(gate.get("failed_calls"), "gate failed calls") == 0,
             _integer(gate.get("unique_runs"), "gate unique runs") == 1,
-            _integer(gate.get("gate_submissions"), "gate submissions") == 1,
+            _integer(gate.get("gate_submissions"), "gate submissions")
+            == (1 if schema == SCHEMA_V1 else 2),
             _integer(gate.get("outcome_events"), "gate outcome events") == 1,
             _integer(gate.get("open_incidents"), "gate open incidents") == 0,
             _integer(gate.get("unique_turns"), "gate unique Turns") == 1,
@@ -315,7 +322,7 @@ def _verify_runtime_stability_report(
     if not all(
         (
             _integer(capacity.get("execute_calls"), "capacity execute calls")
-            == CAPACITY_RUNS,
+            == CAPACITY_RUNS * (1 if schema == SCHEMA_V1 else 2),
             _integer(capacity.get("failed_calls"), "capacity failed calls") == 0,
             _integer(capacity.get("completed_turns"), "capacity completed turns")
             == CAPACITY_RUNS,
@@ -371,7 +378,7 @@ def _verify_runtime_stability_report(
             )
             <= MAX_CAPACITY_PEAK_PYTHON_BYTES,
             _number(capacity.get("elapsed_seconds"), "capacity elapsed seconds")
-            <= MAX_CAPACITY_SECONDS,
+            <= expected_parameters["max_capacity_seconds"],
         )
     ):
         raise ValueError("Runtime stability capacity exceeded a hard threshold")
@@ -901,7 +908,7 @@ def _verify_runtime_stability_report(
 
     soak = _scenario(report, "restart_soak")
     expected_runs = SOAK_RESTART_CYCLES * SOAK_RUNS_PER_CYCLE
-    expected_calls = expected_runs * 2
+    expected_calls = expected_runs * (2 if schema == SCHEMA_V1 else 3)
     total_events = _integer(soak.get("total_events"), "soak total events", minimum=1)
     events_per_cycle = soak.get("events_per_cycle")
     cumulative_events = soak.get("cumulative_events_by_cycle")
@@ -948,7 +955,7 @@ def _verify_runtime_stability_report(
             == expected_calls,
             _integer(soak.get("failed_calls"), "soak failed calls") == 0,
             _integer(soak.get("completed_turns"), "soak completed turns")
-            == expected_calls,
+            == expected_runs * 2,
             _integer(soak.get("completed_runs"), "soak completed runs")
             == expected_runs,
             _integer(soak.get("replay_mismatches"), "soak replay mismatches")

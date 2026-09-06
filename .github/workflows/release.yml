@@ -154,6 +154,28 @@ jobs:
             ${{ runner.temp }}/release-gate-work/codex-adoption-qualification.json
           if-no-files-found: error
 
+      - name: Install locked Codex plugin host
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --prefix plugin/host
+          echo "$PWD/plugin/host/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Qualify and attach immutable plugin distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.candidate.outputs.release_tag }}
+        run: |
+          SOURCE_COMMIT=$(python3 -c 'import json; print(json.load(open("release-lock.json"))["source_commit"])')
+          python3 scripts/qualify_plugin.py \
+            --source-ref "$SOURCE_COMMIT" \
+            --archive "$RUNNER_TEMP/openubmc-$RELEASE_TAG-codex.tar.gz" \
+            --output "$RUNNER_TEMP/plugin-qualification.json"
+          cd "$RUNNER_TEMP"
+          sha256sum "openubmc-$RELEASE_TAG-codex.tar.gz" > "openubmc-$RELEASE_TAG-codex.sha256"
+          gh release upload "$RELEASE_TAG" --repo "${{ github.repository }}" --clobber \
+            "openubmc-$RELEASE_TAG-codex.tar.gz" \
+            "openubmc-$RELEASE_TAG-codex.sha256" \
+            plugin-qualification.json
+
   promote:
     if: ${{ inputs.promote }}
     needs: release-gate

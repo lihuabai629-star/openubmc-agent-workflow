@@ -1086,7 +1086,8 @@ class JsonRpcEndpointTests(unittest.TestCase):
         self.assertFalse(called["result"]["isError"])
         turn = called["result"]["structuredContent"]
         self.assertTrue(turn["run_id"])
-        self.assertEqual(turn["state"], "completed")
+        self.assertEqual(turn["state"], "waiting_response")
+        self.assertEqual(turn["gate"]["name"], "diagnosis.acceptance")
         self.assertEqual(
             self.service._test.context_runtime.repository.case_for_task(
                 "codex-task-a"
@@ -1094,7 +1095,7 @@ class JsonRpcEndpointTests(unittest.TestCase):
             turn["run_id"],
         )
         summary = called["result"]["content"][0]["text"]
-        self.assertIn("completed", summary)
+        self.assertIn("diagnosis.acceptance", summary)
         self.assertIn("DiagnosticReceipt status=complete", summary)
         self.assertIn("result[diagnosis]", summary)
         self.assertEqual(
@@ -1148,7 +1149,7 @@ class JsonRpcEndpointTests(unittest.TestCase):
         self.assertIsNotNone(turn["gate"])
         self.assertIsNotNone(turn["diagnostic_receipt"])
         summary = response["result"]["content"][0]["text"]
-        self.assertIn("phase developer.change", summary)
+        self.assertIn("phase diagnosis.acceptance", summary)
         self.assertIn(f"run_id={turn['run_id']}", summary)
         self.assertIn(f"gate_id={turn['gate']['gate_id']}", summary)
         self.assertIn(f"gate_version={turn['gate']['gate_version']}", summary)
