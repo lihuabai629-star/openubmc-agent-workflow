@@ -26,7 +26,7 @@ from runtime_measurement import encoded, source_identity
 PROMPT = '''Exercise the local openubmc-target-runtime fixture using execute only. Its Domain Adapter is deterministic and has no target connection. Start with exactly this execute argument object: {"kind":"start","intent":"diagnose-and-fix","delivery_strategy":"source-only","target":"198.51.100.10","purpose":"validate fixture state refresh"}. The field is intent, not workflow. Respond to diagnosis.acceptance with the evidence IDs in the returned diagnostic_receipt, root_cause "fixture state was outdated", causal_chain ["fixture state was outdated", "component consumed that state"], code_owner "fixture/component.lua", contradictions [], remaining_gaps [], verification_status "verified". Then respond to developer.change with source_revision "fixture-revision", authored_files ["fixture/component.lua"], verification_plan ["test fixture state refresh"]. Use each returned Gate binding exactly, and response status completed and summary "fixture phase complete". Do not observe, use shell, edit files, or contact a target. Stop only after Runtime reports state completed and outcome_recorded true, and report the terminal Run ID. Tool discovery through exec/ALL_TOOLS is allowed.'''
 
 
-MODEL_REQUEST_ERRORS = {'AgentPreflightError','AgentGatewayError','GateConflict','ReferenceViolation','AgentRequestTooLarge'}
+MODEL_REQUEST_ERRORS = {'AgentPreflightError','GatePreflightError','AgentGatewayError','GateConflict','ReferenceViolation','AgentRequestTooLarge'}
 
 
 def classify_failure(completed, provider_requests, turn_errors, mcp_initialized):
