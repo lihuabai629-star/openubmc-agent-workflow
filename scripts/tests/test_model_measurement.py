@@ -17,7 +17,9 @@ class ModelMeasurementTests(unittest.TestCase):
 
     def test_model_invalid_input_and_runtime_invariant_are_distinct(self):
         self.assertEqual(classify_failure(False,[{'status':200}],['AgentPreflightError'],True),('model','invalid_request'))
+        self.assertEqual(classify_failure(False,[{'status':200}],['GatePreflightError'],True),('model','invalid_request'))
         self.assertEqual(classify_failure(False,[{'status':200}],['RuntimeError'],True),('runtime','RuntimeError'))
+        self.assertEqual(classify_failure(False,[{'status':200}],['GatePreflightError','RuntimeError'],True),('runtime','RuntimeError'))
         self.assertEqual(classify_failure(False,[{'status':200}],[],False),('plugin','mcp_not_initialized'))
         self.assertEqual(classify_failure(True,[{'status':200}],['AgentPreflightError'],True),(None,None))
 
