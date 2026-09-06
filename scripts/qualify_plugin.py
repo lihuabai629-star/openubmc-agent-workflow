@@ -16,7 +16,7 @@ import threading
 import uuid
 
 from package_plugin import build
-from plugin_archive import canonical, verify_directory
+from plugin_archive import canonical, materialize, read_archive, verify_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -156,7 +156,7 @@ def qualify(source: Path, ref: str, archive: Path) -> dict:
         secret = home/'.config/openubmc/credentials.env'
         secret.parent.mkdir(parents=True)
         secret.write_text('# external credentials preserved\n')
-        env = dict(os.environ, CODEX_HOME=str(codex), XDG_CONFIG_HOME=str(home/'.config'),
+        env = dict(os.environ, HOME=str(home), CODEX_HOME=str(codex), XDG_CONFIG_HOME=str(home/'.config'),
                    XDG_DATA_HOME=str(home/'.local/share'), XDG_CACHE_HOME=str(home/'.cache'),
                    OPENUBMC_TARGET_RUNTIME_STATE_DIR=str(root/'runtime-state'),
                    OPENUBMC_MCP_LIFECYCLE_DIR=str(root/'lifecycle'), OPENUBMC_MCP_FORMAL_RUN='0')
@@ -166,8 +166,12 @@ def qualify(source: Path, ref: str, archive: Path) -> dict:
         build(source, ref, repeated)
         if repeated.read_bytes() != archive.read_bytes():
             raise ValueError('archive is not deterministic')
-        install_cli = [sys.executable, '-I', str(source/'scripts/install_plugin.py'), str(archive), '--sha256', report['archive_sha256'], '--home', str(home), '--codex-home', str(codex)]
+        bootstrap = root/'bootstrap'/'openubmc'
+        _, bootstrap_files = read_archive(archive, report['archive_sha256'])
+        materialize(bootstrap, bootstrap_files)
+        install_cli = [sys.executable, '-I', str(bootstrap/'scripts/install_plugin.py'), str(archive), '--sha256', report['archive_sha256'], '--home', str(home), '--codex-home', str(codex)]
         installed = command(install_cli, env)
+        verify_directory(bootstrap)
         plugin = Path(installed['codex_install']['installedPath'])
         lock = verify_directory(plugin)
         if lock['source_commit'] != report['source_commit'] or lock['content_digest'] != report['content_digest']:
@@ -181,7 +185,12 @@ def qualify(source: Path, ref: str, archive: Path) -> dict:
             if Path(server['transport']['cwd']).resolve() != plugin:
                 raise ValueError('MCP launcher does not resolve to the installed plugin')
         native_exec = native_exec_probe(env, root, lock['source_commit'])
-        admin = [sys.executable, '-I', str(source/'scripts/plugin_admin.py')]
+        distribution = Path(installed['source'])
+        admin = [sys.executable, '-I', str(distribution/'scripts/plugin_admin.py')]
+        audit = command([*admin, 'audit', '--home', str(home), '--codex-home', str(codex)], env)
+        if not audit['active']['consistent'] or audit['active']['source_commit'] != lock['source_commit']:
+            raise ValueError('packaged administration reported an inconsistent installation')
+        verify_directory(distribution)
         command([*admin, 'uninstall', '--home', str(home), '--codex-home', str(codex)], env)
         listing = command(['codex', 'plugin', 'list', '--json'], env)
         if any(row['pluginId'].startswith('openubmc@') for row in listing['installed']):
@@ -191,6 +200,8 @@ def qualify(source: Path, ref: str, archive: Path) -> dict:
         # Reinstall must converge even though the owned distribution source
         # and archives intentionally survive native cache removal.
         command(install_cli, env)
+        verify_directory(bootstrap)
+        verify_directory(distribution)
         report.update(schema='openubmc.codex-plugin.qualification.v1', codex=codex_version,
                       deterministic_archive=True, native_install=True, native_uninstall=True,
                       reinstall=True, external_state_preserved=True, mcp_health=doctor['mcp_health'],

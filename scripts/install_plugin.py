@@ -17,6 +17,7 @@ import tomllib
 import types
 import uuid
 
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from plugin_archive import canonical, materialize, read_archive, verify_directory
 
@@ -190,7 +191,7 @@ def verify_staged_config(before: bytes, after: bytes, home: Path, name: str) -> 
 
 def activate(archive: Path, archive_sha: str, home: Path, codex: Path) -> dict:
     lock, files = read_archive(archive, archive_sha)
-    env = dict(os.environ, CODEX_HOME=str(codex), XDG_CONFIG_HOME=str(home/'.config'),
+    env = dict(os.environ, HOME=str(home), CODEX_HOME=str(codex), XDG_CONFIG_HOME=str(home/'.config'),
                XDG_DATA_HOME=str(home/'.local/share'), XDG_CACHE_HOME=str(home/'.cache'))
     store = home/'.local/share/openubmc/plugin-store'
     store.mkdir(parents=True, exist_ok=True, mode=0o700)

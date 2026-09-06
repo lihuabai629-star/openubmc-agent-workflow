@@ -111,6 +111,24 @@ class ActivationTests(unittest.TestCase):
             return installer.activate(*self.archives[index], self.home, self.codex)
 
     @unittest.skipUnless(__import__('shutil').which('codex'), 'Codex required')
+    def test_home_override_isolates_parent_personal_marketplace(self):
+        from unittest.mock import patch
+        outer = self.root/'parent-home'
+        manifest = outer/'plugins/openubmc/.codex-plugin/plugin.json'
+        manifest.parent.mkdir(parents=True)
+        manifest.write_bytes(canonical({'name':'openubmc','version':'9.9.9'}))
+        market = outer/'.agents/plugins/marketplace.json'
+        market.parent.mkdir(parents=True)
+        market.write_bytes(canonical({'name':'personal','plugins':[{'name':'openubmc','source':{'source':'local','path':'./plugins/openubmc'},'policy':{'installation':'AVAILABLE','authentication':'ON_INSTALL'},'category':'Productivity'}]}))
+        before = market.read_bytes()
+        with patch.dict(os.environ, HOME=str(outer)):
+            installed = self.activate()
+        self.assertEqual(installed['version'], '2.0.7')
+        self.assertEqual(installer.identity(self.home/'plugins/openubmc'), installed['content_digest'])
+        self.assertEqual(market.read_bytes(), before)
+        self.assertEqual(json.loads(manifest.read_bytes())['version'], '9.9.9')
+
+    @unittest.skipUnless(__import__('shutil').which('codex'), 'Codex required')
     def test_native_install_update_and_rollback_preserve_unrelated_config(self):
         first = self.activate()
         self.assertEqual(first['status'], 'committed')

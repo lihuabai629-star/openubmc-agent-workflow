@@ -159,7 +159,24 @@ class PluginPackageTests(unittest.TestCase):
             with tarfile.open(base/'bundle.tar.gz') as archive:
                 archive.extractall(base, filter='data')
             home = base/'home'
-            result = subprocess.run([sys.executable, '-I', str(ROOT/'scripts/install_plugin.py'), str(base/'bundle.tar.gz'), '--home', str(home), '--sha256', '0'*64], capture_output=True, text=True)
+            result = subprocess.run([sys.executable, '-I', str(base/'openubmc/scripts/install_plugin.py'), str(base/'bundle.tar.gz'), '--home', str(home), '--sha256', '0'*64], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('archive digest', result.stderr)
             self.assertFalse((home/'.codex/config.toml').exists())
+            check = subprocess.run([sys.executable, '-I', str(base/'openubmc/scripts/pluginctl.py'), 'verify'], capture_output=True, text=True)
+            self.assertEqual(check.returncode, 0, check.stderr)
+
+    @unittest.skipUnless(shutil.which('codex'), 'Codex executable is required')
+    def test_packaged_audit_preserves_plugin_integrity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            subprocess.run([sys.executable, str(BUILDER), 'build', '--source', str(self.source), '--output', str(base/'bundle.tar.gz')], check=True, capture_output=True)
+            with tarfile.open(base/'bundle.tar.gz') as archive:
+                archive.extractall(base, filter='data')
+            plugin = base/'openubmc'
+            (base/'home/.codex').mkdir(parents=True)
+            audit = subprocess.run([sys.executable, '-I', str(plugin/'scripts/plugin_admin.py'), 'audit', '--home', str(base/'home')], capture_output=True, text=True, timeout=30)
+            self.assertEqual(audit.returncode, 0, audit.stderr)
+            self.assertFalse(json.loads(audit.stdout)['active']['installed'])
+            check = subprocess.run([sys.executable, '-I', str(plugin/'scripts/pluginctl.py'), 'verify'], capture_output=True, text=True)
+            self.assertEqual(check.returncode, 0, check.stderr)
