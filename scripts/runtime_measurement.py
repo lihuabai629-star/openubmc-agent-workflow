@@ -106,7 +106,7 @@ def run(source, repetitions, warm_repetitions):
             endpoint = JsonRpcMcpEndpoint(service, session_task_id=f"{batch}-{index}")
             turn = {}
             for sequence, stage in enumerate(("mcp_tools_list", "start", "diagnosis.acceptance", "developer.change"), 1):
-                row = {"run_id": f"{batch}-{index}", "index": index, "cache": cache, "stage": stage, "failure_class": None}
+                row = {"sample_id": f"{batch}-{index}", "index": index, "cache": cache, "stage": stage, "failure_class": None}
                 try:
                     if stage == "mcp_tools_list":
                         request = {"jsonrpc": "2.0", "id": sequence, "method": "tools/list", "params": {}}
@@ -140,6 +140,7 @@ def run(source, repetitions, warm_repetitions):
                             raise ValueError("unexpected tools")
                     else:
                         turn = structured
+                        row["runtime_run_id"] = turn.get("run_id")
                         row["event_count"] = len(repository.events(turn["run_id"]))
                         row["turn_state"] = turn["state"]
                         if stage == "developer.change" and (turn["state"] != "completed" or not turn.get("outcome_recorded")):
