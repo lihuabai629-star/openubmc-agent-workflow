@@ -124,6 +124,24 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
                     parent.kill()
                 parent.wait()
 
+    def test_spawning_thread_exit_does_not_cancel_a_live_clients_startup(self):
+        script = '''import os,subprocess,sys,threading,time
+from pathlib import Path
+def spawn():
+    subprocess.Popen(sys.argv[1:])
+    deadline=time.monotonic()+8
+    while not (Path(os.environ['FIXTURE_ROOT'])/'npm-args').exists() and time.monotonic()<deadline:
+        time.sleep(.02)
+t=threading.Thread(target=spawn)
+t.start();t.join();time.sleep(2)
+'''
+        result = subprocess.run([sys.executable, '-c', script, sys.executable, '-I',
+                                 str(self.plugin/'scripts/pluginctl.py'), 'runtime', '--prepare-on-start'],
+                                env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'MCP_FIXTURE_READY\n')
+        self.assertNotIn('cancelled', result.stderr)
+
     def test_failed_repair_preserves_verified_cache_and_offline_reuse(self):
         prepared=self.prepare('--offline')
         self.assertEqual(prepared.returncode,0,prepared.stderr)
