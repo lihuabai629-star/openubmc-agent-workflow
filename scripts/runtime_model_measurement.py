@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 from runtime_measurement import encoded, source_identity
 
-PROMPT = '''Exercise the local openubmc-target-runtime fixture using execute only. Its Domain Adapter is deterministic and has no target connection. Complete one diagnose-and-fix Run with delivery_strategy source-only for target 198.51.100.10 and purpose "validate fixture state refresh". Respond to diagnosis.acceptance with the evidence IDs in the returned diagnostic_receipt, root_cause "fixture state was outdated", causal_chain ["fixture state was outdated", "component consumed that state"], code_owner "fixture/component.lua", contradictions [], remaining_gaps [], verification_status "verified". Then respond to developer.change with source_revision "fixture-revision", authored_files ["fixture/component.lua"], verification_plan ["test fixture state refresh"]. Use each returned Gate binding exactly, and response status completed and summary "fixture phase complete". Do not observe, use shell, edit files, or contact a target. Stop only after Runtime reports state completed and outcome_recorded true, and report the terminal Run ID. Tool discovery through exec/ALL_TOOLS is allowed.'''
+PROMPT = '''Exercise the local openubmc-target-runtime fixture using execute only. Its Domain Adapter is deterministic and has no target connection. Start with exactly this execute argument object: {"kind":"start","intent":"diagnose-and-fix","delivery_strategy":"source-only","target":"198.51.100.10","purpose":"validate fixture state refresh"}. The field is intent, not workflow. Respond to diagnosis.acceptance with the evidence IDs in the returned diagnostic_receipt, root_cause "fixture state was outdated", causal_chain ["fixture state was outdated", "component consumed that state"], code_owner "fixture/component.lua", contradictions [], remaining_gaps [], verification_status "verified". Then respond to developer.change with source_revision "fixture-revision", authored_files ["fixture/component.lua"], verification_plan ["test fixture state refresh"]. Use each returned Gate binding exactly, and response status completed and summary "fixture phase complete". Do not observe, use shell, edit files, or contact a target. Stop only after Runtime reports state completed and outcome_recorded true, and report the terminal Run ID. Tool discovery through exec/ALL_TOOLS is allowed.'''
 
 
 class Relay(http.server.ThreadingHTTPServer):
@@ -68,7 +68,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     except (ValueError,UnicodeDecodeError): continue
                     data=event.get('response',{})
                     if data.get('model'): record['response_model']=data['model']
-                    if data.get('usage'): record['usage']=data['usage']
+                    if data.get('usage'):
+                        record['usage']={key:value for key,value in data['usage'].items() if key!='attribution'}
         except Exception as error:
             record['error_class']=type(error).__name__
             self.close_connection=True
@@ -96,7 +97,7 @@ def attempt(args, output, relay, model, pair, arm, ordinal):
     argv+=[PROMPT]
     begin=len(relay.records);started=time.perf_counter();failure=None
     with events.open('w') as stdout, (root/'stderr.log').open('w') as stderr:
-        process=subprocess.Popen(argv,env=env,stdout=stdout,stderr=stderr,start_new_session=True)
+        process=subprocess.Popen(argv,env=env,stdin=subprocess.DEVNULL,stdout=stdout,stderr=stderr,start_new_session=True)
         try:
             code=process.wait(timeout=args.timeout)
         except subprocess.TimeoutExpired:
@@ -110,15 +111,19 @@ def attempt(args, output, relay, model, pair, arm, ordinal):
     tools=[row for row in calls if row['request']['method']=='tools/call']
     turns=[row['response'].get('result',{}).get('structuredContent',{}) for row in tools]
     provider=relay.records[begin:]
-    valid=code==0 and len(turns)==3 and [row.get('gate',{}).get('name') for row in turns[:2]]==['diagnosis.acceptance','developer.change'] and turns[-1].get('state')=='completed' and turns[-1].get('outcome_recorded') is True
+    successful=[turn for turn in turns if turn.get('state')!='failed']
+    gates=[(turn.get('gate') or {}).get('name') for turn in successful]
+    completed=bool(successful and successful[-1].get('state')=='completed' and successful[-1].get('outcome_recorded') is True)
+    valid=code==0 and completed and 'diagnosis.acceptance' in gates and 'developer.change' in gates
+    request_errors=[turn.get('error',{}).get('code') for turn in turns if turn.get('state')=='failed']
     if not valid and failure is None:
-        failure=('model' if any(row['status'] and row['status']>=400 for row in provider) or not tools else
-                 'runtime' if any(row['response'].get('result',{}).get('isError') for row in tools) else 'model')
+        failure=('model' if request_errors or not tools else 'runtime' if not completed else 'transport')
+    clean_flow=valid and len(turns)==3 and not request_errors
     row={'model':model,'pair':pair,'arm':arm,'ordinal':ordinal,'exit_code':code,'valid':bool(valid),'failure_class':failure,
          'duration_seconds':elapsed,'runtime_seconds':sum(row['runtime_wall_seconds'] for row in tools),
          'tool_output_bytes':sum(len(encoded(row['response'].get('result',{}))) for row in tools),
          'provider_requests':provider,'provider_seconds':sum(row.get('duration_seconds') or 0 for row in provider),
-         'mcp_calls':len(tools),'events_sha256':hashlib.sha256(events.read_bytes()).hexdigest(),
+         'completed':completed,'clean_flow':bool(clean_flow),'model_request_errors':request_errors,'mcp_calls':len(tools),'events_sha256':hashlib.sha256(events.read_bytes()).hexdigest(),
          'trace_sha256':hashlib.sha256(trace.read_bytes()).hexdigest() if trace.exists() else None}
     (root/'result.json').write_text(json.dumps(row,indent=2)+'\n')
     return row

@@ -152,19 +152,18 @@ def run(source, repetitions, warm_repetitions):
                     break
                 records.append(row)
 
-        for index in range(repetitions):
-            resources = create(f"cold-{index}")
-            try:
+        resources = None
+        try:
+            for index in range(repetitions):
+                if resources is not None:
+                    resources[0].close()
+                resources = create(f"cold-{index}")
                 flow(index, "fresh-service", resources)
-            finally:
-                resources[0].close()
-        if warm_repetitions:
-            resources = create("warm")
-            try:
-                # All warm samples share the same process/service and growing durable store.
-                for index in range(repetitions, repetitions+warm_repetitions):
-                    flow(index, "reused-service", resources)
-            finally:
+            # Reuse the final measured service, which already completed a Run.
+            for index in range(repetitions, repetitions+warm_repetitions):
+                flow(index, "reused-service", resources)
+        finally:
+            if resources is not None:
                 resources[0].close()
     report = {"schema": "openubmc.runtime-measurement.v1", "batch_id": batch,
               "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -173,7 +172,7 @@ def run(source, repetitions, warm_repetitions):
                             "python": platform.python_version(), "platform": platform.platform(),
                             "cache": "module-imports-warm; fresh versus reused service; OS cache uncontrolled",
                             "runtime_time_scope": "endpoint dispatch, Runtime, storage and MCP text projection; excludes final JSON encoding"},
-              "requested_calls": 4*(repetitions+warm_repetitions), "attempted": len(records),
+              "requested_calls": 4*(repetitions+warm_repetitions), "attempted": len(records), "not_attempted": 4*(repetitions+warm_repetitions)-len(records),
               "valid": sum(row["failure_class"] is None for row in records),
               "failure_counts": dict(Counter(row["failure_class"] for row in records if row["failure_class"])),
               "records": records, "construction": constructions, "examples": examples, "summary": aggregate(records)}
