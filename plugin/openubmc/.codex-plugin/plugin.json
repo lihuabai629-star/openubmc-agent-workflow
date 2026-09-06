@@ -1,6 +1,6 @@
 {
   "name": "openubmc",
-  "version": "2.0.10+marketplace.1",
+  "version": "2.0.11",
   "description": "OpenUBMC Runtime and operational skills for Codex",
   "author": {
     "name": "lihuabai629-star"
