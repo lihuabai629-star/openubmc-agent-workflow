@@ -12,6 +12,16 @@ import sys
 import tempfile
 import time
 
+_ACTIVE_PREPARE=None
+
+
+class MeasurementCancelled(Exception):
+    pass
+
+
+def _cancel_prepare(_signum, _frame):
+    raise MeasurementCancelled('plugin measurement cancelled')
+
 
 def receive(process, expected, deadline, pending):
     with selectors.DefaultSelector() as selector:
@@ -108,12 +118,16 @@ def main():
         env=dict(os.environ,XDG_DATA_HOME=str(root/'data'),XDG_CACHE_HOME=str(root/'cache'),
                  OPENUBMC_MCP_FORMAL_RUN='0',OPENUBMC_TARGET_RUNTIME_STATE_DIR=str(root/'state'),OPENUBMC_MCP_LIFECYCLE_DIR=str(root/'lifecycle'))
         started=time.monotonic()
+        global _ACTIVE_PREPARE
+        old_handlers=(signal.getsignal(signal.SIGTERM),signal.getsignal(signal.SIGINT))
+        signal.signal(signal.SIGTERM,_cancel_prepare);signal.signal(signal.SIGINT,_cancel_prepare)
         prepare_process=subprocess.Popen([sys.executable,'-I',str(plugin/'scripts/pluginctl.py'),'prepare'],env=env,
                                          stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+        _ACTIVE_PREPARE=prepare_process
         try:
             prepare_stdout, prepare_stderr=prepare_process.communicate(timeout=540)
             prepared_returncode=prepare_process.returncode
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, MeasurementCancelled, KeyboardInterrupt):
             # Installers own independent sessions. Snapshot descendants before
             # terminating their parent so old plugin versions cannot orphan them.
             for pid in owned_processes(prepare_process.pid):
@@ -121,7 +135,10 @@ def main():
                 except ProcessLookupError: pass
             prepare_stdout, prepare_stderr=prepare_process.communicate()
             prepared_returncode=124
-            prepare_stderr += '\nDependency preparation deadline exceeded by measurement harness\n'
+            prepare_stderr += '\nDependency preparation interrupted or exceeded its measurement deadline\n'
+        finally:
+            _ACTIVE_PREPARE=None
+            signal.signal(signal.SIGTERM,old_handlers[0]);signal.signal(signal.SIGINT,old_handlers[1])
         report['dependency_prepare_seconds']=time.monotonic()-started
         report['dependency_prepare_ok']=prepared_returncode==0
         report['prepare_stages']=[json.loads(line) for line in prepare_stderr.splitlines() if line.startswith('{')]
