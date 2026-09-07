@@ -5,12 +5,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import threading
 import unittest
-
-ROOT = Path(__file__).resolve().parents[2]
+if __package__:
+    from .plugin_fixture import package_fixture
+else:
+    from plugin_fixture import package_fixture
 
 
 def native_snapshot(home, environment):
@@ -51,20 +52,7 @@ class DisableMigrationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.base = Path(cls.temporary.name)
-        source = cls.base/'source'
-        source.mkdir()
-        for name in subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\0'):
-            if name and (ROOT/name).is_file():
-                target = source/name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(ROOT/name, target)
-        subprocess.run(['git', 'init', '-q', str(source)], check=True)
-        subprocess.run(['git', 'add', '.'], cwd=source, check=True)
-        subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'Fixture'], cwd=source, check=True)
-        subprocess.run([sys.executable, str(ROOT/'scripts/package_plugin.py'), 'build', '--source', str(source),
-                        '--output', str(cls.base/'bundle.tar.gz')], check=True, capture_output=True)
-        with tarfile.open(cls.base/'bundle.tar.gz') as archive:
-            archive.extractall(cls.base, filter='data')
+        cls.plugin = package_fixture(cls.base)
 
     @classmethod
     def tearDownClass(cls):
@@ -107,7 +95,7 @@ class DisableMigrationTests(unittest.TestCase):
                                 XDG_CONFIG_HOME=str(self.home/'.config'), XDG_DATA_HOME=str(self.home/'.local/share'))
 
     def cli(self, *arguments, success=True):
-        result = subprocess.run([sys.executable, '-I', str(self.base/'openubmc/scripts/pluginctl.py'), *arguments,
+        result = subprocess.run([sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'), *arguments,
                                  '--home', str(self.home)], env=self.environment, capture_output=True, text=True, timeout=30)
         self.assertNotIn('private-fixture-do-not-print', result.stdout + result.stderr)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)

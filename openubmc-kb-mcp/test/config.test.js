@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
-import { loadConfig } from "../src/config.js";
+const { loadConfig } = await import(process.env.OPENUBMC_TEST_PLUGIN_ROOT
+  ? pathToFileURL(join(process.env.OPENUBMC_TEST_PLUGIN_ROOT, "openubmc-kb-mcp/src/config.js"))
+  : "../src/config.js");
 
 const valid = {
   lightragUrl: "http://127.0.0.1:8899",

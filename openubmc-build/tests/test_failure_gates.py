@@ -9,10 +9,21 @@ import tempfile
 import unittest
 
 
-BUILD_ROOT = Path(__file__).resolve().parents[1]
+BUILD_ROOT = Path(os.environ['OPENUBMC_TEST_PLUGIN_ROOT']) / 'skills/openubmc-build' if os.environ.get('OPENUBMC_TEST_PLUGIN_ROOT') else Path(__file__).resolve().parents[1]
 
 
 class FailureGateTests(unittest.TestCase):
+    def test_checked_command_preserves_normal_summary_and_nonzero_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            for command_rc in (0, 7):
+                result = subprocess.run(
+                    [sys.executable, str(BUILD_ROOT / "scripts/run_bmcgo_checked.py"),
+                     "--log", str(Path(raw) / "build.log"), "--", sys.executable, "-c",
+                     f"print('test summary: 0 failed'); raise SystemExit({command_rc})"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode == 0, command_rc == 0)
+
     def test_checked_command_rejects_error_beside_zero_failure_summary(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             result = subprocess.run(

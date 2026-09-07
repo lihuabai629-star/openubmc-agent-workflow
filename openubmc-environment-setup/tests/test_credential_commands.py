@@ -11,7 +11,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[2]
+PLUGIN_ROOT = Path(os.environ['OPENUBMC_TEST_PLUGIN_ROOT']) if os.environ.get('OPENUBMC_TEST_PLUGIN_ROOT') else None
+ROOT = PLUGIN_ROOT / 'skills' if PLUGIN_ROOT else Path(__file__).resolve().parents[2]
+KB_ROOT = (PLUGIN_ROOT or ROOT) / 'openubmc-kb-mcp'
 SPEC = importlib.util.spec_from_file_location(
     "credential_command_installer", ROOT / "openubmc-environment-setup/scripts/install_environment.py"
 )
@@ -73,7 +75,7 @@ class CredentialCommandTests(unittest.TestCase):
         self.assertFalse((self.home / ".config/openubmc/credentials.env").exists())
 
     def load_kb(self, password, client_secret):
-        loader = (ROOT / "openubmc-kb-mcp/src/config.js").as_uri()
+        loader = (KB_ROOT / "src/config.js").as_uri()
         script = f"""
             import {{ loadConfig }} from {json.dumps(loader)};
             const config = await loadConfig(process.argv[1]);
