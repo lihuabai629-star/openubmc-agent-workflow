@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +24,56 @@ from openubmc_target_runtime import (  # noqa: E402
 
 
 class ArtifactLifecycleTests(unittest.TestCase):
+    def test_gc_and_new_registration_leave_the_new_reference_readable(self) -> None:
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                now = [100.0]
+                store = LocalArtifactStore(
+                    content_root=root / "content",
+                    repository=SQLiteArtifactRepository(root / "artifacts.sqlite") if persistent else None,
+                    clock=lambda: now[0], temporary_retention_seconds=1,
+                )
+                source = root / "evidence.log"
+                source.write_bytes(b"shared evidence")
+
+                def register(run_id: str, retention: str):
+                    return store.put(
+                        source, kind="test-evidence", provenance="test",
+                        retention_hint=retention, target="192.0.2.1", run_id=run_id,
+                        created_by_effect=run_id + "-effect",
+                    )
+
+                old = register("old-run", "temporary")
+                content_path = store.resolve(old)
+                now[0] = 200.0
+                deleting = threading.Event()
+                resume_delete = threading.Event()
+                unlink = os.unlink
+
+                def delayed_unlink(path, *args, **kwargs):
+                    if os.fspath(path) == str(content_path):
+                        deleting.set()
+                        if not resume_delete.wait(5):
+                            raise TimeoutError("filesystem deletion was not released")
+                    return unlink(path, *args, **kwargs)
+
+                with patch("os.unlink", side_effect=delayed_unlink), ThreadPoolExecutor(max_workers=2) as executor:
+                    collection = executor.submit(store.garbage_collect)
+                    try:
+                        self.assertTrue(deleting.wait(5), "GC did not reach the filesystem")
+                        registration = executor.submit(register, "new-run", "audit")
+                        try:
+                            registration.result(timeout=2)
+                        except FutureTimeout:
+                            # Atomic implementations may serialize registration behind GC.
+                            pass
+                    finally:
+                        resume_delete.set()
+                    collection.result(timeout=5)
+                    fresh = registration.result(timeout=5)
+                self.assertEqual(store.resolve(fresh).read_bytes(), b"shared evidence")
+
     def test_expected_digest_is_rechecked_at_the_persisted_copy_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
