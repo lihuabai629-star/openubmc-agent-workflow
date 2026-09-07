@@ -73,10 +73,7 @@ class LocalCredentialSource:
             code = 'credentials_conflict' if 'conflicting' in str(exc) else 'credentials_invalid'
             raise CredentialConfigurationError(code, 'Check the legacy credential file format and duplicate fields') from None
         prefix = 'OPENUBMC_' + ('OS_' if purpose == 'os' else '') + transport.upper()
-        aliases = {
-            'user': [prefix + '_USER'], 'password': [prefix + '_PASSWORD'],
-            'identity_file': [prefix + '_IDENTITY_FILE'],
-        }
+        aliases = {field: [prefix + '_' + field.upper()] for field in ('user', 'password', 'identity_file')}
         if purpose == 'bmc' and transport == 'redfish':
             aliases['user'].append('REDFISH_USERNAME')
             aliases['password'].append('REDFISH_PASSWORD')

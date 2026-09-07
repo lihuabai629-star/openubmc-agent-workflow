@@ -11,6 +11,31 @@ from openubmc_target_runtime import CredentialResolver
 
 
 class LocalCredentialTests(unittest.TestCase):
+    def test_specialized_observe_uses_selected_json_credentials(self):
+        from unittest.mock import patch
+        from test_agent_gateway import SemanticBackend
+        from openubmc_target_runtime import RuntimeMcpService, OrchestratedMcpBackend
+        from types import SimpleNamespace
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'openubmc-debug/scripts'))
+        import _cli_common
+        observed = []
+        class ScopedBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                values = _cli_common.resolve_debug_credentials(SimpleNamespace(ip=arguments['ip']), include_telnet=False, credentials=arguments.get('_credential_values', {}))
+                observed.append(values['ssh']['password'])
+                return super().observe_query(task, arguments, context)
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            path.write_text(json.dumps({'schema_version': 1, 'credentials': {'common': {'user': 'fixture', 'password': 'fixture-selected'}}, 'defaults': {'bmc': {'ssh': 'common'}}})); path.chmod(0o600)
+            with patch.dict('os.environ', {'HOME': raw, 'XDG_CONFIG_HOME': raw, 'OPENUBMC_CREDENTIALS_CONFIG': str(path)}, clear=True):
+                service = RuntimeMcpService(OrchestratedMcpBackend({'debug_collect': ScopedBackend()}))
+                try:
+                    result = service.call_exposed_tool('observe', {'target': '192.0.2.10', 'selectors': [{'kind': 'capability', 'names': ['ssh']}]}, task_id='specialized', operation_id='observe')
+                    self.assertEqual(observed, ['fixture-selected'])
+                    self.assertNotIn('fixture-selected', json.dumps(result))
+                finally:
+                    service.close()
+
     def test_defaults_and_complete_ip_overrides_are_isolated_by_purpose_and_transport(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'credentials.json'
