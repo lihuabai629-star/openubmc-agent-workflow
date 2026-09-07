@@ -381,9 +381,9 @@ def write_timing(path: Path | None, stage: str, started: float) -> None:
             stream.write(json.dumps({'stage': stage, 'elapsed_seconds': time.monotonic()-started})+'\n')
 
 
-def launch(command: str, content: dict[str, bytes], lock: dict, timings: Path | None = None) -> int:
+def launch(command: str, content: dict[str, bytes], lock: dict, timings: Path | None = None, page_args: list[str] | None = None) -> int:
     started = time.monotonic()
-    dependencies = dependency_root(content, command)
+    dependencies = dependency_root(content, "runtime" if command == "configure" else command)
     write_timing(timings, 'dependency_identity', started)
     if not (dependencies/'receipt.json').is_file():
         raise ValueError('Dependencies are not prepared; run pluginctl.py prepare')
@@ -397,7 +397,11 @@ def launch(command: str, content: dict[str, bytes], lock: dict, timings: Path | 
     env = node_environment()
     env['OPENUBMC_MCP_SOURCE_COMMIT'] = lock['source_commit']
     env['OPENUBMC_PLUGIN_CONTENT_DIGEST'] = lock['content_digest']
-    if command == 'runtime':
+    if command == 'configure':
+        argv = [sys.executable, '-I', '-B', '-c',
+                'import sys,runpy;sys.path.insert(0,sys.argv[1]);sys.argv=[sys.argv[2],*sys.argv[3:]];runpy.run_path(sys.argv[0],run_name="__main__")',
+                str(snapshot/'python-packages'), str(snapshot/'skills/openubmc-environment-setup/scripts/config_page.py'), *(page_args or [])]
+    elif command == 'runtime':
         argv = [sys.executable, '-I', '-B', '-c',
                 'import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_path(sys.argv[2],run_name="__main__")',
                 str(snapshot/'python-packages'), str(snapshot/'scripts/launch_runtime.py')]
@@ -421,7 +425,7 @@ def positive_timeout(value: str) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'migrate', 'restore-legacy'])
+    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'configure', 'migrate', 'restore-legacy'])
     parser.add_argument('--home', type=Path, default=Path.home())
     parser.add_argument('--codex-home', type=Path)
     parser.add_argument('--transaction', default='')
@@ -430,6 +434,10 @@ def main() -> int:
     migration_mode.add_argument('--remove', dest='migration_mode', action='store_const', const='remove', help='Remove owned legacy registrations and Skill links')
     parser.add_argument('--preview', action='store_true', help='Inspect migration without changing files')
     parser.add_argument('--target-plugin', default='openubmc@openubmc-public', help='Plugin registration to preserve during migration')
+    parser.add_argument('--no-browser', action='store_true')
+    parser.add_argument('--target', action='append', default=[])
+    parser.add_argument('--purpose', choices=['bmc','os'], default='bmc')
+    parser.add_argument('--transport', choices=['ssh','redfish'], default='ssh')
     parser.add_argument('--capability', choices=['runtime', 'kb', 'all'], default='all', help='Capability to prepare or diagnose')
     parser.add_argument('--repair', action='store_true', help='Recreate a damaged dependency cache')
     parser.add_argument('--prepare-on-start', action='store_true', help='Prepare locked dependencies before the first MCP startup')
@@ -470,6 +478,13 @@ def main() -> int:
                 roots[capability] = str(prepare_dependencies(content, args.repair, capability=capability, offline=args.offline, retries=args.retries, pip_timeout=args.pip_timeout, npm_timeout=args.npm_timeout, lock_timeout=args.lock_timeout))
             report['capability_dependencies'] = roots
             report['dependencies'] = roots.get('runtime', roots.get('kb'))
+        elif args.command == 'configure':
+            if not (dependency_root(content, 'runtime')/'receipt.json').is_file():
+                prepare_dependencies(content, False, capability='runtime')
+            page_args=['--purpose',args.purpose,'--transport',args.transport]
+            if args.no_browser: page_args.append('--no-browser')
+            for target in args.target: page_args.extend(['--target',target])
+            return launch('configure',content,lock,page_args=page_args)
         elif args.command in ('runtime', 'kb'):
             if args.prepare_on_start and not (dependency_root(content, args.command)/'receipt.json').is_file():
                 prepare_for_start(content, args.command)

@@ -174,15 +174,25 @@ def _validate_kb(config: object) -> None:
             raise ConfigurationError('KB request timeout must be finite and positive')
 
 
+def _validate_conan(config: object) -> None:
+    if not isinstance(config, dict) or set(config) - {'credentials'} or not isinstance(config.get('credentials', {}), dict):
+        raise ConfigurationError('Conan configuration must contain credential records')
+    for remote, record in config.get('credentials', {}).items():
+        if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', remote) is None:
+            raise ConfigurationError('Invalid Conan remote name')
+        if not isinstance(record, dict) or set(record) - {'user', 'password'} or any(not isinstance(v, str) or '\0' in v for v in record.values()):
+            raise ConfigurationError('Conan credentials must contain text fields')
+
+
 class LocalConfigurationStore:
     def __init__(self, source: Path, *, kind: str):
         self.source = Path(os.path.abspath(Path(source).expanduser()))
-        if kind not in {'targets', 'kb'}:
+        if kind not in {'targets', 'kb', 'conan'}:
             raise ConfigurationError('Unsupported configuration kind')
         self.kind = kind
 
     def _validate(self, config: object) -> None:
-        (_validate_targets if self.kind == 'targets' else _validate_kb)(config)
+        {'targets': _validate_targets, 'kb': _validate_kb, 'conan': _validate_conan}[self.kind](config)
 
     @contextmanager
     def _locked(self):
@@ -202,6 +212,18 @@ class LocalConfigurationStore:
         revision = _revision(self.source, 'saved')
         active = _revision(self.source, 'active')
         return {'saved': revision is not None, 'revision': revision, 'active_revision': active, 'verified': False}
+
+    def read_active(self) -> dict:
+        """Local operator-only active bytes, never a model-facing projection."""
+        path, _revision_id = activated_source(self.source)
+        return _read(path)
+
+    def read_saved(self) -> dict:
+        """Local operator-only data; callers must remove secrets before display."""
+        revision = _revision(self.source, 'saved')
+        if revision is None:
+            return {'schema_version': 1} if self.kind == 'targets' else {}
+        return _read(_snapshot(self.source, revision))
 
     def save(self, config: dict, *, expected_revision: str | None) -> dict[str, object]:
         self._validate(config)
