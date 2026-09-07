@@ -1539,6 +1539,8 @@ def run_redfish_bundle_flow(
 
 
 def ensure_safe_member_path(destination: pathlib.Path, member_name: str) -> None:
+    if len(pathlib.PurePosixPath(member_name).parts) > 128:
+        raise BundlePullError("extract_budget_exceeded", "Archive path depth exceeds 128 components")
     try:
         target_path = (destination / member_name).resolve()
     except (OSError, RuntimeError) as exc:
@@ -1546,6 +1548,8 @@ def ensure_safe_member_path(destination: pathlib.Path, member_name: str) -> None
     destination_root = destination.resolve()
     if not target_path.is_relative_to(destination_root):
         raise BundlePullError("extract_failed", f"Unsafe archive member path: {member_name}")
+    if len(target_path.relative_to(destination_root).parts) > 128:
+        raise BundlePullError("extract_budget_exceeded", "Resolved archive path depth exceeds 128 components")
 
 
 def locate_bundle_root(extract_dir: pathlib.Path) -> pathlib.Path:

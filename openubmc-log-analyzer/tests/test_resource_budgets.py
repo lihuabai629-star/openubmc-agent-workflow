@@ -210,3 +210,14 @@ class LogResourceBudgetTests(unittest.TestCase):
                 pull_bundle.extract_archive(path, root / "output", max_bytes=1)
             self.assertEqual(raised.exception.code, "extract_failed")
             self.assertEqual(list((root / "output").iterdir()), [])
+
+    def test_archive_path_depth_is_bounded_before_creating_deep_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "bundle.tar"
+            with tarfile.open(path, "w") as archive:
+                archive.addfile(tarfile.TarInfo("dump_info/" + "d/" * 128 + "app.log"))
+            with self.assertRaises(pull_bundle.BundlePullError) as raised:
+                pull_bundle.extract_archive(path, root / "output")
+            self.assertEqual(raised.exception.code, "extract_budget_exceeded")
+            self.assertEqual(list((root / "output").iterdir()), [])
