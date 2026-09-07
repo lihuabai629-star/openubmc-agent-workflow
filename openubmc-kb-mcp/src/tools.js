@@ -72,6 +72,8 @@ function textResult(name, source, responseFormat) {
 
 export function errorResult(error) {
   const failures = {
+    KB_CONFIGURATION_INVALID: ["The activated local KB configuration is invalid.", false,
+      "Repair and activate the local configuration before retrying."],
     KB_CREDENTIALS_MISSING: ["Knowledge-base credentials are not configured.", false,
       "Configure credentials in the local private KB configuration."],
     KB_INTERACTION_REQUIRED: ["Knowledge-base authentication requires human interaction.", false,

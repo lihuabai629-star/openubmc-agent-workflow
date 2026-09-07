@@ -60,9 +60,10 @@ class LocalCredentialSource:
         if selected is not None:
             return selected
         config_home = self.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
+        from .configuration import has_activation
         for name in ('credentials.json', 'credentials.env'):
             path = Path(config_home) / 'openubmc' / name
-            if path.exists() or path.is_symlink():
+            if path.exists() or path.is_symlink() or has_activation(path):
                 return path
         return None
 
