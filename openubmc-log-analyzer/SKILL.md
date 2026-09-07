@@ -57,12 +57,12 @@ MCP 任务默认最多保留 32 个目标连接租约。它不限制 Case 中的
 
 ## 示例（只有远端入口）
 
-用户：“BMC 登录失败，服务器是 `10.10.10.8`，直接拉一键日志分析。”
+用户：“BMC 登录失败，服务器是 `192.0.2.10`，直接拉一键日志分析。”
 
 处理方式：
 - 先拉一键日志包。
 - 一条命令完成拉包和分析：
-  - `python scripts/pull_bundle.py --ip 10.10.10.8 --transport redfish --problem 'BMC 登录失败' --json`
+  - `python scripts/pull_bundle.py --ip 192.0.2.10 --transport redfish --problem 'BMC 登录失败' --json`
 - 读取 `result.bundle_root` 和 `result.analysis`。
 - 根据 `logs.json`，脚本会把 login/auth 相关问题优先映射到 `security.log`、`operation.log`。
 - 先看返回的证据行，只有在还需要更深关联时再继续人工分析。

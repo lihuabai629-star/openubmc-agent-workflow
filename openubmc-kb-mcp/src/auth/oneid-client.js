@@ -87,7 +87,7 @@ export class OneIdClient {
       ?? Boolean(this.config.username && this.config.password);
     if (!configured) {
       const error = new Error(
-        "openUBMC KB credentials are not configured; run openubmc-environment-setup credentials --kb"
+        "openUBMC KB credentials are not configured; configure username, password and clientSecret in the private KB configuration"
       );
       error.code = "KB_CREDENTIALS_MISSING";
       throw error;

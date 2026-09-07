@@ -4,7 +4,7 @@ Last updated: 2026-04-07
 Source:
 - NotebookLM: openUBMC 架构设计与特性参考指南
 - Local bundle inventory: openUBMC_20260204-0112.tar
-- Real bundle replay: 10.121.177.159 / codex_dump_20260407_150135.tar.gz
+- Log bundle replay with a sanitized fixture
 
 ## 目录含义
 

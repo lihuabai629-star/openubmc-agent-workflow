@@ -33,6 +33,7 @@ class PluginPackageTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.source_directory.cleanup()
 
+
     def test_immutable_source_build_is_reproducible_and_relocatable(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -108,7 +109,8 @@ class PluginPackageTests(unittest.TestCase):
             for name in ('openubmc-target-runtime', 'openubmc-kb'):
                 server = servers[name]
                 transport = server['transport']
-                launch = Path(transport['cwd'])/transport['args'][1]
+                launch_arg = next(value for value in transport['args'] if value.endswith('.py'))
+                launch = Path(transport['cwd'])/launch_arg
                 self.assertTrue(launch.is_file(), str(launch))
                 check = subprocess.run([transport['command'], '-I', str(launch), 'verify'], capture_output=True, text=True)
                 self.assertEqual(check.returncode, 0, check.stderr)
@@ -139,7 +141,7 @@ class PluginPackageTests(unittest.TestCase):
             credentials.write_bytes(b'preserved-private-configuration')
             env = dict(os.environ, XDG_CONFIG_HOME=str(home/'.config'), XDG_DATA_HOME=str(home/'.local/share'), CODEX_HOME=str(codex))
             cli = [sys.executable, '-I', str(base/'openubmc/scripts/pluginctl.py')]
-            result = subprocess.run([*cli, 'migrate', '--home', str(home)], env=env, capture_output=True, text=True)
+            result = subprocess.run([*cli, 'migrate', '--remove', '--home', str(home)], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
             self.assertIn('transaction', report)

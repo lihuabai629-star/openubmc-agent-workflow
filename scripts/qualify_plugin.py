@@ -62,7 +62,7 @@ class _ResponsesHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
-def native_exec_probe(env: dict[str, str], root: Path, source_commit: str) -> dict:
+def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, timeout: int = 180) -> dict:
     machine = platform.machine().lower()
     arch, target = ('arm64', 'aarch64') if machine in {'arm64','aarch64'} else ('x64','x86_64')
     executable = ROOT/f'plugin/host/node_modules/@openai/codex-linux-{arch}/vendor/{target}-unknown-linux-musl/bin/codex'
@@ -95,7 +95,9 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str) -> di
             start = len(server.requests)
             process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
-                stdout, stderr = process.communicate(timeout=180)
+                stdout, stderr = process.communicate(timeout=timeout)
+                (root/f'native-{len(runs)+1}.stdout').write_text(stdout)
+                (root/f'native-{len(runs)+1}.stderr').write_text(stderr)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.communicate()

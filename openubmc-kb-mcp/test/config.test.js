@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
-import { loadConfig } from "../src/config.js";
+const { loadConfig } = await import(process.env.OPENUBMC_TEST_PLUGIN_ROOT
+  ? pathToFileURL(join(process.env.OPENUBMC_TEST_PLUGIN_ROOT, "openubmc-kb-mcp/src/config.js"))
+  : "../src/config.js");
 
 const valid = {
   lightragUrl: "http://127.0.0.1:8899",
@@ -32,6 +35,31 @@ test("loads and normalizes a complete local configuration", async () => {
   assert.equal(config.authorizationEndpoint, "https://oauth.example.com/oneid/oidc/authorize");
   assert.equal(config.tokenEndpoint, "https://oauth.example.com/oneid/oidc/token");
   assert.equal(config.tokenCachePath, join(dirname(path), "private", "token.json"));
+});
+
+test("preserves exact file and environment secrets while normalizing usernames", async () => {
+  const fields = ["OPENUBMC_KB_USERNAME", "OPENUBMC_KB_PASSWORD", "OPENUBMC_KB_CLIENT_SECRET"];
+  const previous = fields.map(field => process.env[field]);
+  const path = await configFile({ ...valid, username: " user ", password: " password!'  ", clientSecret: " secret!'  " });
+  try {
+    for (const field of fields) delete process.env[field];
+    let config = await loadConfig(path);
+    assert.equal(config.username, "user");
+    assert.equal(config.password, " password!'  ");
+    assert.equal(config.clientSecret, " secret!'  ");
+    process.env.OPENUBMC_KB_USERNAME = " env-user ";
+    process.env.OPENUBMC_KB_PASSWORD = " env-password!'  ";
+    process.env.OPENUBMC_KB_CLIENT_SECRET = " env-secret!'  ";
+    config = await loadConfig(path);
+    assert.equal(config.username, "env-user");
+    assert.equal(config.password, " env-password!'  ");
+    assert.equal(config.clientSecret, " env-secret!'  ");
+  } finally {
+    fields.forEach((field, index) => {
+      if (previous[index] === undefined) delete process.env[field];
+      else process.env[field] = previous[index];
+    });
+  }
 });
 
 test("rejects missing credentials without including secret values", async () => {
@@ -71,11 +99,27 @@ test("uses the managed user configuration path by default", async () => {
   }
 });
 
-test("uses the bundled desktop OAuth client registration when secret is omitted", async () => {
+test("requires an external OAuth client secret and starts unconfigured without it", async () => {
   const { clientSecret, ...withoutSecret } = valid;
-  const config = await loadConfig(await configFile(withoutSecret));
-  assert.equal(typeof config.clientSecret, "string");
-  assert.ok(config.clientSecret.length > 20);
+  const path = await configFile(withoutSecret);
+  await assert.rejects(() => loadConfig(path), /clientSecret/);
+  const config = await loadConfig(path, { allowMissingCredentials: true });
+  assert.equal(config.clientSecret, "");
+  assert.equal(config.credentialsConfigured, false);
+});
+
+test("uses a private environment client secret without writing it to configuration", async () => {
+  const previous = process.env.OPENUBMC_KB_CLIENT_SECRET;
+  process.env.OPENUBMC_KB_CLIENT_SECRET = "external-test-client-secret";
+  try {
+    const { clientSecret, ...withoutSecret } = valid;
+    const config = await loadConfig(await configFile(withoutSecret));
+    assert.equal(config.clientSecret, "external-test-client-secret");
+    assert.equal(config.credentialsConfigured, true);
+  } finally {
+    if (previous === undefined) delete process.env.OPENUBMC_KB_CLIENT_SECRET;
+    else process.env.OPENUBMC_KB_CLIENT_SECRET = previous;
+  }
 });
 
 test("rejects insecure non-loopback LightRAG URLs", async () => {
