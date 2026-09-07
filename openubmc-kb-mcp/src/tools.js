@@ -229,7 +229,12 @@ export function registerTools(server, client, processLifecycle = null) {
           return errorResult(error);
         }
       };
-      return invoke();
+      processLifecycle?.beginRequest?.();
+      try {
+        return await invoke();
+      } finally {
+        processLifecycle?.endRequest?.();
+      }
     });
   }
 }

@@ -184,23 +184,26 @@ function createProcessLifecycle(path) {
 
 export class PendingResponses {
   constructor() {
-    this.counts = new Map();
+    this.requests = new Map();
   }
 
-  add(requestId) {
-    this.counts.set(requestId, (this.counts.get(requestId) || 0) + 1);
+  add(requestId, onFinish = null) {
+    const requests = this.requests.get(requestId) || [];
+    requests.push(onFinish);
+    this.requests.set(requestId, requests);
   }
 
   finish(requestId) {
-    const count = this.counts.get(requestId) || 0;
-    if (count <= 0) return false;
-    if (count === 1) this.counts.delete(requestId);
-    else this.counts.set(requestId, count - 1);
+    const requests = this.requests.get(requestId);
+    if (!requests?.length) return false;
+    const onFinish = requests.shift();
+    if (!requests.length) this.requests.delete(requestId);
+    onFinish?.();
     return true;
   }
 
   get size() {
-    return this.counts.size;
+    return this.requests.size;
   }
 }
 
@@ -242,8 +245,13 @@ async function main() {
   const pendingResponses = new PendingResponses();
   transport.onmessage = message => {
     if (!Object.hasOwn(message, "id")) return;
-    processLifecycle.beginRequest();
-    pendingResponses.add(message.id);
+    if (message.method === "tools/call") {
+      // Tool work is tracked by its handler, even when the SDK omits a cancelled response.
+      pendingResponses.add(message.id);
+    } else {
+      processLifecycle.beginRequest();
+      pendingResponses.add(message.id, () => processLifecycle.endRequest());
+    }
   };
   let stdinClosed = false;
   transport.onerror = error => {
@@ -259,9 +267,7 @@ async function main() {
     try {
       await send(message);
     } finally {
-      if (hasResponseId && pendingResponses.finish(responseId)) {
-        processLifecycle.endRequest();
-      }
+      if (hasResponseId) pendingResponses.finish(responseId);
     }
     monitor.unref();
     if (stdinClosed && pendingResponses.size === 0) {
@@ -310,6 +316,11 @@ async function main() {
   const dispatch = transport.onmessage;
   transport.onmessage = (message, extra) => {
     const hasResponse = Object.hasOwn(message, "id");
+    if (!hasResponse && message.method === "notifications/cancelled") {
+      dispatch?.(message, extra);
+      pendingResponses.finish(message.params?.requestId);
+      return;
+    }
     if (processLifecycle.shutdownRequested) {
       if (hasResponse) {
         send({
@@ -326,7 +337,6 @@ async function main() {
         dispatch?.(message, extra);
       } catch (error) {
         pendingResponses.finish(requestId);
-        processLifecycle.endRequest();
         throw error;
       }
       return;
