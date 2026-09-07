@@ -34,6 +34,62 @@ class WarningTransport(FakeRedfishTransport):
 
 
 class TaskDiagnosticTests(unittest.TestCase):
+    def test_task_uri_secrets_are_used_locally_but_not_persisted_or_returned(self):
+        task_uri = '/redfish/v1/TaskService/Tasks/1?token=fictional-secret'
+        requested = []
+        class UriSession(FakeRedfishSession):
+            def request_json(self, method, path, **kwargs):
+                if path == '/redfish/v1/UpdateService/upload':
+                    return RedfishResponse(status=202, headers={'Location': task_uri}, payload={})
+                if path.startswith('/redfish/v1/TaskService/Tasks/'):
+                    requested.append(path)
+                    return RedfishResponse(status=200, headers={}, payload={'TaskState': 'Completed', 'TaskStatus': 'Warning'})
+                return super().request_json(method, path, **kwargs)
+        class UriTransport(FakeRedfishTransport):
+            def open_session(self, *, target, credentials):
+                self.opens += 1
+                return UriSession(self.opens)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / 'fixture.hpm'; artifact.write_bytes(b'fictional firmware')
+            transport = UriTransport()
+            backend = UpgradeMcpBackend(journal_store=MutationJournalStore(root / 'journals'), credential_loader=lambda _args: {'redfish': {'user': 'fixture', 'password': 'fictional-secret'}}, redfish_transport_factory=lambda _args: transport)
+            service = RuntimeMcpService(backend)
+            try:
+                result = service.call_tool('upgrade_run', {'intent': 'upgrade-and-verify', 'ip': '192.0.2.10', 'artifact_path': str(artifact), 'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(), 'product_version': '2.0.0', 'deadline': 5}, task_id='uri', operation_id='upgrade')
+                self.assertEqual(requested, [task_uri])
+                self.assertFalse('fictional-secret' in json.dumps(result))
+                self.assertFalse('fictional-secret' in json.dumps(backend.operation_state_store.load('uri', 'upgrade')))
+            finally:
+                service.close()
+
+    def test_earlier_warning_messages_survive_a_message_free_terminal_response(self):
+        class ProgressSession(WarningSession):
+            def request_json(self, method, path, **kwargs):
+                if path == '/redfish/v1/TaskService/Tasks/1':
+                    payload = self.responses.pop(0)
+                    return RedfishResponse(status=200, headers={}, payload=payload)
+                return super().request_json(method, path, **kwargs)
+        class ProgressTransport(WarningTransport):
+            def open_session(self, *, target, credentials):
+                self.opens += 1
+                session = ProgressSession(self.opens)
+                session.responses = [{'TaskState': 'Running', 'TaskStatus': 'Warning', 'Messages': [{'MessageId': 'Update.1.0.EarlyWarning', 'Message': 'Check cooling'}]}, {'TaskState': 'Completed', 'TaskStatus': 'Warning'}]
+                return session
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            artifact = root / 'fixture.hpm'; artifact.write_bytes(b'fictional firmware')
+            transport = ProgressTransport({})
+            backend = UpgradeMcpBackend(journal_store=MutationJournalStore(root / 'journals'), credential_loader=lambda _args: {'redfish': {'user': 'fixture', 'password': 'fictional-secret'}}, redfish_transport_factory=lambda _args: transport)
+            service = RuntimeMcpService(backend)
+            try:
+                result = service.call_tool('upgrade_run', {'intent': 'upgrade-and-verify', 'ip': '192.0.2.10', 'artifact_path': str(artifact), 'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(), 'product_version': '2.0.0', 'deadline': 5}, task_id='progress', operation_id='upgrade')
+                self.assertIn('Update.1.0.EarlyWarning', json.dumps(result))
+                self.assertIn('Update.1.0.EarlyWarning', json.dumps(backend.operation_state_store.load('progress', 'upgrade')))
+                self.assertEqual(result['mutation']['monitor']['messages_status'], 'missing')
+            finally:
+                service.close()
+
     def test_upgrade_and_log_share_the_runtime_artifact_store(self):
         from openubmc_target_runtime import LocalArtifactStore, OrchestratedMcpBackend
         sys.path.insert(0, str(ROOT / 'openubmc-log-analyzer'))
@@ -122,7 +178,7 @@ class TaskDiagnosticTests(unittest.TestCase):
             root = Path(raw)
             artifact = root / 'fixture.hpm'; artifact.write_bytes(b'fictional firmware')
             transport = WarningTransport({'TaskState': 'Completed', 'TaskStatus': 'Warning', 'Messages': [
-                {'MessageId': 'Update.1.0.RebootRequired', 'Severity': 'Warning', 'Message': 'Reboot needed; password=fictional-secret', 'Resolution': 'Check active firmware'}]})
+                {'MessageId': 'Update.1.0.RebootRequired', 'MessageSeverity': 'Warning', 'Message': 'Reboot needed; password=fictional-secret', 'Resolution': 'Check active firmware'}]})
             backend = UpgradeMcpBackend(journal_store=MutationJournalStore(root / 'journals'), credential_loader=lambda _args: {'redfish': {'user': 'fixture', 'password': 'fictional-secret'}}, redfish_transport_factory=lambda _args: transport)
             service = RuntimeMcpService(backend)
             try:
@@ -132,6 +188,7 @@ class TaskDiagnosticTests(unittest.TestCase):
             monitor = result['mutation']['monitor']
             self.assertEqual(monitor.get('task_status'), 'Warning')
             self.assertEqual(monitor['messages'][0]['MessageId'], 'Update.1.0.RebootRequired')
+            self.assertEqual(monitor['messages'][0].get('MessageSeverity'), 'Warning')
             self.assertIn('Reboot needed', monitor['messages'][0]['Message'])
             self.assertNotIn('fictional-secret', json.dumps(result))
             self.assertEqual(result['verification']['installed_version'], '2.0.0')

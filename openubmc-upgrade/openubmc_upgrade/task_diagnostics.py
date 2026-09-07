@@ -3,13 +3,17 @@ from collections.abc import Mapping
 from openubmc_target_runtime.redaction import redact_text
 
 
+def safe_task_text(value, secrets: tuple[str, ...] = ()) -> str:
+    text = str(value or '')
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, '<redacted>')
+    return redact_text(text)
+
+
 def task_diagnostics(payload: Mapping[str, object], *, secrets: tuple[str, ...] = ()) -> dict[str, object]:
     def safe(value):
-        text = str(value or '')
-        for secret in secrets:
-            if secret:
-                text = text.replace(secret, '<redacted>')
-        return redact_text(text)
+        return safe_task_text(value, secrets)
 
     messages = payload.get('Messages')
     projected = []
@@ -18,7 +22,7 @@ def task_diagnostics(payload: Mapping[str, object], *, secrets: tuple[str, ...] 
             if not isinstance(message, Mapping):
                 continue
             row = {}
-            for name in ('MessageId', 'Message', 'Severity', 'Resolution', 'MessageArgs', 'RelatedProperties'):
+            for name in ('MessageId', 'Message', 'MessageSeverity', 'Severity', 'Resolution', 'MessageArgs', 'RelatedProperties'):
                 value = message.get(name)
                 if isinstance(value, str):
                     row[name] = safe(value)
@@ -35,7 +39,7 @@ def task_diagnostics(payload: Mapping[str, object], *, secrets: tuple[str, ...] 
     }
 
 
-def externalize_messages(diagnostics, *, store, target: str, run_id: str, operation_id: str):
+def externalize_messages(diagnostics, *, store, target: str, run_id: str, operation_id: str, field: str = 'messages'):
     """Keep full sanitized evidence outside the receipt when messages are large."""
     import json
     from pathlib import Path
@@ -51,6 +55,6 @@ def externalize_messages(diagnostics, *, store, target: str, run_id: str, operat
         reference = store.put(path, kind='redfish-task-diagnostics-source', provenance='redfish-upgrade-task',
                               retention_hint='run-lifetime', target=target, run_id=run_id, created_by_effect=observation_id + ':source')
     redacted = store.redact(reference, kind='redfish-task-diagnostics', provenance='redfish-upgrade-task-redacted', created_by_effect=observation_id)
-    return {key: value for key, value in diagnostics.items() if key != 'messages'} | {
-        'messages': [], 'messages_artifact_ref': redacted.to_public_dict(),
+    return {key: value for key, value in diagnostics.items() if key != field} | {
+        field: [], field + '_artifact_ref': redacted.to_public_dict(),
     }

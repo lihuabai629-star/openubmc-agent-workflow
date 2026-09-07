@@ -25,7 +25,7 @@ from urllib import request as urlrequest
 import uuid
 
 from .operation_state import UpgradeOperationStateStore
-from .task_diagnostics import task_diagnostics, externalize_messages
+from .task_diagnostics import task_diagnostics, externalize_messages, safe_task_text
 from .webui import (
     SameOriginRedirectHandler,
     WebUiHttpError,
@@ -1531,7 +1531,7 @@ class UpgradeMcpBackend:
         }
 
     @staticmethod
-    def _monitor_task(session, task_uri: str, context, *, record_diagnostics=None) -> dict[str, object]:
+    def _monitor_task(session, task_uri: str, context, *, record_diagnostics=None, diagnostic_secrets=()) -> dict[str, object]:
         if not task_uri:
             return {"state": "not_advertised", "task_uri": ""}
         terminal_success = {"completed", "completedok", "success", "succeeded"}
@@ -1550,7 +1550,7 @@ class UpgradeMcpBackend:
             except (OSError, TimeoutError, RedfishHttpError) as exc:
                 return {
                     "state": "connection_lost",
-                    "task_uri": task_uri,
+                    "task_uri": safe_task_text(task_uri, diagnostic_secrets),
                     "error": type(exc).__name__,
                     "observations": observations,
                     **diagnostics,
@@ -1564,7 +1564,7 @@ class UpgradeMcpBackend:
             if normalized in terminal_success:
                 return {
                     "state": "completed",
-                    "task_uri": task_uri,
+                    "task_uri": safe_task_text(task_uri, diagnostic_secrets),
                     "observations": observations,
                     **diagnostics,
                 }
@@ -1580,7 +1580,7 @@ class UpgradeMcpBackend:
         update_service: Mapping[str, object],
         image_uri: str,
         context,
-        *, record_diagnostics=None,
+        *, record_diagnostics=None, diagnostic_secrets=(),
     ) -> dict[str, object]:
         """Activate a legacy multipart upload through SimpleUpdate.
 
@@ -1628,9 +1628,9 @@ class UpgradeMcpBackend:
         task_uri = _response_uri(response)
         return {
             "state": "submitted",
-            "task_uri": task_uri,
+            "task_uri": safe_task_text(task_uri, diagnostic_secrets),
             "http_status": response.status,
-            "monitor": UpgradeMcpBackend._monitor_task(session, task_uri, context, record_diagnostics=record_diagnostics),
+            "monitor": UpgradeMcpBackend._monitor_task(session, task_uri, context, record_diagnostics=record_diagnostics, diagnostic_secrets=diagnostic_secrets),
         }
 
     @staticmethod
@@ -3782,9 +3782,13 @@ class UpgradeMcpBackend:
                     webui_result["cleanup"] = cleanup
         if webui_result is not None:
             return webui_result
+        task_observations = []
         def record_diagnostics(payload, task_uri):
-            diagnostics = {**task_diagnostics(payload, secrets=diagnostic_secrets), "task_uri": task_uri}
+            diagnostics = {**task_diagnostics(payload, secrets=diagnostic_secrets), "task_uri": safe_task_text(task_uri, diagnostic_secrets)}
             diagnostics = externalize_messages(diagnostics, store=self.artifact_store, target=str(arguments["ip"]), run_id=context.task_id, operation_id=context.operation_id)
+            task_observations.append(dict(diagnostics))
+            history = externalize_messages({"task_observations": list(task_observations)}, store=self.artifact_store, target=str(arguments["ip"]), run_id=context.task_id, operation_id=context.operation_id, field="task_observations")
+            diagnostics = {**diagnostics, **history}
             record_state({"redfish_task": diagnostics})
             return diagnostics
 
@@ -3793,6 +3797,7 @@ class UpgradeMcpBackend:
             str(upload["task_uri"]),
             context,
             record_diagnostics=record_diagnostics,
+            diagnostic_secrets=diagnostic_secrets,
         )
         activation: dict[str, object] | None = None
         monitor = staging_monitor
@@ -3808,6 +3813,7 @@ class UpgradeMcpBackend:
                 staged_image_uri,
                 context,
                 record_diagnostics=record_diagnostics,
+                diagnostic_secrets=diagnostic_secrets,
             )
             activation_monitor = activation.get("monitor")
             if isinstance(activation_monitor, Mapping):
@@ -3820,6 +3826,7 @@ class UpgradeMcpBackend:
                 }
         return {
             **upload,
+            "task_uri": safe_task_text(upload.get("task_uri", ""), diagnostic_secrets),
             "monitor": monitor,
             "staging_monitor": staging_monitor,
             "activation": activation,
