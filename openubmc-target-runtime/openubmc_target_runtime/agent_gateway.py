@@ -7,6 +7,7 @@ import json
 import re
 import threading
 
+from .credentials import CredentialConfigurationError
 from .catalog import OperationDescriptor
 from .agent_interaction import interaction_telemetry
 from .capabilities import CAPABILITY_ALIASES, CAPABILITY_STATES
@@ -1840,6 +1841,9 @@ class AgentGateway:
             },
             "gaps": ["operation_failed"],
         }
+        if isinstance(exc, CredentialConfigurationError):
+            result["error"]["code"] = exc.code
+            result["next_guidance"] = "Review the selected record in local credential configuration; keep secret values out of chat."
         if isinstance(exc, AgentBudgetError):
             result.update(
                 _projection_telemetry(

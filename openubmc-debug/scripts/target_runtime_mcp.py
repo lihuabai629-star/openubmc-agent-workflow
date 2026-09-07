@@ -32,6 +32,8 @@ from _remote_common import (
 
 
 def select_default_credentials_file() -> str:
+    if "OPENUBMC_CREDENTIALS_CONFIG" in os.environ:
+        return os.environ["OPENUBMC_CREDENTIALS_CONFIG"]
     selectors = (
         "OPENUBMC_CREDENTIALS_FILE",
         "OPENUBMC_DEBUG_CREDENTIALS_FILE",
@@ -42,9 +44,11 @@ def select_default_credentials_file() -> str:
     config_root = Path(
         os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
     )
+    structured = config_root / "openubmc" / "credentials.json"
+    if structured.exists() or structured.is_symlink():
+        return str(structured)
     credentials = config_root / "openubmc" / "credentials.env"
     if credentials.is_file():
-        os.environ["OPENUBMC_CREDENTIALS_FILE"] = str(credentials)
         return str(credentials)
     return ""
 
@@ -1159,18 +1163,19 @@ class DebugMcpBackend:
         common = {
             key: value
             for key, value in arguments.items()
-            if key not in {"targets", "reference_role", "concurrency"}
+            if key not in {"targets", "reference_role", "concurrency", "_credential_values_by_target"}
         }
         merged_targets = [
             {**common, **dict(target)}
             for target in targets
         ]
-        runner = lambda request, child_context: self._run_single(
-            task,
-            request,
-            child_context,
-            collect_only=False,
-        )
+        credentials_by_target = arguments.get("_credential_values_by_target", {})
+        def runner(request, child_context):
+            scoped = dict(request)
+            selected = credentials_by_target.get(str(request.get("ip", "")))
+            if selected is not None:
+                scoped["_credential_values"] = selected
+            return self._run_single(task, scoped, child_context, collect_only=False)
         if len(merged_targets) == 2:
             payload = run_dual_target_comparison(
                 targets=merged_targets,

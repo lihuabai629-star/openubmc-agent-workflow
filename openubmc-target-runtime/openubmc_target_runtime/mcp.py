@@ -76,6 +76,7 @@ from .session_outcome import (
     SessionOutcomeService,
 )
 from .credential_file import load_selected_credentials_file
+from .runtime import CredentialResolver
 from .lifecycle import OperationContext, TaskRunRegistry
 from .mcp_lifecycle import McpProcessLifecycle
 from .mutation import (
@@ -158,6 +159,7 @@ _INTERNAL_TASK_ARGUMENTS = frozenset(
         "_task_delivery_strategy",
         "_task_authorized_exceptions",
         "_credential_values",
+        "_credential_values_by_target",
     }
 )
 _DOMAIN_TO_TOOL = DEFAULT_OPERATION_CONTRACTS.domain_to_entry_operation()
@@ -306,6 +308,7 @@ class _OrchestratedMcpTask:
         self._resources: dict[int, object] = {}
         self._resource_tools: dict[str, object] = {}
         self._credential_values: dict[str, str] | None = None
+        self._credential_resolver = CredentialResolver()
         self._credential_parse_count = 0
         self._workflow_summaries: list[dict[str, object]] = []
         self._mutation_outcomes: OrderedDict[str, DomainOutcome[object]] = OrderedDict()
@@ -1185,7 +1188,13 @@ class _OrchestratedMcpTask:
         merged.pop("role", None)
         merged = self._project_domain_arguments(tool_name, merged)
         if tool_name in _CREDENTIAL_VALUE_TOOLS:
-            merged["_credential_values"] = self.credential_values()
+            if merged.get("targets") and self._credential_resolver.uses_structured_source(self.task_id):
+                merged["_credential_values_by_target"] = {
+                    str(item["ip"]): self.credential_values({**merged, **item}, tool_name=tool_name)
+                    for item in merged["targets"]
+                }
+            else:
+                merged["_credential_values"] = self.credential_values(merged, tool_name=tool_name)
         if tool_name in {"live_patch_run", "upgrade_run"}:
             merged["_task_intent"] = (
                 self.orchestration.intent.original_intent.value
@@ -1209,8 +1218,13 @@ class _OrchestratedMcpTask:
         merged.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
         return merged
 
-    def credential_values(self) -> dict[str, str]:
+    def credential_values(self, arguments: Mapping[str, object] | None = None, *, tool_name: str = "debug_collect") -> dict[str, str]:
         with self._lock:
+            if self._credential_values is None and arguments and arguments.get("ip") and self._credential_resolver.uses_structured_source(self.task_id):
+                return self._credential_resolver.resolve_local_values(
+                    task_id=self.task_id, host=str(arguments["ip"]), arguments=arguments,
+                    transports=("redfish",) if tool_name == "upgrade_run" else ("ssh", "redfish") if tool_name == "log_bundle_collect" else ("ssh",),
+                )
             if self._credential_values is None:
                 self._credential_values = load_selected_credentials_file()
                 self._credential_parse_count += 1

@@ -638,6 +638,13 @@ class LogBundleRuntimeLease:
             label: str,
             default_value: str = "",
         ) -> str:
+            if file_credentials.get("__runtime_selected__") == "1":
+                from openubmc_target_runtime.credential_file import selected_credential_value
+                if direct_explicit and direct_value:
+                    return direct_value
+                selected = selected_credential_value(file_credentials, (env_name,) if env_name else fallback_env_names)
+                if selected is not None:
+                    return selected
             if env_name:
                 if env_name in os.environ:
                     return os.environ[env_name]
@@ -730,7 +737,7 @@ class LogBundleRuntimeLease:
                 user=user,
                 password=password,
                 port=int(getattr(args, "ssh_port", 22)),
-                identity_file=str(getattr(args, "ssh_identity_file", "")),
+                identity_file=str(getattr(args, "ssh_identity_file", "")) or file_credentials.get("OPENUBMC_SSH_IDENTITY_FILE", ""),
             )
 
         resolver = runtime.CredentialResolver(

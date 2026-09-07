@@ -1176,7 +1176,7 @@ class RuntimeMcpBackendTests(unittest.TestCase):
                 exported = os.environ.get("OPENUBMC_CREDENTIALS_FILE")
 
         self.assertEqual(selected, str(credentials))
-        self.assertEqual(exported, str(credentials))
+        self.assertIsNone(exported)
 
     def test_orchestrated_debug_compares_two_roleless_targets_symmetrically(self) -> None:
         module = load_script("target_runtime_mcp")
