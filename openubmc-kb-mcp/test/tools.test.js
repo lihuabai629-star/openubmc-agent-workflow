@@ -29,9 +29,9 @@ test("tool handlers delegate to the LightRAG client", async () => {
   await tools[2].handler({ page: 1 });
   assert.deepEqual(JSON.parse(result.content[0].text), {
     ok: true,
-    result: { answer: "a" }
+    result: { answer: "a", truncated: false, truncation_reasons: [] }
   });
-  assert.deepEqual(result.structuredContent, { ok: true, result: { answer: "a" } });
+  assert.deepEqual(result.structuredContent, { ok: true, result: { answer: "a", truncated: false, truncation_reasons: [] } });
   assert.deepEqual(calls, [
     ["query", { query: "BMC启动", mode: "local" }],
     ["status"],

@@ -1,11 +1,79 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+for (const mode of ["timeout", "cancel-before-stop", "cancel-during-stop"]) {
+  test(`stdio SIGTERM drains authentication: ${mode}`, async t => {
+    const cancelRequest = mode !== "timeout";
+    const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-deadline-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    let started;
+    const requestStarted = new Promise(resolveStarted => { started = resolveStarted; });
+    let responseClosed;
+    const upstreamClosed = new Promise(resolveClosed => { responseClosed = resolveClosed; });
+    const http = createServer(async (_request, response) => {
+      response.on("close", responseClosed);
+      started();
+      await delay(mode === "cancel-during-stop" ? 1400 : 400);
+      response.end(JSON.stringify({ data: { need_captcha_verification: true } }));
+    });
+    http.listen(0, "127.0.0.1");
+    await once(http, "listening");
+    t.after(() => { http.closeAllConnections(); http.close(); });
+    const base = `http://127.0.0.1:${http.address().port}`;
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({
+      lightragUrl: base, userCenterUrl: base, oauthBaseUrl: base,
+      username: "fixture-user", password: "fixture-password", clientSecret: "fixture-secret",
+      requestTimeoutMs: mode === "cancel-during-stop" ? 1200 : 100
+    }));
+    const transport = new StdioClientTransport({
+      command: process.execPath, args: [resolve("src/server.js"), "--config", configPath],
+      stderr: "pipe",
+      env: { ...process.env, OPENUBMC_KB_USERNAME: "", OPENUBMC_KB_PASSWORD: "", OPENUBMC_KB_CLIENT_SECRET: "",
+        OPENUBMC_MCP_TOKEN_CACHE: join(dir, "token.json"), OPENUBMC_MCP_FORMAL_RUN: "0",
+        OPENUBMC_MCP_PARENT_PID: String(process.pid), OPENUBMC_MCP_LIFECYCLE_DIR: join(dir, "lifecycle"),
+        OPENUBMC_MCP_LIFECYCLE_POLL_SECONDS: "0.01" }
+    });
+    const client = new Client({ name: "deadline-test", version: "1.0.0" });
+    t.after(() => client.close());
+    await client.connect(transport);
+    const stopped = new Promise(resolveStopped => { client.onclose = resolveStopped; });
+    const controller = new AbortController();
+    const pending = client.callTool({ name: "openubmc_kb_query", arguments: { query: "fan" } }, undefined, { signal: controller.signal });
+    const outcome = cancelRequest ? assert.rejects(pending) : pending;
+    await requestStarted;
+    if (mode === "cancel-before-stop") { controller.abort(); await outcome; }
+    process.kill(transport.pid, "SIGTERM");
+    if (mode === "cancel-during-stop") {
+      const until = Date.now() + 1000;
+      let shuttingDown = false;
+      while (Date.now() < until) {
+        const records = await readdir(join(dir, "lifecycle"));
+        const status = JSON.parse(await readFile(join(dir, "lifecycle", records[0]), "utf8"));
+        if (status.shutdown_requested) { shuttingDown = true; break; }
+        await delay(10);
+      }
+      assert.equal(shuttingDown, true);
+      controller.abort();
+      await outcome;
+      await Promise.race([upstreamClosed, delay(200).then(() => assert.fail("shutdown ignored cancellation"))]);
+    }
+    if (!cancelRequest) {
+      const result = await outcome;
+      assert.equal(result.structuredContent.error.code, "KB_TIMEOUT");
+    }
+    await Promise.race([stopped, delay(1500).then(() => assert.fail("stdio process did not drain and stop"))]);
+  });
+}
 
 test("stdio server initializes and lists all tools without authenticating", async () => {
   const dir = await mkdtemp(join(tmpdir(), "openubmc-stdio-"));

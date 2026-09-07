@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { requestTimeoutMs } from "./http/request-lifetime.js";
 
 const DEFAULTS = Object.freeze({
   lightragUrl: "https://discuss.openubmc.cn/rag",
@@ -102,6 +103,7 @@ export async function loadConfig(
   const oauthBaseUrl = normalizeUrl(parsed.oauthBaseUrl, "oauthBaseUrl");
   return Object.freeze({
     ...parsed,
+    requestTimeoutMs: requestTimeoutMs(parsed.requestTimeoutMs),
     username,
     password,
     credentialsConfigured: Boolean(username && password && clientSecret),
