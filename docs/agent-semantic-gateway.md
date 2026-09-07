@@ -36,6 +36,13 @@ are not part of the Agent Interface.
 
 ## Interface profiles
 
+The Runtime MCP Adapter supports protocol `2025-06-18`. An `initialize` request
+for an unsupported version receives that supported version for negotiation,
+without invoking a Domain Adapter. Legacy requests without `protocolVersion`
+use the same default; a present but empty or non-string version, or non-object
+parameters, receives JSON-RPC invalid params (`-32602`). Advertising this version
+does not claim compatibility with newer MCP protocols.
+
 The default profile is `agent` and exposes only:
 
 - `observe`: exact, read-only, live observations;

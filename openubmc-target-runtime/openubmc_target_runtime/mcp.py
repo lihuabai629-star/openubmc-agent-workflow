@@ -3791,12 +3791,13 @@ class JsonRpcMcpEndpoint:
         if message.get("jsonrpc") != "2.0" or not isinstance(method, str):
             return self._error(message_id, -32600, "invalid JSON-RPC request")
         if method == "initialize":
-            requested = (
-                params.get("protocolVersion")
-                if isinstance(params, Mapping)
-                else None
-            )
-            protocol = requested if isinstance(requested, str) else MCP_PROTOCOL_VERSION
+            if not isinstance(params, Mapping):
+                return self._error(message_id, -32602, "initialize params must be an object")
+            requested = params.get("protocolVersion", MCP_PROTOCOL_VERSION)
+            if not isinstance(requested, str) or not requested.strip():
+                return self._error(message_id, -32602, "protocolVersion must be a non-empty string")
+            # Only this protocol is implemented; unknown versions negotiate it.
+            protocol = MCP_PROTOCOL_VERSION
             return self._response(
                 message_id,
                 {
