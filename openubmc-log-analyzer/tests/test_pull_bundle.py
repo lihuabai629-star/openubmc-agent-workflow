@@ -1039,6 +1039,43 @@ class DiscoveryCommandTests(unittest.TestCase):
 
 
 class ExtractArchiveTests(unittest.TestCase):
+    def test_invalid_bundles_fail_without_a_partial_result(self) -> None:
+        for failure in ("corrupt", "traversal", "symlink", "missing-layout"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as raw:
+                root = pathlib.Path(raw)
+                archive_path = root / "bundle.tar"
+                with tarfile.open(archive_path, "w") as archive:
+                    member = tarfile.TarInfo("dump_info/LogDump/partial.log")
+                    if failure == "missing-layout":
+                        member.name = "partial.log"
+                    member.size = 6
+                    archive.addfile(member, io.BytesIO(b"error\n"))
+                    if failure in ("traversal", "symlink"):
+                        unsafe = tarfile.TarInfo("../escape" if failure == "traversal" else "link")
+                        if failure == "symlink":
+                            unsafe.type = tarfile.SYMTYPE
+                            unsafe.linkname = "../escape"
+                        archive.addfile(unsafe)
+                if failure == "corrupt":
+                    archive_path.write_bytes(b"not a tar archive")
+                with self.assertRaises(pull_bundle.BundlePullError):
+                    pull_bundle.extract_archive(archive_path, root / "extract")
+                self.assertFalse((root / "escape").exists())
+                self.assertFalse(any((root / "extract").iterdir()))
+
+    def test_same_name_bundle_contains_only_current_members(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            archive_path = root / "bundle.tar.gz"
+            for name in ("old.log", "new.log", "new.log"):
+                with tarfile.open(archive_path, "w:gz") as archive:
+                    member = tarfile.TarInfo("dump_info/LogDump/" + name)
+                    member.size = 6
+                    archive.addfile(member, io.BytesIO(b"error\n"))
+                result = pull_bundle.extract_archive(archive_path, root / "extract")
+                files = {path.name for path in result.bundle_root.rglob("*.log")}
+                self.assertEqual(files, {name})
+
     def test_extract_archive_returns_bundle_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = pathlib.Path(tmp_dir)
