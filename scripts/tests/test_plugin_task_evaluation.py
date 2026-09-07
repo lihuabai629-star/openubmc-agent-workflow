@@ -158,12 +158,15 @@ class TaskReviewEvidenceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            proof = root / "trace.json"
+            proof = root / "episode" / "trace.json"
+            proof.parent.mkdir()
             proof.write_text('{"observed":"fixture"}')
             episode = {
                 "episode_id": "ep",
                 "case_id": "reuse",
-                "source": {"digest": "sha256:" + "a" * 64},
+                "source": {
+                    "digest": "sha256:" + hashlib.sha256(proof.read_bytes()).hexdigest()
+                },
             }
             case = {
                 "case_id": "reuse",
@@ -181,11 +184,12 @@ class TaskReviewEvidenceTests(unittest.TestCase):
                     {
                         "episode_id": "ep",
                         "source_digest": episode["source"]["digest"],
+                        "source_path": "episode/trace.json",
                         "predicates": {"reused": True},
                         "metrics": {"human_interventions": 0},
                         "evidence_refs": [
                             {
-                                "path": "trace.json",
+                                "path": "episode/trace.json",
                                 "sha256": hashlib.sha256(
                                     proof.read_bytes()
                                 ).hexdigest(),
@@ -200,6 +204,20 @@ class TaskReviewEvidenceTests(unittest.TestCase):
             )
             self.assertTrue(scores[0]["passed"])
             self.assertEqual(metrics["ep"]["human_interventions"], 0)
+            other = root / "other.json"
+            other.write_bytes(proof.read_bytes())
+            review["samples"][0]["evidence_refs"][0]["path"] = "other.json"
+            review["digest"] = digest(review)
+            with self.assertRaisesRegex(ValueError, "evidence"):
+                reviewed_task_scores(
+                    root,
+                    review,
+                    [episode],
+                    [case],
+                    bundle_digest=review["bundle_digest"],
+                )
+            review["samples"][0]["evidence_refs"][0]["path"] = "episode/trace.json"
+            review["digest"] = digest(review)
             proof.write_text("changed")
             with self.assertRaisesRegex(ValueError, "evidence"):
                 reviewed_task_scores(
@@ -209,6 +227,97 @@ class TaskReviewEvidenceTests(unittest.TestCase):
                     [case],
                     bundle_digest=review["bundle_digest"],
                 )
+
+
+class ActualPairingTests(unittest.TestCase):
+    def test_same_declared_task_cannot_pair_different_actual_targets(self):
+        from scripts.plugin_task_evaluation import summarize_tasks
+
+        case = {
+            "case_id": "task",
+            "oracle": {"required_predicates": ["complete"], "forbidden_predicates": []},
+        }
+        row = {
+            "episode_id": "ep",
+            "case_id": "task",
+            "repetition": 1,
+            "status": "completed",
+            "strict_success": True,
+            "hard_failure": False,
+            "metrics": {},
+            "pairing_identity": {
+                "target_input_digest": "target-a",
+                "case_prompt_digest": "prompt",
+            },
+        }
+        baseline = {"episodes": [row], "scores": []}
+        candidate = {
+            "episodes": [
+                dict(
+                    row,
+                    pairing_identity={
+                        "target_input_digest": "target-b",
+                        "case_prompt_digest": "prompt",
+                    },
+                )
+            ],
+            "scores": [],
+        }
+        with self.assertRaisesRegex(ValueError, "actual task inputs"):
+            summarize_tasks(
+                [case], {"baseline": baseline, "candidate": candidate}, repetitions=1
+            )
+
+
+class LoadedTaskIdentityTests(unittest.TestCase):
+    def test_actual_harness_identity_must_match_loaded_plugin_and_client(self):
+        from scripts.plugin_task_evaluation import validate_task_identity
+
+        identity = {
+            "plugin_runtime": {
+                "subject_digest": "subject",
+                "runtime_digest": "runtime",
+            },
+            "executable": {"digest": "sha256:client"},
+            "model_configuration": {"model": "fixed"},
+        }
+        source = {"adapter_kind": "codex"}
+        records = [
+            {
+                "event_type": "harness.prepared",
+                "payload": {"adapter_kind": "codex", "identity": identity},
+            }
+        ]
+        self.assertTrue(
+            validate_task_identity(
+                source,
+                records,
+                subject_digest="subject",
+                runtime_digest="runtime",
+                client="client",
+                model="fixed",
+            )
+        )
+        identity["plugin_runtime"]["runtime_digest"] = "other-runtime"
+        with self.assertRaisesRegex(ValueError, "identity"):
+            validate_task_identity(
+                source,
+                records,
+                subject_digest="subject",
+                runtime_digest="runtime",
+                client="client",
+                model="fixed",
+            )
+        self.assertFalse(
+            validate_task_identity(
+                source,
+                [],
+                subject_digest="subject",
+                runtime_digest="runtime",
+                client="client",
+                model="fixed",
+            )
+        )
 
 
 if __name__ == "__main__":

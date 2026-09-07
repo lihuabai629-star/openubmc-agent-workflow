@@ -26,9 +26,10 @@ python scripts/plugin_task_evaluation.py prepare \
   "samples": [{
     "episode_id": "actual episode identity",
     "source_digest": "sha256:...",
+    "source_path": "raw/actual-episode/harness-evidence.json",
     "predicates": {"default_selected": true},
     "metrics": {"extra_tool_calls": 0, "human_interventions": 0, "recovery_attempts": 0},
-    "evidence_refs": [{"path": "raw/actual-evidence.json", "sha256": "..."}]
+    "evidence_refs": [{"path": "raw/actual-episode/agent-events.jsonl", "sha256": "..."}]
   }],
   "digest": "sha256:..."
 }

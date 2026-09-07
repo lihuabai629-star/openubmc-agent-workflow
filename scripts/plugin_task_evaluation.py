@@ -126,17 +126,17 @@ TASK_METRICS = (
 )
 
 
+def valid_metric(value):
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
 def metric_summary(rows, *, expected=None):
     rows = list(rows)
     count = len(rows) if expected is None else expected
     result = {}
     for name in TASK_METRICS:
         values = [row.get("metrics", {}).get(name) for row in rows]
-        valid = [
-            value
-            for value in values
-            if type(value) in (int, float) and math.isfinite(value) and value >= 0
-        ]
+        valid = [value for value in values if valid_metric(value)]
         complete = count > 0 and len(valid) == count
         result[name] = {
             "measured": len(valid),
@@ -163,6 +163,14 @@ def summarize_tasks(cases, arms, *, repetitions):
     if not expected or len({case["case_id"] for case in cases}) != len(cases):
         raise ValueError("select distinct task cases")
     case_index = {case["case_id"]: case for case in cases}
+    actual_inputs = {}
+    for arm, data in arms.items():
+        for row in data["episodes"]:
+            key = (row["case_id"], row["repetition"])
+            value = row.get("pairing_identity")
+            if key in actual_inputs and actual_inputs[key] != value:
+                raise ValueError("paired samples received different actual task inputs")
+            actual_inputs[key] = value
     reports, successes, gaps = {}, {}, []
     failed = False
     for arm, data in arms.items():
@@ -193,13 +201,11 @@ def summarize_tasks(cases, arms, *, repetitions):
                 for name in names
             ]
             absent = [name for name, score in zip(names, predicates) if score is None]
+            if row.get("identity_verified") is False:
+                absent.append("loaded_agent_identity")
             metrics = row.get("metrics", {})
             missing_metrics = [
-                name
-                for name in TASK_METRICS
-                if type(metrics.get(name)) not in (int, float)
-                or not math.isfinite(metrics[name])
-                or metrics[name] < 0
+                name for name in TASK_METRICS if not valid_metric(metrics.get(name))
             ]
             if absent or missing_metrics:
                 arm_gaps.append(
@@ -251,10 +257,7 @@ def summarize_tasks(cases, arms, *, repetitions):
                 successes[arm][key].get("metrics", {}).get(name)
                 for arm in ("baseline", "candidate")
             ]
-            if all(
-                type(value) in (int, float) and math.isfinite(value) and value >= 0
-                for value in values
-            ):
+            if all(valid_metric(value) for value in values):
                 differences.append(values[1] - values[0])
         complete = bool(common) and len(differences) == len(common)
         paired[name] = {
@@ -300,12 +303,21 @@ def reviewed_task_scores(root, review, episodes, cases, *, bundle_digest):
                 "task review sample is duplicated or bound to another source"
             )
         seen.add(identifier)
+        source = root / sample["source_path"]
+        if (
+            not source.resolve().is_relative_to(root.resolve())
+            or source.is_symlink()
+            or not source.is_file()
+            or "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+            != sample["source_digest"]
+        ):
+            raise ValueError("task source evidence identity mismatch")
         if not sample.get("evidence_refs"):
             raise ValueError("task review evidence is missing")
         for reference in sample["evidence_refs"]:
             path = root / reference["path"]
             if (
-                not path.resolve().is_relative_to(root.resolve())
+                not path.resolve().is_relative_to(source.parent.resolve())
                 or path.is_symlink()
                 or not path.is_file()
             ):
@@ -326,10 +338,7 @@ def reviewed_task_scores(root, review, episodes, cases, *, bundle_digest):
             )
         observations = sample.get("metrics", {})
         if any(
-            name not in TASK_METRICS
-            or type(value) not in (int, float)
-            or not math.isfinite(value)
-            or value < 0
+            name not in TASK_METRICS or not valid_metric(value)
             for name, value in observations.items()
         ):
             raise ValueError("task review metric is invalid")
@@ -345,6 +354,31 @@ def reviewed_task_scores(root, review, episodes, cases, *, bundle_digest):
         index[identifier]["failure_layer"] = layer
         metrics[identifier] = observations
     return scores, metrics
+
+
+def validate_task_identity(
+    source, records, *, subject_digest, runtime_digest, client, model
+):
+    """Compare actual harness preparation evidence with the pinned experiment."""
+    if source.get("adapter_kind") != "codex":
+        raise ValueError("task evidence must come from the Codex Agent harness")
+    prepared = [row for row in records if row.get("event_type") == "harness.prepared"]
+    if not prepared:
+        return False
+    if len(prepared) != 1:
+        raise ValueError("task evidence has ambiguous harness identity")
+    payload = prepared[0]["payload"]
+    identity = payload.get("identity", {})
+    plugin = identity.get("plugin_runtime", {})
+    if (
+        payload.get("adapter_kind") != "codex"
+        or plugin.get("subject_digest") != subject_digest
+        or plugin.get("runtime_digest") != runtime_digest
+        or identity.get("executable", {}).get("digest") != "sha256:" + client
+        or identity.get("model_configuration", {}).get("model") != model
+    ):
+        raise ValueError("actual Agent identity differs from the pinned task identity")
+    return True
 
 
 def load_lab_arm(bundle, subject_path, review_path):
@@ -395,6 +429,38 @@ def load_lab_arm(bundle, subject_path, review_path):
         for row in load_jsonl(bundle / "runs/all-runs.jsonl", description="episodes")
         if row["arm_id"] == arm_id
     ]
+    source_paths = {}
+    for reference in manifest["sources"]:
+        path = bundle / reference["path"]
+        source_paths["sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()] = path
+    for row in episodes:
+        path = source_paths.get(row["source"]["digest"])
+        if path is None:
+            raise ValueError("task source is not indexed by the verified bundle")
+        source = load_json(path, description="task source")
+        row["pairing_identity"] = {
+            name: source.get(name)
+            for name in (
+                "target_input_digest",
+                "case_prompt_digest",
+                "case_budgets_digest",
+            )
+        }
+        records_path = path.parent / source["raw_records"]
+        if not records_path.resolve().is_relative_to(path.parent.resolve()):
+            raise ValueError("task raw records escape their verified source")
+        row["identity_verified"] = validate_task_identity(
+            source,
+            load_jsonl(records_path, description="task raw records"),
+            subject_digest=subject.digest,
+            runtime_digest=runtime["digest"],
+            client=client,
+            model=experiment.arms[arm_id]["model"],
+        )
+        # Wall time is measured by the harness even when usage omits it.
+        elapsed = source.get("budget", {}).get("elapsed_seconds")
+        if valid_metric(elapsed):
+            row["metrics"]["wall_seconds"] = elapsed
     cases = [case.document for case in dataset.cases.values()]
     scores = []
     if review_path:
