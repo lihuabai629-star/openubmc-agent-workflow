@@ -375,6 +375,7 @@ class CredentialResolver:
         self._local_source = LocalCredentialSource(config_path=config_path, environ=environ)
         self._local_cache: dict[tuple[str, str, str, str], object] = {}
         self._task_sources: dict[str, Path | None] = {}
+        self._task_snapshots: dict[str, tuple[Path | None, str | None]] = {}
         self._task_source_environments: dict[str, dict[str, str]] = {}
         self._cache: dict[tuple[str, str, str], object] = {}
         self._lock = threading.RLock()
@@ -390,16 +391,24 @@ class CredentialResolver:
         with self._lock:
             if key in self._local_cache:
                 return CredentialResolution(self._local_cache[key], cache_hit=True)
-            path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
-            values = self._local_source.resolve(path, host=host, purpose=purpose, transport=transport, required=required)
+            path, snapshot = self._selected_local_snapshot(task_id)
+            values = self._local_source.resolve(snapshot[0], host=host, purpose=purpose, transport=transport, required=required)
             if values is None:
                 return CredentialResolution(None, cache_hit=False)
             credential_type = ResolvedSshCredentials if transport == "ssh" else ResolvedRedfishCredentials
             resolved = credential_type.from_mapping(values)
             self._task_sources[task_id] = path
             self._remember_source_environment(task_id)
+            self._task_snapshots[task_id] = snapshot
             self._local_cache[key] = resolved
             return CredentialResolution(resolved, cache_hit=False)
+
+    def _selected_local_snapshot(self, task_id: str):
+        """Called with the resolver lock held."""
+        from .configuration import activated_source
+        path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
+        snapshot = self._task_snapshots.get(task_id) or (activated_source(path) if path is not None else (None, None))
+        return path, snapshot
 
     def _remember_source_environment(self, task_id: str) -> None:
         if task_id not in self._task_source_environments:
@@ -427,10 +436,33 @@ class CredentialResolver:
             self._remember_source_environment(task_id)
             return values
 
+    def refresh_local_revision(self, task_id: str) -> bool:
+        """Switch snapshots only at a caller-owned request boundary."""
+        from .configuration import activated_source
+        from .credentials import LocalCredentialSource
+        with self._lock:
+            if task_id not in self._task_sources:
+                return False
+            path = self._task_sources[task_id]
+            if path is None:
+                path = LocalCredentialSource(environ=self.source_environment(task_id)).select_path()
+            snapshot = activated_source(path) if path is not None else (None, None)
+            previous = self._task_snapshots.get(task_id, (self._task_sources[task_id], None))
+            if snapshot == previous:
+                return False
+            self._task_sources[task_id] = path
+            self._task_snapshots[task_id] = snapshot
+            self._local_cache = {key: value for key, value in self._local_cache.items() if key[0] != task_id}
+            return True
+
+    def configuration_revision(self, task_id: str) -> str | None:
+        with self._lock:
+            return self._task_snapshots.get(task_id, (None, None))[1]
+
     def uses_structured_source(self, task_id: str) -> bool:
         with self._lock:
-            path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
-            return self._local_source.is_structured(path)
+            _path, snapshot = self._selected_local_snapshot(task_id)
+            return self._local_source.is_structured(snapshot[0])
 
     def resolve_local_values(
         self, *, task_id: str, host: str, arguments: Mapping[str, object] | None = None,

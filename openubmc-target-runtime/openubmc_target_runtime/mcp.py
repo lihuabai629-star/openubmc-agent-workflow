@@ -19,6 +19,7 @@ import time
 from typing import Protocol, TypeVar
 import uuid
 
+from .configuration import configuration_request
 from .contracts import (
     RUNTIME_API_VERSION,
     CredentialSelector,
@@ -1217,6 +1218,22 @@ class _OrchestratedMcpTask:
             )
         merged.pop(CONTEXT_WORKFLOW_STEP_ARGUMENT, None)
         return merged
+
+    def refresh_credentials(self) -> None:
+        """Called under TaskRunRegistry's operation lock, before adapter use."""
+        with self._lock:
+            if not self._credential_resolver.refresh_local_revision(self.task_id):
+                return
+            resources = list(self._resource_tools.items())
+            self._resource_tools.clear()
+            self._resources.clear()
+            self._credential_values = None
+            seen = set()
+            for tool_name, resource in resources:
+                backend = self.tool_backends[tool_name]
+                if id(backend) not in seen:
+                    seen.add(id(backend))
+                    backend.close_task(resource)
 
     def credential_values(self, arguments: Mapping[str, object] | None = None, *, tool_name: str = "debug_collect") -> dict[str, str]:
         with self._lock:
@@ -3043,6 +3060,7 @@ class RuntimeMcpService:
     def tool_definitions(self) -> list[dict[str, object]]:
         return self.interface_catalog.tool_definitions()
 
+    @configuration_request()
     def call_exposed_tool(
         self,
         name: str,
@@ -3112,6 +3130,7 @@ class RuntimeMcpService:
                 specialized = getattr(debug_backend, "observe_query", None)
                 if operation == "debug_collect" and callable(specialized):
                     def observe_with_credentials(task, context):
+                        task.refresh_credentials()
                         backend, resource = task.resource_for("debug_collect")
                         local_arguments = dict(observed_arguments)
                         local_arguments["_credential_values"] = task.credential_values(local_arguments)
@@ -3143,6 +3162,8 @@ class RuntimeMcpService:
                 f"operation catalog handler became unavailable: {descriptor.name}"
             )
         def invoke_and_authenticate(task, context):
+            if isinstance(task, _OrchestratedMcpTask):
+                task.refresh_credentials()
             raw = callback(task, bounded_arguments, context)
             if operation != "upgrade_batch" or not isinstance(raw, Mapping):
                 return raw
@@ -3168,6 +3189,7 @@ class RuntimeMcpService:
         )
         return value
 
+    @configuration_request()
     def call_tool(
         self,
         name: str,

@@ -5,9 +5,8 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { OneIdClient } from "./auth/oneid-client.js";
+import { ReloadingKnowledgeClient } from "./reloading-client.js";
 import { loadConfig } from "./config.js";
-import { LightRagClient } from "./lightrag-client.js";
 import {
   McpProcessLifecycle,
   installMcpProcessSignalHandlers
@@ -23,8 +22,7 @@ function configPath(argv) {
 
 export async function createServer(path, processLifecycle = null) {
   const config = await loadConfig(path, { allowMissingCredentials: true });
-  const auth = new OneIdClient(config);
-  const lightrag = new LightRagClient(config, auth);
+  const lightrag = new ReloadingKnowledgeClient(config);
   const server = new McpServer(
     { name: "openubmc-kb-mcp-server", version: "1.3.0" },
     {
