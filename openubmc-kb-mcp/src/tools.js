@@ -103,11 +103,12 @@ export function errorResult(error) {
     KB_TOOL_FAILED: ["The knowledge-base request failed.", false,
       "Inspect local diagnostics before deciding whether to retry."]
   };
-  const statusCode = {
+  const statusCodes = {
     401: "KB_AUTHENTICATION_FAILED", 403: "KB_PERMISSION_DENIED",
     429: "KB_RATE_LIMITED", 502: "KB_SERVICE_UNAVAILABLE",
     503: "KB_SERVICE_UNAVAILABLE", 504: "KB_SERVICE_UNAVAILABLE"
-  }[error?.status];
+  };
+  const statusCode = Object.hasOwn(statusCodes, error?.status) ? statusCodes[error.status] : undefined;
   const networkCode = ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN",
     "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET"]
     .includes(error?.cause?.code) ? "KB_NETWORK_ERROR" : undefined;
@@ -125,7 +126,7 @@ export function errorResult(error) {
   };
   return {
     isError: true,
-    content: [{ type: "text", text: `${code}: ${message}` }],
+    content: [{ type: "text", text: `${code}: ${message}\n${recovery}` }],
     structuredContent
   };
 }

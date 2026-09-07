@@ -63,6 +63,7 @@ test("MCP classifies HTTP failures without exposing upstream authentication data
     assert.equal(result.structuredContent.error.code, code);
     assert.equal(result.structuredContent.error.retryable, retryable);
     assert.ok(result.structuredContent.error.recovery);
+    assert.ok(result.content[0].text.includes(result.structuredContent.error.recovery));
     assert.equal(JSON.stringify(result).includes(config.password), false);
     assert.equal(JSON.stringify(result).includes(config.clientSecret), false);
   }
@@ -72,7 +73,8 @@ test("MCP retries evidenced transient network failure but not unknown local erro
   for (const [error, code, retryable] of [
     [new TypeError("fetch failed", { cause: { code: "ECONNRESET" } }), "KB_NETWORK_ERROR", true],
     [new TypeError(config.password), "KB_TOOL_FAILED", false],
-    [Object.assign(new Error(config.clientSecret), { code: "KB_UNTRUSTED_MESSAGE" }), "KB_TOOL_FAILED", false]
+    [Object.assign(new Error(config.clientSecret), { code: "KB_UNTRUSTED_MESSAGE" }), "KB_TOOL_FAILED", false],
+    [Object.assign(new Error(config.password), { status: "constructor" }), "KB_TOOL_FAILED", false]
   ]) {
     const result = await query(t, { fetch: async () => { throw error; } });
     assert.equal(result.structuredContent.error.code, code);

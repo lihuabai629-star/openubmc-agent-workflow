@@ -36,7 +36,8 @@ npm ci
 ```json
 {
   "username": "用户名",
-  "password": "你的密码"
+  "password": "你的密码",
+  "clientSecret": "本地授权配置中的客户端密钥"
 }
 ```
 
@@ -59,6 +60,19 @@ npm run check
 - `openubmc_kb_status：检查知识库状态`
 - `openubmc_kb_list：列出知识库文档`
 
-首次调用工具时才检查登录状态。OAuth Token 临近失效时会自动续期；知识库返回 401/403 时会使当前访问令牌失效，并自动续期或登录后重试一次。
+首次调用工具时才检查登录状态。OAuth Token 临近失效时会自动续期；知识库返回 401 时会使当前访问令牌失效，并自动续期或登录后重试一次。403 表示权限不足，直接返回错误。
+
+错误回执的 `code`、`retryable` 和 `recovery` 分别表示原因、是否适合重试与下一步动作。文本回执也包含恢复提示；原始上游认证错误内容不会进入工具回执。
+
+| 错误码 | 下一步 |
+| --- | --- |
+| `KB_CREDENTIALS_MISSING` | 在本地私有配置中填写凭据 |
+| `KB_INTERACTION_REQUIRED` | 在本地完成交互认证后再调用 |
+| `KB_AUTHENTICATION_FAILED` | 检查本地账号与认证配置 |
+| `KB_PERMISSION_DENIED` | 检查账号是否有对应权限 |
+| `KB_RATE_LIMITED` | 等待后再重试只读请求 |
+| `KB_SERVICE_UNAVAILABLE` | 服务恢复后重试 |
+| `KB_NETWORK_ERROR` | 检查网络后重试 |
+| `KB_TOOL_FAILED` | 检查本地诊断信息，不自动重复调用 |
 
 三个工具都支持紧凑 JSON 或 Markdown 文本。查询上下文、流水线历史、文档摘要和错误信息都有固定上限；文档列表每页 10–100 条，并返回服务端分页信息。MCP 仅用于候选定位，源码和目标环境证据仍是最终依据。
