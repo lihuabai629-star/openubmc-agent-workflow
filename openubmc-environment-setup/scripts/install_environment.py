@@ -801,7 +801,7 @@ def validate_release_source(root: Path, dry_run: bool) -> dict[str, object]:
         print(f"would validate release contract in {root}")
         return release_identity(root, source_mode="managed", dry_run=True)
     result = run_command(
-        [sys.executable, str(validator), "--release-contract-only"],
+        [sys.executable, "-B", str(validator), "--release-contract-only"],
         cwd=root,
     )
     if result.returncode != 0:
@@ -892,7 +892,7 @@ def release_identity(
             "immutable": managed,
         }
     result = run_command(
-        [sys.executable, str(verifier), "verify", "--root", str(root)],
+        [sys.executable, "-B", str(verifier), "verify", "--root", str(root)],
         cwd=root,
     )
     if result.returncode != 0:

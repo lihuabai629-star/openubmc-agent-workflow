@@ -3,6 +3,7 @@
 The `openubmc` plugin contains the eleven workflow Skills, Runtime, and knowledge MCP launchers.
 The package version, source commit, and file inventory travel together in `plugin-lock.json`.
 The supported qualification host is Codex CLI 0.153.4 on Linux, Python 3.12, and Node.js 20 or newer.
+See [Python entrypoints](../plugin/python-entrypoints.md) for standalone commands and initialized module imports.
 
 ## Install a release
 

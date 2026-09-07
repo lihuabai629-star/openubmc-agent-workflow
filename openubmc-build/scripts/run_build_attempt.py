@@ -602,7 +602,7 @@ def lock_guardian_main(
             try:
                 child = subprocess.Popen(
                     [
-                        sys.executable,
+                        sys.executable, "-B",
                         "-I",
                         "-c",
                         TRUSTED_BOOTSTRAP,

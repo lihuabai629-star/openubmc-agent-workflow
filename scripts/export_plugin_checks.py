@@ -21,6 +21,7 @@ FILES = {
     'behavior/redfish_fixture.py': 'openubmc-upgrade/tests/redfish_fixture.py',
     'behavior/test_plugin_credentials.py': 'scripts/tests/test_plugin_credentials.py',
     'behavior/test_plugin_disable_migration.py': 'scripts/tests/test_plugin_disable_migration.py',
+    'behavior/test_plugin_python_entrypoints.py': 'scripts/tests/test_plugin_python_entrypoints.py',
     'behavior/config.test.mjs': 'openubmc-kb-mcp/test/config.test.js',
 }
 

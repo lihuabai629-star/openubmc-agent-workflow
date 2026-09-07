@@ -170,7 +170,7 @@ def main() -> int:
         return 0
 
     command = [
-        sys.executable,
+        sys.executable, "-B",
         str(SCRIPT_DIR / "deploy_live_file.py"),
         "--ip",
         args.ip,
