@@ -9,7 +9,7 @@ function invalid() {
 export async function readConfigurationJson(path, { privateFile = false, missing = false } = {}) {
   let file;
   try {
-    file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
     const info = await file.stat();
     if (!info.isFile() || info.size > 1024 * 1024 || (privateFile && process.platform !== 'win32'
       && (info.uid !== process.getuid() || (info.mode & 0o077)))) throw invalid();

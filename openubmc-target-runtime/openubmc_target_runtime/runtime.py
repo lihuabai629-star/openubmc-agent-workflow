@@ -391,9 +391,7 @@ class CredentialResolver:
         with self._lock:
             if key in self._local_cache:
                 return CredentialResolution(self._local_cache[key], cache_hit=True)
-            path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
-            from .configuration import activated_source
-            snapshot = self._task_snapshots.get(task_id) or (activated_source(path) if path is not None else (None, None))
+            path, snapshot = self._selected_local_snapshot(task_id)
             values = self._local_source.resolve(snapshot[0], host=host, purpose=purpose, transport=transport, required=required)
             if values is None:
                 return CredentialResolution(None, cache_hit=False)
@@ -404,6 +402,13 @@ class CredentialResolver:
             self._task_snapshots[task_id] = snapshot
             self._local_cache[key] = resolved
             return CredentialResolution(resolved, cache_hit=False)
+
+    def _selected_local_snapshot(self, task_id: str):
+        """Called with the resolver lock held."""
+        from .configuration import activated_source
+        path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
+        snapshot = self._task_snapshots.get(task_id) or (activated_source(path) if path is not None else (None, None))
+        return path, snapshot
 
     def _remember_source_environment(self, task_id: str) -> None:
         if task_id not in self._task_source_environments:
@@ -455,10 +460,8 @@ class CredentialResolver:
             return self._task_snapshots.get(task_id, (None, None))[1]
 
     def uses_structured_source(self, task_id: str) -> bool:
-        from .configuration import activated_source
         with self._lock:
-            path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
-            snapshot = self._task_snapshots.get(task_id) or (activated_source(path) if path is not None else (None, None))
+            _path, snapshot = self._selected_local_snapshot(task_id)
             return self._local_source.is_structured(snapshot[0])
 
     def resolve_local_values(

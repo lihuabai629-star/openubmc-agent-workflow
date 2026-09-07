@@ -100,3 +100,21 @@ test('activated endpoint cannot receive a token cached for the previous endpoint
   assert.equal(tokens.some(item => item.url.includes('/second') && item.auth.includes('fixture-first-token')), false);
   assert.equal(tokens[0].auth, 'Bearer fixture-first-token');
 });
+
+test('local configuration rejects FIFO files without blocking MCP startup', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'openubmc-config-fifo-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'kb.json');
+  execFileSync('mkfifo', [path]);
+  const result = (() => {
+    try {
+      execFileSync(process.execPath, ['--input-type=module', '-e',
+        "import { loadConfig } from './src/config.js'; await loadConfig(process.argv[1]);", path],
+        { timeout: 1500, encoding: 'utf8', stdio: 'pipe' });
+      return { accepted: true };
+    } catch (error) { return error; }
+  })();
+  assert.notEqual(result.code, 'ETIMEDOUT');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Invalid local KB configuration/);
+});
