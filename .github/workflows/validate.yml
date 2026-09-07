@@ -101,7 +101,7 @@ jobs:
           echo "$PWD/plugin/host/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Test plugin activation recovery with native Codex
-        run: python -m unittest scripts.tests.test_plugin_package scripts.tests.test_plugin_activation
+        run: python -m unittest scripts.tests.test_plugin_package scripts.tests.test_plugin_activation scripts.tests.test_plugin_credentials scripts.tests.test_plugin_disable_migration
 
       - name: Qualify immutable Codex plugin
         run: >-

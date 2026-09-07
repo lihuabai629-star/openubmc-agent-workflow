@@ -151,7 +151,8 @@ The private file is:
 ~~~
 
 The installer enforces mode `0600`. BMC SSH and Redfish share one username and
-password; OS SSH uses a separate username and password. Target IP addresses are
+password. OS SSH is optional and uses a separate username and password; leave
+the OS username empty to skip it. Each selected capability needs both fields. Target IP addresses are
 not stored. Existing supported Telnet fields are preserved.
 
 Credential values are never sourced into the login shell. The shell hook
@@ -179,7 +180,9 @@ python3 "$HOME/.agents/skills/openubmc-environment-setup/scripts/install_environ
 Do not place passwords in command arguments, profiles, logs, or ordinary
 environment variables.
 
-Configure the separate openUBMC KB OneID credentials with hidden TTY input:
+Configure the separate openUBMC KB OneID password and OAuth clientSecret with
+hidden TTY input. Enter at the clientSecret prompt preserves an existing secret.
+The command validates local configuration with the KB loader before saving:
 
 ~~~bash
 python3 "$HOME/.agents/skills/openubmc-environment-setup/scripts/install_environment.py" \

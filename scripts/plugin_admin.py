@@ -89,7 +89,7 @@ def main() -> int:
     if not re.fullmatch(r'[0-9a-f]{64}', archive_sha):
         raise ValueError('release audit has no valid archive digest')
     archive = store/'archives'/(archive_sha+'.tar.gz')
-    subprocess.run([sys.executable, '-I', str(Path(__file__).with_name('install_plugin.py')),
+    subprocess.run([sys.executable, "-B", '-I', str(Path(__file__).with_name('install_plugin.py')),
                     str(archive), '--sha256', archive_sha, '--home', str(home), '--codex-home', str(codex)],
                    env=env, capture_output=True, text=True, check=True)
     print(json.dumps({'ok': True, 'release': args.release, 'source_commit': selected['source_commit']}))

@@ -295,7 +295,7 @@ def rollback_command(
     host_key_policy: str = "insecure",
 ) -> str:
     command = [
-        sys.executable,
+        sys.executable, "-B",
         str(Path(__file__).resolve().parent / "rollback_live_file.py"),
         "--ip",
         ip,
@@ -374,9 +374,9 @@ def run_health_check(
     json_mode: bool,
 ) -> dict[str, Any]:
     scripts = debug_scripts_path()
-    preflight_command = [sys.executable, str(scripts / "preflight_remote.py"), "--ip", ip, "--json"]
+    preflight_command = [sys.executable, "-B", str(scripts / "preflight_remote.py"), "--ip", ip, "--json"]
     logs_command = [
-        sys.executable,
+        sys.executable, "-B",
         str(scripts / "collect_logs.py"),
         "--ip",
         ip,
@@ -431,7 +431,7 @@ def run_health_check(
     verification_results: list[dict[str, Any]] = []
     for mdbctl_command in verify_mdbctl:
         command = [
-            sys.executable,
+            sys.executable, "-B",
             str(scripts / "mdbctl_remote.py"),
             "--ip",
             ip,

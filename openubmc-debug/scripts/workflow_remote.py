@@ -762,7 +762,7 @@ def child_environment(args: argparse.Namespace) -> dict[str, str]:
 
 
 def base_script_command(script: str, args: argparse.Namespace) -> list[str]:
-    return [sys.executable, str(SCRIPT_DIR / script), "--ip", args.ip]
+    return [sys.executable, "-B", str(SCRIPT_DIR / script), "--ip", args.ip]
 
 
 def ssh_flags(args: argparse.Namespace) -> list[str]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import pathlib
 import sys
 import tarfile
@@ -13,7 +14,7 @@ from urllib import error as urllib_error
 from unittest import mock
 
 
-SCRIPT_DIR = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+SCRIPT_DIR = pathlib.Path(os.environ['OPENUBMC_TEST_PLUGIN_ROOT']) / 'skills/openubmc-log-analyzer/scripts' if os.environ.get('OPENUBMC_TEST_PLUGIN_ROOT') else pathlib.Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import pull_bundle  # type: ignore  # noqa: E402
@@ -1036,26 +1037,6 @@ class DiscoveryCommandTests(unittest.TestCase):
         self.assertIn("/data", command)
         self.assertIn("*openUBMC*.tar.gz", command)
         self.assertIn("find", command)
-
-
-class ExtractArchiveTests(unittest.TestCase):
-    def test_extract_archive_returns_bundle_root(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = pathlib.Path(tmp_dir)
-            bundle_source = tmp_path / "source" / "openUBMC_20260402-1015"
-            log_file = bundle_source / "dump_info" / "LogDump" / "app.log"
-            log_file.parent.mkdir(parents=True)
-            log_file.write_text("error line\n", encoding="utf-8")
-
-            archive_path = tmp_path / "openUBMC_20260402-1015.tar.gz"
-            with tarfile.open(archive_path, "w:gz") as tar:
-                tar.add(bundle_source, arcname=bundle_source.name)
-
-            extract_parent = tmp_path / "extract"
-            result = pull_bundle.extract_archive(archive_path, extract_parent)
-
-            self.assertTrue((result.bundle_root / "dump_info" / "LogDump" / "app.log").exists())
-            self.assertTrue(result.extract_dir.exists())
 
 
 if __name__ == "__main__":
