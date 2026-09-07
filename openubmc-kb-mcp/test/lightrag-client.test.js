@@ -59,7 +59,7 @@ test("status and list use the community API endpoint shapes", async () => {
   ]);
 });
 
-test("status and document pages are bounded for agent context", async () => {
+test("status preserves history coverage and list retains data for the MCP projection", async () => {
   const auth = { getAccessToken: async () => "token" };
   const client = new LightRagClient({ lightragUrl: "https://kb.example.com" }, auth, async url => {
     if (String(url).endsWith("pipeline_status")) {
@@ -85,9 +85,9 @@ test("status and document pages are bounded for agent context", async () => {
   assert.equal(status.pipeline.history_messages.length, 10);
   assert.equal(status.pipeline.history_total, 25);
   assert.equal(status.pipeline.history_truncated, true);
-  assert.equal(page.documents[0].content_summary.length, 600);
-  assert.equal(page.documents[0].error_msg.length, 300);
-  assert.equal("metadata" in page.documents[0], false);
+  assert.equal(page.documents[0].content_summary.length, 1000);
+  assert.equal(page.documents[0].error_msg.length, 500);
+  assert.equal("metadata" in page.documents[0], true);
 });
 
 test("does not contact LightRAG when authentication fails", async () => {

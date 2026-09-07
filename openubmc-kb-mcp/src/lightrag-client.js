@@ -1,7 +1,8 @@
+import { readResponseText } from "./http/read-response.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, withRequestDeadline } from "./http/request-lifetime.js";
 
 async function parseResponse(response, operation) {
-  const text = await response.text();
+  const text = await readResponseText(response, 2 * 1024 * 1024);
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!response.ok) {
@@ -39,6 +40,7 @@ export class LightRagClient {
     };
     const response = await this.fetch(`${this.baseUrl}${path}`, { ...options, headers });
     if (retry && response.status === 401) {
+      await response.body?.cancel();
       await this.auth.clearToken();
       return this.authenticatedRequest(path, options, false);
     }
@@ -109,25 +111,7 @@ export class LightRagClient {
         method: "POST",
         body: JSON.stringify(request)
       });
-      const documents = Array.isArray(result?.documents) ? result.documents : [];
-      return {
-        ...result,
-        documents: documents.map(document => ({
-          id: document?.id,
-          file_path: document?.file_path,
-          status: document?.status,
-          chunks_count: document?.chunks_count,
-          content_length: document?.content_length,
-          content_summary: typeof document?.content_summary === "string"
-            ? document.content_summary.slice(0, 600)
-            : document?.content_summary,
-          created_at: document?.created_at,
-          updated_at: document?.updated_at,
-          error_msg: typeof document?.error_msg === "string"
-            ? document.error_msg.slice(0, 300)
-            : document?.error_msg
-        }))
-      };
+      return result;
     }, options.signal);
   }
 }
