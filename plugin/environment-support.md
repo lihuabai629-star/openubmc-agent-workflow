@@ -28,11 +28,15 @@ python3 -I <plugin-root>/skills/openubmc-environment-setup/scripts/install_envir
 
 Select the resulting mode-0600 credentials file through `OPENUBMC_CREDENTIALS_FILE` when needed. Never put credential values in command arguments, logs or ordinary documentation.
 
+BMC credentials can be configured alone. Leave the optional OS username empty to skip OS SSH; a selected capability needs both username and password.
+
 Knowledge-base authentication also requires the user's authorized OAuth application configuration. Import a private JSON file containing `username`, `password` and `clientSecret`, with `clientId`, `redirectUri` and service URLs when the application uses non-default values:
 
 ```bash
 python3 -I <plugin-root>/skills/openubmc-environment-setup/scripts/install_environment.py credentials --kb --kb-config <private-kb-config.json>
 ```
+
+Use `credentials --kb` for interactive entry with hidden password and clientSecret prompts. Enter at the clientSecret prompt keeps an existing secret. Both entry routes validate the local configuration with the KB loader before saving. Existing application settings and secret whitespace are preserved.
 
 Keep that file mode 0600. The plugin does not distribute an OAuth client secret. Missing credentials leave the knowledge MCP available for status checks; they do not prevent Runtime startup. `doctor` proves local package and MCP startup readiness, not BMC or knowledge-service access.
 

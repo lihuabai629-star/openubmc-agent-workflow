@@ -34,6 +34,31 @@ test("loads and normalizes a complete local configuration", async () => {
   assert.equal(config.tokenCachePath, join(dirname(path), "private", "token.json"));
 });
 
+test("preserves exact file and environment secrets while normalizing usernames", async () => {
+  const fields = ["OPENUBMC_KB_USERNAME", "OPENUBMC_KB_PASSWORD", "OPENUBMC_KB_CLIENT_SECRET"];
+  const previous = fields.map(field => process.env[field]);
+  const path = await configFile({ ...valid, username: " user ", password: " password!'  ", clientSecret: " secret!'  " });
+  try {
+    for (const field of fields) delete process.env[field];
+    let config = await loadConfig(path);
+    assert.equal(config.username, "user");
+    assert.equal(config.password, " password!'  ");
+    assert.equal(config.clientSecret, " secret!'  ");
+    process.env.OPENUBMC_KB_USERNAME = " env-user ";
+    process.env.OPENUBMC_KB_PASSWORD = " env-password!'  ";
+    process.env.OPENUBMC_KB_CLIENT_SECRET = " env-secret!'  ";
+    config = await loadConfig(path);
+    assert.equal(config.username, "env-user");
+    assert.equal(config.password, " env-password!'  ");
+    assert.equal(config.clientSecret, " env-secret!'  ");
+  } finally {
+    fields.forEach((field, index) => {
+      if (previous[index] === undefined) delete process.env[field];
+      else process.env[field] = previous[index];
+    });
+  }
+});
+
 test("rejects missing credentials without including secret values", async () => {
   const path = await configFile({ ...valid, username: "", password: "do-not-print" });
   await assert.rejects(() => loadConfig(path), error => {

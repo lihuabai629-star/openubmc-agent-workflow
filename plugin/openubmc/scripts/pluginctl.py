@@ -309,6 +309,43 @@ def node_environment() -> dict[str, str]:
     return env
 
 
+def local_credentials_status(content: dict[str, bytes]) -> dict[str, object]:
+    """Inspect the selected file using the same reader as domain operations."""
+    import types
+    reader = types.ModuleType('verified_credential_file')
+    exec(compile(content['skills/openubmc-target-runtime/openubmc_target_runtime/credential_file.py'],
+                 '<verified-credential-file>', 'exec'), reader.__dict__)
+    result = {'configured': False, 'status': 'unavailable', 'reason': '',
+              'remote_authentication': 'not_checked', 'capabilities': {}}
+    try:
+        path = reader.selected_credentials_path()
+        if path is None:
+            path = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home()/'.config')/'openubmc/credentials.env'
+        if not path.exists() and not path.is_symlink():
+            return dict(result, status='missing', reason='credentials file is missing')
+        values = reader.read_credentials_file(path)
+    except (reader.CredentialFileError, OSError) as error:
+        return dict(result, reason=str(error))
+    groups = {
+        'bmc_ssh': ('OPENUBMC_SSH_USER', 'OPENUBMC_SSH_PASSWORD'),
+        'redfish': ('REDFISH_USERNAME', 'REDFISH_PASSWORD'),
+        'os_ssh': ('OPENUBMC_OS_SSH_USER', 'OPENUBMC_OS_SSH_PASSWORD'),
+        'telnet': ('OPENUBMC_TELNET_USER', 'OPENUBMC_TELNET_PASSWORD'),
+    }
+    missing = []
+    for capability, keys in groups.items():
+        result['capabilities'][capability] = all(values.get(key) for key in keys)
+        selected = any(values.get(key) for key in keys)
+        if capability == 'os_ssh':
+            selected = selected or bool(values.get('OPENUBMC_OS_SSH_PORT'))
+        if selected:
+            missing.extend(key for key in keys if not values.get(key))
+    configured = any(result['capabilities'].values()) and not missing
+    return dict(result, configured=configured, status='configured' if configured else 'incomplete',
+                reason='local credentials are complete; remote authentication was not checked' if configured
+                else 'missing keys: ' + ', '.join(missing) if missing else 'no credential capability is configured')
+
+
 def probe_server(command: str, content: dict[str, bytes], lock: dict) -> dict[str, object]:
     """Perform a bounded MCP initialize/tools/list probe through the public launcher."""
     request = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
@@ -439,7 +476,8 @@ def main() -> int:
                 report['mcp_health'] = {name: probe_server(name, content, lock) for name in ('runtime', 'kb')}
             else:
                 report['mcp_health'] = {'runtime': {'ok': False, 'error': 'dependencies unavailable'}, 'kb': {'ok': False, 'error': 'dependencies unavailable'}}
-            report['credentials_configured'] = bool(os.environ.get('OPENUBMC_CREDENTIALS_FILE') or (Path(os.environ.get('XDG_CONFIG_HOME') or Path.home()/'.config')/'openubmc/credentials.env').is_file())
+            report['credentials'] = local_credentials_status(content)
+            report['credentials_configured'] = report['credentials']['configured']
             report['startup_ready'] = report['dependencies_ready'] and all(item.get('ok') for item in report['mcp_health'].values())
             report['ok'] = report['startup_ready']
         print(json.dumps(report, sort_keys=True))
