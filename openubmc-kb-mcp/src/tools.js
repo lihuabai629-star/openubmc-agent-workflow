@@ -100,6 +100,10 @@ export function errorResult(error) {
       "Retry this read-only request after the service recovers."],
     KB_NETWORK_ERROR: ["The knowledge-base connection was interrupted.", true,
       "Check connectivity and retry this read-only request."],
+    KB_TIMEOUT: ["The knowledge-base request exceeded its total deadline.", true,
+      "Check the upstream service before retrying this read-only request."],
+    KB_CANCELLED: ["The knowledge-base request was cancelled.", false,
+      "Start a new request only if the task still needs this information."],
     KB_TOOL_FAILED: ["The knowledge-base request failed.", false,
       "Inspect local diagnostics before deciding whether to retry."]
   };
@@ -153,12 +157,12 @@ export function createTools(client) {
         response_format: responseFormat
       },
       outputSchema: OUTPUT_SCHEMA,
-      handler: async input => {
+      handler: async (input, options) => {
         if (typeof input?.query !== "string" || input.query.trim() === "") {
           throw new Error("query must be a non-empty string");
         }
         const normalized = { ...input, query: input.query.trim() };
-        const result = boundedQueryResult(await client.query(normalized));
+        const result = boundedQueryResult(await client.query(normalized, options));
         return textResult("openubmc_kb_query", result, input.response_format);
       }
     },
@@ -169,9 +173,9 @@ export function createTools(client) {
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: { response_format: responseFormat },
       outputSchema: OUTPUT_SCHEMA,
-      handler: async input => textResult(
+      handler: async (input, options) => textResult(
         "openubmc_kb_status",
-        await client.status(),
+        await client.status(options),
         input.response_format
       )
     },
@@ -189,9 +193,9 @@ export function createTools(client) {
         response_format: responseFormat
       },
       outputSchema: OUTPUT_SCHEMA,
-      handler: async input => textResult(
+      handler: async (input, options) => textResult(
         "openubmc_kb_list",
-        await client.list(input),
+        await client.list(input, options),
         input.response_format
       )
     }
@@ -220,7 +224,7 @@ export function registerTools(server, client, processLifecycle = null) {
       }
       const invoke = async () => {
         try {
-          return await handler(input);
+          return await handler(input, { signal: extra.signal });
         } catch (error) {
           return errorResult(error);
         }
