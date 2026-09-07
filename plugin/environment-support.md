@@ -20,25 +20,19 @@ Linux, Python 3.12 with pip, Node.js 20+ with npm, Git and Codex are the require
 
 ## Private credentials
 
-Use the bundled credential helper with hidden terminal input for BMC/OS credentials:
+When the user needs to enter or change BMC/OS, KB or Conan credentials, open the local browser page:
 
 ```bash
-python3 -I <plugin-root>/skills/openubmc-environment-setup/scripts/install_environment.py credentials
+python3 -I <plugin-root>/scripts/pluginctl.py configure
 ```
 
-Select the resulting mode-0600 credentials file through `OPENUBMC_CREDENTIALS_FILE` when needed. Never put credential values in command arguments, logs or ordinary documentation.
+Keep the page process alive while the user edits. The page displays the Linux/WSL environment and exact local source, separates global BMC/OS defaults from IP overrides, and supports explicit import while retaining the original file. Secret fields support keep, replace and remove; values stay in the local page and Runtime. Ask for missing target or account context only, never ask the user to paste a password or application secret into chat.
 
-BMC credentials can be configured alone. Leave the optional OS username empty to skip OS SSH; a selected capability needs both username and password.
+Saving creates a private revision; **Save and activate** selects it for subsequent Runtime/KB requests. Existing requests keep their original account. With an already authorized target, append `--target <ip> --purpose bmc|os --transport ssh|redfish`; activation then runs that bounded connection check. Without a target, saving performs no device probe. The page also offers explicit checks for selected targets and configured KB/Conan services. Report their actual status: saved and active do not mean verified.
 
-Knowledge-base authentication also requires the user's authorized OAuth application configuration. Import a private JSON file containing `username`, `password` and `clientSecret`, with `clientId`, `redirectUri` and service URLs when the application uses non-default values:
+SSH checks preserve strict host identity verification, Redfish checks verify TLS, and no check retries a rejected IP override with global credentials. Conan authenticates only an existing named remote and uses the native per-user token cache. KB requires the user's authorized OAuth application settings; interactive authentication requirements remain visible as such. The plugin supplies no shared OAuth client secret.
 
-```bash
-python3 -I <plugin-root>/skills/openubmc-environment-setup/scripts/install_environment.py credentials --kb --kb-config <private-kb-config.json>
-```
-
-Use `credentials --kb` for interactive entry with hidden password and clientSecret prompts. Enter at the clientSecret prompt keeps an existing secret. Both entry routes validate the local configuration with the KB loader before saving. Existing application settings and secret whitespace are preserved.
-
-Keep that file mode 0600. The plugin does not distribute an OAuth client secret. Missing credentials leave the knowledge MCP available for status checks; they do not prevent Runtime startup. `doctor` proves local package and MCP startup readiness, not BMC or knowledge-service access.
+For a machine without an accessible browser, the existing `install_environment.py credentials` hidden-input helper remains available. A headless page can be started with `configure --no-browser`; open its session URL in the same machine's browser. Use the WSL environment containing the installed plugin and credentials.
 
 ## Lifecycle
 
