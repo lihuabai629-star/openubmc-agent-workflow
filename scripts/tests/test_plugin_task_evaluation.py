@@ -269,6 +269,71 @@ class ActualPairingTests(unittest.TestCase):
             )
 
 
+class ProviderPairingTests(unittest.TestCase):
+    def test_same_model_name_with_different_actual_providers_is_not_a_pair(self):
+        from scripts.plugin_task_evaluation import (
+            validate_task_identity,
+            summarize_tasks,
+        )
+
+        def configuration(provider):
+            records = [
+                {
+                    "event_type": "harness.prepared",
+                    "payload": {
+                        "adapter_kind": "codex",
+                        "identity": {
+                            "plugin_runtime": {
+                                "subject_digest": "subject",
+                                "runtime_digest": "runtime",
+                            },
+                            "executable": {"digest": "sha256:client"},
+                            "model_configuration": {
+                                "model": "fixed",
+                                "provider": {"configuration_digest": provider},
+                            },
+                        },
+                    },
+                }
+            ]
+            return validate_task_identity(
+                {"adapter_kind": "codex"},
+                records,
+                subject_digest="subject",
+                runtime_digest="runtime",
+                client="client",
+                model="fixed",
+            )
+
+        case = {
+            "case_id": "task",
+            "oracle": {"required_predicates": ["complete"], "forbidden_predicates": []},
+        }
+        row = {
+            "episode_id": "ep",
+            "case_id": "task",
+            "repetition": 1,
+            "status": "completed",
+            "strict_success": True,
+            "hard_failure": False,
+            "metrics": {},
+        }
+        arms = {
+            name: {
+                "episodes": [
+                    dict(
+                        row,
+                        pairing_identity={"model_configuration": configuration(name)},
+                    )
+                ],
+                "scores": [],
+            }
+            for name in ("baseline", "candidate")
+        }
+        with self.assertRaisesRegex(ValueError, "actual task inputs"):
+            summarize_tasks([case], arms, repetitions=1)
+
+
 class LoadedTaskIdentityTests(unittest.TestCase):
     def test_actual_harness_identity_must_match_loaded_plugin_and_client(self):
         from scripts.plugin_task_evaluation import validate_task_identity

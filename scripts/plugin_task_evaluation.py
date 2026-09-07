@@ -168,8 +168,18 @@ def summarize_tasks(cases, arms, *, repetitions):
         for row in data["episodes"]:
             key = (row["case_id"], row["repetition"])
             value = row.get("pairing_identity")
-            if key in actual_inputs and actual_inputs[key] != value:
-                raise ValueError("paired samples received different actual task inputs")
+            if key in actual_inputs:
+                previous = actual_inputs[key]
+                left, right = dict(previous or {}), dict(value or {})
+                if not left.get("model_configuration") or not right.get(
+                    "model_configuration"
+                ):
+                    left.pop("model_configuration", None)
+                    right.pop("model_configuration", None)
+                if left != right:
+                    raise ValueError(
+                        "paired samples received different actual task inputs"
+                    )
             actual_inputs[key] = value
     reports, successes, gaps = {}, {}, []
     failed = False
@@ -378,7 +388,7 @@ def validate_task_identity(
         or identity.get("model_configuration", {}).get("model") != model
     ):
         raise ValueError("actual Agent identity differs from the pinned task identity")
-    return True
+    return dict(identity["model_configuration"])
 
 
 def load_lab_arm(bundle, subject_path, review_path):
@@ -433,6 +443,7 @@ def load_lab_arm(bundle, subject_path, review_path):
     for reference in manifest["sources"]:
         path = bundle / reference["path"]
         source_paths["sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()] = path
+    model_configurations = set()
     for row in episodes:
         path = source_paths.get(row["source"]["digest"])
         if path is None:
@@ -449,7 +460,7 @@ def load_lab_arm(bundle, subject_path, review_path):
         records_path = path.parent / source["raw_records"]
         if not records_path.resolve().is_relative_to(path.parent.resolve()):
             raise ValueError("task raw records escape their verified source")
-        row["identity_verified"] = validate_task_identity(
+        model_configuration = validate_task_identity(
             source,
             load_jsonl(records_path, description="task raw records"),
             subject_digest=subject.digest,
@@ -457,10 +468,17 @@ def load_lab_arm(bundle, subject_path, review_path):
             client=client,
             model=experiment.arms[arm_id]["model"],
         )
+        row["identity_verified"] = bool(model_configuration)
+        if model_configuration:
+            row["pairing_identity"]["model_configuration"] = model_configuration
+            model_configurations.add(digest(model_configuration))
         # Wall time is measured by the harness even when usage omits it.
         elapsed = source.get("budget", {}).get("elapsed_seconds")
         if valid_metric(elapsed):
             row["metrics"]["wall_seconds"] = elapsed
+    if len(model_configurations) > 1:
+        raise ValueError("actual model configuration changed within one task arm")
+    model_configuration_digest = next(iter(model_configurations), None)
     cases = [case.document for case in dataset.cases.values()]
     scores = []
     if review_path:
@@ -496,6 +514,7 @@ def load_lab_arm(bundle, subject_path, review_path):
         "runtime_digest": runtime["digest"],
         "client_sha256": client,
         "model": arm["model"],
+        "model_configuration_digest": model_configuration_digest,
         "environment_digest": digest(environment),
         "bundle_digest": manifest["bundle_digest"],
         "review_digest": review["digest"] if review_path else None,
