@@ -1609,6 +1609,8 @@ def extract_archive(
             total_bytes = 0
             member_sizes: dict[str, int] = {}
             for count, member in enumerate(archive, start=1):
+                if member.sparse is not None:
+                    raise BundlePullError("extract_failed", "Sparse archive members are not supported for log extraction")
                 size = max(0, member.size)
                 if member.islnk():
                     if member.linkname not in member_sizes:

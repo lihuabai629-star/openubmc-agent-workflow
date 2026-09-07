@@ -196,3 +196,17 @@ class LogResourceBudgetTests(unittest.TestCase):
                 pull_bundle.extract_archive(path, root / "output")
             self.assertEqual(raised.exception.code, "extract_failed")
             self.assertEqual(list((root / "output").iterdir()), [])
+
+    def test_sparse_members_cannot_bypass_actual_output_byte_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "bundle.tar.gz"
+            with tarfile.open(path, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+                member = tarfile.TarInfo("dump_info/app.log")
+                member.size = 8192
+                member.pax_headers = {"GNU.sparse.map": "0,8192", "GNU.sparse.size": "1"}
+                archive.addfile(member, io.BytesIO(b"x" * 8192))
+            with self.assertRaises(pull_bundle.BundlePullError) as raised:
+                pull_bundle.extract_archive(path, root / "output", max_bytes=1)
+            self.assertEqual(raised.exception.code, "extract_failed")
+            self.assertEqual(list((root / "output").iterdir()), [])

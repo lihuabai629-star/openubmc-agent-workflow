@@ -175,7 +175,9 @@
 (including hard-link targets), and 576 MiB of decompressed tar data by default.
 The stream limit also covers extended headers. Exceeding a limit removes the
 partial extraction directory and returns `extract_budget_exceeded`. Hard links
-must refer to an earlier regular file; existing path and tar data filters apply.
+must refer to an earlier regular file. Sparse members are rejected because their
+expanded extents can disagree with their declared size. Existing path and tar
+data filters apply.
 
 `analyze_bundle` scans at most 64 MiB of decompressed log data, 512 files, and
 20,000 directory entries, with a 64 KiB maximum line. Limits apply across selected
