@@ -132,7 +132,7 @@ def check_dependencies(root: Path) -> dict:
     if root.is_symlink() or receipt.is_symlink():
         raise ValueError('Dependency cache must not be a symbolic link')
     record = json.loads(receipt.read_bytes())
-    if record.get('schema') != 'openubmc.plugin-dependencies.v2' or record.get('files') != dependency_inventory(root):
+    if not isinstance(record, dict) or record.get('schema') != 'openubmc.plugin-dependencies.v2' or record.get('files') != dependency_inventory(root):
         raise ValueError('Dependency cache drift; run pluginctl.py prepare --repair')
     return record
 

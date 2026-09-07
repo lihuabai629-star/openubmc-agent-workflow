@@ -105,6 +105,18 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.assertFalse(report['capabilities']['kb']['dependencies_ready'])
         self.assertFalse(report['startup_ready'])
 
+    def test_malformed_kb_receipt_does_not_hide_healthy_runtime(self):
+        prepared = self.prepare('--offline')
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        root = Path(json.loads(prepared.stdout)['capability_dependencies']['kb'])
+        (root / 'receipt.json').write_text('[]')
+        result = subprocess.run([*self.cli[:-1], 'doctor'], env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report['capabilities']['runtime']['startup_ready'])
+        self.assertFalse(report['capabilities']['kb']['dependencies_ready'])
+        self.assertIn('cache drift', report['capabilities']['kb']['error'])
+
     def test_first_start_prepares_dependencies_and_warm_start_does_not_download(self):
         argv = [sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'), 'runtime', '--prepare-on-start']
         first = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=20)
