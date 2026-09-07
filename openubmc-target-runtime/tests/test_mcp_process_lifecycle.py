@@ -1159,7 +1159,11 @@ class McpProcessLifecycleTests(unittest.TestCase):
                         return "signal-operation"
 
                     def handle(self, message):
-                        time.sleep(0.3)
+                        deadline = time.monotonic() + 10
+                        while not (root / "release-response").exists():
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError("parent did not release the active response")
+                            time.sleep(0.01)
                         return {
                             "jsonrpc": "2.0",
                             "id": message.get("id"),
@@ -1258,8 +1262,19 @@ class McpProcessLifecycleTests(unittest.TestCase):
                     + "\n"
                 )
                 child.stdin.flush()
+                assert child.stdout is not None
+                self.assertTrue(
+                    select.select([child.stdout], [], [], 5)[0],
+                    "late request did not receive a shutdown response",
+                )
+                rejected_response = child.stdout.readline()
+                self.assertEqual(json.loads(rejected_response)["id"], 2)
+                (lifecycle_root / "release-response").touch()
                 stdout, stderr = child.communicate(timeout=5)
-                responses = [json.loads(line) for line in stdout.splitlines()]
+                responses = [
+                    json.loads(line)
+                    for line in (rejected_response + stdout).splitlines()
+                ]
                 self.assertEqual(child.returncode, 0, stderr)
                 by_id = {response["id"]: response for response in responses}
                 self.assertEqual(set(by_id), {1, 2})
