@@ -535,7 +535,7 @@ def _default_credential_loader(
             selected_credential_value(values, defaults)
         names = ((selected_env,) if selected_env else ()) + defaults
         if values.get("__runtime_selected__") == "1":
-            return selected_credential_value(values, names) or ""
+            return selected_credential_value(values, (selected_env,) if selected_env else defaults) or ""
         for name in names:
             candidate = os.environ.get(name, values.get(name, ""))
             if candidate:

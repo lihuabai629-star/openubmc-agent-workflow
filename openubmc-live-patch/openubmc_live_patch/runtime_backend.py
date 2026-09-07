@@ -115,7 +115,7 @@ def _default_credential_loader(
         selector = _argument_text(arguments, selector_name)
         names = ((selector,) if selector else ()) + defaults
         if values.get("__runtime_selected__") == "1":
-            return selected_credential_value(values, names) or ""
+            return selected_credential_value(values, (selector,) if selector else defaults) or ""
         for name in names:
             value = os.environ.get(name, values.get(name, ""))
             if value:

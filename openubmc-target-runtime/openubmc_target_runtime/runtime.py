@@ -375,6 +375,7 @@ class CredentialResolver:
         self._local_source = LocalCredentialSource(config_path=config_path, environ=environ)
         self._local_cache: dict[tuple[str, str, str, str], object] = {}
         self._task_sources: dict[str, Path | None] = {}
+        self._task_source_environments: dict[str, dict[str, str]] = {}
         self._cache: dict[tuple[str, str, str], object] = {}
         self._lock = threading.RLock()
 
@@ -396,8 +397,35 @@ class CredentialResolver:
             credential_type = ResolvedSshCredentials if transport == "ssh" else ResolvedRedfishCredentials
             resolved = credential_type.from_mapping(values)
             self._task_sources[task_id] = path
+            self._remember_source_environment(task_id)
             self._local_cache[key] = resolved
             return CredentialResolution(resolved, cache_hit=False)
+
+    def _remember_source_environment(self, task_id: str) -> None:
+        if task_id not in self._task_source_environments:
+            self._task_source_environments[task_id] = {
+                name: value for name, value in self._local_source.environ.items()
+                if name in {"OPENUBMC_CREDENTIALS_CONFIG", "OPENUBMC_CREDENTIALS_FILE", "OPENUBMC_DEBUG_CREDENTIALS_FILE", "XDG_CONFIG_HOME", "HOME"}
+            }
+
+    def source_environment(self, task_id: str) -> dict[str, str]:
+        """Keep source selectors stable while leaving named credential values local."""
+        with self._lock:
+            environment = dict(self._local_source.environ)
+            if task_id in self._task_source_environments:
+                for name in ("OPENUBMC_CREDENTIALS_CONFIG", "OPENUBMC_CREDENTIALS_FILE", "OPENUBMC_DEBUG_CREDENTIALS_FILE", "XDG_CONFIG_HOME", "HOME"):
+                    environment.pop(name, None)
+                environment.update(self._task_source_environments[task_id])
+            return environment
+
+    def resolve_legacy_values(self, *, task_id: str, loader: Callable[..., dict[str, str]]) -> dict[str, str]:
+        """Read the compatibility file while binding the same task source as JSON."""
+        with self._lock:
+            path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
+            values = loader(environ=self.source_environment(task_id))
+            self._task_sources[task_id] = path
+            self._remember_source_environment(task_id)
+            return values
 
     def uses_structured_source(self, task_id: str) -> bool:
         with self._lock:

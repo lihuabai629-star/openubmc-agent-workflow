@@ -50,6 +50,43 @@ from redfish_fixture import FakeRedfishSession, FakeRedfishTransport
 TEST_DEADLINE_SECONDS = 30
 
 
+class SelectedCredentialTests(unittest.TestCase):
+    def test_named_password_environment_wins_over_ambient_json_fallback(self):
+        from openubmc_target_runtime import OrchestratedMcpBackend
+        class ControlledTransport:
+            selected = None
+            def open_session(self, *, target, credentials):
+                self.selected = credentials
+                raise RuntimeError('Controlled connection boundary reached')
+            @staticmethod
+            def is_authentication_failure(error):
+                return False
+            @staticmethod
+            def close_session(session):
+                pass
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = root / 'credentials.json'
+            config.write_text('{"schema_version":1,"credentials":{}}'); config.chmod(0o600)
+            artifact = root / 'fixture.hpm'; artifact.write_bytes(b'fictional firmware')
+            transport = ControlledTransport()
+            backend = UpgradeMcpBackend(journal_store=MutationJournalStore(root / 'journal'), redfish_transport_factory=lambda _args: transport)
+            environment = {'HOME': raw, 'XDG_CONFIG_HOME': raw, 'OPENUBMC_CREDENTIALS_CONFIG': str(config), 'FIXTURE_SELECTED_PASSWORD': 'fictional-selected', 'OPENUBMC_REDFISH_PASSWORD': 'fictional-default'}
+            with mock.patch.dict(os.environ, environment, clear=True):
+                service = RuntimeMcpService(OrchestratedMcpBackend({'upgrade_run': backend}))
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'Controlled connection boundary reached'):
+                        service.call_tool('upgrade_run', {
+                            'intent': 'upgrade-and-verify', 'ip': '192.0.2.10',
+                            'artifact_path': str(artifact), 'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                            'product_version': '1.0', 'redfish_user': 'fixture-user',
+                            'redfish_password_env': 'FIXTURE_SELECTED_PASSWORD', 'deadline': 3,
+                        }, task_id='named-password', operation_id='upgrade')
+                    self.assertEqual(transport.selected.password, 'fictional-selected')
+                finally:
+                    service.close()
+
+
 class UncertainUpgradeSession(FakeRedfishSession):
     def __init__(self, number: int, transport: "UncertainUpgradeTransport") -> None:
         super().__init__(number)

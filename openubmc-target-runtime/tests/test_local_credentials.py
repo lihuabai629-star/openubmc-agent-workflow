@@ -103,6 +103,30 @@ class LocalCredentialTests(unittest.TestCase):
             selected = resolver.resolve_local(task_id='normalized-path', host='192.0.2.1', transport='ssh')
             self.assertEqual(selected.credentials.user, 'fixture')
 
+    def test_multitarget_task_keeps_bound_legacy_source_when_new_selectors_conflict(self):
+        import os
+        from unittest.mock import patch
+        from test_mcp_contracts import FakeDebugBackend
+        from openubmc_target_runtime import RuntimeMcpService, OrchestratedMcpBackend
+        observed = []
+        class ConnectionBackend(FakeDebugBackend):
+            def debug_run(self, task, arguments, context):
+                observed.append(arguments.get('_credential_values', {}).get('OPENUBMC_SSH_USER'))
+                return super().debug_run(task, arguments, context)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'selected.env'
+            path.write_text('OPENUBMC_SSH_USER=fixture\nOPENUBMC_SSH_PASSWORD=fixture-secret\n'); path.chmod(0o600)
+            with patch.dict(os.environ, {'OPENUBMC_CREDENTIALS_FILE': str(path), 'XDG_CONFIG_HOME': temporary, 'HOME': temporary}, clear=True):
+                service = RuntimeMcpService(OrchestratedMcpBackend({'debug_run': ConnectionBackend()}))
+                arguments = {'targets': [{'ip': '192.0.2.10', 'target_id': 'reference', 'role': 'reference'}, {'ip': '192.0.2.11', 'target_id': 'candidate', 'role': 'candidate'}]}
+                try:
+                    service.call_tool('debug_run', arguments, task_id='bound-legacy', operation_id='first')
+                    os.environ['OPENUBMC_CREDENTIALS_CONFIG'] = str(Path(temporary) / 'other.env')
+                    result = service.call_tool('debug_run', arguments, task_id='bound-legacy', operation_id='second')
+                    self.assertEqual(observed, ['fixture', 'fixture'], result)
+                finally:
+                    service.close()
+
     def test_observe_passes_ip_record_to_the_authorized_adapter_without_exposing_secrets(self):
         from unittest.mock import patch
         from test_mcp_contracts import FakeDebugBackend

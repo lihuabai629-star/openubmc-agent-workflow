@@ -634,7 +634,7 @@ class _OrchestratedMcpTask:
                     raw, arguments, "ssh_password_env"
                 ),
                 identity_file=ssh_identity_source,
-                environ=os.environ,
+                environ=self._credential_resolver.source_environment(self.task_id),
             )
             telnet_selector = CredentialSelector.for_telnet(
                 user=self._selector_arguments(raw, arguments, "telnet_user"),
@@ -642,7 +642,7 @@ class _OrchestratedMcpTask:
                 password_env=self._selector_arguments(
                     raw, arguments, "telnet_password_env"
                 ),
-                environ=os.environ,
+                environ=self._credential_resolver.source_environment(self.task_id),
             )
             redfish_selector = CredentialSelector.for_redfish(
                 user=self._selector_arguments(raw, arguments, "redfish_user"),
@@ -652,7 +652,7 @@ class _OrchestratedMcpTask:
                 password_env=self._selector_arguments(
                     raw, arguments, "redfish_password_env"
                 ),
-                environ=os.environ,
+                environ=self._credential_resolver.source_environment(self.task_id),
             )
             selectors = (ssh_selector, telnet_selector, redfish_selector)
             policy_name = self._selector_arguments(
@@ -1188,7 +1188,7 @@ class _OrchestratedMcpTask:
         merged.pop("role", None)
         merged = self._project_domain_arguments(tool_name, merged)
         if tool_name in _CREDENTIAL_VALUE_TOOLS:
-            if merged.get("targets") and self._credential_resolver.uses_structured_source(self.task_id):
+            if self._credential_values is None and merged.get("targets") and self._credential_resolver.uses_structured_source(self.task_id):
                 merged["_credential_values_by_target"] = {
                     str(item["ip"]): self.credential_values({**merged, **item}, tool_name=tool_name)
                     for item in merged["targets"]
@@ -1232,7 +1232,7 @@ class _OrchestratedMcpTask:
                     transports=transports,
                 )
             if self._credential_values is None:
-                self._credential_values = load_selected_credentials_file()
+                self._credential_values = self._credential_resolver.resolve_legacy_values(task_id=self.task_id, loader=load_selected_credentials_file)
                 self._credential_parse_count += 1
             return dict(self._credential_values)
 
