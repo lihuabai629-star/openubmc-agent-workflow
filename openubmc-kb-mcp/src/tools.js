@@ -1,7 +1,7 @@
 import * as z from "zod/v4";
+import { boundedReceipt } from "./output-budget.js";
 
 
-const QUERY_RESPONSE_LIMIT = 24000;
 const READ_ONLY_ANNOTATIONS = Object.freeze({
   readOnlyHint: true,
   destructiveHint: false,
@@ -20,23 +20,6 @@ const OUTPUT_SCHEMA = {
 };
 
 
-function boundedQueryResult(value) {
-  if (!value || typeof value !== "object" || typeof value.response !== "string") {
-    return value;
-  }
-  const originalChars = value.response.length;
-  const truncated = originalChars > QUERY_RESPONSE_LIMIT;
-  return {
-    ...value,
-    response: truncated
-      ? value.response.slice(0, QUERY_RESPONSE_LIMIT)
-      : value.response,
-    response_chars: originalChars,
-    truncated
-  };
-}
-
-
 function markdown(name, value) {
   if (name === "openubmc_kb_query") {
     const references = Array.isArray(value?.references)
@@ -45,7 +28,7 @@ function markdown(name, value) {
     return [
       value?.response || "No knowledge-base context returned.",
       references ? `\nReferences\n\n${references}` : "",
-      value?.truncated ? `\nResponse truncated at ${QUERY_RESPONSE_LIMIT} characters.` : ""
+      value?.truncated ? `\nIncomplete context: ${value.truncation_reasons.join(", ")}.` : ""
     ].filter(Boolean).join("\n");
   }
   if (name === "openubmc_kb_status") {
@@ -70,17 +53,20 @@ function markdown(name, value) {
 }
 
 
-function textResult(name, value, responseFormat) {
+function textResult(name, source, responseFormat) {
+  return boundedReceipt(name, source, value => {
   const structuredContent = { ok: true, result: value };
   return {
     content: [{
       type: "text",
       text: responseFormat === "markdown"
-        ? markdown(name, value)
+        ? markdown(name, value) + (name !== "openubmc_kb_query" && value.truncated
+          ? `\nIncomplete context: ${value.truncation_reasons.join(", ")}.` : "")
         : JSON.stringify(structuredContent, null, 2)
     }],
     structuredContent
   };
+  });
 }
 
 
@@ -100,6 +86,10 @@ export function errorResult(error) {
       "Retry this read-only request after the service recovers."],
     KB_NETWORK_ERROR: ["The knowledge-base connection was interrupted.", true,
       "Check connectivity and retry this read-only request."],
+    KB_RESPONSE_INVALID: ["The upstream response has an invalid field shape.", false,
+      "Check knowledge-base service compatibility before retrying."],
+    KB_RESPONSE_TOO_LARGE: ["The upstream response exceeded the byte budget.", false,
+      "Narrow the query or reduce the requested page size before retrying."],
     KB_TIMEOUT: ["The knowledge-base request exceeded its total deadline.", true,
       "Check the upstream service before retrying this read-only request."],
     KB_CANCELLED: ["The knowledge-base request was cancelled.", false,
@@ -162,7 +152,7 @@ export function createTools(client) {
           throw new Error("query must be a non-empty string");
         }
         const normalized = { ...input, query: input.query.trim() };
-        const result = boundedQueryResult(await client.query(normalized, options));
+        const result = await client.query(normalized, options);
         return textResult("openubmc_kb_query", result, input.response_format);
       }
     },

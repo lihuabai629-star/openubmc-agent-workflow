@@ -1,3 +1,4 @@
+import { readResponseText } from "../http/read-response.js";
 import { constants, publicEncrypt, randomBytes } from "node:crypto";
 import { CookieJar } from "../http/cookie-jar.js";
 import { createTokenOwner, FileTokenStore } from "./token-store.js";
@@ -19,7 +20,7 @@ function unwrap(value) {
 }
 
 async function responseJson(response, operation) {
-  const text = await response.text();
+  const text = await readResponseText(response, 256 * 1024);
   let value;
   try { value = text ? JSON.parse(text) : {}; } catch { value = {}; }
   if (!response.ok) {
@@ -134,6 +135,7 @@ export class OneIdClient {
         return refreshed.accessToken;
       } catch (error) {
         if (signal?.aborted) throw signal.reason;
+        if (error?.code === "KB_RESPONSE_TOO_LARGE") throw error;
         this.token = previous;
       }
     }
