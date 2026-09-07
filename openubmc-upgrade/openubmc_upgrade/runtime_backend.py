@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import base64
 import hashlib
@@ -25,6 +25,7 @@ from urllib import request as urlrequest
 import uuid
 
 from .operation_state import UpgradeOperationStateStore
+from .task_diagnostics import task_diagnostics, externalize_messages
 from .webui import (
     SameOriginRedirectHandler,
     WebUiHttpError,
@@ -67,6 +68,8 @@ _identity = importlib.util.module_from_spec(_identity_spec)
 _identity_spec.loader.exec_module(_identity)
 validate_artifact_metadata = _identity.validate_artifact_metadata
 from openubmc_target_runtime import (  # noqa: E402
+    LocalArtifactStore,
+    SQLiteArtifactRepository,
     CredentialResolver,
     CredentialSelector,
     MutationAuthorization,
@@ -935,6 +938,7 @@ class _UpgradeBinding:
     redfish_selector: CredentialSelector
     ssh_selector: CredentialSelector
     transport: object
+    diagnostic_secrets: tuple[str, ...] = field(default=(), repr=False)
 
     def close(self) -> None:
         self.task_run.close()
@@ -1022,6 +1026,10 @@ class UpgradeMcpBackend:
         if max_batch_targets < 1:
             raise ValueError("max_batch_targets must be positive")
         self.journal_store = journal_store
+        self.artifact_store = LocalArtifactStore(
+            content_root=journal_store.root / "upgrade-task-artifacts",
+            repository=SQLiteArtifactRepository(journal_store.root / "upgrade-task-artifacts.sqlite3"),
+        )
         self.operation_state_store = UpgradeOperationStateStore(journal_store.root)
         self.credential_loader = credential_loader
         self.redfish_transport_factory = redfish_transport_factory
@@ -1102,6 +1110,7 @@ class UpgradeMcpBackend:
             redfish_selector=redfish_selector,
             ssh_selector=ssh_selector,
             transport=transport,
+            diagnostic_secrets=(redfish_credentials.password,),
         )
 
     @staticmethod
@@ -1520,7 +1529,7 @@ class UpgradeMcpBackend:
         }
 
     @staticmethod
-    def _monitor_task(session, task_uri: str, context) -> dict[str, object]:
+    def _monitor_task(session, task_uri: str, context, *, record_diagnostics=None) -> dict[str, object]:
         if not task_uri:
             return {"state": "not_advertised", "task_uri": ""}
         terminal_success = {"completed", "completedok", "success", "succeeded"}
@@ -1531,6 +1540,7 @@ class UpgradeMcpBackend:
             "failed",
         }
         observations: list[str] = []
+        diagnostics: dict[str, object] = {}
         while True:
             context.raise_if_stopped()
             try:
@@ -1541,20 +1551,25 @@ class UpgradeMcpBackend:
                     "task_uri": task_uri,
                     "error": type(exc).__name__,
                     "observations": observations,
+                    **diagnostics,
                 }
             payload = response.payload if isinstance(response.payload, Mapping) else {}
+            diagnostics = (record_diagnostics(payload, task_uri) if record_diagnostics is not None else task_diagnostics(payload))
             raw_state = payload.get("TaskState", payload.get("TaskStatus", ""))
             state = str(raw_state).strip()
-            observations.append(state or f"http-{response.status}")
+            observations.append(str(diagnostics.get("task_state") or diagnostics.get("task_status") or f"http-{response.status}"))
             normalized = state.lower().replace(" ", "")
             if normalized in terminal_success:
                 return {
                     "state": "completed",
                     "task_uri": task_uri,
                     "observations": observations,
+                    **diagnostics,
                 }
             if normalized in terminal_failure:
-                raise RuntimeError(f"Redfish upgrade task ended in {state}")
+                error = RuntimeError(f"Redfish upgrade task ended in {diagnostics['task_state']}; status={diagnostics['task_status']}")
+                error.task_diagnostics = diagnostics
+                raise error
             context.wait(min(2.0, context.remaining()))
 
     @staticmethod
@@ -1563,6 +1578,7 @@ class UpgradeMcpBackend:
         update_service: Mapping[str, object],
         image_uri: str,
         context,
+        *, record_diagnostics=None,
     ) -> dict[str, object]:
         """Activate a legacy multipart upload through SimpleUpdate.
 
@@ -1612,7 +1628,7 @@ class UpgradeMcpBackend:
             "state": "submitted",
             "task_uri": task_uri,
             "http_status": response.status,
-            "monitor": UpgradeMcpBackend._monitor_task(session, task_uri, context),
+            "monitor": UpgradeMcpBackend._monitor_task(session, task_uri, context, record_diagnostics=record_diagnostics),
         }
 
     @staticmethod
@@ -2337,6 +2353,7 @@ class UpgradeMcpBackend:
                     execution.mark_effects_started,
                     record_operation_state=record_operation_state,
                     artifact_source=shared_artifact,
+                    diagnostic_secrets=binding.diagnostic_secrets,
                 ),
             )
             mutation_observation.update(result)
@@ -3667,6 +3684,7 @@ class UpgradeMcpBackend:
         record_operation_state: Callable[[Mapping[str, object]], None]
         | None = None,
         artifact_source: _SharedArtifactSource | None = None,
+        diagnostic_secrets: tuple[str, ...] = (),
     ) -> dict[str, object]:
         configured_upload_timeout = _argument_timeout(
             arguments,
@@ -3762,10 +3780,17 @@ class UpgradeMcpBackend:
                     webui_result["cleanup"] = cleanup
         if webui_result is not None:
             return webui_result
+        def record_diagnostics(payload, task_uri):
+            diagnostics = {**task_diagnostics(payload, secrets=diagnostic_secrets), "task_uri": task_uri}
+            diagnostics = externalize_messages(diagnostics, store=self.artifact_store, target=str(arguments["ip"]), run_id=context.task_id, operation_id=context.operation_id)
+            record_state({"redfish_task": diagnostics})
+            return diagnostics
+
         staging_monitor = self._monitor_task(
             session,
             str(upload["task_uri"]),
             context,
+            record_diagnostics=record_diagnostics,
         )
         activation: dict[str, object] | None = None
         monitor = staging_monitor
@@ -3780,6 +3805,7 @@ class UpgradeMcpBackend:
                 update_payload,
                 staged_image_uri,
                 context,
+                record_diagnostics=record_diagnostics,
             )
             activation_monitor = activation.get("monitor")
             if isinstance(activation_monitor, Mapping):
