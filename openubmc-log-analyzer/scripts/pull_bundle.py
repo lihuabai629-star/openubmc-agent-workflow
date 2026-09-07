@@ -1539,7 +1539,10 @@ def run_redfish_bundle_flow(
 
 
 def ensure_safe_member_path(destination: pathlib.Path, member_name: str) -> None:
-    target_path = (destination / member_name).resolve()
+    try:
+        target_path = (destination / member_name).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise BundlePullError("extract_failed", "Archive member path cannot be resolved safely") from exc
     destination_root = destination.resolve()
     if not target_path.is_relative_to(destination_root):
         raise BundlePullError("extract_failed", f"Unsafe archive member path: {member_name}")

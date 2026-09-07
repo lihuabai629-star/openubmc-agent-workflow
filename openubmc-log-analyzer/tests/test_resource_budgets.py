@@ -179,3 +179,20 @@ class LogResourceBudgetTests(unittest.TestCase):
                 (current / "app.log").unlink(missing_ok=True)
                 for directory in reversed(directories):
                     directory.rmdir()
+
+    def test_archive_symlink_loop_cleans_partial_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "bundle.tar"
+            with tarfile.open(path, "w") as archive:
+                first = tarfile.TarInfo("dump_info/first.log")
+                archive.addfile(first)
+                loop = tarfile.TarInfo("loop")
+                loop.type = tarfile.SYMTYPE
+                loop.linkname = "loop"
+                archive.addfile(loop)
+                archive.addfile(tarfile.TarInfo("loop/second.log"))
+            with self.assertRaises(pull_bundle.BundlePullError) as raised:
+                pull_bundle.extract_archive(path, root / "output")
+            self.assertEqual(raised.exception.code, "extract_failed")
+            self.assertEqual(list((root / "output").iterdir()), [])
