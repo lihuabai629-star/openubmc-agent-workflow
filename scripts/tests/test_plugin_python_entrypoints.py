@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import py_compile
+import select
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,18 @@ if __package__:
     from .plugin_fixture import package_fixture
 else:
     from plugin_fixture import package_fixture
+
+
+MODULE_IMPORT = '''
+from pathlib import Path
+import runpy, sys
+root = Path(sys.argv[1])
+entry = root/'skills/openubmc-debug/scripts/target_runtime_cli.py'
+guard = runpy.run_path(str(entry.with_name('_plugin_entrypoint.py')))
+cache = guard['initialize'](entry)
+import target_runtime_cli
+raise SystemExit(target_runtime_cli.main(['--help']))
+'''
 
 
 def inventory(root):
@@ -97,20 +110,72 @@ class PythonEntrypointTests(unittest.TestCase):
         self.assertEqual(inventory(self.plugin), self.before)
 
     def test_supported_module_import_initializes_before_the_importer(self):
-        script = '''
-from pathlib import Path
-import runpy, sys
-root = Path(sys.argv[1])
-entry = root/'skills/openubmc-debug/scripts/target_runtime_cli.py'
-guard = runpy.run_path(str(entry.with_name('_plugin_entrypoint.py')))
-cache = guard['initialize'](entry)
-sys.path.insert(0, str(entry.parent))
-import target_runtime_cli
-raise SystemExit(target_runtime_cli.main(['--help']))
-'''
-        result = self.run_python('-c', script, self.plugin)
+        result = self.run_python('-c', MODULE_IMPORT, self.plugin)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(inventory(self.plugin), self.before)
+
+    def test_missing_lock_blocks_cli_module_import_and_both_mcps(self):
+        (self.plugin/'plugin-lock.json').unlink()
+        marker = self.home/'unverified-source-executed'
+        source = self.plugin/'skills/openubmc-debug/scripts/_cli_common.py'
+        with source.open('a') as stream:
+            stream.write('\nfrom pathlib import Path\nPath(' + repr(str(marker)) + ').touch()\n')
+        commands = [(self.plugin/'skills/openubmc-debug/scripts/target_runtime_cli.py', '--help'),
+                    ('-c', MODULE_IMPORT, self.plugin)]
+        commands += [('-I', self.plugin/'scripts/pluginctl.py', server) for server in ('runtime', 'kb')]
+        for snapshot_receipt in (False, True):
+            if snapshot_receipt:
+                (self.plugin/'.openubmc-runtime-snapshot.json').write_text('{"schema":"openubmc.runtime-snapshot.v1"}')
+            for command in commands:
+                with self.subTest(command=command[-1], snapshot_receipt=snapshot_receipt):
+                    marker.unlink(missing_ok=True)
+                    result = self.run_python(*command)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('plugin-lock.json', result.stderr)
+                    self.assertFalse(marker.exists())
+
+    def test_runtime_snapshot_children_preserve_integrity_and_reject_drift(self):
+        temporary = self.home/'runtime-temporary'
+        temporary.mkdir()
+        environment = dict(self.environment, TMPDIR=str(temporary))
+        child = subprocess.Popen([sys.executable, '-I', '-B', str(self.plugin/'scripts/launch_runtime.py')],
+                                 cwd=self.home, env=environment, stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            request = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                       'params': {'protocolVersion': '2024-11-05', 'capabilities': {},
+                                  'clientInfo': {'name': 'package-test', 'version': '1'}}}
+            child.stdin.write(json.dumps(request) + '\n')
+            child.stdin.flush()
+            self.assertTrue(select.select([child.stdout], [], [], 30)[0], 'MCP initialize timed out')
+            line = child.stdout.readline()
+            if not line:
+                _, stderr = child.communicate(timeout=5)
+                self.fail('MCP exited before initialize: ' + stderr)
+            self.assertIn('serverInfo', json.loads(line)['result'])
+            entries = list(temporary.rglob('target_runtime_cli.py'))
+            self.assertEqual(len(entries), 1)
+            entry = entries[0]
+            for arguments in ((entry, '--help'), ('-I', '-B', entry, '--help')):
+                result = self.run_python(*arguments)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            marker = self.home/'snapshot-drift-executed'
+            source = entry.with_name('_cli_common.py')
+            source.chmod(0o600)
+            with source.open('a') as stream:
+                stream.write('\nfrom pathlib import Path\nPath(' + repr(str(marker)) + ').touch()\n')
+            result = self.run_python(entry, '--help')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('snapshot inventory mismatch', result.stderr)
+            self.assertFalse(marker.exists())
+            self.assertFalse(list(temporary.rglob('*.pyc')))
+            self.assertEqual(inventory(self.plugin), self.before)
+        finally:
+            try:
+                child.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate(timeout=5)
 
     def test_isolated_python_child_preserves_package_integrity(self):
         parent = '''

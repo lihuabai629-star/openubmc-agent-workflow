@@ -1092,6 +1092,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import os
 from pathlib import Path
 import runpy
@@ -1240,6 +1241,20 @@ if snapshot_entrypoint.exists():
 else:
     snapshot_entrypoint.write_bytes(ENTRYPOINT_CONTENT)
 snapshot_entrypoint.chmod(0o400)
+
+# Carry the already-verified inventory to Python children. Derive it from
+# captured bytes, never from a fresh scan that could accept intervening drift.
+snapshot_files = dict(COMPOSITION_FILES)
+for relative, content in RUNTIME_CONTENT.items():
+    snapshot_files["installed-runtime/openubmc_target_runtime/" + relative] = hashlib.sha256(content).hexdigest()
+snapshot_files[entrypoint_relative.as_posix()] = hashlib.sha256(ENTRYPOINT_CONTENT).hexdigest()
+receipt = {{"schema": "openubmc.runtime-snapshot.v1", "root": str(snapshot_root.resolve()),
+           "source_commit": SOURCE_COMMIT, "runtime_content_digest": EXPECTED_DIGEST,
+           "mcp_entrypoint_digest": actual_entrypoint_digest, "files": snapshot_files}}
+receipt_path = snapshot_root / ".openubmc-runtime-snapshot.pending"
+receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+receipt_path.chmod(0o400)
+receipt_path.replace(snapshot_root / ".openubmc-runtime-snapshot.json")
 PACKAGE_ROOT = snapshot_package
 MCP_ENTRYPOINT = snapshot_entrypoint
 
