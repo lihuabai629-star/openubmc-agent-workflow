@@ -14,7 +14,8 @@ const OUTPUT_SCHEMA = {
   error: z.object({
     code: z.string(),
     message: z.string(),
-    retryable: z.boolean()
+    retryable: z.boolean(),
+    recovery: z.string().optional()
   }).optional()
 };
 
@@ -84,19 +85,48 @@ function textResult(name, value, responseFormat) {
 
 
 export function errorResult(error) {
-  const message = error instanceof Error ? error.message : "Unknown MCP tool error";
-  const code = typeof error?.code === "string" ? error.code : "KB_TOOL_FAILED";
+  const failures = {
+    KB_CREDENTIALS_MISSING: ["Knowledge-base credentials are not configured.", false,
+      "Configure credentials in the local private KB configuration."],
+    KB_INTERACTION_REQUIRED: ["Knowledge-base authentication requires human interaction.", false,
+      "Complete interactive authentication locally before retrying."],
+    KB_AUTHENTICATION_FAILED: ["Knowledge-base authentication failed.", false,
+      "Check the local account credentials and authentication configuration."],
+    KB_PERMISSION_DENIED: ["Knowledge-base access was denied.", false,
+      "Check that the configured account has permission for this operation."],
+    KB_RATE_LIMITED: ["The upstream service rate limit was reached.", true,
+      "Wait before retrying this read-only request."],
+    KB_SERVICE_UNAVAILABLE: ["The upstream service is temporarily unavailable.", true,
+      "Retry this read-only request after the service recovers."],
+    KB_NETWORK_ERROR: ["The knowledge-base connection was interrupted.", true,
+      "Check connectivity and retry this read-only request."],
+    KB_TOOL_FAILED: ["The knowledge-base request failed.", false,
+      "Inspect local diagnostics before deciding whether to retry."]
+  };
+  const statusCodes = {
+    401: "KB_AUTHENTICATION_FAILED", 403: "KB_PERMISSION_DENIED",
+    429: "KB_RATE_LIMITED", 502: "KB_SERVICE_UNAVAILABLE",
+    503: "KB_SERVICE_UNAVAILABLE", 504: "KB_SERVICE_UNAVAILABLE"
+  };
+  const statusCode = Object.hasOwn(statusCodes, error?.status) ? statusCodes[error.status] : undefined;
+  const networkCode = ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN",
+    "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET"]
+    .includes(error?.cause?.code) ? "KB_NETWORK_ERROR" : undefined;
+  const code = Object.hasOwn(failures, error?.code)
+    ? error.code : statusCode || networkCode || "KB_TOOL_FAILED";
+  const [message, retryable, recovery] = failures[code];
   const structuredContent = {
     ok: false,
     error: {
       code,
       message,
-      retryable: !["KB_CREDENTIALS_MISSING"].includes(code)
+      retryable,
+      recovery
     }
   };
   return {
     isError: true,
-    content: [{ type: "text", text: `${code}: ${message}` }],
+    content: [{ type: "text", text: `${code}: ${message}\n${recovery}` }],
     structuredContent
   };
 }

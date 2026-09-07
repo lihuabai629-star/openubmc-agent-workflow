@@ -35,7 +35,7 @@ export class LightRagClient {
       authorization: `Bearer ${token}`
     };
     const response = await this.fetch(`${this.baseUrl}${path}`, { ...options, headers });
-    if (retry && (response.status === 401 || response.status === 403)) {
+    if (retry && response.status === 401) {
       await this.auth.clearToken();
       return this.authenticatedRequest(path, options, false);
     }

@@ -9,6 +9,7 @@ export class CaptchaRequiredError extends Error {
   constructor() {
     super("openUBMC login requires an interactive CAPTCHA; knowledge-base access was blocked");
     this.name = "CaptchaRequiredError";
+    this.code = "KB_INTERACTION_REQUIRED";
   }
 }
 
