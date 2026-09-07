@@ -73,6 +73,7 @@ npm run check
 | `KB_RATE_LIMITED` | 等待后再重试只读请求 |
 | `KB_SERVICE_UNAVAILABLE` | 服务恢复后重试 |
 | `KB_NETWORK_ERROR` | 检查网络后重试 |
+| `KB_RESPONSE_INVALID` | 检查服务端返回字段是否符合接口约定 |
 | `KB_RESPONSE_TOO_LARGE` | 缩小查询范围或页面大小；不会自动重试超量响应 |
 | `KB_TIMEOUT` | 检查上游响应速度，必要时调整本地请求总期限 |
 | `KB_CANCELLED` | 调用已取消；任务仍需要时再发起新请求 |

@@ -7,10 +7,10 @@ import { OneIdClient } from "../src/auth/oneid-client.js";
 import { LightRagClient } from "../src/lightrag-client.js";
 import { registerTools } from "../src/tools.js";
 
-async function connect(t, fetch, { cached = true } = {}) {
-  const config = { lightragUrl: "https://kb.example.test", userCenterUrl: "https://login.example.test", username: "fixture", password: "fixture", clientSecret: "fixture", credentialsConfigured: true };
+async function connect(t, fetch, { cached = true, expired = false } = {}) {
+  const config = { lightragUrl: "https://kb.example.test", userCenterUrl: "https://login.example.test", username: "fixture", password: "fixture", clientSecret: "fixture", tokenEndpoint: "https://login.example.test/token", credentialsConfigured: true };
   const auth = new OneIdClient(config, { fetch, tokenStore: {
-    load: async () => cached ? ({ accessToken: "fixture-token", expiresAt: Date.now() + 600_000 }) : undefined,
+    load: async () => cached ? ({ accessToken: "fixture-token", refreshToken: "fixture-refresh", expiresAt: expired ? 0 : Date.now() + 600_000 }) : undefined,
     save: async () => {}, clear: async () => {}
   } });
   const server = new McpServer({ name: "kb-budget-test", version: "1" });
@@ -98,4 +98,34 @@ test("MCP applies a smaller HTTP body budget during authentication", async t => 
   assert.equal(result.structuredContent.error.code, "KB_RESPONSE_TOO_LARGE");
   assert.equal(cancelled, true);
   assert.ok(chunks <= 7);
+});
+
+
+test("MCP does not fall back to password login after an oversized refresh response", async t => {
+  const urls = [];
+  const client = await connect(t, async url => {
+    urls.push(String(url));
+    return String(url).endsWith("/token")
+      ? new Response("x".repeat(400 * 1024))
+      : Response.json({ data: { need_captcha_verification: true } });
+  }, { expired: true });
+  const result = await client.callTool({ name: "openubmc_kb_query", arguments: { query: "fan" } });
+  assert.equal(result.structuredContent.error.code, "KB_RESPONSE_TOO_LARGE");
+  assert.deepEqual(urls, ["https://login.example.test/token"]);
+});
+
+test("MCP rejects malformed known containers instead of reporting complete empty results", async t => {
+  for (const [name, payload] of [
+    ["query", { response: "answer", references: { hidden: "reference" } }],
+    ["query", { response: "answer", references: [null] }],
+    ["query", 123],
+    ["list", { documents: { hidden: "document" }, pagination: { total_count: 1 } }],
+    ["list", { documents: ["invalid row"] }],
+    ["status", { busy: false, history_messages: { hidden: "event" } }]
+  ]) {
+    const client = await connect(t, async url => Response.json(String(url).endsWith("status_counts") ? { status_counts: {} } : payload));
+    const result = await client.callTool({ name: `openubmc_kb_${name}`, arguments: name === "query" ? { query: "fan" } : {} });
+    assert.equal(result.isError, true, `${name}: ${JSON.stringify(payload)}`);
+    assert.equal(result.structuredContent.error.code, "KB_RESPONSE_INVALID");
+  }
 });

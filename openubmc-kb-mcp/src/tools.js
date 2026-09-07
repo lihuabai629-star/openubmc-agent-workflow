@@ -86,6 +86,8 @@ export function errorResult(error) {
       "Retry this read-only request after the service recovers."],
     KB_NETWORK_ERROR: ["The knowledge-base connection was interrupted.", true,
       "Check connectivity and retry this read-only request."],
+    KB_RESPONSE_INVALID: ["The upstream response has an invalid field shape.", false,
+      "Check knowledge-base service compatibility before retrying."],
     KB_RESPONSE_TOO_LARGE: ["The upstream response exceeded the byte budget.", false,
       "Narrow the query or reduce the requested page size before retrying."],
     KB_TIMEOUT: ["The knowledge-base request exceeded its total deadline.", true,

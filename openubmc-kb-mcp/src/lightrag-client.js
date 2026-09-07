@@ -79,21 +79,7 @@ export class LightRagClient {
         this.authenticatedRequest("/api/v1/rag/documents/pipeline_status", { signal }),
         this.authenticatedRequest("/api/v1/rag/documents/status_counts", { signal })
       ]);
-      const history = Array.isArray(pipeline?.history_messages)
-        ? pipeline.history_messages
-        : [];
-      const historyLimit = 10;
-      return {
-        configured: true,
-        endpoint: this.baseUrl,
-        pipeline: {
-          ...pipeline,
-          history_messages: history.slice(-historyLimit),
-          history_total: history.length,
-          history_truncated: history.length > historyLimit
-        },
-        counts
-      };
+      return { configured: true, endpoint: this.baseUrl, pipeline, counts };
     }, options.signal);
   }
 

@@ -44,12 +44,7 @@ test("status and list use the community API endpoint shapes", async () => {
   assert.deepEqual(status, {
     configured: true,
     endpoint: "https://kb.example.com",
-    pipeline: {
-      ok: true,
-      history_messages: [],
-      history_total: 0,
-      history_truncated: false
-    },
+    pipeline: { ok: true },
     counts: { ok: true }
   });
   assert.deepEqual(urls, [
@@ -59,7 +54,7 @@ test("status and list use the community API endpoint shapes", async () => {
   ]);
 });
 
-test("status preserves history coverage and list retains data for the MCP projection", async () => {
+test("status and list retain upstream data for the MCP projection", async () => {
   const auth = { getAccessToken: async () => "token" };
   const client = new LightRagClient({ lightragUrl: "https://kb.example.com" }, auth, async url => {
     if (String(url).endsWith("pipeline_status")) {
@@ -82,9 +77,7 @@ test("status preserves history coverage and list retains data for the MCP projec
   const status = await client.status();
   const page = await client.list();
 
-  assert.equal(status.pipeline.history_messages.length, 10);
-  assert.equal(status.pipeline.history_total, 25);
-  assert.equal(status.pipeline.history_truncated, true);
+  assert.equal(status.pipeline.history_messages.length, 25);
   assert.equal(page.documents[0].content_summary.length, 1000);
   assert.equal(page.documents[0].error_msg.length, 500);
   assert.equal("metadata" in page.documents[0], true);

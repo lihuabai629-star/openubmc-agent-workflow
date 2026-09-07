@@ -135,6 +135,7 @@ export class OneIdClient {
         return refreshed.accessToken;
       } catch (error) {
         if (signal?.aborted) throw signal.reason;
+        if (error?.code === "KB_RESPONSE_TOO_LARGE") throw error;
         this.token = previous;
       }
     }
