@@ -69,7 +69,6 @@ _identity_spec.loader.exec_module(_identity)
 validate_artifact_metadata = _identity.validate_artifact_metadata
 from openubmc_target_runtime import (  # noqa: E402
     LocalArtifactStore,
-    SQLiteArtifactRepository,
     CredentialResolver,
     CredentialSelector,
     MutationAuthorization,
@@ -1018,6 +1017,7 @@ class UpgradeMcpBackend:
         max_cached_bindings: int = 32,
         max_batch_concurrency: int = 32,
         max_batch_targets: int = 128,
+        artifact_store: LocalArtifactStore | None = None,
     ) -> None:
         if max_cached_bindings < 1:
             raise ValueError("max_cached_bindings must be positive")
@@ -1026,10 +1026,7 @@ class UpgradeMcpBackend:
         if max_batch_targets < 1:
             raise ValueError("max_batch_targets must be positive")
         self.journal_store = journal_store
-        self.artifact_store = LocalArtifactStore(
-            content_root=journal_store.root / "upgrade-task-artifacts",
-            repository=SQLiteArtifactRepository(journal_store.root / "upgrade-task-artifacts.sqlite3"),
-        )
+        self.artifact_store = artifact_store
         self.operation_state_store = UpgradeOperationStateStore(journal_store.root)
         self.credential_loader = credential_loader
         self.redfish_transport_factory = redfish_transport_factory
@@ -1039,6 +1036,11 @@ class UpgradeMcpBackend:
 
     def open_task(self, task_id: str) -> _UpgradeTask:
         return _UpgradeTask(task_id, self)
+
+    def bind_artifact_store(self, artifact_store: LocalArtifactStore) -> None:
+        if self.artifact_store is not None and self.artifact_store is not artifact_store:
+            raise ValueError("Upgrade is already bound to another ArtifactStore")
+        self.artifact_store = artifact_store
 
     @staticmethod
     def close_task(task: _UpgradeTask) -> None:

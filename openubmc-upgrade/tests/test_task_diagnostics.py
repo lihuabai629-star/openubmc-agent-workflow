@@ -34,6 +34,20 @@ class WarningTransport(FakeRedfishTransport):
 
 
 class TaskDiagnosticTests(unittest.TestCase):
+    def test_upgrade_and_log_share_the_runtime_artifact_store(self):
+        from openubmc_target_runtime import LocalArtifactStore, OrchestratedMcpBackend
+        sys.path.insert(0, str(ROOT / 'openubmc-log-analyzer'))
+        from openubmc_log_analyzer import LogBundleMcpBackend
+        with tempfile.TemporaryDirectory() as raw:
+            store = LocalArtifactStore(content_root=Path(raw) / 'artifacts')
+            log = LogBundleMcpBackend(artifact_store=store)
+            upgrade = UpgradeMcpBackend(journal_store=MutationJournalStore(Path(raw) / 'journals'))
+            service = RuntimeMcpService(OrchestratedMcpBackend({'log_bundle_collect': log, 'upgrade_run': upgrade}))
+            try:
+                self.assertIs(upgrade.artifact_store, store)
+            finally:
+                service.close()
+
     def test_missing_and_malformed_messages_are_reported_without_inventing_details(self):
         for payload, expected, invalid in [
             ({'TaskState': 'Completed'}, 'missing', 0),
@@ -57,13 +71,15 @@ class TaskDiagnosticTests(unittest.TestCase):
                     service.close()
 
     def test_large_messages_remain_available_through_a_redacted_artifact(self):
+        from openubmc_target_runtime import LocalArtifactStore, SQLiteArtifactRepository
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             artifact = root / 'fixture.hpm'; artifact.write_bytes(b'fictional firmware')
             messages = [{'MessageId': f'Update.1.0.Warning{index}', 'Message': 'fictional-secret ' + 'x' * 1000} for index in range(40)]
             transport = WarningTransport({'TaskState': 'Completed', 'TaskStatus': 'Warning', 'Messages': messages})
             backend = UpgradeMcpBackend(journal_store=MutationJournalStore(root / 'journals'), credential_loader=lambda _args: {'redfish': {'user': 'fixture', 'password': 'fictional-secret'}}, redfish_transport_factory=lambda _args: transport)
-            service = RuntimeMcpService(backend)
+            store = LocalArtifactStore(content_root=root / 'artifacts', repository=SQLiteArtifactRepository(root / 'artifacts.sqlite3'))
+            service = RuntimeMcpService(backend, artifact_store=store)
             try:
                 result = service.call_tool('upgrade_run', {'intent': 'upgrade-and-verify', 'ip': '192.0.2.10', 'artifact_path': str(artifact), 'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(), 'product_version': '2.0.0', 'deadline': 5}, task_id='large', operation_id='upgrade')
                 monitor = result['mutation']['monitor']
@@ -76,7 +92,7 @@ class TaskDiagnosticTests(unittest.TestCase):
                 self.assertNotIn('fictional-secret', json.dumps(body) + json.dumps(result))
                 self.assertEqual(reference.target, '192.0.2.10')
                 self.assertEqual(reference.run_id, 'large')
-                reopened = UpgradeMcpBackend(journal_store=MutationJournalStore(root / 'journals'))
+                reopened = UpgradeMcpBackend(journal_store=MutationJournalStore(root / 'journals'), artifact_store=LocalArtifactStore(content_root=root / 'artifacts', repository=SQLiteArtifactRepository(root / 'artifacts.sqlite3')))
                 self.assertEqual(json.loads(reopened.artifact_store.resolve(reference, require_redacted=True).read_text()), body)
             finally:
                 service.close()
