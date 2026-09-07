@@ -89,6 +89,20 @@ class LocalCredentialTests(unittest.TestCase):
             self.assertNotIn('override-secret', rendered)
             self.assertNotIn('default-secret', rendered)
 
+    def test_equivalent_explicit_paths_select_one_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'sub').mkdir()
+            path = root / 'credentials.env'
+            path.write_text('OPENUBMC_SSH_USER=fixture\nOPENUBMC_SSH_PASSWORD=fixture-password\n')
+            path.chmod(0o600)
+            resolver = CredentialResolver(environ={
+                'OPENUBMC_CREDENTIALS_CONFIG': str(path),
+                'OPENUBMC_CREDENTIALS_FILE': str(root / 'sub' / '..' / 'credentials.env'),
+            })
+            selected = resolver.resolve_local(task_id='normalized-path', host='192.0.2.1', transport='ssh')
+            self.assertEqual(selected.credentials.user, 'fixture')
+
     def test_observe_passes_ip_record_to_the_authorized_adapter_without_exposing_secrets(self):
         from unittest.mock import patch
         from test_mcp_contracts import FakeDebugBackend
@@ -135,6 +149,40 @@ class LocalCredentialTests(unittest.TestCase):
                     self.assertNotIn('never-send-this', json.dumps(response))
                 finally:
                     service.close()
+
+    def test_observe_honors_explicit_source_for_legacy_and_extensionless_json(self):
+        from unittest.mock import patch
+        from test_mcp_contracts import FakeDebugBackend
+        from openubmc_target_runtime import RuntimeMcpService, OrchestratedMcpBackend
+        from types import SimpleNamespace
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'openubmc-debug/scripts'))
+        import _cli_common
+        observed = []
+        class ConnectionBackend(FakeDebugBackend):
+            def debug_collect(self, task, arguments, context):
+                values = _cli_common.resolve_debug_credentials(SimpleNamespace(ip=arguments['ip']), include_telnet=False, credentials=arguments.get('_credential_values', {}))
+                observed.append((values['ssh']['user'], values['ssh']['password']))
+                return super().debug_collect(task, arguments, context)
+        configurations = {
+            'selected.env': 'OPENUBMC_SSH_USER=fixture-user\nOPENUBMC_SSH_PASSWORD=fixture-secret\n',
+            'selected.conf': json.dumps({'schema_version': 1, 'credentials': {
+                'common': {'user': 'fixture-user', 'password': 'fixture-secret'}},
+                'defaults': {'bmc': {'ssh': 'common'}}}),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            for name, content in configurations.items():
+                with self.subTest(name=name):
+                    observed.clear()
+                    path = Path(temporary) / name
+                    path.write_text(content); path.chmod(0o600)
+                    with patch.dict('os.environ', {'OPENUBMC_CREDENTIALS_CONFIG': str(path), 'XDG_CONFIG_HOME': temporary, 'HOME': temporary}, clear=True):
+                        service = RuntimeMcpService(OrchestratedMcpBackend({'debug_collect': ConnectionBackend()}))
+                        try:
+                            result = service.call_exposed_tool('observe', {'target': '192.0.2.10', 'selectors': [{'kind': 'capability', 'names': ['ssh']}]}, task_id='source-observe', operation_id='check')
+                            self.assertEqual(observed, [('fixture-user', 'fixture-secret')])
+                            self.assertNotIn('fixture-secret', json.dumps(result))
+                        finally:
+                            service.close()
 
     def test_selected_json_missing_bmc_record_does_not_fall_back_to_ambient_password(self):
         from unittest.mock import patch

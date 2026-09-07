@@ -1221,9 +1221,15 @@ class _OrchestratedMcpTask:
     def credential_values(self, arguments: Mapping[str, object] | None = None, *, tool_name: str = "debug_collect") -> dict[str, str]:
         with self._lock:
             if self._credential_values is None and arguments and arguments.get("ip") and self._credential_resolver.uses_structured_source(self.task_id):
+                transports = ("redfish",) if tool_name == "upgrade_run" else ("ssh",)
+                if tool_name == "log_bundle_collect":
+                    selected = str(arguments.get("transport", "auto"))
+                    if selected == "auto" and arguments.get("remote_command"):
+                        selected = "ssh"
+                    transports = (selected,) if selected in {"ssh", "redfish"} else ("ssh", "redfish")
                 return self._credential_resolver.resolve_local_values(
                     task_id=self.task_id, host=str(arguments["ip"]), arguments=arguments,
-                    transports=("redfish",) if tool_name == "upgrade_run" else ("ssh", "redfish") if tool_name == "log_bundle_collect" else ("ssh",),
+                    transports=transports,
                 )
             if self._credential_values is None:
                 self._credential_values = load_selected_credentials_file()

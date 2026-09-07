@@ -135,6 +135,35 @@ class ScriptedSshTransport:
 
 
 class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
+    def test_orchestrated_bundle_accepts_selected_key_without_a_password(self) -> None:
+        class KeyTransport(ScriptedSshTransport):
+            def open_master(self, *, target, credentials):
+                self.selected = credentials
+                return super().open_master(target=target, credentials=credentials)
+
+        ssh = KeyTransport([])
+        runtime = target_runtime_adapter._load_runtime_module()
+        backend = target_runtime_adapter.LogBundleMcpBackend(ssh_transport_factory=lambda _args: ssh)
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            path.write_text(json.dumps({'schema_version': 1, 'credentials': {
+                'key': {'user': 'fixture-user', 'identity_file': '/fixture/local-key'}},
+                'defaults': {'bmc': {'ssh': 'key'}}}))
+            path.chmod(0o600)
+            with mock.patch.dict(os.environ, {'OPENUBMC_CREDENTIALS_CONFIG': str(path)}, clear=True):
+                service = runtime.RuntimeMcpService(runtime.OrchestratedMcpBackend({'log_bundle_collect': backend}))
+                try:
+                    result = service.call_tool('log_bundle_collect', {
+                        'ip': '192.0.2.10', 'transport': 'ssh', 'extract': False,
+                        'remote_path': '/tmp/fixture.tar.gz', 'deadline': 10,
+                    }, task_id='key-only-bundle', operation_id='collect')
+                finally:
+                    service.close()
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(ssh.opens, 1)
+        self.assertEqual(ssh.selected.identity_file, '/fixture/local-key')
+        self.assertEqual(ssh.selected.password, '')
+
     def test_orchestrated_bundle_uses_credentials_file_without_manual_exports(self) -> None:
         redfish = CallbackRedfishTransport()
         manager = {"UUID": "machine-a", "FirmwareVersion": "1.0"}
@@ -202,6 +231,35 @@ class LogAnalyzerTargetRuntimeTests(unittest.TestCase):
         self.assertEqual(redfish.opens, 1)
         self.assertEqual(redfish.credentials[0].user, "file-user")
         self.assertEqual(redfish.credentials[0].password, "file-password")
+
+    def test_redfish_only_collection_ignores_unused_ssh_record_and_rejects_alias_conflicts(self):
+        runtime = target_runtime_adapter._load_runtime_module()
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            path.write_text(json.dumps({'schema_version': 1, 'credentials': {
+                'web': {'user': 'fixture-user', 'password': 'fixture-password'},
+                'unused': {'password': 'incomplete-unused'}},
+                'defaults': {'bmc': {'redfish': 'web', 'ssh': 'unused'}}}))
+            path.chmod(0o600)
+            bundle = Path(raw) / 'bundle.tar.gz'; bundle.write_bytes(b'bundle')
+            cases = [({'OPENUBMC_CREDENTIALS_CONFIG': str(path)}, True),
+                     ({'OPENUBMC_REDFISH_USER': 'fixture-user', 'OPENUBMC_REDFISH_PASSWORD': 'one-fixture', 'REDFISH_PASSWORD': 'other-fixture'}, False)]
+            for environment, success in cases:
+                with self.subTest(success=success):
+                    redfish = CallbackRedfishTransport()
+                    backend = target_runtime_adapter.LogBundleMcpBackend(redfish_transport_factory=lambda _args: redfish)
+                    with (mock.patch.dict(os.environ, {**environment, 'XDG_CONFIG_HOME': raw, 'HOME': raw}, clear=True),
+                          mock.patch.object(runtime_pull_bundle, 'redfish_request_json', return_value={'UUID': 'fixture', 'FirmwareVersion': '1'}),
+                          mock.patch.object(runtime_pull_bundle, 'run_redfish_bundle_flow_with_session', return_value=runtime_pull_bundle.BundleStageResult(remote_bundle_path='/tmp/bundle.tar.gz', local_bundle_path=bundle, generation_ran=True, transport='redfish'))):
+                        service = runtime.RuntimeMcpService(runtime.OrchestratedMcpBackend({'log_bundle_collect': backend}))
+                        try:
+                            result = service.call_tool('log_bundle_collect', {'ip': '192.0.2.10', 'transport': 'redfish', 'extract': False, 'deadline': 10}, task_id='redfish-only', operation_id='collect')
+                        finally:
+                            service.close()
+                    self.assertEqual(result['ok'], success, result)
+                    self.assertEqual(redfish.opens, int(success))
+                    if not success:
+                        self.assertEqual(result['canonical_error']['code'], 'credentials_conflict')
 
     def test_task_reuses_one_lease_under_concurrent_same_target_calls(self) -> None:
         entered = threading.Event()

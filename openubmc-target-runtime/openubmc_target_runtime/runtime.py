@@ -402,7 +402,7 @@ class CredentialResolver:
     def uses_structured_source(self, task_id: str) -> bool:
         with self._lock:
             path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
-            return path is not None and path.suffix.lower() == ".json"
+            return self._local_source.is_structured(path)
 
     def resolve_local_values(
         self, *, task_id: str, host: str, arguments: Mapping[str, object] | None = None,

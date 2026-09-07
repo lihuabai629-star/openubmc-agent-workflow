@@ -531,6 +531,8 @@ def _default_credential_loader(
         if value:
             return value
         selected_env = _argument_text(arguments, selector)
+        if not selected_env:
+            selected_credential_value(values, defaults)
         names = ((selected_env,) if selected_env else ()) + defaults
         if values.get("__runtime_selected__") == "1":
             return selected_credential_value(values, names) or ""

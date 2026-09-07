@@ -6,7 +6,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
-from .credential_file import CredentialFileError, read_private_text, parse_credentials_text
+from .credential_file import CredentialFileError, read_private_text, parse_credentials_text, selected_credential_value, selected_credentials_path
 
 
 class CredentialConfigurationError(RuntimeError):
@@ -45,19 +45,20 @@ class LocalCredentialSource:
         self.config_path = Path(config_path) if config_path is not None else None
         self.environ = os.environ if environ is None else environ
 
+    def is_structured(self, path: Path | None) -> bool:
+        return path is not None and (path.suffix.lower() == '.json' or read_private_credentials(path).lstrip().startswith('{'))
+
     def select_path(self) -> Path | None:
         if self.config_path is not None:
-            return self.config_path.expanduser().absolute()
-        selected = []
-        for name in ('OPENUBMC_CREDENTIALS_CONFIG', 'OPENUBMC_CREDENTIALS_FILE', 'OPENUBMC_DEBUG_CREDENTIALS_FILE'):
-            if name in self.environ:
-                if not self.environ[name].strip():
-                    raise CredentialConfigurationError('credentials_invalid', 'An explicit credential source is empty')
-                selected.append(Path(self.environ[name]).expanduser().absolute())
-        if len(set(selected)) > 1:
-            raise CredentialConfigurationError('credentials_conflict', 'Explicit credential source selectors disagree')
-        if selected:
-            return selected[0]
+            return Path(os.path.abspath(self.config_path.expanduser()))
+        try:
+            selected = selected_credentials_path(self.environ, env_names=(
+                'OPENUBMC_CREDENTIALS_CONFIG', 'OPENUBMC_CREDENTIALS_FILE', 'OPENUBMC_DEBUG_CREDENTIALS_FILE'))
+        except CredentialFileError as exc:
+            code = 'credentials_conflict' if 'same file' in str(exc) else 'credentials_invalid'
+            raise CredentialConfigurationError(code, 'Check the explicit local credential source selectors') from None
+        if selected is not None:
+            return selected
         config_home = self.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
         for name in ('credentials.json', 'credentials.env'):
             path = Path(config_home) / 'openubmc' / name
@@ -81,12 +82,7 @@ class LocalCredentialSource:
             aliases['password'].append('REDFISH_PASSWORD')
         record = {}
         for field, names in aliases.items():
-            choices = [self.environ[name] for name in names if name in self.environ]
-            if not choices:
-                choices = [values[name] for name in names if name in values]
-            if len(set(choices)) > 1:
-                raise CredentialConfigurationError('credentials_conflict', 'Credential aliases disagree at the same priority')
-            record[field] = choices[0] if choices else ''
+            record[field] = selected_credential_value(values, names, environ=self.environ) or ''
         return record
 
     def resolve(self, path: Path | None, *, host: str, purpose: str, transport: str, required: bool = True) -> dict[str, str] | None:
@@ -133,4 +129,3 @@ class LocalCredentialSource:
     def _validate_record(record: Mapping[str, str], *, purpose: str, transport: str) -> None:
         if not record.get('user', '').strip() or not (record.get('password') or transport == 'ssh' and record.get('identity_file')):
             raise CredentialConfigurationError('credentials_missing', f'Complete the selected local {purpose} {transport} record; defaults are not combined with overrides')
-

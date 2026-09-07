@@ -221,6 +221,7 @@ def load_selected_credentials_file(
     environ: Mapping[str, str] | None = None,
     *,
     env_names: Sequence[str] = (
+        "OPENUBMC_CREDENTIALS_CONFIG",
         GENERAL_CREDENTIALS_FILE_ENV,
         DEBUG_CREDENTIALS_FILE_ENV,
     ),
@@ -246,10 +247,11 @@ def selected_credential_value(
         for name in names:
             if name in values:
                 return values[name]
-    for name in names:
-        if name in source:
-            return source[name]
-    for name in names:
-        if name in values:
-            return values[name]
+    for layer in (source, values):
+        choices = [layer[name] for name in names if name in layer]
+        if len(set(choices)) > 1:
+            from .credentials import CredentialConfigurationError
+            raise CredentialConfigurationError('credentials_conflict', 'Credential aliases disagree at the same priority')
+        if choices:
+            return choices[0]
     return None
