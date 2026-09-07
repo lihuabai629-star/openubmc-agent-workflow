@@ -1046,6 +1046,30 @@ class JsonRpcEndpointTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.service.close()
 
+    def test_unknown_protocol_negotiates_a_supported_version_without_domain_calls(self) -> None:
+        for version in ("unsupported-not-a-version", "2026-07-28"):
+            with self.subTest(version=version):
+                response = self.endpoint.handle({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": version},
+                })
+                self.assertEqual(response["result"]["protocolVersion"], "2025-06-18")
+        self.assertEqual(self.backend.created, [])
+
+    def test_initialize_rejects_malformed_version_parameters(self) -> None:
+        for params in ([], "invalid", {"protocolVersion": None},
+                       {"protocolVersion": 20250618}, {"protocolVersion": ""}):
+            with self.subTest(params=params):
+                response = self.endpoint.handle({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params,
+                })
+                self.assertEqual(response.get("error", {}).get("code"), -32602)
+        self.assertEqual(self.backend.created, [])
+
+    def test_legacy_initialize_without_version_uses_supported_default(self) -> None:
+        response = self.endpoint.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        self.assertEqual(response["result"]["protocolVersion"], "2025-06-18")
+
     def test_initialize_list_and_call_follow_mcp_json_rpc_shape(self) -> None:
         initialized = self.endpoint.handle(
             {
