@@ -212,7 +212,7 @@ def run_gate(
 ) -> int:
     completed = subprocess.run(
         [
-            sys.executable,
+            sys.executable, "-B",
             str(script),
             "--plan",
             str(plan_path),

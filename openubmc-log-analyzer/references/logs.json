@@ -4,7 +4,7 @@
     "NotebookLM: openUBMC architecture notebook",
     "NotebookLM Q&A: login / object-sync / startup troubleshooting",
     "Local bundle inventory: openUBMC_20260204-0112.tar",
-    "Real bundle replay: 10.121.177.159 / codex_dump_20260407_150135.tar.gz"
+    "Log bundle replay with a sanitized fixture"
   ],
   "directories": {
     "LogDump": "Core runtime logs (primary entry for most issues)",

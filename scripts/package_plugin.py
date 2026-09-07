@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import gzip
 import hashlib
 import importlib.util
 import io
 import json
 from pathlib import Path, PurePosixPath
+import posixpath
 import subprocess
 import sys
 import tarfile
@@ -38,6 +40,38 @@ def source_files(source: Path, ref: str) -> tuple[str, dict[str, bytes]]:
     return commit, files
 
 
+def protect_python_entrypoints(payload: dict[str, bytes]) -> None:
+    helper = 'skills/openubmc-debug/scripts/_plugin_entrypoint.py'
+    for name, content in list(payload.items()):
+        path = PurePosixPath(name)
+        if path.suffix != '.py' or 'tests' in path.parts or name == 'scripts/pluginctl.py':
+            continue
+        tree = ast.parse(content)
+        has_main = any(isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                       and isinstance(node.test.left, ast.Name) and node.test.left.id == '__name__'
+                       for node in tree.body)
+        if not has_main and not (path.parent.name in {'scripts', 'tools'} and not path.name.startswith('_')):
+            continue
+        header = 0
+        for node in tree.body:
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                header = node.end_lineno
+            elif isinstance(node, ast.ImportFrom) and node.module == '__future__':
+                header = node.end_lineno
+            else:
+                break
+        relative = posixpath.relpath(helper, str(path.parent))
+        guard = ("\nif __name__ == '__main__':\n"
+                 "    import sys as _openubmc_sys\n"
+                 "    _openubmc_sys.dont_write_bytecode = True\n"
+                 "    import runpy as _openubmc_runpy\n"
+                 "    from pathlib import Path as _openubmc_Path\n"
+                 f"    _openubmc_guard = _openubmc_Path(__file__).parent / {relative!r}\n"
+                 "    _openubmc_cache = _openubmc_runpy.run_path(str(_openubmc_guard))['initialize'](__file__)\n\n")
+        lines = content.decode().splitlines(keepends=True)
+        payload[name] = (''.join(lines[:header]) + guard + ''.join(lines[header:])).encode()
+
+
 def assemble(source: Path, ref: str) -> dict[str, bytes]:
     commit, source_content = source_files(source, ref)
     workflow = json.loads(source_content['workflow.json'])
@@ -63,16 +97,18 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
         if name.startswith('plugin/openubmc/'):
             payload[name.removeprefix('plugin/openubmc/')] = content
     payload['requirements.lock'] = source_content['requirements-ci.lock']
+    payload['PYTHON.md'] = source_content['plugin/python-entrypoints.md']
     payload['workflow.json'] = source_content['workflow.json']
     for name in ('install_plugin.py', 'plugin_admin.py', 'plugin_archive.py'):
         payload['scripts/'+name] = source_content['scripts/'+name]
-    payload['skills/openubmc-environment-setup/SKILL.md'] += b'''\n\n## Codex plugin ownership\n\nWhen this Skill is loaded from the OpenUBMC Codex plugin, the plugin package is the authority for Codex Skill and MCP delivery. Use the installed plugin's `scripts/pluginctl.py doctor`, `prepare`, and `migrate` checks for Runtime lifecycle diagnostics. The distribution installer and administration entry points perform activation, rollback, and removal. Do not use loose-installation bootstrap commands to create a second Codex Runtime or MCP registration. Credentials and Runtime state remain external and are preserved by plugin lifecycle operations.\n'''
+    payload['skills/openubmc-environment-setup/SKILL.md'] = source_content['plugin/environment-support.md']
     # The support directory retains the canonical sibling layout required by
     # existing public Skill helpers. Its descriptor is generated from the recipe.
     payload['skills/openubmc-target-runtime/SKILL.md'] = source_content['plugin/runtime-support.md']
     manifest = json.loads(payload['.codex-plugin/plugin.json'])
     manifest['version'] = workflow['version']
     payload['.codex-plugin/plugin.json'] = canonical(manifest)
+    protect_python_entrypoints(payload)
 
     # Reuse the qualified launcher's validation and verified snapshot, with
     # location-derived roots instead of installer-specific absolute paths.

@@ -209,7 +209,7 @@ def activate(archive: Path, archive_sha: str, home: Path, codex: Path) -> dict:
                 raise ValueError('existing immutable release has drifted')
         else:
             stage_directory(release, files)
-        cli = [sys.executable, '-I', str(release/'scripts/pluginctl.py')]
+        cli = [sys.executable, "-B", '-I', str(release/'scripts/pluginctl.py')]
         for operation in ('prepare', 'doctor'):
             command([*cli, operation], env)
         source = home/'plugins/openubmc'

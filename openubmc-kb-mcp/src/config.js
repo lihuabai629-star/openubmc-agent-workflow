@@ -19,10 +19,6 @@ const requiredStrings = [
   "redirectUri"
 ];
 
-// Bundled desktop OAuth application registration. It identifies the client;
-// user credentials and issued tokens remain separate secrets.
-const BUNDLED_CLIENT_SECRET = "33f49baf1f7744518d83423be7d89d2c";
-
 function normalizeUrl(value, field) {
   let url;
   try {
@@ -58,8 +54,8 @@ function tokenCachePath(parsed, configPath) {
 
 function credentialValue(parsed, field, environmentName) {
   const environmentValue = process.env[environmentName];
-  if (typeof environmentValue === "string" && environmentValue.trim()) return environmentValue.trim();
-  return typeof parsed[field] === "string" ? parsed[field].trim() : "";
+  const normalize = value => typeof value === "string" ? (field === "username" ? value.trim() : value) : "";
+  return normalize(environmentValue) || normalize(parsed[field]);
 }
 
 function defaultConfigPath() {
@@ -83,6 +79,7 @@ export async function loadConfig(
   parsed = { ...DEFAULTS, ...parsed };
   const username = credentialValue(parsed, "username", "OPENUBMC_KB_USERNAME");
   const password = credentialValue(parsed, "password", "OPENUBMC_KB_PASSWORD");
+  const clientSecret = credentialValue(parsed, "clientSecret", "OPENUBMC_KB_CLIENT_SECRET");
 
   for (const field of requiredStrings) {
     if (typeof parsed[field] !== "string" || parsed[field].trim() === "") {
@@ -98,15 +95,18 @@ export async function loadConfig(
   if (!allowMissingCredentials && !password) {
     throw new Error("Missing required configuration field: password");
   }
+  if (!allowMissingCredentials && !clientSecret) {
+    throw new Error("Missing required configuration field: clientSecret");
+  }
 
   const oauthBaseUrl = normalizeUrl(parsed.oauthBaseUrl, "oauthBaseUrl");
   return Object.freeze({
     ...parsed,
     username,
     password,
-    credentialsConfigured: Boolean(username && password),
+    credentialsConfigured: Boolean(username && password && clientSecret),
     configPath: absolutePath,
-    clientSecret: parsed.clientSecret || BUNDLED_CLIENT_SECRET,
+    clientSecret,
     lightragUrl: normalizeLightRagUrl(parsed.lightragUrl),
     userCenterUrl: normalizeUrl(parsed.userCenterUrl, "userCenterUrl"),
     oauthBaseUrl,

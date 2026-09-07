@@ -17,6 +17,7 @@ import tempfile
 import subprocess
 import sys
 import time
+import threading
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,34 @@ class DependencyCancelled(ValueError):
 
 def _cancel_dependency_process(_signum, _frame):
     raise DependencyCancelled('Dependency preparation cancelled')
+
+
+def prepare_for_start(content: dict[str, bytes]) -> None:
+    """Keep first-use downloads owned by the MCP client's lifetime on Linux."""
+    parent = os.getppid()
+    if sys.platform != 'linux' or parent <= 1:
+        raise ValueError('First-start dependency preparation requires a live Linux parent')
+    signal.signal(signal.SIGTERM, _cancel_dependency_process)
+    signal.signal(signal.SIGINT, _cancel_dependency_process)
+    stopped = threading.Event()
+    def watch_parent():
+        # Linux parent-death signals follow the spawning thread's lifetime.
+        # Codex uses worker threads, so watch process reparenting instead.
+        while not stopped.wait(.1):
+            if os.getppid() != parent:
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+    watcher = threading.Thread(target=watch_parent, daemon=True)
+    watcher.start()
+    try:
+        if os.getppid() != parent:
+            raise DependencyCancelled('MCP client exited before dependency preparation')
+        prepare_dependencies(content, False, lock_timeout=540)
+    finally:
+        stopped.set()
+        watcher.join(timeout=1)
+    if os.getppid() != parent:
+        raise DependencyCancelled('MCP client exited during dependency preparation')
 
 
 def canonical(value: object) -> bytes:
@@ -280,6 +309,32 @@ def node_environment() -> dict[str, str]:
     return env
 
 
+def local_credentials_status(content: dict[str, bytes]) -> dict[str, object]:
+    """Inspect the selected file using the same reader as domain operations."""
+    import types
+    reader = types.ModuleType('verified_credential_file')
+    exec(compile(content['skills/openubmc-target-runtime/openubmc_target_runtime/credential_file.py'],
+                 '<verified-credential-file>', 'exec'), reader.__dict__)
+    result = {'configured': False, 'status': 'unavailable', 'reason': '',
+              'remote_authentication': 'not_checked', 'capabilities': {}}
+    try:
+        path = reader.selected_credentials_path()
+        if path is None:
+            path = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home()/'.config')/'openubmc/credentials.env'
+        if not path.exists() and not path.is_symlink():
+            return dict(result, status='missing', reason='credentials file is missing')
+        values = reader.read_credentials_file(path)
+    except (reader.CredentialFileError, OSError) as error:
+        return dict(result, reason=str(error))
+    completeness = reader.credential_completeness(values)
+    result['capabilities'] = completeness['capabilities']
+    missing = completeness['missing_keys']
+    configured = completeness['configured']
+    return dict(result, configured=configured, status='configured' if configured else 'incomplete',
+                reason='local credentials are complete; remote authentication was not checked' if configured
+                else 'missing keys: ' + ', '.join(missing) if missing else 'no credential capability is configured')
+
+
 def probe_server(command: str, content: dict[str, bytes], lock: dict) -> dict[str, object]:
     """Perform a bounded MCP initialize/tools/list probe through the public launcher."""
     request = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
@@ -290,7 +345,7 @@ def probe_server(command: str, content: dict[str, bytes], lock: dict) -> dict[st
     probe_env = node_environment()
     probe_env['OPENUBMC_MCP_FORMAL_RUN'] = '0'
     probe_env['OPENUBMC_MCP_PARENT_PID'] = str(os.getpid())
-    process = subprocess.Popen([sys.executable, '-I', str(ROOT/'scripts/pluginctl.py'), command],
+    process = subprocess.Popen([sys.executable, "-B", '-I', str(ROOT/'scripts/pluginctl.py'), command],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, env=probe_env)
     try:
@@ -363,7 +418,13 @@ def main() -> int:
     parser.add_argument('--home', type=Path, default=Path.home())
     parser.add_argument('--codex-home', type=Path)
     parser.add_argument('--transaction', default='')
+    migration_mode = parser.add_mutually_exclusive_group()
+    migration_mode.add_argument('--disable-only', dest='migration_mode', action='store_const', const='disable-only', default='disable-only', help='Disable legacy registrations while retaining files (default)')
+    migration_mode.add_argument('--remove', dest='migration_mode', action='store_const', const='remove', help='Remove owned legacy registrations and Skill links')
+    parser.add_argument('--preview', action='store_true', help='Inspect migration without changing files')
+    parser.add_argument('--target-plugin', default='openubmc@openubmc-public', help='Plugin registration to preserve during migration')
     parser.add_argument('--repair', action='store_true', help='Recreate a damaged dependency cache')
+    parser.add_argument('--prepare-on-start', action='store_true', help='Prepare locked dependencies before the first MCP startup')
     parser.add_argument('--offline', action='store_true', help='Disable package index access')
     parser.add_argument('--retries', type=int, choices=range(4), default=0, help='Additional bounded attempts per stage')
     parser.add_argument('--pip-timeout', type=positive_timeout, help='pip stage deadline in seconds (default 300)')
@@ -386,14 +447,20 @@ def main() -> int:
             module = types.ModuleType('openubmc_plugin_install')
             exec(compile(content['scripts/plugin_install.py'], '<verified-plugin-install>', 'exec'), module.__dict__)
             skill_paths = [item['path'] for item in json.loads(content['workflow.json'])['skills']]
-            result = module.migrate(args.home, skill_paths, args.codex_home) if args.command == 'migrate' else module.restore(args.home, args.transaction, args.codex_home)
-            print(json.dumps(result, sort_keys=True)); return 0
+            if args.command == 'migrate':
+                operation = module.preview if args.preview else module.migrate
+                result = operation(args.home, skill_paths, args.codex_home, mode=args.migration_mode, target_plugin=args.target_plugin)
+            else:
+                result = module.restore(args.home, args.transaction, args.codex_home)
+            print(json.dumps(result, sort_keys=True)); return 0 if result['ok'] else 2
         if args.command == 'prepare':
             signal.signal(signal.SIGTERM, _cancel_dependency_process)
             signal.signal(signal.SIGINT, _cancel_dependency_process)
             root = prepare_dependencies(content, args.repair, offline=args.offline, retries=args.retries, pip_timeout=args.pip_timeout, npm_timeout=args.npm_timeout, lock_timeout=args.lock_timeout)
             report['dependencies'] = str(root)
         elif args.command in ('runtime', 'kb'):
+            if args.prepare_on_start and not (dependency_root(content)/'receipt.json').is_file():
+                prepare_for_start(content)
             return launch(args.command, content, lock, args.timings)
         elif args.command == 'doctor':
             report['package_integrity'] = True
@@ -407,7 +474,8 @@ def main() -> int:
                 report['mcp_health'] = {name: probe_server(name, content, lock) for name in ('runtime', 'kb')}
             else:
                 report['mcp_health'] = {'runtime': {'ok': False, 'error': 'dependencies unavailable'}, 'kb': {'ok': False, 'error': 'dependencies unavailable'}}
-            report['credentials_configured'] = bool(os.environ.get('OPENUBMC_CREDENTIALS_FILE') or (Path(os.environ.get('XDG_CONFIG_HOME') or Path.home()/'.config')/'openubmc/credentials.env').is_file())
+            report['credentials'] = local_credentials_status(content)
+            report['credentials_configured'] = report['credentials']['configured']
             report['startup_ready'] = report['dependencies_ready'] and all(item.get('ok') for item in report['mcp_health'].values())
             report['ok'] = report['startup_ready']
         print(json.dumps(report, sort_keys=True))
