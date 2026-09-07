@@ -24,6 +24,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import zlib
 from dataclasses import dataclass, field
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
@@ -474,27 +475,33 @@ def iter_directory(directory: pathlib.Path, budget: AnalysisBudget | None = None
                 # Local analysis must not traverse links outside the supplied bundle.
                 if not entry.is_symlink():
                     yield pathlib.Path(entry.path)
+                else:
+                    budget.reasons.add("symlink_skipped")
     except OSError:
         budget.reasons.add("path_read_failed")
 
 
 def iter_matching_paths(root: pathlib.Path, parts: tuple[str, ...], budget: AnalysisBudget):
-    if not parts:
-        if root.is_file():
-            yield root
-        return
-    part, *tail = parts
-    if part in ("..", "/"):
-        budget.reasons.add("unsafe_reference_path")
-        return
-    if part == "**":
-        yield from iter_matching_paths(root, tuple(tail), budget)
-    for child in iter_directory(root, budget):
-        if part == "**" and child.is_dir():
-            yield from iter_matching_paths(child, parts, budget)
-        elif fnmatch.fnmatchcase(child.name, part):
-            if not tail or child.is_dir():
-                yield from iter_matching_paths(child, tuple(tail), budget)
+    pending = [(root, parts)]
+    while pending:
+        directory, remaining = pending.pop()
+        if not remaining:
+            if directory.is_file():
+                yield directory
+            continue
+        part, *tail = remaining
+        if part in ("..", "/"):
+            budget.reasons.add("unsafe_reference_path")
+            continue
+        if part == "**":
+            pending.append((directory, tuple(tail)))
+        for child in iter_directory(directory, budget):
+            if part == "**" and child.is_dir():
+                pending.append((child, remaining))
+            elif fnmatch.fnmatchcase(child.name, part):
+                if not tail or child.is_dir():
+                    pending.append((child, tuple(tail)))
+
 
 
 def expand_log_paths(bundle_root: pathlib.Path, path_patterns: list[object],
@@ -506,7 +513,11 @@ def expand_log_paths(bundle_root: pathlib.Path, path_patterns: list[object],
         if not isinstance(raw_pattern, str) or not raw_pattern:
             continue
         target = bundle_root / raw_pattern
-        if not target.resolve().is_relative_to(bundle_root.resolve()):
+        try:
+            safe = target.resolve().is_relative_to(bundle_root.resolve())
+        except (OSError, RuntimeError):
+            safe = False
+        if not safe:
             budget.reasons.add("unsafe_reference_path")
             continue
         if not any(char in raw_pattern for char in "*?["):
@@ -626,7 +637,7 @@ def collect_evidence_lines(
                 continue
             if has_fallback_match:
                 retain(fallback_matches, evidence_line)
-    except (OSError, EOFError):
+    except (OSError, EOFError, zlib.error):
         if budget is None:
             raise
         budget.reasons.add("file_read_failed")
@@ -1608,10 +1619,12 @@ def extract_archive(
                 ensure_safe_member_path(extract_dir, member.name)
                 archive.extract(member, extract_dir, filter="data")
         return ExtractionResult(extract_dir=extract_dir, bundle_root=locate_bundle_root(extract_dir))
-    except (BundlePullError, tarfile.TarError, OSError, EOFError, lzma.LZMAError) as exc:
+    except (BundlePullError, tarfile.TarError, OSError, EOFError, lzma.LZMAError, zlib.error, RecursionError) as exc:
         shutil.rmtree(extract_dir)
         if isinstance(exc, BundlePullError):
             raise
+        if isinstance(exc, RecursionError):
+            raise BundlePullError("extract_budget_exceeded", "Archive extended-header nesting limit exceeded") from exc
         raise BundlePullError("extract_failed", f"Failed to extract {archive_path}: {exc}") from exc
 
 

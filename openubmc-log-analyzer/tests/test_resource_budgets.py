@@ -128,3 +128,54 @@ class LogResourceBudgetTests(unittest.TestCase):
                 pull_bundle.extract_archive(path, root / "output", max_stream_bytes=4096)
             self.assertEqual(raised.exception.code, "extract_budget_exceeded")
             self.assertEqual(list((root / "output").iterdir()), [])
+
+    def test_corrupt_deflate_reports_partial_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "app.log.gz").write_bytes(bytes.fromhex("1f8b0800000000000003") + b"\x07" * 20)
+            reference = {"files": [{"name": "app", "paths": ["app.log.gz"], "keywords": ["login"]}]}
+            result = pull_bundle.analyze_bundle(root, "login", reference_data=reference)
+            self.assertFalse(result["coverage"]["complete"])
+            self.assertIn("file_read_failed", result["coverage"]["reasons"])
+
+    def test_repeated_pax_headers_fail_cleanly_without_partial_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "bundle.tar"
+            with path.open("wb") as stream:
+                first = tarfile.TarInfo("dump_info/first.log")
+                first.size = 1
+                stream.write(first.tobuf())
+                stream.write(b"x" + b"\0" * 511)
+                for _ in range(700):
+                    stream.write(tarfile.TarInfo.create_pax_global_header({"comment": "fixture"}))
+                stream.write(tarfile.TarInfo("dump_info/last.log").tobuf())
+                stream.write(b"\0" * 1024)
+            with self.assertRaises(pull_bundle.BundlePullError) as raised:
+                pull_bundle.extract_archive(path, root / "output")
+            self.assertEqual(raised.exception.code, "extract_budget_exceeded")
+            self.assertEqual(list((root / "output").iterdir()), [])
+
+    def test_recursive_discovery_handles_deep_trees_and_symlink_loops(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            loop = root / "loop.log"
+            loop.symlink_to("loop.log")
+            reference = {"files": [{"name": "app", "paths": ["loop.log"], "keywords": ["login"]}]}
+            result = pull_bundle.analyze_bundle(root, "login", reference_data=reference)
+            self.assertFalse(result["coverage"]["complete"])
+            directories = []
+            current = root
+            try:
+                for _ in range(1050):
+                    current = current / "d"
+                    current.mkdir()
+                    directories.append(current)
+                (current / "app.log").write_text("login error\n")
+                reference["files"][0]["paths"] = ["**/app.log"]
+                result = pull_bundle.analyze_bundle(root, "login", reference_data=reference)
+                self.assertEqual(len(result["selected_logs"][0]["evidence_lines"]), 1)
+            finally:
+                (current / "app.log").unlink(missing_ok=True)
+                for directory in reversed(directories):
+                    directory.rmdir()
