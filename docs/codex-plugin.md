@@ -68,6 +68,25 @@ that edit before retrying; the installer does not overwrite it.
 
 ## Dependency recovery
 
+Runtime and KB use separate dependency caches, locks and receipts. Runtime needs Python;
+KB needs Node 20 or newer. A missing Node/npm installation or failed KB preparation does
+not prevent Runtime preparation or startup. Each execution snapshot still verifies the
+complete plugin source and the selected capability's dependency inventory. Existing
+single-cache receipts remain available for older releases and are not rewritten.
+
+Preparation and doctor check both capabilities by default. Select one when needed:
+
+```bash
+python3 -I ~/plugins/openubmc/scripts/pluginctl.py prepare --capability runtime
+python3 -I ~/plugins/openubmc/scripts/pluginctl.py doctor --capability runtime
+python3 -I ~/plugins/openubmc/scripts/pluginctl.py prepare --capability kb
+```
+
+Doctor reports each selected capability's dependency and MCP readiness. An overall failure
+can coexist with a ready Runtime when KB is unavailable. Codex still loads both declared MCP
+entries; capability selection in these commands does not disable the KB registration.
+First-use preparation installs only the dependencies of the server being launched.
+
 Preparation prints one JSON progress event per pip/npm stage to stderr. Default deadlines are
 300 seconds for pip, 180 seconds for npm, and 30 seconds for the dependency cache lock. Additional
 attempts are opt-in and bounded to three per stage:
@@ -81,6 +100,9 @@ A failed repair retains the previous verified cache. Cancellation stops the inst
 before removing its incomplete stage. After a force-killed parent, a surviving installer keeps the
 cache lock until it exits; a competing prepare reports a lock timeout. Retry preparation after that
 worker exits. Interrupted directory publication is reconciled before reuse or another installation.
+The archive installer's outer command deadline defaults to 600 seconds and can be set with
+`OPENUBMC_PLUGIN_INSTALL_TIMEOUT_SEC`. A timeout or cancellation gives dependency preparation
+time to stop its owned workers and remove staging before the installer exits.
 
 Offline installation requires the Python wheels and npm package tarballs to be available locally:
 
