@@ -84,6 +84,7 @@ from openubmc_target_runtime import (  # noqa: E402
     TargetSpec,
     TaskAuthorizationPolicy,
     load_selected_credentials_file,
+    selected_credential_value,
     mutation_journal_operation_status,
 )
 
@@ -530,7 +531,11 @@ def _default_credential_loader(
         if value:
             return value
         selected_env = _argument_text(arguments, selector)
+        if not selected_env:
+            selected_credential_value(values, defaults)
         names = ((selected_env,) if selected_env else ()) + defaults
+        if values.get("__runtime_selected__") == "1":
+            return selected_credential_value(values, (selected_env,) if selected_env else defaults) or ""
         for name in names:
             candidate = os.environ.get(name, values.get(name, ""))
             if candidate:

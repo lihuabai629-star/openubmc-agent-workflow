@@ -49,6 +49,46 @@ from live_patch_diagnosis import accept_diagnosis  # noqa: E402
 TEST_DEADLINE_SECONDS = 30
 
 
+class SelectedCredentialTests(unittest.TestCase):
+    def test_named_telnet_credentials_win_over_json_ssh_defaults(self):
+        from unittest.mock import patch
+        class ControlledTelnet:
+            selected = None
+            def open_session(self, *, target, credentials):
+                self.selected = credentials
+                raise RuntimeError('Controlled Telnet connection boundary reached')
+            @staticmethod
+            def is_authentication_failure(error):
+                return False
+            @staticmethod
+            def close_session(session):
+                pass
+        class ControlledSsh:
+            def open_master(self, **kwargs):
+                raise RuntimeError('Unexpected SSH connection')
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = root / 'credentials.json'
+            config.write_text(json.dumps({'schema_version': 1, 'credentials': {'ssh': {'user': 'fixture-ssh', 'password': 'fictional-ssh'}}, 'defaults': {'bmc': {'ssh': 'ssh'}}})); config.chmod(0o600)
+            artifact = root / 'fixture.lua'; artifact.write_text('return true\n')
+            telnet = ControlledTelnet()
+            backend = LivePatchMcpBackend(journal_store=MutationJournalStore(root / 'journal'), ssh_transport_factory=lambda _args: ControlledSsh(), telnet_transport_factory=lambda _args: telnet)
+            environment = {'HOME': raw, 'XDG_CONFIG_HOME': raw, 'OPENUBMC_CREDENTIALS_CONFIG': str(config), 'FIXTURE_TELNET_USER': 'fixture-telnet', 'FIXTURE_TELNET_PASSWORD': 'fictional-telnet'}
+            with patch.dict(os.environ, environment, clear=True):
+                service = RuntimeMcpService(OrchestratedMcpBackend({'live_patch_run': backend}))
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'Controlled Telnet connection boundary reached'):
+                        service.call_tool('live_patch_run', {
+                            'intent': 'live-patch', 'ip': '192.0.2.10', 'local_path': str(artifact),
+                            'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                            'remote_path': '/opt/bmc/apps/demo/fixture.lua', 'restart_scope': 'none', 'deadline': 3,
+                            'telnet_user_env': 'FIXTURE_TELNET_USER', 'telnet_password_env': 'FIXTURE_TELNET_PASSWORD',
+                        }, task_id='named-telnet', operation_id='patch')
+                    self.assertEqual((telnet.selected.user, telnet.selected.password), ('fixture-telnet', 'fictional-telnet'))
+                finally:
+                    service.close()
+
+
 def recovery_context(task_id: str, operation_id: str) -> OperationContext:
     return OperationContext(
         task_id=task_id,

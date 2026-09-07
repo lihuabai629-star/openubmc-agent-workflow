@@ -356,6 +356,8 @@ class CredentialResolver:
         loader: Callable[[CredentialSelector], ResolvedSshCredentials] | None = None,
         *,
         ssh_loader: Callable[[CredentialSelector], ResolvedSshCredentials] | None = None,
+        config_path: str | Path | None = None,
+        environ: Mapping[str, str] | None = None,
         redfish_loader: Callable[
             [CredentialSelector], ResolvedRedfishCredentials
         ]
@@ -369,10 +371,103 @@ class CredentialResolver:
             self._loaders["ssh"] = selected_ssh_loader
         if redfish_loader is not None:
             self._loaders["redfish"] = redfish_loader
-        if not self._loaders:
-            raise ValueError("at least one credential loader is required")
+        from .credentials import LocalCredentialSource
+        self._local_source = LocalCredentialSource(config_path=config_path, environ=environ)
+        self._local_cache: dict[tuple[str, str, str, str], object] = {}
+        self._task_sources: dict[str, Path | None] = {}
+        self._task_source_environments: dict[str, dict[str, str]] = {}
         self._cache: dict[tuple[str, str, str], object] = {}
         self._lock = threading.RLock()
+
+    def resolve_local(
+        self, *, task_id: str, host: str, transport: str, purpose: str = "bmc", required: bool = True,
+    ) -> CredentialResolution[object]:
+        """Resolve one complete local record and bind its source for the task."""
+        from .credentials import normalize_credential_host
+        if not task_id.strip() or not host.strip() or purpose not in {"bmc", "os"} or transport not in {"ssh", "redfish"}:
+            raise ValueError("Local credentials require a task, target, BMC/OS purpose and SSH/Redfish transport")
+        key = (task_id, normalize_credential_host(host), purpose, transport)
+        with self._lock:
+            if key in self._local_cache:
+                return CredentialResolution(self._local_cache[key], cache_hit=True)
+            path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
+            values = self._local_source.resolve(path, host=host, purpose=purpose, transport=transport, required=required)
+            if values is None:
+                return CredentialResolution(None, cache_hit=False)
+            credential_type = ResolvedSshCredentials if transport == "ssh" else ResolvedRedfishCredentials
+            resolved = credential_type.from_mapping(values)
+            self._task_sources[task_id] = path
+            self._remember_source_environment(task_id)
+            self._local_cache[key] = resolved
+            return CredentialResolution(resolved, cache_hit=False)
+
+    def _remember_source_environment(self, task_id: str) -> None:
+        if task_id not in self._task_source_environments:
+            self._task_source_environments[task_id] = {
+                name: value for name, value in self._local_source.environ.items()
+                if name in {"OPENUBMC_CREDENTIALS_CONFIG", "OPENUBMC_CREDENTIALS_FILE", "OPENUBMC_DEBUG_CREDENTIALS_FILE", "XDG_CONFIG_HOME", "HOME"}
+            }
+
+    def source_environment(self, task_id: str) -> dict[str, str]:
+        """Keep source selectors stable while leaving named credential values local."""
+        with self._lock:
+            environment = dict(self._local_source.environ)
+            if task_id in self._task_source_environments:
+                for name in ("OPENUBMC_CREDENTIALS_CONFIG", "OPENUBMC_CREDENTIALS_FILE", "OPENUBMC_DEBUG_CREDENTIALS_FILE", "XDG_CONFIG_HOME", "HOME"):
+                    environment.pop(name, None)
+                environment.update(self._task_source_environments[task_id])
+            return environment
+
+    def resolve_legacy_values(self, *, task_id: str, loader: Callable[..., dict[str, str]]) -> dict[str, str]:
+        """Read the compatibility file while binding the same task source as JSON."""
+        with self._lock:
+            path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
+            values = loader(environ=self.source_environment(task_id))
+            self._task_sources[task_id] = path
+            self._remember_source_environment(task_id)
+            return values
+
+    def uses_structured_source(self, task_id: str) -> bool:
+        with self._lock:
+            path = self._task_sources[task_id] if task_id in self._task_sources else self._local_source.select_path()
+            return self._local_source.is_structured(path)
+
+    def resolve_local_values(
+        self, *, task_id: str, host: str, arguments: Mapping[str, object] | None = None,
+        transports: tuple[str, ...] = ("ssh", "redfish"),
+    ) -> dict[str, str]:
+        """Project selected records only into local Domain Adapter input."""
+        arguments = arguments or {}
+        values = {"__runtime_selected__": "1"}
+        for purpose, transport in (("bmc", "ssh"), ("bmc", "redfish"), ("os", "ssh")):
+            if transport not in transports:
+                continue
+            prefix = ("os_" if purpose == "os" else "") + transport
+            if any(arguments.get(prefix + suffix) for suffix in ("_user", "_user_env", "_password", "_password_env", "_identity_file")):
+                continue
+            selected_host = str(arguments.get("os_ip", "")) if purpose == "os" else host
+            if not selected_host:
+                continue
+            record = self.resolve_local(task_id=task_id, host=selected_host, purpose=purpose, transport=transport,
+                                        required=len(transports) == 1 or purpose == "os").credentials
+            env_prefix = "OPENUBMC_" + prefix.upper()
+            if record is None:
+                values[env_prefix + "_USER"] = ""
+                values[env_prefix + "_PASSWORD"] = ""
+                if transport == "ssh":
+                    values[env_prefix + "_IDENTITY_FILE"] = ""
+                else:
+                    values["REDFISH_USERNAME"] = ""
+                    values["REDFISH_PASSWORD"] = ""
+                continue
+            values[env_prefix + "_USER"] = record.user
+            values[env_prefix + "_PASSWORD"] = record.password
+            if isinstance(record, ResolvedSshCredentials):
+                values[env_prefix + "_IDENTITY_FILE"] = record.identity_file
+            if transport == "redfish":
+                values["REDFISH_USERNAME"] = record.user
+                values["REDFISH_PASSWORD"] = record.password
+        return values
 
     def resolve(
         self,

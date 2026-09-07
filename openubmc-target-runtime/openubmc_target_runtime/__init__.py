@@ -149,6 +149,7 @@ from .credential_file import (
     load_selected_credentials_file,
     read_credentials_file,
     selected_credentials_path,
+    selected_credential_value,
 )
 from .distribution import (
     iter_runtime_source_files,
@@ -709,6 +710,7 @@ __all__ = [
     "run_telnet_command",
     "run_telnet_command_text",
     "selected_credentials_path",
+    "selected_credential_value",
     "select_request_engine",
     "telnet_command_markers",
     "telnet_connect",
