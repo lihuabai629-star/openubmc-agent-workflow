@@ -175,7 +175,7 @@ class PluginPackageTests(unittest.TestCase):
             credentials.write_bytes(b'preserved-private-configuration')
             env = dict(os.environ, XDG_CONFIG_HOME=str(home/'.config'), XDG_DATA_HOME=str(home/'.local/share'), CODEX_HOME=str(codex))
             cli = [sys.executable, '-I', str(base/'openubmc/scripts/pluginctl.py')]
-            result = subprocess.run([*cli, 'migrate', '--home', str(home)], env=env, capture_output=True, text=True)
+            result = subprocess.run([*cli, 'migrate', '--remove', '--home', str(home)], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
             self.assertIn('transaction', report)

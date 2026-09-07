@@ -42,6 +42,8 @@ Keep that file mode 0600. The plugin does not distribute an OAuth client secret.
 
 ## Lifecycle
 
+For a legacy loose installation or `openubmc@personal`, use `pluginctl.py migrate --disable-only --preview` to inspect ownership and pending changes, then `migrate --disable-only` to save them. Keep the returned transaction ID for `restore-legacy --transaction <id>`. This route retains old files and links, disables the canonical Skill entries and owned MCP entries, and preserves the target `openubmc@openubmc-public` registration. Use `--target-plugin` when preserving a different target registration. Start a new Codex task to load the saved state. A later config or ownership edit blocks restoration until reconciled. Explicit `migrate --remove` retains the old removal behavior.
+
 Use `codex plugin list` to identify the installed marketplace and `codex plugin remove openubmc@<marketplace>` to uninstall. For a Git marketplace, refresh with `codex plugin marketplace upgrade <marketplace>` and reinstall with `codex plugin add openubmc@<marketplace>`. Start a new Codex task after a version change.
 
 For an archive installation managed by `install_plugin.py`, use its `plugin_admin.py audit` and recorded rollback entries. Do not apply archive-administration commands to an installation managed only by the native marketplace. Credentials and durable Runtime records survive plugin removal.

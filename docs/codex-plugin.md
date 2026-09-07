@@ -37,8 +37,16 @@ python3 -I ~/plugins/openubmc/scripts/plugin_admin.py audit
 ```
 
 Doctor reports package integrity, dependency integrity, MCP startup readiness, and whether a
-credential file is configured. Startup readiness does not prove access to a target or knowledge service.
+credential file is readable, private, parseable and complete for its selected capabilities.
+Startup readiness and local credential completeness are independent of remote authentication.
 Audit compares the active native Codex cache with the distribution source and reports transaction state.
+
+For a marketplace migration, run the installed `pluginctl.py migrate --disable-only --preview`
+before `migrate --disable-only`. The returned transaction supports `restore-legacy --transaction <id>`.
+Old files and links remain in place; canonical Skill entries, owned MCP entries and the old personal
+plugin are disabled. The selected target plugin remains unchanged. Later configuration or ownership
+changes block restoration. Start a new Codex task after applying or restoring the migration.
+The explicit `migrate --remove` route and old removal journals remain supported.
 
 Install a newer verified archive with the same installation command. To select a previous release,
 use its exact `VERSION-DIGEST16` directory name from `release_path` in the audit:

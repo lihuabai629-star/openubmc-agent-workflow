@@ -429,6 +429,11 @@ def main() -> int:
     parser.add_argument('--home', type=Path, default=Path.home())
     parser.add_argument('--codex-home', type=Path)
     parser.add_argument('--transaction', default='')
+    migration_mode = parser.add_mutually_exclusive_group()
+    migration_mode.add_argument('--disable-only', dest='migration_mode', action='store_const', const='disable-only', default='disable-only', help='Disable legacy registrations while retaining files (default)')
+    migration_mode.add_argument('--remove', dest='migration_mode', action='store_const', const='remove', help='Remove owned legacy registrations and Skill links')
+    parser.add_argument('--preview', action='store_true', help='Inspect migration without changing files')
+    parser.add_argument('--target-plugin', default='openubmc@openubmc-public', help='Plugin registration to preserve during migration')
     parser.add_argument('--repair', action='store_true', help='Recreate a damaged dependency cache')
     parser.add_argument('--prepare-on-start', action='store_true', help='Prepare locked dependencies before the first MCP startup')
     parser.add_argument('--offline', action='store_true', help='Disable package index access')
@@ -453,8 +458,12 @@ def main() -> int:
             module = types.ModuleType('openubmc_plugin_install')
             exec(compile(content['scripts/plugin_install.py'], '<verified-plugin-install>', 'exec'), module.__dict__)
             skill_paths = [item['path'] for item in json.loads(content['workflow.json'])['skills']]
-            result = module.migrate(args.home, skill_paths, args.codex_home) if args.command == 'migrate' else module.restore(args.home, args.transaction, args.codex_home)
-            print(json.dumps(result, sort_keys=True)); return 0
+            if args.command == 'migrate':
+                operation = module.preview if args.preview else module.migrate
+                result = operation(args.home, skill_paths, args.codex_home, mode=args.migration_mode, target_plugin=args.target_plugin)
+            else:
+                result = module.restore(args.home, args.transaction, args.codex_home)
+            print(json.dumps(result, sort_keys=True)); return 0 if result['ok'] else 2
         if args.command == 'prepare':
             signal.signal(signal.SIGTERM, _cancel_dependency_process)
             signal.signal(signal.SIGINT, _cancel_dependency_process)
