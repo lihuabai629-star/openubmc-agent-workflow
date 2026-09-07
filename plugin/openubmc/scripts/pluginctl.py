@@ -398,9 +398,11 @@ def launch(command: str, content: dict[str, bytes], lock: dict, timings: Path | 
     env['OPENUBMC_MCP_SOURCE_COMMIT'] = lock['source_commit']
     env['OPENUBMC_PLUGIN_CONTENT_DIGEST'] = lock['content_digest']
     if command == 'configure':
+        # The page and its worker use the guarded package entrypoints. The
+        # execution snapshot provides verified dependencies, not a plugin lock.
         argv = [sys.executable, '-I', '-B', '-c',
                 'import sys,runpy;sys.path.insert(0,sys.argv[1]);sys.argv=[sys.argv[2],*sys.argv[3:]];runpy.run_path(sys.argv[0],run_name="__main__")',
-                str(snapshot/'python-packages'), str(snapshot/'skills/openubmc-environment-setup/scripts/config_page.py'), *(page_args or [])]
+                str(snapshot/'python-packages'), str(ROOT/'skills/openubmc-environment-setup/scripts/config_page.py'), *(page_args or [])]
     elif command == 'runtime':
         argv = [sys.executable, '-I', '-B', '-c',
                 'import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_path(sys.argv[2],run_name="__main__")',

@@ -63,6 +63,62 @@ class PythonEntrypointTests(unittest.TestCase):
         return subprocess.run([sys.executable, *map(str, arguments)], cwd=self.home,
                               env=self.environment, input=input_text, capture_output=True, text=True, timeout=30)
 
+    def test_configuration_cli_and_check_worker_preserve_package_integrity(self):
+        # Use the assembled product with an empty dependency lock: this HTTP/Conan
+        # scenario uses only the standard library and a controlled external tool.
+        requirements = self.plugin/'requirements.lock'
+        requirements.write_bytes(b'')
+        lock_path = self.plugin/'plugin-lock.json'
+        lock = json.loads(lock_path.read_bytes())
+        lock['files']['requirements.lock'] = hashlib.sha256(b'').hexdigest()
+        del lock['content_digest']
+        canonical = lambda value: (json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False)+'\n').encode()
+        lock['content_digest'] = hashlib.sha256(canonical(lock)).hexdigest()
+        lock_path.write_bytes(canonical(lock))
+        before = inventory(self.plugin)
+        binary = self.home/'bin'; binary.mkdir()
+        conan = binary/'conan'
+        conan.write_text('#!/bin/sh\necho "ERROR: Connection refused" >&2\nexit 1\n')
+        conan.chmod(0o700)
+        env = dict(self.environment, XDG_CACHE_HOME=str(self.home/'cache'),
+                   PIP_NO_INDEX='1', PATH=str(binary)+os.pathsep+os.environ['PATH'])
+        from urllib.parse import urlsplit
+        from urllib.request import Request, urlopen
+        with tempfile.TemporaryFile(mode='w+') as errors:
+            child = subprocess.Popen([sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'),
+                                      'configure', '--no-browser'], cwd=self.home, env=env,
+                                     stdout=subprocess.PIPE, stderr=errors, text=True)
+            try:
+                self.assertTrue(select.select([child.stdout], [], [], 30)[0], 'page launch timed out')
+                url = urlsplit(child.stdout.readline().strip())
+                errors.seek(0)
+                self.assertEqual(url.scheme, 'http', errors.read())
+                origin = f'http://{url.netloc}'
+                def request(path, data):
+                    with urlopen(Request(origin+path, data=json.dumps(data).encode(), headers={
+                            'Origin': origin, 'X-OpenUBMC-Session': url.fragment,
+                            'Content-Type': 'application/json'}), timeout=15) as response:
+                        return json.load(response)
+                saved = request('/api/save', {'kind':'conan', 'expected_revision':None,
+                    'config':{'credentials':{'fixture':{'user':'fixture',
+                        'password':{'action':'replace','value':'fixture-package-secret'}}}}})
+                request('/api/activate', {'kind':'conan','revision':saved['revision'],
+                                          'expected_active_revision':None})
+                checked = request('/api/check', {'kind':'conan','target':{'remote':'fixture'},'confirm':True})
+                self.assertEqual(checked['code'], 'network_error', checked)
+                self.assertFalse(checked['verified'])
+                self.assertNotIn('fixture-package-secret', json.dumps(checked))
+                request('/api/close', {})
+                self.assertEqual(child.wait(timeout=10), 0)
+                self.assertEqual(inventory(self.plugin), before)
+                verified = subprocess.run([sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'),
+                                           'verify'], env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(verified.returncode, 0, verified.stderr)
+            finally:
+                if child.poll() is None:
+                    child.terminate(); child.wait(timeout=10)
+                child.stdout.close()
+
     def test_ordinary_debug_help_preserves_plugin_integrity(self):
         result = self.run_python(self.plugin/'skills/openubmc-debug/scripts/target_runtime_cli.py', '--help')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
