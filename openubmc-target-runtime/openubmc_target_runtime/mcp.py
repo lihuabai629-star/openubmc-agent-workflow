@@ -3111,17 +3111,17 @@ class RuntimeMcpService:
                 debug_backend = self.backend.tool_backends.get(operation)
                 specialized = getattr(debug_backend, "observe_query", None)
                 if operation == "debug_collect" and callable(specialized):
+                    def observe_with_credentials(task, context):
+                        backend, resource = task.resource_for("debug_collect")
+                        local_arguments = dict(observed_arguments)
+                        local_arguments["_credential_values"] = task.credential_values(local_arguments)
+                        return backend.observe_query(resource, local_arguments, context)
+
                     return self.registry.execute(
                         task_id=sdk_context.task_id,
                         operation_id=sdk_context.operation_id,
                         timeout_seconds=sdk_context.timeout_seconds,
-                        callback=lambda task, context: (
-                            lambda backend, resource: backend.observe_query(
-                                resource,
-                                observed_arguments,
-                                context,
-                            )
-                        )(*task.resource_for("debug_collect")),
+                        callback=observe_with_credentials,
                     )
             specialized = getattr(self.backend, "observe_query", None)
             if operation == "debug_collect" and callable(specialized):
