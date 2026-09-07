@@ -137,6 +137,37 @@ class DisableMigrationTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), disabled)
         self.assertTrue(self.link.is_symlink())
 
+    def test_interrupted_migration_cannot_change_the_preserved_target(self):
+        wrapper = """
+import os, runpy, sys
+replace = os.replace
+config = sys.argv[1]
+def interrupt(source, destination):
+    if os.fspath(destination) == config:
+        os._exit(86)
+    return replace(source, destination)
+os.replace = interrupt
+sys.argv = sys.argv[2:]
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+        result = subprocess.run([sys.executable, '-I', '-c', wrapper, str(self.config),
+                                 str(self.plugin/'scripts/pluginctl.py'), 'migrate', '--disable-only', '--home', str(self.home)],
+                                env=self.environment, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 86)
+        preview = self.cli('migrate', '--preview', '--target-plugin', 'openubmc@personal', success=False)
+        self.assertTrue(preview['conflicts'])
+        self.cli('migrate', '--target-plugin', 'openubmc@personal', success=False)
+        self.assertEqual(self.config.read_text(), self.original)
+        self.link.unlink()
+        self.link.symlink_to(self.home/'changed-skill')
+        self.assertTrue(self.cli('migrate', '--preview', success=False)['conflicts'])
+        self.cli('migrate', '--disable-only', success=False)
+        self.link.unlink()
+        self.link.symlink_to(self.skill.parent)
+        self.assertTrue(self.cli('migrate', '--disable-only')['changed'])
+        skills, config = native_snapshot(self.home, self.environment)
+        self.assertTrue(config['plugins']['openubmc@openubmc-public']['enabled'])
+
     def test_ownership_conflict_blocks_preview_and_apply(self):
         original = self.original.replace('openubmc-target-runtime-mcp"', 'other-mcp"')
         self.config.write_text(original)
