@@ -23,7 +23,9 @@ class DependencyPreparationTests(unittest.TestCase):
                  'requirements.lock': b'',
                  'openubmc-kb-mcp/package.json': b'{"name":"fixture","version":"0.0.0"}',
                  'openubmc-kb-mcp/package-lock.json': b'{}',
-                 'scripts/launch_runtime.py': b'print("MCP_FIXTURE_READY", flush=True)\n',
+                 'scripts/launch_runtime.py': b'import sys,json\nlines=sys.stdin.read().splitlines()\nif not lines: print("MCP_FIXTURE_READY", flush=True)\nfor line in lines:\n r=json.loads(line)\n if "id" in r: print(json.dumps({"jsonrpc":"2.0","id":r["id"],"result": {"serverInfo":{"name":"fixture"}} if r["method"]=="initialize" else {"tools":[{"name":"observe"},{"name":"execute"}]}}),flush=True)\n',
+                 'openubmc-kb-mcp/src/server.js': b'console.log("MCP_FIXTURE_READY")\n',
+                 'skills/openubmc-target-runtime/openubmc_target_runtime/credential_file.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/credential_file.py').read_bytes(),
                  'scripts/pluginctl.py': (ROOT/'plugin/openubmc/scripts/pluginctl.py').read_bytes()}
         for name, data in files.items():
             path = self.plugin/name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
@@ -58,6 +60,9 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.env = dict(os.environ, PATH=str(bin_dir)+os.pathsep+os.environ['PATH'],
                         XDG_DATA_HOME=str(self.root/'data'), PIP_NO_INDEX='1', FIXTURE_ROOT=str(self.root))
         self.env['XDG_CACHE_HOME'] = str(self.root/'cache')
+        self.env['XDG_CONFIG_HOME'] = str(self.root/'config')
+        self.env.pop('OPENUBMC_CREDENTIALS_FILE', None)
+        self.env.pop('OPENUBMC_DEBUG_CREDENTIALS_FILE', None)
         self.cli = [sys.executable,'-I',str(self.plugin/'scripts/pluginctl.py'),'prepare']
 
     def prepare(self, *args):
@@ -65,6 +70,40 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
 
     def mode(self, value):
         (self.root/'mode').write_text(value)
+
+    def test_runtime_prepares_and_launches_when_node_and_npm_are_unavailable(self):
+        node = self.root / 'bin' / 'node'
+        node.write_text('#!/bin/sh\necho Node-unavailable >&2\nexit 17\n')
+        node.chmod(0o755)
+        self.mode('fail')
+        prepared = self.prepare('--capability', 'runtime', '--offline')
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        runtime_root = Path(json.loads(prepared.stdout)['capability_dependencies']['runtime'])
+        receipt = (runtime_root / 'receipt.json').read_bytes()
+        launched = subprocess.run([*self.cli[:-1], 'runtime'], env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        self.assertEqual(launched.stdout, 'MCP_FIXTURE_READY\n')
+        self.assertFalse((self.root / 'npm-args').exists())
+        failed_kb = self.prepare('--capability', 'kb', '--offline')
+        self.assertNotEqual(failed_kb.returncode, 0)
+        self.assertEqual((runtime_root / 'receipt.json').read_bytes(), receipt)
+
+    def test_doctor_reports_runtime_readiness_when_kb_is_unavailable(self):
+        prepared = self.prepare('--capability', 'runtime', '--offline')
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        node = self.root / 'bin' / 'node'
+        node.write_text('#!/bin/sh\nexit 17\n'); node.chmod(0o755)
+        scoped = subprocess.run([*self.cli[:-1], 'doctor', '--capability', 'runtime'], env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(scoped.returncode, 0, scoped.stderr)
+        report = json.loads(scoped.stdout)
+        self.assertTrue(report['capabilities']['runtime']['startup_ready'])
+        self.assertNotIn('kb', report['mcp_health'])
+        combined = subprocess.run([*self.cli[:-1], 'doctor'], env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(combined.returncode, 2, combined.stderr)
+        report = json.loads(combined.stdout)
+        self.assertTrue(report['capabilities']['runtime']['startup_ready'])
+        self.assertFalse(report['capabilities']['kb']['dependencies_ready'])
+        self.assertFalse(report['startup_ready'])
 
     def test_first_start_prepares_dependencies_and_warm_start_does_not_download(self):
         argv = [sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'), 'runtime', '--prepare-on-start']
@@ -77,7 +116,7 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.assertEqual(warm.returncode, 0, warm.stderr)
         self.assertEqual(warm.stdout, 'MCP_FIXTURE_READY\n')
         self.assertNotIn('"stage"', warm.stderr)
-        dependency = next((self.root/'data').rglob('fixture.js'))
+        dependency = next((self.root/'data').rglob('requirements.lock'))
         dependency.write_text('unverified dependency')
         damaged = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=20)
         self.assertNotEqual(damaged.returncode, 0)
@@ -97,7 +136,7 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
     def test_first_start_parent_loss_stops_downloader_and_releases_cache_lock(self):
         self.mode('hang')
         child_script = 'import subprocess,sys,time; subprocess.Popen(sys.argv[1:]); time.sleep(120)'
-        argv = [sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'), 'runtime', '--prepare-on-start']
+        argv = [sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'), 'kb', '--prepare-on-start']
         with (self.root/'parent.stdout').open('w') as stdout, (self.root/'parent.stderr').open('w') as stderr:
             parent = subprocess.Popen([sys.executable, '-c', child_script, *argv], env=self.env,
                                       stdout=stdout, stderr=stderr)
@@ -136,7 +175,7 @@ t=threading.Thread(target=spawn)
 t.start();t.join();time.sleep(2)
 '''
         result = subprocess.run([sys.executable, '-c', script, sys.executable, '-I',
-                                 str(self.plugin/'scripts/pluginctl.py'), 'runtime', '--prepare-on-start'],
+                                 str(self.plugin/'scripts/pluginctl.py'), 'kb', '--prepare-on-start'],
                                 env=self.env, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'MCP_FIXTURE_READY\n')
@@ -145,7 +184,7 @@ t.start();t.join();time.sleep(2)
     def test_failed_repair_preserves_verified_cache_and_offline_reuse(self):
         prepared=self.prepare('--offline')
         self.assertEqual(prepared.returncode,0,prepared.stderr)
-        dependencies=Path(json.loads(prepared.stdout)['dependencies'])
+        dependencies=Path(json.loads(prepared.stdout)['capability_dependencies']['kb'])
         receipt=(dependencies/'receipt.json').read_bytes()
         self.mode('fail')
         failed=self.prepare('--repair','--offline','--retries','0')
@@ -254,7 +293,7 @@ t.start();t.join();time.sleep(2)
     def test_interrupted_directory_publish_restores_previous_verified_cache(self):
         prepared=self.prepare('--offline')
         self.assertEqual(prepared.returncode,0,prepared.stderr)
-        root=Path(json.loads(prepared.stdout)['dependencies']);original=(root/'receipt.json').read_bytes()
+        root=Path(json.loads(prepared.stdout)['capability_dependencies']['kb']);original=(root/'receipt.json').read_bytes()
         root.rename(root.with_name(root.name+'.previous'))
         stage=root.with_name(root.name+'.staging');stage.mkdir();(stage/'partial').write_text('incomplete')
         self.mode('fail')
@@ -279,6 +318,42 @@ t.start();t.join();time.sleep(2)
         self.assertFalse(path.exists())
         verified=subprocess.run([*self.cli[:-1],'verify'],env=self.env,capture_output=True,text=True)
         self.assertEqual(verified.returncode,0,verified.stderr)
+
+    def test_installer_timeout_stops_owned_prepare_workers_and_releases_staging(self):
+        import tarfile
+        self.mode('hang')
+        archive = self.root / 'plugin.tar.gz'
+        with tarfile.open(archive, 'w:gz') as bundle:
+            bundle.add(self.plugin, arcname='openubmc')
+        home = self.root / 'install-home'
+        env = dict(self.env, OPENUBMC_PLUGIN_INSTALL_TIMEOUT_SEC='3')
+        argv = [sys.executable, '-I', str(ROOT / 'scripts/install_plugin.py'), str(archive),
+                '--sha256', hashlib.sha256(archive.read_bytes()).hexdigest(), '--home', str(home)]
+        with (self.root / 'installer.stdout').open('w') as stdout, (self.root / 'installer.stderr').open('w') as stderr:
+            process = subprocess.Popen(argv, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
+            try:
+                process.wait(timeout=7)
+                self.assertNotEqual(process.returncode, 0)
+                self.assertIn('timed out', (self.root / 'installer.stderr').read_text())
+                self.assertTrue((self.root / 'pids').exists())
+                for pid in map(int, (self.root / 'pids').read_text().split()):
+                    status = Path(f'/proc/{pid}/stat')
+                    self.assertTrue(not status.exists() or status.read_text().split()[2] == 'Z')
+                self.assertFalse(list(home.rglob('*.staging')))
+            finally:
+                if (self.root / 'pids').exists():
+                    worker = int((self.root / 'pids').read_text().split()[0])
+                    status = Path(f'/proc/{worker}/stat')
+                    if status.exists():
+                        owner = int(status.read_text().split()[3])
+                        if owner > 1:
+                            try: os.kill(owner, signal.SIGTERM)
+                            except ProcessLookupError: pass
+                    try: os.killpg(worker, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=3)
 
 
 if __name__=='__main__': unittest.main()
