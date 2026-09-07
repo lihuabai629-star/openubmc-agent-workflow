@@ -1,0 +1,41 @@
+{
+  "case_digests": {
+    "conan-existing-remote": "sha256:aee5e32032e6f2ec8d96439a3e4f2d5d91ae88fca95f95f56e46e8649ec8015b",
+    "configuration-update": "sha256:e5dfdba4df0782cb76a83a5672632231dad10489cd8cd4ba926a7e2177e05f34",
+    "credentials-default": "sha256:9d67d4bc789863e634ee4a083d2a27451f8f0af7ca328fc9a0ed57518751d874",
+    "credentials-ip-override": "sha256:082bb791a167ceff3be1c733ad3d17989a3f312b5d83ad47f464910e42f5af3e",
+    "credentials-missing": "sha256:99b014d2690e3197333a648b87a0b7a427cf1e5c7ca4f5c78230e2b23d0625f2",
+    "credentials-multi-purpose": "sha256:e942ec90908defbdc9fa8a0acccf6a7612edfb74a86083dedef4bfd6346c31f5",
+    "kb-recovery-budget": "sha256:aa9b19b48a1808fdd14a3b6c3366cbebc20debc385263e7e0c29df8879702617",
+    "skill-negative": "sha256:05ad5e4741560171a1bb58aeffbb8a5331d65c5bf03c4e7ebb56731072724d38",
+    "skill-positive": "sha256:57979931eff4a2c12778c7a73a95dd32d4343ab0a978eeb44caeeb68798c7353"
+  },
+  "cases": [
+    "skill-positive",
+    "skill-negative",
+    "credentials-missing",
+    "credentials-default",
+    "credentials-ip-override",
+    "credentials-multi-purpose",
+    "configuration-update",
+    "conan-existing-remote",
+    "kb-recovery-budget"
+  ],
+  "compatibility": {
+    "evidence_schemas": [
+      "openubmc-agent-workflow.harness-evidence.v2"
+    ],
+    "runtime_api": "agent-gateway-v2"
+  },
+  "created_from": [
+    "openUBMC plugin public task interfaces"
+  ],
+  "digest": "sha256:c556af9a3b487eeb4a74d32227cf7105d97172a03be29054ed754bf33a532b5f",
+  "eval_set_id": "plugin-tasks",
+  "review": {
+    "status": "development"
+  },
+  "schema": "openubmc-agent-workflow.eval-set.v1",
+  "split": "development",
+  "version": "1.0.0"
+}
