@@ -155,7 +155,13 @@ def _validate_kb(config: object) -> None:
         try:
             url = urlsplit(config[name])
             valid = url.hostname and not url.username and not url.password and not url.query and not url.fragment
-            valid = valid and (url.scheme == 'https' or (url.scheme == 'http' and url.hostname in {'localhost', '127.0.0.1', '::1'}))
+            loopback = url.hostname == 'localhost'
+            if not loopback:
+                try:
+                    loopback = ipaddress.ip_address(url.hostname).is_loopback
+                except ValueError:
+                    pass
+            valid = valid and (url.scheme == 'https' or (url.scheme == 'http' and loopback))
         except ValueError:
             valid = False
         if not valid:

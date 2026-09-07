@@ -1,5 +1,6 @@
 import { activeConfiguration, readConfigurationJson } from "./configuration.js";
 import { homedir } from "node:os";
+import { isIP } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { requestTimeoutMs } from "./http/request-lifetime.js";
 
@@ -33,7 +34,8 @@ function normalizeUrl(value, field) {
 function normalizeLightRagUrl(value) {
   const normalized = normalizeUrl(value, "lightragUrl");
   const url = new URL(normalized);
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  const loopback = ["localhost", "[::1]"].includes(url.hostname)
+    || (isIP(url.hostname) === 4 && url.hostname.startsWith("127."));
   if (url.protocol !== "https:" && !loopback) {
     throw new Error("lightragUrl must use HTTPS unless it points to a loopback address");
   }
