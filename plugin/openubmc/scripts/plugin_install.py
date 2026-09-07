@@ -120,6 +120,15 @@ def disable_config(text: str, servers: set[str], skills: set[str], plugins: set[
     return after
 
 
+def removal_changes(before: bytes, after: bytes, links: list[dict]) -> dict:
+    original, migrated = tomllib.loads(before.decode()), tomllib.loads(after.decode())
+    original_skills = {row['path'] for row in original.get('skills', {}).get('config', []) if 'path' in row}
+    migrated_skills = {row['path'] for row in migrated.get('skills', {}).get('config', []) if 'path' in row}
+    return {'skills': sorted(original_skills - migrated_skills),
+            'mcp_servers': sorted(set(original.get('mcp_servers', {})) - set(migrated.get('mcp_servers', {}))),
+            'plugins': [], 'links': sorted(item['path'] for item in links)}
+
+
 def plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
          mode: str = 'remove', target_plugin: str = 'openubmc@openubmc-public') -> tuple[dict, bytes, bytes]:
     if mode not in {'remove', 'disable-only'}:
@@ -175,6 +184,7 @@ def plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
         after = disable_config(before.decode(), owned_servers, skill_files, plugins).encode()
     else:
         after = migration_config(before.decode(), owned_servers, targets).encode()
+        changes = removal_changes(before, after, links)
     record = {'schema': 'openubmc.plugin-migration.v1', 'home': str(home), 'codex_home': str(codex_root),
               'before_digest': digest(before), 'after_digest': digest(after), 'links': sorted(links, key=lambda item:item['path']),
               'config_existed': config.is_file(), 'status': 'prepared', 'mode': mode, 'changes': changes,
@@ -213,6 +223,8 @@ def pending_migration(home: Path, codex_home: Path | None, mode: str, target_plu
             before_path, after_path = root/'before.toml', root/'after.toml'
             if not before_path.is_file() or not after_path.is_file() or digest(before_path.read_bytes()) != record.get('before_digest') or digest(after_path.read_bytes()) != record.get('after_digest'):
                 raise ValueError('incomplete migration journal snapshot is invalid')
+            if mode == 'remove' and 'changes' not in record:
+                record['changes'] = removal_changes(before_path.read_bytes(), after_path.read_bytes(), record['links'])
             pending.append((path.parent, record))
     if len(pending) > 1:
         raise ValueError('multiple incomplete migration journals require reconciliation')
