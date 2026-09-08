@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -130,6 +131,13 @@ def valid_metric(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
+def valid_digest(value):
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    )
+
+
 def metric_summary(rows, *, expected=None):
     rows = list(rows)
     count = len(rows) if expected is None else expected
@@ -155,6 +163,16 @@ def summarize_tasks(cases, arms, *, repetitions):
         or set(arms) != {"baseline", "candidate"}
     ):
         raise ValueError("select two arms and positive repetitions")
+    baseline_identity = arms["baseline"].get("identity", {})
+    candidate_identity = arms["candidate"].get("identity", {})
+    if baseline_identity.get("subject_digest") and baseline_identity.get(
+        "subject_digest"
+    ) == candidate_identity.get("subject_digest"):
+        raise ValueError("paired tasks require distinct plugin subjects")
+    if baseline_identity.get("archive_sha256") and baseline_identity.get(
+        "archive_sha256"
+    ) == candidate_identity.get("archive_sha256"):
+        raise ValueError("paired tasks require distinct plugin archives")
     expected = {
         (case["case_id"], repeat)
         for case in cases
@@ -171,6 +189,11 @@ def summarize_tasks(cases, arms, *, repetitions):
             if key in actual_inputs:
                 previous = actual_inputs[key]
                 left, right = dict(previous or {}), dict(value or {})
+                if not valid_digest(left.get("target_input_digest")) or not valid_digest(
+                    right.get("target_input_digest")
+                ):
+                    left.pop("target_input_digest", None)
+                    right.pop("target_input_digest", None)
                 if not left.get("model_configuration") or not right.get(
                     "model_configuration"
                 ):
@@ -211,6 +234,10 @@ def summarize_tasks(cases, arms, *, repetitions):
                 for name in names
             ]
             absent = [name for name, score in zip(names, predicates) if score is None]
+            if not valid_digest(
+                (row.get("pairing_identity") or {}).get("target_input_digest")
+            ):
+                absent.append("target_input_digest")
             if row.get("identity_verified") is False:
                 absent.append("loaded_agent_identity")
             metrics = row.get("metrics", {})

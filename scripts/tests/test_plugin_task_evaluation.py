@@ -48,6 +48,47 @@ class CandidateExportTests(unittest.TestCase):
 
 
 class PairedTaskReportTests(unittest.TestCase):
+    def test_a_subject_cannot_qualify_against_itself(self):
+        from scripts.plugin_task_evaluation import summarize_tasks
+
+        case = {
+            "case_id": "task",
+            "oracle": {"required_predicates": [], "forbidden_predicates": []},
+        }
+        arm = {
+            "identity": {
+                "subject_digest": "sha256:" + "a" * 64,
+                "archive_sha256": "b" * 64,
+            },
+            "episodes": [],
+            "scores": [],
+        }
+        with self.assertRaisesRegex(ValueError, "distinct.*subject"):
+            summarize_tasks(
+                [case], {"baseline": arm, "candidate": arm}, repetitions=1
+            )
+
+    def test_different_subjects_cannot_qualify_the_same_archive(self):
+        from scripts.plugin_task_evaluation import summarize_tasks
+
+        case = {
+            "case_id": "task",
+            "oracle": {"required_predicates": [], "forbidden_predicates": []},
+        }
+        arms = {
+            name: {
+                "identity": {
+                    "subject_digest": "sha256:" + marker * 64,
+                    "archive_sha256": "c" * 64,
+                },
+                "episodes": [],
+                "scores": [],
+            }
+            for name, marker in (("baseline", "a"), ("candidate", "b"))
+        }
+        with self.assertRaisesRegex(ValueError, "distinct.*archive"):
+            summarize_tasks([case], arms, repetitions=1)
+
     def test_success_requires_task_predicates_and_complete_pair_metrics(self):
         from scripts.plugin_task_evaluation import summarize_tasks
 
@@ -65,6 +106,7 @@ class PairedTaskReportTests(unittest.TestCase):
             "status": "completed",
             "strict_success": True,
             "hard_failure": False,
+            "pairing_identity": {"target_input_digest": "sha256:" + "a" * 64},
             "metrics": {
                 "wall_seconds": 10,
                 "cost_usd": 0.02,
@@ -122,6 +164,7 @@ class TaskDenominatorTests(unittest.TestCase):
                 "status": "completed" if success else "failed",
                 "hard_failure": False,
                 "failure_layer": "runtime" if not success else None,
+                "pairing_identity": {"target_input_digest": "sha256:" + "a" * 64},
                 "metrics": {
                     "wall_seconds": seconds,
                     "cost_usd": 0,
@@ -230,6 +273,76 @@ class TaskReviewEvidenceTests(unittest.TestCase):
 
 
 class ActualPairingTests(unittest.TestCase):
+    def test_missing_target_evidence_stays_unverified_for_each_affected_sample(self):
+        from scripts.plugin_task_evaluation import summarize_tasks
+
+        case = {
+            "case_id": "task",
+            "oracle": {"required_predicates": ["complete"], "forbidden_predicates": []},
+        }
+        episode = {
+            "episode_id": "ep",
+            "case_id": "task",
+            "repetition": 1,
+            "status": "completed",
+            "strict_success": True,
+            "hard_failure": False,
+            "metrics": {
+                "wall_seconds": 1,
+                "cost_usd": 0,
+                "extra_tool_calls": 0,
+                "human_interventions": 0,
+                "recovery_attempts": 0,
+            },
+        }
+        scores = [
+            {"episode_id": "ep", "scorer_id": "plugin-task.complete", "passed": True}
+        ]
+        for affected in (("candidate",), ("baseline", "candidate")):
+            for missing in (
+                {},
+                {"target_input_digest": None},
+                {"target_input_digest": "sha256:not-a-digest"},
+            ):
+                with self.subTest(affected=affected, missing=missing):
+                    arms = {
+                        name: {
+                            "episodes": [
+                                dict(
+                                    episode,
+                                    pairing_identity=missing
+                                    if name in affected
+                                    else {"target_input_digest": "sha256:" + "a" * 64},
+                                )
+                            ],
+                            "scores": scores,
+                        }
+                        for name in ("baseline", "candidate")
+                    }
+                    report = summarize_tasks([case], arms, repetitions=1)
+                    self.assertEqual(report["status"], "unverified")
+                    for name in affected:
+                        self.assertEqual(report["arms"][name]["task_successes"], 0)
+                        self.assertIn(
+                            {
+                                "case": "task",
+                                "repetition": 1,
+                                "missing": ["target_input_digest"],
+                            },
+                            report["arms"][name]["gaps"],
+                        )
+        # An explicitly recorded empty target is still known input.
+        for arm in arms.values():
+            arm["episodes"][0]["pairing_identity"] = {
+                "target_input_digest": (
+                    "sha256:44136fa355b3678a1146ad16f7e8649e"
+                    "94fb4fc21fe77e8310c060f61caaff8a"
+                )
+            }
+        self.assertEqual(
+            summarize_tasks([case], arms, repetitions=1)["status"], "passed"
+        )
+
     def test_same_declared_task_cannot_pair_different_actual_targets(self):
         from scripts.plugin_task_evaluation import summarize_tasks
 
@@ -246,7 +359,7 @@ class ActualPairingTests(unittest.TestCase):
             "hard_failure": False,
             "metrics": {},
             "pairing_identity": {
-                "target_input_digest": "target-a",
+                "target_input_digest": "sha256:" + "a" * 64,
                 "case_prompt_digest": "prompt",
             },
         }
@@ -256,7 +369,7 @@ class ActualPairingTests(unittest.TestCase):
                 dict(
                     row,
                     pairing_identity={
-                        "target_input_digest": "target-b",
+                        "target_input_digest": "sha256:" + "b" * 64,
                         "case_prompt_digest": "prompt",
                     },
                 )
