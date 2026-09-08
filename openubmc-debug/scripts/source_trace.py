@@ -229,7 +229,8 @@ def inspect_source(source_root: str, symbol: str, *, max_files: int = 256,
     try:
         commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
                                 capture_output=True, text=True, timeout=2, check=False)
-        status = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"],
+        status = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", str(root),
+                                 "status", "--porcelain", "--untracked-files=normal"],
                                 capture_output=True, text=True, timeout=2, check=False)
         if commit.returncode == status.returncode == 0:
             revision = commit.stdout.strip()

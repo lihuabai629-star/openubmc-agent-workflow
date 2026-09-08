@@ -130,6 +130,15 @@ print(json.dumps(search_source_terms(sys.argv[2], ['update', 'Drive failure text
         result = json.loads(proc.stdout)
         self.assertEqual(result["trace_candidates"], [{"symbol": "update", "helper": "source_trace.py"}])
 
+    def test_git_metadata_does_not_execute_a_configured_project_monitor(self) -> None:
+        self.write("a.lua", "update()\n")
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.write("monitor", "#!/bin/sh\ntouch monitor-executed\n")
+        (self.root / "monitor").chmod(0o755)
+        subprocess.run(["git", "-C", str(self.root), "config", "core.fsmonitor", str(self.root / "monitor")], check=True)
+        self.trace()
+        self.assertFalse((self.root / "monitor-executed").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
