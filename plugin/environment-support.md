@@ -20,6 +20,42 @@ Linux, Python 3.12 with pip, Node.js 20+ with npm, Git and Codex are the require
 
 ## Private credentials
 
+### Reuse existing configuration
+
+Run `pluginctl.py doctor` first. Its `credentials` report includes local capabilities and
+`active_revision`; `remote_authentication=not_checked` is a local readiness result. The Runtime
+prefers the selected structured `credentials.json` source, including its activated revision, over
+retained legacy defaults. An absent logical source file does not mean its active snapshot is absent.
+
+Use `observe`/`execute` for authorized target work; the Runtime resolves credentials locally. If a
+local target/purpose/transport lookup itself needs diagnosis, use the public task-bound resolver:
+
+```python
+import json
+import sys
+sys.path.insert(0, "<plugin-root>/skills/openubmc-target-runtime")
+from openubmc_target_runtime import CredentialResolver
+
+resolver = CredentialResolver()
+lookup = {"task_id": "local-credential-check", "host": "<BMC IP>",
+          "purpose": "bmc", "transport": "redfish"}
+selected = resolver.resolve_local(**lookup)
+reused = resolver.resolve_local(**lookup)
+print(json.dumps({"configured": selected.credentials is not None,
+                  "cache_reused": reused.cache_hit,
+                  "active_revision": resolver.configuration_revision(lookup["task_id"]),
+                  "remote_authentication": "not_checked"}))
+```
+
+Replace only the plugin root, authorized target, purpose (`bmc` or `os`), and transport (`ssh` or
+`redfish`). This checks local resolution and cache reuse without connecting. Keep the resolved
+credential object in local memory; print only readiness metadata. `CredentialResolver.resolve_local`
+selects and pins the activated snapshot. Direct `LocalCredentialSource.resolve`, reading the logical
+file, or calling a legacy loader bypasses that selection and cannot establish Runtime readiness.
+An exact IP override selects a complete record; authentication failure never falls back to a default.
+
+### Change or check an account
+
 When the user needs to enter or change BMC/OS, KB or Conan credentials, open the local browser page:
 
 ```bash
@@ -31,6 +67,10 @@ Keep the page process alive while the user edits. The page displays the Linux/WS
 Saving creates a private revision; **Save and activate** selects it for subsequent Runtime/KB requests. Existing requests keep their original account. With an already authorized target, append `--target <ip> --purpose bmc|os --transport ssh|redfish`; activation then runs that bounded connection check. Without a target, saving performs no device probe. The page also offers explicit checks for selected targets and configured KB/Conan services. Report their actual status: saved and active do not mean verified.
 
 SSH checks preserve strict host identity verification, Redfish checks verify TLS, and no check retries a rejected IP override with global credentials. Conan authenticates only an existing named remote and uses the native per-user token cache. KB requires the user's authorized OAuth application settings; interactive authentication requirements remain visible as such. The plugin supplies no shared OAuth client secret.
+
+A Redfish certificate validation failure remains an unverified connection. Report that failure and
+the need for a trusted certificate or correctly matching endpoint; never silently retry with TLS
+verification disabled or reinterpret it as missing credentials.
 
 For a machine without an accessible browser, the existing `install_environment.py credentials` hidden-input helper remains available. A headless page can be started with `configure --no-browser`; open its session URL in the same machine's browser. Use the WSL environment containing the installed plugin and credentials.
 
