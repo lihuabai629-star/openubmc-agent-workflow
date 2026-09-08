@@ -441,8 +441,9 @@ def reviewed_task_scores(root, review, episodes, cases, *, bundle_digest):
 def runtime_task_completion(records):
     """Read Runtime-returned Outcomes; independent reviews cannot replace them."""
     runs, terminal, pending = {}, {}, set()
+    started, transport_errors = {}, {}
     unresolved = False
-    for record in records:
+    for position, record in enumerate(records):
         if record.get("event_type") != "codex.event":
             continue
         event = record.get("payload", {})
@@ -455,11 +456,15 @@ def runtime_task_completion(records):
             continue
         if event.get("type") == "item.started":
             pending.add(item.get("id"))
+            started[item.get("id")] = (position, item.get("arguments"))
             continue
         if event.get("type") != "item.completed":
             continue
         pending.discard(item.get("id"))
         arguments = item.get("arguments") or {}
+        if started.get(item.get("id"), (None, arguments))[1] != arguments:
+            unresolved = True
+            continue
         requested_run = arguments.get("run_id") if isinstance(arguments, dict) else None
         if requested_run is not None and not isinstance(requested_run, str):
             unresolved = True
@@ -473,7 +478,19 @@ def runtime_task_completion(records):
             or not isinstance(turn, dict)
             or turn.get("schema") != "openubmc.target-runtime.v1/agent-gateway-v1/turn"
         ):
-            unresolved = True
+            if (
+                item.get("status") == "failed"
+                and item.get("error")
+                and item.get("result") is None
+                and requested_run
+                and arguments.get("kind") in {"resume", "respond", "control"}
+            ):
+                # A failed transport has no Outcome. Only a new call on this
+                # same Run can establish what happened after this failure.
+                transport_errors[requested_run] = position
+                runs[requested_run] = {"run_id": requested_run, "status": "unverified"}
+            else:
+                unresolved = True
             continue
         run_id = turn.get("run_id")
         if not isinstance(run_id, str):
@@ -509,6 +526,15 @@ def runtime_task_completion(records):
             if run_id in terminal and terminal[run_id] != outcome:
                 unresolved = True
             terminal[run_id] = outcome
+        if status in {"completed", "failed"} and run_id in transport_errors:
+            call_started, start_arguments = started.get(item.get("id"), (-1, None))
+            if (
+                call_started > transport_errors[run_id]
+                and start_arguments == arguments
+                and requested_run == run_id
+                and arguments.get("kind") in {"resume", "respond", "control"}
+            ):
+                del transport_errors[run_id]
         runs[run_id] = {
             "run_id": run_id,
             "status": status,
@@ -518,7 +544,7 @@ def runtime_task_completion(records):
         }
     statuses = {run["status"] for run in runs.values()}
     status = (
-        "unverified" if unresolved or pending or "unverified" in statuses else
+        "unverified" if unresolved or pending or transport_errors or "unverified" in statuses else
         "failed" if "failed" in statuses else
         "completed" if runs else "not-applicable"
     )

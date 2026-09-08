@@ -44,7 +44,7 @@ python scripts/plugin_task_evaluation.py prepare \
 
 `completion` 独立判定完整用户任务，`status` 为 `completed`、`failed` 或 `unverified`。`criterion` 写明实际完整任务验收条件，不能只写 Agent 正常退出或局部观察成功。其非空 `evidence_refs` 必须绑定 Bundle manifest 中该 episode 的原始 `raw_records` 路径与 SHA-256；复核新建的说明文件、其他 episode 的证据和复制到新位置的来源都不能代替。缺少 `completion` 的旧 Review 仍可读取，该任务保留 `task_completion` 缺口。回答有依据、如实承认诊断未完成时，`answer_grounded` 和禁止虚假成功的判据仍可为真，完整任务则应按证据填写 `failed` 或 `unverified`。
 
-报告从已验证原始 Codex 记录中的 Runtime MCP `execute` 返回值读取 Run 的终态。每个已出现的 Run 都需要 `state=completed`、`outcome_recorded=true` 和 `outcome.status=completed`；最终失败、未知、缺少 Outcome、未结束的调用或矛盾终态不能被人工 `completion=completed` 覆盖。无 Run 的参数拒绝不阻止后续成功；同一 Run 的过程 Gate 或 Incident 可由后续真实完成消除。纯 Python 等无 Run 任务可依据独立完成复核统计，不要求生成 Runtime Outcome。`task_results` 同时显示独立完成判定、Runtime 完成状态和最终任务状态，不改变 RunEngine 或 MutationJournal 的事实。
+报告从已验证原始 Codex 记录中的 Runtime MCP `execute` 返回值读取 Run 的终态。每个已出现的 Run 都需要 `state=completed`、`outcome_recorded=true` 和 `outcome.status=completed`；最终失败、未知、缺少 Outcome、未结束的调用或矛盾终态不能被人工 `completion=completed` 覆盖。无 Run 的参数拒绝不阻止后续成功；同一 Run 的过程 Gate 或 Incident 可由后续真实完成消除。 对明确 Run 的 `resume`、`respond` 或 `control`，没有返回内容的传输失败可由失败后新发起的同 Run 调用所返回的权威终态解除；以 `item.started` 顺序和调用参数确认新调用。缺少新发起证据、失败前已开始的晚到结果、未知 Run、未确认的 `start`、身份冲突、畸形返回或矛盾终态仍保留缺口。纯 Python 等无 Run 任务可依据独立完成复核统计，不要求生成 Runtime Outcome。`task_results` 同时显示独立完成判定、Runtime 完成状态和最终任务状态，不改变 RunEngine 或 MutationJournal 的事实。
 
 `wall_seconds` 是完整任务耗时，`cost_usd` 是实际账单口径成本；有 token 数据但没有价格依据时成本仍未测量。`extra_tool_calls` 是独立复核识别的冗余调用数；`human_interventions` 计任务中的人工介入，`recovery_attempts` 计恢复尝试。观察到零可填零，未观察则省略。复核只能补充缺失指标，不能改写 harness 已记录的测量值。
 

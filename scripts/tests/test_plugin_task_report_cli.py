@@ -17,6 +17,18 @@ from scripts.tests.plugin_task_report_fixture import (
 )
 
 
+def runtime_call(identifier, *, run_id="run-fixture", kind="resume", turn=None, failed=False):
+    item = {"id": identifier, "type": "mcp_tool_call",
+            "server": "openubmc-target-runtime", "tool": "execute",
+            "arguments": {"kind": kind, "run_id": run_id}}
+    started = {"type": "item.started", "item": dict(item, status="in_progress")}
+    if failed:
+        completed = dict(item, status="failed", error={"message": "Controlled transport timeout"})
+    else:
+        completed = dict(item, status="completed", result={"structured_content": turn})
+    return [started, {"type": "item.completed", "item": completed}]
+
+
 class PublicTaskCompletionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -90,6 +102,57 @@ class PublicTaskCompletionTests(unittest.TestCase):
             runtime_turn("completed"),
         ]})
         self.assert_successes(fixture, 1)
+
+    def test_fresh_same_run_resume_recovers_a_transport_failure(self):
+        fixture = build_report_fixture(self.root, samples={"skill-positive": []},
+            extra_events={"skill-positive": [
+                *runtime_call("failed-call", failed=True),
+                *runtime_call("fresh-resume", turn=runtime_turn("completed")),
+            ]})
+        report = self.assert_successes(fixture, 1)
+        for arm in report["arms"].values():
+            self.assertFalse(any(gap["case"] == "skill-positive" for gap in arm["gaps"]))
+
+    def test_transport_failure_with_conflicting_call_identity_cannot_recover(self):
+        for phase in ("failure", "recovery"):
+            with self.subTest(phase=phase):
+                conflicting = runtime_call("conflicting-call", failed=phase == "failure",
+                                           turn=runtime_turn("completed"))
+                conflicting[0]["item"]["arguments"] = {"kind": "resume", "run_id": "another-run"}
+                fixture = build_report_fixture(self.root / phase, samples={"skill-positive": []},
+                    extra_events={"skill-positive": [
+                        *runtime_call("failed-call", failed=True), *conflicting,
+                        *runtime_call("fresh-resume", turn=runtime_turn("completed")),
+                    ]})
+                self.assert_successes(fixture, 0)
+
+    def test_transport_recovery_keeps_unknown_and_stale_results_unverified(self):
+        failed = runtime_call("failed-call", failed=True)
+        resumed = runtime_call("resume", turn=runtime_turn("completed"))
+        malformed = runtime_call("malformed-call", failed=True)
+        malformed[1]["item"]["result"] = {"unexpected": "not a Runtime Turn"}
+        cases = {
+            "unknown-run": [*runtime_call("unknown", run_id="", failed=True), *resumed],
+            "unconfirmed-start": [*runtime_call("start", kind="start", failed=True), *resumed],
+            "malformed-result": [*malformed, *resumed],
+            "missing-new-start": [*failed, resumed[1]],
+            "overlapping-old-result": [resumed[0], *failed, resumed[1]],
+            "failure-after-completion": [*resumed, *failed],
+            "different-run": [*failed, *runtime_call("other", run_id="other-run",
+                                turn=runtime_turn("completed", run_id="other-run"))],
+            "contradictory-terminal": [*runtime_call("terminal", turn=runtime_turn("failed")),
+                                        *failed, *resumed],
+            "mismatched-return": [*failed, *runtime_call("wrong-return",
+                                    turn=runtime_turn("completed", run_id="other-run")), *resumed],
+        }
+        for name, events in cases.items():
+            with self.subTest(name=name):
+                fixture = build_report_fixture(self.root / name, samples={"skill-positive": []},
+                    extra_events={"skill-positive": events})
+                report = self.assert_successes(fixture, 0)
+                for arm in report["arms"].values():
+                    gap = next(gap for gap in arm["gaps"] if gap["case"] == "skill-positive")
+                    self.assertIn("runtime_outcome", gap["missing"])
 
     def test_blank_run_id_with_unknown_outcome_cannot_be_ignored(self):
         fixture = build_report_fixture(self.root, samples={"skill-positive": [
