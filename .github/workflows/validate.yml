@@ -95,6 +95,13 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: python scripts/validate_workflow.py
 
+      - name: Validate local configuration in Chromium
+        working-directory: openubmc-environment-setup/tests/browser
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          npm test
+
       - name: Install locked Codex plugin host
         run: |
           npm ci --ignore-scripts --no-audit --no-fund --prefix plugin/host
