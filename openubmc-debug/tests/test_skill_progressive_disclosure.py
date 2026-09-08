@@ -102,7 +102,12 @@ class SkillProgressiveDisclosureTests(unittest.TestCase):
             encoding="utf-8"
         )
         examples = json_examples(content)
-        observe, resume, no_progress, reconcile, artifact = examples[:5]
+        observe = next(example for example in examples if 'selectors' in example)
+        resume = next(example for example in examples if example.get('kind') == 'resume')
+        no_progress = next(example for example in examples if 'response_required' in example)
+        reconcile = next(example for example in examples if example.get('command') == 'reconcile')
+        artifact = next(example for example in examples
+                        if 'artifact_ref' in example.get('response', {}).get('payload', {}))
 
         self.assertEqual(
             observe["selectors"][0]["names"],

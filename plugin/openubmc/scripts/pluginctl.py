@@ -317,29 +317,25 @@ def node_environment() -> dict[str, str]:
 
 
 def local_credentials_status(content: dict[str, bytes]) -> dict[str, object]:
-    """Inspect the selected file using the same reader as domain operations."""
+    """Inspect local sources using verified Runtime modules, without dependencies."""
+    import sys
     import types
-    reader = types.ModuleType('verified_credential_file')
-    exec(compile(content['skills/openubmc-target-runtime/openubmc_target_runtime/credential_file.py'],
-                 '<verified-credential-file>', 'exec'), reader.__dict__)
-    result = {'configured': False, 'status': 'unavailable', 'reason': '',
-              'remote_authentication': 'not_checked', 'capabilities': {}}
+    prefix = '_verified_openubmc_credentials'
+    package = types.ModuleType(prefix)
+    package.__path__ = []
+    loaded = {prefix: package}
+    sys.modules[prefix] = package
     try:
-        path = reader.selected_credentials_path()
-        if path is None:
-            path = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home()/'.config')/'openubmc/credentials.env'
-        if not path.exists() and not path.is_symlink():
-            return dict(result, status='missing', reason='credentials file is missing')
-        values = reader.read_credentials_file(path)
-    except (reader.CredentialFileError, OSError) as error:
-        return dict(result, reason=str(error))
-    completeness = reader.credential_completeness(values)
-    result['capabilities'] = completeness['capabilities']
-    missing = completeness['missing_keys']
-    configured = completeness['configured']
-    return dict(result, configured=configured, status='configured' if configured else 'incomplete',
-                reason='local credentials are complete; remote authentication was not checked' if configured
-                else 'missing keys: ' + ', '.join(missing) if missing else 'no credential capability is configured')
+        for name in ('credential_file', 'configuration', 'credentials'):
+            module = types.ModuleType(prefix + '.' + name)
+            module.__package__ = prefix
+            sys.modules[module.__name__] = loaded[module.__name__] = module
+            path = 'skills/openubmc-target-runtime/openubmc_target_runtime/' + name + '.py'
+            exec(compile(content[path], '<verified-' + name + '>', 'exec'), module.__dict__)
+        return module.LocalCredentialSource().status()
+    finally:
+        for name in loaded:
+            sys.modules.pop(name, None)
 
 
 def probe_server(command: str, content: dict[str, bytes], lock: dict) -> dict[str, object]:
