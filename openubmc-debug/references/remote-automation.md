@@ -54,10 +54,17 @@ lookup establishes neither remote authentication nor authority for a target muta
 
 ## Transport security and local dependencies
 
-For Redfish, preserve certificate verification. A certificate validation failure remains an
-unverified connection; report the certificate or endpoint trust problem. Never silently retry
-with `verify=False`, an insecure TLS option, or another credential record. Correct trust or the
-matching endpoint through the authorized configuration path before retrying.
+Distinguish the configured Redfish transport from the strict configuration checker. Historical
+internal BMC transport bindings may permit insecure TLS; the configuration checker's Redfish
+connection verifies certificates. Preserve the selected check policy: a strict-check failure
+remains unverified. Never silently retry that check with `verify=False`, an insecure TLS option,
+or another credential record. Correct certificate trust or the matching endpoint before retrying
+the strict check.
+
+An existing explicit authorization for insecure transport can be reused within its original
+scope without another confirmation. Report that transport's actual result with certificate
+verification disabled; it does not qualify certificate validation or replace a failed strict
+check. A historical transport default does not broaden a task's explicit validation boundary.
 
 SSH-backed lanes require the local `ssh` executable. `sshpass` is conditional on password
 authentication; key/agent authentication does not need it. `rg` is conditional on local source
@@ -232,12 +239,12 @@ without limiting the number of targets that may be requested.
 Treat matching target bindings, credential selectors, artifact identities, delivery strategy, and
 task-level authorization as reusable Case facts. A direct user request to apply/live-patch,
 upgrade, or rollback authorizes that named mutation and is projected onto internal gates without a
-second confirmation. Apply or upgrade authorization never implies rollback. Insecure TLS and the
-Live Patch exceptions `force_path`, `no_backup`, and `no_remount` are frozen task facts. Internal
-BMC workflows authorize insecure TLS by default and may explicitly set it to `false` for a trusted
-certificate; Live Patch exceptions remain explicit. A Case that already carries the matching facts
-must not ask again. Stop automatic advancement when a mutation outcome is unknown, or when recovery
-requires a rollback that was not separately authorized.
+second confirmation. Apply or upgrade authorization never implies rollback. The selected TLS
+policy and the Live Patch exceptions `force_path`, `no_backup`, and `no_remount` are frozen task
+facts. Reuse matching authorization only within its original scope; the transport-security rules
+above keep strict checks distinct from historical insecure transport. Live Patch exceptions remain
+explicit. Stop automatic advancement when a mutation outcome is unknown, or when recovery requires
+a rollback that was not separately authorized.
 
 The local stdio server persists the material TaskContext under the Target Runtime state directory.
 Reconnecting with the same task ID restores the typed intent, target bindings/selectors, at most 16

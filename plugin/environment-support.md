@@ -68,9 +68,13 @@ Saving creates a private revision; **Save and activate** selects it for subseque
 
 SSH checks preserve strict host identity verification, Redfish checks verify TLS, and no check retries a rejected IP override with global credentials. Conan authenticates only an existing named remote and uses the native per-user token cache. KB requires the user's authorized OAuth application settings; interactive authentication requirements remain visible as such. The plugin supplies no shared OAuth client secret.
 
-A Redfish certificate validation failure remains an unverified connection. Report that failure and
-the need for a trusted certificate or correctly matching endpoint; never silently retry with TLS
-verification disabled or reinterpret it as missing credentials.
+These strict checks are distinct from historical Runtime transport bindings that may permit
+insecure TLS. A strict-check failure remains unverified. Report the certificate or endpoint trust
+problem; never silently retry the check with TLS verification disabled or reinterpret it as missing
+credentials. If insecure transport is already explicitly authorized, report any connection result
+within that scope with certificate verification disabled: it does not qualify certificate validation
+or replace the strict check. Reuse that authorization without asking again; it does not change the
+check policy.
 
 For a machine without an accessible browser, the existing `install_environment.py credentials` hidden-input helper remains available. A headless page can be started with `configure --no-browser`; open its session URL in the same machine's browser. Use the WSL environment containing the installed plugin and credentials.
 
