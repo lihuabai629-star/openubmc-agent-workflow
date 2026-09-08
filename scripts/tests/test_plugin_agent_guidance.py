@@ -1,5 +1,6 @@
 """Execute examples taken from the Skills shipped to real Agents."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -105,7 +106,7 @@ print(json.dumps({"run_id": command.run_id, "gate_id": command.gate_id,
                         for block in skill.read_text().split('```python')[1:]]
             self.assertEqual(len(examples), 1, 'Include a secret-free local resolver example')
             example = examples[0].replace('<plugin-root>', str(plugin)).replace('<BMC IP>', '192.0.2.10')
-            result = subprocess.run([
+            prepared = subprocess.run([
                 sys.executable, '-I', '-B', '-c', '''
 import json, os, pathlib, sys
 sys.path.insert(0, sys.argv[1])
@@ -120,18 +121,29 @@ saved = store.save({"schema_version": 1,
     "defaults": {"bmc": {"ssh": "local", "redfish": "local"}}, "targets": {}}, expected_revision=None)
 store.activate(saved["revision"], expected_active_revision=None)
 assert not source.exists()
-exec(compile(sys.stdin.read(), "<packaged-credential-example>", "exec"))
 print(json.dumps({"expected_active_revision": saved["revision"]}))
 ''', str(plugin / 'skills/openubmc-target-runtime'), str(base / 'config')],
-                input=example, capture_output=True, text=True, timeout=10)
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            expected = json.loads(prepared.stdout)
+            result = subprocess.run([
+                sys.executable, '-I', '-c', example],
+                env={'PATH': os.environ.get('PATH', ''),
+                     'XDG_CONFIG_HOME': str(base / 'config')},
+                capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
-            report, expected = map(json.loads, result.stdout.splitlines())
+            report = json.loads(result.stdout)
             self.assertEqual(report, {
                 'configured': True, 'cache_reused': True,
                 'active_revision': expected['expected_active_revision'],
                 'remote_authentication': 'not_checked',
             })
             self.assertNotIn('doc-local-only-secret', result.stdout + result.stderr)
+            verified = subprocess.run([
+                sys.executable, '-I', '-B', str(plugin / 'scripts/pluginctl.py'), 'verify'],
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertTrue(json.loads(verified.stdout)['ok'])
 
 
 if __name__ == '__main__':
