@@ -14,6 +14,26 @@ else:
 
 
 class PluginCredentialTests(unittest.TestCase):
+    def test_doctor_uses_runtime_redfish_environment_aliases_and_conflicts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            plugin = package_fixture(base)
+            env = {key: value for key, value in os.environ.items() if not key.startswith(('OPENUBMC_', 'REDFISH_', 'XDG_', 'PYTHON'))}
+            env.update(HOME=str(base / 'home'), XDG_CONFIG_HOME=str(base / 'config'),
+                       XDG_DATA_HOME=str(base / 'data'), OPENUBMC_REDFISH_USER='fixture',
+                       OPENUBMC_REDFISH_PASSWORD='redfish-only-local-secret')
+            cli = [sys.executable, '-I', str(plugin / 'scripts/pluginctl.py'), 'doctor']
+            result = subprocess.run(cli, env=env, capture_output=True, text=True, timeout=30)
+            report = json.loads(result.stdout)
+            self.assertTrue(report['credentials_configured'], report['credentials'])
+            self.assertTrue(report['credentials']['capabilities']['redfish'])
+            env['REDFISH_USERNAME'] = 'conflicting-fixture'
+            conflict = subprocess.run(cli, env=env, capture_output=True, text=True, timeout=30)
+            rejected = json.loads(conflict.stdout)
+            self.assertFalse(rejected['credentials_configured'])
+            self.assertEqual(rejected['credentials']['code'], 'credentials_conflict')
+            self.assertNotIn('redfish-only-local-secret', result.stdout + result.stderr + conflict.stdout + conflict.stderr)
+
     def test_runtime_launcher_keeps_standard_json_ahead_of_retained_legacy_file(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
