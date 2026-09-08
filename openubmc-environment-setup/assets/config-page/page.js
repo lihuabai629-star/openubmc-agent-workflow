@@ -199,7 +199,11 @@ function records(parent, config, conan = false) {
     }
     return value;
   };
-  read.names = () => rows.map((r) => r.n.value.trim()).filter(Boolean);
+  read.options = () => rows.map((r) => [r.n.id, r.n.value.trim()]);
+  read.reference = (name) =>
+    rows.find((r) => r.n.value.trim() === name)?.n.id || "";
+  read.recordName = (reference) =>
+    rows.find((r) => r.n.id === reference)?.n.value.trim() || "";
   return read;
 }
 function renderTargets(config) {
@@ -208,22 +212,26 @@ function renderTargets(config) {
   node("h3", "全局默认", parent);
   const grid = node("div", undefined, parent);
   grid.className = "form-grid";
-  const names = Object.keys(config.credentials || {});
   const references = [];
-  const options = [["", "未配置"], ...names.map((n) => [n, n])];
+  const options = [["", "未配置"], ...getRecords.options()];
   const bmcSsh = select(
     grid,
     "BMC SSH",
     options,
-    config.defaults?.bmc?.ssh || "",
+    getRecords.reference(config.defaults?.bmc?.ssh),
   );
   const redfish = select(
     grid,
     "BMC Redfish",
     options,
-    config.defaults?.bmc?.redfish || "",
+    getRecords.reference(config.defaults?.bmc?.redfish),
   );
-  const osSsh = select(grid, "OS SSH", options, config.defaults?.os?.ssh || "");
+  const osSsh = select(
+    grid,
+    "OS SSH",
+    options,
+    getRecords.reference(config.defaults?.os?.ssh),
+  );
   references.push([bmcSsh, "未配置"], [redfish, "未配置"], [osSsh, "未配置"]);
   node("h3", "按 IP 覆盖", parent);
   const body = table(parent, [
@@ -238,13 +246,25 @@ function renderTargets(config) {
     const row = node("tr", undefined, body);
     const cells = Array.from({ length: 5 }, () => node("td", undefined, row));
     const address = input(cells[0], "IP 地址", ip);
-    const opts = [
-      ["", "继承全局默认"],
-      ...getRecords.names().map((n) => [n, n]),
-    ];
-    const ssh = select(cells[1], "SSH 记录", opts, value.bmc?.ssh || "");
-    const rf = select(cells[2], "Redfish 记录", opts, value.bmc?.redfish || "");
-    const os = select(cells[3], "OS 记录", opts, value.os?.ssh || "");
+    const opts = [["", "继承全局默认"], ...getRecords.options()];
+    const ssh = select(
+      cells[1],
+      "SSH 记录",
+      opts,
+      getRecords.reference(value.bmc?.ssh),
+    );
+    const rf = select(
+      cells[2],
+      "Redfish 记录",
+      opts,
+      getRecords.reference(value.bmc?.redfish),
+    );
+    const os = select(
+      cells[3],
+      "OS 记录",
+      opts,
+      getRecords.reference(value.os?.ssh),
+    );
     references.push(
       [ssh, "继承全局默认"],
       [rf, "继承全局默认"],
@@ -265,7 +285,10 @@ function renderTargets(config) {
   addButton.type = "button";
   addButton.className = "add";
   addButton.onclick = () => add();
-  function refs(ssh, rf, os) {
+  function refs(sshReference, rfReference, osReference) {
+    const ssh = getRecords.recordName(sshReference);
+    const rf = getRecords.recordName(rfReference);
+    const os = getRecords.recordName(osReference);
     return {
       ...(ssh || rf
         ? { bmc: { ...(ssh ? { ssh } : {}), ...(rf ? { redfish: rf } : {}) } }
@@ -277,10 +300,7 @@ function renderTargets(config) {
     for (const [ref, empty] of references) {
       const old = ref.value;
       ref.replaceChildren();
-      for (const [v, t] of [
-        ["", empty],
-        ...getRecords.names().map((n) => [n, n]),
-      ]) {
+      for (const [v, t] of [["", empty], ...getRecords.options()]) {
         const option = node("option", t, ref);
         option.value = v;
       }
