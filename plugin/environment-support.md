@@ -33,6 +33,7 @@ local target/purpose/transport lookup itself needs diagnosis, use the public tas
 ```python
 import json
 import sys
+sys.dont_write_bytecode = True
 sys.path.insert(0, "<plugin-root>/skills/openubmc-target-runtime")
 from openubmc_target_runtime import CredentialResolver
 
