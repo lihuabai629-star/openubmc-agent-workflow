@@ -22,11 +22,20 @@ def _digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
-def _code_only(text: str) -> str:
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("source trace time budget exhausted")
+    return remaining
+
+
+def _code_only(text: str, deadline: float) -> str:
     """Mask Lua comments/strings while preserving source line positions."""
     output: list[str] = []
     offset = 0
     while offset < len(text):
+        if offset % 1024 == 0:
+            _remaining(deadline)
         long_string = _LONG_STRING.match(text, offset)
         end = offset
         if long_string:
@@ -60,11 +69,15 @@ def _code_only(text: str) -> str:
     return "".join(output)
 
 
-def _file_references(text: str, symbol: str) -> list[dict[str, object]]:
-    code = _code_only(text)
+def _file_references(text: str, symbol: str, deadline: float) -> tuple[list[dict[str, object]], bool]:
+    code = _code_only(text, deadline)
     tokens: list[tuple[str, int]] = []
     for line_number, line in enumerate(code.splitlines(), 1):
-        tokens.extend((match.group(), line_number) for match in re.finditer(r"[A-Za-z_]\w*|[^\s]", line))
+        _remaining(deadline)
+        for index, match in enumerate(re.finditer(r"[A-Za-z_]\w*|[^\s]", line)):
+            if index % 1024 == 0:
+                _remaining(deadline)
+            tokens.append((match.group(), line_number))
     references: list[dict[str, object]] = []
     blocks: list[tuple[str, str]] = []
     declared: set[int] = set()
@@ -76,6 +89,8 @@ def _file_references(text: str, symbol: str) -> list[dict[str, object]]:
         return name == symbol if "." in symbol or ":" in symbol else re.split(r"[.:]", name)[-1] == symbol
 
     for index, (token, line_number) in enumerate(tokens):
+        if index % 256 == 0:
+            _remaining(deadline)
         if token == "function":
             end = index + 1
             parts = []
@@ -126,7 +141,9 @@ def _file_references(text: str, symbol: str) -> list[dict[str, object]]:
         else:
             references.append({"kind": "value_reference", "line": line_number, "symbol": name,
                                "caller": caller, "resolution": "unresolved_dispatch"})
-    return references
+    dynamic_dispatch = any(token == "]" and tokens[index + 1][0] == "("
+                           for index, (token, _) in enumerate(tokens[:-1]))
+    return references, dynamic_dispatch
 
 
 def inspect_source(source_root: str, symbol: str, *, max_files: int = 256,
@@ -138,6 +155,7 @@ def inspect_source(source_root: str, symbol: str, *, max_files: int = 256,
         raise ValueError("source trace limits are outside the supported range")
     root = Path(source_root).resolve()
     files: list[dict[str, str]] = []
+    blob_ids: dict[str, dict[int, str]] = {}
     references: list[dict[str, object]] = []
     gaps: list[dict[str, str]] = []
     deadline = time.monotonic() + timeout
@@ -157,6 +175,9 @@ def inspect_source(source_root: str, symbol: str, *, max_files: int = 256,
             gap("source_root_missing")
             return
         for directory, names, filenames in os.walk(root, onerror=lambda _: gap("unreadable_directory")):
+            if time.monotonic() >= deadline:
+                gap("time_limit")
+                return
             selected = []
             for name in sorted(names):
                 path = Path(directory, name)
@@ -210,14 +231,21 @@ def inspect_source(source_root: str, symbol: str, *, max_files: int = 256,
             total_bytes += len(raw)
             digest = _digest(raw)
             files.append({"path": relative, "digest": digest})
-            found = _file_references(raw.decode("utf-8"), symbol)
+            blob = b"blob " + str(len(raw)).encode() + b"\0" + raw
+            blob_ids[relative] = {40: hashlib.sha1(blob).hexdigest(), 64: hashlib.sha256(blob).hexdigest()}
+            found, dynamic_dispatch = _file_references(raw.decode("utf-8"), symbol, deadline)
+            if dynamic_dispatch:
+                gap("unresolved_dispatch", relative)
             for item in found:
                 if len(references) >= max_matches:
                     gap("match_limit")
                     truncated = True
                     break
                 references.append({**item, "path": relative, "content_digest": digest,
-                                   "generated": bool(set(path.relative_to(root).parts) & {"generated", "autogen", ".generated"})})
+                                   "generated": bool(set(path.relative_to(root).parts) & {"gen", "generated", "autogen", ".generated"})})
+        except TimeoutError:
+            gap("time_limit")
+            break
         except (OSError, UnicodeError, ValueError):
             gap("unreadable_or_unsupported_source", relative)
     if sum(item["kind"] == "declaration" for item in references) > 1:
@@ -228,14 +256,28 @@ def inspect_source(source_root: str, symbol: str, *, max_files: int = 256,
     dirty = None
     try:
         commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
-                                capture_output=True, text=True, timeout=2, check=False)
-        status = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", str(root),
-                                 "status", "--porcelain", "--untracked-files=normal"],
-                                capture_output=True, text=True, timeout=2, check=False)
-        if commit.returncode == status.returncode == 0:
+                                capture_output=True, text=True, timeout=_remaining(deadline), check=False)
+        if commit.returncode == 0:
             revision = commit.stdout.strip()
-            dirty = bool(status.stdout.strip())
-    except (OSError, subprocess.TimeoutExpired):
+            # Compare inspected bytes with raw committed blobs. Git worktree
+            # comparison can execute repository-configured clean filters.
+            if files:
+                tree = subprocess.run(["git", "--literal-pathspecs", "-C", str(root), "ls-tree", "-r", "-z",
+                                       revision, "--", *blob_ids], capture_output=True, timeout=_remaining(deadline), check=False)
+                if tree.returncode == 0:
+                    committed = {}
+                    for entry in tree.stdout.split(b"\0"):
+                        if not entry:
+                            continue
+                        identity, path = entry.split(b"\t", 1)
+                        committed[os.fsdecode(path)] = identity.split()[2].decode("ascii")
+                    dirty = any(path not in committed or blob_ids[path].get(len(committed[path])) != committed[path]
+                                for path in blob_ids)
+                else:
+                    gap("revision_unavailable")
+    except (TimeoutError, subprocess.TimeoutExpired):
+        gap("time_limit")
+    except OSError:
         gap("revision_unavailable")
     incomplete = any(item["code"] != "ambiguous_declarations" for item in gaps)
     return {
@@ -243,7 +285,8 @@ def inspect_source(source_root: str, symbol: str, *, max_files: int = 256,
         "status": "incomplete" if incomplete else ("references_available" if references else "no_references_observed"),
         "symbol": symbol,
         "source": {"root": str(root), "snapshot_digest": _digest(json.dumps(files, sort_keys=True).encode()),
-                   "files": files, "revision": revision, "dirty": dirty},
+                   "files": files, "revision": revision, "dirty": dirty,
+                   "dirty_scope": "inspected_lua_files"},
         "references": references,
         "proves_runtime_execution": False,
         "gaps": gaps,

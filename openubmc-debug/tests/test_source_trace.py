@@ -139,6 +139,37 @@ print(json.dumps(search_source_terms(sys.argv[2], ['update', 'Drive failure text
         self.trace()
         self.assertFalse((self.root / "monitor-executed").exists())
 
+    def test_git_metadata_never_executes_clean_filters(self) -> None:
+        self.write("a.lua", "function update() return 1 end\n")
+        self.write(".gitattributes", "*.lua filter=fixture\n")
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "filter.fixture.clean",
+                        "sh -c 'touch filter-executed; cat'"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "a.lua", ".gitattributes"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-qm", "fixture"], check=True)
+        (self.root / "filter-executed").unlink(missing_ok=True)
+        self.write("a.lua", "function update() return 2 end\n")
+        result = self.trace()
+        self.assertFalse((self.root / "filter-executed").exists())
+        self.assertTrue(result["source"]["dirty"])
+
+    def test_dynamic_member_calls_are_explicitly_unresolved(self) -> None:
+        self.write("drive.lua", 'Drive["update"]()\n')
+        result = self.trace()
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("unresolved_dispatch", [g["code"] for g in result["gaps"]])
+
+    def test_parsing_large_last_file_honors_time_budget(self) -> None:
+        self.write("drive.lua", "update()\n" * 110000)
+        result = self.trace("--max-file-bytes", "1048576", "--timeout", "0.001")
+        self.assertIn("time_limit", [g["code"] for g in result["gaps"]])
+        self.assertEqual(result["status"], "incomplete")
+
+    def test_marks_openubmc_gen_output(self) -> None:
+        self.write("gen/drive.lua", "function update() end\n")
+        self.assertTrue(self.trace()["references"][0]["generated"])
+
 
 if __name__ == "__main__":
     unittest.main()

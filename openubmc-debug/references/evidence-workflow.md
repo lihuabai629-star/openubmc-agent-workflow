@@ -96,7 +96,9 @@ python <debug-skill>/scripts/source_trace.py --source-root <repository> --symbol
 Use a qualified symbol to narrow duplicate terminal names. The result binds
 declarations, direct call candidates, callback registration candidates and value
 references to exact file bytes and the observed Git revision. Generated paths
-are marked. `incomplete` and `gaps` preserve unreadable files, limits, unsupported
+including `gen/` are marked. `source.dirty` compares only inspected Lua bytes
+with raw committed blobs; it is not a whole-worktree status. `incomplete` and
+`gaps` preserve unreadable files, limits, unsupported
 languages and unresolved dispatch; increase scope only when the missing evidence
 is needed. The helper reads Lua syntax without executing project code. Aliases,
 dynamic table lookups and runtime registration require direct inspection or
