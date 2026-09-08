@@ -106,6 +106,8 @@ class PairedTaskReportTests(unittest.TestCase):
             "status": "completed",
             "strict_success": True,
             "hard_failure": False,
+            "task_completion": {"status": "completed"},
+            "runtime_completion": {"status": "not-applicable", "runs": []},
             "pairing_identity": {"target_input_digest": "sha256:" + "a" * 64},
             "metrics": {
                 "wall_seconds": 10,
@@ -163,6 +165,8 @@ class TaskDenominatorTests(unittest.TestCase):
                 "strict_success": success,
                 "status": "completed" if success else "failed",
                 "hard_failure": False,
+                "task_completion": {"status": "completed" if success else "failed"},
+                "runtime_completion": {"status": "not-applicable", "runs": []},
                 "failure_layer": "runtime" if not success else None,
                 "pairing_identity": {"target_input_digest": "sha256:" + "a" * 64},
                 "metrics": {
@@ -287,6 +291,8 @@ class ActualPairingTests(unittest.TestCase):
             "status": "completed",
             "strict_success": True,
             "hard_failure": False,
+            "task_completion": {"status": "completed"},
+            "runtime_completion": {"status": "not-applicable", "runs": []},
             "metrics": {
                 "wall_seconds": 1,
                 "cost_usd": 0,
