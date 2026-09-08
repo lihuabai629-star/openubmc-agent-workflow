@@ -1265,10 +1265,6 @@ sys.pycache_prefix = _fresh_pycache_root.name
 
 os.environ["OPENUBMC_MCP_SOURCE_COMMIT"] = SOURCE_COMMIT
 
-config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
-credentials = config_root / "openubmc" / "credentials.env"
-if credentials.is_file():
-    os.environ.setdefault("OPENUBMC_CREDENTIALS_FILE", str(credentials))
 sys.path.insert(0, str(PACKAGE_ROOT.parent))
 sys.path.insert(0, str(MCP_ENTRYPOINT.parent))
 runpy.run_path(str(MCP_ENTRYPOINT), run_name="__main__")

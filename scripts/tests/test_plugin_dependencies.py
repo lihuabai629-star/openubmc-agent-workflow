@@ -26,6 +26,8 @@ class DependencyPreparationTests(unittest.TestCase):
                  'scripts/launch_runtime.py': b'import sys,json\nlines=sys.stdin.read().splitlines()\nif not lines: print("MCP_FIXTURE_READY", flush=True)\nfor line in lines:\n r=json.loads(line)\n if "id" in r: print(json.dumps({"jsonrpc":"2.0","id":r["id"],"result": {"serverInfo":{"name":"fixture"}} if r["method"]=="initialize" else {"tools":[{"name":"observe"},{"name":"execute"}]}}),flush=True)\n',
                  'openubmc-kb-mcp/src/server.js': b'console.log("MCP_FIXTURE_READY")\n',
                  'skills/openubmc-target-runtime/openubmc_target_runtime/credential_file.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/credential_file.py').read_bytes(),
+                 'skills/openubmc-target-runtime/openubmc_target_runtime/configuration.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/configuration.py').read_bytes(),
+                 'skills/openubmc-target-runtime/openubmc_target_runtime/credentials.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/credentials.py').read_bytes(),
                  'scripts/pluginctl.py': (ROOT/'plugin/openubmc/scripts/pluginctl.py').read_bytes()}
         for name, data in files.items():
             path = self.plugin/name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
