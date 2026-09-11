@@ -4672,7 +4672,8 @@ class AgentGatewayTests(unittest.TestCase):
                 value['result']['systemd'] = {
                     selector['id']: {'requested': selector['names'], 'complete': True,
                         'gaps': [], 'units': [{'unit': name, 'properties': {'ActiveState': 'failed'},
-                                              'journal': []} for name in selector['names']]}
+                                              'journal': [{'MESSAGE': 'password=fixture-secret fan probe failed',
+                                                           '__REALTIME_TIMESTAMP': '1789100000000000'}]} for name in selector['names']]}
                     for selector in arguments['selectors'] if selector['kind'] == 'systemd'
                 }
                 return value
@@ -4692,6 +4693,8 @@ class AgentGatewayTests(unittest.TestCase):
             ], 'freshness': {'mode': 'live', 'max_age_seconds': 0}},
             task_id='systemd-partitions', operation_id='systemd-narrow')
         self.assertTrue(changed['results']['services']['complete'])
+        self.assertIn('fan probe failed', json.dumps(changed['results']))
+        self.assertNotIn('fixture-secret', json.dumps(changed))
         waiting = service.call_exposed_tool('execute', {
             'kind': 'start', 'target': '192.0.2.10', 'intent': 'diagnosis-only',
             'observation_ref': changed['observation_ref'],

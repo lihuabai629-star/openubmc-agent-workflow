@@ -1510,13 +1510,10 @@ class ResultProjector:
                 child = _mapping(_mapping(result.get("systemd")).get(selector.selector_id))
                 complete = child.get("complete") is True and child.get("requested") == list(selector.names)
                 counts["available" if complete else "not_checked"] += 1
+                from .systemd_contract import systemd_unit_summaries
                 observations[selector.selector_id] = {
                     "kind": "systemd", "complete": complete,
-                    "units": [
-                        {"unit": item.get("unit"), "properties": item.get("properties", {}),
-                         "journal_lines": len(item.get("journal", []))}
-                        for item in child.get("units", []) if isinstance(item, Mapping)
-                    ],
+                    "units": systemd_unit_summaries(child),
                     "boot_id": child.get("boot_id"),
                     "gaps": child.get("gaps", ["systemd_not_collected"]),
                 }

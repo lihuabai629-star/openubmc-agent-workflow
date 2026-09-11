@@ -8,12 +8,13 @@ import time
 
 from _target_runtime_adapter import _load_runtime_module
 
-UNIT = _load_runtime_module().SYSTEMD_UNIT
-validate_names = _load_runtime_module().validate_systemd_names
+_RUNTIME = _load_runtime_module()
+UNIT = _RUNTIME.SYSTEMD_UNIT
+validate_names = _RUNTIME.validate_systemd_names
 PROPERTIES = ('Id', 'LoadState', 'ActiveState', 'SubState', 'Result',
               'ExecMainCode', 'ExecMainStatus', 'InvocationID')
 JOURNAL_FIELDS = ('_BOOT_ID', '_SYSTEMD_INVOCATION_ID', '_SYSTEMD_UNIT',
-                  '__REALTIME_TIMESTAMP', 'MESSAGE', 'PRIORITY')
+                  '__REALTIME_TIMESTAMP', 'MESSAGE', 'PRIORITY', 'UNIT', 'INVOCATION_ID', '_PID')
 BOOT_COMMAND = 'cat /proc/sys/kernel/random/boot_id'
 
 
@@ -48,22 +49,26 @@ def parse_journal(output, boot, name, invocation):
     if len(logs) > 100:
         raise CollectionGap('journal_line_limit')
     for row in logs:
-        if (not isinstance(row, dict) or not set(JOURNAL_FIELDS) <= set(row)
-                or any(not isinstance(row[key], str) for key in JOURNAL_FIELDS)
+        if (not isinstance(row, dict) or not {'_BOOT_ID', '__REALTIME_TIMESTAMP', 'MESSAGE', 'PRIORITY'} <= set(row)
+                or any(not isinstance(row[key], str) for key in JOURNAL_FIELDS if key in row)
                 or not row['__REALTIME_TIMESTAMP'].isdigit()
                 or row['PRIORITY'] not in '01234567' or len(row['PRIORITY']) != 1
-                or not re.fullmatch(r'[0-9a-f]{32}', row['_SYSTEMD_INVOCATION_ID'])):
+):
             raise CollectionGap('malformed_journal')
         if row['_BOOT_ID'] != boot.replace('-', ''):
             raise CollectionGap('journal_boot_mismatch')
-        if row['_SYSTEMD_INVOCATION_ID'] != invocation:
+        manager = row.get('_PID') == '1' and row.get('UNIT') == name
+        row_invocation = row.get('INVOCATION_ID') if manager else row.get('_SYSTEMD_INVOCATION_ID')
+        if not isinstance(row_invocation, str) or not re.fullmatch(r'[0-9a-f]{32}', row_invocation):
+            raise CollectionGap('malformed_journal')
+        if row_invocation != invocation:
             raise CollectionGap('journal_invocation_mismatch')
-        if row['_SYSTEMD_UNIT'] != name:
+        if not manager and row.get('_SYSTEMD_UNIT') != name:
             raise CollectionGap('journal_unit_mismatch')
     return logs
 
 
-def collect_systemd(names, run_ssh, *, deadline):
+def collect_systemd(names, run_ssh, *, deadline, secret_values=()):
     """Collect only fixed commands; run_ssh is the bound transport, never Agent input."""
     validate_names(names)
     result = {'requested': list(names), 'units': [], 'complete': False, 'gaps': [],
@@ -77,6 +82,12 @@ def collect_systemd(names, run_ssh, *, deadline):
             raise CollectionGap('deadline_exceeded')
         reply = run_ssh(text, timeout=remaining, stdout_limit_bytes=remaining_bytes + 1,
                         stderr_limit_bytes=min(8192, remaining_bytes + 1))
+        if getattr(reply, 'output_limit_exceeded', False):
+            raise CollectionGap('output_limit')
+        if getattr(reply, 'timed_out', False) or time.monotonic() > deadline:
+            raise CollectionGap('deadline_exceeded')
+        if getattr(reply, 'stdout_read_error', False) or getattr(reply, 'stderr_read_error', False):
+            raise CollectionGap('transport_failed')
         remaining_bytes -= len(reply.stdout.encode()) + len(reply.stderr.encode())
         if remaining_bytes < 0:
             raise CollectionGap('output_limit')
@@ -86,6 +97,9 @@ def collect_systemd(names, run_ssh, *, deadline):
             raise CollectionGap('unsupported')
         if 'permission denied' in reply.stderr.lower() or 'access denied' in reply.stderr.lower():
             raise CollectionGap('permission_denied')
+        if (reply.returncode == 4 and text.startswith('LC_ALL=C systemctl --system show ')
+                and 'LoadState=not-found' in reply.stdout.splitlines()):
+            raise CollectionGap('unit_not_found')
         if reply.returncode:
             raise CollectionGap('command_failed')
         return reply.stdout
@@ -111,8 +125,12 @@ def collect_systemd(names, run_ssh, *, deadline):
             show = 'LC_ALL=C systemctl --system show --no-pager --property=' + ','.join(PROPERTIES) + ' -- ' + shlex.quote(name)
             before = parse_properties(command(show), name)
             journal_command = ('LC_ALL=C journalctl --system --no-pager --quiet --output=json --output-fields='
-                               + ','.join(JOURNAL_FIELDS) + ' --boot=' + boot + ' --lines=100 --unit=' + shlex.quote(name)
-                               + ' _SYSTEMD_INVOCATION_ID=' + before['InvocationID'])
+                               + ','.join(JOURNAL_FIELDS) + ' --boot=' + boot + ' --lines=100 '
+                               + '_SYSTEMD_UNIT=' + shlex.quote(name)
+                               + ' _SYSTEMD_INVOCATION_ID=' + before['InvocationID']
+                               + ' + _BOOT_ID=' + boot.replace('-', '')
+                               + ' UNIT=' + shlex.quote(name) + ' INVOCATION_ID=' + before['InvocationID']
+                               + ' _PID=1')
             logs = parse_journal(command(journal_command), boot, name, before['InvocationID'])
             after = parse_properties(command(show), name)
             if before != after:
@@ -121,6 +139,8 @@ def collect_systemd(names, run_ssh, *, deadline):
                 raise CollectionGap('journal_boot_mismatch')
             if len(logs) == 100 and 'journal_truncated' not in result['gaps']:
                 result['gaps'].append('journal_truncated')
+            for row in logs:
+                row['MESSAGE'] = _RUNTIME.redact_text(row['MESSAGE'], secret_values=secret_values)
             result['units'].append({'unit': name, 'properties': before,
                                     'journal': [{k: row[k] for k in JOURNAL_FIELDS if k in row} for row in logs]})
         if command(BOOT_COMMAND).strip() != boot:
@@ -130,7 +150,7 @@ def collect_systemd(names, run_ssh, *, deadline):
         result['gaps'].append('deadline_exceeded')
     except CollectionGap as error:
         result['gaps'].append(str(error))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         result['gaps'].append('transport_failed')
     result['completed_at'] = datetime.now(timezone.utc).isoformat()
     return result

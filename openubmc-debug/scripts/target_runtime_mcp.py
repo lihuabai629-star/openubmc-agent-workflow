@@ -960,7 +960,8 @@ class DebugMcpBackend:
                     operation={"names": selector["names"]},
                     collect=lambda selector=selector: systemd_observation.collect_systemd(
                         selector["names"], run_systemd_ssh,
-                        deadline=time.monotonic() + deadline.remaining()),
+                        deadline=time.monotonic() + deadline.remaining(),
+                        secret_values=(str(ssh_credentials.get("password", "")),)),
                 )
             preflight_end = None
             if assured:

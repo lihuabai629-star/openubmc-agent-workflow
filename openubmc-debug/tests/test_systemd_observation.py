@@ -142,8 +142,18 @@ class SystemdCollectorTests(unittest.TestCase):
             def run_channel(self, master, remote_command, **limits):
                 if 'uptime' in remote_command:
                     return subprocess.CompletedProcess('', 0, '2026-09-11 12:00:00 +0000\n up 1 day', '')
-                return captured(remote_command, **limits)
+                reply = captured(remote_command, **limits)
+                if 'journalctl' in remote_command:
+                    reply.stdout = reply.stdout.replace('fan probe failed',
+                        'fan probe failed fixture-secret --password other-secret')
+                return reply
         class Task:
+            def close(self):
+                pass
+            def maintain(self):
+                return 0
+            def status(self):
+                return {}
             @contextlib.contextmanager
             def lease_scope(self, args, **kwargs):
                 lease = open_debug_runtime_lease(args=args, task_id='systemd-real',
@@ -167,6 +177,46 @@ class SystemdCollectorTests(unittest.TestCase):
         self.assertEqual(value['observation_timing']['selectors'][0]['status'], 'observed')
         self.assertNotIn('fixture-secret', json.dumps(value))
 
+        runtime = target_runtime_mcp._load_runtime_module()
+        class Backend(target_runtime_mcp.DebugMcpBackend):
+            def open_task(self, task_id):
+                return Task()
+        blobs = runtime.InMemoryBlobRepository()
+        service = runtime.RuntimeMcpService(Backend(), blob_repository=blobs)
+        self.addCleanup(service.close)
+        receipt = service.call_exposed_tool('observe', {
+            'target': '192.0.2.10', 'selectors': [
+                {'id': 'services', 'kind': 'systemd', 'names': ['fan.service']}],
+        }, task_id='systemd-e2e', operation_id='observe')
+        self.assertEqual(receipt['status'], 'complete')
+        source = blobs.read(receipt['observation_ref']['handle'].removeprefix('blob://'))
+        self.assertNotIn(b'fixture-secret', source)
+        self.assertNotIn(b'other-secret', source)
+        self.assertIn(b'fan probe failed', source)
+        with self.assertRaises(ValueError):
+            service.call_exposed_tool('execute', {
+                'kind': 'start', 'target': '192.0.2.11', 'intent': 'diagnosis-only',
+                'observation_ref': receipt['observation_ref'],
+            }, task_id='systemd-wrong-target', operation_id='start-wrong')
+        waiting = service.call_exposed_tool('execute', {
+            'kind': 'start', 'target': '192.0.2.10', 'intent': 'diagnosis-only',
+            'observation_ref': receipt['observation_ref'],
+        }, task_id='systemd-e2e', operation_id='start')
+        self.assertEqual(waiting['gate']['name'], 'diagnosis.acceptance')
+        self.assertEqual(waiting['state'], 'waiting_response')
+        gate = waiting['gate']
+        final = service.call_exposed_tool('execute', {
+            'kind': 'respond', 'run_id': waiting['run_id'],
+            **{key: gate[key] for key in ('gate_id', 'gate_version', 'schema_digest')},
+            'response': {'status': 'completed', 'summary': 'Fan probe failure verified',
+                'payload': {'root_cause': 'fan probe failed with exit status 7',
+                    'evidence_ids': [item['evidence_id'] for item in waiting['diagnostic_receipt']['evidence']],
+                    'causal_chain': ['fan probe failed', 'main process exited with status 7'],
+                    'code_owner': 'fan.service', 'contradictions': [], 'remaining_gaps': [],
+                    'verification_status': 'verified'}},
+        }, task_id='systemd-e2e', operation_id='accept')
+        self.assertEqual(final['outcome']['status'], 'completed')
+
     def test_previous_invocation_journal_cannot_prove_current_failure(self):
         ssh = CapturedSsh()
         def transport(command, **limits):
@@ -177,6 +227,44 @@ class SystemdCollectorTests(unittest.TestCase):
         value = collect_systemd(['fan.service'], transport, deadline=time.monotonic() + 10)
         self.assertFalse(value['complete'])
         self.assertEqual(value['gaps'], ['journal_invocation_mismatch'])
+
+    def test_system_manager_failure_explanation_is_collected(self):
+        ssh = CapturedSsh()
+        def transport(command, **limits):
+            reply = ssh(command, **limits)
+            if 'journalctl' in command:
+                reply.stdout = json.dumps({'_BOOT_ID': BOOT.replace('-', ''),
+                    'UNIT': 'fan.service', 'INVOCATION_ID': INVOCATION, '_PID': '1',
+                    '__REALTIME_TIMESTAMP': '1789100000000000', 'PRIORITY': '3',
+                    'MESSAGE': 'Failed to start fan.service: executable missing'})
+            return reply
+        value = collect_systemd(['fan.service'], transport, deadline=time.monotonic() + 10)
+        self.assertTrue(value['complete'])
+        self.assertIn('executable missing', value['units'][0]['journal'][0]['MESSAGE'])
+
+    def test_transport_capture_metadata_prevents_false_complete(self):
+        for attribute, gap in [('output_limit_exceeded', 'output_limit'),
+                               ('timed_out', 'deadline_exceeded'),
+                               ('stdout_read_error', 'transport_failed')]:
+            with self.subTest(attribute=attribute):
+                def transport(command, **limits):
+                    reply = subprocess.CompletedProcess('', 0, BOOT, '')
+                    setattr(reply, attribute, True)
+                    return reply
+                value = collect_systemd(['fan.service'], transport, deadline=time.monotonic() + 10)
+                self.assertFalse(value['complete'])
+                self.assertEqual(value['gaps'], [gap])
+
+    def test_missing_unit_has_distinct_gap(self):
+        ssh = CapturedSsh()
+        def transport(command, **limits):
+            if 'systemctl' in command:
+                return subprocess.CompletedProcess(command, 4,
+                    PROPERTIES.replace('LoadState=loaded', 'LoadState=not-found').replace(INVOCATION, ''), '')
+            return ssh(command, **limits)
+        value = collect_systemd(['fan.service'], transport, deadline=time.monotonic() + 10)
+        self.assertEqual(value['gaps'], ['unit_not_found'])
+        self.assertFalse(value['complete'])
 
     def test_invalid_selectors_never_access_target(self):
         for names in ([{}], ['--help'], ['*.service'], ['../fan.service'],
