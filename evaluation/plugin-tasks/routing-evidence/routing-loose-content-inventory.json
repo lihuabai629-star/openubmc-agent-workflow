@@ -1,5 +1,5 @@
 {
-  "digest": "sha256:e7fc9491a688303fa1b957b4b5a65490d3c34b5f7fe8ade40655a3a63274f23c",
+  "digest": "sha256:82305fb4230891357ab0beafa7450dc5c986a49709b1fde87de066dfcc61c923",
   "files": [
     {
       "path": "openubmc-aspeed-kernel-driver-dev/SKILL.md",
@@ -342,161 +342,6 @@
       "size_bytes": 11203
     },
     {
-      "path": "openubmc-debug/scripts/__pycache__/_cli_common.cpython-312.pyc",
-      "sha256": "sha256:ad7bb09b1606c4062b4e75a9628c9436890fe9516039d39fafe0ef9c8ae9c138",
-      "size_bytes": 14797
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_comparison.cpython-312.pyc",
-      "sha256": "sha256:27a6c0a0ba2cfb8ed3619acd6eed3649bd288b082bac8c5b983396c24608cf4b",
-      "size_bytes": 46877
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_debug_dump.cpython-312.pyc",
-      "sha256": "sha256:0121cd88e8b7acdb126620a8e83609812409a171dac3c8c632560bf6da1855ef",
-      "size_bytes": 7934
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_json_common.cpython-312.pyc",
-      "sha256": "sha256:fc103485463b5e46c1bbef6adf4418a49939ad2bfdfd847a1eab42d3629fa31c",
-      "size_bytes": 1731
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_minimal_telnet.cpython-312.pyc",
-      "sha256": "sha256:e25da2b1dedcb8fb41dd61d6e0656bb9ffc95c205a550053881d6b7c320cd5fd",
-      "size_bytes": 2294
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_preflight_checks.cpython-312.pyc",
-      "sha256": "sha256:f67886eb5aa4dc1ace1cdedbd121b6ded6d2a655ee2373488d4b6cdb122d1c7a",
-      "size_bytes": 13893
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_preflight_recommendations.cpython-312.pyc",
-      "sha256": "sha256:6d3c802db0cfa2694cad9fb893a963f5057dee706a4839bc541113066c712c13",
-      "size_bytes": 11709
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_remote_common.cpython-312.pyc",
-      "sha256": "sha256:0bc0c8727527a4be1faacae109e8256f4a39dccf2930882aa4d2137d524eb058",
-      "size_bytes": 46660
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_runtime_distribution.cpython-312.pyc",
-      "sha256": "sha256:272d899c1fcbf6cc2ecdbdd81bd0bb7321803aacc69ae929cd70a60bd51593f5",
-      "size_bytes": 4979
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_source_root.cpython-312.pyc",
-      "sha256": "sha256:c418ca0492978bb690c0cc5eca2818f0ac7e647f6c9c46b3a0117035791c77ec",
-      "size_bytes": 4263
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_target_runtime_adapter.cpython-312.pyc",
-      "sha256": "sha256:d1a49a8e40b4a2cffe65a8e94388337b1d0ce83c043150dab3af479579bf476f",
-      "size_bytes": 48442
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_telnet_common.cpython-312.pyc",
-      "sha256": "sha256:ac882cf2f9437300209c0b9c0249b4343ab071eab819ee1731c2c58fc6d5defc",
-      "size_bytes": 753
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_workflow_contracts.cpython-312.pyc",
-      "sha256": "sha256:d6217152c5f8a2b55115705f462dd34449d9d049324891cd641005f29dd83be9",
-      "size_bytes": 10213
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_workflow_correlation.cpython-312.pyc",
-      "sha256": "sha256:28200bc05af2b9f18054f4604885b1f74f13c3aebe3545cc169d05c896713020",
-      "size_bytes": 24744
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_workflow_freshness.cpython-312.pyc",
-      "sha256": "sha256:5c724c346cb3ca63abc211c31b3fb4beadcebc081779c90417043c0fcaff5062",
-      "size_bytes": 19418
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_workflow_runtime.cpython-312.pyc",
-      "sha256": "sha256:eb794da4d5923f164696992875918b4c961680e2b2e08643bcdeb70d6bedb684",
-      "size_bytes": 38079
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/_workflow_source.cpython-312.pyc",
-      "sha256": "sha256:af088ba665479d111cfdf8d77d3fc368287584897441a78b58a632db0eff88ab",
-      "size_bytes": 21375
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/active_alarms.cpython-312.pyc",
-      "sha256": "sha256:1432e35499770ab14a919429836210da92bc8d77cf5c48682889a017eb9ea7b3",
-      "size_bytes": 40028
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/busctl_remote.cpython-312.pyc",
-      "sha256": "sha256:6901eda0ee7f8487c5c68ac6d06f40d8de3470599f9f5224cc70c3f17e38aa91",
-      "size_bytes": 20745
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/collect_logs.cpython-312.pyc",
-      "sha256": "sha256:c6788f35b0594fea30f5233301e448d3a65e328ce9a587bff593a7638551480f",
-      "size_bytes": 40902
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/compare_remote.cpython-312.pyc",
-      "sha256": "sha256:27ffd1f2e1b6994fff38bf2a6745f93510e21d12a57054c8134cc33c9e108751",
-      "size_bytes": 10062
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/doctor.cpython-312.pyc",
-      "sha256": "sha256:9a624f41882c879864516e7f86af7ced13d08fc30885750fe2cc549184d998cf",
-      "size_bytes": 18377
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/mdbctl_remote.cpython-312.pyc",
-      "sha256": "sha256:1ca4c5c62be9f676c1997a3f2f5a4faeebe2e5a1359727e25570a4d6e2a684ba",
-      "size_bytes": 19590
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/package_skill.cpython-312.pyc",
-      "sha256": "sha256:16330514c159b216a500093850622b4f630d90bc2349345e04d24bea98c232d1",
-      "size_bytes": 70625
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/preflight_checks.cpython-312.pyc",
-      "sha256": "sha256:f925fb5cc1fa27a11f171e724a05654d30af06f5949e3dd53e70b326972624a5",
-      "size_bytes": 3189
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/preflight_recommendations.cpython-312.pyc",
-      "sha256": "sha256:41ee2ad885b76ae38ee3317cfa53d06822415fea9fa235d60560c59d41d701d1",
-      "size_bytes": 3206
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/preflight_remote.cpython-312.pyc",
-      "sha256": "sha256:1b700d81dda962af3a9e78a9409ff89b4fd87004f8244050572b55f8ef0662a4",
-      "size_bytes": 19214
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/read_remote_file.cpython-312.pyc",
-      "sha256": "sha256:e5e155ccace6bc8b7a5855585f100d05af026d2861e6805a216122a46f725ff6",
-      "size_bytes": 23460
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/target_runtime_cli.cpython-312.pyc",
-      "sha256": "sha256:df0d2a8c637ca437c87d0a682b1662a9b1c47a918c136589a9320f6c999ac19d",
-      "size_bytes": 11027
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/target_runtime_mcp.cpython-312.pyc",
-      "sha256": "sha256:ad20032c8b9e38c351a86820385d652fa2d7750aa2ea79f1e4b91ce0585a1296",
-      "size_bytes": 34247
-    },
-    {
-      "path": "openubmc-debug/scripts/__pycache__/workflow_remote.cpython-312.pyc",
-      "sha256": "sha256:b1a174cd23cb47f0602ee997c93f751922d3e4a16db12127b7e40d48651e7e34",
-      "size_bytes": 71001
-    },
-    {
       "path": "openubmc-debug/scripts/_cli_common.py",
       "sha256": "sha256:d3454be17b73e0b167f2d112f1f82e0e67d941a4fdc6e435128525e0310d5661",
       "size_bytes": 13521
@@ -657,76 +502,6 @@
       "size_bytes": 2936
     },
     {
-      "path": "openubmc-debug/tests/__pycache__/test_debug_credential_bundle.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:da12eefc58c46ed6849ffb4df852b3f5b9065fc43b74fbdbd0060839b389d0d2",
-      "size_bytes": 3491
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_dual_target_comparison.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:ad66db395cc6533b8708e9fcad8651aac59829d8114dfc15eecf45349a6c1fc9",
-      "size_bytes": 34119
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_internal_development_mode.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:168832ecd12196e6be50dd468b38f4fda28cecf5075c438699a274d0b479207a",
-      "size_bytes": 9227
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_multi_target_comparison.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:5fcdc0a3f2921bdc054b388ac76d5999a9b5c3188ffecc5e36a10b9654f8e13e",
-      "size_bytes": 13491
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_object_alarm_lane_contract.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:b60527a6a08f97999aa9c5da78204c6f67f27f02027febf3436b8783a6828192",
-      "size_bytes": 6448
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_object_alarm_runtime_adapter.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:01a01217d2d3f75114021d745b6638fbecec569e2d58e68d9e933e6d98369d7d",
-      "size_bytes": 25298
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_preflight_compatibility.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:0a335105b8e340d03d1d97b1cff62f2a0cf25afd3fac225d1b5927ca4ba4d54f",
-      "size_bytes": 20637
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_runtime_mcp_backend.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:2c6124ea39100c1926090f7b7472f5dd32cefbf857f121dae5b68b772cb5db1b",
-      "size_bytes": 41270
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_runtime_vendoring.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:4b1fa51362af5cbe4c0efd2b0737f54dbf78f984ce7528d0ed07fed895ca0964",
-      "size_bytes": 11718
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_ssh_control_master.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:c12c4e9626d8bd272450628b9313e9e4bf2d184863f510582b55a536d386261e",
-      "size_bytes": 22666
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_ssh_control_master.cpython-312.pyc",
-      "sha256": "sha256:bfc7584e5a529935d3be178903846222207d233697ff3d418f28d8f0f57f97a9",
-      "size_bytes": 20849
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_target_runtime_cli.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:c6657af0da466d4636d17d97a524bf6aa99e0f857612e107ec7b65c14cac7f80",
-      "size_bytes": 12616
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_telnet_runtime_adapter.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:bf451b0b1461b7500ea993995d1d3a5500b8ce79bdff41acf952810105594d8e",
-      "size_bytes": 12469
-    },
-    {
-      "path": "openubmc-debug/tests/__pycache__/test_typed_debug_run.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:bb4a63275b9b48906074d9ad742c92fb557948d46efd8b18987fa8f78d2361e9",
-      "size_bytes": 63652
-    },
-    {
       "path": "openubmc-debug/tests/test_debug_credential_bundle.py",
       "sha256": "sha256:93e16e918b7940a503555d0f8e72539ef8df2120a1cc107a53bd265cf5095055",
       "size_bytes": 2495
@@ -880,41 +655,6 @@
       "path": "openubmc-developer/skill.json",
       "sha256": "sha256:6fb49b2396fba98c610a62287be0c8c98864c36a2e2c6dfcff8beed765a4c294",
       "size_bytes": 1966
-    },
-    {
-      "path": "openubmc-developer/tests/__pycache__/behavior_eval_runner.cpython-312.pyc",
-      "sha256": "sha256:a32947bb78a99f743a9cc456c0d5a1f02e543d4d898f8965f8d55b036fe2afee",
-      "size_bytes": 92323
-    },
-    {
-      "path": "openubmc-developer/tests/__pycache__/test_behavior_eval_runner.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:c2dde1b0b7fa83cc31bbd76790a0e0c68906c25068a8c62c7a598928ac819743",
-      "size_bytes": 71037
-    },
-    {
-      "path": "openubmc-developer/tests/__pycache__/test_behavior_scenarios.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:8c4e770e5c6235e3a9e06fb3fe78a3f63aea58fd9c3c19acd4f25fcb2d631afd",
-      "size_bytes": 23258
-    },
-    {
-      "path": "openubmc-developer/tests/__pycache__/test_metadata_release.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:23e2bf55a21010cd3e4822352c76306a7a7e6ac74e448cd3e9334812ac7ad2c7",
-      "size_bytes": 8171
-    },
-    {
-      "path": "openubmc-developer/tests/__pycache__/test_security_scan.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:2575c9979225eaceeb0e33936591ef1c06867d3b3800e0a51408d125e73f86cf",
-      "size_bytes": 2222
-    },
-    {
-      "path": "openubmc-developer/tests/__pycache__/test_skill_contract.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:504dcb0db3be095b719ae2323852d540e6a783f01b5b19e64383523cac3b54d2",
-      "size_bytes": 17832
-    },
-    {
-      "path": "openubmc-developer/tests/__pycache__/test_trigger_scenarios.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:3e296e7a5157f1cada75cf0070f65a1f3add7613432cd6208984ea32c01fc2d8",
-      "size_bytes": 17769
     },
     {
       "path": "openubmc-developer/tests/behavior_eval_runner.py",
@@ -1072,16 +812,6 @@
       "size_bytes": 150
     },
     {
-      "path": "openubmc-live-patch/openubmc_live_patch/__pycache__/__init__.cpython-312.pyc",
-      "sha256": "sha256:20936b972177cdf99380c7233d313cf6e0b49239711078dce8995e5f863ab02e",
-      "size_bytes": 370
-    },
-    {
-      "path": "openubmc-live-patch/openubmc_live_patch/__pycache__/runtime_backend.cpython-312.pyc",
-      "sha256": "sha256:70dc4dc09ac9a0617adfa05b249a2ed94064246d74eba539774f0c1c8f8bd9bb",
-      "size_bytes": 59286
-    },
-    {
       "path": "openubmc-live-patch/openubmc_live_patch/runtime_backend.py",
       "sha256": "sha256:9646d68e455e2f70d1bf2b3672f91fe12bb2961adda4e4ba91e8c1c41880a298",
       "size_bytes": 53192
@@ -1095,21 +825,6 @@
       "path": "openubmc-live-patch/references/remote-file-patterns.md",
       "sha256": "sha256:a48e85281218db9751be058cc7d4e37034e53742b4998bf7011a3c787b612853",
       "size_bytes": 3358
-    },
-    {
-      "path": "openubmc-live-patch/scripts/__pycache__/deploy_live_file.cpython-312.pyc",
-      "sha256": "sha256:25b1ae915a88f4228175ce27049e6c8f1ea00f891ef3304572bf9fb180b3a17e",
-      "size_bytes": 41037
-    },
-    {
-      "path": "openubmc-live-patch/scripts/__pycache__/runtime_cli.cpython-312.pyc",
-      "sha256": "sha256:399c61e68c209313385b19db7141f6c45cc9799dff8e11b904b5bc9aa09c404e",
-      "size_bytes": 9664
-    },
-    {
-      "path": "openubmc-live-patch/scripts/__pycache__/target_runtime_adapter.cpython-312.pyc",
-      "sha256": "sha256:2b1bb2dfcb8f2f82345a7a35dac8249509a389f7422a1f32dfa9735ce194a9bf",
-      "size_bytes": 14546
     },
     {
       "path": "openubmc-live-patch/scripts/deploy_current_patch.py",
@@ -1147,26 +862,6 @@
       "size_bytes": 1030
     },
     {
-      "path": "openubmc-live-patch/tests/__pycache__/test_live_patch_cli.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:bc6e3b21cdaa6f49514b1ccdfc444365c3f30b9bb77811b6afe2cb82fa9c7e73",
-      "size_bytes": 58911
-    },
-    {
-      "path": "openubmc-live-patch/tests/__pycache__/test_runtime_backend.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:1b40594c2aa87e50c66e9f93e58cf98c8aaf12ad6d31418dc19f9baa7465aceb",
-      "size_bytes": 34980
-    },
-    {
-      "path": "openubmc-live-patch/tests/__pycache__/test_runtime_cli.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:f513f84bc6ec08d09c6d52a1df3d5dd18d5929375803141544475c504885961e",
-      "size_bytes": 21195
-    },
-    {
-      "path": "openubmc-live-patch/tests/__pycache__/test_runtime_transaction.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:4c25b89256d0f696f765bd09cae844fe9add754a942f8780e097673ea9a07527",
-      "size_bytes": 14763
-    },
-    {
       "path": "openubmc-live-patch/tests/test_live_patch_cli.py",
       "sha256": "sha256:61d87b9479338426d6a00b8c5f961899aea67860d3640e017d348b748630646a",
       "size_bytes": 48932
@@ -1202,24 +897,9 @@
       "size_bytes": 163
     },
     {
-      "path": "openubmc-log-analyzer/openubmc_log_analyzer/__pycache__/__init__.cpython-312.pyc",
-      "sha256": "sha256:3d5fa93f8e563d7afaddbb004868a521b194b572a723002d455c0e7a0ec3cd84",
-      "size_bytes": 383
-    },
-    {
-      "path": "openubmc-log-analyzer/openubmc_log_analyzer/__pycache__/runtime_backend.cpython-312.pyc",
-      "sha256": "sha256:3e19972397abf08edb6651cb435960e2b4221c44c85305cc51ccc366cc2c8af8",
-      "size_bytes": 39601
-    },
-    {
       "path": "openubmc-log-analyzer/openubmc_log_analyzer/runtime_backend.py",
       "sha256": "sha256:0f38c05d5f15bca3ac9eb122c0cd9ab8a06e950aca4ef5bf6d07aaf9d855ef64",
       "size_bytes": 29758
-    },
-    {
-      "path": "openubmc-log-analyzer/references/.tmp/bmcview/10.121.177.77/var/log/app.log",
-      "sha256": "sha256:5024d43c729a9e6fce0d866b42c1a4e32359586a23d66bd5b5fd4fdd263165e4",
-      "size_bytes": 104831
     },
     {
       "path": "openubmc-log-analyzer/references/analysis.md",
@@ -1240,26 +920,6 @@
       "path": "openubmc-log-analyzer/references/remote-collection.md",
       "sha256": "sha256:ece24e60cd52e29f58b3ff0a2761144a3eba61281a043281f4a949673759e19a",
       "size_bytes": 9689
-    },
-    {
-      "path": "openubmc-log-analyzer/scripts/__pycache__/_runtime_distribution.cpython-312.pyc",
-      "sha256": "sha256:b8984c370db24f5bb6ff83b9eaafeaa005d9c397228e2fdf570c8ec7e530a588",
-      "size_bytes": 4357
-    },
-    {
-      "path": "openubmc-log-analyzer/scripts/__pycache__/package_skill.cpython-312.pyc",
-      "sha256": "sha256:8d0b8a60be1143e574e05599a4b5b62b80c290f99e9366616a8f81afe30422a3",
-      "size_bytes": 9627
-    },
-    {
-      "path": "openubmc-log-analyzer/scripts/__pycache__/pull_bundle.cpython-312.pyc",
-      "sha256": "sha256:64e74be15cc0ed7436aa8a80c3a0338f2d40923f0582752379fa8ee7b999387b",
-      "size_bytes": 80424
-    },
-    {
-      "path": "openubmc-log-analyzer/scripts/__pycache__/target_runtime_adapter.cpython-312.pyc",
-      "sha256": "sha256:c40b3ea1b9638d25cb273a65a0e7c2ef8f24f42f38080a5b707dd90e4cb8de8e",
-      "size_bytes": 1135
     },
     {
       "path": "openubmc-log-analyzer/scripts/_runtime_distribution.py",
@@ -1285,21 +945,6 @@
       "path": "openubmc-log-analyzer/skill.json",
       "sha256": "sha256:a1374a2de39288eaaac5361705b87efee977367b7b63bc9655ee11fad8bbd3b9",
       "size_bytes": 1051
-    },
-    {
-      "path": "openubmc-log-analyzer/tests/__pycache__/test_pull_bundle.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:6353daee052ac0211d1698060f99e2fb814557d2231289b2fae2801a58557d1f",
-      "size_bytes": 55301
-    },
-    {
-      "path": "openubmc-log-analyzer/tests/__pycache__/test_runtime_packaging.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:2a4301e2bfb6fdf2aa1203a90401a811af8d03c75ad2acb142fbf728f2db65b4",
-      "size_bytes": 6709
-    },
-    {
-      "path": "openubmc-log-analyzer/tests/__pycache__/test_target_runtime_adapter.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:426f3ead75cdb67f164517f953c24ec6d0e6ae2c1509251896c2aa5ac99503af",
-      "size_bytes": 23195
     },
     {
       "path": "openubmc-log-analyzer/tests/test_pull_bundle.py",
@@ -1372,11 +1017,6 @@
       "size_bytes": 5065
     },
     {
-      "path": "openubmc-qemu-arm-kvm/scripts/__pycache__/probe-openubmc-qemu.cpython-312.pyc",
-      "sha256": "sha256:f21d31497af93ddc03136efcfb5b407a885a45767d97df3bb019cdd93aa89c66",
-      "size_bytes": 8838
-    },
-    {
       "path": "openubmc-qemu-arm-kvm/scripts/probe-openubmc-qemu.py",
       "sha256": "sha256:300f8d2ea56aa3b1b3b401b512e05be61a2aabf1be0efe19ee969bbe1d185fd4",
       "size_bytes": 4964
@@ -1422,19 +1062,9 @@
       "size_bytes": 5054
     },
     {
-      "path": "openubmc-redfish-interface-diff/scripts/__pycache__/analyze_redfish_diff.cpython-312.pyc",
-      "sha256": "sha256:f504632ba2f56ead1f3997c7d81a306e633def14ff816f250e1eaf609242f4a5",
-      "size_bytes": 145901
-    },
-    {
       "path": "openubmc-redfish-interface-diff/scripts/analyze_redfish_diff.py",
       "sha256": "sha256:01e1ff6d5f7438dd1f9c00606700466dbb4124475a240661622fd33027ffbd41",
       "size_bytes": 95236
-    },
-    {
-      "path": "openubmc-redfish-interface-diff/scripts/tests/__pycache__/test_semantic_diff.cpython-312.pyc",
-      "sha256": "sha256:777a89c9db0349bf7c33a47dc4061eb76e9ff718b99384fade3c1ba3046c3bc3",
-      "size_bytes": 9227
     },
     {
       "path": "openubmc-redfish-interface-diff/scripts/tests/test_semantic_diff.py",
@@ -1522,121 +1152,6 @@
       "size_bytes": 13783
     },
     {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/build_release_qualification.cpython-312.pyc",
-      "sha256": "sha256:36e2f83c3d25ba495d763b310a0739f5e73e387e50bdb4e5bb9ceb76467c3a91",
-      "size_bytes": 15255
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/compare_run_results.cpython-312.pyc",
-      "sha256": "sha256:73406e20f0a5d2aa0a59b0f648e630b88d52b44f67372bead8ad3795266e31a3",
-      "size_bytes": 5791
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/dmtf_diagnostic_adapter.cpython-312.pyc",
-      "sha256": "sha256:807e9c10bbfda63cad326f50af7e4ff3a13230431e3642a274b3db409771d62c",
-      "size_bytes": 12258
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/generate_junit_report.cpython-312.pyc",
-      "sha256": "sha256:3909018ba38912a57f7ccf2d54e7aa6d556daace1e82f1edb0c93333dc16163e",
-      "size_bytes": 9187
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/generate_pilot_report.cpython-312.pyc",
-      "sha256": "sha256:079a384c49b3d3e9e0ec67430b6b9f4fb88291359536690dde692f3a9ad687e1",
-      "size_bytes": 35698
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/generate_plan_manifest.cpython-312.pyc",
-      "sha256": "sha256:efc1d0a931e0ac4f06c4bee7b62833965e6b86884a0c6eee96af572d60885ed6",
-      "size_bytes": 2235
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_artifact_scan.cpython-312.pyc",
-      "sha256": "sha256:de98998710868cde40c09259883cbc07591b8d097f21de4610b0d77cc3e32ae7",
-      "size_bytes": 9722
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_contracts.cpython-312.pyc",
-      "sha256": "sha256:2ece0494b5f1f6ba4661ec676c4ea6c911cf0a598c44b75b0aad7e016e4b75cd",
-      "size_bytes": 78905
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_diagnostics.cpython-312.pyc",
-      "sha256": "sha256:199f9e429f9e07fd82c41673e73abc62efe8eaa87c291c3c7b7c59f66a6f2d8c",
-      "size_bytes": 13934
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_discovery.cpython-312.pyc",
-      "sha256": "sha256:0e9d41ce49621befc1d21d8e6a0fb7a8f4c0cc9a5f83b0d8044741e01bece316",
-      "size_bytes": 23473
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_evidence.cpython-312.pyc",
-      "sha256": "sha256:812b823587f447c50913afdacbd2dd5f3b110272f62fea9dce102d2aaeac1f7a",
-      "size_bytes": 11649
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_identity.cpython-312.pyc",
-      "sha256": "sha256:4e3db61476a4db54da91028fb740be3ae5148cee80429a33179469ee4e3044ab",
-      "size_bytes": 1882
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_lease.cpython-312.pyc",
-      "sha256": "sha256:b65de2101bdddb08044e7908a2e97fc00efb571b1002ed9790636da9cd1e07e5",
-      "size_bytes": 36261
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_mcp.cpython-312.pyc",
-      "sha256": "sha256:d79f9539301e47e9488d77b4535422aa423a32b1f029c61fed30ff8784ab56ef",
-      "size_bytes": 23705
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_mutation_fixtures.cpython-312.pyc",
-      "sha256": "sha256:8f8f0690564f4fd5eff73aec6531d608f565531b23b460ff1993ae6ab282fa22",
-      "size_bytes": 11004
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_platform.cpython-312.pyc",
-      "sha256": "sha256:624d34871a16cc780fb769184b2a60f52863bec541cda93eef9691a33db7b72f",
-      "size_bytes": 37918
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_profile_compiler.cpython-312.pyc",
-      "sha256": "sha256:c8cee29b36cb47fc36eb0938f81239b0315efca165f61515fdf7a641e5c15155",
-      "size_bytes": 63420
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_publication.cpython-312.pyc",
-      "sha256": "sha256:cc40eb29bfbba028c1ae127ba9b3b651dc4a3d34894f38c6400ab450a3b2716e",
-      "size_bytes": 37150
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_repeatability.cpython-312.pyc",
-      "sha256": "sha256:2fafaae528338f2f11a98b989b36afffff5e817597f28eda090aec07f31f5be1",
-      "size_bytes": 13998
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_runner.cpython-312.pyc",
-      "sha256": "sha256:038bee7f54c749240f8127729bc697967d93f66390da6af54d38ed6079adae4c",
-      "size_bytes": 64855
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/redfish_task_fixtures.cpython-312.pyc",
-      "sha256": "sha256:cfd1872779cdfca8f71cc603cc621d25bdc1c3f59cfa3688b39226ae3c30471d",
-      "size_bytes": 9366
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/run_offline_qualification.cpython-312.pyc",
-      "sha256": "sha256:51924b09eeb35529d430f0f52f2de0b2a43ca9d6a4b2f510bd89798e4bd8b8f6",
-      "size_bytes": 18243
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/__pycache__/validate_test_manifest.cpython-312.pyc",
-      "sha256": "sha256:b36f54f34436e90ad69b2f9ee93e1a9f8529fafb531afe311fc969efb42cb0d7",
-      "size_bytes": 2086
-    },
-    {
       "path": "openubmc-redfish-testing/scripts/build_release_qualification.py",
       "sha256": "sha256:4e7dc03af11eb52e972c5f0103ec63369a52bad9ff295407af54c981c4784895",
       "size_bytes": 11495
@@ -1675,41 +1190,6 @@
       "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__main__.py",
       "sha256": "sha256:94f948948ccf45fdd8f90002ff743950bbedd6622ada93fade84866e121cc11c",
       "size_bytes": 157
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__pycache__/__init__.cpython-312.pyc",
-      "sha256": "sha256:e062cd9ff0c3da2f61e651b3b959cb654cebebccdf76d8d17f45dd978ef723fd",
-      "size_bytes": 1601
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__pycache__/__main__.cpython-312.pyc",
-      "sha256": "sha256:2121f84dd690bc7994eba4c2cadee6171b62c44d5c43c62454aec865f254bed4",
-      "size_bytes": 441
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__pycache__/cli.cpython-312.pyc",
-      "sha256": "sha256:ca4291affd376599c26a5daa53dfd4ecfb04738fbeffa43d188c72e3a4f8f425",
-      "size_bytes": 14365
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__pycache__/contracts.cpython-312.pyc",
-      "sha256": "sha256:2ceacdd74f1a036c8f9dee8fb190ef5fa135dd2a1080ab8fe7bc7988e08780f7",
-      "size_bytes": 571
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__pycache__/execution.cpython-312.pyc",
-      "sha256": "sha256:e181c6e7be4259ea1ddcd44d20e0400c28a7cc001916a64c89723ad5cc01cdfb",
-      "size_bytes": 474
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__pycache__/planning.cpython-312.pyc",
-      "sha256": "sha256:5238ed6a9fb727777889c330cafa475b8cc589db0a96569bb773943859415122",
-      "size_bytes": 407
-    },
-    {
-      "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/__pycache__/qualification.cpython-312.pyc",
-      "sha256": "sha256:26f53dd82594e7e6e0ac8a570a4033f6a01e4e96f908b5fcdce0906d3e0dbe39",
-      "size_bytes": 25189
     },
     {
       "path": "openubmc-redfish-testing/scripts/openubmc_redfish_testing/_qualification/release-attestation.v2.json",
@@ -1860,181 +1340,6 @@
       "path": "openubmc-redfish-testing/tests/__init__.py",
       "sha256": "sha256:7a105427a23c060a1d5d47aaab9bea29a07158432367480199caf8d9ababf992",
       "size_bytes": 63
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/__init__.cpython-312.pyc",
-      "sha256": "sha256:21b6766673aba13eb5f49d8a3c09230a8a2f2316f6d900bc9f59f2fabc5ea80e",
-      "size_bytes": 266
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/redfish_runner_test_adapter.cpython-312.pyc",
-      "sha256": "sha256:63d534984a44f8b6f3ae91471f052e5ee6e4accaf65051b7fbda60054d98485b",
-      "size_bytes": 3041
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_artifact_scan_secret_boundary.cpython-312.pyc",
-      "sha256": "sha256:95c5e9912a129d4169f221d4c2eaf935d950dd1be3535ab26abc76e6faf4c034",
-      "size_bytes": 2865
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_diagnostic_evidence.cpython-312.pyc",
-      "sha256": "sha256:0bd4bc6a75764446cfa9955592879bb1e18d2da5c755ad91497808b0d022179a",
-      "size_bytes": 11474
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_dmtf_diagnostic_adapter.cpython-312.pyc",
-      "sha256": "sha256:fe2e9857f3d5b4f4b9546431889dc4993511015269dc3edbe58a6b1c2c7eb9f9",
-      "size_bytes": 14888
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_generate_junit_report.cpython-312.pyc",
-      "sha256": "sha256:721243f9d1909aff0a045f901b6fedb567b9bd8451d84f6329af4477c92ff573",
-      "size_bytes": 12676
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_generate_pilot_report.cpython-312.pyc",
-      "sha256": "sha256:c0f881f3c60dab425433f62f29e0efb0dfe24af53d0c6df4af1059832a5fa1d0",
-      "size_bytes": 21115
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_generic_production_https.cpython-312.pyc",
-      "sha256": "sha256:1eab3715a25f261c37e50373e49c43cc06092b40baa603d621dcd77f57a10ad5",
-      "size_bytes": 39836
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_generic_readonly_profile.cpython-312.pyc",
-      "sha256": "sha256:3f57ee6052aca656d820ab4c7b6f8ff29065691fa502b44bfe773ed79d18c62b",
-      "size_bytes": 16984
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_installable_distribution.cpython-312.pyc",
-      "sha256": "sha256:c34424c77165b93cb4b97fa0fcfab03c491d0105f776d5f6a26e636a5d41ab09",
-      "size_bytes": 19085
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_kernel_internal_seams.cpython-312.pyc",
-      "sha256": "sha256:45157a495d72488dbdecea2644e5eab978ccef0dc3636372ef2df02be4a5663a",
-      "size_bytes": 4979
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_manifest_contract.cpython-312.pyc",
-      "sha256": "sha256:c54e7fcc52496d2174cfdbca45ca4b5a8a1e0999ba9373bec8e87194c13489a0",
-      "size_bytes": 8053
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_mcp_facade.cpython-312.pyc",
-      "sha256": "sha256:06934c20ea4711bfd789bbe7a28903ff7324ebd01382ac6574bc955eed5b2124",
-      "size_bytes": 28873
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_mutation_fixture_safety.cpython-312.pyc",
-      "sha256": "sha256:b3c618c47513b240c57c7bbe854e7d3c2683e3f55b4160f97eb02761805dbb11",
-      "size_bytes": 7670
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_npu_readonly_contract.cpython-312.pyc",
-      "sha256": "sha256:0b0f03254e2bd0c5a3f3a7e8cfe1d4bf2b5a6839d9684571fb6f5d89d22a6874",
-      "size_bytes": 13226
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_npu_task_fixture.cpython-312.pyc",
-      "sha256": "sha256:571f6e2f6f4cbae5c798a6ca23b92e11e1350c2a08f5e3201e0bd283edc19844",
-      "size_bytes": 9957
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_offline_qualification.cpython-312.pyc",
-      "sha256": "sha256:e71cb3295543b8ad1665e40d8b1d090f355eeb09a25c1cf00427d352d28d134a",
-      "size_bytes": 19072
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_plan_contract.cpython-312.pyc",
-      "sha256": "sha256:5b1c7ae6a658a5537c460f61d933d115cbf1fd259daf78e0679ba835a27f3bf3",
-      "size_bytes": 26321
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_platform_adapter.cpython-312.pyc",
-      "sha256": "sha256:ae8ab2e00fdad9246a40e724744a7376c4b0ca953b0eede9c9ca1cb8c25cbd9b",
-      "size_bytes": 26698
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_profile_compiler.cpython-312.pyc",
-      "sha256": "sha256:d79196c9c92cc54b38926780cb650ea6765d753c0426f7e32b4e0beb20c227aa",
-      "size_bytes": 32727
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_profile_compiler_cli.cpython-312.pyc",
-      "sha256": "sha256:574d2b88b32be678be1bfb823bdd88127479ffd25a4b25dd422a8dda10f97fe1",
-      "size_bytes": 13603
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_r0_lease_contract.cpython-312.pyc",
-      "sha256": "sha256:1bada26686910a76eaf0ba52f2eb893ad0328018aea9ac9f645d24e8f8230c6c",
-      "size_bytes": 6707
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_r0_lease_execution.cpython-312.pyc",
-      "sha256": "sha256:fa38971e3bfb0928c809f9770ac232a22c9e28487aad2d45fe51289105f4ab18",
-      "size_bytes": 96892
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_r0_lease_ledger.cpython-312.pyc",
-      "sha256": "sha256:aab4f649355351ca1475c1651eed6f099a62c679478649862ecd233255fb02a0",
-      "size_bytes": 36057
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_readonly_pilot_safety_edges.cpython-312.pyc",
-      "sha256": "sha256:44ddd35ce66ef56d27be87e093319738b5cb76d6df508d4f16a08322abe87aa3",
-      "size_bytes": 21167
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_redfish_discovery.cpython-312.pyc",
-      "sha256": "sha256:9a367608958b20605cfd69891e6f10f020ce265b5beaed1cf8de476baf66ca71",
-      "size_bytes": 44872
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_redfish_identity.cpython-312.pyc",
-      "sha256": "sha256:5a44e0c0d551022496bf2c716ee6234d208c2cbf752f0843c1896ac48137ec35",
-      "size_bytes": 2241
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_repeatable_pilot.cpython-312.pyc",
-      "sha256": "sha256:6715e6225e121d284f38143ea4407c962395fae8b5c3438294cfacd401a4b43f",
-      "size_bytes": 15238
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_resolved_manifest_binding.cpython-312.pyc",
-      "sha256": "sha256:34870977b1a383ce3c87b1de2f6c00843ac8953e93260e0ea4111af09fd42cba",
-      "size_bytes": 7282
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_runner_bounds_and_evidence.cpython-312.pyc",
-      "sha256": "sha256:780f3171762bb8ca0c17f9fa68a78dfb64445323704e006c3329f60254009119",
-      "size_bytes": 25635
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_runner_cli_authorization.cpython-312.pyc",
-      "sha256": "sha256:bb9dfdd02e6abf0e52e8e70dcbb350751022159d62dd2d9d6d9660f54d8e3f6a",
-      "size_bytes": 4426
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_runner_preflight.cpython-312.pyc",
-      "sha256": "sha256:c0079f4a5d0d074cf28103f26f3e40df21c2c2750b82dd4b8b083aa3614609e4",
-      "size_bytes": 36811
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_single_production_execution_seam.cpython-312.pyc",
-      "sha256": "sha256:cd32f6c521f704fe5346db3e5af81d00178ecd0deb4a47b0d037f1f8c4ac4a93",
-      "size_bytes": 22296
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_skill_package.cpython-312.pyc",
-      "sha256": "sha256:4eeceec48b6f3ed25af895c577ed319f52b7161c0d13ddd5905a2181df98ee07",
-      "size_bytes": 8222
-    },
-    {
-      "path": "openubmc-redfish-testing/tests/__pycache__/test_unified_cli.cpython-312.pyc",
-      "sha256": "sha256:e72d913270dd735914f1b709eb04201058d77398e441005ca73132300c6722bd",
-      "size_bytes": 23056
     },
     {
       "path": "openubmc-redfish-testing/tests/fixtures/generic-readonly-graph-a.json",
@@ -2322,26 +1627,6 @@
       "size_bytes": 413
     },
     {
-      "path": "openubmc-upgrade/openubmc_upgrade/__pycache__/__init__.cpython-312.pyc",
-      "sha256": "sha256:6802dfce3871ba8f27853097acf50b64b9a2806d3f566159b3d90d4c881f07ab",
-      "size_bytes": 564
-    },
-    {
-      "path": "openubmc-upgrade/openubmc_upgrade/__pycache__/operation_state.cpython-312.pyc",
-      "sha256": "sha256:20da7cb258a3d06793445448c0a52c521fe4e177a4faa08aa6f860b75382d3a1",
-      "size_bytes": 7744
-    },
-    {
-      "path": "openubmc-upgrade/openubmc_upgrade/__pycache__/runtime_backend.cpython-312.pyc",
-      "sha256": "sha256:9e829ff19ffdcd769ec4a1a15ac54d279f8a999433d090eceac5bc3d94450f83",
-      "size_bytes": 141963
-    },
-    {
-      "path": "openubmc-upgrade/openubmc_upgrade/__pycache__/webui.cpython-312.pyc",
-      "sha256": "sha256:11b2799082cca5db8aa7c65788246f74ecca068d8d5559ccf5aa02acd73a193a",
-      "size_bytes": 28620
-    },
-    {
       "path": "openubmc-upgrade/openubmc_upgrade/operation_state.py",
       "sha256": "sha256:ee7749862f212dc8816bd3a404e957c551787e7882662945f7047b18469de971",
       "size_bytes": 5247
@@ -2367,26 +1652,6 @@
       "size_bytes": 4162
     },
     {
-      "path": "openubmc-upgrade/scripts/__pycache__/artifact_identity.cpython-312.pyc",
-      "sha256": "sha256:5225d9387e0284c217d954e43b544513158a4a5cb696dec5dc52df3a489f96c0",
-      "size_bytes": 10980
-    },
-    {
-      "path": "openubmc-upgrade/scripts/__pycache__/preflight_upgrade.cpython-312.pyc",
-      "sha256": "sha256:66ac8b4f6ee6ea45bf50a382084198eb46874c86020040b08b3314f670307de8",
-      "size_bytes": 13156
-    },
-    {
-      "path": "openubmc-upgrade/scripts/__pycache__/redfish_credentials.cpython-312.pyc",
-      "sha256": "sha256:d423dba7500ba58571ada838ccb51bb697e81e311db5c6cf9b4764027efd8ddc",
-      "size_bytes": 5583
-    },
-    {
-      "path": "openubmc-upgrade/scripts/__pycache__/target_runtime_adapter.cpython-312.pyc",
-      "sha256": "sha256:b5880e1d96d777dd102fa408dfb0e00819e58dd943b501b395eb76a317eb4b99",
-      "size_bytes": 16873
-    },
-    {
       "path": "openubmc-upgrade/scripts/artifact_identity.py",
       "sha256": "sha256:11473c52f58e1d716e6a6e93ba87cd6ff35d2c275a20f6a3495709093a20466c",
       "size_bytes": 7555
@@ -2410,56 +1675,6 @@
       "path": "openubmc-upgrade/skill.json",
       "sha256": "sha256:0bd047e0a8dc9d0298e2c3c347a9dfc35687069d50124c3302e99b9a3522e11d",
       "size_bytes": 1026
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_operation_state.cpython-312.pyc",
-      "sha256": "sha256:cca06c6393f62dacfd694b6c19382ce4e41f5a19b85b9e0edaeb7315438c6345",
-      "size_bytes": 2985
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_preflight_upgrade.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:a70980f49979d8eef4e71f522e9da4b66879b2087894a4bed93bdb5a66cdbf18",
-      "size_bytes": 4716
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_preflight_upgrade.cpython-312.pyc",
-      "sha256": "sha256:90ed5915ec6cd60638a67d90b6b1e255c1dd0e77afed7b20b3a4fc1afc313350",
-      "size_bytes": 4827
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_runtime_backend.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:1e761f753b09d74e1e9866c86e8a9f3513d0304bc263dad3df0775eba3216c0a",
-      "size_bytes": 67973
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_runtime_backend.cpython-312.pyc",
-      "sha256": "sha256:9290d34c4f263ab833739765012a023b4253b3761db4d065bf5e98b2b7f24fda",
-      "size_bytes": 160954
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_runtime_upgrade.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:6ddb69198123e2241398d088ae2697e9ca426e5c6658f10328fa7ea58d10d2d4",
-      "size_bytes": 13330
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_runtime_upgrade.cpython-312.pyc",
-      "sha256": "sha256:9c393311f8179762aa9018615306bf4dc600c07c021bf4379c2da4540d6fc383",
-      "size_bytes": 11676
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_upgrade_helpers.cpython-312-pytest-9.1.1.pyc",
-      "sha256": "sha256:72df0827eccb2813e50fee075e1d5e00fcf6e16b5e925b52d3fa98680ce24a78",
-      "size_bytes": 7437
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_upgrade_helpers.cpython-312.pyc",
-      "sha256": "sha256:aa6486220d2c183a199cbbbefd7bcce16616b5fc0cead3d8b1cf2d9d570e3e3b",
-      "size_bytes": 10893
-    },
-    {
-      "path": "openubmc-upgrade/tests/__pycache__/test_webui.cpython-312.pyc",
-      "sha256": "sha256:0c169ce0378856363414ea2a5f1eec4469b06c672fc28c4c6c5adb8475a327b4",
-      "size_bytes": 17290
     },
     {
       "path": "openubmc-upgrade/tests/test_operation_state.py",

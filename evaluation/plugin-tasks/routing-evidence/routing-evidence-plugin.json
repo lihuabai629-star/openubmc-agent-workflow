@@ -74,33 +74,33 @@
       "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
     }
   },
-  "digest": "sha256:02b734d6594cad2c98d62b08394059b32ef9c8d49095c9b687a79953157f1c5a",
+  "digest": "sha256:b0c7d4db85445de8cf75a91031c17c510ccc9f639886013e88eff2717e3cb46d",
   "evaluator": {
-    "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+    "commit": "54e2d085009218008308a2096073abb8261ccb5c",
     "files": {
       "matrix": {
-        "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+        "commit": "54e2d085009218008308a2096073abb8261ccb5c",
         "committed_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
         "path": "evaluation/plugin-tasks/routing-matrix.json",
         "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
       },
       "review_contract": {
-        "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
-        "committed_sha256": "sha256:408cbc14949d46665ff393b67a29c4cf3d727ab6b6990b344b3444829ae1e2d5",
+        "commit": "54e2d085009218008308a2096073abb8261ccb5c",
+        "committed_sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629",
         "path": "evaluation/plugin-tasks/routing-review-contract.json",
-        "sha256": "sha256:408cbc14949d46665ff393b67a29c4cf3d727ab6b6990b344b3444829ae1e2d5"
+        "sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629"
       },
       "runner": {
-        "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
-        "committed_sha256": "sha256:d813f28e0d6ac81364fc8c9ef31579e1024e22c8f8fcfa621ec1b28a2846357f",
+        "commit": "54e2d085009218008308a2096073abb8261ccb5c",
+        "committed_sha256": "sha256:3012d3a845f819810b12e6325b09b0efe2c8401e00bd6eee16d309dd28267aa3",
         "path": "scripts/skill_routing_evaluation.py",
-        "sha256": "sha256:d813f28e0d6ac81364fc8c9ef31579e1024e22c8f8fcfa621ec1b28a2846357f"
+        "sha256": "sha256:3012d3a845f819810b12e6325b09b0efe2c8401e00bd6eee16d309dd28267aa3"
       }
     },
     "mismatches": [],
     "schema": "openubmc.skill-routing-evaluator.v1",
     "status": "verified",
-    "tree": "9e3621a02232f750cfb05fe3ccbb39ff1d01ce58"
+    "tree": "89c878e4ca8254e98706506122613c5032990b14"
   },
   "integrity": {
     "status": "verified"
@@ -109,6 +109,352 @@
     "boundary": "local-only",
     "embedded": false,
     "file_count": 26,
+    "published_records": {
+      "manifest": {
+        "arm": "plugin",
+        "digest": "sha256:d35be6529021101ebb8c556e4dba0de4e5eb0d1234f9aee23919c31f88273045",
+        "file_count": 38,
+        "files": [
+          {
+            "case_id": "diagnosis-zh-ordinary",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/diagnosis-zh-ordinary/turn-1.jsonl",
+            "sha256": "sha256:021e073c7293ea1949807c021d5d5abdd4ac3fecdd09a003eb880c17537e1cce",
+            "size_bytes": 54255,
+            "source_sha256": "sha256:ec9e9a0365e7461963242975e8a0c6faed743736c96e46fa4d14236c81ecb3be",
+            "turn": 1
+          },
+          {
+            "case_id": "diagnosis-zh-ordinary",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/diagnosis-zh-ordinary/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "diagnosis-zh-ordinary",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/diagnosis-zh-ordinary/rollout-identity.json",
+            "sha256": "sha256:d75e0bd2ab196b590aa2e6fac4f9a041b0ba338e4acaf874fa208d2301bede2c",
+            "size_bytes": 1092,
+            "source_sha256": "sha256:9636720abbccb3a1b46078d678788345d3ef2a6bf8fd755f1a83d716f475cb83"
+          },
+          {
+            "case_id": "diagnosis-en-ordinary",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/diagnosis-en-ordinary/turn-1.jsonl",
+            "sha256": "sha256:20e983ca60499f19fdc57f07904849f2aa33422b9b05b24011787213d41c8951",
+            "size_bytes": 58084,
+            "source_sha256": "sha256:bc301d5e8dd2b8eadf74c0849e0cc36eea0e81b993f6e304d76505bd284b965a",
+            "turn": 1
+          },
+          {
+            "case_id": "diagnosis-en-ordinary",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/diagnosis-en-ordinary/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "diagnosis-en-ordinary",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/diagnosis-en-ordinary/rollout-identity.json",
+            "sha256": "sha256:e591edb51d388872c3cd02455e0b8ddce46ff65740ce0d5f4ccd3d2c6b130dbf",
+            "size_bytes": 1075,
+            "source_sha256": "sha256:f38a23599c0f8aae65e09dde5a364845c776b0391a25de0d91f9bbac7f8dc7e3"
+          },
+          {
+            "case_id": "logs-en-ordinary",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/logs-en-ordinary/turn-1.jsonl",
+            "sha256": "sha256:99b9bd1ff03cefdcdb7d759fe4fc941247e1057f9da1053923d66b66fec0f92f",
+            "size_bytes": 11448,
+            "source_sha256": "sha256:0688671060acc03cc7589db081d7b9c17ee2ae39aca7b045c9e0b483397f7ee0",
+            "turn": 1
+          },
+          {
+            "case_id": "logs-en-ordinary",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/logs-en-ordinary/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "logs-en-ordinary",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/logs-en-ordinary/rollout-identity.json",
+            "sha256": "sha256:e655ba010fcc0614089512a385e43f7a5106d87aabf3ef837b49b27635dabbb5",
+            "size_bytes": 1085,
+            "source_sha256": "sha256:06da095936620c4450560a82c5c08883ed6316bb8fdf8fadeb343e3d2f388bde"
+          },
+          {
+            "case_id": "build-zh-explicit-source",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/build-zh-explicit-source/turn-1.jsonl",
+            "sha256": "sha256:801554e9b2191b064e7f15072447fe1376f9de09a02aaeea5abea5f5784b9aa8",
+            "size_bytes": 76977,
+            "source_sha256": "sha256:fab28ef1ea87d2fcdc6396684305210dcc8ab2ddfc2573375c58b1269ce9f7c4",
+            "turn": 1
+          },
+          {
+            "case_id": "build-zh-explicit-source",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/build-zh-explicit-source/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "build-zh-explicit-source",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/build-zh-explicit-source/rollout-identity.json",
+            "sha256": "sha256:e2e8f561230b25907c02ddd4b33fe0a5dd6d0267d8a0a5baafa7ab95376fcb5b",
+            "size_bytes": 1123,
+            "source_sha256": "sha256:2b4c0e2a7aa89b61e3d7aee37ebaddb95dba711a843314ac1712aaaa6bfcdacb"
+          },
+          {
+            "case_id": "build-en-source-cwd",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/build-en-source-cwd/turn-1.jsonl",
+            "sha256": "sha256:59f5f8bd7661077c51f646551cef18f2bce3d10c15b00f7e0eefb31c714d9a65",
+            "size_bytes": 115971,
+            "source_sha256": "sha256:8fb65ed9caa49d6d5c1302421f4adca45d16b9378c1fa6a2e9b188eb6b62294a",
+            "turn": 1
+          },
+          {
+            "case_id": "build-en-source-cwd",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/build-en-source-cwd/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "build-en-source-cwd",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/build-en-source-cwd/rollout-identity.json",
+            "sha256": "sha256:d465517b999f75e7513f01fa19b6027775ffef5f4fa196ecc03c6468fd2ae01c",
+            "size_bytes": 1061,
+            "source_sha256": "sha256:bf7f41dc2122b03ac5b7434a792e4286f39bf4ba5d6499973a9aae3f9b158d7d"
+          },
+          {
+            "case_id": "upgrade-en-ordinary",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/upgrade-en-ordinary/turn-1.jsonl",
+            "sha256": "sha256:46ef27c7d0712ceec05b60531f626e6a62908713026326c79e6fae2f66bb8806",
+            "size_bytes": 23443,
+            "source_sha256": "sha256:81557995348beeced9a01bbbbac5f8c36a766186bf8b26cc866486330f122475",
+            "turn": 1
+          },
+          {
+            "case_id": "upgrade-en-ordinary",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/upgrade-en-ordinary/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "upgrade-en-ordinary",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/upgrade-en-ordinary/rollout-identity.json",
+            "sha256": "sha256:46267c602c960f60396101c8ac99ee2456bb1f676ee92d604bf0fe7d8504ce96",
+            "size_bytes": 1063,
+            "source_sha256": "sha256:6b88517b5828f74404f50b60058fae943d7cde040d4cf7d8c81c9d4633b6e320"
+          },
+          {
+            "case_id": "credentials-zh-ordinary",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/credentials-zh-ordinary/turn-1.jsonl",
+            "sha256": "sha256:ec2fc04ed50b2b72d624a5a7165bc25fe6834ff37a46f8f6d1af501d5fe89ccb",
+            "size_bytes": 15836,
+            "source_sha256": "sha256:df6e508f1cb8029035af64bb9610847b6c70b627096b642512f6657f806650f8",
+            "turn": 1
+          },
+          {
+            "case_id": "credentials-zh-ordinary",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/credentials-zh-ordinary/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "credentials-zh-ordinary",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/credentials-zh-ordinary/rollout-identity.json",
+            "sha256": "sha256:84b743810a0a3c65f985e7131ae267f0ab548b106127d777dbe3f979e3e02536",
+            "size_bytes": 1046,
+            "source_sha256": "sha256:9b34678df249fe57c748fe3cf6518ff6e313958747e4564d01d708b4f72aab16"
+          },
+          {
+            "case_id": "kb-en-ordinary",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/kb-en-ordinary/turn-1.jsonl",
+            "sha256": "sha256:d3303b372ec9610092ede3c064332313fcf2beb3521cf2bb6b7a58159bc980c8",
+            "size_bytes": 18276,
+            "source_sha256": "sha256:b70b01e58b8683a0e0160015337e9a933bc9c43f8181d2a1e9bef13e8007a057",
+            "turn": 1
+          },
+          {
+            "case_id": "kb-en-ordinary",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/kb-en-ordinary/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "kb-en-ordinary",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/kb-en-ordinary/rollout-identity.json",
+            "sha256": "sha256:3584366a2fd07a82966d2bd97825ff4f35fed55b85dc6951c0eb353a5ad35454",
+            "size_bytes": 1077,
+            "source_sha256": "sha256:a09f675a0c7e2664e23a02658e3cab77fa67bed94d23ede46801b8ed7038d6ba"
+          },
+          {
+            "case_id": "component-zh-explicit-source",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/component-zh-explicit-source/turn-1.jsonl",
+            "sha256": "sha256:018f4a0c7482a51b0da721baa96103ebd0686d4c1d040711874f81c08352545e",
+            "size_bytes": 407460,
+            "source_sha256": "sha256:1e8fc55ba6723771cfb915dd64e9fbe695c2c7de2af23870d88468ae4d9370dc",
+            "turn": 1
+          },
+          {
+            "case_id": "component-zh-explicit-source",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/component-zh-explicit-source/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "component-zh-explicit-source",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/component-zh-explicit-source/rollout-identity.json",
+            "sha256": "sha256:5d99c65d96d2a125abe7671d9254bc49221adfd2dc50beef3f942647fccb4f78",
+            "size_bytes": 1110,
+            "source_sha256": "sha256:1b5ab8b1292e17ff253b2dc7eea5d95eb785ee4e55d1ef2336a903f8d94a1c0c"
+          },
+          {
+            "case_id": "negative-zh-ordinary",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/negative-zh-ordinary/turn-1.jsonl",
+            "sha256": "sha256:726f5e7ca6004b3ce1c336b134679143a7091f28de2f6be8d418e065f1170fb4",
+            "size_bytes": 1014,
+            "source_sha256": "sha256:05736cb94d1e10d8f1d565edc1e28a8699eb33d80417d8b5e8235b0d7d37b6f8",
+            "turn": 1
+          },
+          {
+            "case_id": "negative-zh-ordinary",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/negative-zh-ordinary/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "negative-zh-ordinary",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/negative-zh-ordinary/rollout-identity.json",
+            "sha256": "sha256:7b0ad9e44fdbcc46da6d60cbc6728e1ba9391a7fb7038ea4e74eb32aee384bcd",
+            "size_bytes": 912,
+            "source_sha256": "sha256:6dbf6ff99863ab829e068b5143d98790073506689c4e637a063cfeefed29c126"
+          },
+          {
+            "case_id": "ambiguous-zh-ordinary",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/ambiguous-zh-ordinary/turn-1.jsonl",
+            "sha256": "sha256:3b9a8be0e80489b89a4b1d3c0cc73f32e296c9f159f355325e0d4d94a944d058",
+            "size_bytes": 1025,
+            "source_sha256": "sha256:866ace1c6426e37f0643697ced5303df94bf169541f350a8ad5a8c92446445b9",
+            "turn": 1
+          },
+          {
+            "case_id": "ambiguous-zh-ordinary",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/ambiguous-zh-ordinary/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "ambiguous-zh-ordinary",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/ambiguous-zh-ordinary/rollout-identity.json",
+            "sha256": "sha256:b2c216120562035eff263977e8e2e4bf816d04f55580572267c8b144366bb639",
+            "size_bytes": 911,
+            "source_sha256": "sha256:264b5aacff313c435d778670927b5489cc57fed26e3205db48ec72870655cf6b"
+          },
+          {
+            "case_id": "context-en-multi-turn",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/context-en-multi-turn/turn-1.jsonl",
+            "sha256": "sha256:14971f8366d88fab17a1a3dd7596ebb4e728f3d67f87c5e945e1c99d55d4d0f4",
+            "size_bytes": 874,
+            "source_sha256": "sha256:aa8527e879f12f4108ecbbb60c13b9d02f2f1d57c99cd83d544108182b268de1",
+            "turn": 1
+          },
+          {
+            "case_id": "context-en-multi-turn",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/context-en-multi-turn/turn-1.stderr",
+            "sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "size_bytes": 271,
+            "source_sha256": "sha256:27215695778f2c93d1f1b5dcb8102e883d66216e858d7a649830dc0dab49e7a2",
+            "turn": 1
+          },
+          {
+            "case_id": "context-en-multi-turn",
+            "kind": "jsonl",
+            "path": "sanitized-records/plugin/context-en-multi-turn/turn-2.jsonl",
+            "sha256": "sha256:6d6d1929ae4a67b0ccba7239af77f119249f1179f923ee66203a9c35be7b4fb7",
+            "size_bytes": 42454,
+            "source_sha256": "sha256:c78f23b58e9c1c63cd8701f323b3d61df1ef7b61c2af5df9338c440d3679b91b",
+            "turn": 2
+          },
+          {
+            "case_id": "context-en-multi-turn",
+            "kind": "stderr",
+            "path": "sanitized-records/plugin/context-en-multi-turn/turn-2.stderr",
+            "sha256": "sha256:dd645ca75964575d63eb3b11880e36046ed5b11138495ea615694962dd965de9",
+            "size_bytes": 232,
+            "source_sha256": "sha256:dd645ca75964575d63eb3b11880e36046ed5b11138495ea615694962dd965de9",
+            "turn": 2
+          },
+          {
+            "case_id": "context-en-multi-turn",
+            "kind": "rollout-identity",
+            "path": "sanitized-records/plugin/context-en-multi-turn/rollout-identity.json",
+            "sha256": "sha256:b8db340c137450322db20b40935da64c471da2b55bf74a553513b13a06f1ae25",
+            "size_bytes": 1378,
+            "source_sha256": "sha256:13cd319d9c80e370c470a161c2df2f631355831447f0e78315ae42ca95be7834"
+          }
+        ],
+        "schema": "openubmc.skill-routing-sanitized-records.v1"
+      },
+      "verification": {
+        "file_count": 38,
+        "mismatches": [],
+        "samples_verified": 12,
+        "status": "verified"
+      }
+    },
     "secret_scan": {
       "matches": [],
       "policy": "CLI_PROXY_API_KEY-and-credential-name-pattern",
@@ -140,6 +486,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -150,6 +497,9 @@
             "openubmc-debug": "enabled"
           },
           "expected_mcp_availability": {},
+          "expected_routes": [
+            "openubmc-debug"
+          ],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -264,6 +614,9 @@
           "openubmc-debug": "enabled"
         },
         "expected_mcp_availability": {},
+        "expected_routes": [
+          "openubmc-debug"
+        ],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -301,6 +654,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -311,6 +665,9 @@
             "openubmc-debug": "enabled"
           },
           "expected_mcp_availability": {},
+          "expected_routes": [
+            "openubmc-debug"
+          ],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -359,6 +716,7 @@
           {
             "command": "/bin/bash -lc 'git rev-parse --show-toplevel'",
             "exit_code": 128,
+            "output_sha256": "sha256:d2b35cacadc66b7fad8dedd1be5244e17150a6625978c9330f831bd7a9cd6b1e",
             "status": "failed"
           }
         ],
@@ -440,6 +798,9 @@
           "openubmc-debug": "enabled"
         },
         "expected_mcp_availability": {},
+        "expected_routes": [
+          "openubmc-debug"
+        ],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -477,6 +838,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -487,6 +849,9 @@
             "openubmc-log-analyzer": "enabled"
           },
           "expected_mcp_availability": {},
+          "expected_routes": [
+            "openubmc-log-analyzer"
+          ],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -591,6 +956,9 @@
           "openubmc-log-analyzer": "enabled"
         },
         "expected_mcp_availability": {},
+        "expected_routes": [
+          "openubmc-log-analyzer"
+        ],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -628,6 +996,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -638,6 +1007,9 @@
             "openubmc-build": "enabled"
           },
           "expected_mcp_availability": {},
+          "expected_routes": [
+            "openubmc-build"
+          ],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -807,6 +1179,9 @@
           "openubmc-build": "enabled"
         },
         "expected_mcp_availability": {},
+        "expected_routes": [
+          "openubmc-build"
+        ],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -844,6 +1219,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -854,6 +1230,9 @@
             "openubmc-build": "enabled"
           },
           "expected_mcp_availability": {},
+          "expected_routes": [
+            "openubmc-build"
+          ],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -1068,6 +1447,9 @@
           "openubmc-build": "enabled"
         },
         "expected_mcp_availability": {},
+        "expected_routes": [
+          "openubmc-build"
+        ],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -1105,6 +1487,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -1115,6 +1498,9 @@
             "openubmc-upgrade": "enabled"
           },
           "expected_mcp_availability": {},
+          "expected_routes": [
+            "openubmc-upgrade"
+          ],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -1148,6 +1534,7 @@
           {
             "command": "/bin/bash -lc \"pwd && rg --files -g '*.hpm' -g '*.HPM' -g '*.hpm.metadata.json' -g '*.HPM.metadata.json' .\"",
             "exit_code": 1,
+            "output_sha256": "sha256:42cbc982335052bbfe8914657cff468b46957d57e1e168fc3396d4392c342b7d",
             "status": "failed"
           },
           {
@@ -1234,6 +1621,9 @@
           "openubmc-upgrade": "enabled"
         },
         "expected_mcp_availability": {},
+        "expected_routes": [
+          "openubmc-upgrade"
+        ],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -1269,10 +1659,26 @@
         },
         "operational": {
           "capability_codes": [],
-          "classifications": [],
-          "environment_or_auth_codes": [],
+          "classifications": [
+            "environment-or-auth"
+          ],
+          "environment_or_auth_codes": [
+            "CREDENTIALS_MISSING",
+            "READ_ONLY_FILESYSTEM"
+          ],
+          "failed_commands": [
+            {
+              "command": "/bin/bash -lc 'python3 -I /tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/scripts/pluginctl.py doctor'",
+              "diagnostic_codes": [
+                "CREDENTIALS_MISSING",
+                "READ_ONLY_FILESYSTEM"
+              ],
+              "exit_code": 2,
+              "status": "failed"
+            }
+          ],
           "failed_mcp_calls": [],
-          "status": "passed"
+          "status": "failed"
         },
         "routing": {
           "allowed_routes": [],
@@ -1281,6 +1687,9 @@
             "openubmc-environment-setup": "enabled"
           },
           "expected_mcp_availability": {},
+          "expected_routes": [
+            "openubmc-environment-setup"
+          ],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -1303,7 +1712,12 @@
           },
           {
             "command": "/bin/bash -lc 'python3 -I /tmp/openubmc-skill-routing-233-20260911/candidate-runtime/codex-home/plugins/cache/openubmc-evaluation/openubmc/2.0.12/scripts/pluginctl.py doctor'",
+            "diagnostic_codes": [
+              "CREDENTIALS_MISSING",
+              "READ_ONLY_FILESYSTEM"
+            ],
             "exit_code": 2,
+            "output_sha256": "sha256:630adfeacd8c9ec0dd236062af12f004d7fa9a6016c7d29f6e5b8b68559b9c19",
             "status": "failed"
           },
           {
@@ -1390,6 +1804,9 @@
           "openubmc-environment-setup": "enabled"
         },
         "expected_mcp_availability": {},
+        "expected_routes": [
+          "openubmc-environment-setup"
+        ],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -1431,6 +1848,7 @@
           "environment_or_auth_codes": [
             "KB_CREDENTIALS_MISSING"
           ],
+          "failed_commands": [],
           "failed_mcp_calls": [
             {
               "failure_kind": "transport",
@@ -1450,6 +1868,7 @@
           "expected_mcp_availability": {
             "openubmc-kb": "available"
           },
+          "expected_routes": [],
           "fallback_routes": [
             "openubmc-debug"
           ],
@@ -1621,6 +2040,7 @@
         "expected_mcp_availability": {
           "openubmc-kb": "available"
         },
+        "expected_routes": [],
         "fallback_routes": [
           "openubmc-debug"
         ],
@@ -1663,6 +2083,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -1673,6 +2094,9 @@
             "openubmc-developer": "enabled"
           },
           "expected_mcp_availability": {},
+          "expected_routes": [
+            "openubmc-developer"
+          ],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -1807,6 +2231,9 @@
           "openubmc-developer": "enabled"
         },
         "expected_mcp_availability": {},
+        "expected_routes": [
+          "openubmc-developer"
+        ],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -1842,6 +2269,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -1850,6 +2278,7 @@
           "classification": "passed",
           "expected_availability": {},
           "expected_mcp_availability": {},
+          "expected_routes": [],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -1930,6 +2359,7 @@
         "classification": "passed",
         "expected_availability": {},
         "expected_mcp_availability": {},
+        "expected_routes": [],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -1963,6 +2393,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -1971,6 +2402,7 @@
           "classification": "passed",
           "expected_availability": {},
           "expected_mcp_availability": {},
+          "expected_routes": [],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -2051,6 +2483,7 @@
         "classification": "passed",
         "expected_availability": {},
         "expected_mcp_availability": {},
+        "expected_routes": [],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -2087,6 +2520,7 @@
           "capability_codes": [],
           "classifications": [],
           "environment_or_auth_codes": [],
+          "failed_commands": [],
           "failed_mcp_calls": [],
           "status": "passed"
         },
@@ -2097,6 +2531,9 @@
             "openubmc-debug": "enabled"
           },
           "expected_mcp_availability": {},
+          "expected_routes": [
+            "openubmc-debug"
+          ],
           "fallback_routes": [],
           "missing_mcp": [],
           "missing_routes": [],
@@ -2111,6 +2548,7 @@
               "classification": "passed",
               "expected_availability": {},
               "expected_mcp_availability": {},
+              "expected_routes": [],
               "fallback_routes": [],
               "missing_mcp": [],
               "missing_routes": [],
@@ -2126,6 +2564,9 @@
                 "openubmc-debug": "enabled"
               },
               "expected_mcp_availability": {},
+              "expected_routes": [
+                "openubmc-debug"
+              ],
               "fallback_routes": [],
               "missing_mcp": [],
               "missing_routes": [],
@@ -2261,6 +2702,9 @@
           "openubmc-debug": "enabled"
         },
         "expected_mcp_availability": {},
+        "expected_routes": [
+          "openubmc-debug"
+        ],
         "fallback_routes": [],
         "missing_mcp": [],
         "missing_routes": [],
@@ -2275,6 +2719,7 @@
             "classification": "passed",
             "expected_availability": {},
             "expected_mcp_availability": {},
+            "expected_routes": [],
             "fallback_routes": [],
             "missing_mcp": [],
             "missing_routes": [],
@@ -2290,6 +2735,9 @@
               "openubmc-debug": "enabled"
             },
             "expected_mcp_availability": {},
+            "expected_routes": [
+              "openubmc-debug"
+            ],
             "fallback_routes": [],
             "missing_mcp": [],
             "missing_routes": [],
@@ -2323,7 +2771,7 @@
     "matrix_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
     "retained_run_schema": "openubmc.skill-routing-run.v1",
     "retained_run_sha256": "sha256:7f230e45b9d1a0daa2138593f3dee5ed2e2d6dfbd022e6981d4d7ec4585ecdc8",
-    "review_contract_sha256": "sha256:408cbc14949d46665ff393b67a29c4cf3d727ab6b6990b344b3444829ae1e2d5",
+    "review_contract_sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629",
     "workspace_verification": {
       "explicit_source": {
         "clean": true,

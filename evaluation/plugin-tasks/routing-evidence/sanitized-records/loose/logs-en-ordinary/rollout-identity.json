@@ -1,0 +1,27 @@
+{
+  "digest": "sha256:fb512fe998a6e66806377ab230bc1c81683d8d32e5409211ea77e237331afb9c",
+  "identity": {
+    "codex_version": "0.153.4",
+    "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+    "model_provider": "cliproxy",
+    "originator": "codex_exec",
+    "status": "recorded",
+    "thread_id": "01a08f43-1c4b-7d02-9997-88cbc9c1ae53",
+    "turn_contexts": [
+      {
+        "approval_policy": "never",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "effort": "xhigh",
+        "model": "gpt-5.6-sol",
+        "sandbox_policy": {
+          "type": "read-only"
+        }
+      }
+    ],
+    "user_prompts": [
+      "Analyze the openUBMC one-click log bundle at /tmp/openubmc-routing-eval/missing-bundle.tar.gz for repeated webserver crashes. Use only local read-only checks; if the bundle is absent, report that exact blocker without inventing findings."
+    ]
+  },
+  "schema": "openubmc.skill-routing-rollout-projection.v1",
+  "source_rollout_sha256": "sha256:a3bf2178815983d55fc8b6f8e9d9f63570ee0dd89c0007e74f2941875aaa8054"
+}

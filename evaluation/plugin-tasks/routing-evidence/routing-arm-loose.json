@@ -1,6 +1,6 @@
 {
   "arm_id": "loose-skills",
-  "digest": "sha256:b8c9fbc91949f941afacb6ff4f987c402c0f8654cde15803433834cd0f543bdf",
+  "digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
   "environment": {
     "credentials": "not-provided",
     "knowledge_base": "unavailable-in-loose-arm",
@@ -33,11 +33,11 @@
   "loose_skills": {
     "configuration_pattern": "directory-enabled-and-direct-SKILL-disabled",
     "configuration_sha256": "sha256:2f56fae78781bbe94cb1ec3abcafbe738c6bc9889a6d23742716766dd13af830",
-    "content_inventory_digest": "sha256:e7fc9491a688303fa1b957b4b5a65490d3c34b5f7fe8ade40655a3a63274f23c",
+    "content_inventory_digest": "sha256:82305fb4230891357ab0beafa7450dc5c986a49709b1fde87de066dfcc61c923",
     "content_inventory_file": {
-      "file_count": 503,
+      "file_count": 346,
       "path": "routing-loose-content-inventory.json",
-      "sha256": "sha256:b41d08f552bf49a08eb4620e486d0e65554a9c1138f3c031da3be16945429457"
+      "sha256": "sha256:d4f3ab55cdbc051254cf997ac17a392da47223f271bc0e48dc8c9128def252be"
     },
     "disabled_canonical_skills": [
       "openubmc-build",
