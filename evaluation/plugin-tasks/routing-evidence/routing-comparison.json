@@ -28,7 +28,7 @@
         "tree": "bfa37aa8b877c191a7870165912234f1295aebae"
       }
     },
-    "evidence_digest": "sha256:224546150c4251b16fb3ac1feee4a4cc85513fd766ef5541bacd979e79264459",
+    "evidence_digest": "sha256:6c0abcc1d6c19de254e2286a1c10d1516abe566c22cd8e511388d5ba47352b23",
     "identity_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
     "inventory": {
       "content_digest": "sha256:8b38059c7ebf0b1f2972b33b1ce90e567d5c98ca6b0c1c4c258f2a9f70e15e77",
@@ -39,8 +39,8 @@
       "sha256": "sha256:a2acc0ed9efcc324a87162f1acaac68d61169d5839bf3eb782b10e9b5ae3eb13"
     },
     "published_records": {
-      "digest": "sha256:09f9ac549c738b3fe7f3a1268a4dfcf03ebdd8bc27e237fbeb6c7390b33a1eb7",
-      "file_count": 38
+      "digest": "sha256:bf4463054e8a074515105560499c1ae47c76a9a1a6278a5b8c7dcce0c2ac4f4b",
+      "file_count": 51
     },
     "summary": {
       "classifications": {
@@ -83,7 +83,7 @@
       "subject_digest": "sha256:caf3583a199687176b38b3d6d0a9ce19d3c6ae74fab1dc2918e0f4351847cbde",
       "version": "2.0.12"
     },
-    "evidence_digest": "sha256:01f02f763f6bb120cb6aeadf012e725eff683820313a7d0dce30c1bb491f6541",
+    "evidence_digest": "sha256:5957805ae6e4df2a7bc9113e8b1da09ed4ce596a09e33032c1ec79337be1701a",
     "identity_digest": "sha256:c2d0ac0b2102e74fa8734ac9a807c3dea887817faaf9004a937df5915c6c7adc",
     "inventory": {
       "content_digest": "sha256:bcf386f4502415c735e650a20e0ac86ee7895edf12e344ff2b1acb75d123dec9",
@@ -92,8 +92,8 @@
       "sha256": "sha256:1cd4ece599278949c963354a68ac7fa91bd11aa427d6873524fed9ad79dd3e63"
     },
     "published_records": {
-      "digest": "sha256:d35be6529021101ebb8c556e4dba0de4e5eb0d1234f9aee23919c31f88273045",
-      "file_count": 38
+      "digest": "sha256:ca8a6cf8a6a398a8d68bb5307a399c505f48e72ec813efde9611cc39de285e1c",
+      "file_count": 51
     },
     "summary": {
       "classifications": {
@@ -983,34 +983,34 @@
       "workspace_mode": "ordinary"
     }
   ],
-  "digest": "sha256:9064b0b20296abd928ae16f8be987557528d2d26c6e1173c3fa1feba879e0c72",
+  "digest": "sha256:2b44e005bb30c54ebdadfb2e02d5ff4833271330ca9d8a28aeb16c965d59b606",
   "paired_identity": {
     "evaluator": {
-      "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
+      "commit": "e0d534250ce825b0d80106eec12138129339458a",
       "files": {
         "matrix": {
-          "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
+          "commit": "e0d534250ce825b0d80106eec12138129339458a",
           "committed_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
           "path": "evaluation/plugin-tasks/routing-matrix.json",
           "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
         },
         "review_contract": {
-          "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
+          "commit": "e0d534250ce825b0d80106eec12138129339458a",
           "committed_sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629",
           "path": "evaluation/plugin-tasks/routing-review-contract.json",
           "sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629"
         },
         "runner": {
-          "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
-          "committed_sha256": "sha256:bef499f7c35484aa8ec2399a0bed83b64b262915076ca79273ecec37ada50b48",
+          "commit": "e0d534250ce825b0d80106eec12138129339458a",
+          "committed_sha256": "sha256:4ed7eef0011db7878669f4e03d29aad3c440e91b14af77dfde9887f90636ecbc",
           "path": "scripts/skill_routing_evaluation.py",
-          "sha256": "sha256:bef499f7c35484aa8ec2399a0bed83b64b262915076ca79273ecec37ada50b48"
+          "sha256": "sha256:4ed7eef0011db7878669f4e03d29aad3c440e91b14af77dfde9887f90636ecbc"
         }
       },
       "mismatches": [],
       "schema": "openubmc.skill-routing-evaluator.v1",
       "status": "verified",
-      "tree": "321bf3f9003eeba8f7e45699c1735dc10be08239"
+      "tree": "686abc09bf5e8a54109fe8de8f8023fd9e3baf2a"
     },
     "execution": {
       "approval_policy": "never",

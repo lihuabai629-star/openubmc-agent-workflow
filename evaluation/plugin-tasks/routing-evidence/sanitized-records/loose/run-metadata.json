@@ -1,0 +1,40 @@
+{
+  "digest": "sha256:bb28280cc8670e9147db7bd43c3f3a432ee65bcd2458af962d7249a4ff12f338",
+  "run": {
+    "arm_id": "loose-skills",
+    "codex": {
+      "executable_sha256": "sha256:61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+      "version": "codex-cli 0.153.4"
+    },
+    "effort": "xhigh",
+    "inventory": {
+      "path": "baseline-inventory.json",
+      "sha256": "sha256:a2acc0ed9efcc324a87162f1acaac68d61169d5839bf3eb782b10e9b5ae3eb13"
+    },
+    "matrix": {
+      "path": "routing-matrix.json",
+      "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
+    },
+    "model": "gpt-5.6-sol",
+    "plugins": false,
+    "sample_count": 12,
+    "samples": [
+      "samples/diagnosis-zh-ordinary.json",
+      "samples/diagnosis-en-ordinary.json",
+      "samples/logs-en-ordinary.json",
+      "samples/build-zh-explicit-source.json",
+      "samples/build-en-source-cwd.json",
+      "samples/upgrade-en-ordinary.json",
+      "samples/credentials-zh-ordinary.json",
+      "samples/kb-en-ordinary.json",
+      "samples/component-zh-explicit-source.json",
+      "samples/negative-zh-ordinary.json",
+      "samples/ambiguous-zh-ordinary.json",
+      "samples/context-en-multi-turn.json"
+    ],
+    "schema": "openubmc.skill-routing-run.v1",
+    "wall_seconds": 2010.236784
+  },
+  "schema": "openubmc.skill-routing-run-projection.v1",
+  "source_run_sha256": "sha256:ff94db3bd5d8a4eab33c8d2db2260243e22c9039a222c9384bbb153f0c003a6c"
+}

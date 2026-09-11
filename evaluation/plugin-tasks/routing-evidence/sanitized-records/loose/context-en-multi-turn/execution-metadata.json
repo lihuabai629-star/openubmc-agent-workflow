@@ -1,0 +1,57 @@
+{
+  "digest": "sha256:ce971cac644797ddf3c228c58555f5a7a78b727fbd334226bd5ec6c3a50e632d",
+  "execution": {
+    "case_id": "context-en-multi-turn",
+    "identity": {
+      "codex_version": "0.153.4",
+      "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+      "model_provider": "cliproxy",
+      "originator": "codex_exec",
+      "rollout_sha256": "sha256:bfd3c4ae4dd3a1172a81416c10b35c00e4eec66287e72e5154cfd7de28452560",
+      "status": "verified",
+      "thread_id": "01a08f5f-5b44-7623-8173-5c33af77718a",
+      "turn_contexts": [
+        {
+          "approval_policy": "never",
+          "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+          "effort": "xhigh",
+          "model": "gpt-5.6-sol",
+          "sandbox_policy": {
+            "type": "read-only"
+          }
+        },
+        {
+          "approval_policy": "never",
+          "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+          "effort": "xhigh",
+          "model": "gpt-5.6-sol",
+          "sandbox_policy": {
+            "type": "read-only"
+          }
+        }
+      ]
+    },
+    "raw_files": [
+      {
+        "path": "raw/context-en-multi-turn/turn-1.jsonl",
+        "sha256": "sha256:80ef02b7a5b4ebce6d6378c4c5915cceb80bdabf7592f0410fc33f5bc42853b3",
+        "stderr_path": "raw/context-en-multi-turn/turn-1.stderr",
+        "stderr_sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7"
+      },
+      {
+        "path": "raw/context-en-multi-turn/turn-2.jsonl",
+        "sha256": "sha256:9f7ac04e25db45251c0d273a26c9c4c07c695af384169aae3b2a659e20059b33",
+        "stderr_path": "raw/context-en-multi-turn/turn-2.stderr",
+        "stderr_sha256": "sha256:d2ab6c8a8762a0cdc628130676a62fd5f523e509260b6b28364fb5f04c79f383"
+      }
+    ],
+    "returncodes": [
+      0,
+      0
+    ],
+    "timed_out": false,
+    "wall_seconds": 65.031878
+  },
+  "schema": "openubmc.skill-routing-execution-projection.v1",
+  "source_sample_sha256": "sha256:b728aa1b679f8682b85ae16b82c2be7d3abb0a3e5aa89e14bf0d587fa0d464f5"
+}
