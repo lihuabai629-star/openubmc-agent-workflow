@@ -2609,6 +2609,11 @@ def render_comparison_report(comparison: Mapping[str, object]) -> str:
     candidate_distribution = candidate["distribution"]
     disabled_count = before["classifications"]["skill-not-loaded"]
     unchanged_pass = summary["unchanged_pass"]
+    negative_pass = sum(
+        row["intent"] in {"negative", "ambiguous"}
+        and row["change"] == "unchanged-pass"
+        for row in cases
+    )
     explicit_build = case("build-zh-explicit-source")
     source_build = case("build-en-source-cwd")
     credentials = case("credentials-zh-ordinary")
@@ -2624,7 +2629,7 @@ def render_comparison_report(comparison: Mapping[str, object]) -> str:
             f"按各安装形态的意图所有者判据增加 {summary['routing_pass_delta']} 个。"
             f"其中 {summary['discoverability_improved']} 个可配对用例改善，"
             f"{summary['not_comparable_treatment']} 个 KB 用例因安装能力不同不计入发现性增量，"
-            f"{unchanged_pass} 个负向用例两组均未误触发。"
+            f"{unchanged_pass} 个用例保持通过，其中 {negative_pass} 个负向/含糊用例两组均未误触发。"
         ),
         "",
         "## 执行与输入身份",
