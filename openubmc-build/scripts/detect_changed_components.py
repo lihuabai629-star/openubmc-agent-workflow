@@ -39,7 +39,7 @@ def is_component(path: Path) -> bool:
 
 def needs_generation(entries: list[str]) -> bool:
     for entry in entries:
-        entry = entry[3:] if len(entry) >= 3 and entry[1:3] == "  " else entry
+        entry = entry[3:] if len(entry) >= 3 and entry[0] == " " and entry[2] == " " else entry
         parts = Path(entry.strip()).parts
         if "mds" in parts or "proto" in parts:
             return True
