@@ -80,6 +80,30 @@ def refresh_evidence_arm_bindings(evidence: dict[str, object]) -> None:
     ] = routing_result_projection_digest(evidence)
 
 
+def compare_checked_arm_evidence(
+    baseline: dict[str, object], candidate: dict[str, object]
+) -> dict[str, object]:
+    evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+    matrix_path = ROOT / "evaluation/plugin-tasks/routing-matrix.json"
+    matrix = apply_review_contract(
+        load_matrix(matrix_path),
+        matrix_path,
+        ROOT / "evaluation/plugin-tasks/routing-review-contract.json",
+    )
+    return compare_arm_evidence(
+        baseline,
+        candidate,
+        replay_root=evidence_root,
+        baseline_inventory=json.loads(
+            (evidence_root / "routing-inventory-loose.json").read_text()
+        ),
+        candidate_inventory=json.loads(
+            (evidence_root / "routing-inventory-plugin.json").read_text()
+        ),
+        matrix=matrix,
+    )
+
+
 class SkillRoutingEvaluationTests(unittest.TestCase):
     def test_evaluator_identity_requires_one_commit_with_all_review_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1567,7 +1591,7 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         candidate["digest"] = document_digest(candidate)
 
         with self.assertRaisesRegex(ValueError, "paired execution"):
-            compare_arm_evidence(baseline, candidate)
+            compare_checked_arm_evidence(baseline, candidate)
 
     def test_pair_comparison_rejects_unverified_or_failed_evidence(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
@@ -1579,9 +1603,9 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         execution_failed["samples"][0]["failure_layers"]["execution"]["status"] = "failed"
 
         with self.assertRaisesRegex(ValueError, "baseline evidence integrity"):
-            compare_arm_evidence(unverified, candidate)
+            compare_checked_arm_evidence(unverified, candidate)
         with self.assertRaisesRegex(ValueError, "baseline evidence execution"):
-            compare_arm_evidence(execution_failed, candidate)
+            compare_checked_arm_evidence(execution_failed, candidate)
 
     def test_rebuilt_pair_has_verified_identity_and_expected_route_counts(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
@@ -1677,7 +1701,7 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         baseline["digest"] = document_digest(baseline)
 
         with self.assertRaisesRegex(ValueError, "baseline arm identity"):
-            compare_arm_evidence(baseline, candidate)
+            compare_checked_arm_evidence(baseline, candidate)
 
     def test_comparison_rejects_a_valid_plugin_identity_in_the_baseline_role(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
@@ -1688,7 +1712,7 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         baseline["digest"] = document_digest(baseline)
 
         with self.assertRaisesRegex(ValueError, "paired arm roles"):
-            compare_arm_evidence(baseline, candidate)
+            compare_checked_arm_evidence(baseline, candidate)
 
     def test_comparison_requires_distinct_arm_identifiers(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
@@ -1700,7 +1724,7 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         candidate["digest"] = document_digest(candidate)
 
         with self.assertRaisesRegex(ValueError, "paired arm identities must be distinct"):
-            compare_arm_evidence(baseline, candidate)
+            compare_checked_arm_evidence(baseline, candidate)
 
     def test_comparison_rejects_verification_projections_from_another_arm(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
@@ -1721,7 +1745,7 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             tampered["digest"] = document_digest(tampered)
 
             with self.assertRaisesRegex(ValueError, "binding"):
-                compare_arm_evidence(tampered, candidate)
+                compare_checked_arm_evidence(tampered, candidate)
 
     def test_comparison_rejects_route_results_detached_from_published_replay(
         self,
@@ -1742,10 +1766,30 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
                     replacement["failure_layers"][layer]
                 )
         tampered["summary"] = copy.deepcopy(candidate["summary"])
+        tampered["raw_evidence"]["published_records"]["verification"][
+            "result_projection_digest"
+        ] = routing_result_projection_digest(tampered)
         tampered["digest"] = document_digest(tampered)
 
-        with self.assertRaisesRegex(ValueError, "replay binding"):
-            compare_arm_evidence(tampered, candidate)
+        with self.assertRaisesRegex(ValueError, "published replay"):
+            compare_checked_arm_evidence(tampered, candidate)
+
+    def test_comparison_rejects_a_retagged_source_binding_from_another_arm(
+        self,
+    ) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        baseline = json.loads((evidence_root / "routing-evidence-loose.json").read_text())
+        candidate = json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
+        tampered = copy.deepcopy(baseline)
+        tampered["source_binding"] = copy.deepcopy(candidate["source_binding"])
+        tampered["source_binding"]["arm_digest"] = tampered["arm_identity"]["digest"]
+        tampered["source_binding"]["inventory_sha256"] = tampered["arm_identity"][
+            "inventory"
+        ]["sha256"]
+        tampered["digest"] = document_digest(tampered)
+
+        with self.assertRaisesRegex(ValueError, "published replay"):
+            compare_checked_arm_evidence(tampered, candidate)
 
     def test_checked_in_evaluator_identity_matches_its_declared_commit(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"

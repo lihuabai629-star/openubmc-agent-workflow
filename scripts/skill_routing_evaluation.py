@@ -210,6 +210,31 @@ def publish_sanitized_records(
     run_directory = run_directory.resolve(strict=True)
     output_root = output_root.resolve()
     files: list[dict[str, object]] = []
+    run_path = run_directory / "run.json"
+    if run_path.is_file():
+        retained_run = json.loads(run_path.read_text())
+        if not isinstance(retained_run, Mapping):
+            raise ValueError("published run metadata is invalid")
+        run_projection = {
+            "schema": "openubmc.skill-routing-run-projection.v1",
+            "source_run_sha256": _sha256(run_path),
+            "run": dict(retained_run),
+        }
+        run_projection = _sanitize_public_value(run_projection, environ)
+        assert isinstance(run_projection, dict)
+        run_projection["digest"] = document_digest(run_projection)
+        run_relative = Path("sanitized-records", arm_name, "run-metadata.json")
+        run_target = output_root / run_relative
+        _write_json(run_target, run_projection)
+        files.append(
+            {
+                "kind": "run-metadata",
+                "path": run_relative.as_posix(),
+                "source_sha256": _sha256(run_path),
+                "sha256": _sha256(run_target),
+                "size_bytes": run_target.stat().st_size,
+            }
+        )
     for sample in samples:
         case_id = str(sample.get("case_id", ""))
         if re.fullmatch(r"[a-z0-9-]+", case_id) is None:
@@ -259,6 +284,49 @@ def publish_sanitized_records(
                         "size_bytes": target.stat().st_size,
                     }
                 )
+        sample_path = run_directory / "samples" / f"{case_id}.json"
+        if sample_path.is_file():
+            retained_sample = json.loads(sample_path.read_text())
+            if not isinstance(retained_sample, Mapping):
+                raise ValueError(f"published sample metadata is invalid for {case_id}")
+            execution_projection = {
+                "schema": "openubmc.skill-routing-execution-projection.v1",
+                "source_sample_sha256": _sha256(sample_path),
+                "execution": {
+                    key: retained_sample.get(key)
+                    for key in (
+                        "case_id",
+                        "identity",
+                        "raw_files",
+                        "returncodes",
+                        "timed_out",
+                        "wall_seconds",
+                    )
+                },
+            }
+            execution_projection = _sanitize_public_value(
+                execution_projection, environ
+            )
+            assert isinstance(execution_projection, dict)
+            execution_projection["digest"] = document_digest(execution_projection)
+            execution_relative = Path(
+                "sanitized-records",
+                arm_name,
+                case_id,
+                "execution-metadata.json",
+            )
+            execution_target = output_root / execution_relative
+            _write_json(execution_target, execution_projection)
+            files.append(
+                {
+                    "case_id": case_id,
+                    "kind": "execution-metadata",
+                    "path": execution_relative.as_posix(),
+                    "source_sha256": _sha256(sample_path),
+                    "sha256": _sha256(execution_target),
+                    "size_bytes": execution_target.stat().st_size,
+                }
+            )
         rollout = sample.get("rollout_identity")
         if not isinstance(rollout, Mapping):
             raise ValueError(f"published rollout identity is invalid for {case_id}")
@@ -406,6 +474,108 @@ def verify_published_replay(
     arm = evidence.get("arm_identity")
     arm_kind = str(arm.get("kind", "")) if isinstance(arm, Mapping) else ""
     available_mcp = _arm_mcp_servers(arm) if isinstance(arm, Mapping) else []
+    expected_arm_name = "loose" if arm_kind == "loose-skills" else "plugin"
+    if published.get("arm") != expected_arm_name:
+        mismatches.append("arm.binding")
+    run_rows = [
+        row
+        for row in files
+        if isinstance(row, Mapping) and row.get("kind") == "run-metadata"
+    ]
+    if len(run_rows) != 1:
+        mismatches.append("run-metadata")
+    else:
+        try:
+            run_document = _read_digested_document(
+                output_root / str(run_rows[0]["path"])
+            )
+        except (KeyError, OSError, ValueError):
+            mismatches.append("run-metadata.document")
+        else:
+            retained_run = run_document.get("run")
+            source_binding = evidence.get("source_binding")
+            arm_execution = arm.get("execution") if isinstance(arm, Mapping) else None
+            evidence_summary = evidence.get("summary")
+            if not isinstance(retained_run, Mapping):
+                mismatches.append("run-metadata.payload")
+            elif not isinstance(source_binding, Mapping) or not isinstance(
+                arm_execution, Mapping
+            ):
+                mismatches.append("run-metadata.identity")
+            else:
+                retained_inventory = retained_run.get("inventory")
+                retained_matrix = retained_run.get("matrix")
+                retained_codex = retained_run.get("codex")
+                expected_sample_paths = [
+                    f"samples/{sample.get('case_id')}.json"
+                    for sample in samples
+                    if isinstance(sample, Mapping)
+                ]
+                run_checks = {
+                    "projection_schema": (
+                        run_document.get("schema"),
+                        "openubmc.skill-routing-run-projection.v1",
+                    ),
+                    "source_sha256": (
+                        run_document.get("source_run_sha256"),
+                        source_binding.get("retained_run_sha256"),
+                    ),
+                    "manifest_source_sha256": (
+                        run_rows[0].get("source_sha256"),
+                        source_binding.get("retained_run_sha256"),
+                    ),
+                    "schema": (
+                        retained_run.get("schema"),
+                        source_binding.get("retained_run_schema"),
+                    ),
+                    "arm_id": (retained_run.get("arm_id"), arm.get("arm_id")),
+                    "model": (retained_run.get("model"), arm_execution.get("model")),
+                    "effort": (
+                        retained_run.get("effort"),
+                        arm_execution.get("effort"),
+                    ),
+                    "plugins": (
+                        retained_run.get("plugins"),
+                        arm_execution.get("plugins"),
+                    ),
+                    "sample_count": (retained_run.get("sample_count"), len(samples)),
+                    "samples": (retained_run.get("samples"), expected_sample_paths),
+                    "wall_seconds": (
+                        retained_run.get("wall_seconds"),
+                        evidence_summary.get("wall_seconds")
+                        if isinstance(evidence_summary, Mapping)
+                        else None,
+                    ),
+                    "inventory": (
+                        retained_inventory.get("sha256")
+                        if isinstance(retained_inventory, Mapping)
+                        else None,
+                        source_binding.get("inventory_sha256"),
+                    ),
+                    "matrix": (
+                        retained_matrix.get("sha256")
+                        if isinstance(retained_matrix, Mapping)
+                        else None,
+                        source_binding.get("matrix_sha256"),
+                    ),
+                    "codex_version": (
+                        str(retained_codex.get("version", "")).rsplit(" ", 1)[-1]
+                        if isinstance(retained_codex, Mapping)
+                        else None,
+                        arm_execution.get("codex_version"),
+                    ),
+                    "codex_executable": (
+                        retained_codex.get("executable_sha256")
+                        if isinstance(retained_codex, Mapping)
+                        else None,
+                        arm_execution.get("codex_executable_sha256"),
+                    ),
+                }
+                mismatches.extend(
+                    f"run-metadata.{name}"
+                    for name, (actual, expected) in run_checks.items()
+                    if actual != expected
+                )
     verified_samples = 0
 
     def event_projection(summary: Mapping[str, object]) -> dict[str, object]:
@@ -466,9 +636,11 @@ def verify_published_replay(
         combined_events: list[dict[str, object]] = []
         turn_summaries = []
         source_ok = True
+        invalid_count = 0
         for row, expected_raw in zip(jsonl_rows, expected_turns, strict=True):
             path = output_root / str(row["path"])
             events, invalid = _event_lines(path.read_text())
+            invalid_count += len(invalid)
             if invalid:
                 source_ok = False
             combined_events.extend(events)
@@ -524,6 +696,101 @@ def verify_published_replay(
             ):
                 source_ok = False
         replayed = summarize_events(combined_events, inventory, environ=environment)
+        execution_rows = [
+            row for row in rows if row.get("kind") == "execution-metadata"
+        ]
+        if len(execution_rows) != 1:
+            source_ok = False
+        else:
+            try:
+                execution_document = _read_digested_document(
+                    output_root / str(execution_rows[0]["path"])
+                )
+            except (KeyError, OSError, ValueError):
+                source_ok = False
+            else:
+                execution_input = execution_document.get("execution")
+                raw_integrity = sample.get("raw_integrity")
+                rollout_identity = sample.get("rollout_identity")
+                if not isinstance(execution_input, Mapping) or not isinstance(
+                    raw_integrity, Mapping
+                ):
+                    source_ok = False
+                else:
+                    expected_raw_files = [
+                        {
+                            "path": turn["jsonl"]["path"],
+                            "sha256": turn["jsonl"]["sha256"],
+                            "stderr_path": turn["stderr"]["path"],
+                            "stderr_sha256": turn["stderr"]["sha256"],
+                        }
+                        for turn in expected_turns
+                        if isinstance(turn, Mapping)
+                        and isinstance(turn.get("jsonl"), Mapping)
+                        and isinstance(turn.get("stderr"), Mapping)
+                    ]
+                    retained_identity = execution_input.get("identity")
+                    execution_checks = {
+                        "projection_schema": (
+                            execution_document.get("schema"),
+                            "openubmc.skill-routing-execution-projection.v1",
+                        ),
+                        "source_sha256": (
+                            execution_document.get("source_sample_sha256"),
+                            raw_integrity.get("source_sample_sha256"),
+                        ),
+                        "manifest_source_sha256": (
+                            execution_rows[0].get("source_sha256"),
+                            raw_integrity.get("source_sample_sha256"),
+                        ),
+                        "case_id": (execution_input.get("case_id"), case_id),
+                        "raw_files": (
+                            execution_input.get("raw_files"),
+                            expected_raw_files,
+                        ),
+                        "wall_seconds": (
+                            execution_input.get("wall_seconds"),
+                            sample.get("wall_seconds"),
+                        ),
+                        "thread_id": (
+                            retained_identity.get("thread_id")
+                            if isinstance(retained_identity, Mapping)
+                            else None,
+                            rollout_identity.get("thread_id")
+                            if isinstance(rollout_identity, Mapping)
+                            else None,
+                        ),
+                        "rollout_sha256": (
+                            retained_identity.get("rollout_sha256")
+                            if isinstance(retained_identity, Mapping)
+                            else None,
+                            rollout_identity.get("rollout_sha256")
+                            if isinstance(rollout_identity, Mapping)
+                            else None,
+                        ),
+                    }
+                    if any(
+                        actual != expected
+                        for actual, expected in execution_checks.values()
+                    ):
+                        source_ok = False
+                    returncodes = execution_input.get("returncodes")
+                    if not isinstance(returncodes, list):
+                        source_ok = False
+                        returncodes = []
+                    replayed_execution = _execution_failure_layer(
+                        returncodes=returncodes,
+                        timed_out=execution_input.get("timed_out") is True,
+                        invalid_json_lines=invalid_count,
+                        observation=replayed,
+                        expected_turns=len(expected_turns),
+                    )
+                    layers = sample.get("failure_layers")
+                    expected_execution = (
+                        layers.get("execution") if isinstance(layers, Mapping) else None
+                    )
+                    if replayed_execution != expected_execution:
+                        source_ok = False
         expected_observation = sample.get("observation")
         expected_projection = (
             event_projection(expected_observation)
@@ -2296,6 +2563,7 @@ def reconstruct_arm_evidence(
     for raw_case in matrix["cases"]:
         case = dict(raw_case)
         case_id = str(case["case_id"])
+        legacy_sample_path = run_directory / "samples" / f"{case_id}.json"
         legacy = legacy_samples.get(case_id)
         if not isinstance(legacy, Mapping):
             raise ValueError(f"retained sample metadata is missing for {case_id}")
@@ -2420,6 +2688,7 @@ def reconstruct_arm_evidence(
             "mismatches": raw_mismatches,
             "arm_digest": arm["digest"],
             "case_id": case_id,
+            "source_sample_sha256": _sha256(legacy_sample_path),
             "raw_manifest_digest": document_digest(
                 {"case_id": case_id, "raw_manifest": raw_manifest}
             ),
@@ -2800,7 +3069,9 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         or published_verification.get("status") != "verified"
         or published_verification.get("mismatches") != []
         or published_verification.get("file_count")
-        != raw_evidence.get("file_count", 0) + len(evidence.get("samples", []))
+        != published_manifest.get("file_count")
+        or published_verification.get("samples_verified")
+        != len(evidence.get("samples", []))
     ):
         raise ValueError(f"{label} published record identity is unverified")
     require_binding(
@@ -2944,7 +3215,13 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
 
 
 def compare_arm_evidence(
-    baseline: Mapping[str, object], candidate: Mapping[str, object]
+    baseline: Mapping[str, object],
+    candidate: Mapping[str, object],
+    *,
+    replay_root: Path,
+    baseline_inventory: Sequence[Mapping[str, object]],
+    candidate_inventory: Sequence[Mapping[str, object]],
+    matrix: Mapping[str, object],
 ) -> dict[str, object]:
     _require_qualified_evidence("baseline", baseline)
     _require_qualified_evidence("candidate", candidate)
@@ -3013,6 +3290,21 @@ def compare_arm_evidence(
     }
     if baseline_samples.keys() != candidate_samples.keys():
         raise ValueError("paired evidence case identities do not match")
+    for label, evidence, inventory in (
+        ("baseline", baseline, baseline_inventory),
+        ("candidate", candidate, candidate_inventory),
+    ):
+        replay = verify_published_replay(
+            evidence,
+            inventory,
+            matrix,
+            replay_root,
+        )
+        if replay.get("status") != "verified":
+            raise ValueError(
+                f"{label} published replay verification failed: "
+                + ", ".join(str(value) for value in replay.get("mismatches", []))
+            )
     rows = []
     for case_id in baseline_samples:
         before = baseline_samples[case_id]
@@ -3421,7 +3713,14 @@ def _rebuild_pair_into(args: argparse.Namespace, output: Path) -> int:
         )
         evidence["raw_evidence"]["published_records"]["verification"] = verification
         evidence["digest"] = document_digest(evidence)
-    comparison = compare_arm_evidence(baseline, candidate)
+    comparison = compare_arm_evidence(
+        baseline,
+        candidate,
+        replay_root=output,
+        baseline_inventory=baseline_inventory_rows,
+        candidate_inventory=candidate_inventory_rows,
+        matrix=reviewed_matrix,
+    )
     baseline_path = output / "routing-evidence-loose.json"
     candidate_path = output / "routing-evidence-plugin.json"
     comparison_path = output / "routing-comparison.json"
