@@ -79,7 +79,12 @@ def verify(root: Path = ROOT) -> tuple[dict, dict[str, bytes]]:
         if path.is_symlink():
             raise ValueError('plugin contains symbolic link: ' + str(path.relative_to(root)))
         if path.is_file() and path != lock_path:
-            content[path.relative_to(root).as_posix()] = path.read_bytes()
+            relative = path.relative_to(root)
+            # Python may create runtime bytecode beside packaged scripts. These
+            # caches are derived files and must never change package identity.
+            if path.suffix == '.pyc' and '__pycache__' in relative.parts:
+                continue
+            content[relative.as_posix()] = path.read_bytes()
     if {name: hashlib.sha256(data).hexdigest() for name, data in content.items()} != lock['files']:
         raise ValueError('plugin file inventory mismatch; reinstall the verified archive')
     for name in content:

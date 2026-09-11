@@ -86,3 +86,5 @@ For a legacy loose installation or `openubmc@personal`, use `pluginctl.py migrat
 Use `codex plugin list` to identify the installed marketplace and `codex plugin remove openubmc@<marketplace>` to uninstall. For a Git marketplace, refresh with `codex plugin marketplace upgrade <marketplace>` and reinstall with `codex plugin add openubmc@<marketplace>`. Start a new Codex task after a version change.
 
 For an archive installation managed by `install_plugin.py`, use its `plugin_admin.py audit` and recorded rollback entries. Do not apply archive-administration commands to an installation managed only by the native marketplace. Credentials and durable Runtime records survive plugin removal.
+
+Runtime cache files under `__pycache__` are ignored by package verification. They are derived by Python during MCP startup and cannot invalidate a verified release; packaged files and dependency caches remain hash checked.
