@@ -67,6 +67,51 @@ class LocalCredentialSource:
                 return path
         return None
 
+    def status(self) -> dict[str, object]:
+        """Describe selected local capabilities without claiming a remote connection."""
+        from .configuration import activated_source, ConfigurationError
+        result = {'configured': False, 'status': 'missing', 'reason': 'No local credential capability is configured',
+                  'remote_authentication': 'not_checked', 'capabilities': {}, 'active_revision': None}
+        try:
+            path = self.select_path()
+            selected, revision = activated_source(path) if path is not None else (None, None)
+            result['active_revision'] = revision
+            content = read_private_credentials(selected) if selected is not None else ''
+            structured = selected is not None and (selected.suffix.lower() == '.json' or content.lstrip().startswith('{'))
+            hosts = ['default-credential-readiness.invalid']
+            if structured:
+                config = json.loads(content, object_pairs_hook=_unique_object)
+                if not isinstance(config, dict) or not isinstance(config.get('targets', {}), dict):
+                    raise CredentialConfigurationError('credentials_invalid', 'Invalid local target configuration')
+                hosts.extend(config.get('targets', {}))
+            capabilities = {'bmc_ssh': False, 'redfish': False, 'os_ssh': False, 'os_redfish': False}
+            for host in hosts:
+                for purpose, transport, name in [('bmc', 'ssh', 'bmc_ssh'), ('bmc', 'redfish', 'redfish'),
+                                                 ('os', 'ssh', 'os_ssh'), ('os', 'redfish', 'os_redfish')]:
+                    record = self.resolve(selected, host=host, purpose=purpose, transport=transport, required=False)
+                    capabilities[name] = capabilities[name] or record is not None
+            legacy_incomplete = False
+            if not structured:
+                # Telnet and the legacy OS-port completeness rule remain separate
+                # from the Runtime's SSH/Redfish record interface.
+                values = parse_credentials_text(content)
+                telnet = [selected_credential_value(values, (key,), environ=self.environ) or ''
+                          for key in ('OPENUBMC_TELNET_USER', 'OPENUBMC_TELNET_PASSWORD')]
+                capabilities['telnet'] = all(telnet)
+                legacy_incomplete = any(telnet) and not all(telnet)
+                if selected_credential_value(values, ('OPENUBMC_OS_SSH_PORT',), environ=self.environ) and not capabilities['os_ssh']:
+                    legacy_incomplete = True
+            result.update(configured=any(capabilities.values()) and not legacy_incomplete, capabilities=capabilities)
+            result['status'] = 'configured' if result['configured'] else 'incomplete' if selected is not None else 'missing'
+            result['reason'] = ('Local credentials are complete; remote authentication was not checked'
+                                if result['configured'] else 'Complete the selected local credential capabilities')
+        except CredentialConfigurationError as error:
+            result.update(status=error.code.removeprefix('credentials_'), reason=str(error), code=error.code)
+        except (CredentialFileError, ConfigurationError, ValueError, TypeError, RecursionError, OSError):
+            result.update(status='invalid', reason='Check the selected current-user credential configuration and permissions',
+                          code='credentials_invalid')
+        return result
+
     def _legacy_record(self, content: str, *, purpose: str, transport: str) -> dict[str, str]:
         try:
             values = parse_credentials_text(content)

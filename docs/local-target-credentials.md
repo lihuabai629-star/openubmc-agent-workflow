@@ -54,6 +54,16 @@ then canonical environment values, then file values. `REDFISH_USERNAME` and
 source files and conflicting duplicate fields are reported as conflicts. The
 Runtime does not search other directories for credentials.
 
+New installer-managed shell hooks leave target credential selectors unset unless
+the caller explicitly selected one. Older `env.sh` files may already have exported
+`OPENUBMC_CREDENTIALS_FILE` for the standard legacy file. That inherited value remains
+an explicit source to the Runtime; it cannot safely infer whether the user chose it.
+Regenerating the managed hook takes effect in a new shell. For a single invocation
+that should use standard discovery, clear only the selector known to come from the
+old hook, for example `env -u OPENUBMC_CREDENTIALS_FILE <command>`. Keep a deliberately
+selected source. Plugin-only migration preserves old shell files, so it does not
+by itself refresh that hook or the environment of an already running task.
+
 `CredentialResolver.resolve_local` returns a typed SSH or Redfish credential and
 whether that task/target/purpose/transport lookup reused its cache. Missing local
 records return `credentials_missing`, conflicting sources return

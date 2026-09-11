@@ -37,6 +37,56 @@ The Runtime owns observation time and freshness. A plain `resume` reattaches the
 Gate and cannot make diagnosis acceptable; a failed or cancelled diagnosis terminates before
 development.
 
+## Starting and answering a diagnosis
+
+Use the complete `diagnosis-only` start Action in the Debug entrypoint. The public start fields are:
+
+| Field | Use |
+| --- | --- |
+| `kind`, `intent` | `start` and `diagnosis-only` for read-only diagnosis |
+| `target` | The authorized BMC address |
+| `purpose` | Symptom, expected behavior, and requested conclusion in prose |
+| `deadline` | Caller wait bound, greater than zero and at most 120 seconds |
+| `targets` | Optional comparison scope of 2–16 objects with `ip` and optional `role`/`target_id`; when also supplied, `target` must match the first entry |
+| `entry_operation`, `entry_arguments` | Optional supported Domain operation and its documented arguments; arguments require an operation and cannot set Runtime-owned identity, authorization, workflow, epoch, or recovery fields |
+| `observation_ref` | Optional unchanged Runtime-issued ObservationRef for reusable evidence |
+| `delivery_strategy` | For an authorized fix route; omit for diagnosis-only work |
+
+`purpose` describes the question; it does not execute a shell command or add a collection lane.
+The current public `observe` selectors are capability and MDB. The diagnostic collector has no
+systemd-state selector or `systemctl`/`journalctl` command entry. MDB service registration and
+historical logs cannot establish current failed systemd units. Keep those facts unverified when
+the returned evidence does not contain them.
+
+Inspect the returned structured Turn and its `diagnostic_receipt`. When `state=waiting_response`,
+read `gate.input_schema`. Copy the complete returned `next_action` when it is a reusable Action;
+when it is null, use the binding in `gate` with the Turn's `run_id` and supply the missing response.
+Preserve `gate_id`, `gate_version`, `schema_digest`, and `submission_id` exactly. The illustrative
+values below must be replaced by those returned bindings, including the actual Gate version:
+
+```json
+{
+  "kind": "respond",
+  "run_id": "<current Run ID>",
+  "gate_id": "<current Gate ID>",
+  "gate_version": 1,
+  "schema_digest": "<current Gate schema digest>",
+  "submission_id": "<returned submission ID>",
+  "response": {
+    "status": "failed",
+    "summary": "Current evidence does not establish the reported failure or its root cause",
+    "payload": {}
+  },
+  "deadline": 60
+}
+```
+
+Use that failed response only when the evidence cannot support a diagnosis. For a defensible
+conclusion, use `status=completed` and fill the diagnosis fields required by the returned schema
+with current evidence. Never copy a sample root cause or convert a collection receipt into
+accepted diagnosis. A `running` Turn can be resumed with its retained Run ID; terminal status
+comes from the returned Outcome.
+
 ## Canonical calls and preflight
 
 Use only canonical capability names. `mdbctl` is the capability name; MDB queries use selector

@@ -95,13 +95,20 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: python scripts/validate_workflow.py
 
+      - name: Validate local configuration in Chromium
+        working-directory: openubmc-environment-setup/tests/browser
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          npm test
+
       - name: Install locked Codex plugin host
         run: |
           npm ci --ignore-scripts --no-audit --no-fund --prefix plugin/host
           echo "$PWD/plugin/host/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Test plugin activation recovery with native Codex
-        run: python -m unittest scripts.tests.test_plugin_package scripts.tests.test_plugin_activation scripts.tests.test_plugin_credentials scripts.tests.test_plugin_disable_migration
+        run: python -m unittest scripts.tests.test_plugin_package scripts.tests.test_plugin_activation scripts.tests.test_plugin_credentials scripts.tests.test_plugin_disable_migration scripts.tests.test_plugin_agent_guidance
 
       - name: Qualify immutable Codex plugin
         run: >-

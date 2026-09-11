@@ -9,8 +9,8 @@ description: Diagnose, compare, and verify openUBMC runtime issues by correlatin
 
 Own read-only runtime diagnosis and post-change verification. Infer whether the request is:
 
-- `diagnose`: explain and localize a current or reproduced symptom;
-- `verify_delivery`: verify requested behavior on the deployed target.
+- diagnosis: explain and localize a current or reproduced symptom;
+- delivery verification: verify requested behavior on the deployed target.
 
 Accept prose or a concise handoff; do not require a transport envelope. Keep diagnosis separate
 from implementation:
@@ -32,7 +32,7 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   the answer in the same `observe` call. Do not run a separate capability preflight; the internal
   Observation Adapter performs it.
 - Call `execute` when work can cross diagnosis, source change, build, live patch, upgrade,
-  recovery, verification, or acceptance phases.
+  recovery, verification, or acceptance phases, including a read-only diagnosis Run.
 - A build-upgrade Run that requires exact Drive convergence may carry a bounded
   `hardware_acceptance.devices` declaration in its Debug entry arguments. It is validated
   before mutation but applied only to post-upgrade `debug_collect`: missing, unhealthy,
@@ -61,8 +61,25 @@ Use the default `openubmc-target-runtime` MCP through its semantic Agent Interfa
   bounded `summary` as citable visible evidence. Raw Evidence bytes do not need a separate read.
   `projection_truncated` and `content_compacted` describe the display; determine source
   completeness from the receipt's `truncated`, `content_complete`, freshness, coverage, and gaps.
-- Do not use compatibility or operator operations from the default Agent profile. Load the Agent
-  Gateway reference only when continuation, recovery, profiles, or Runtime mechanics matter.
+- Do not use compatibility or operator operations from the default Agent profile.
+
+For a read-only diagnosis, replace the target and purpose in this complete `execute` Action:
+
+```json
+{
+  "kind": "start",
+  "intent": "diagnosis-only",
+  "target": "<BMC IP>",
+  "purpose": "Explain the reported service failure using read-only evidence",
+  "deadline": 60
+}
+```
+
+Put the symptom and requested conclusion in `purpose`. `diagnose` is not an accepted intent;
+`symptom` is not an Action field. Omit a delivery strategy for diagnosis-only work. The deadline
+is the caller wait bound, greater than zero and at most 120 seconds. Before adding collection
+arguments or continuing the Run, read the Agent Gateway reference. A valid start proves no
+diagnostic conclusion; only current evidence and an accepted diagnosis can support completion.
 
 ## Diagnostic workflow
 

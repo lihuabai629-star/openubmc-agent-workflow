@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -130,6 +131,13 @@ def valid_metric(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
+def valid_digest(value):
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    )
+
+
 def metric_summary(rows, *, expected=None):
     rows = list(rows)
     count = len(rows) if expected is None else expected
@@ -155,6 +163,16 @@ def summarize_tasks(cases, arms, *, repetitions):
         or set(arms) != {"baseline", "candidate"}
     ):
         raise ValueError("select two arms and positive repetitions")
+    baseline_identity = arms["baseline"].get("identity", {})
+    candidate_identity = arms["candidate"].get("identity", {})
+    if baseline_identity.get("subject_digest") and baseline_identity.get(
+        "subject_digest"
+    ) == candidate_identity.get("subject_digest"):
+        raise ValueError("paired tasks require distinct plugin subjects")
+    if baseline_identity.get("archive_sha256") and baseline_identity.get(
+        "archive_sha256"
+    ) == candidate_identity.get("archive_sha256"):
+        raise ValueError("paired tasks require distinct plugin archives")
     expected = {
         (case["case_id"], repeat)
         for case in cases
@@ -171,6 +189,11 @@ def summarize_tasks(cases, arms, *, repetitions):
             if key in actual_inputs:
                 previous = actual_inputs[key]
                 left, right = dict(previous or {}), dict(value or {})
+                if not valid_digest(left.get("target_input_digest")) or not valid_digest(
+                    right.get("target_input_digest")
+                ):
+                    left.pop("target_input_digest", None)
+                    right.pop("target_input_digest", None)
                 if not left.get("model_configuration") or not right.get(
                     "model_configuration"
                 ):
@@ -196,7 +219,7 @@ def summarize_tasks(cases, arms, *, repetitions):
             if key in score_index:
                 raise ValueError("duplicate task predicate")
             score_index[key] = score
-        confirmed, arm_gaps = {}, []
+        confirmed, arm_gaps, task_results = {}, [], []
         for key in sorted(expected):
             row = rows.get(key)
             if row is None:
@@ -211,8 +234,18 @@ def summarize_tasks(cases, arms, *, repetitions):
                 for name in names
             ]
             absent = [name for name, score in zip(names, predicates) if score is None]
+            if not valid_digest(
+                (row.get("pairing_identity") or {}).get("target_input_digest")
+            ):
+                absent.append("target_input_digest")
             if row.get("identity_verified") is False:
                 absent.append("loaded_agent_identity")
+            completion = row.get("task_completion", {}).get("status", "unverified")
+            runtime = row.get("runtime_completion", {"status": "unverified"})
+            if completion == "unverified":
+                absent.append("task_completion")
+            if runtime["status"] == "unverified":
+                absent.append("runtime_outcome")
             metrics = row.get("metrics", {})
             missing_metrics = [
                 name for name in TASK_METRICS if not valid_metric(metrics.get(name))
@@ -230,6 +263,8 @@ def summarize_tasks(cases, arms, *, repetitions):
                 and row.get("strict_success") is True
                 and row.get("hard_failure") is False
                 and row.get("gate_eligible", True) is True
+                and completion == "completed"
+                and runtime["status"] in {"completed", "not-applicable"}
             )
             if (
                 outcome
@@ -239,11 +274,27 @@ def summarize_tasks(cases, arms, *, repetitions):
                 confirmed[key] = row
             elif not absent:
                 failed = True
+            task_results.append(
+                {
+                    "case": key[0],
+                    "repetition": key[1],
+                    "episode_id": row["episode_id"],
+                    "status": "completed" if key in confirmed else (
+                        "failed" if completion == "failed" or runtime["status"] == "failed"
+                        else "unverified" if absent else "failed"
+                    ),
+                    "review_completion": completion,
+                    "runtime_completion": runtime,
+                }
+            )
         metrics_report = metric_summary(confirmed.values())
         layers = {}
         for key, row in rows.items():
             if key not in confirmed:
-                layer = row.get("failure_layer") or "unclassified"
+                layer = row.get("failure_layer") or (
+                    "runtime" if row.get("runtime_completion", {}).get("status") == "failed"
+                    else "unclassified"
+                )
                 layers[layer] = layers.get(layer, 0) + 1
         all_metrics = metric_summary(rows.values(), expected=len(expected))
         reports[arm] = {
@@ -255,6 +306,7 @@ def summarize_tasks(cases, arms, *, repetitions):
             "all_tasks": all_metrics,
             "failure_layers": layers,
             "gaps": arm_gaps,
+            "task_results": task_results,
         }
         successes[arm] = confirmed
         gaps.extend(arm_gaps)
@@ -316,6 +368,10 @@ def reviewed_task_scores(root, review, episodes, cases, *, bundle_digest):
         source = root / sample["source_path"]
         if (
             not source.resolve().is_relative_to(root.resolve())
+            or (
+                index[identifier].get("verified_source_path") is not None
+                and sample["source_path"] != index[identifier]["verified_source_path"]
+            )
             or source.is_symlink()
             or not source.is_file()
             or "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
@@ -335,6 +391,22 @@ def reviewed_task_scores(root, review, episodes, cases, *, bundle_digest):
             if hashlib.sha256(path.read_bytes()).hexdigest() != reference.get("sha256"):
                 raise ValueError("task review evidence digest mismatch")
         oracle = oracles[index[identifier]["case_id"]]
+        completion = sample.get("completion")
+        if completion is not None:
+            if (
+                not isinstance(completion, dict)
+                or completion.get("status") not in {"completed", "failed", "unverified"}
+                or not isinstance(completion.get("criterion"), str)
+                or not completion["criterion"].strip()
+                or not completion.get("evidence_refs")
+            ):
+                raise ValueError("task completion requires a status, criterion and evidence")
+            # Only the original Agent records indexed by the verified source may
+            # support completion; a new reviewer-authored file is not evidence.
+            for reference in completion["evidence_refs"]:
+                if reference not in index[identifier].get("task_evidence_refs", []):
+                    raise ValueError("task completion evidence is not the verified episode record")
+            index[identifier]["task_completion"] = completion
         allowed = set(oracle["required_predicates"] + oracle["forbidden_predicates"])
         for name, passed in sample["predicates"].items():
             if name not in allowed or type(passed) is not bool:
@@ -364,6 +436,119 @@ def reviewed_task_scores(root, review, episodes, cases, *, bundle_digest):
         index[identifier]["failure_layer"] = layer
         metrics[identifier] = observations
     return scores, metrics
+
+
+def runtime_task_completion(records):
+    """Read Runtime-returned Outcomes; independent reviews cannot replace them."""
+    runs, terminal, pending = {}, {}, set()
+    started, transport_errors = {}, {}
+    unresolved = False
+    for position, record in enumerate(records):
+        if record.get("event_type") != "codex.event":
+            continue
+        event = record.get("payload", {})
+        item = event.get("item", {})
+        if (
+            item.get("type") != "mcp_tool_call"
+            or item.get("server") != "openubmc-target-runtime"
+            or item.get("tool") != "execute"
+        ):
+            continue
+        if event.get("type") == "item.started":
+            pending.add(item.get("id"))
+            started[item.get("id")] = (position, item.get("arguments"))
+            continue
+        if event.get("type") != "item.completed":
+            continue
+        pending.discard(item.get("id"))
+        arguments = item.get("arguments") or {}
+        if started.get(item.get("id"), (None, arguments))[1] != arguments:
+            unresolved = True
+            continue
+        requested_run = arguments.get("run_id") if isinstance(arguments, dict) else None
+        if requested_run is not None and not isinstance(requested_run, str):
+            unresolved = True
+            requested_run = None
+        if requested_run:
+            runs.setdefault(requested_run, {"run_id": requested_run, "status": "unverified"})
+        result = item.get("result") or {}
+        turn = result.get("structured_content") if isinstance(result, dict) else None
+        if (
+            item.get("status") != "completed"
+            or not isinstance(turn, dict)
+            or turn.get("schema") != "openubmc.target-runtime.v1/agent-gateway-v1/turn"
+        ):
+            if (
+                item.get("status") == "failed"
+                and item.get("error")
+                and item.get("result") is None
+                and requested_run
+                and arguments.get("kind") in {"resume", "respond", "control"}
+            ):
+                # A failed transport has no Outcome. Only a new call on this
+                # same Run can establish what happened after this failure.
+                transport_errors[requested_run] = position
+                runs[requested_run] = {"run_id": requested_run, "status": "unverified"}
+            else:
+                unresolved = True
+            continue
+        run_id = turn.get("run_id")
+        if not isinstance(run_id, str):
+            unresolved = True
+            continue
+        if not run_id:
+            # A rejected request that created no Run has no terminal Outcome.
+            # It does not erase a later valid Run's successful completion.
+            if (
+                requested_run
+                or turn.get("state") != "failed"
+                or turn.get("outcome") is not None
+                or turn.get("outcome_recorded") is True
+            ):
+                unresolved = True
+            continue
+        if requested_run and requested_run != run_id:
+            unresolved = True
+        outcome = turn.get("outcome")
+        if outcome is None:
+            outcome = {}
+        if not isinstance(outcome, dict):
+            runs[run_id] = {"run_id": run_id, "status": "unverified"}
+            unresolved = True
+            continue
+        status = "unverified"
+        if turn.get("outcome_recorded") is True:
+            outcome_status = outcome.get("status")
+            if outcome_status == "completed" and turn.get("state") == "completed":
+                status = "completed"
+            elif outcome_status in {"failed", "cancelled"}:
+                status = "failed"
+            if run_id in terminal and terminal[run_id] != outcome:
+                unresolved = True
+            terminal[run_id] = outcome
+        if status in {"completed", "failed"} and run_id in transport_errors:
+            call_started, start_arguments = started.get(item.get("id"), (-1, None))
+            if (
+                call_started > transport_errors[run_id]
+                and start_arguments == arguments
+                and requested_run == run_id
+                and arguments.get("kind") in {"resume", "respond", "control"}
+            ):
+                del transport_errors[run_id]
+        runs[run_id] = {
+            "run_id": run_id,
+            "status": status,
+            "state": turn.get("state"),
+            "outcome_recorded": turn.get("outcome_recorded") is True,
+            "outcome_status": outcome.get("status"),
+        }
+    statuses = {run["status"] for run in runs.values()}
+    status = (
+        "unverified" if unresolved or pending or transport_errors or "unverified" in statuses else
+        "failed" if "failed" in statuses else
+        "completed" if runs else "not-applicable"
+    )
+    return {"status": status, "runs": list(runs.values())}
 
 
 def validate_task_identity(
@@ -449,6 +634,7 @@ def load_lab_arm(bundle, subject_path, review_path):
         if path is None:
             raise ValueError("task source is not indexed by the verified bundle")
         source = load_json(path, description="task source")
+        row["verified_source_path"] = path.relative_to(bundle).as_posix()
         row["pairing_identity"] = {
             name: source.get(name)
             for name in (
@@ -460,9 +646,15 @@ def load_lab_arm(bundle, subject_path, review_path):
         records_path = path.parent / source["raw_records"]
         if not records_path.resolve().is_relative_to(path.parent.resolve()):
             raise ValueError("task raw records escape their verified source")
+        records = load_jsonl(records_path, description="task raw records")
+        row["task_evidence_refs"] = [{
+            "path": records_path.relative_to(bundle).as_posix(),
+            "sha256": hashlib.sha256(records_path.read_bytes()).hexdigest(),
+        }]
+        row["runtime_completion"] = runtime_task_completion(records)
         model_configuration = validate_task_identity(
             source,
-            load_jsonl(records_path, description="task raw records"),
+            records,
             subject_digest=subject.digest,
             runtime_digest=runtime["digest"],
             client=client,
