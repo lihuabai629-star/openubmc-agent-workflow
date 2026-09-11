@@ -26,7 +26,7 @@ from implementation:
 Use the default `openubmc-target-runtime` MCP through its semantic Agent Interface:
 
 - For current systemd service failures, use a `systemd` selector with literal `.service` names
-  or `["failed"]` discovery. Read [the selector contract](references/agent-gateway.md#current-systemd-service-evidence).
+  or `["failed"]` discovery; see the Agent semantic interface reference below.
 - Call `observe` for an exact read-only question. Declare only the selectors needed for the
   answer. A narrow MDB or capability query should complete in one call and return an inline
   `ObservationReceipt`.

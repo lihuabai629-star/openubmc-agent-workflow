@@ -128,6 +128,8 @@ class SystemdCollectorTests(unittest.TestCase):
         import target_runtime_mcp
         from _target_runtime_adapter import open_debug_runtime_lease
         captured = CapturedSsh()
+        failure_mode = ""
+        boot_reads = 0
         class Transport:
             def __init__(self, **options):
                 pass
@@ -142,6 +144,26 @@ class SystemdCollectorTests(unittest.TestCase):
             def run_channel(self, master, remote_command, **limits):
                 if 'uptime' in remote_command:
                     return subprocess.CompletedProcess('', 0, '2026-09-11 12:00:00 +0000\n up 1 day', '')
+                nonlocal boot_reads
+                if remote_command == 'cat /proc/sys/kernel/random/boot_id':
+                    boot_reads += 1
+                    if failure_mode == 'boot_changed' and boot_reads == 2:
+                        return subprocess.CompletedProcess('', 0, '0' * 36, '')
+                if 'list-units' in remote_command:
+                    return subprocess.CompletedProcess('', 0, '', '')
+                if 'systemctl' in remote_command:
+                    if failure_mode == 'permission_denied':
+                        return subprocess.CompletedProcess('', 1, '', 'Permission denied')
+                    if failure_mode == 'unit_not_found':
+                        return subprocess.CompletedProcess('', 4, 'LoadState=not-found', '')
+                    if failure_mode == 'deadline_exceeded':
+                        raise subprocess.TimeoutExpired('', 0.01)
+                    if failure_mode == 'output_limit':
+                        reply = subprocess.CompletedProcess('', 0, '', '')
+                        reply.output_limit_exceeded = True
+                        return reply
+                if 'journalctl' in remote_command and failure_mode == 'malformed_journal':
+                    return subprocess.CompletedProcess('', 0, '[', '')
                 reply = captured(remote_command, **limits)
                 if 'journalctl' in remote_command:
                     reply.stdout = reply.stdout.replace('fan probe failed',
@@ -216,6 +238,52 @@ class SystemdCollectorTests(unittest.TestCase):
                     'verification_status': 'verified'}},
         }, task_id='systemd-e2e', operation_id='accept')
         self.assertEqual(final['outcome']['status'], 'completed')
+
+        for failure_mode in ('permission_denied', 'unit_not_found', 'deadline_exceeded',
+                             'output_limit', 'malformed_journal', 'boot_changed'):
+            with self.subTest(public_failure=failure_mode):
+                boot_reads = 0
+                failed = service.call_exposed_tool('observe', {
+                    'target': '192.0.2.10', 'selectors': [
+                        {'id': 'services', 'kind': 'systemd', 'names': ['fan.service']}],
+                }, task_id='systemd-' + failure_mode, operation_id='observe-failure')
+                self.assertEqual(failed['status'], 'incomplete')
+                self.assertIn(failure_mode, failed['results']['services']['gaps'])
+                self.assertNotIn('observation_ref', failed)
+                for blob_id in blobs.blob_ids():
+                    body = blobs.read(blob_id)
+                    document = json.loads(body)
+                    if document.get('task_id') != 'systemd-' + failure_mode:
+                        continue
+                    invalid_ref = {**receipt['observation_ref'],
+                        'handle': 'blob://' + blob_id, 'digest': blob_id, 'size': len(body),
+                        'scope_digest': document['scope_digest'], 'observed_at': document['observed_at']}
+                    with self.assertRaisesRegex(ValueError, 'coherent live scope'):
+                        service.call_exposed_tool('execute', {
+                            'kind': 'start', 'target': '192.0.2.10', 'intent': 'diagnosis-only',
+                            'observation_ref': invalid_ref,
+                        }, task_id='reject-' + failure_mode, operation_id='reject-incomplete')
+                    break
+                else:
+                    self.fail('incomplete source was not retained')
+        failure_mode = ''
+        empty = service.call_exposed_tool('observe', {
+            'target': '192.0.2.10', 'selectors': [
+                {'id': 'services', 'kind': 'systemd', 'names': ['failed']}],
+        }, task_id='systemd-empty', operation_id='observe-empty')
+        self.assertTrue(empty['results']['services']['complete'])
+        self.assertEqual(empty['results']['services']['units'], [])
+        stale_context = runtime.ContextRuntime(runtime.OperationCatalog([
+            runtime.OperationDescriptor.from_tool_definition(item)
+            for item in service.tool_definitions()
+        ]), blob_repository=blobs, clock=lambda: time.time() + 3600)
+        stale_service = runtime.RuntimeMcpService(Backend(), context_runtime=stale_context)
+        self.addCleanup(stale_service.close)
+        with self.assertRaisesRegex(ValueError, 'older than'):
+            stale_service.call_exposed_tool('execute', {
+                'kind': 'start', 'target': '192.0.2.10', 'intent': 'diagnosis-only',
+                'observation_ref': receipt['observation_ref'],
+            }, task_id='systemd-stale', operation_id='start-stale')
 
     def test_previous_invocation_journal_cannot_prove_current_failure(self):
         ssh = CapturedSsh()

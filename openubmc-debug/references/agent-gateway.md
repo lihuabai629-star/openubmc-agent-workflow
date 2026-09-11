@@ -223,7 +223,7 @@ ledgers, Runtime sequencing, incident metrics, and governance projections remain
 For current service failures, use `observe` with one systemd selector:
 
 ```json
-{"target":"192.0.2.10","selectors":[{"id":"services","kind":"systemd","names":["fan.service"]}]}
+{"target":"<bmc-host>","selectors":[{"id":"services","kind":"systemd","names":["fan.service"]}]}
 ```
 
 Use `"names":["failed"]` to discover current failed system-manager services. Combine up to
