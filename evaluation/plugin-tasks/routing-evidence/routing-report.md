@@ -6,7 +6,7 @@
 
 - Codex CLI：`0.153.4`；模型：`gpt-5.6-sol`；effort：`xhigh`；provider：`cliproxy`。
 - 原生入口：`originator=codex_exec`；安全策略：`approval_policy=never`，`sandbox=read-only`。每个 rollout 和多轮 resume 都从原生 session 记录反验。
-- 评估器：提交 `9f4e2ebf79507bce12920555c7b1392a6062ffa5`，tree `4491b58b4d9be7b1ba8a152c80adf072eb942f4c`；runner `sha256:3d97ab45ebfd2b238caa1b4a73c1fba5fb4fdfd07285578295c4bf21d436c70e`，matrix `sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d`，review contract `sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629`。三个输入均已与该提交中的精确字节核验。
+- 评估器：提交 `a6bd24c482553739a084317d3f3715388ac4a2e6`，tree `ec4758591eb0828aba4485141440feda2940b035`；runner `sha256:5ef459308e85930638efe442e71231ff9f8271f16a750b009dccbba48a389330`，matrix `sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d`，review contract `sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629`。三个输入均已与该提交中的精确字节核验。
 - 外部环境：两臂均未提供目标或凭据；KB MCP 可用性属于安装形态这一处理变量。loose 臂为 `unavailable-in-loose-arm`，插件臂为 `configured-without-credentials`。
 - 源码：`lihuabai629-star/openubmc-agent-workflow@3a898818b5ea5bd5f810ecd3c22de6617ae617da`，tree `eab8fda257f1d9802cf5fad82f10223e1f8820e1`。
 - 插件：`openubmc 2.0.12`；archive `sha256:caa1a7605eab1e0dc6b58de3b0b96b9b89ec53dbb0f12f79258d0f87dba6d94d`；content `2ce74f4b0aeebd6fd1f1fc268c1611c92bf57179961ec44c380e6e074c31384d`；subject `sha256:caf3583a199687176b38b3d6d0a9ce19d3c6ae74fab1dc2918e0f4351847cbde`；Runtime `sha256:bd511c205cb754613795142d6cd91e1138802a33580c636a9e74e363a4d4d692`。原生 inventory 含 12 个插件 Skill 和 2 个 MCP。
@@ -61,7 +61,7 @@
 
 ## 证据边界
 
-原始 JSONL、stderr 和完整 session 仅保留在本地；提交了可重放的脱敏 native event、stderr 与 rollout 身份投影，共 38 个 loose 文件和 38 个 plugin 文件，并保留原始文件 SHA-256 绑定。loose evidence：`sha256:d9e8d89a2a982b2365b9501c75802f6e4724aa1c244a21f0a51b0eb40f9cb7cf`；plugin evidence：`sha256:edd574e0acfb93f390a70d7beee6323d256ebcbc8f604bb8c4707ea779fd8d1f`。提交记录已扫描当前凭据值、私钥、GitHub token、JWT 和 RFC1918 地址。
+原始 JSONL、stderr 和完整 session 仅保留在本地；提交了可重放的脱敏 native event、stderr 与 rollout 身份投影，共 38 个 loose 文件和 38 个 plugin 文件，并保留原始文件 SHA-256 绑定。loose evidence：`sha256:c194b4513904f0dfe1ea1e6429e65447b21f01c9c44073468f2f78880b387ec8`；plugin evidence：`sha256:beff3a9487ec1aec40eaf6155e51005d8410f7c66f6e57b959c4048ae01d6167`。提交记录已扫描当前凭据值、私钥、GitHub token、JWT 和 RFC1918 地址。
 
 本记录只验证 Linux WSL2 中的原生 Codex CLI 路由；未验证原生 Windows、真实 BMC、Conan 发布或升级完成度。
 这是 routing-only 原生 Codex 记录，不替代完整 Evaluation Lab Bundle 和 independent task review。
