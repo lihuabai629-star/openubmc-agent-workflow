@@ -207,8 +207,5 @@ change requires it.
   [startup-product-assembly.md](references/startup-product-assembly.md)
 - Hardware VPD acquisition, byte validation, snapshots, refresh, and removal:
   [hardware-vpd.md](references/hardware-vpd.md)
-- SR/DDS product records, matching, inheritance, soft variants, and effective
-  product selection:
-  [sr-dds-product-records.md](references/sr-dds-product-records.md)
-- ProfileSchema import/export contracts, adapters, redaction, and compatibility:
-  [profile-schema-import-export.md](references/profile-schema-import-export.md)
+- SR/DDS product records and effective product selection: [sr-dds-product-records.md](references/sr-dds-product-records.md)
+- ProfileSchema import/export, adapters, redaction, and compatibility: [profile-schema-import-export.md](references/profile-schema-import-export.md)
