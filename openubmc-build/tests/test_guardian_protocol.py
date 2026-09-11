@@ -279,7 +279,8 @@ class GuardianProtocolTests(unittest.TestCase):
             )
             first_record: dict[str, int] | None = None
             try:
-                self.assertTrue(wait_for(records.exists, 5))
+                self.assertTrue(wait_for(
+                    lambda: records.exists() and records.read_text(encoding="utf-8").endswith("\n"), 5))
                 first_record = json.loads(
                     records.read_text(encoding="utf-8").splitlines()[0]
                 )
@@ -530,7 +531,8 @@ class GuardianProtocolTests(unittest.TestCase):
             )
             first_record: dict[str, int] | None = None
             try:
-                self.assertTrue(wait_for(records.exists, 5))
+                self.assertTrue(wait_for(
+                    lambda: records.exists() and records.read_text(encoding="utf-8").endswith("\n"), 5))
                 first_record = json.loads(
                     records.read_text(encoding="utf-8").splitlines()[0]
                 )

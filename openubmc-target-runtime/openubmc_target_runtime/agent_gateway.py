@@ -2025,7 +2025,7 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                 "properties": {
                     "status": {
                         "type": "string",
-                        "enum": ["completed", "failed", "cancelled"],
+                        "enum": ["completed", "failed", "cancelled", "partial"],
                     },
                     "summary": {"type": "string", "minLength": 1},
                     "payload": {

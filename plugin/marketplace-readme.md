@@ -14,7 +14,16 @@ Alternatively, add `lihuabai629-star/openubmc-codex-plugins` as a Git marketplac
 
 Start a new Codex task after installation. The first startup downloads and verifies Python/npm dependencies; allow up to ten minutes on a slow connection. Later startups reuse the verified local cache. Credentials are configured separately.
 
-Try: “检查 openUBMC Runtime 状态，并说明缺少哪些配置。”
+Try from any working directory:
+
+- “这台 BMC 的传感器读数异常，帮我定位。”
+- “分析这个一键收集日志包。”
+- “帮我配置默认 BMC 账号和这个 IP 的覆盖项。”
+- “编译这个目录里的 openUBMC 组件。”
+
+For source-dependent work, provide the source directory when it differs from the
+current directory. Target diagnosis and local plugin configuration do not require
+a source checkout.
 
 ## Credentials
 

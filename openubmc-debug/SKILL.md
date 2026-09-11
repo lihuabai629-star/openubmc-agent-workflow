@@ -1,6 +1,6 @@
 ---
 name: openubmc-debug
-description: Diagnose, compare, and verify openUBMC runtime issues by correlating local source or configuration, northbound interfaces, live MDB/D-Bus objects and alarms, logs or files, and optional OS-host evidence. Use for a supplied BMC IP, a runtime symptom, comparison of live targets, a diagnostic handoff, or post-upgrade verification. Keep remote work read-only and route implementation, build, upgrade, or live mutation to their owning skills.
+description: "Diagnose openUBMC/BMC runtime problems: 设备不识别、传感器异常、告警、服务启动失败、接口报错、两台 BMC 对比。Use for live target symptoms, a supplied BMC IP, diagnostic handoff, or post-upgrade verification; correlate source, MDB/D-Bus, Redfish, logs, and optional OS evidence. Remote diagnosis is read-only; route implementation, builds, upgrades, and file replacement to their owning skills."
 ---
 
 # openUBMC Runtime Debug
@@ -161,6 +161,7 @@ Read only the directly relevant one-hop references:
 - Agent semantic interface and Runtime continuation: `references/agent-gateway.md`
 - Remote credentials, preflight, helpers, concurrency, and target automation: `references/remote-automation.md`
 - Evidence selection and correlation: `references/evidence-workflow.md`
+- Hypothesis-directed Drive diagnosis and fault-chain comparison: `references/diagnostic-advice.md`
 - Combined snapshot details: `references/workflow.md`
 - Structured result fields: `references/diagnostic-contract.md`
 - Focused mechanism checks: `references/mechanism-debugging.md`
