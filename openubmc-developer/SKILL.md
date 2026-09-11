@@ -96,6 +96,13 @@ Follow a stable repository precedent by default. If precedents conflict or none
 can satisfy the requirement correctly, present the material alternatives before
 a deviation or refactor.
 
+For a model/interface change or a multi-component handoff, use the impact and
+component-acceptance contract in
+[`openubmc-build/references/handoff-contract.md`](../openubmc-build/references/handoff-contract.md).
+Carry the task's explicit paths and evidence-backed dependency edges; preserve
+unknown coverage as a gap. Submit actual component checks through the current
+`developer.change` Gate, using partial submissions when work remains.
+
 ## Implement in the existing structure
 
 - Put behavior in the layer that already owns it. Keep adapters thin, preserve a

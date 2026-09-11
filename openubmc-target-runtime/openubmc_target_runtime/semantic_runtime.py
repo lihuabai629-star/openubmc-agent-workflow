@@ -1224,9 +1224,9 @@ def _validate_gate_response_shape(response: Mapping[str, object]) -> None:
     raw_status = response.get("status")
     raw_summary = response.get("summary")
     status = raw_status.strip().lower() if isinstance(raw_status, str) else ""
-    if status not in {"completed", "failed", "cancelled"}:
+    if status not in {"completed", "failed", "cancelled", "partial"}:
         raise AgentGatewayError(
-            "response status must be completed, failed, or cancelled"
+            "response status must be completed, failed, cancelled, or partial"
         )
     if not isinstance(raw_summary, str) or not raw_summary.strip():
         raise AgentGatewayError("response summary must be a non-empty string")
