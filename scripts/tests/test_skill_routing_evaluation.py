@@ -22,6 +22,7 @@ from scripts.skill_routing_evaluation import (
     inventory_content_digest,
     load_arm_identity,
     load_matrix,
+    publish_sanitized_records,
     render_comparison_report,
     resolve_executable,
     routing_exit_code,
@@ -31,6 +32,8 @@ from scripts.skill_routing_evaluation import (
     verify_rollout_identity,
     verify_arm_artifacts,
     verify_loose_content_inventory,
+    verify_published_records,
+    verify_published_replay,
     validate_review_classification,
     verify_workspace_layout,
 )
@@ -142,9 +145,38 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
 
         self.assertEqual(cases["kb-en-ordinary"]["allowed_routes"], ["openubmc-debug"])
         self.assertEqual(
+            cases["build-en-source-cwd"]["arm_routes"]["loose-skills"],
+            {"expected_routes": ["openubmc-bingo-build"]},
+        )
+        self.assertEqual(
             cases["context-en-multi-turn"]["expected_routes_by_turn"],
             [[], ["openubmc-debug"]],
         )
+
+    def test_arm_specific_route_contract_accepts_a_legacy_intent_owner(self) -> None:
+        matrix_path = ROOT / "evaluation/plugin-tasks/routing-matrix.json"
+        contract_path = ROOT / "evaluation/plugin-tasks/routing-review-contract.json"
+        matrix = apply_review_contract(load_matrix(matrix_path), matrix_path, contract_path)
+        case = next(
+            value for value in matrix["cases"] if value["case_id"] == "build-en-source-cwd"
+        )
+        inventory = [
+            {"name": "openubmc-bingo-build", "enabled": True},
+            {"name": "openubmc-build", "enabled": False},
+        ]
+        observation = {"skill_reads": ["openubmc-bingo-build"], "mcp_calls": []}
+
+        baseline = evaluate_route(
+            case, observation, inventory, arm_kind="loose-skills"
+        )
+        candidate_contract = evaluate_route(
+            case, observation, inventory, arm_kind="plugin"
+        )
+
+        self.assertEqual(baseline["status"], "passed")
+        self.assertEqual(baseline["expected_routes"], ["openubmc-bingo-build"])
+        self.assertEqual(candidate_contract["classification"], "skill-not-loaded")
+        self.assertEqual(candidate_contract["expected_routes"], ["openubmc-build"])
 
     def test_mcp_route_rejects_an_undeclared_supporting_skill(self) -> None:
         case = {
@@ -197,6 +229,23 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         self.assertEqual(verified["status"], "verified")
         self.assertEqual(stale["status"], "unverified")
         self.assertIn("content", stale["mismatches"])
+
+    def test_loose_inventory_excludes_transient_hidden_paths_and_python_caches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            skill_root = Path(temporary)
+            (skill_root / "example").mkdir()
+            (skill_root / "example/SKILL.md").write_text("---\nname: example\n---\n")
+            (skill_root / "example/.tmp/private-target").mkdir(parents=True)
+            (skill_root / "example/.tmp/private-target/state.json").write_text("{}\n")
+            (skill_root / "example/__pycache__").mkdir()
+            (skill_root / "example/__pycache__/helper.pyc").write_bytes(b"cache")
+
+            document = file_content_inventory(skill_root)
+
+        self.assertEqual(
+            [row["path"] for row in document["files"]],
+            ["example/SKILL.md"],
+        )
 
     def test_command_pins_real_model_effort_and_read_only_execution(self) -> None:
         first = build_codex_command(
@@ -321,6 +370,13 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             path.write_text(json.dumps(document))
 
             with self.assertRaisesRegex(ValueError, "runtime_digest"):
+                load_arm_identity(path)
+
+            document["execution"]["plugins"] = "false"
+            document["plugin"]["runtime_digest"] = sha
+            document["digest"] = document_digest(document)
+            path.write_text(json.dumps(document))
+            with self.assertRaisesRegex(ValueError, "plugins must be boolean"):
                 load_arm_identity(path)
 
     def test_arm_artifact_verification_detects_archive_drift(self) -> None:
@@ -690,6 +746,86 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         self.assertNotIn(secret, rendered)
         self.assertIn("<redacted:CLI_PROXY_API_KEY>", rendered)
 
+    def test_published_native_records_are_replayable_and_redacted(self) -> None:
+        secret = "credential-value-that-must-not-leak"
+        github_token = "ghp_" + "a" * 40
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0LXVzZXIifQ.signaturevalue"
+        private_key = (
+            "-----BEGIN PRIVATE KEY-----\nprivate-material\n"
+            "-----END PRIVATE KEY-----"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run = root / "run"
+            raw = run / "raw/example/turn-1.jsonl"
+            stderr = run / "raw/example/turn-1.stderr"
+            raw.parent.mkdir(parents=True)
+            raw.write_text(
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "agent_message",
+                            "text": " ".join(
+                                [
+                                    secret,
+                                    github_token,
+                                    jwt,
+                                    private_key,
+                                    "target 10.20.30.40",
+                                ]
+                            ),
+                        },
+                    }
+                )
+                + "\n"
+            )
+            stderr.write_text("target 10.20.30.40\n")
+            sample = {
+                "case_id": "example",
+                "raw_manifest": [
+                    {
+                        "turn": 1,
+                        "jsonl": {"path": "raw/example/turn-1.jsonl"},
+                        "stderr": {"path": "raw/example/turn-1.stderr"},
+                    }
+                ],
+                "rollout_identity": {
+                    "thread_id": "thread-1",
+                    "rollout_sha256": "sha256:" + "a" * 64,
+                    "status": "recorded",
+                    "model": "gpt-5.6-sol",
+                    "verification": {"status": "verified", "mismatches": []},
+                },
+            }
+            published = publish_sanitized_records(
+                run,
+                root / "published",
+                "loose",
+                [sample],
+                {"CLI_PROXY_API_KEY": secret},
+            )
+            verification = verify_published_records(
+                published, root / "published"
+            )
+            retained = "\n".join(
+                (root / "published" / row["path"]).read_text()
+                for row in published["files"]
+            )
+
+        self.assertEqual(verification["status"], "verified")
+        self.assertEqual(published["file_count"], 3)
+        for value in (secret, github_token, jwt, private_key, "10.20.30.40"):
+            self.assertNotIn(value, retained)
+        for marker in (
+            "<redacted:CLI_PROXY_API_KEY>",
+            "<redacted:github-token>",
+            "<redacted:jwt>",
+            "<redacted:private-key>",
+            "<redacted:private-ip>",
+        ):
+            self.assertIn(marker, retained)
+
     def test_operational_auth_failure_is_separate_from_route_result(self) -> None:
         observation = {
             "mcp_calls": [
@@ -709,6 +845,60 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         self.assertEqual(layer["status"], "failed")
         self.assertEqual(layer["classifications"], ["environment-or-auth"])
         self.assertEqual(layer["environment_or_auth_codes"], ["KB_CREDENTIALS_MISSING"])
+
+    def test_failed_doctor_command_records_environment_diagnostics(self) -> None:
+        doctor = {
+            "ok": False,
+            "credentials": {"configured": False, "status": "missing"},
+            "mcp_health": {
+                "kb": {
+                    "ok": False,
+                    "stderr": "[Errno 30] Read-only file system: /private/cache.lock",
+                }
+            },
+        }
+        events = [
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "python pluginctl.py doctor",
+                    "status": "failed",
+                    "exit_code": 2,
+                    "aggregated_output": json.dumps(doctor),
+                },
+            }
+        ]
+
+        summary = summarize_events(events, [])
+        layer = _operational_failure_layer(summary)
+
+        self.assertEqual(
+            summary["commands"][0]["diagnostic_codes"],
+            ["CREDENTIALS_MISSING", "READ_ONLY_FILESYSTEM"],
+        )
+        self.assertIn("output_sha256", summary["commands"][0])
+        self.assertNotIn("aggregated_output", summary["commands"][0])
+        self.assertEqual(layer["status"], "failed")
+        self.assertEqual(layer["classifications"], ["environment-or-auth"])
+        self.assertEqual(
+            layer["environment_or_auth_codes"],
+            ["CREDENTIALS_MISSING", "READ_ONLY_FILESYSTEM"],
+        )
+        self.assertEqual(
+            layer["failed_commands"],
+            [
+                {
+                    "command": "python pluginctl.py doctor",
+                    "status": "failed",
+                    "exit_code": 2,
+                    "diagnostic_codes": [
+                        "CREDENTIALS_MISSING",
+                        "READ_ONLY_FILESYSTEM",
+                    ],
+                }
+            ],
+        )
 
     def test_execution_recovery_requires_transport_errors_and_complete_turns(self) -> None:
         complete = {
@@ -1088,10 +1278,10 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
 
         self.assertEqual(baseline["integrity"]["status"], "verified")
         self.assertEqual(candidate["integrity"]["status"], "verified")
-        self.assertEqual(baseline["summary"]["routing_passed"], 2)
+        self.assertEqual(baseline["summary"]["routing_passed"], 8)
         self.assertEqual(candidate["summary"]["routing_passed"], 12)
-        self.assertEqual(comparison["summary"]["routing_pass_delta"], 10)
-        self.assertEqual(comparison["summary"]["discoverability_improved"], 9)
+        self.assertEqual(comparison["summary"]["routing_pass_delta"], 4)
+        self.assertEqual(comparison["summary"]["discoverability_improved"], 3)
         self.assertEqual(comparison["summary"]["not_comparable_treatment"], 1)
         comparison_cases = {sample["case_id"]: sample for sample in comparison["cases"]}
         self.assertEqual(
@@ -1099,8 +1289,19 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             "not-comparable-treatment",
         )
         baseline_cases = {sample["case_id"]: sample for sample in baseline["samples"]}
+        candidate_cases = {sample["case_id"]: sample for sample in candidate["samples"]}
         self.assertEqual(baseline_cases["negative-zh-ordinary"]["route"]["status"], "passed")
         self.assertEqual(baseline_cases["ambiguous-zh-ordinary"]["route"]["status"], "passed")
+        self.assertEqual(
+            baseline_cases["build-en-source-cwd"]["route"]["expected_routes"],
+            ["openubmc-bingo-build"],
+        )
+        self.assertEqual(
+            candidate_cases["credentials-zh-ordinary"]["failure_layers"]["operational"][
+                "classifications"
+            ],
+            ["environment-or-auth"],
+        )
         recovered = baseline_cases["build-en-source-cwd"]["failure_layers"]["execution"]
         self.assertEqual(recovered["status"], "passed")
         self.assertEqual(recovered["classifications"], ["model-transport-recovered"])
@@ -1113,11 +1314,37 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(baseline["raw_evidence"]["boundary"], "local-only")
         self.assertFalse(baseline["raw_evidence"]["embedded"])
+        self.assertEqual(
+            baseline["raw_evidence"]["published_records"]["verification"]["status"],
+            "verified",
+        )
 
         for name in ("routing-arm-loose.json", "routing-arm-plugin.json"):
             identity = load_arm_identity(evidence_root / name)
             self.assertEqual(identity["source"]["commit"], "3a898818b5ea5bd5f810ecd3c22de6617ae617da")
             self.assertEqual(identity["source"]["tree"], "eab8fda257f1d9802cf5fad82f10223e1f8820e1")
+
+    def test_checked_in_sanitized_records_replay_each_route(self) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        matrix_path = ROOT / "evaluation/plugin-tasks/routing-matrix.json"
+        matrix = apply_review_contract(
+            load_matrix(matrix_path),
+            matrix_path,
+            ROOT / "evaluation/plugin-tasks/routing-review-contract.json",
+        )
+        for evidence_name, inventory_name in (
+            ("routing-evidence-loose.json", "routing-inventory-loose.json"),
+            ("routing-evidence-plugin.json", "routing-inventory-plugin.json"),
+        ):
+            evidence = json.loads((evidence_root / evidence_name).read_text())
+            inventory = json.loads((evidence_root / inventory_name).read_text())
+
+            replay = verify_published_replay(
+                evidence, inventory, matrix, evidence_root
+            )
+
+            self.assertEqual(replay["status"], "verified", replay)
+            self.assertEqual(replay["samples_verified"], 12)
 
     def test_checked_in_report_is_rebuilt_from_the_comparison(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"

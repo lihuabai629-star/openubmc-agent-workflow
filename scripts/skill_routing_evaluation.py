@@ -38,6 +38,19 @@ SECRET_ENV_NAME = re.compile(
     r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_?KEY|COOKIE)",
     re.IGNORECASE,
 )
+PRIVATE_IPV4 = re.compile(
+    r"(?<![0-9])(?:10\.(?:\d{1,3}\.){2}\d{1,3}|"
+    r"192\.168\.(?:\d{1,3}\.)\d{1,3}|"
+    r"172\.(?:1[6-9]|2\d|3[01])\.(?:\d{1,3}\.)\d{1,3})(?![0-9])"
+)
+GITHUB_TOKEN = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
+)
+JWT_TOKEN = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN [^-\n]*PRIVATE KEY-----.*?-----END [^-\n]*PRIVATE KEY-----",
+    re.DOTALL,
+)
 
 
 def _credential_environment(environ: Mapping[str, str]) -> dict[str, str]:
@@ -86,6 +99,407 @@ def _sanitize_value(value: object, environ: Mapping[str, str]) -> object:
         return current
 
     return sanitize(value)
+
+
+def _sanitize_public_value(value: object, environ: Mapping[str, str]) -> object:
+    """Redact credentials and stable sensitive indicators for committed records."""
+    value = _sanitize_value(value, environ)
+
+    def sanitize(current: object) -> object:
+        if isinstance(current, str):
+            current = PRIVATE_KEY_BLOCK.sub("<redacted:private-key>", current)
+            current = GITHUB_TOKEN.sub("<redacted:github-token>", current)
+            current = JWT_TOKEN.sub("<redacted:jwt>", current)
+            return PRIVATE_IPV4.sub("<redacted:private-ip>", current)
+        if isinstance(current, Mapping):
+            return {str(key): sanitize(item) for key, item in current.items()}
+        if isinstance(current, list):
+            return [sanitize(item) for item in current]
+        if isinstance(current, tuple):
+            return [sanitize(item) for item in current]
+        return current
+
+    return sanitize(value)
+
+
+def _sanitize_jsonl(text: str, environ: Mapping[str, str]) -> str:
+    lines = []
+    for line in text.splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            value = _sanitize_public_value(line, environ)
+            lines.append(str(value))
+        else:
+            value = _sanitize_public_value(value, environ)
+            lines.append(
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+def publish_sanitized_records(
+    run_directory: Path,
+    output_root: Path,
+    arm_name: str,
+    samples: Sequence[Mapping[str, object]],
+    environ: Mapping[str, str],
+) -> dict[str, object]:
+    """Publish sanitized native events plus the rollout identity source projection."""
+    if re.fullmatch(r"[a-z0-9-]+", arm_name) is None:
+        raise ValueError("published arm name is invalid")
+    run_directory = run_directory.resolve(strict=True)
+    output_root = output_root.resolve()
+    files: list[dict[str, object]] = []
+    for sample in samples:
+        case_id = str(sample.get("case_id", ""))
+        if re.fullmatch(r"[a-z0-9-]+", case_id) is None:
+            raise ValueError("published case identity is invalid")
+        raw_manifest = sample.get("raw_manifest")
+        if not isinstance(raw_manifest, list):
+            raise ValueError(f"published raw manifest is invalid for {case_id}")
+        for entry in raw_manifest:
+            if not isinstance(entry, Mapping):
+                raise ValueError(f"published raw entry is invalid for {case_id}")
+            turn = entry.get("turn")
+            if not isinstance(turn, int) or turn < 1:
+                raise ValueError(f"published raw turn is invalid for {case_id}")
+            for kind, suffix in (("jsonl", "jsonl"), ("stderr", "stderr")):
+                source_record = entry.get(kind)
+                source_relative = (
+                    source_record.get("path")
+                    if isinstance(source_record, Mapping)
+                    else None
+                )
+                if not isinstance(source_relative, str):
+                    raise ValueError(f"published {kind} source is invalid for {case_id}")
+                source = (run_directory / source_relative).resolve(strict=True)
+                try:
+                    source.relative_to(run_directory)
+                except ValueError as error:
+                    raise ValueError("published source escapes run directory") from error
+                target_relative = Path(
+                    "sanitized-records", arm_name, case_id, f"turn-{turn}.{suffix}"
+                )
+                target = output_root / target_relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                content = source.read_text(errors="replace")
+                if kind == "jsonl":
+                    sanitized = _sanitize_jsonl(content, environ)
+                else:
+                    sanitized = str(_sanitize_public_value(content, environ))
+                target.write_text(sanitized)
+                files.append(
+                    {
+                        "case_id": case_id,
+                        "turn": turn,
+                        "kind": kind,
+                        "path": target_relative.as_posix(),
+                        "source_sha256": _sha256(source),
+                        "sha256": _sha256(target),
+                        "size_bytes": target.stat().st_size,
+                    }
+                )
+        rollout = sample.get("rollout_identity")
+        if not isinstance(rollout, Mapping):
+            raise ValueError(f"published rollout identity is invalid for {case_id}")
+        rollout_projection = {
+            "schema": "openubmc.skill-routing-rollout-projection.v1",
+            "source_rollout_sha256": rollout.get("rollout_sha256"),
+            "identity": {
+                key: value
+                for key, value in rollout.items()
+                if key not in {"verification", "rollout_sha256"}
+            },
+        }
+        rollout_projection = _sanitize_public_value(rollout_projection, environ)
+        assert isinstance(rollout_projection, dict)
+        rollout_projection["digest"] = document_digest(rollout_projection)
+        rollout_relative = Path(
+            "sanitized-records", arm_name, case_id, "rollout-identity.json"
+        )
+        rollout_path = output_root / rollout_relative
+        _write_json(rollout_path, rollout_projection)
+        files.append(
+            {
+                "case_id": case_id,
+                "kind": "rollout-identity",
+                "path": rollout_relative.as_posix(),
+                "source_sha256": rollout.get("rollout_sha256"),
+                "sha256": _sha256(rollout_path),
+                "size_bytes": rollout_path.stat().st_size,
+            }
+        )
+    document: dict[str, object] = {
+        "schema": "openubmc.skill-routing-sanitized-records.v1",
+        "arm": arm_name,
+        "file_count": len(files),
+        "files": files,
+    }
+    document["digest"] = document_digest(document)
+    return document
+
+
+def verify_published_records(
+    published: Mapping[str, object], output_root: Path
+) -> dict[str, object]:
+    """Verify committed sanitized records by path, digest, syntax, and leak patterns."""
+    output_root = output_root.resolve(strict=True)
+    mismatches: list[str] = []
+    if published.get("digest") != document_digest(published):
+        mismatches.append("digest")
+    files = published.get("files")
+    if not isinstance(files, list) or published.get("file_count") != len(files):
+        mismatches.append("file_count")
+        files = []
+    for index, row in enumerate(files):
+        if not isinstance(row, Mapping) or not isinstance(row.get("path"), str):
+            mismatches.append(f"files[{index}]")
+            continue
+        path = (output_root / str(row["path"])).resolve()
+        try:
+            path.relative_to(output_root)
+        except ValueError:
+            mismatches.append(f"files[{index}].path")
+            continue
+        if not path.is_file():
+            mismatches.append(f"files[{index}].missing")
+            continue
+        if row.get("sha256") != _sha256(path):
+            mismatches.append(f"files[{index}].sha256")
+        content = path.read_text(errors="replace")
+        if (
+            PRIVATE_IPV4.search(content)
+            or GITHUB_TOKEN.search(content)
+            or JWT_TOKEN.search(content)
+            or PRIVATE_KEY_BLOCK.search(content)
+        ):
+            mismatches.append(f"files[{index}].sensitive")
+        if path.suffix == ".jsonl":
+            _, invalid = _event_lines(content)
+            if invalid:
+                mismatches.append(f"files[{index}].jsonl")
+    return {
+        "status": "verified" if not mismatches else "unverified",
+        "mismatches": mismatches,
+        "file_count": len(files),
+    }
+
+
+def verify_published_replay(
+    evidence: Mapping[str, object],
+    inventory: Sequence[Mapping[str, object]],
+    matrix: Mapping[str, object],
+    output_root: Path,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Replay published native events and compare their routing observations."""
+    environment = {} if environ is None else environ
+    raw_evidence = evidence.get("raw_evidence")
+    published_records = (
+        raw_evidence.get("published_records")
+        if isinstance(raw_evidence, Mapping)
+        else None
+    )
+    published = (
+        published_records.get("manifest")
+        if isinstance(published_records, Mapping)
+        else None
+    )
+    if not isinstance(published, Mapping):
+        return {
+            "status": "unverified",
+            "mismatches": ["manifest"],
+            "file_count": 0,
+            "samples_verified": 0,
+        }
+    basic = verify_published_records(published, output_root)
+    mismatches = list(basic["mismatches"])
+    files = published.get("files", [])
+    cases = {
+        str(case.get("case_id")): case
+        for case in matrix.get("cases", [])
+        if isinstance(case, Mapping)
+    }
+    samples = evidence.get("samples")
+    if not isinstance(samples, list):
+        samples = []
+        mismatches.append("samples")
+    arm = evidence.get("arm_identity")
+    arm_kind = str(arm.get("kind", "")) if isinstance(arm, Mapping) else ""
+    available_mcp = _arm_mcp_servers(arm) if isinstance(arm, Mapping) else []
+    verified_samples = 0
+
+    def event_projection(summary: Mapping[str, object]) -> dict[str, object]:
+        calls = summary.get("mcp_calls", [])
+        return {
+            "thread_id": summary.get("thread_id"),
+            "skill_reads": summary.get("skill_reads"),
+            "mcp_calls": [
+                {
+                    "server": call.get("server"),
+                    "tool": call.get("tool"),
+                    "status": call.get("status"),
+                }
+                for call in calls
+                if isinstance(call, Mapping)
+            ],
+            "commands": [
+                {
+                    key: command[key]
+                    for key in ("command", "status", "exit_code", "diagnostic_codes")
+                    if key in command
+                }
+                for command in summary.get("commands", [])
+                if isinstance(command, Mapping)
+            ],
+            "usage": summary.get("usage"),
+            "completed_turns": summary.get("completed_turns"),
+            "errors": summary.get("errors"),
+            "final_answer": summary.get("final_answer"),
+        }
+
+    for sample in samples:
+        if not isinstance(sample, Mapping):
+            continue
+        case_id = str(sample.get("case_id", ""))
+        case = cases.get(case_id)
+        if not isinstance(case, Mapping):
+            mismatches.append(f"{case_id}.case")
+            continue
+        rows = [
+            row
+            for row in files
+            if isinstance(row, Mapping) and row.get("case_id") == case_id
+        ]
+        jsonl_rows = sorted(
+            (row for row in rows if row.get("kind") == "jsonl"),
+            key=lambda row: int(row.get("turn", 0)),
+        )
+        stderr_rows = {
+            int(row.get("turn", 0)): row
+            for row in rows
+            if row.get("kind") == "stderr"
+        }
+        expected_turns = sample.get("raw_manifest")
+        if not isinstance(expected_turns, list) or len(jsonl_rows) != len(expected_turns):
+            mismatches.append(f"{case_id}.turns")
+            continue
+        combined_events: list[dict[str, object]] = []
+        turn_summaries = []
+        source_ok = True
+        for row, expected_raw in zip(jsonl_rows, expected_turns, strict=True):
+            path = output_root / str(row["path"])
+            events, invalid = _event_lines(path.read_text())
+            if invalid:
+                source_ok = False
+            combined_events.extend(events)
+            turn_summaries.append(summarize_events(events, inventory, environ=environment))
+            raw_jsonl = (
+                expected_raw.get("jsonl")
+                if isinstance(expected_raw, Mapping)
+                else None
+            )
+            if not isinstance(raw_jsonl, Mapping) or row.get("source_sha256") != raw_jsonl.get(
+                "sha256"
+            ):
+                source_ok = False
+            raw_stderr = (
+                expected_raw.get("stderr")
+                if isinstance(expected_raw, Mapping)
+                else None
+            )
+            stderr_row = stderr_rows.get(int(row.get("turn", 0)))
+            if (
+                not isinstance(raw_stderr, Mapping)
+                or not isinstance(stderr_row, Mapping)
+                or stderr_row.get("source_sha256") != raw_stderr.get("sha256")
+            ):
+                source_ok = False
+        rollout_rows = [row for row in rows if row.get("kind") == "rollout-identity"]
+        if len(rollout_rows) != 1:
+            source_ok = False
+        else:
+            rollout_document = _read_digested_document(
+                output_root / str(rollout_rows[0]["path"])
+            )
+            expected_rollout = sample.get("rollout_identity")
+            expected_projection = (
+                {
+                    key: value
+                    for key, value in expected_rollout.items()
+                    if key not in {"verification", "rollout_sha256"}
+                }
+                if isinstance(expected_rollout, Mapping)
+                else None
+            )
+            expected_projection = _sanitize_public_value(
+                expected_projection, environment
+            )
+            if (
+                not isinstance(expected_rollout, Mapping)
+                or rollout_rows[0].get("source_sha256")
+                != expected_rollout.get("rollout_sha256")
+                or rollout_document.get("source_rollout_sha256")
+                != expected_rollout.get("rollout_sha256")
+                or rollout_document.get("identity") != expected_projection
+            ):
+                source_ok = False
+        replayed = summarize_events(combined_events, inventory, environ=environment)
+        expected_observation = sample.get("observation")
+        expected_projection = (
+            event_projection(expected_observation)
+            if isinstance(expected_observation, Mapping)
+            else None
+        )
+        expected_projection = _sanitize_public_value(expected_projection, environment)
+        replay_projection = event_projection(replayed)
+        route = evaluate_route(
+            case,
+            replayed,
+            inventory,
+            arm_kind=arm_kind,
+            turn_observations=turn_summaries,
+            available_mcp=available_mcp,
+        )
+        expected_route = sample.get("route")
+        route_projection = {
+            key: route.get(key)
+            for key in (
+                "status",
+                "classification",
+                "expected_routes",
+                "observed_routes",
+                "observed_mcp",
+            )
+        }
+        expected_route_projection = (
+            {
+                key: expected_route.get(key)
+                for key in route_projection
+            }
+            if isinstance(expected_route, Mapping)
+            else None
+        )
+        if (
+            not source_ok
+            or replay_projection != expected_projection
+            or route_projection != expected_route_projection
+        ):
+            mismatches.append(f"{case_id}.replay")
+            continue
+        verified_samples += 1
+    return {
+        "status": "verified" if not mismatches else "unverified",
+        "mismatches": mismatches,
+        "file_count": basic["file_count"],
+        "samples_verified": verified_samples,
+    }
 
 
 def resolve_executable(value: str) -> Path:
@@ -268,9 +682,14 @@ def file_content_inventory(root: Path) -> dict[str, object]:
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        relative = path.relative_to(root).as_posix()
-        if relative.split("/", 1)[0].startswith("."):
+        relative_path = path.relative_to(root)
+        if (
+            any(part.startswith(".") for part in relative_path.parts)
+            or "__pycache__" in relative_path.parts
+            or relative_path.suffix in {".pyc", ".pyo"}
+        ):
             continue
+        relative = relative_path.as_posix()
         rows.append(
             {
                 "path": relative,
@@ -633,6 +1052,8 @@ def load_arm_identity(path: Path) -> dict[str, object]:
         raise ValueError(
             "routing arm execution identity requires " + ", ".join(missing_execution)
         )
+    if not isinstance(document["execution"].get("plugins"), bool):
+        raise ValueError("routing arm execution plugins must be boolean")
     if document["kind"] == "plugin":
         plugin = document.get("plugin")
         if not isinstance(plugin, Mapping):
@@ -729,6 +1150,7 @@ def apply_review_contract(
         if not isinstance(rule, Mapping) or set(rule) - {
             "allowed_routes",
             "expected_routes_by_turn",
+            "arm_routes",
         }:
             raise ValueError(f"routing review contract rule is invalid for {case['case_id']}")
         allowed = rule.get("allowed_routes", [])
@@ -753,6 +1175,55 @@ def apply_review_contract(
                     f"routing review turn routes are invalid for {case['case_id']}"
                 )
             case["expected_routes_by_turn"] = [list(routes) for routes in turn_routes]
+        arm_routes = rule.get("arm_routes")
+        if arm_routes is not None:
+            if not isinstance(arm_routes, Mapping) or set(arm_routes) - {
+                "loose-skills",
+                "plugin",
+            }:
+                raise ValueError(
+                    f"routing review arm routes are invalid for {case['case_id']}"
+                )
+            normalized_arm_routes: dict[str, dict[str, object]] = {}
+            for arm_kind, arm_rule in arm_routes.items():
+                if not isinstance(arm_rule, Mapping) or set(arm_rule) - {
+                    "expected_routes",
+                    "allowed_routes",
+                    "expected_routes_by_turn",
+                }:
+                    raise ValueError(
+                        f"routing review {arm_kind} routes are invalid for {case['case_id']}"
+                    )
+                normalized = {key: value for key, value in arm_rule.items()}
+                for key in ("expected_routes", "allowed_routes"):
+                    routes = normalized.get(key, [])
+                    if not isinstance(routes, list) or not all(
+                        isinstance(value, str) and value for value in routes
+                    ):
+                        raise ValueError(
+                            f"routing review {arm_kind} {key} are invalid for {case['case_id']}"
+                        )
+                    if key in normalized:
+                        normalized[key] = list(routes)
+                arm_turn_routes = normalized.get("expected_routes_by_turn")
+                if arm_turn_routes is not None:
+                    if (
+                        not isinstance(arm_turn_routes, list)
+                        or len(arm_turn_routes) != len(case["turns"])
+                        or not all(
+                            isinstance(routes, list)
+                            and all(isinstance(value, str) and value for value in routes)
+                            for routes in arm_turn_routes
+                        )
+                    ):
+                        raise ValueError(
+                            f"routing review {arm_kind} turn routes are invalid for {case['case_id']}"
+                        )
+                    normalized["expected_routes_by_turn"] = [
+                        list(routes) for routes in arm_turn_routes
+                    ]
+                normalized_arm_routes[str(arm_kind)] = normalized
+            case["arm_routes"] = normalized_arm_routes
         merged_cases.append(case)
     return {**matrix, "cases": merged_cases, "review_contract": dict(contract)}
 
@@ -772,16 +1243,29 @@ def evaluate_route(
     observation: Mapping[str, object],
     inventory: Sequence[Mapping[str, object]],
     *,
+    arm_kind: str | None = None,
     turn_observations: Sequence[Mapping[str, object]] | None = None,
     available_mcp: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """Evaluate observed native reads/calls against the matrix routing contract."""
-    expected_routes = [_canonical_skill_name(value) for value in case.get("expected_routes", [])]
-    allowed_routes = [_canonical_skill_name(value) for value in case.get("allowed_routes", [])]
+    effective_case = dict(case)
+    arm_routes = case.get("arm_routes")
+    if arm_kind is not None and isinstance(arm_routes, Mapping):
+        arm_contract = arm_routes.get(arm_kind)
+        if isinstance(arm_contract, Mapping):
+            effective_case.update(arm_contract)
+    expected_routes = [
+        _canonical_skill_name(value)
+        for value in effective_case.get("expected_routes", [])
+    ]
+    allowed_routes = [
+        _canonical_skill_name(value)
+        for value in effective_case.get("allowed_routes", [])
+    ]
     observed_routes = [
         _canonical_skill_name(value) for value in observation.get("skill_reads", [])
     ]
-    expected_mcp = [str(value) for value in case.get("expected_mcp", [])]
+    expected_mcp = [str(value) for value in effective_case.get("expected_mcp", [])]
     observed_mcp = [
         str(call.get("server", ""))
         for call in observation.get("mcp_calls", [])
@@ -832,6 +1316,7 @@ def evaluate_route(
     result = {
         "status": "passed" if classification == "passed" else "failed",
         "classification": classification,
+        "expected_routes": expected_routes,
         "expected_availability": availability,
         "observed_routes": observed_routes,
         "allowed_routes": allowed_routes,
@@ -842,15 +1327,15 @@ def evaluate_route(
         "missing_mcp": missing_mcp,
         "expected_mcp_availability": mcp_availability,
     }
-    turn_expectations = case.get("expected_routes_by_turn")
+    turn_expectations = effective_case.get("expected_routes_by_turn")
     if (
         turn_expectations is None
-        and case.get("intent") == "multi-turn"
+        and effective_case.get("intent") == "multi-turn"
         and turn_observations is not None
     ):
         turn_expectations = [
             *([[]] * max(0, len(turn_observations) - 1)),
-            list(case.get("expected_routes", [])),
+            list(effective_case.get("expected_routes", [])),
         ]
     if isinstance(turn_expectations, list):
         turns: list[dict[str, object]] = []
@@ -862,7 +1347,7 @@ def evaluate_route(
                 turn_case = {
                     "expected_routes": expected,
                     "expected_mcp": [],
-                    "intent": case.get("intent"),
+                    "intent": effective_case.get("intent"),
                 }
                 turns.append(
                     evaluate_route(
@@ -993,6 +1478,28 @@ def _bounded_evidence(
     }
 
 
+def _command_diagnostic_codes(output: str) -> list[str]:
+    """Extract stable failure classes without retaining command output."""
+    codes = set(re.findall(r"\b[A-Z][A-Z0-9_]{3,}\b", output))
+    try:
+        structured = json.loads(output)
+    except json.JSONDecodeError:
+        structured = None
+    if isinstance(structured, Mapping):
+        credentials = structured.get("credentials")
+        if isinstance(credentials, Mapping) and (
+            credentials.get("configured") is False
+            or str(credentials.get("status", "")).lower() == "missing"
+        ):
+            codes.add("CREDENTIALS_MISSING")
+    normalized = output.lower()
+    if "read-only file system" in normalized or "errno 30" in normalized:
+        codes.add("READ_ONLY_FILESYSTEM")
+    if "permission denied" in normalized:
+        codes.add("PERMISSION_DENIED")
+    return sorted(codes)
+
+
 def summarize_events(
     events: Sequence[Mapping[str, object]],
     inventory: Sequence[Mapping[str, object]],
@@ -1050,13 +1557,25 @@ def summarize_events(
             final_answer = str(_sanitize_value(item["text"], environment))
         elif item_type == "command_execution":
             command = str(item.get("command", ""))
-            commands.append(
-                {
-                    "command": str(_sanitize_value(command, environment)),
-                    "status": str(item.get("status", "unknown")),
-                    **({"exit_code": item["exit_code"]} if isinstance(item.get("exit_code"), int) else {}),
-                }
+            status = str(item.get("status", "unknown"))
+            exit_code = item.get("exit_code")
+            command_record: dict[str, object] = {
+                "command": str(_sanitize_value(command, environment)),
+                "status": status,
+                **({"exit_code": exit_code} if isinstance(exit_code, int) else {}),
+            }
+            output = str(_sanitize_value(item.get("aggregated_output", ""), environment))
+            failed = status in {"failed", "error"} or (
+                isinstance(exit_code, int) and exit_code != 0
             )
+            if failed and output:
+                command_record["output_sha256"] = (
+                    "sha256:" + hashlib.sha256(output.encode()).hexdigest()
+                )
+                diagnostic_codes = _command_diagnostic_codes(output)
+                if diagnostic_codes:
+                    command_record["diagnostic_codes"] = diagnostic_codes
+            commands.append(command_record)
             for name, path in inventory_paths:
                 if path and output_proves_skill_read(name, path, item) and name not in skill_reads:
                     skill_reads.append(name)
@@ -1322,7 +1841,8 @@ def _operational_failure_layer(
     capability_codes: set[str] = set()
     failed_calls = []
     environment_pattern = re.compile(
-        r"(?:AUTH|CREDENTIAL|NOT_CONFIGURED|CONFIGURATION|API_KEY)", re.IGNORECASE
+        r"(?:AUTH|CREDENTIAL|NOT_CONFIGURED|CONFIGURATION|API_KEY|READ_ONLY|PERMISSION_DENIED)",
+        re.IGNORECASE,
     )
     capability_pattern = re.compile(
         r"(?:CAPABILITY|UNAVAILABLE|UNSUPPORTED|NOT_IMPLEMENTED|TOOL_MISSING)",
@@ -1332,6 +1852,9 @@ def _operational_failure_layer(
     calls = observation.get("mcp_calls", [])
     if not isinstance(calls, list):
         calls = []
+    commands = observation.get("commands", [])
+    if not isinstance(commands, list):
+        commands = []
 
     def domain_error(value: object) -> bool:
         if not isinstance(value, Mapping):
@@ -1365,19 +1888,42 @@ def _operational_failure_layer(
         codes = code_pattern.findall(rendered)
         environment_codes.update(code for code in codes if environment_pattern.search(code))
         capability_codes.update(code for code in codes if capability_pattern.search(code))
+    failed_commands = []
+    for command in commands:
+        if not isinstance(command, Mapping):
+            continue
+        diagnostic_codes = command.get("diagnostic_codes")
+        if not isinstance(diagnostic_codes, list) or not diagnostic_codes:
+            continue
+        codes = sorted({str(code) for code in diagnostic_codes})
+        failed_commands.append(
+            {
+                key: command[key]
+                for key in ("command", "status", "exit_code")
+                if key in command
+            }
+            | {"diagnostic_codes": codes}
+        )
+        environment_codes.update(
+            code for code in codes if environment_pattern.search(code)
+        )
+        capability_codes.update(
+            code for code in codes if capability_pattern.search(code)
+        )
     classifications = []
     if environment_codes:
         classifications.append("environment-or-auth")
     if capability_codes:
         classifications.append("capability-missing")
-    if failed_calls and not classifications:
+    if (failed_calls or failed_commands) and not classifications:
         classifications.append("unclassified")
     return {
-        "status": "failed" if failed_calls else "passed",
+        "status": "failed" if failed_calls or failed_commands else "passed",
         "classifications": classifications,
         "environment_or_auth_codes": sorted(environment_codes),
         "capability_codes": sorted(capability_codes),
         "failed_mcp_calls": failed_calls,
+        "failed_commands": failed_commands,
     }
 
 
@@ -1593,6 +2139,7 @@ def reconstruct_arm_evidence(
             case,
             observation,
             inventory,
+            arm_kind=str(arm["kind"]),
             turn_observations=turn_summaries,
             available_mcp=_arm_mcp_servers(arm),
         )
@@ -1619,7 +2166,7 @@ def reconstruct_arm_evidence(
                 "intent": case["intent"],
                 "language": case["language"],
                 "workspace_mode": case["workspace_mode"],
-                "expected_routes": list(case["expected_routes"]),
+                "expected_routes": list(route["expected_routes"]),
                 "expected_mcp": list(case.get("expected_mcp", [])),
                 "wall_seconds": legacy.get("wall_seconds"),
                 "observation": observation,
@@ -1759,6 +2306,21 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
 
     raw_evidence = evidence.get("raw_evidence")
     secret_scan = raw_evidence.get("secret_scan") if isinstance(raw_evidence, Mapping) else None
+    published_records = (
+        raw_evidence.get("published_records")
+        if isinstance(raw_evidence, Mapping)
+        else None
+    )
+    published_manifest = (
+        published_records.get("manifest")
+        if isinstance(published_records, Mapping)
+        else None
+    )
+    published_verification = (
+        published_records.get("verification")
+        if isinstance(published_records, Mapping)
+        else None
+    )
     if (
         not isinstance(raw_evidence, Mapping)
         or raw_evidence.get("boundary") != "local-only"
@@ -1767,6 +2329,17 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         or secret_scan.get("status") != "clean"
     ):
         raise ValueError(f"{label} evidence raw boundary is unverified")
+    if (
+        not isinstance(published_manifest, Mapping)
+        or published_manifest.get("schema")
+        != "openubmc.skill-routing-sanitized-records.v1"
+        or published_manifest.get("digest") != document_digest(published_manifest)
+        or not isinstance(published_verification, Mapping)
+        or published_verification.get("status") != "verified"
+        or published_verification.get("file_count")
+        != raw_evidence.get("file_count", 0) + len(evidence.get("samples", []))
+    ):
+        raise ValueError(f"{label} published record identity is unverified")
 
     samples = evidence.get("samples")
     if not isinstance(samples, list) or not samples:
@@ -1892,6 +2465,8 @@ def compare_arm_evidence(
                 "workspace_mode": before["workspace_mode"],
                 "baseline": {
                     "classification": before["route"]["classification"],
+                    "expected_routes": before["route"]["expected_routes"],
+                    "allowed_routes": before["route"]["allowed_routes"],
                     "observed_routes": before["route"]["observed_routes"],
                     "observed_mcp": before["route"]["observed_mcp"],
                     "total_tokens": before["observation"]["usage"].get("total_tokens", 0),
@@ -1909,6 +2484,8 @@ def compare_arm_evidence(
                 },
                 "candidate": {
                     "classification": after["route"]["classification"],
+                    "expected_routes": after["route"]["expected_routes"],
+                    "allowed_routes": after["route"]["allowed_routes"],
                     "observed_routes": after["route"]["observed_routes"],
                     "observed_mcp": after["route"]["observed_mcp"],
                     "total_tokens": after["observation"]["usage"].get("total_tokens", 0),
@@ -1936,6 +2513,10 @@ def compare_arm_evidence(
             "summary": baseline["summary"],
             "inventory": baseline_identity["inventory"],
             "distribution": baseline_identity["distribution"],
+            "published_records": {
+                key: baseline["raw_evidence"]["published_records"]["manifest"][key]
+                for key in ("digest", "file_count")
+            },
         },
         "candidate": {
             "arm_id": candidate["arm_identity"]["arm_id"],
@@ -1944,6 +2525,10 @@ def compare_arm_evidence(
             "summary": candidate["summary"],
             "inventory": candidate_identity["inventory"],
             "distribution": candidate_identity["distribution"],
+            "published_records": {
+                key: candidate["raw_evidence"]["published_records"]["manifest"][key]
+                for key in ("digest", "file_count")
+            },
         },
         "summary": {
             "cases": len(rows),
@@ -2026,13 +2611,17 @@ def render_comparison_report(comparison: Mapping[str, object]) -> str:
     unchanged_pass = summary["unchanged_pass"]
     explicit_build = case("build-zh-explicit-source")
     source_build = case("build-en-source-cwd")
+    credentials = case("credentials-zh-ordinary")
+    credential_codes = credentials["candidate"]["operational"][
+        "environment_or_auth_codes"
+    ]
     lines = [
         "# openUBMC 原生 Skill 路由对比",
         "",
         (
             f"插件通过 {after['routing_passed']}/{summary['cases']} 个路由判据用例，"
             f"loose Skills 基线通过 {before['routing_passed']}/{summary['cases']} 个，"
-            f"产品级路由结果增加 {summary['routing_pass_delta']} 个。"
+            f"按各安装形态的意图所有者判据增加 {summary['routing_pass_delta']} 个。"
             f"其中 {summary['discoverability_improved']} 个可配对用例改善，"
             f"{summary['not_comparable_treatment']} 个 KB 用例因安装能力不同不计入发现性增量，"
             f"{unchanged_pass} 个负向用例两组均未误触发。"
@@ -2078,22 +2667,23 @@ def render_comparison_report(comparison: Mapping[str, object]) -> str:
             "",
             "## 错误归因",
             "",
-            f"- loose 基线的 {disabled_count} 个正向失败首先归因为 `skill-not-loaded`：原生 inventory 将预期的 7 个 canonical Skills 标为 disabled。记录同时保留随后读取的 fallback Skill，没有把加载问题误写成模型未触发。",
+            f"- loose 基线的 {disabled_count} 个用例归因为 `skill-not-loaded`：对应意图所有者在原生 inventory 中 disabled。逐臂 review contract 将 `openubmc-debugging`、`openubmc-bingo-build` 和 `openubmc-mdb-interface-dev` 视为 loose 安装的有效旧入口，未把这些实际触发误写成失败。",
             "- loose KB 用例归因为 `mcp-not-loaded`：该安装形态没有 `openubmc-kb` MCP，不能据此判断模型是否会触发一个并不存在的工具。插件 KB 已读取相关 Debug Skill 并实际调用 query/status；query 返回 `KB_CREDENTIALS_MISSING`，属于 `environment-or-auth`，不属于路由失败。",
+            f"- 插件凭据用例的 Skill 路由通过，但 `pluginctl.py doctor` 返回退出码 2；结构化输出归因为 `environment-or-auth`（{', '.join(f'`{code}`' for code in credential_codes)}）。模型如实报告凭据缺失和只读锁限制，路由成功没有覆盖该环境失败。",
             "- loose 的两个 rollout 出现可恢复的模型流超时并继续到 `turn.completed`，记录为 `model-transport-recovered`，未误判为终态执行失败。",
             "- 当前矩阵没有出现预期 Skill 已启用并读取、随后因内部实现能力缺失而失败的样本。已有 `skill-positive` 的 systemd/journal 采集失败属于 #228 的 Runtime 能力缺口，不计入 #233 路由结果。",
             "- 未提供目标、设备凭据或真实包；没有联系、重启、刷写或修改 BMC。设备任务未被宣称完成。",
             "",
             "## 最小改进",
             "",
-            "1. 保留已合并的插件中英文描述；本轮 9 个可配对正向发现性样本均改善，没有证据支持继续扩大默认 prompt。",
+            f"1. 保留已合并的插件中英文描述；本轮 {summary['discoverability_improved']} 个可配对正向用例改善，其余有效旧入口保持通过，没有证据支持继续扩大默认 prompt。",
             "2. loose 安装先校正目录 `enabled=true` 与直接 `SKILL.md enabled=false` 的重复配置，再重新探测 canonical Skill inventory。本轮证明了 canonical Skill 被禁用，没有单独证明 Codex 的路径解析因果。",
             "3. 后续单独精简 Debug/Build 的参考资料读取；该问题影响 token 和延迟，不改变本轮路由结论。",
             "4. systemd/journal 当前状态采集继续由 #228 修复，不并入 Skill 发现性改动。",
             "",
             "## 证据边界",
             "",
-            f"原始 JSONL 与 stderr 仅保留在本地；提交的是脱敏摘要、逐文件 SHA-256 和读取/调用记录。loose evidence：`{baseline['evidence_digest']}`；plugin evidence：`{candidate['evidence_digest']}`。原始文件已针对当前凭据类环境变量扫描，未发现匹配。",
+            f"原始 JSONL、stderr 和完整 session 仅保留在本地；提交了可重放的脱敏 native event、stderr 与 rollout 身份投影，共 {baseline['published_records']['file_count']} 个 loose 文件和 {candidate['published_records']['file_count']} 个 plugin 文件，并保留原始文件 SHA-256 绑定。loose evidence：`{baseline['evidence_digest']}`；plugin evidence：`{candidate['evidence_digest']}`。提交记录已扫描当前凭据值、私钥、GitHub token、JWT 和 RFC1918 地址。",
             "",
             "本记录只验证 Linux WSL2 中的原生 Codex CLI 路由；未验证原生 Windows、真实 BMC、Conan 发布或升级完成度。",
             "这是 routing-only 原生 Codex 记录，不替代完整 Evaluation Lab Bundle 和 independent task review。",
@@ -2119,6 +2709,11 @@ def rebuild_pair(args: argparse.Namespace) -> int:
             "evaluator identity verification failed: "
             + ", ".join(evaluator["mismatches"])
         )
+    reviewed_matrix = apply_review_contract(
+        load_matrix(matrix_path), matrix_path, review_contract_path
+    )
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
     ordinary = Path(args.ordinary_workspace).resolve(strict=True)
     source = Path(args.source_workspace).resolve(strict=True)
     explicit = Path(args.explicit_source).resolve(strict=True)
@@ -2137,6 +2732,12 @@ def rebuild_pair(args: argparse.Namespace) -> int:
         )
     baseline_inventory = Path(args.baseline_inventory).resolve(strict=True)
     candidate_inventory = Path(args.candidate_inventory).resolve(strict=True)
+    baseline_inventory_rows = json.loads(baseline_inventory.read_text())
+    candidate_inventory_rows = json.loads(candidate_inventory.read_text())
+    if not isinstance(baseline_inventory_rows, list) or not isinstance(
+        candidate_inventory_rows, list
+    ):
+        raise ValueError("paired Skill inventories are invalid")
     baseline_verification = verify_arm_artifacts(
         baseline_arm,
         inventory_path=baseline_inventory,
@@ -2198,9 +2799,43 @@ def rebuild_pair(args: argparse.Namespace) -> int:
         workspace_verification=workspace_verification,
         environ=os.environ,
     )
+    for arm_name, evidence, run_directory in (
+        (
+            "loose",
+            baseline,
+            Path(args.baseline_run).resolve(strict=True),
+        ),
+        (
+            "plugin",
+            candidate,
+            Path(args.candidate_run).resolve(strict=True),
+        ),
+    ):
+        published = publish_sanitized_records(
+            run_directory,
+            output,
+            arm_name,
+            evidence["samples"],
+            os.environ,
+        )
+        evidence["raw_evidence"]["published_records"] = {
+            "manifest": published,
+        }
+        verification = verify_published_replay(
+            evidence,
+            baseline_inventory_rows if arm_name == "loose" else candidate_inventory_rows,
+            reviewed_matrix,
+            output,
+            os.environ,
+        )
+        if verification["status"] != "verified":
+            raise ValueError(
+                f"{arm_name} sanitized record verification failed: "
+                + ", ".join(verification["mismatches"])
+            )
+        evidence["raw_evidence"]["published_records"]["verification"] = verification
+        evidence["digest"] = document_digest(evidence)
     comparison = compare_arm_evidence(baseline, candidate)
-    output = Path(args.output).resolve()
-    output.mkdir(parents=True, exist_ok=True)
     baseline_path = output / "routing-evidence-loose.json"
     candidate_path = output / "routing-evidence-plugin.json"
     comparison_path = output / "routing-comparison.json"
@@ -2210,7 +2845,18 @@ def rebuild_pair(args: argparse.Namespace) -> int:
     _write_json(comparison_path, comparison)
     report_path.write_text(render_comparison_report(comparison))
     generated_scan = scan_secret_files(
-        [baseline_path, candidate_path, comparison_path, report_path], os.environ
+        [
+            baseline_path,
+            candidate_path,
+            comparison_path,
+            report_path,
+            *sorted(
+                path
+                for path in (output / "sanitized-records").rglob("*")
+                if path.is_file()
+            ),
+        ],
+        os.environ,
     )
     if generated_scan["status"] != "clean":
         raise RuntimeError(
@@ -2403,6 +3049,7 @@ def run_matrix(args: argparse.Namespace) -> int:
             case,
             summary,
             inventory,
+            arm_kind=str(arm["kind"]),
             turn_observations=turn_summaries,
             available_mcp=_arm_mcp_servers(arm),
         )
@@ -2412,7 +3059,7 @@ def run_matrix(args: argparse.Namespace) -> int:
             "intent": case["intent"],
             "language": case["language"],
             "workspace_mode": case["workspace_mode"],
-            "expected_routes": list(case["expected_routes"]),
+            "expected_routes": list(route["expected_routes"]),
             "expected_mcp": list(case.get("expected_mcp", [])),
             "raw_files": raw_files,
             "returncodes": returncodes,

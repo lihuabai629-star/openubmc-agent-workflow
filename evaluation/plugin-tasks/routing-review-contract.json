@@ -2,11 +2,53 @@
   "schema": "openubmc.skill-routing-review-contract.v1",
   "execution_matrix_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
   "cases": {
+    "diagnosis-zh-ordinary": {
+      "arm_routes": {
+        "loose-skills": {
+          "expected_routes": ["openubmc-debugging"]
+        }
+      }
+    },
+    "diagnosis-en-ordinary": {
+      "arm_routes": {
+        "loose-skills": {
+          "expected_routes": ["openubmc-debugging"],
+          "allowed_routes": ["openubmc-redfish-testing"]
+        }
+      }
+    },
+    "build-zh-explicit-source": {
+      "arm_routes": {
+        "loose-skills": {
+          "expected_routes": ["openubmc-bingo-build"]
+        }
+      }
+    },
+    "build-en-source-cwd": {
+      "arm_routes": {
+        "loose-skills": {
+          "expected_routes": ["openubmc-bingo-build"]
+        }
+      }
+    },
     "kb-en-ordinary": {
       "allowed_routes": ["openubmc-debug"]
     },
+    "component-zh-explicit-source": {
+      "arm_routes": {
+        "loose-skills": {
+          "expected_routes": ["openubmc-mdb-interface-dev"]
+        }
+      }
+    },
     "context-en-multi-turn": {
-      "expected_routes_by_turn": [[], ["openubmc-debug"]]
+      "expected_routes_by_turn": [[], ["openubmc-debug"]],
+      "arm_routes": {
+        "loose-skills": {
+          "expected_routes": ["openubmc-debugging"],
+          "expected_routes_by_turn": [[], ["openubmc-debugging"]]
+        }
+      }
     }
   }
 }
