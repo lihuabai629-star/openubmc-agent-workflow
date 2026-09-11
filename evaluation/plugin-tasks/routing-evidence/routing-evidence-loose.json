@@ -1,0 +1,2588 @@
+{
+  "arm_identity": {
+    "arm_id": "loose-skills",
+    "artifact_verification": {
+      "mismatches": [],
+      "observed": {
+        "inventory": {
+          "content_digest": "sha256:8b38059c7ebf0b1f2972b33b1ce90e567d5c98ca6b0c1c4c258f2a9f70e15e77",
+          "sha256": "sha256:a2acc0ed9efcc324a87162f1acaac68d61169d5839bf3eb782b10e9b5ae3eb13"
+        },
+        "loose_content_inventory": {
+          "digest": "sha256:e7fc9491a688303fa1b957b4b5a65490d3c34b5f7fe8ade40655a3a63274f23c",
+          "file_count": 503,
+          "mismatches": [],
+          "sha256": "sha256:b41d08f552bf49a08eb4620e486d0e65554a9c1138f3c031da3be16945429457",
+          "status": "verified"
+        },
+        "loose_skills": {
+          "configuration_sha256": "sha256:2f56fae78781bbe94cb1ec3abcafbe738c6bc9889a6d23742716766dd13af830",
+          "content_inventory_digest": "sha256:e7fc9491a688303fa1b957b4b5a65490d3c34b5f7fe8ade40655a3a63274f23c",
+          "file_count": 503
+        },
+        "source": {
+          "clean": true,
+          "commit": "3a898818b5ea5bd5f810ecd3c22de6617ae617da",
+          "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
+        }
+      },
+      "status": "verified"
+    },
+    "digest": "sha256:b8c9fbc91949f941afacb6ff4f987c402c0f8654cde15803433834cd0f543bdf",
+    "distribution": {
+      "configuration_pattern": "directory-enabled-and-direct-SKILL-disabled",
+      "configuration_sha256": "sha256:2f56fae78781bbe94cb1ec3abcafbe738c6bc9889a6d23742716766dd13af830",
+      "content_inventory_digest": "sha256:e7fc9491a688303fa1b957b4b5a65490d3c34b5f7fe8ade40655a3a63274f23c",
+      "content_inventory_file": {
+        "file_count": 503,
+        "path": "routing-loose-content-inventory.json",
+        "sha256": "sha256:b41d08f552bf49a08eb4620e486d0e65554a9c1138f3c031da3be16945429457"
+      },
+      "disabled_canonical_skills": [
+        "openubmc-build",
+        "openubmc-debug",
+        "openubmc-developer",
+        "openubmc-environment-setup",
+        "openubmc-live-patch",
+        "openubmc-log-analyzer",
+        "openubmc-upgrade"
+      ],
+      "source_state": {
+        "commit": "e9aaf15ced95366083ce48edc7fc657d9373eb53",
+        "dirty": true,
+        "repository": "skills-control-plane",
+        "snapshot_identity_authority": "content-inventory",
+        "status_digest": "sha256:e794ce328ea885c65030fcb9eeb3899010a842e0f56d39f4b731af17a0c5d00e",
+        "tree": "bfa37aa8b877c191a7870165912234f1295aebae"
+      }
+    },
+    "environment": {
+      "credentials": "not-provided",
+      "knowledge_base": "unavailable-in-loose-arm",
+      "operating_system": "Linux WSL2",
+      "profile": "isolated-routing-no-private-inputs",
+      "target": "not-provided"
+    },
+    "execution": {
+      "approval_policy": "never",
+      "codex_executable_sha256": "sha256:61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+      "codex_version": "0.153.4",
+      "effort": "xhigh",
+      "model": "gpt-5.6-sol",
+      "model_provider": "cliproxy",
+      "originator": "codex_exec",
+      "plugins": false,
+      "sandbox_policy": {
+        "type": "read-only"
+      }
+    },
+    "inventory": {
+      "content_digest": "sha256:8b38059c7ebf0b1f2972b33b1ce90e567d5c98ca6b0c1c4c258f2a9f70e15e77",
+      "enabled_count": 29,
+      "enabled_openubmc_count": 23,
+      "entry_count": 36,
+      "openubmc_entry_count": 30,
+      "sha256": "sha256:a2acc0ed9efcc324a87162f1acaac68d61169d5839bf3eb782b10e9b5ae3eb13"
+    },
+    "kind": "loose-skills",
+    "source": {
+      "commit": "3a898818b5ea5bd5f810ecd3c22de6617ae617da",
+      "repository": "lihuabai629-star/openubmc-agent-workflow",
+      "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
+    }
+  },
+  "digest": "sha256:d41c446ff5322f830972c1f3b943275db653b0a9c91c99845e8f2f146366b803",
+  "evaluator": {
+    "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+    "files": {
+      "matrix": {
+        "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+        "committed_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
+        "path": "evaluation/plugin-tasks/routing-matrix.json",
+        "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
+      },
+      "review_contract": {
+        "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+        "committed_sha256": "sha256:408cbc14949d46665ff393b67a29c4cf3d727ab6b6990b344b3444829ae1e2d5",
+        "path": "evaluation/plugin-tasks/routing-review-contract.json",
+        "sha256": "sha256:408cbc14949d46665ff393b67a29c4cf3d727ab6b6990b344b3444829ae1e2d5"
+      },
+      "runner": {
+        "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+        "committed_sha256": "sha256:d813f28e0d6ac81364fc8c9ef31579e1024e22c8f8fcfa621ec1b28a2846357f",
+        "path": "scripts/skill_routing_evaluation.py",
+        "sha256": "sha256:d813f28e0d6ac81364fc8c9ef31579e1024e22c8f8fcfa621ec1b28a2846357f"
+      }
+    },
+    "mismatches": [],
+    "schema": "openubmc.skill-routing-evaluator.v1",
+    "status": "verified",
+    "tree": "9e3621a02232f750cfb05fe3ccbb39ff1d01ce58"
+  },
+  "integrity": {
+    "status": "verified"
+  },
+  "raw_evidence": {
+    "boundary": "local-only",
+    "embedded": false,
+    "file_count": 26,
+    "secret_scan": {
+      "matches": [],
+      "policy": "CLI_PROXY_API_KEY-and-credential-name-pattern",
+      "status": "clean"
+    }
+  },
+  "samples": [
+    {
+      "case_id": "diagnosis-zh-ordinary",
+      "expected_mcp": [],
+      "expected_routes": [
+        "openubmc-debug"
+      ],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "skill-not-loaded",
+          "expected_availability": {
+            "openubmc-debug": "disabled"
+          },
+          "expected_mcp_availability": {},
+          "fallback_routes": [
+            "openubmc-debugging"
+          ],
+          "missing_mcp": [],
+          "missing_routes": [
+            "openubmc-debug"
+          ],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openubmc-debugging"
+          ],
+          "status": "failed",
+          "unexpected_routes": [
+            "openubmc-debugging"
+          ]
+        }
+      },
+      "intent": "diagnosis",
+      "language": "zh",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"pwd && rg --files -uu . 2>/dev/null | sed -n '1,200p' && ls -la\"",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 1,
+        "errors": [],
+        "final_answer": "目前无法完成设备诊断，也不能判断 webserver 启动失败原因。\n\n已确认的事实：\n\n- 未提供目标 BMC 的 IP/主机名、SSH 端口及可用凭据。\n- 未提供准确的 systemd unit 名称（“webserver”可能只是组件俗称）。\n- 当前工作区为空，没有离线日志、状态输出或配置文件。\n- 未查询本地执行容器的服务，避免将其误认为目标 BMC。\n\n继续只读诊断至少需要：\n\n1. BMC 连接信息及准确服务名；或\n2. 从 BMC 提供以下输出：\n\n```bash\nsystemctl status <service> --no-pager --full\njournalctl -u <service> -b -n 200 --no-pager -o short-precise\nsystemctl cat <service>\n```\n\n如有 `config.cfg` 和相关 `src/service/main.lua`，也请一并提供。拿到这些证据后才能区分 unit/`ExecStart` 配置、文件缺失、依赖失败或 Skynet 组件启动异常。",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md\"",
+            "name": "openubmc-debugging",
+            "output_sha256": "sha256:752c1e6146da975192b3d60789d4726a37c6daa682341feb924af5b415dc027b",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openubmc-debugging"
+        ],
+        "thread_id": "01a08f41-acdb-7781-9593-bc61997175a8",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 26112,
+          "input_tokens": 39692,
+          "output_tokens": 1217,
+          "reasoning_output_tokens": 614,
+          "total_tokens": 40909
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/diagnosis-zh-ordinary/turn-1.jsonl",
+            "sha256": "sha256:f66056dc6f5aa392b02c31cd22c4a90c44c41664bcdfa70ee5790228b6911314",
+            "size_bytes": 9386
+          },
+          "stderr": {
+            "path": "raw/diagnosis-zh-ordinary/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:a90f4699a749a85aeb8fd2174c5a5d83120d316f8be23f08b97f8397dfa6f11b",
+        "status": "recorded",
+        "thread_id": "01a08f41-acdb-7781-9593-bc61997175a8",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "我的 openUBMC BMC 上 webserver 服务启动失败了，帮我读取当前服务状态和相关日志，判断原因。目标和凭据这次没有提供；只做只读检查，缺什么就明确说明，不要声称已经完成设备诊断。"
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "skill-not-loaded",
+        "expected_availability": {
+          "openubmc-debug": "disabled"
+        },
+        "expected_mcp_availability": {},
+        "fallback_routes": [
+          "openubmc-debugging"
+        ],
+        "missing_mcp": [],
+        "missing_routes": [
+          "openubmc-debug"
+        ],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debugging"
+        ],
+        "status": "failed",
+        "unexpected_routes": [
+          "openubmc-debugging"
+        ]
+      },
+      "wall_seconds": 41.733928,
+      "workspace_mode": "ordinary"
+    },
+    {
+      "case_id": "diagnosis-en-ordinary",
+      "expected_mcp": [],
+      "expected_routes": [
+        "openubmc-debug"
+      ],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "skill-not-loaded",
+          "expected_availability": {
+            "openubmc-debug": "disabled"
+          },
+          "expected_mcp_availability": {},
+          "fallback_routes": [
+            "openubmc-redfish-testing",
+            "openubmc-debugging"
+          ],
+          "missing_mcp": [],
+          "missing_routes": [
+            "openubmc-debug"
+          ],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openubmc-redfish-testing",
+            "openubmc-debugging"
+          ],
+          "status": "failed",
+          "unexpected_routes": [
+            "openubmc-redfish-testing",
+            "openubmc-debugging"
+          ]
+        }
+      },
+      "intent": "diagnosis",
+      "language": "en",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,260p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/SKILL.md && pwd && rg --files -g '\"'!*'\"' -g '*' . 2>/dev/null | sed -n '1,120p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,320p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/references/workflow.md; sed -n '1,320p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/references/safety-policy.md; sed -n '1,320p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md; find . -maxdepth 2 -mindepth 1 -printf '%y %p\\\\n' | sed -n '1,120p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 1,
+        "errors": [],
+        "final_answer": "Live diagnosis was not performed. Result: `NOT_RUN`; zero network or device traffic occurred.\n\nRead-only local checks found the workspace empty—no target/product profiles, source, logs, fixtures, or prior evidence.\n\nMissing inputs:\n\n- Approved BMC target: fixed HTTPS IP literal and port\n- Approved leaf-certificate SHA-256 fingerprint\n- Expected ServiceRoot/Manager identity and firmware/model baseline\n- Approved read-only Product Profile covering fan/sensor discovery\n- Credentials injected privately as `OPENUBMC_SSH_USER` and `OPENUBMC_SSH_PASSWORD`—do not paste them into chat\n- Exactly one execution grant: a ≤30-minute authorization or an approved R0 lease\n- Helpful diagnostic context: expected fan, observed Redfish response, relevant service name, `systemctl`/`journalctl` output, and known MDB bus/object paths\n\nWithout those inputs, I cannot determine whether the fan is absent at hardware discovery, MDB/D-Bus publication, or Redfish mapping. I do not claim the device has been diagnosed.",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,260p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/SKILL.md && pwd && rg --files -g '\"'!*'\"' -g '*' . 2>/dev/null | sed -n '1,120p'\"",
+            "name": "openubmc-redfish-testing",
+            "output_sha256": "sha256:bf088e78dfc1286cb1d0c2bbf33a70e86bdc39aec765d22ef8be3614b378758a",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/SKILL.md"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,320p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/references/workflow.md; sed -n '1,320p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/references/safety-policy.md; sed -n '1,320p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md; find . -maxdepth 2 -mindepth 1 -printf '%y %p\\\\n' | sed -n '1,120p'\"",
+            "name": "openubmc-debugging",
+            "output_sha256": "sha256:233bfa9701ba6a053b47e1b52f84706933041aec714589471880f406f5e3eeb8",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openubmc-redfish-testing",
+          "openubmc-debugging"
+        ],
+        "thread_id": "01a08f42-4fc6-79d3-bd93-9f6e2bb0b0e2",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 32640,
+          "input_tokens": 46199,
+          "output_tokens": 1631,
+          "reasoning_output_tokens": 928,
+          "total_tokens": 47830
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/diagnosis-en-ordinary/turn-1.jsonl",
+            "sha256": "sha256:dcf89d1c811af82037812cc5522a0b291d29fba5f5407d2b95b54af87681b091",
+            "size_bytes": 39514
+          },
+          "stderr": {
+            "path": "raw/diagnosis-en-ordinary/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:c3e198dfaa84c45d6dfe59656a7d1ac31ffbb39816f3fff625d1602b7d2535c6",
+        "status": "recorded",
+        "thread_id": "01a08f42-4fc6-79d3-bd93-9f6e2bb0b0e2",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "Diagnose why the fan sensor is missing on my openUBMC BMC. I have not supplied a target or credentials in this task. Perform only authorized read-only checks, state the missing inputs, and do not claim the device was diagnosed."
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "skill-not-loaded",
+        "expected_availability": {
+          "openubmc-debug": "disabled"
+        },
+        "expected_mcp_availability": {},
+        "fallback_routes": [
+          "openubmc-redfish-testing",
+          "openubmc-debugging"
+        ],
+        "missing_mcp": [],
+        "missing_routes": [
+          "openubmc-debug"
+        ],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-redfish-testing",
+          "openubmc-debugging"
+        ],
+        "status": "failed",
+        "unexpected_routes": [
+          "openubmc-redfish-testing",
+          "openubmc-debugging"
+        ]
+      },
+      "wall_seconds": 52.344843,
+      "workspace_mode": "ordinary"
+    },
+    {
+      "case_id": "logs-en-ordinary",
+      "expected_mcp": [],
+      "expected_routes": [
+        "openubmc-log-analyzer"
+      ],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "skill-not-loaded",
+          "expected_availability": {
+            "openubmc-log-analyzer": "disabled"
+          },
+          "expected_mcp_availability": {},
+          "fallback_routes": [
+            "openubmc-debugging"
+          ],
+          "missing_mcp": [],
+          "missing_routes": [
+            "openubmc-log-analyzer"
+          ],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openubmc-debugging"
+          ],
+          "status": "failed",
+          "unexpected_routes": [
+            "openubmc-debugging"
+          ]
+        }
+      },
+      "intent": "logs",
+      "language": "en",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"if [ -e /tmp/openubmc-routing-eval/missing-bundle.tar.gz ]; then stat --format='type=%F size=%s bytes path=%n' /tmp/openubmc-routing-eval/missing-bundle.tar.gz; else printf '%s\\\\n' 'ABSENT: /tmp/openubmc-routing-eval/missing-bundle.tar.gz'; fi\"",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 1,
+        "errors": [],
+        "final_answer": "Blocked: `/tmp/openubmc-routing-eval/missing-bundle.tar.gz` is absent.\n\nNo crash findings can be established without the requested log bundle. No files were modified.",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md\"",
+            "name": "openubmc-debugging",
+            "output_sha256": "sha256:752c1e6146da975192b3d60789d4726a37c6daa682341feb924af5b415dc027b",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openubmc-debugging"
+        ],
+        "thread_id": "01a08f43-1c4b-7d02-9997-88cbc9c1ae53",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 32384,
+          "input_tokens": 39478,
+          "output_tokens": 432,
+          "reasoning_output_tokens": 88,
+          "total_tokens": 39910
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/logs-en-ordinary/turn-1.jsonl",
+            "sha256": "sha256:98f2075dde200b3727573d2251e095da332b2d9b03a018aa07e01814c5fcfab2",
+            "size_bytes": 8459
+          },
+          "stderr": {
+            "path": "raw/logs-en-ordinary/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:a3bf2178815983d55fc8b6f8e9d9f63570ee0dd89c0007e74f2941875aaa8054",
+        "status": "recorded",
+        "thread_id": "01a08f43-1c4b-7d02-9997-88cbc9c1ae53",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "Analyze the openUBMC one-click log bundle at /tmp/openubmc-routing-eval/missing-bundle.tar.gz for repeated webserver crashes. Use only local read-only checks; if the bundle is absent, report that exact blocker without inventing findings."
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "skill-not-loaded",
+        "expected_availability": {
+          "openubmc-log-analyzer": "disabled"
+        },
+        "expected_mcp_availability": {},
+        "fallback_routes": [
+          "openubmc-debugging"
+        ],
+        "missing_mcp": [],
+        "missing_routes": [
+          "openubmc-log-analyzer"
+        ],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debugging"
+        ],
+        "status": "failed",
+        "unexpected_routes": [
+          "openubmc-debugging"
+        ]
+      },
+      "wall_seconds": 24.195488,
+      "workspace_mode": "ordinary"
+    },
+    {
+      "case_id": "build-zh-explicit-source",
+      "expected_mcp": [],
+      "expected_routes": [
+        "openubmc-build"
+      ],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "skill-not-loaded",
+          "expected_availability": {
+            "openubmc-build": "disabled"
+          },
+          "expected_mcp_availability": {},
+          "fallback_routes": [
+            "openubmc-bingo-build"
+          ],
+          "missing_mcp": [],
+          "missing_routes": [
+            "openubmc-build"
+          ],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openubmc-bingo-build"
+          ],
+          "status": "failed",
+          "unexpected_routes": [
+            "openubmc-bingo-build"
+          ]
+        }
+      },
+      "intent": "build",
+      "language": "zh",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '241,520p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"set -u\nsrc=/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout\nprintf 'SOURCE_STAT\\\\n'\nstat -c 'type=%F mode=%A owner=%U:%G path=%n' \\\"\"'$src\" 2>&1\nprintf '\"'ROOT_ENTRIES\\\\n'\nfind \\\"\"'$src\" -mindepth 1 -maxdepth 2 -printf '\"'%y %P\\\\n' 2>&1 | sort | sed -n '1,240p'\nprintf 'TOOLS\\\\n'\nfor tool in bmcgo bingo conan conan2 python3 cmake make ninja gcc g++ git; do\n  if command -v \\\"\"'$tool\" >/dev/null 2>&1; then\n    command -v \"$tool\"\n  else\n    printf '\"'MISSING %s\\\\n' \\\"\"'$tool\"\n  fi\ndone'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,260p' AGENTS.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"set -u\nsrc=/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout\nprintf 'BUILD_MARKERS\\\\n'\nfind \\\"\"'$src\" -type f '\"\\\\( -path '*/mds/service.json' -o -name 'conanfile.py' -o -name 'conanfile.txt' -o -name 'CMakeLists.txt' -o -path '*/.bingo/config' -o -path '*/build/frame.py' -o -name 'manifest.yml' -o -name 'pyproject.toml' -o -name 'package.json' -o -name 'requirements.txt' -o -name 'Makefile' \\\\) -printf '%P\\\\n' | sort\nprintf 'BMCGO_FILE\\\\n'\nls -l /usr/local/bin/bmcgo\nfile /usr/local/bin/bmcgo\nprintf 'BINGO_FILE\\\\n'\nls -l /usr/local/bin/bingo\nfile /usr/local/bin/bingo\nprintf 'NAME_REFERENCES\\\\n'\nrg -n --hidden --glob '\"'!.git/**'\"' '\\\\bbmcgo\\\\b|\\\\bbingo\\\\b' \\\"\"'$src\" | sed -n '\"'1,260p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,380p' openubmc-build/scripts/preflight_build_env.sh\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'bash openubmc-build/scripts/preflight_build_env.sh'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"set -u\nprintf 'ENTRYPOINTS\\\\n'\nsed -n '1,80p' /usr/local/bin/bmcgo\nsed -n '1,80p' /usr/local/bin/bingo\nsed -n '1,80p' /usr/local/bin/conan\nprintf 'PACKAGE_METADATA\\\\n'\npython3 - <<'PY'\nfrom importlib import metadata\npatterns = ('bmcgo', 'bingo', 'conan', 'semver')\nfor d in sorted(metadata.distributions(), key=lambda x: (x.metadata.get('Name') or '').lower()):\n    name = d.metadata.get('Name') or ''\n    low = name.lower()\n    if any(p in low for p in patterns):\n        print(f'{name}=={d.version}')\nprint('entry_points:')\nfor ep in metadata.entry_points(group='console_scripts'):\n    if ep.name in {'bmcgo','bingo','conan'}:\n        try:\n            dist = ep.dist.metadata.get('Name') if ep.dist else '<unknown>'\n        except Exception:\n            dist = '<unknown>'\n        print(f'{ep.name}: {ep.value} [{dist}]')\nPY\nprintf 'HOME_STATE\\\\n'\nprintf 'HOME=%s\\\\n' \\\"\"'${HOME-<unset>}\"\nfor p in \"${HOME-}/.bmcgo_log\" \"${HOME-}/.conan\" \"${HOME-}/.conan2\"; do\n  if [ -e \"$p\" ]; then stat -c '\"'present type=%F mode=%A owner=%U:%G path=%n' \\\"\"'$p\"; else printf '\"'absent %s\\\\n' \\\"\"'$p\"; fi\ndone'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nfrom importlib import metadata\nfor pkg in ('hw-ibmc-bmcgo','openubmc-bingo','conan'):\n    d=metadata.distribution(pkg)\n    print(f'[{pkg} {d.version}]')\n    for key in ('Requires-Python','Summary'):\n        vals=d.metadata.get_all(key) or []\n        for v in vals: print(f'{key}: {v}')\n    print('Requires-Dist:')\n    for req in d.requires or []: print(f'  {req}')\nPY\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'python3 -m pip check'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"set -u\nprintf 'HOST_TOOL_VERSIONS\\\\n'\npython3 --version\npip3 --version\ncmake --version | sed -n '1p'\nmake --version | sed -n '1p'\nninja --version\ngcc --version | sed -n '1p'\ng++ --version | sed -n '1p'\ngit --version\nnode --version\nnpm --version\nif command -v meson >/dev/null 2>&1; then meson --version; else printf 'MISSING meson\\\\n'; fi\nif command -v pkg-config >/dev/null 2>&1; then pkg-config --version; else printf 'MISSING pkg-config\\\\n'; fi\nif command -v ssh >/dev/null 2>&1; then ssh -V 2>&1; else printf 'MISSING ssh\\\\n'; fi\nprintf 'ENV_OVERRIDES\\\\n'\nfor name in CONAN_HOME CONAN_USER_HOME BMCGO_HOME; do eval \\\"v=\\\\\"'${$name-}\"; if [ -n \"$v\" ]; then printf '\"'%s=%s\\\\n' \\\"\"'$name\" \"$v\"; else printf '\"'%s=<unset>\\\\n' \\\"\"'$name\"; fi; done\nprintf '\"'GIT_STATE\\\\n'\ngit status --porcelain=v2 --branch\ngit submodule status 2>&1 || true\nprintf 'ROOT_DOC\\\\n'\nsed -n '1,90p' README.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"nl -ba README.md | sed -n '1,28p'\nnl -ba openubmc-build/scripts/preflight_build_env.sh | sed -n '58,90p'\nnl -ba openubmc-build/scripts/preflight_build_env.sh | sed -n '198,240p'\nnl -ba openubmc-build/scripts/preflight_build_env.sh | sed -n '320,335p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 1,
+        "errors": [],
+        "final_answer": "结论：当前目录不具备用 `bmcgo` 构建 openUBMC 组件的前置条件。\n\n| 检查项 | 实际结果 |\n|---|---|\n| 源码类型 | 这是 `openUBMC Agent Workflow` 工具仓库，并非组件源码仓，见 [README.md](/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout/README.md:1) |\n| 组件标志 | 未找到 `mds/service.json`、`conanfile.py`、`conanfile.txt` 或 `CMakeLists.txt` |\n| bmcgo 配置 | 未找到 `.bmcgo/config` 或 `.bingo/config` |\n| bmcgo | 已安装 `hw-ibmc-bmcgo 0.7.94` |\n| bingo 依赖 | 已安装 `openubmc-bingo 0.7.48`，满足 bmcgo 的 `>=0.7.27,<0.8.0` 要求 |\n| Conan | 已安装 Conan `2.30.0`，但尚无可读取的用户配置、profile 或 remote |\n| Python 依赖 | Python `3.12.3`；`pip check` 返回无依赖冲突 |\n| 基础工具 | Git 2.43.0、CMake 3.28.3、Make 4.3、Ninja 1.11.1、GCC/G++ 9.5.0、Meson 1.11.2 均存在 |\n| 源码状态 | Git 工作区干净，处于 detached HEAD `3a898818...` |\n\n主要缺口：\n\n1. 需要提供真正的组件根目录，至少应包含 `mds/service.json` 或 `conanfile.py`。仓库自带预检逻辑也将这些作为组件标志，见 [preflight_build_env.sh](/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout/openubmc-build/scripts/preflight_build_env.sh:68)。\n2. 当前只读环境下，`bmcgo --version` 尝试创建 `$HOME/.bmcgo_log` 时以 `Read-only file system` 失败。\n3. `conan --version` 和 `conan remote list` 尝试初始化 `$HOME/.conan2/global.conf` 时同样失败，因此无法确认有效的 Conan profile、openUBMC remote、网络及凭据。\n4. 因缺少实际组件声明，无法判断该组件要求 Conan 1 还是 Conan 2、GCC 版本是否匹配，以及具体依赖能否解析。\n\n`build/manufacture`、产品 manifest 和 HPM 签名文件缺失不算本次“组件构建”的缺口，它们只与产品固件出包有关。\n\n本次未执行编译、安装、发布或源码修改。版本探测产生的写入尝试均被只读文件系统阻止，源码工作区仍保持干净。",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/SKILL.md\"",
+            "name": "openubmc-bingo-build",
+            "output_sha256": "sha256:8ea0f615710bf9e009ec15ed88f3e1e9386b528ad8e2d2bf664e90efbf40e280",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openubmc-bingo-build"
+        ],
+        "thread_id": "01a08f43-7ad6-79a2-9cb3-f7de7e9dd013",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 279680,
+          "input_tokens": 314780,
+          "output_tokens": 8234,
+          "reasoning_output_tokens": 4889,
+          "total_tokens": 323014
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/build-zh-explicit-source/turn-1.jsonl",
+            "sha256": "sha256:edb60c68d1339c01ff1ee179743169ac5d25c034e194817eb7ad6b70475b00fe",
+            "size_bytes": 83739
+          },
+          "stderr": {
+            "path": "raw/build-zh-explicit-source/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:f5c86e6d21165acd335a19531fe5c27e98b4cd2c349395d219d87894f9c91974",
+        "status": "recorded",
+        "thread_id": "01a08f43-7ad6-79a2-9cb3-f7de7e9dd013",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "请检查外部源码目录 /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout 是否具备用 bmcgo 构建 openUBMC 组件的前置条件。本次只授权只读预检，不执行编译、安装、发布或修改源码；给出实际检查结果和缺口。"
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "skill-not-loaded",
+        "expected_availability": {
+          "openubmc-build": "disabled"
+        },
+        "expected_mcp_availability": {},
+        "fallback_routes": [
+          "openubmc-bingo-build"
+        ],
+        "missing_mcp": [],
+        "missing_routes": [
+          "openubmc-build"
+        ],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-bingo-build"
+        ],
+        "status": "failed",
+        "unexpected_routes": [
+          "openubmc-bingo-build"
+        ]
+      },
+      "wall_seconds": 264.828148,
+      "workspace_mode": "explicit-source"
+    },
+    {
+      "case_id": "build-en-source-cwd",
+      "expected_mcp": [],
+      "expected_routes": [
+        "openubmc-build"
+      ],
+      "failure_layers": {
+        "execution": {
+          "classifications": [
+            "model-transport-recovered"
+          ],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "skill-not-loaded",
+          "expected_availability": {
+            "openubmc-build": "disabled"
+          },
+          "expected_mcp_availability": {},
+          "fallback_routes": [
+            "openubmc-bingo-build"
+          ],
+          "missing_mcp": [],
+          "missing_routes": [
+            "openubmc-build"
+          ],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openubmc-bingo-build"
+          ],
+          "status": "failed",
+          "unexpected_routes": [
+            "openubmc-bingo-build"
+          ]
+        }
+      },
+      "intent": "build",
+      "language": "en",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '241,520p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' docs/agents/issue-tracker.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' docs/agents/triage-labels.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,280p' docs/agents/domain.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,320p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/references/bingo-source-map.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"ls -la && find . -maxdepth 3 -type d -print | sort | sed -n '1,220p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"pwd && git status --short && find . -maxdepth 3 -type f -print | sort | sed -n '1,260p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,360p' CONTEXT.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,300p' openubmc-build/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '301,650p' openubmc-build/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,320p' openubmc-build/scripts/preflight_build_env.sh\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,360p' openubmc-build/scripts/run_bmcgo_checked.py\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg -n --hidden -S '(bmcgo|preflight_build_env|build prerequisite|prerequisite|依赖|component build)' --glob '\"'!'\"\\\\.git/**' . | sed -n '1,420p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"nl -ba openubmc-build/scripts/preflight_build_env.sh | sed -n '1,360p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"wc -l openubmc-build/SKILL.md openubmc-build/scripts/run_bmcgo_checked.py openubmc-environment-setup/SKILL.md && nl -ba openubmc-build/SKILL.md | sed -n '1,260p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'bash openubmc-build/scripts/preflight_build_env.sh'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"find . -type f \\\\( -path '*/mds/service.json' -o -name conanfile.py -o -path '*/.bmcgo/config' -o -path '*/.bingo/config' -o -path '*/build/frame.py' -o -path '*/build/product/*/manifest.yml' \\\\) -print | sort\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"unzip -p openubmc-environment-setup/assets/hw_ibmc_bmcgo-0.7.51-py3-none-any.whl '*/METADATA' | sed -n '1,240p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"nl -ba openubmc-environment-setup/scripts/install_environment.py | sed -n '170,235p'; nl -ba openubmc-environment-setup/scripts/install_environment.py | sed -n '2090,2165p'; nl -ba openubmc-environment-setup/scripts/install_environment.py | sed -n '2190,2245p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg -n -S '(preflight|bmcgo|conan|component|mds/service.json|conanfile.py|prerequisite|requires|required)' README.md openubmc-build openubmc-environment-setup/SKILL.md --glob '*.md' --glob '*.txt' | sed -n '1,360p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nfrom importlib import metadata\nfor dist in metadata.distributions():\n    name = (dist.metadata.get('Name') or '').lower()\n    if any(key in name for key in ('bmcgo', 'conan', 'semver')):\n        print(f\\\"{dist.metadata.get('Name')}=={dist.version}\\\")\n        reqs = dist.requires or []\n        for req in reqs:\n            print(f\\\"  requires: {req}\\\")\nPY\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'git rev-parse --show-toplevel; git rev-parse HEAD; git branch --show-current; git status --porcelain=v1; git remote -v'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"nl -ba openubmc-environment-setup/SKILL.md | sed -n '1,45p'; nl -ba openubmc-environment-setup/SKILL.md | sed -n '195,240p'; nl -ba openubmc-environment-setup/SKILL.md | sed -n '245,287p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sha256sum openubmc-environment-setup/assets/hw_ibmc_bmcgo-0.7.51-py3-none-any.whl; stat -c '%n %s bytes mode=%a' openubmc-environment-setup/assets/hw_ibmc_bmcgo-0.7.51-py3-none-any.whl; find /usr/local/lib/python3.12/dist-packages -maxdepth 1 -type d \\\\( -iname '*bmcgo*dist-info' -o -iname '*bingo*dist-info' -o -iname 'conan*dist-info' \\\\) -print | sort\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nfrom importlib import metadata\nfor wanted in ('hw-ibmc-bmcgo', 'openubmc-bingo', 'conan', 'node-semver'):\n    try:\n        d = metadata.distribution(wanted)\n    except metadata.PackageNotFoundError:\n        print(f'{wanted}: MISSING')\n        continue\n    print(f'{d.metadata.get(\\\"Name\\\")}=={d.version}')\n    for req in d.requires or []:\n        print(f'  {req}')\nPY\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"bmcgo --help 2>&1 | sed -n '1,160p' || true\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"command -v bingo || true; bingo --version 2>&1 || true; bingo --help 2>&1 | sed -n '1,120p' || true\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"git --version; python3 --version; pip3 --version; make --version | sed -n '1p'; cmake --version | sed -n '1p'; ninja --version; node --version; npm --version; gcc --version | sed -n '1p'; g++ --version | sed -n '1p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'cat openubmc-build/references/modes/validate.md'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'cat openubmc-build/references/modes/component-package.md'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'cat openubmc-build/references/conan-auth.md'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nfrom importlib import metadata\nfor distname in ('hw-ibmc-bmcgo','openubmc-bingo'):\n    d=metadata.distribution(distname)\n    print(f'[{distname}]')\n    for ep in d.entry_points:\n        if ep.group == 'console_scripts':\n            print(f'{ep.name} = {ep.value}')\nPY\nsed -n '1,80p' /usr/local/bin/bmcgo\nsed -n '1,80p' /usr/local/bin/bingo\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"ssh -V 2>&1; command -v sshpass || true; command -v rg || true; rg --version | sed -n '1p'; command -v docker || true; docker --version 2>&1 || true; command -v meson || true; meson --version 2>&1 || true\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'python3 -m pip check'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nimport os\nfrom pathlib import Path\nfor name in ('HOME', 'CONAN_HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME'):\n    value = os.environ.get(name)\n    print(f'{name}={value if value else \\\"<unset>\\\"}')\nhome = Path(os.environ.get('HOME', ''))\nfor rel in ('.bmcgo_log', '.conan2', '.conan2/profiles/default', '.conan'):\n    path = home / rel\n    print(f'{path}: exists={path.exists()} type={\\\"dir\\\" if path.is_dir() else \\\"file\\\" if path.is_file() else \\\"absent\\\"}')\ncredential_names = sorted(name for name in os.environ if name.startswith(('CONAN_LOGIN_USERNAME_', 'CONAN_PASSWORD_')))\nprint('Conan credential variables present: ' + (', '.join(credential_names) if credential_names else '<none>'))\nPY\ndf -h . \\\"\"'$HOME\"\nfree -h\ngit status --short\ngit diff --stat\ngit diff --cached --stat'",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 1,
+        "errors": [
+          "Reconnecting... 1/5 (stream disconnected before completion: Transport error: timeout)",
+          "Reconnecting... 1/5 (stream disconnected before completion: Transport error: timeout)"
+        ],
+        "final_answer": "The checkout is **not ready to build a component with `bmcgo`**.\n\n| Check | Result |\n|---|---|\n| Component workspace | Blocked: no `mds/service.json` or `conanfile.py` anywhere in the checkout |\n| `bmcgo` | Installed (`0.7.94`), but cannot start because `$HOME/.bmcgo_log` cannot be created |\n| Conan | Installed (`2.30.0`), but cannot initialize `$HOME/.conan2`; profiles/remotes are absent |\n| Dependencies | `pip check` passes; bingo `0.7.48` satisfies the installed `bmcgo` requirement |\n| Basic tools | Python, Git, Make, CMake, Ninja, GCC/G++, Meson, SSH, Node.js 20 and npm are present |\n| Repository wheel | Bundled `bmcgo` wheel is `0.7.51`; its recorded SHA-256 is valid, but differs from installed `0.7.94` |\n| Checkout state | Clean and unchanged |\n\nTo become build-ready, use an actual component checkout containing the applicable model/recipe, provide writable workspace and home/cache paths, then initialize the component-required Conan major version, profile, remotes, and authentication. The intended Conan version cannot be determined without the component’s `conanfile.py` or `.bmcgo/config`.\n\nI followed the repository’s [read-only preflight helper](/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout/openubmc-build/scripts/preflight_build_env.sh:68) and its documented [tool prerequisites](/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout/openubmc-environment-setup/SKILL.md:203). No compilation, installation, publication, or file editing was performed.",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/SKILL.md\"",
+            "name": "openubmc-bingo-build",
+            "output_sha256": "sha256:8ea0f615710bf9e009ec15ed88f3e1e9386b528ad8e2d2bf664e90efbf40e280",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-bingo-build/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openubmc-bingo-build"
+        ],
+        "thread_id": "01a08f47-852d-7773-bfcc-8961cd60d59c",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 410752,
+          "input_tokens": 461685,
+          "output_tokens": 10158,
+          "reasoning_output_tokens": 5790,
+          "total_tokens": 471843
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/build-en-source-cwd/turn-1.jsonl",
+            "sha256": "sha256:de2de560bc62e90afd7be4780079fdcc1daca771a2e79926bf18915eaec525df",
+            "size_bytes": 413390
+          },
+          "stderr": {
+            "path": "raw/build-en-source-cwd/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:60e3e4e4d2f28d8af6aa1763e535f798abe07e8af4d7cea8c1a0f61cc8e04249",
+        "status": "recorded",
+        "thread_id": "01a08f47-852d-7773-bfcc-8961cd60d59c",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "Check this openUBMC source checkout for the prerequisites needed to build a component with bmcgo. This task authorizes read-only preflight only: do not compile, install, publish, or edit files."
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "skill-not-loaded",
+        "expected_availability": {
+          "openubmc-build": "disabled"
+        },
+        "expected_mcp_availability": {},
+        "fallback_routes": [
+          "openubmc-bingo-build"
+        ],
+        "missing_mcp": [],
+        "missing_routes": [
+          "openubmc-build"
+        ],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-bingo-build"
+        ],
+        "status": "failed",
+        "unexpected_routes": [
+          "openubmc-bingo-build"
+        ]
+      },
+      "wall_seconds": 580.726275,
+      "workspace_mode": "source"
+    },
+    {
+      "case_id": "upgrade-en-ordinary",
+      "expected_mcp": [],
+      "expected_routes": [
+        "openubmc-upgrade"
+      ],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "skill-not-loaded",
+          "expected_availability": {
+            "openubmc-upgrade": "disabled"
+          },
+          "expected_mcp_availability": {},
+          "fallback_routes": [
+            "openubmc-redfish-testing"
+          ],
+          "missing_mcp": [],
+          "missing_routes": [
+            "openubmc-upgrade"
+          ],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openubmc-redfish-testing"
+          ],
+          "status": "failed",
+          "unexpected_routes": [
+            "openubmc-redfish-testing"
+          ]
+        }
+      },
+      "intent": "upgrade",
+      "language": "en",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'rg --files -uu .'",
+            "exit_code": 1,
+            "status": "failed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg -n -i \\\"\\\\bhpm\\\\b|firmware update|update service|simpleupdate|multiparthttp(push|pushuri)|firmwareinventory\\\" /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-*\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,360p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-upgrade/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 1,
+        "errors": [],
+        "final_answer": "Prerequisite inspection result: **not runnable yet**. The workspace is empty, and no BMC target was supplied. No device was contacted or changed.\n\nMissing identity:\n\n| Identity | Required values |\n|---|---|\n| Target | Exact HTTPS BMC origin, including non-default port if applicable, e.g. `https://192.0.2.10:443` |\n| HPM artifact | Absolute file path |\n| HPM artifact | Expected SHA-256 digest |\n| HPM artifact | Expected four-part product version, e.g. `12.00.05.03` |\n\nAdditional prerequisites for a later read-only preflight:\n\n- Redfish credentials supplied through a credential selector, environment variables, or credentials file—do not paste passwords into chat.\n- TLS verification policy for the target.\n- If an `<hpm>.metadata.json` sidecar exists, its digest, size, and product version must match the HPM.\n- Mutation authorization is required only for the eventual upgrade; it is intentionally absent and unnecessary now.\n- A BMC-reachable `image_uri` is conditionally required only if discovery later selects legacy Redfish `SimpleUpdate`.\n\nNo upload, activation, restart, or device mutation was performed.",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/SKILL.md\"",
+            "name": "openubmc-redfish-testing",
+            "output_sha256": "sha256:b4efa0a48eb9c69a6e25e621170e3e8856e2ef4d314df6aebf5a7038305b656f",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openubmc-redfish-testing"
+        ],
+        "thread_id": "01a08f50-61be-7bb3-97b9-ea9de063c1d8",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 71296,
+          "input_tokens": 93655,
+          "output_tokens": 2373,
+          "reasoning_output_tokens": 1572,
+          "total_tokens": 96028
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/upgrade-en-ordinary/turn-1.jsonl",
+            "sha256": "sha256:b36302f1b983a25d8e3a7dba4f3817c400b94276da1190d6cd7f9522ec96ad30",
+            "size_bytes": 89774
+          },
+          "stderr": {
+            "path": "raw/upgrade-en-ordinary/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:24f01e7aca21db10a73db5d2ee6f69c3101c91e297c8617625600112cb5bb567",
+        "status": "recorded",
+        "thread_id": "01a08f50-61be-7bb3-97b9-ea9de063c1d8",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "I already have an openUBMC HPM and eventually need to upgrade a BMC. For now, only inspect the prerequisites and list the missing target and artifact identity; do not upload, activate, restart, or change any device."
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "skill-not-loaded",
+        "expected_availability": {
+          "openubmc-upgrade": "disabled"
+        },
+        "expected_mcp_availability": {},
+        "fallback_routes": [
+          "openubmc-redfish-testing"
+        ],
+        "missing_mcp": [],
+        "missing_routes": [
+          "openubmc-upgrade"
+        ],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-redfish-testing"
+        ],
+        "status": "failed",
+        "unexpected_routes": [
+          "openubmc-redfish-testing"
+        ]
+      },
+      "wall_seconds": 130.824054,
+      "workspace_mode": "ordinary"
+    },
+    {
+      "case_id": "credentials-zh-ordinary",
+      "expected_mcp": [],
+      "expected_routes": [
+        "openubmc-environment-setup"
+      ],
+      "failure_layers": {
+        "execution": {
+          "classifications": [
+            "model-transport-recovered"
+          ],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "skill-not-loaded",
+          "expected_availability": {
+            "openubmc-environment-setup": "disabled"
+          },
+          "expected_mcp_availability": {},
+          "fallback_routes": [
+            "openai-docs"
+          ],
+          "missing_mcp": [],
+          "missing_routes": [
+            "openubmc-environment-setup"
+          ],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openai-docs"
+          ],
+          "status": "failed",
+          "unexpected_routes": [
+            "openai-docs"
+          ]
+        }
+      },
+      "intent": "credentials",
+      "language": "zh",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/openai-docs/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"curl -fsSL --max-time 12 'https://developers.openai.com/search?q=Codex%20credentials%20configuration' | sed -n '1,80p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"find /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home -maxdepth 4 -type f -printf '%p\\\\n' | sort | sed -n '1,240p'\nprintf '\\\\nENV_NAMES\\\\n'\nenv | sed 's/=.*//' | sort | rg -i '(\"'^|_)(BMC|OS|OPENUBMC|REDFISH|IPMI|SSH|USER(NAME)?|PASS(WORD)?|CRED(ENTIAL)?S?|SECRET|TOKEN|HOST|PORT)($|_)'\"' || true\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"printf 'CONFIG_TOML_STRUCTURE\\\\n'\nrg -N '\"'^'\"\\\\s*(\\\\[[\"'^]]+'\"\\\\]|[A-Za-z0-9_.-]+\\\\s*=)' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/config.toml | sed -E 's/(\"'^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*=).*/'\"\\\\1 <redacted>/'\nprintf '\\\\nAUTH_JSON_KEY_PATHS\\\\n'\njq -r 'paths(scalars) | map(tostring) | join(\\\".\\\")' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/auth.json 2>/dev/null | sort\nprintf '\\\\nCREDENTIAL_RELATED_FILES\\\\n'\nfind /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills -type f \\\\( -iname '*cred*' -o -iname '*secret*' -o -iname '*auth*' \\\\) -printf '%p\\\\n' | sort\nprintf '\\\\nBMC_OS_CREDENTIAL_MENTION_FILES\\\\n'\nrg -il --glob '\"'!*.sqlite*'\"' --glob '\"'!auth.json'\"' '(bmc.{0,30}(credential|username|password)|os.{0,30}(credential|username|password)|credential.{0,30}(bmc|os)|OPENUBMC_.*(USER|PASS|CRED)|BMC_.*(USER|PASS|CRED)|OS_.*(USER|PASS|CRED))' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home 2>/dev/null | sort | sed -n '1,160p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg -n -i -C 2 '(credential|username|password|secret|BMC_|OS_)' \\\\\n  /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debug/SKILL.md \\\\\n  /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debug/references/remote-automation.md \\\\\n  /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debug/scripts/_cli_common.py \\\\\n  /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debug/scripts/_preflight_checks.py \\\\\n  /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/SKILL.md \\\\\n  /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-redfish-testing/references/workflow.md \\\\\n  | sed -n '1,280p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,140p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debug/references/remote-automation.md\nprintf '\\\\nCLI_COMMON_KEYS_AND_PRECEDENCE\\\\n'\nsed -n '1,190p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debug/scripts/_cli_common.py\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"printf 'OPENUBMC_CREDENTIAL_STATE\\\\n'\nfor name in OPENUBMC_CREDENTIALS_FILE OPENUBMC_DEBUG_CREDENTIALS_FILE OPENUBMC_SSH_USER OPENUBMC_SSH_PASSWORD OPENUBMC_TELNET_USER OPENUBMC_TELNET_PASSWORD OPENUBMC_OS_IP OPENUBMC_OS_SSH_USER OPENUBMC_OS_SSH_PASSWORD OPENUBMC_OS_SSH_PORT REDFISH_USERNAME REDFISH_PASSWORD; do\n  if env | sed 's/=.*//' | rg -qx \\\"\"'$name\"; then\n    if test -n \"$(printenv \"$name\")\"; then state=present_nonempty; else state=present_empty; fi\n  else\n    state=absent\n  fi\n  printf '\"'%s=%s\\\\n' \\\"\"'$name\" \"$state\"\ndone\nprintf '\"'\\\\nCONFIGURED_SKILLS\\\\n'\nawk '\n  /\"'^'\"\\\\[\\\\[skills\\\\.config\\\\]\\\\]/ { if (path \"'!= \"\") { print path \" enabled=\" enabled }; path=\"\"; enabled=\"\"; next }\n  /''^path[[:space:]]*=/ { line=$0; sub(/''^[''^=]*=[[:space:]]*/, \"\", line); gsub(/''^\"|\"$/, \"\", line); n=split(line,a,\"/\"); path=a[n]; next }\n  /''^enabled[[:space:]]*=/ { line=$0; sub(/''^[''^=]*=[[:space:]]*/, \"\", line); enabled=line; next }\n  END { if (path != \"\") print path \" enabled=\" enabled }\n'\"' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/config.toml | sort\nprintf '\\\\nWORKSPACE_FILES\\\\n'\nfind /tmp/openubmc-skill-routing-233-20260911/workspaces/empty -mindepth 1 -maxdepth 3 -printf '%y %p\\\\n' | sort\"",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 1,
+        "errors": [
+          "Reconnecting... 1/5 (stream disconnected before completion: idle timeout waiting for SSE)"
+        ],
+        "final_answer": "检查结果：配置入口已就绪，但当前隔离环境尚未注入 BMC/OS 凭据，因此暂不能直接连接设备。\n\n- `openubmc-debug` 已启用。\n- 支持通过 `OPENUBMC_CREDENTIALS_FILE` 指定权限为 `0600` 的凭据文件。\n- 也支持 BMC 的 `OPENUBMC_SSH_USER/PASSWORD`、OS 的 `OPENUBMC_OS_SSH_USER/PASSWORD` 等环境变量。\n- 上述凭据变量及凭据文件选择器当前均为 `absent`。\n- 未读取或显示任何密码，也未修改任何配置。\n- 工作区保持为空，无文件写入。\n\n结论：入口机制正常；凭据配置状态为“未配置”，不是故障。密码应通过隔离环境的秘密注入/环境配置入口提供，不要发送到对话中。",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/openai-docs/SKILL.md\"",
+            "name": "openai-docs",
+            "output_sha256": "sha256:7cb8fa1b2a0c635b5c61ffe1da7b8594a7ea0fce5b71e8d523e2025d88b2a05e",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/.system/openai-docs/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openai-docs"
+        ],
+        "thread_id": "01a08f52-6104-7392-9995-5e5d43935616",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 178560,
+          "input_tokens": 212353,
+          "output_tokens": 4962,
+          "reasoning_output_tokens": 2758,
+          "total_tokens": 217315
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/credentials-zh-ordinary/turn-1.jsonl",
+            "sha256": "sha256:845ad3fdc8e9882833d4b54b990b488dabba492044a0b3f6a438d76e3e312ca8",
+            "size_bytes": 132986
+          },
+          "stderr": {
+            "path": "raw/credentials-zh-ordinary/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:62c274bc49b67d202359b7f8945d53dfce77acbeab83c9f41b64288021449f83",
+        "status": "recorded",
+        "thread_id": "01a08f52-6104-7392-9995-5e5d43935616",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "帮我检查 Codex 的 openUBMC BMC/OS 凭据配置入口是否就绪。只检查隔离环境中的配置状态，不写入账号、不修改现有凭据；不要要求我在对话里发送密码。"
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "skill-not-loaded",
+        "expected_availability": {
+          "openubmc-environment-setup": "disabled"
+        },
+        "expected_mcp_availability": {},
+        "fallback_routes": [
+          "openai-docs"
+        ],
+        "missing_mcp": [],
+        "missing_routes": [
+          "openubmc-environment-setup"
+        ],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openai-docs"
+        ],
+        "status": "failed",
+        "unexpected_routes": [
+          "openai-docs"
+        ]
+      },
+      "wall_seconds": 527.992606,
+      "workspace_mode": "ordinary"
+    },
+    {
+      "case_id": "kb-en-ordinary",
+      "expected_mcp": [
+        "openubmc-kb"
+      ],
+      "expected_routes": [],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [
+            "openubmc-debug"
+          ],
+          "classification": "mcp-not-loaded",
+          "expected_availability": {},
+          "expected_mcp_availability": {
+            "openubmc-kb": "unavailable"
+          },
+          "fallback_routes": [
+            "openubmc-debugging"
+          ],
+          "missing_mcp": [
+            "openubmc-kb"
+          ],
+          "missing_routes": [],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openubmc-debugging"
+          ],
+          "status": "failed",
+          "unexpected_routes": [
+            "openubmc-debugging"
+          ]
+        }
+      },
+      "intent": "knowledge-base",
+      "language": "en",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 1,
+        "errors": [],
+        "final_answer": "Environment failure: no openUBMC knowledge-base connector or search tool is configured in this session. Authentication could not be attempted, so no knowledge results or candidate guidance were retrieved.",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md\"",
+            "name": "openubmc-debugging",
+            "output_sha256": "sha256:752c1e6146da975192b3d60789d4726a37c6daa682341feb924af5b415dc027b",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openubmc-debugging"
+        ],
+        "thread_id": "01a08f5a-6f61-74e2-8e88-080e080cc4f2",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 39936,
+          "input_tokens": 53564,
+          "output_tokens": 608,
+          "reasoning_output_tokens": 327,
+          "total_tokens": 54172
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/kb-en-ordinary/turn-1.jsonl",
+            "sha256": "sha256:65e47c3de1fe75de05681d8cf64000963f6cd28ae6cb031b811eb37319dc2a64",
+            "size_bytes": 7649
+          },
+          "stderr": {
+            "path": "raw/kb-en-ordinary/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:6846feadb43f9ebc62f1cf1c56a4813c1395ed8ff45f9c0e330bd33cdd5aa92f",
+        "status": "recorded",
+        "thread_id": "01a08f5a-6f61-74e2-8e88-080e080cc4f2",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "Search the configured openUBMC knowledge base for guidance on a missing fan sensor. Treat knowledge results only as candidate guidance. If the KB is not configured or authentication fails, report that environment failure plainly."
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [
+          "openubmc-debug"
+        ],
+        "classification": "mcp-not-loaded",
+        "expected_availability": {},
+        "expected_mcp_availability": {
+          "openubmc-kb": "unavailable"
+        },
+        "fallback_routes": [
+          "openubmc-debugging"
+        ],
+        "missing_mcp": [
+          "openubmc-kb"
+        ],
+        "missing_routes": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debugging"
+        ],
+        "status": "failed",
+        "unexpected_routes": [
+          "openubmc-debugging"
+        ]
+      },
+      "wall_seconds": 40.654006,
+      "workspace_mode": "ordinary"
+    },
+    {
+      "case_id": "component-zh-explicit-source",
+      "expected_mcp": [],
+      "expected_routes": [
+        "openubmc-developer"
+      ],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "skill-not-loaded",
+          "expected_availability": {
+            "openubmc-developer": "disabled"
+          },
+          "expected_mcp_availability": {},
+          "fallback_routes": [
+            "openubmc-mdb-interface-dev"
+          ],
+          "missing_mcp": [],
+          "missing_routes": [
+            "openubmc-developer"
+          ],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openubmc-mdb-interface-dev"
+          ],
+          "status": "failed",
+          "unexpected_routes": [
+            "openubmc-mdb-interface-dev"
+          ]
+        }
+      },
+      "intent": "component-development",
+      "language": "zh",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-mdb-interface-dev/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '241,520p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-mdb-interface-dev/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"find /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout -maxdepth 3 -type d -print | sort | sed -n '1,240p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg --files -g 'model.json' -g 'service.json' -g 'types.json' -g '*.lua' -g 'CMakeLists.txt' -g 'conanfile.py' -g 'bingo*' /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout | sed -n '1,320p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'find /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout -name AGENTS.md -print'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'pwd; git -C /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout status --short --branch; git -C /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout rev-parse --show-toplevel; git -C /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout remote -v'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' AGENTS.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg --files -g '\"'!/.git'\"' | sed -n '1,320p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"find . -path './.git' -prune -o -maxdepth 3 -type d -print | sort | sed -n '1,240p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc 'git log -8 --oneline --decorate; git ls-tree --name-only HEAD; git status --porcelain=v1 -uall'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg -n --hidden -g '\"'!.git/**'\"' -g '\"'!*.lock'\"' 'model\\\\.json|service\\\\.json|bingo gen|mdb_interface|Create[A-Z]|interfaces\\\\.properties|手写|generated|生成' . | sed -n '1,420p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"find . -path './.git' -prune -o \\\\( -iname '*model*.json' -o -iname '*service*.json' -o -iname '*.lua' \\\\) -type f -print | sort | sed -n '1,360p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,280p' lua-component/SKILL.md; sed -n '1,280p' openubmc-developer/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg -n --hidden -g '\"'!.git/**'\"' 'mdb|MDS|Lua 组件|属性|property|interface' README.md CONTEXT.md docs lua-component openubmc-developer plugin/openubmc/.codex-plugin 2>/dev/null | sed -n '1,420p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' docs/agents/domain.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,260p' openubmc-developer/SKILL.md; sed -n '261,560p' openubmc-developer/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' openubmc-developer/references/mdb-mds.md; sed -n '1,240p' openubmc-developer/references/lua-component.md; sed -n '1,220p' openubmc-developer/references/persistence-compatibility.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg -n -C 8 'trigger.generated-chain-positive|还没确定|源码所有权|扩展模式|model.json|手写 Lua' openubmc-developer/evals/evals.json openubmc-developer/tests lua-component/tests docs README.md CONTEXT.md | sed -n '1,520p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,280p' CONTEXT.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg --files docs/adr | sort; for f in docs/adr/*.md; do printf '%s\\\\n' \\\"\"'$f\"; sed -n '\"'1,220p' \\\"\"'$f\"; done'",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,260p' openubmc-developer/evals/trigger-evals.json; sed -n '261,560p' openubmc-developer/evals/trigger-evals.json\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"find . -path './.git' -prune -o -type f \\\\( -name 'model.json' -o -name 'service.json' -o -name 'types.json' -o -name '*.lua' \\\\) -print | sort; rg -l --hidden -g '\"'!.git/**'\"' '\"'^'\"\\\\s*local |\"'^function |return '\"\\\\{' -g '*.lua' . | sort\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"sed -n '1,180p' README.md; sed -n '1,220p' plugin/openubmc/.codex-plugin/plugin.json\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"nl -ba openubmc-developer/references/mdb-mds.md | sed -n '1,130p'; nl -ba openubmc-developer/references/lua-component.md | sed -n '1,100p'; nl -ba openubmc-developer/SKILL.md | sed -n '104,132p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"nl -ba openubmc-developer/evals/trigger-evals.json | sed -n '360,455p'; nl -ba openubmc-developer/evals/evals.json | sed -n '610,635p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"git ls-files | rg '(\"'^|/)mds/(model|service|types)'\"\\\\.json\"'$|'\"\\\\.lua\"'$'\"' || true; git ls-files | rg '(\"'^|/)(generated|gen|temp)/'\"' | sed -n '1,160p'; git status --porcelain=v1 --untracked-files=all\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg -n '\\\"id\\\": \\\"trigger-authored-generation-analysis\\\"|\\\"id\\\": \\\"trigger-exact-path-generated-chain-analysis\\\"' openubmc-developer/evals/trigger-evals.json; nl -ba openubmc-developer/evals/trigger-evals.json | sed -n '244,365p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"git show -s --format='commit=%H%nsubject=%s%ncommitted=%cI' HEAD; git branch --show-current; git symbolic-ref -q --short HEAD || true\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"rg -n 'new MDB|MDB 属性|model.json|手写 Lua|authored-generation' openubmc-developer/evals/trigger-evals.json openubmc-developer/evals/evals.json docs -g '*.json' -g '*.md' | sed -n '1,260p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"git ls-files '*model.json' '*service.json' '*types.json' '*.lua'; printf 'tracked_candidate_count='; git ls-files | awk '/(\"'^|'\"\\\\/)mds\\\\/(model|service|types)\\\\.json\"'$/ || /'\"\\\\.lua\"'$/ {n++} END {print n+0}'\"'; printf 'fixture_mentions='; rg -l 'mds/model\\\\.json|generated/[\"'^\" ]+'\"\\\\.lua|src/[\"'^\" ]+'\"\\\\.lua' openubmc-developer/evals/*.json | wc -l; git status --porcelain=v1 --untracked-files=all\"",
+            "exit_code": 0,
+            "status": "completed"
+          },
+          {
+            "command": "/bin/bash -lc \"nl -ba openubmc-developer/evals/trigger-evals.json | sed -n '190,242p'; nl -ba README.md | sed -n '1,18p'; nl -ba README.md | sed -n '108,128p'\"",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 1,
+        "errors": [],
+        "final_answer": "结论：如果它确实是对外可见的 MDB 属性，属性契约应进入模型生成链，不能只在 Lua 对象上临时增加字段。手写 Lua 只负责计算、初始化、更新或消费该属性。\n\n| 内容 | 所有者 |\n|---|---|\n| 属性名、类型、范围、默认值 | `mdb_interface` 的接口 JSON |\n| 组件对象暴露该属性 | `mds/model.json` 的 `interfaces.<接口>.properties` |\n| Lua/C++ binding | `bingo gen` 生成物，不直接修改 |\n| 取值、刷新、恢复等业务逻辑 | 手写 Lua service/domain 模块 |\n| 纯内部缓存或协调状态 | 手写 Lua；不应伪装成 MDB 属性 |\n\n源码依据：\n\n- 仓库规范将接口 JSON、`model.json` 等认定为 authored 输入，生成 binding 只是派生物：[mdb-mds.md](/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout/openubmc-developer/references/mdb-mds.md:3)。\n- 规范要求扩展现有契约所有者，并明确私有状态不得进入共享接口：[mdb-mds.md](/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout/openubmc-developer/references/mdb-mds.md:32)。\n- 生成模型对象被视为封闭结构；私有缓存应放在 service、collection 或独立映射中：[lua-component.md](/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout/openubmc-developer/references/lua-component.md:23)。\n- 仓库自己的评测范例也明确采用 `mds/model.json → generator → generated Lua → policy_service 消费者` 的模式：[trigger-evals.json](/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout/openubmc-developer/evals/trigger-evals.json:194)。\n\n但这个目录实际是 “openUBMC Agent Workflow” 仓库，而非业务组件：[README.md](/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout/README.md:1)。只读检索没有找到任何实际跟踪的 `mds/model.json`、`service.json`、`types.json` 或 `.lua` 文件；相关内容仅嵌在评测 JSON 中。因此目前可以确定上述归属原则，但不能从该 checkout 证明具体接口名、对象类、生成命令或受影响消费者。\n\n真实组件中的推荐路径是：\n\n1. 先查目标属性是否已在 `mdb_interface` 对应 `bmc.kepler.*` 接口中定义。\n2. 若未定义，先扩展接口 JSON；若已定义，在组件 `mds/model.json` 中引用。\n3. 通过仓库规定的 `bingo gen` 更新派生 binding。\n4. 仅在手写 Lua 中补属性值的初始化、更新和消费逻辑。\n5. 若属性要持久化，再单独核对 `usage`、表/主键及升级回滚兼容性。\n\n全程未修改文件；目标工作树保持干净。",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-mdb-interface-dev/SKILL.md\"",
+            "name": "openubmc-mdb-interface-dev",
+            "output_sha256": "sha256:5d93353c76c9708c583937fdf5348e3a3616bc44258cf4b882e2908c524f448d",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-mdb-interface-dev/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openubmc-mdb-interface-dev"
+        ],
+        "thread_id": "01a08f5b-0e0b-7a32-9871-e20aa212b3c2",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 388096,
+          "input_tokens": 460031,
+          "output_tokens": 7095,
+          "reasoning_output_tokens": 2802,
+          "total_tokens": 467126
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/component-zh-explicit-source/turn-1.jsonl",
+            "sha256": "sha256:1beefc389cf194eb54f2d69a91743eec2694851580e1e819e988deaf062ed2eb",
+            "size_bytes": 516373
+          },
+          "stderr": {
+            "path": "raw/component-zh-explicit-source/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:13d85ca2492b654d455df3eb47834ef64ff57de95fe0b001ea20dae0e208bcc0",
+        "status": "recorded",
+        "thread_id": "01a08f5b-0e0b-7a32-9871-e20aa212b3c2",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "在外部 openUBMC 源码目录 /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout 中，我还没确定一个新的 MDB 属性应写进 model.json 生成链，还是手写 Lua。请只读分析源码所有权和扩展模式，不修改文件。"
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "skill-not-loaded",
+        "expected_availability": {
+          "openubmc-developer": "disabled"
+        },
+        "expected_mcp_availability": {},
+        "fallback_routes": [
+          "openubmc-mdb-interface-dev"
+        ],
+        "missing_mcp": [],
+        "missing_routes": [
+          "openubmc-developer"
+        ],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-mdb-interface-dev"
+        ],
+        "status": "failed",
+        "unexpected_routes": [
+          "openubmc-mdb-interface-dev"
+        ]
+      },
+      "wall_seconds": 258.069839,
+      "workspace_mode": "explicit-source"
+    },
+    {
+      "case_id": "negative-zh-ordinary",
+      "expected_mcp": [],
+      "expected_routes": [],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "passed",
+          "expected_availability": {},
+          "expected_mcp_availability": {},
+          "fallback_routes": [],
+          "missing_mcp": [],
+          "missing_routes": [],
+          "observed_mcp": [],
+          "observed_routes": [],
+          "status": "passed",
+          "unexpected_routes": []
+        }
+      },
+      "intent": "negative",
+      "language": "zh",
+      "observation": {
+        "commands": [],
+        "completed_turns": 1,
+        "errors": [],
+        "final_answer": "Python 列表推导式是一种简洁创建列表的语法：\n\n```python\n新列表 = [表达式 for 元素 in 可迭代对象 if 条件]\n```\n\n例如，从整数列表中筛选偶数并计算平方：\n\n```python\nnumbers = [1, 2, 3, 4, 5, 6]\n\nsquares = [number ** 2 for number in numbers if number % 2 == 0]\n\nprint(squares)\n# 输出：[4, 16, 36]\n```\n\n它等价于：\n\n```python\nsquares = []\n\nfor number in numbers:\n    if number % 2 == 0:\n        squares.append(number ** 2)\n```",
+        "mcp_calls": [],
+        "skill_read_evidence": [],
+        "skill_reads": [],
+        "thread_id": "01a08f5e-fe23-7b20-85f6-304167fa4dec",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 7296,
+          "input_tokens": 11686,
+          "output_tokens": 155,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 11841
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/negative-zh-ordinary/turn-1.jsonl",
+            "sha256": "sha256:a7d8f7b5456b1f906e236421509ecb4452300b2cb3e7cd2a65876fc36fb0f02c",
+            "size_bytes": 846
+          },
+          "stderr": {
+            "path": "raw/negative-zh-ordinary/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:67e938885f581c7b5bd5cc48e43b1ca3569eb8f22d3deb838bf8a97c2606b011",
+        "status": "recorded",
+        "thread_id": "01a08f5e-fe23-7b20-85f6-304167fa4dec",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "解释 Python 列表推导式，并给一个纯 Python 示例。"
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "passed",
+        "expected_availability": {},
+        "expected_mcp_availability": {},
+        "fallback_routes": [],
+        "missing_mcp": [],
+        "missing_routes": [],
+        "observed_mcp": [],
+        "observed_routes": [],
+        "status": "passed",
+        "unexpected_routes": []
+      },
+      "wall_seconds": 9.633665,
+      "workspace_mode": "ordinary"
+    },
+    {
+      "case_id": "ambiguous-zh-ordinary",
+      "expected_mcp": [],
+      "expected_routes": [],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "passed",
+          "expected_availability": {},
+          "expected_mcp_availability": {},
+          "fallback_routes": [],
+          "missing_mcp": [],
+          "missing_routes": [],
+          "observed_mcp": [],
+          "observed_routes": [],
+          "status": "passed",
+          "unexpected_routes": []
+        }
+      },
+      "intent": "ambiguous",
+      "language": "zh",
+      "observation": {
+        "commands": [],
+        "completed_turns": 1,
+        "errors": [],
+        "final_answer": "可以。请先提供这些信息：\n\n- 问题现象：完整报错、截图或异常表现\n- 预期结果：正常情况下应该是什么样\n- 复现步骤：从什么操作开始，如何稳定触发\n- 环境信息：产品/平台、软件版本、分支或 commit、构建方式\n- 相关日志：问题发生前后完整日志，尽量保留时间戳\n- 最近改动：代码、配置、固件或硬件是否有变化\n- 已尝试的方法及结果\n- 若涉及代码：相关仓库路径、文件或补丁\n\n敏感信息（密码、Token、设备序列号、内部地址等）请先脱敏。你也可以直接把问题描述和日志贴过来，我再判断还缺什么。",
+        "mcp_calls": [],
+        "skill_read_evidence": [],
+        "skill_reads": [],
+        "thread_id": "01a08f5f-23dd-7a22-b15f-e053450a9e45",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 11520,
+          "input_tokens": 11685,
+          "output_tokens": 239,
+          "reasoning_output_tokens": 58,
+          "total_tokens": 11924
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/ambiguous-zh-ordinary/turn-1.jsonl",
+            "sha256": "sha256:87d1f8c4335d5cde6d3f4d988bd709b772dd2f94bdd9de2af94571efeffdc5ff",
+            "size_bytes": 1030
+          },
+          "stderr": {
+            "path": "raw/ambiguous-zh-ordinary/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:c44edc831e1e1e4d3940502ad7c80be411d75bd872be680b84a50fc09f92b06b",
+        "status": "recorded",
+        "thread_id": "01a08f5f-23dd-7a22-b15f-e053450a9e45",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "帮我看看这个问题，先告诉我还需要哪些信息。"
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "passed",
+        "expected_availability": {},
+        "expected_mcp_availability": {},
+        "fallback_routes": [],
+        "missing_mcp": [],
+        "missing_routes": [],
+        "observed_mcp": [],
+        "observed_routes": [],
+        "status": "passed",
+        "unexpected_routes": []
+      },
+      "wall_seconds": 14.191702,
+      "workspace_mode": "ordinary"
+    },
+    {
+      "case_id": "context-en-multi-turn",
+      "expected_mcp": [],
+      "expected_routes": [
+        "openubmc-debug"
+      ],
+      "failure_layers": {
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0,
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "identity": {
+          "mismatches": [],
+          "status": "verified"
+        },
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "routing": {
+          "allowed_routes": [],
+          "classification": "skill-not-loaded",
+          "expected_availability": {
+            "openubmc-debug": "disabled"
+          },
+          "expected_mcp_availability": {},
+          "fallback_routes": [
+            "openubmc-debugging"
+          ],
+          "missing_mcp": [],
+          "missing_routes": [
+            "openubmc-debug"
+          ],
+          "observed_mcp": [],
+          "observed_routes": [
+            "openubmc-debugging"
+          ],
+          "status": "failed",
+          "turns": [
+            {
+              "allowed_routes": [],
+              "classification": "passed",
+              "expected_availability": {},
+              "expected_mcp_availability": {},
+              "fallback_routes": [],
+              "missing_mcp": [],
+              "missing_routes": [],
+              "observed_mcp": [],
+              "observed_routes": [],
+              "status": "passed",
+              "unexpected_routes": []
+            },
+            {
+              "allowed_routes": [],
+              "classification": "skill-not-loaded",
+              "expected_availability": {
+                "openubmc-debug": "disabled"
+              },
+              "expected_mcp_availability": {},
+              "fallback_routes": [
+                "openubmc-debugging"
+              ],
+              "missing_mcp": [],
+              "missing_routes": [
+                "openubmc-debug"
+              ],
+              "observed_mcp": [],
+              "observed_routes": [
+                "openubmc-debugging"
+              ],
+              "status": "failed",
+              "unexpected_routes": [
+                "openubmc-debugging"
+              ]
+            }
+          ],
+          "unexpected_routes": [
+            "openubmc-debugging"
+          ]
+        }
+      },
+      "intent": "multi-turn",
+      "language": "en",
+      "observation": {
+        "commands": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md\"",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        ],
+        "completed_turns": 2,
+        "errors": [],
+        "final_answer": "Current diagnosis: there is not enough evidence to identify a root cause. “webserver” may be a description rather than the exact systemd unit name, so I won’t assume an openUBMC service name or implementation.\n\nPlease provide these read-only artifacts, collected by someone with target access:\n\n```bash\nsystemctl status <exact-unit> --no-pager -l\njournalctl -u <exact-unit> -b -n 200 --no-pager\nsystemctl cat <exact-unit>\nsystemctl show <exact-unit> \\\n  -p LoadState -p ActiveState -p SubState -p Result \\\n  -p ExecStart -p ExecMainCode -p ExecMainStatus -p NRestarts\n```\n\nAlso useful:\n\n- Exact firmware/openUBMC version and product model\n- Whether the failure began after an upgrade or configuration change\n- Any `config.cfg` referenced by `ExecStart`\n- If Skynet-based, the relevant `src/service/main.lua` startup logic\n- Any coredump/error file named in the journal\n- Whether the unit is missing, exits immediately, times out, or repeatedly restarts\n\nRead-only scope excludes `start`, `restart`, manually invoking `ExecStart`, configuration edits, and certificate regeneration.\n\nBlockers remain:\n\n- Target address/identifier unavailable\n- Credentials or another authorized access method unavailable\n- No status, journal, unit, or source artifacts supplied\n\nUntil one of those evidence paths is available, the root cause remains undetermined.",
+        "mcp_calls": [],
+        "skill_read_evidence": [
+          {
+            "command": "/bin/bash -lc \"sed -n '1,240p' /tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md\"",
+            "name": "openubmc-debugging",
+            "output_sha256": "sha256:752c1e6146da975192b3d60789d4726a37c6daa682341feb924af5b415dc027b",
+            "path": "/tmp/openubmc-skill-routing-233-20260911/baseline-runtime/codex-home/skills/openubmc-debugging/SKILL.md"
+          }
+        ],
+        "skill_reads": [
+          "openubmc-debugging"
+        ],
+        "thread_id": "01a08f5f-5b44-7623-8173-5c33af77718a",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 30720,
+          "input_tokens": 37882,
+          "output_tokens": 1370,
+          "reasoning_output_tokens": 745,
+          "total_tokens": 39252
+        }
+      },
+      "raw_integrity": {
+        "mismatches": [],
+        "status": "verified"
+      },
+      "raw_manifest": [
+        {
+          "jsonl": {
+            "path": "raw/context-en-multi-turn/turn-1.jsonl",
+            "sha256": "sha256:80ef02b7a5b4ebce6d6378c4c5915cceb80bdabf7592f0410fc33f5bc42853b3",
+            "size_bytes": 1065
+          },
+          "stderr": {
+            "path": "raw/context-en-multi-turn/turn-1.stderr",
+            "sha256": "sha256:f67c46d1d2597e36239395868560d6f2bb96ff9317ce6eef52c140452b35b8b7",
+            "size_bytes": 270
+          },
+          "turn": 1
+        },
+        {
+          "jsonl": {
+            "path": "raw/context-en-multi-turn/turn-2.jsonl",
+            "sha256": "sha256:9f7ac04e25db45251c0d273a26c9c4c07c695af384169aae3b2a659e20059b33",
+            "size_bytes": 8857
+          },
+          "stderr": {
+            "path": "raw/context-en-multi-turn/turn-2.stderr",
+            "sha256": "sha256:d2ab6c8a8762a0cdc628130676a62fd5f523e509260b6b28364fb5f04c79f383",
+            "size_bytes": 231
+          },
+          "turn": 2
+        }
+      ],
+      "rollout_identity": {
+        "codex_version": "0.153.4",
+        "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+        "model_provider": "cliproxy",
+        "originator": "codex_exec",
+        "rollout_sha256": "sha256:bfd3c4ae4dd3a1172a81416c10b35c00e4eec66287e72e5154cfd7de28452560",
+        "status": "recorded",
+        "thread_id": "01a08f5f-5b44-7623-8173-5c33af77718a",
+        "turn_contexts": [
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          },
+          {
+            "approval_policy": "never",
+            "cwd": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty",
+            "effort": "xhigh",
+            "model": "gpt-5.6-sol",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "user_prompts": [
+          "A service on a machine will not start. Tell me what context you need; do not access anything yet.",
+          "It is the webserver service on an openUBMC BMC. Continue as a read-only diagnosis, but the target and credentials are still unavailable, so preserve those as blockers."
+        ],
+        "verification": {
+          "mismatches": [],
+          "status": "verified"
+        }
+      },
+      "route": {
+        "allowed_routes": [],
+        "classification": "skill-not-loaded",
+        "expected_availability": {
+          "openubmc-debug": "disabled"
+        },
+        "expected_mcp_availability": {},
+        "fallback_routes": [
+          "openubmc-debugging"
+        ],
+        "missing_mcp": [],
+        "missing_routes": [
+          "openubmc-debug"
+        ],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debugging"
+        ],
+        "status": "failed",
+        "turns": [
+          {
+            "allowed_routes": [],
+            "classification": "passed",
+            "expected_availability": {},
+            "expected_mcp_availability": {},
+            "fallback_routes": [],
+            "missing_mcp": [],
+            "missing_routes": [],
+            "observed_mcp": [],
+            "observed_routes": [],
+            "status": "passed",
+            "unexpected_routes": []
+          },
+          {
+            "allowed_routes": [],
+            "classification": "skill-not-loaded",
+            "expected_availability": {
+              "openubmc-debug": "disabled"
+            },
+            "expected_mcp_availability": {},
+            "fallback_routes": [
+              "openubmc-debugging"
+            ],
+            "missing_mcp": [],
+            "missing_routes": [
+              "openubmc-debug"
+            ],
+            "observed_mcp": [],
+            "observed_routes": [
+              "openubmc-debugging"
+            ],
+            "status": "failed",
+            "unexpected_routes": [
+              "openubmc-debugging"
+            ]
+          }
+        ],
+        "unexpected_routes": [
+          "openubmc-debugging"
+        ]
+      },
+      "wall_seconds": 65.031878,
+      "workspace_mode": "ordinary"
+    }
+  ],
+  "schema": "openubmc.skill-routing-evidence.v1",
+  "source_binding": {
+    "inventory_sha256": "sha256:a2acc0ed9efcc324a87162f1acaac68d61169d5839bf3eb782b10e9b5ae3eb13",
+    "legacy_binding": {
+      "matrix_file": {
+        "current_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
+        "retained_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
+        "semantic_binding": "verified-by-rollout-user-prompts",
+        "status": "verified"
+      },
+      "mismatches": [],
+      "status": "verified"
+    },
+    "matrix_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
+    "retained_run_schema": "openubmc.skill-routing-run.v1",
+    "retained_run_sha256": "sha256:ff94db3bd5d8a4eab33c8d2db2260243e22c9039a222c9384bbb153f0c003a6c",
+    "review_contract_sha256": "sha256:408cbc14949d46665ff393b67a29c4cf3d727ab6b6990b344b3444829ae1e2d5",
+    "workspace_verification": {
+      "explicit_source": {
+        "clean": true,
+        "commit": "3a898818b5ea5bd5f810ecd3c22de6617ae617da",
+        "path": "/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout",
+        "repository_root": "/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout"
+      },
+      "mismatches": [],
+      "ordinary": {
+        "empty": true,
+        "inside_git": false,
+        "path": "/tmp/openubmc-skill-routing-233-20260911/workspaces/empty"
+      },
+      "source": {
+        "clean": true,
+        "commit": "3a898818b5ea5bd5f810ecd3c22de6617ae617da",
+        "path": "/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout",
+        "repository_root": "/tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout"
+      },
+      "status": "verified"
+    }
+  },
+  "summary": {
+    "classifications": {
+      "capability-missing": 0,
+      "environment-or-auth": 0,
+      "mcp-not-loaded": 1,
+      "passed": 2,
+      "skill-not-loaded": 9,
+      "skill-not-triggered": 0,
+      "unclassified": 0,
+      "wrong-route": 0
+    },
+    "routing_failed": 10,
+    "routing_passed": 2,
+    "sample_count": 12,
+    "usage": {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 1508992,
+      "input_tokens": 1782690,
+      "output_tokens": 38474,
+      "reasoning_output_tokens": 20571,
+      "total_tokens": 1821164
+    },
+    "wall_seconds": 2010.236784
+  }
+}

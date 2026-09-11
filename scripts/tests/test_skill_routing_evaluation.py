@@ -1128,6 +1128,24 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             (evidence_root / "routing-report.md").read_text(),
         )
 
+    def test_checked_in_evaluator_identity_matches_its_declared_commit(self) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        baseline = json.loads((evidence_root / "routing-evidence-loose.json").read_text())
+        candidate = json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
+        comparison = json.loads((evidence_root / "routing-comparison.json").read_text())
+        expected = baseline["evaluator"]
+        observed = verify_evaluator_identity(
+            ROOT,
+            expected["commit"],
+            ROOT / "scripts/skill_routing_evaluation.py",
+            ROOT / "evaluation/plugin-tasks/routing-matrix.json",
+            ROOT / "evaluation/plugin-tasks/routing-review-contract.json",
+        )
+
+        self.assertEqual(observed, expected)
+        self.assertEqual(candidate["evaluator"], expected)
+        self.assertEqual(comparison["paired_identity"]["evaluator"], expected)
+
 
 if __name__ == "__main__":
     unittest.main()

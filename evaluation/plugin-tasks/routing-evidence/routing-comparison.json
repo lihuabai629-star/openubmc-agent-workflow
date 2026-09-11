@@ -1,0 +1,929 @@
+{
+  "baseline": {
+    "arm_id": "loose-skills",
+    "distribution": {
+      "configuration_pattern": "directory-enabled-and-direct-SKILL-disabled",
+      "configuration_sha256": "sha256:2f56fae78781bbe94cb1ec3abcafbe738c6bc9889a6d23742716766dd13af830",
+      "content_inventory_digest": "sha256:e7fc9491a688303fa1b957b4b5a65490d3c34b5f7fe8ade40655a3a63274f23c",
+      "content_inventory_file": {
+        "file_count": 503,
+        "path": "routing-loose-content-inventory.json",
+        "sha256": "sha256:b41d08f552bf49a08eb4620e486d0e65554a9c1138f3c031da3be16945429457"
+      },
+      "disabled_canonical_skills": [
+        "openubmc-build",
+        "openubmc-debug",
+        "openubmc-developer",
+        "openubmc-environment-setup",
+        "openubmc-live-patch",
+        "openubmc-log-analyzer",
+        "openubmc-upgrade"
+      ],
+      "source_state": {
+        "commit": "e9aaf15ced95366083ce48edc7fc657d9373eb53",
+        "dirty": true,
+        "repository": "skills-control-plane",
+        "snapshot_identity_authority": "content-inventory",
+        "status_digest": "sha256:e794ce328ea885c65030fcb9eeb3899010a842e0f56d39f4b731af17a0c5d00e",
+        "tree": "bfa37aa8b877c191a7870165912234f1295aebae"
+      }
+    },
+    "evidence_digest": "sha256:d41c446ff5322f830972c1f3b943275db653b0a9c91c99845e8f2f146366b803",
+    "identity_digest": "sha256:b8c9fbc91949f941afacb6ff4f987c402c0f8654cde15803433834cd0f543bdf",
+    "inventory": {
+      "content_digest": "sha256:8b38059c7ebf0b1f2972b33b1ce90e567d5c98ca6b0c1c4c258f2a9f70e15e77",
+      "enabled_count": 29,
+      "enabled_openubmc_count": 23,
+      "entry_count": 36,
+      "openubmc_entry_count": 30,
+      "sha256": "sha256:a2acc0ed9efcc324a87162f1acaac68d61169d5839bf3eb782b10e9b5ae3eb13"
+    },
+    "summary": {
+      "classifications": {
+        "capability-missing": 0,
+        "environment-or-auth": 0,
+        "mcp-not-loaded": 1,
+        "passed": 2,
+        "skill-not-loaded": 9,
+        "skill-not-triggered": 0,
+        "unclassified": 0,
+        "wrong-route": 0
+      },
+      "routing_failed": 10,
+      "routing_passed": 2,
+      "sample_count": 12,
+      "usage": {
+        "cache_write_input_tokens": 0,
+        "cached_input_tokens": 1508992,
+        "input_tokens": 1782690,
+        "output_tokens": 38474,
+        "reasoning_output_tokens": 20571,
+        "total_tokens": 1821164
+      },
+      "wall_seconds": 2010.236784
+    }
+  },
+  "candidate": {
+    "arm_id": "plugin-3a898818",
+    "distribution": {
+      "archive_sha256": "sha256:caa1a7605eab1e0dc6b58de3b0b96b9b89ec53dbb0f12f79258d0f87dba6d94d",
+      "content_digest": "2ce74f4b0aeebd6fd1f1fc268c1611c92bf57179961ec44c380e6e074c31384d",
+      "marketplace": "openubmc-evaluation",
+      "mcp_servers": [
+        "openubmc-kb",
+        "openubmc-target-runtime"
+      ],
+      "name": "openubmc",
+      "plugin_skill_count": 12,
+      "runtime_digest": "sha256:bd511c205cb754613795142d6cd91e1138802a33580c636a9e74e363a4d4d692",
+      "subject_digest": "sha256:caf3583a199687176b38b3d6d0a9ce19d3c6ae74fab1dc2918e0f4351847cbde",
+      "version": "2.0.12"
+    },
+    "evidence_digest": "sha256:02b734d6594cad2c98d62b08394059b32ef9c8d49095c9b687a79953157f1c5a",
+    "identity_digest": "sha256:c2d0ac0b2102e74fa8734ac9a807c3dea887817faaf9004a937df5915c6c7adc",
+    "inventory": {
+      "content_digest": "sha256:bcf386f4502415c735e650a20e0ac86ee7895edf12e344ff2b1acb75d123dec9",
+      "enabled_count": 18,
+      "entry_count": 18,
+      "sha256": "sha256:1cd4ece599278949c963354a68ac7fa91bd11aa427d6873524fed9ad79dd3e63"
+    },
+    "summary": {
+      "classifications": {
+        "capability-missing": 0,
+        "environment-or-auth": 0,
+        "mcp-not-loaded": 0,
+        "passed": 12,
+        "skill-not-loaded": 0,
+        "skill-not-triggered": 0,
+        "unclassified": 0,
+        "wrong-route": 0
+      },
+      "routing_failed": 0,
+      "routing_passed": 12,
+      "sample_count": 12,
+      "usage": {
+        "cache_write_input_tokens": 0,
+        "cached_input_tokens": 998784,
+        "input_tokens": 1234252,
+        "output_tokens": 27644,
+        "reasoning_output_tokens": 12926,
+        "total_tokens": 1261896
+      },
+      "wall_seconds": 1134.871956
+    }
+  },
+  "cases": [
+    {
+      "baseline": {
+        "classification": "skill-not-loaded",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debugging"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 40909,
+        "wall_seconds": 41.733928
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debug"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 87827,
+        "wall_seconds": 59.657238
+      },
+      "case_id": "diagnosis-zh-ordinary",
+      "change": "improved",
+      "intent": "diagnosis",
+      "language": "zh",
+      "workspace_mode": "ordinary"
+    },
+    {
+      "baseline": {
+        "classification": "skill-not-loaded",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-redfish-testing",
+          "openubmc-debugging"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 47830,
+        "wall_seconds": 52.344843
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debug"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 71290,
+        "wall_seconds": 82.61124
+      },
+      "case_id": "diagnosis-en-ordinary",
+      "change": "improved",
+      "intent": "diagnosis",
+      "language": "en",
+      "workspace_mode": "ordinary"
+    },
+    {
+      "baseline": {
+        "classification": "skill-not-loaded",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debugging"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 39910,
+        "wall_seconds": 24.195488
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-log-analyzer"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 39012,
+        "wall_seconds": 27.610711
+      },
+      "case_id": "logs-en-ordinary",
+      "change": "improved",
+      "intent": "logs",
+      "language": "en",
+      "workspace_mode": "ordinary"
+    },
+    {
+      "baseline": {
+        "classification": "skill-not-loaded",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-bingo-build"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 323014,
+        "wall_seconds": 264.828148
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-build"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 227249,
+        "wall_seconds": 194.856962
+      },
+      "case_id": "build-zh-explicit-source",
+      "change": "improved",
+      "intent": "build",
+      "language": "zh",
+      "workspace_mode": "explicit-source"
+    },
+    {
+      "baseline": {
+        "classification": "skill-not-loaded",
+        "execution": {
+          "classifications": [
+            "model-transport-recovered"
+          ],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-bingo-build"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 471843,
+        "wall_seconds": 580.726275
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-build"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 263554,
+        "wall_seconds": 203.04666
+      },
+      "case_id": "build-en-source-cwd",
+      "change": "improved",
+      "intent": "build",
+      "language": "en",
+      "workspace_mode": "source"
+    },
+    {
+      "baseline": {
+        "classification": "skill-not-loaded",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-redfish-testing"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 96028,
+        "wall_seconds": 130.824054
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-upgrade"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 57627,
+        "wall_seconds": 92.997341
+      },
+      "case_id": "upgrade-en-ordinary",
+      "change": "improved",
+      "intent": "upgrade",
+      "language": "en",
+      "workspace_mode": "ordinary"
+    },
+    {
+      "baseline": {
+        "classification": "skill-not-loaded",
+        "execution": {
+          "classifications": [
+            "model-transport-recovered"
+          ],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openai-docs"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 217315,
+        "wall_seconds": 527.992606
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-environment-setup"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 53527,
+        "wall_seconds": 70.87882
+      },
+      "case_id": "credentials-zh-ordinary",
+      "change": "improved",
+      "intent": "credentials",
+      "language": "zh",
+      "workspace_mode": "ordinary"
+    },
+    {
+      "baseline": {
+        "classification": "mcp-not-loaded",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debugging"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 54172,
+        "wall_seconds": 40.654006
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [
+          {
+            "server": "openubmc-kb",
+            "status": "failed",
+            "tool": "openubmc_kb_query"
+          },
+          {
+            "server": "openubmc-kb",
+            "status": "completed",
+            "tool": "openubmc_kb_status"
+          }
+        ],
+        "observed_mcp": [
+          "openubmc-kb",
+          "openubmc-kb"
+        ],
+        "observed_routes": [
+          "openubmc-debug"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [
+            "environment-or-auth"
+          ],
+          "environment_or_auth_codes": [
+            "KB_CREDENTIALS_MISSING"
+          ],
+          "failed_mcp_calls": [
+            {
+              "failure_kind": "transport",
+              "server": "openubmc-kb",
+              "status": "failed",
+              "tool": "openubmc_kb_query"
+            }
+          ],
+          "status": "failed"
+        },
+        "total_tokens": 84762,
+        "wall_seconds": 90.903929
+      },
+      "case_id": "kb-en-ordinary",
+      "change": "not-comparable-treatment",
+      "intent": "knowledge-base",
+      "language": "en",
+      "workspace_mode": "ordinary"
+    },
+    {
+      "baseline": {
+        "classification": "skill-not-loaded",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-mdb-interface-dev"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 467126,
+        "wall_seconds": 258.069839
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-developer"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 280369,
+        "wall_seconds": 203.365034
+      },
+      "case_id": "component-zh-explicit-source",
+      "change": "improved",
+      "intent": "component-development",
+      "language": "zh",
+      "workspace_mode": "explicit-source"
+    },
+    {
+      "baseline": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 11841,
+        "wall_seconds": 9.633665
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 11163,
+        "wall_seconds": 12.458547
+      },
+      "case_id": "negative-zh-ordinary",
+      "change": "unchanged-pass",
+      "intent": "negative",
+      "language": "zh",
+      "workspace_mode": "ordinary"
+    },
+    {
+      "baseline": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 11924,
+        "wall_seconds": 14.191702
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 11236,
+        "wall_seconds": 13.658199
+      },
+      "case_id": "ambiguous-zh-ordinary",
+      "change": "unchanged-pass",
+      "intent": "ambiguous",
+      "language": "zh",
+      "workspace_mode": "ordinary"
+    },
+    {
+      "baseline": {
+        "classification": "skill-not-loaded",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0,
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debugging"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 39252,
+        "wall_seconds": 65.031878
+      },
+      "candidate": {
+        "classification": "passed",
+        "execution": {
+          "classifications": [],
+          "invalid_json_lines": 0,
+          "returncodes": [
+            0,
+            0
+          ],
+          "status": "passed",
+          "timed_out": false
+        },
+        "mcp_calls": [],
+        "observed_mcp": [],
+        "observed_routes": [
+          "openubmc-debug"
+        ],
+        "operational": {
+          "capability_codes": [],
+          "classifications": [],
+          "environment_or_auth_codes": [],
+          "failed_mcp_calls": [],
+          "status": "passed"
+        },
+        "total_tokens": 74280,
+        "wall_seconds": 82.818215
+      },
+      "case_id": "context-en-multi-turn",
+      "change": "improved",
+      "intent": "multi-turn",
+      "language": "en",
+      "workspace_mode": "ordinary"
+    }
+  ],
+  "digest": "sha256:e08acc18ce10d12d7b73eede267e17c347cc29a9793c4a3f8c9b7a715a9da7fa",
+  "paired_identity": {
+    "evaluator": {
+      "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+      "files": {
+        "matrix": {
+          "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+          "committed_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
+          "path": "evaluation/plugin-tasks/routing-matrix.json",
+          "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
+        },
+        "review_contract": {
+          "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+          "committed_sha256": "sha256:408cbc14949d46665ff393b67a29c4cf3d727ab6b6990b344b3444829ae1e2d5",
+          "path": "evaluation/plugin-tasks/routing-review-contract.json",
+          "sha256": "sha256:408cbc14949d46665ff393b67a29c4cf3d727ab6b6990b344b3444829ae1e2d5"
+        },
+        "runner": {
+          "commit": "7f90c498459a1218edb6e243eba4b97c447076ff",
+          "committed_sha256": "sha256:d813f28e0d6ac81364fc8c9ef31579e1024e22c8f8fcfa621ec1b28a2846357f",
+          "path": "scripts/skill_routing_evaluation.py",
+          "sha256": "sha256:d813f28e0d6ac81364fc8c9ef31579e1024e22c8f8fcfa621ec1b28a2846357f"
+        }
+      },
+      "mismatches": [],
+      "schema": "openubmc.skill-routing-evaluator.v1",
+      "status": "verified",
+      "tree": "9e3621a02232f750cfb05fe3ccbb39ff1d01ce58"
+    },
+    "execution": {
+      "approval_policy": "never",
+      "codex_executable_sha256": "sha256:61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+      "codex_version": "0.153.4",
+      "effort": "xhigh",
+      "model": "gpt-5.6-sol",
+      "model_provider": "cliproxy",
+      "originator": "codex_exec",
+      "sandbox_policy": {
+        "type": "read-only"
+      }
+    },
+    "external_environment": {
+      "credentials": "not-provided",
+      "operating_system": "Linux WSL2",
+      "profile": "isolated-routing-no-private-inputs",
+      "target": "not-provided"
+    },
+    "source": {
+      "commit": "3a898818b5ea5bd5f810ecd3c22de6617ae617da",
+      "repository": "lihuabai629-star/openubmc-agent-workflow",
+      "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
+    },
+    "status": "verified",
+    "treatment": {
+      "baseline": {
+        "kind": "loose-skills",
+        "knowledge_base": "unavailable-in-loose-arm",
+        "mcp_servers": []
+      },
+      "candidate": {
+        "kind": "plugin",
+        "knowledge_base": "configured-without-credentials",
+        "mcp_servers": [
+          "openubmc-kb",
+          "openubmc-target-runtime"
+        ]
+      }
+    }
+  },
+  "schema": "openubmc.skill-routing-comparison.v1",
+  "summary": {
+    "cases": 12,
+    "discoverability_improved": 9,
+    "improved": 9,
+    "not_comparable_treatment": 1,
+    "regressed": 0,
+    "routing_pass_delta": 10,
+    "unchanged_fail": 0,
+    "unchanged_pass": 2
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "arm_id": "loose-skills",
+  "digest": "sha256:b8c9fbc91949f941afacb6ff4f987c402c0f8654cde15803433834cd0f543bdf",
+  "environment": {
+    "credentials": "not-provided",
+    "knowledge_base": "unavailable-in-loose-arm",
+    "operating_system": "Linux WSL2",
+    "profile": "isolated-routing-no-private-inputs",
+    "target": "not-provided"
+  },
+  "execution": {
+    "approval_policy": "never",
+    "codex_executable_sha256": "sha256:61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+    "codex_version": "0.153.4",
+    "effort": "xhigh",
+    "model": "gpt-5.6-sol",
+    "model_provider": "cliproxy",
+    "originator": "codex_exec",
+    "plugins": false,
+    "sandbox_policy": {
+      "type": "read-only"
+    }
+  },
+  "inventory": {
+    "content_digest": "sha256:8b38059c7ebf0b1f2972b33b1ce90e567d5c98ca6b0c1c4c258f2a9f70e15e77",
+    "enabled_count": 29,
+    "enabled_openubmc_count": 23,
+    "entry_count": 36,
+    "openubmc_entry_count": 30,
+    "sha256": "sha256:a2acc0ed9efcc324a87162f1acaac68d61169d5839bf3eb782b10e9b5ae3eb13"
+  },
+  "kind": "loose-skills",
+  "loose_skills": {
+    "configuration_pattern": "directory-enabled-and-direct-SKILL-disabled",
+    "configuration_sha256": "sha256:2f56fae78781bbe94cb1ec3abcafbe738c6bc9889a6d23742716766dd13af830",
+    "content_inventory_digest": "sha256:e7fc9491a688303fa1b957b4b5a65490d3c34b5f7fe8ade40655a3a63274f23c",
+    "content_inventory_file": {
+      "file_count": 503,
+      "path": "routing-loose-content-inventory.json",
+      "sha256": "sha256:b41d08f552bf49a08eb4620e486d0e65554a9c1138f3c031da3be16945429457"
+    },
+    "disabled_canonical_skills": [
+      "openubmc-build",
+      "openubmc-debug",
+      "openubmc-developer",
+      "openubmc-environment-setup",
+      "openubmc-live-patch",
+      "openubmc-log-analyzer",
+      "openubmc-upgrade"
+    ],
+    "source_state": {
+      "commit": "e9aaf15ced95366083ce48edc7fc657d9373eb53",
+      "dirty": true,
+      "repository": "skills-control-plane",
+      "snapshot_identity_authority": "content-inventory",
+      "status_digest": "sha256:e794ce328ea885c65030fcb9eeb3899010a842e0f56d39f4b731af17a0c5d00e",
+      "tree": "bfa37aa8b877c191a7870165912234f1295aebae"
+    }
+  },
+  "schema": "openubmc.skill-routing-arm.v1",
+  "source": {
+    "commit": "3a898818b5ea5bd5f810ecd3c22de6617ae617da",
+    "repository": "lihuabai629-star/openubmc-agent-workflow",
+    "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
+  }
+}
