@@ -103,6 +103,20 @@ class DiagnosticAdviceProjectionTests(unittest.TestCase):
         self.assertEqual(next(item for item in advice["hypotheses"]
                               if item["id"] == "mdb_not_created")["status"], "fulfilled")
 
+    def test_inconsistent_hypothesis_is_omitted_even_with_valid_fact_references(self):
+        class AlteredAdvice(AdviceBackend):
+            def debug_run(self, task, arguments, context):
+                result = super().debug_run(task, arguments, context)
+                candidate = next(item for item in result["diagnostic_advice"]["hypotheses"]
+                                 if item["id"] == "mdb_not_created")
+                candidate["status"] = "contradicted"
+                candidate["contradicting_refs"] = candidate["supporting_refs"]
+                candidate["supporting_refs"] = []
+                return result
+        _, turn = self.start(AlteredAdvice())
+        self.assertNotIn("diagnostic_advice", turn["diagnostic_receipt"])
+        self.assertIsNone(turn["outcome"])
+
     def test_tampered_attachment_is_omitted_without_changing_factual_coverage(self):
         _, baseline = self.start(AdviceBackend(include_advice=False))
         _, turn = self.start(AdviceBackend(tamper=True))

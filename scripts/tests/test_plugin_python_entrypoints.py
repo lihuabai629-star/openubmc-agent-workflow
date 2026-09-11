@@ -268,15 +268,21 @@ raise SystemExit(subprocess.run([sys.executable, '-I', sys.argv[1], '--help']).r
         self.assertFalse(marker.exists())
         self.assertEqual(inventory(self.plugin), self.before)
 
-    def test_untracked_bytecode_is_rejected_before_cli_or_mcp_execution(self):
+    def test_untracked_bytecode_is_ignored_without_execution(self):
         marker = self.poison_cache()
+        verified = self.run_python('-I', self.plugin/'scripts/pluginctl.py', 'verify')
+        self.assertEqual(verified.returncode, 0, verified.stderr)
         commands = [(self.plugin/'skills/openubmc-debug/scripts/target_runtime_cli.py', '--help')]
         commands += [('-I', self.plugin/'scripts/pluginctl.py', server) for server in ('runtime', 'kb')]
         for command in commands:
             with self.subTest(command=command[-1]):
                 marker.unlink(missing_ok=True)
                 result = self.run_python(*command)
-                self.assertNotIn('inventory mismatch', result.stderr)
+                if command[-1] == '--help':
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn('Dependencies are not prepared', result.stderr)
                 self.assertFalse(marker.exists())
 
     def test_source_drift_and_unknown_files_still_block_both_mcps(self):

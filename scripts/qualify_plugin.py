@@ -181,6 +181,25 @@ def qualify(source: Path, ref: str, archive: Path) -> dict:
         doctor = command([sys.executable, '-I', str(plugin/'scripts/pluginctl.py'), 'doctor'], env)
         if not doctor['startup_ready']:
             raise ValueError('installed MCP startup failed')
+        # Exercise incidental Python caches in the installed product, then use
+        # doctor to initialize and list tools from both real MCP servers again.
+        import compileall
+        if not compileall.compile_dir(str(plugin), quiet=2, force=True):
+            raise ValueError('installed Python cache generation failed')
+        generated_caches = list(plugin.rglob('__pycache__/*.pyc'))
+        if not generated_caches:
+            raise ValueError('cache restart qualification generated no bytecode')
+        plugin_cli = [sys.executable, '-I', str(plugin/'scripts/pluginctl.py')]
+        command([*plugin_cli, 'verify'], env)
+        restarted = command([*plugin_cli, 'doctor'], env)
+        if not restarted['startup_ready'] or not all(
+                restarted['mcp_health'][name]['ok'] for name in ('runtime', 'kb')):
+            raise ValueError('MCP restart after cache generation failed')
+        command([*plugin_cli, 'verify'], env)
+        report['bytecode_restart'] = {
+            'generated_cache_count': len(generated_caches),
+            'mcp_health': restarted['mcp_health'], 'verified_after_restart': True,
+        }
         servers = command(['codex', 'mcp', 'list', '--json'], env)
         for name in ('openubmc-target-runtime', 'openubmc-kb'):
             server = next(row for row in servers if row['name'] == name)

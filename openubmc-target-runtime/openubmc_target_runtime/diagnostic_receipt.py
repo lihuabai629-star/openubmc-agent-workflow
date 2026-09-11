@@ -2205,12 +2205,25 @@ def _stored_diagnostic_advice(raw: object, evidence: object) -> dict[str, object
                     or (type(fact.get("present")) is not bool if fact["status"] == "observed" else fact.get("present") is not None)):
                 return None
             refs.append(reference)
+        patterns = {
+            "hardware_not_discovered": (False, False, False),
+            "mdb_not_created": (True, False, False),
+            "northbound_not_published": (True, True, False),
+        }
+        if {candidate.get("id") for candidate in hypotheses} != set(patterns):
+            return None
+        selected = {fact["stage"]: fact for fact in facts if fact["target"] == raw["target"]}
         for candidate in hypotheses:
-            if candidate.get("status") not in {"fulfilled", "contradicted", "unknown"}:
+            supporting, contradicting = [], []
+            for stage, expected in zip(_ADVICE_STAGES, patterns[candidate["id"]]):
+                fact = selected.get(stage, {})
+                if fact.get("status") == "observed":
+                    destination = supporting if fact["present"] is expected else contradicting
+                    destination.append(fact["evidence_ref"])
+            status = "contradicted" if contradicting else "fulfilled" if len(supporting) == 3 else "unknown"
+            if (candidate.get("status") != status or candidate.get("supporting_refs") != supporting
+                    or candidate.get("contradicting_refs") != contradicting):
                 return None
-            for name in ("supporting_refs", "contradicting_refs"):
-                if not isinstance(candidate.get(name), list) or any(item not in refs for item in candidate[name]):
-                    return None
         from .semantic_runtime import ObservationQuery
         for suggestion in proposed:
             if suggestion.get("stage") not in _ADVICE_STAGES or suggestion["query"].get("target") != raw["target"]:
