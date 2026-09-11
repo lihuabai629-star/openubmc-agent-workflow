@@ -1659,6 +1659,19 @@ def _structured_results(
     telnet = _mapping(lanes.get("telnet"))
     files = _mapping(telnet.get("files"))
     results: list[dict[str, object]] = []
+    for selector_id, child in _mapping(runtime_result.get("systemd")).items():
+        child = _mapping(child)
+        results.append({
+            "result_id": "systemd-" + str(selector_id), "kind": "systemd",
+            "request": ", ".join(str(name) for name in child.get("requested", [])),
+            "status": "available" if child.get("complete") is True else "unavailable",
+            "value": {"boot_id": child.get("boot_id"), "gaps": child.get("gaps", []),
+                "units": [{"unit": item.get("unit"), "properties": item.get("properties", {}),
+                           "journal_lines": len(item.get("journal", []))}
+                          for item in child.get("units", []) if isinstance(item, Mapping)]},
+            "observed_at": child.get("completed_at") or value.get("observed_at"),
+            "evidence_ids": evidence_ids,
+        })
     result_id_counts: dict[str, int] = {}
     for index, path in enumerate(plan.files, start=1):
         base_result_id, kind = {

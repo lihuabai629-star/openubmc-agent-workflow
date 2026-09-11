@@ -25,10 +25,12 @@ from implementation:
 
 Use the default `openubmc-target-runtime` MCP through its semantic Agent Interface:
 
+- For current systemd service failures, use a `systemd` selector with literal `.service` names
+  or `["failed"]` discovery. Read [the selector contract](references/agent-gateway.md#current-systemd-service-evidence).
 - Call `observe` for an exact read-only question. Declare only the selectors needed for the
   answer. A narrow MDB or capability query should complete in one call and return an inline
   `ObservationReceipt`.
-- Treat one answer as one observation: combine related capability and MDB selectors needed for
+- Treat one answer as one observation: combine related capability, MDB and systemd selectors needed for
   the answer in the same `observe` call. Do not run a separate capability preflight; the internal
   Observation Adapter performs it.
 - Call `execute` when work can cross diagnosis, source change, build, live patch, upgrade,

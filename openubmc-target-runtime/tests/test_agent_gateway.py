@@ -4363,7 +4363,7 @@ class AgentGatewayTests(unittest.TestCase):
             (
                 [{"id": "unsafe", "kind": "shell", "queries": ["id"]}],
                 "selectors[0].kind",
-                ["capability", "mdb"],
+                ["capability", "mdb", "systemd"],
                 None,
             ),
             (
@@ -4658,6 +4658,74 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertIsNone(turn["next_action"])
         self.assertEqual(turn["gate"]["gate_id"], "new-gate")
         self.assertTrue(turn["gate"]["submission_id"].startswith("gate-submit-"))
+
+    def test_systemd_evidence_survives_mixed_partitioned_observe(self) -> None:
+        class ServicesBackend(SemanticBackend):
+            def observe_query(self, task, arguments, context):
+                value = super().observe_query(task, arguments, context)
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc).isoformat()
+                value['observed_at'] = now
+                value['observation_timing'].update(started_at=now, completed_at=now)
+                for fact in value['observation_timing']['selectors']:
+                    fact.update(started_at=now, completed_at=now)
+                value['result']['systemd'] = {
+                    selector['id']: {'requested': selector['names'], 'complete': True,
+                        'gaps': [], 'units': [{'unit': name, 'properties': {'ActiveState': 'failed'},
+                                              'journal': []} for name in selector['names']]}
+                    for selector in arguments['selectors'] if selector['kind'] == 'systemd'
+                }
+                return value
+        service = RuntimeMcpService(ServicesBackend())
+        self.addCleanup(service.close)
+        names = [f"{'x' * 160}{i}.service" for i in range(16)]
+        receipt = service.call_exposed_tool(
+            'observe', {'target': '192.0.2.10', 'selectors': [
+                {'id': 'services', 'kind': 'systemd', 'names': names},
+                {'id': 'caps', 'kind': 'capability', 'names': ['ssh']},
+            ]}, task_id='systemd-partitions', operation_id='systemd-wide')
+        self.assertEqual(receipt['status'], 'complete')
+        self.assertTrue(receipt['results']['services']['complete'])
+        changed = service.call_exposed_tool(
+            'observe', {'target': '192.0.2.10', 'selectors': [
+                {'id': 'services', 'kind': 'systemd', 'names': names[:2]},
+            ], 'freshness': {'mode': 'live', 'max_age_seconds': 0}},
+            task_id='systemd-partitions', operation_id='systemd-narrow')
+        self.assertTrue(changed['results']['services']['complete'])
+        waiting = service.call_exposed_tool('execute', {
+            'kind': 'start', 'target': '192.0.2.10', 'intent': 'diagnosis-only',
+            'observation_ref': changed['observation_ref'],
+        }, task_id='systemd-diagnosis', operation_id='systemd-start')
+        self.assertEqual(waiting['gate']['name'], 'diagnosis.acceptance')
+        diagnostic = waiting['diagnostic_receipt']
+        self.assertTrue(any(item['kind'] == 'systemd' and item['status'] == 'available'
+                            for item in diagnostic['results']))
+        evidence_ids = [item['evidence_id'] for item in diagnostic['evidence']]
+        final = service.call_exposed_tool('execute', {
+            'kind': 'respond', 'run_id': waiting['run_id'], **gate_binding(waiting),
+            'response': {'status': 'completed', 'summary': 'Service failure diagnosed',
+                'payload': accepted_diagnosis_payload(evidence_ids,
+                    root_cause='fan service process exited unsuccessfully', remaining_gaps=[])},
+        }, task_id='systemd-diagnosis', operation_id='systemd-accept')
+        self.assertEqual(final['outcome']['status'], 'completed')
+
+    def test_systemd_query_budget_rejects_multiple_scopes_before_access(self):
+        with self.assertRaises(ValueError):
+            self.service.call_exposed_tool('observe', {
+                'target': '192.0.2.10', 'selectors': [
+                    {'id': 'first', 'kind': 'systemd', 'names': ['failed']},
+                    {'id': 'second', 'kind': 'systemd', 'names': ['fan.service']},
+                ]}, task_id='systemd-limit', operation_id='systemd-limit')
+        self.assertEqual(self.backend.calls, [])
+
+    def test_systemd_observe_missing_collection_is_incomplete(self) -> None:
+        receipt = self.service.call_exposed_tool(
+            "observe", {"target": "192.0.2.10", "selectors": [
+                {"id": "services", "kind": "systemd", "names": ["fan.service"]}
+            ]}, task_id="systemd-missing", operation_id="systemd-1")
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(receipt["results"]["services"]["kind"], "systemd")
+        self.assertFalse(receipt["results"]["services"]["complete"])
 
     def test_observe_is_bounded_grounded_and_does_not_open_a_case(self) -> None:
         receipt = self.service.call_exposed_tool(
