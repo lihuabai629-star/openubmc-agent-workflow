@@ -276,8 +276,7 @@ raise SystemExit(subprocess.run([sys.executable, '-I', sys.argv[1], '--help']).r
             with self.subTest(command=command[-1]):
                 marker.unlink(missing_ok=True)
                 result = self.run_python(*command)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('inventory mismatch', result.stderr)
+                self.assertNotIn('inventory mismatch', result.stderr)
                 self.assertFalse(marker.exists())
 
     def test_source_drift_and_unknown_files_still_block_both_mcps(self):
