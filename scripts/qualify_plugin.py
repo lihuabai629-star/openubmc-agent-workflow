@@ -8,6 +8,7 @@ import http.server
 import json
 import os
 import platform
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -104,10 +105,15 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                 raise ValueError('native Codex plugin exec timed out')
             if process.returncode:
                 raise ValueError('native Codex plugin exec failed: '+(stderr or stdout)[-2000:])
-            catalog = json.dumps(server.requests[start:1 + start], ensure_ascii=False)
+            catalog = "\n".join(part.get('text', '')
+                                for item in server.requests[start].get('input', [])
+                                if item.get('role') == 'developer'
+                                for part in item.get('content', []) if isinstance(part, dict))
             expected_skills = ('openubmc-debug', 'openubmc-build', 'openubmc-upgrade',
                                'openubmc-environment-setup')
-            if any(name not in catalog for name in expected_skills):
+            if any(not re.search(r"(?m)^- openubmc:" + re.escape(name)
+                                 + r": .*\(file: [^\n)]*/" + re.escape(name) + r"/SKILL\.md\)$", catalog)
+                   for name in expected_skills):
                 raise ValueError('packaged Skills are absent from the model catalog outside a source checkout')
             outputs = {}
             for request in server.requests[start:]:
