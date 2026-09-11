@@ -1,0 +1,12 @@
+{
+  "schema": "openubmc.skill-routing-review-contract.v1",
+  "execution_matrix_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
+  "cases": {
+    "kb-en-ordinary": {
+      "allowed_routes": ["openubmc-debug"]
+    },
+    "context-en-multi-turn": {
+      "expected_routes_by_turn": [[], ["openubmc-debug"]]
+    }
+  }
+}
