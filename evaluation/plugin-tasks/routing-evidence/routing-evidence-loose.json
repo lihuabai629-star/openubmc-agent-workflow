@@ -91,33 +91,33 @@
       "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
     }
   },
-  "digest": "sha256:c194b4513904f0dfe1ea1e6429e65447b21f01c9c44073468f2f78880b387ec8",
+  "digest": "sha256:a027dd8872d9b39d1e6a541bdfad5dccda32e78a5e64b4d0992ff6662311d5af",
   "evaluator": {
-    "commit": "a6bd24c482553739a084317d3f3715388ac4a2e6",
+    "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
     "files": {
       "matrix": {
-        "commit": "a6bd24c482553739a084317d3f3715388ac4a2e6",
+        "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
         "committed_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
         "path": "evaluation/plugin-tasks/routing-matrix.json",
         "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
       },
       "review_contract": {
-        "commit": "a6bd24c482553739a084317d3f3715388ac4a2e6",
+        "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
         "committed_sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629",
         "path": "evaluation/plugin-tasks/routing-review-contract.json",
         "sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629"
       },
       "runner": {
-        "commit": "a6bd24c482553739a084317d3f3715388ac4a2e6",
-        "committed_sha256": "sha256:5ef459308e85930638efe442e71231ff9f8271f16a750b009dccbba48a389330",
+        "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
+        "committed_sha256": "sha256:36db44404f8b480f173dcdbc3593b3fa0e9265b5f99465cc5a65653d4f0359ad",
         "path": "scripts/skill_routing_evaluation.py",
-        "sha256": "sha256:5ef459308e85930638efe442e71231ff9f8271f16a750b009dccbba48a389330"
+        "sha256": "sha256:36db44404f8b480f173dcdbc3593b3fa0e9265b5f99465cc5a65653d4f0359ad"
       }
     },
     "mismatches": [],
     "schema": "openubmc.skill-routing-evaluator.v1",
     "status": "verified",
-    "tree": "ec4758591eb0828aba4485141440feda2940b035"
+    "tree": "f52a02baae437a36a15017bf771c7ee3eda9cef8"
   },
   "integrity": {
     "status": "verified"

@@ -28,7 +28,7 @@
         "tree": "bfa37aa8b877c191a7870165912234f1295aebae"
       }
     },
-    "evidence_digest": "sha256:c194b4513904f0dfe1ea1e6429e65447b21f01c9c44073468f2f78880b387ec8",
+    "evidence_digest": "sha256:a027dd8872d9b39d1e6a541bdfad5dccda32e78a5e64b4d0992ff6662311d5af",
     "identity_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
     "inventory": {
       "content_digest": "sha256:8b38059c7ebf0b1f2972b33b1ce90e567d5c98ca6b0c1c4c258f2a9f70e15e77",
@@ -83,7 +83,7 @@
       "subject_digest": "sha256:caf3583a199687176b38b3d6d0a9ce19d3c6ae74fab1dc2918e0f4351847cbde",
       "version": "2.0.12"
     },
-    "evidence_digest": "sha256:beff3a9487ec1aec40eaf6155e51005d8410f7c66f6e57b959c4048ae01d6167",
+    "evidence_digest": "sha256:cfa034bb3fdedac6cbb7121e94963f993553bf23f3a1aa10c3bad46de23bf74f",
     "identity_digest": "sha256:c2d0ac0b2102e74fa8734ac9a807c3dea887817faaf9004a937df5915c6c7adc",
     "inventory": {
       "content_digest": "sha256:bcf386f4502415c735e650a20e0ac86ee7895edf12e344ff2b1acb75d123dec9",
@@ -983,34 +983,34 @@
       "workspace_mode": "ordinary"
     }
   ],
-  "digest": "sha256:21a625dba0048a153f5152a93b7d82942d84cf2745bb7e153055fbe09357b75a",
+  "digest": "sha256:50407ffa4e712676d40b512caaa9914c8043bbceba7368772a01c6a2ad0d31b3",
   "paired_identity": {
     "evaluator": {
-      "commit": "a6bd24c482553739a084317d3f3715388ac4a2e6",
+      "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
       "files": {
         "matrix": {
-          "commit": "a6bd24c482553739a084317d3f3715388ac4a2e6",
+          "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
           "committed_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
           "path": "evaluation/plugin-tasks/routing-matrix.json",
           "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
         },
         "review_contract": {
-          "commit": "a6bd24c482553739a084317d3f3715388ac4a2e6",
+          "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
           "committed_sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629",
           "path": "evaluation/plugin-tasks/routing-review-contract.json",
           "sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629"
         },
         "runner": {
-          "commit": "a6bd24c482553739a084317d3f3715388ac4a2e6",
-          "committed_sha256": "sha256:5ef459308e85930638efe442e71231ff9f8271f16a750b009dccbba48a389330",
+          "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
+          "committed_sha256": "sha256:36db44404f8b480f173dcdbc3593b3fa0e9265b5f99465cc5a65653d4f0359ad",
           "path": "scripts/skill_routing_evaluation.py",
-          "sha256": "sha256:5ef459308e85930638efe442e71231ff9f8271f16a750b009dccbba48a389330"
+          "sha256": "sha256:36db44404f8b480f173dcdbc3593b3fa0e9265b5f99465cc5a65653d4f0359ad"
         }
       },
       "mismatches": [],
       "schema": "openubmc.skill-routing-evaluator.v1",
       "status": "verified",
-      "tree": "ec4758591eb0828aba4485141440feda2940b035"
+      "tree": "f52a02baae437a36a15017bf771c7ee3eda9cef8"
     },
     "execution": {
       "approval_policy": "never",
