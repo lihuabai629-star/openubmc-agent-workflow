@@ -2165,14 +2165,14 @@ def _advice_pointer(document: object, pointer: object) -> object:
             or pointer.count("/") > 16 or re.search(r"~(?![01])", pointer)):
         raise ValueError("invalid advice pointer")
     current = document
-    for token in pointer[1:].split("/"):
-        token = token.replace("~1", "/").replace("~0", "~")
+    for segment in pointer[1:].split("/"):
+        segment = segment.replace("~1", "/").replace("~0", "~")
         if isinstance(current, list):
-            if not re.fullmatch(r"0|[1-9][0-9]*", token):
+            if not re.fullmatch(r"0|[1-9][0-9]*", segment):
                 raise ValueError("invalid advice array index")
-            current = current[int(token)]
+            current = current[int(segment)]
         elif isinstance(current, Mapping):
-            current = current[token]
+            current = current[segment]
         else:
             raise ValueError("advice pointer does not resolve")
     return current
