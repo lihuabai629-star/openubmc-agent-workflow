@@ -40,7 +40,8 @@
     "scripts/verify_hpm_containment.py",
     "scripts/verify_product_artifact.py",
     "scripts/write_artifact_metadata.py",
-    "skill.json"
+    "skill.json",
+    "scripts/completed_evidence.py"
   ],
   "keywords": [
     "openubmc",

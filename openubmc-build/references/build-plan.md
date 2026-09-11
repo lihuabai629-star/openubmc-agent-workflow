@@ -63,6 +63,10 @@ Product Plan creation fails when `build/<community>.lock` is missing. Do not ren
 
 Product Plans automatically treat Manifest `output/` and `temp/` as planned mutable paths so normal in-checkout build products do not trigger workspace contamination. Add `--mutable-path manifest=<relative-path>` only for another command-owned output subtree; source and configuration paths remain frozen.
 
+`--hpm-key-file <absolute-path>` selects required containment verification for the supported
+openUBMC PICMG/ext4 package format. The file is a private frozen Plan input; the runner and
+finalizer reject drift. Omit it for a local-only build whose HPM cannot yet be qualified.
+
 ## Execute an Attempt
 
 ```bash
@@ -141,7 +145,3 @@ A reused receipt keeps the original Attempt ID, paths, and `finished_at`, with
 to execute again. Plans without `--reuse-evidence` retain the normal retry behavior.
 Product finalization, publication, remote checks, and real-device verification
 always require their own execution and fresh acceptance evidence.
-
-`--hpm-key-file <absolute-path>` selects required containment verification for the supported
-openUBMC PICMG/ext4 package format. The file is a private frozen Plan input; the runner and
-finalizer reject drift. Omit it for a local-only build whose HPM cannot yet be qualified.
