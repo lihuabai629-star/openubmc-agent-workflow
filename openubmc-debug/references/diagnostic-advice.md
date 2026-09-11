@@ -33,14 +33,14 @@ and use the target epochs reported by the current Runtime. Put the original capt
 ```json
 {
   "schema": "openubmc-debug.diagnostic-advice-request.v1",
-  "target": "192.0.2.20",
+  "target": "<target-ip>",
   "device": {"Name": "Drive0", "Protocol": "NVMe"},
   "snapshot_at": "2026-09-08T01:00:00+00:00",
   "max_age_seconds": 30,
-  "target_epochs": {"192.0.2.20": 7},
+  "target_epochs": {"<target-ip>": 7},
   "sources": {
     "capture": {
-      "ip": "192.0.2.20",
+      "ip": "<target-ip>",
       "ok": true,
       "observed_at": "2026-09-08T01:00:00+00:00",
       "target_epoch": 7,
@@ -60,7 +60,7 @@ and use the target epochs reported by the current Runtime. Put the original capt
   ],
   "queries": {
     "hardware_discovery": {
-      "target": "192.0.2.20",
+      "target": "<target-ip>",
       "selectors": [
         {"id": "scanner-drive0", "kind": "mdb", "queries": ["lsprop ScannerDrive0"]}
       ]

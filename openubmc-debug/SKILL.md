@@ -161,6 +161,7 @@ Read only the directly relevant one-hop references:
 - Agent semantic interface and Runtime continuation: `references/agent-gateway.md`
 - Remote credentials, preflight, helpers, concurrency, and target automation: `references/remote-automation.md`
 - Evidence selection and correlation: `references/evidence-workflow.md`
+- Hypothesis-directed Drive diagnosis and fault-chain comparison: `references/diagnostic-advice.md`
 - Combined snapshot details: `references/workflow.md`
 - Structured result fields: `references/diagnostic-contract.md`
 - Focused mechanism checks: `references/mechanism-debugging.md`

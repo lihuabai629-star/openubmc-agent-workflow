@@ -38,15 +38,15 @@ def _pointer(document, pointer):
             or pointer.count("/") > 16 or re.search(r"~(?![01])", pointer)):
         raise ValueError("evidence reference must be a bounded JSON pointer")
     value = document
-    for token in pointer[1:].split("/"):
-        token = token.replace("~1", "/").replace("~0", "~")
+    for segment in pointer[1:].split("/"):
+        segment = segment.replace("~1", "/").replace("~0", "~")
         try:
             if isinstance(value, list):
-                if not re.fullmatch(r"0|[1-9][0-9]*", token):
+                if not re.fullmatch(r"0|[1-9][0-9]*", segment):
                     raise ValueError("array reference requires a canonical JSON pointer index")
-                value = value[int(token)]
+                value = value[int(segment)]
             else:
-                value = value[token]
+                value = value[segment]
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise ValueError("evidence reference does not resolve") from error
     return value
