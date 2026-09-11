@@ -148,6 +148,8 @@ def analyze(root, paths, graph_path, *, component_for_path, needs_generation):
         selected.add(name)
         if needs_generation([path.relative_to(roots[name]).as_posix()]):
             generation.add(name)
+        elif path.is_dir() or raw_path.endswith("/"):
+            gaps.append("directory_scope_unresolved:" + path.relative_to(root).as_posix())
     edges, consumers = [], {name: [] for name in roots}
     evidence_cache, total_bytes, seen_edges = {}, 0, set()
     for edge in graph.get("edges", []):

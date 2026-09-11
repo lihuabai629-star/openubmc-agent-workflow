@@ -91,7 +91,10 @@ not discover missing graph edges or execute repository configuration. Model,
 interface and protocol inputs expand through the supplied consumer edges; ordinary
 source changes retain their direct component and upstream source bindings.
 Unmapped paths, incomplete graphs, dynamic dependencies and cycles appear in
-`gaps`. They cannot establish completed component acceptance.
+`gaps`. They cannot establish completed component acceptance. Explicit MDS, proto,
+or interface/path contract directories expand proven consumers, including paths
+with a trailing slash. Other directory inputs retain `directory_scope_unresolved`;
+provide the specific changed files to resolve that scope.
 
 Graph and individual dependency-evidence files are limited to 1 MiB; distinct
 evidence totals at most 16 MiB. A graph contains at most 128 components and 1,024

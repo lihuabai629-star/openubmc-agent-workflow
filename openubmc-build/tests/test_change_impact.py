@@ -138,6 +138,34 @@ class ImpactCliTests(unittest.TestCase):
             ["consumer", "interface", "leaf"],
         )
 
+    def test_contract_directories_expand_proven_consumers(self):
+        for directory in ("mds", "proto", "json/intf", "json/path"):
+            (self.root / "interface" / directory).mkdir(parents=True, exist_ok=True)
+            for suffix in ("", "/"):
+                with self.subTest(directory=directory, suffix=suffix):
+                    result = self.analyze("interface/" + directory + suffix)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    report = json.loads(result.stdout)
+                    self.assertEqual([item["component"] for item in report["components"]],
+                                     ["consumer", "interface", "leaf"])
+                    self.assertTrue(all(item["needs_generation"] for item in report["components"]))
+                    self.assertEqual(report["gaps"], [])
+
+    def test_porcelain_status_prefix_keeps_generation_hint(self):
+        from importlib.util import spec_from_file_location, module_from_spec
+        spec = spec_from_file_location("changed", SCRIPT); mod = module_from_spec(spec); spec.loader.exec_module(mod)
+        self.assertTrue(mod.needs_generation([" M mds/model.json"]))
+        self.assertTrue(mod.needs_generation([" M json/intf/foo.json"]))
+
+    def test_broad_directory_input_keeps_scope_unresolved(self):
+        for directory in ("interface", "interface/json"):
+            (self.root / directory).mkdir(parents=True, exist_ok=True)
+            with self.subTest(directory=directory):
+                result = self.analyze(directory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("directory_scope_unresolved:" + directory,
+                              json.loads(result.stdout)["gaps"])
+
     def test_graph_inputs_are_bounded_and_invalid_types_fail_without_tracebacks(self):
         valid = self.graph
         for invalid in (

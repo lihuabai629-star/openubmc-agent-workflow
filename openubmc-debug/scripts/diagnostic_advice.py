@@ -60,6 +60,12 @@ def _source_body(source):
     return source.get("raw", {}) if source.get("schema") == OBSERVATION_SOURCE_SCHEMA else source
 
 
+def _source_observed_at(source):
+    body = _source_body(source)
+    freshness = body.get("result", {}).get("freshness", body.get("freshness", {}))
+    return source.get("observed_at") or freshness.get("observed_at")
+
+
 def _source_epoch(source):
     if "target_epoch" in source:
         return source["target_epoch"]
@@ -184,7 +190,7 @@ def _validate_request(request):
 def _known_source(source, request, snapshot_at):
     body = _source_body(source)
     freshness = body.get("result", {}).get("freshness", body.get("freshness", {}))
-    observed_at = _timestamp(source.get("observed_at") or freshness.get("observed_at"))
+    observed_at = _timestamp(_source_observed_at(source))
     valid_until = _timestamp(freshness.get("valid_until"))
     expected_epoch = request.get("target_epochs", {}).get(_source_target(source))
     actual_epoch = _source_epoch(source)
@@ -299,7 +305,7 @@ def build_diagnostic_advice(request: Mapping[str, object]) -> dict[str, object]:
             "evidence_ref": {
                 "source_id": source_id, "source_digest": source_digest(source),
                 "device_pointer": binding["device_pointer"], "value_pointer": binding["value_pointer"],
-                "observed_at": source.get("observed_at"), "target_epoch": _source_epoch(source),
+                "observed_at": _source_observed_at(source), "target_epoch": _source_epoch(source),
                 **({"observation_ref": copy.deepcopy(request["observation_refs"][source_id])}
                    if source_id in request.get("observation_refs", {}) else {}),
             },

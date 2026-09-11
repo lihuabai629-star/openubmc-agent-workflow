@@ -25,11 +25,12 @@ DEVICE = {"Name": "Drive0", "Protocol": "NVMe"}
 
 
 class AdviceBackend(CompleteBoundedDiagnosticBackend):
-    def __init__(self, *, include_advice=True, tamper=False, historical_source=False):
+    def __init__(self, *, include_advice=True, tamper=False, historical_source=False, nested_timestamp=False):
         super().__init__()
         self.include_advice = include_advice
         self.tamper = tamper
         self.historical_source = historical_source
+        self.nested_timestamp = nested_timestamp
 
     def debug_run(self, task, arguments, context):
         value = super().debug_run(task, arguments, context)
@@ -40,6 +41,8 @@ class AdviceBackend(CompleteBoundedDiagnosticBackend):
         value["result"]["drive"] = dict(DEVICE, hardware_discovery=True, mdb=False, northbound=False)
         if self.historical_source:
             value["observed_at"] = "2000-01-01T00:00:00+00:00"
+        if self.nested_timestamp:
+            value["result"]["freshness"]["observed_at"] = value.pop("observed_at")
         if not self.include_advice:
             return value
         request = {
@@ -89,6 +92,16 @@ class DiagnosticAdviceProjectionTests(unittest.TestCase):
             task_id="diagnostic-advice", operation_id="resume",
         )
         self.assertEqual(resumed["gate"]["name"], "diagnosis.acceptance")
+
+    def test_freshness_timestamp_only_capture_preserves_advice_at_the_gateway(self):
+        _, turn = self.start(AdviceBackend(nested_timestamp=True))
+        self.assertEqual(turn["gate"]["name"], "diagnosis.acceptance")
+        self.assertIsNone(turn["outcome"])
+        advice = turn["diagnostic_receipt"]["diagnostic_advice"]
+        self.assertEqual(advice["status"], "advisory")
+        self.assertTrue(all(fact["evidence_ref"]["observed_at"] for fact in advice["facts"]))
+        self.assertEqual(next(item for item in advice["hypotheses"]
+                              if item["id"] == "mdb_not_created")["status"], "fulfilled")
 
     def test_tampered_attachment_is_omitted_without_changing_factual_coverage(self):
         _, baseline = self.start(AdviceBackend(include_advice=False))

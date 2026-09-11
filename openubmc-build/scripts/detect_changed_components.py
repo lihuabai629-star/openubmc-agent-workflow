@@ -38,19 +38,15 @@ def is_component(path: Path) -> bool:
 
 
 def needs_generation(entries: list[str]) -> bool:
-    contract_markers = (
-        "/mds/",
-        "mds/",
-        "proto/",
-        "mds/service.json",
-        "mds/model.json",
-        "mds/types.json",
-        "mds/ipmi.json",
-        "json/intf/",
-        "json/path/",
-        "/proto/",
-    )
-    return any(any(marker in entry for marker in contract_markers) for entry in entries)
+    for entry in entries:
+        entry = entry[3:] if len(entry) >= 3 and entry[1:3] == "  " else entry
+        parts = Path(entry.strip()).parts
+        if "mds" in parts or "proto" in parts:
+            return True
+        if any(left == "json" and right in {"intf", "path"}
+               for left, right in zip(parts, parts[1:])):
+            return True
+    return False
 
 
 def component_dirs(root: Path) -> list[Path]:
