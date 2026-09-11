@@ -26,6 +26,7 @@ from scripts.skill_routing_evaluation import (
     publish_sanitized_records,
     render_comparison_report,
     resolve_executable,
+    routing_result_projection_digest,
     routing_exit_code,
     scan_secret_files,
     summarize_events,
@@ -74,6 +75,9 @@ def refresh_evidence_arm_bindings(evidence: dict[str, object]) -> None:
         verification = sample["rollout_identity"]["verification"]
         verification["arm_digest"] = arm_digest
         sample["failure_layers"]["identity"] = copy.deepcopy(verification)
+    raw_evidence["published_records"]["verification"][
+        "result_projection_digest"
+    ] = routing_result_projection_digest(evidence)
 
 
 class SkillRoutingEvaluationTests(unittest.TestCase):
@@ -509,6 +513,93 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "unverified")
             self.assertIn("plugin.archive_sha256", result["mismatches"])
+
+    def test_arm_artifact_verification_rejects_a_hash_matching_opaque_archive(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            subprocess.run(["git", "init", "-q", str(source)], check=True)
+            subprocess.run(
+                ["git", "-C", str(source), "config", "user.email", "eval@example.com"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(source), "config", "user.name", "Eval"],
+                check=True,
+            )
+            (source / "README").write_text("source\n")
+            subprocess.run(["git", "-C", str(source), "add", "README"], check=True)
+            subprocess.run(
+                ["git", "-C", str(source), "commit", "-qm", "source"], check=True
+            )
+            commit = subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            tree = subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD^{tree}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            inventory_rows = [
+                {
+                    "name": "openubmc:x",
+                    "path": "/skills/x/SKILL.md",
+                    "enabled": True,
+                }
+            ]
+            inventory_path = root / "inventory.json"
+            inventory_path.write_text(json.dumps(inventory_rows))
+            archive = root / "candidate.tar.gz"
+            archive.write_bytes(b"opaque-but-digest-matched")
+            archive_sha256 = "sha256:" + __import__("hashlib").sha256(
+                archive.read_bytes()
+            ).hexdigest()
+            subject = {"payload": {"content_digest": "content-1"}}
+            subject["digest"] = document_digest(subject)
+            subject_path = root / "subject.json"
+            subject_path.write_text(json.dumps(subject))
+            runtime = {"subject_digest": subject["digest"]}
+            runtime["digest"] = document_digest(runtime)
+            runtime_path = root / "runtime.json"
+            runtime_path.write_text(json.dumps(runtime))
+            identity = {
+                "source": {"commit": commit, "tree": tree},
+                "inventory": {
+                    "sha256": "sha256:"
+                    + __import__("hashlib").sha256(
+                        inventory_path.read_bytes()
+                    ).hexdigest(),
+                    "content_digest": inventory_content_digest(inventory_rows),
+                },
+                "plugin": {
+                    "archive_sha256": archive_sha256,
+                    "content_digest": "content-1",
+                    "subject_digest": subject["digest"],
+                    "runtime_digest": runtime["digest"],
+                },
+            }
+
+            result = verify_arm_artifacts(
+                identity,
+                inventory_path=inventory_path,
+                source_workspace=source,
+                artifact_paths={
+                    "archive": archive,
+                    "subject": subject_path,
+                    "runtime": runtime_path,
+                },
+            )
+
+            self.assertEqual(result["status"], "unverified")
+            self.assertNotIn("plugin.archive_sha256", result["mismatches"])
+            self.assertIn("plugin.archive.structure", result["mismatches"])
 
     def test_arm_artifact_verification_cross_binds_subject_and_runtime_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1631,6 +1722,30 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "binding"):
                 compare_arm_evidence(tampered, candidate)
+
+    def test_comparison_rejects_route_results_detached_from_published_replay(
+        self,
+    ) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        baseline = json.loads((evidence_root / "routing-evidence-loose.json").read_text())
+        candidate = json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
+        candidate_samples = {
+            sample["case_id"]: sample for sample in candidate["samples"]
+        }
+        tampered = copy.deepcopy(baseline)
+        for sample in tampered["samples"]:
+            replacement = candidate_samples[sample["case_id"]]
+            sample["observation"] = copy.deepcopy(replacement["observation"])
+            sample["route"] = copy.deepcopy(replacement["route"])
+            for layer in ("execution", "routing", "operational"):
+                sample["failure_layers"][layer] = copy.deepcopy(
+                    replacement["failure_layers"][layer]
+                )
+        tampered["summary"] = copy.deepcopy(candidate["summary"])
+        tampered["digest"] = document_digest(tampered)
+
+        with self.assertRaisesRegex(ValueError, "replay binding"):
+            compare_arm_evidence(tampered, candidate)
 
     def test_checked_in_evaluator_identity_matches_its_declared_commit(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"

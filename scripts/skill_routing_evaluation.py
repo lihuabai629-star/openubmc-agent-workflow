@@ -12,10 +12,16 @@ import queue
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+
+if __package__:
+    from .plugin_archive import read_archive
+else:
+    from plugin_archive import read_archive
 
 
 MATRIX_SCHEMA = "openubmc.skill-routing-matrix.v1"
@@ -657,6 +663,32 @@ def document_digest(document: Mapping[str, object]) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def routing_result_projection_digest(evidence: Mapping[str, object]) -> str:
+    """Bind all comparison inputs to the arm and published replay manifest."""
+    arm = evidence.get("arm_identity")
+    raw_evidence = evidence.get("raw_evidence")
+    published_records = (
+        raw_evidence.get("published_records")
+        if isinstance(raw_evidence, Mapping)
+        else None
+    )
+    manifest = (
+        published_records.get("manifest")
+        if isinstance(published_records, Mapping)
+        else None
+    )
+    return document_digest(
+        {
+            "arm_digest": arm.get("digest") if isinstance(arm, Mapping) else None,
+            "manifest_digest": (
+                manifest.get("digest") if isinstance(manifest, Mapping) else None
+            ),
+            "samples": evidence.get("samples"),
+            "summary": evidence.get("summary"),
+        }
+    )
+
+
 def verify_evaluator_identity(
     workspace: Path,
     evaluator_commit: str,
@@ -963,7 +995,123 @@ def verify_arm_artifacts(
             and isinstance(subject_payload.get("skill_files"), Mapping)
             else []
         )
+        subject_skill_inventory = (
+            dict(subject_payload["skill_files"])
+            if isinstance(subject_payload, Mapping)
+            and isinstance(subject_payload.get("skill_files"), Mapping)
+            else {}
+        )
         expected_skill_count = plugin.get("plugin_skill_count")
+        archive_mismatches: list[str] = []
+        archive_observed: dict[str, object] = {}
+        try:
+            archive_lock, archive_files = read_archive(
+                artifact_paths["archive"], archive_hex
+            )
+        except (KeyError, OSError, tarfile.TarError, UnicodeError, ValueError):
+            archive_mismatches.append("structure")
+        else:
+            locked_files = archive_lock.get("files")
+            if not isinstance(locked_files, Mapping):
+                archive_mismatches.append("file_inventory")
+                locked_files = {}
+            archive_skill_inventory = {
+                str(name): str(digest)
+                for name, digest in locked_files.items()
+                if str(name).startswith("skills/")
+                and str(name).endswith("/SKILL.md")
+            }
+            try:
+                mcp_document = json.loads(archive_files[".mcp.json"])
+            except (KeyError, UnicodeError, ValueError):
+                archive_mismatches.append("mcp_config")
+                archive_mcp_servers: list[str] = []
+            else:
+                mcp_servers = (
+                    mcp_document.get("mcpServers")
+                    if isinstance(mcp_document, Mapping)
+                    else None
+                )
+                if not isinstance(mcp_servers, Mapping):
+                    archive_mismatches.append("mcp_config")
+                    archive_mcp_servers = []
+                else:
+                    archive_mcp_servers = sorted(str(name) for name in mcp_servers)
+            archive_observed = {
+                "name": archive_lock.get("name"),
+                "version": archive_lock.get("version"),
+                "source_commit": archive_lock.get("source_commit"),
+                "content_digest": archive_lock.get("content_digest"),
+                "file_count": len(locked_files),
+                "skill_files": archive_skill_inventory,
+                "mcp_servers": archive_mcp_servers,
+            }
+            archive_checks = {
+                "name": (archive_lock.get("name"), plugin.get("name")),
+                "version": (archive_lock.get("version"), plugin.get("version")),
+                "source_commit": (
+                    archive_lock.get("source_commit"),
+                    expected_commit,
+                ),
+                "content_digest": (
+                    archive_lock.get("content_digest"),
+                    plugin_observed["content_digest"],
+                ),
+                "file_count_subject": (
+                    len(locked_files),
+                    subject_payload.get("files")
+                    if isinstance(subject_payload, Mapping)
+                    else None,
+                ),
+                "file_count_runtime": (
+                    len(locked_files),
+                    runtime.get("files_verified"),
+                ),
+                "workflow_skills": (
+                    archive_lock.get("skills"),
+                    subject_payload.get("workflow_skills")
+                    if isinstance(subject_payload, Mapping)
+                    else None,
+                ),
+                "skill_files_subject": (
+                    archive_skill_inventory,
+                    subject_skill_inventory,
+                ),
+                "skill_files_inventory": (
+                    sorted(archive_skill_inventory),
+                    inventory_skill_files,
+                ),
+                "manifest_sha256": (
+                    locked_files.get(".codex-plugin/plugin.json"),
+                    subject_payload.get("manifest_sha256")
+                    if isinstance(subject_payload, Mapping)
+                    else None,
+                ),
+                "mcp_config_sha256": (
+                    locked_files.get(".mcp.json"),
+                    subject_payload.get("mcp_config_sha256")
+                    if isinstance(subject_payload, Mapping)
+                    else None,
+                ),
+                "plugin_lock_sha256": (
+                    hashlib.sha256(archive_files["plugin-lock.json"]).hexdigest(),
+                    subject_payload.get("plugin_lock_sha256")
+                    if isinstance(subject_payload, Mapping)
+                    else None,
+                ),
+                "mcp_servers": (archive_mcp_servers, expected_mcp),
+            }
+            archive_mismatches.extend(
+                name
+                for name, (actual, expected) in archive_checks.items()
+                if actual != expected
+            )
+        observed["plugin_archive"] = {
+            "status": "verified" if not archive_mismatches else "unverified",
+            "mismatches": archive_mismatches,
+            **archive_observed,
+        }
+        mismatches.extend(f"plugin.archive.{name}" for name in archive_mismatches)
         cross_checks = {
             "subject_distribution_commit": (
                 subject_distribution.get("commit")
@@ -2500,11 +2648,15 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
     else:
         observed_plugin = observed.get("plugin")
         plugin_binding = observed.get("plugin_binding")
+        plugin_archive = observed.get("plugin_archive")
         if (
             not isinstance(observed_plugin, Mapping)
             or not isinstance(plugin_binding, Mapping)
             or plugin_binding.get("status") != "verified"
             or plugin_binding.get("mismatches") != []
+            or not isinstance(plugin_archive, Mapping)
+            or plugin_archive.get("status") != "verified"
+            or plugin_archive.get("mismatches") != []
         ):
             raise ValueError(f"{label} evidence plugin distribution binding is invalid")
         for key in (
@@ -2516,6 +2668,28 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
             require_binding(
                 observed_plugin.get(key), distribution.get(key), f"plugin {key}"
             )
+        for key in ("name", "version", "content_digest"):
+            require_binding(
+                plugin_archive.get(key), distribution.get(key), f"plugin archive {key}"
+            )
+        require_binding(
+            plugin_archive.get("source_commit"),
+            identity_source.get("commit"),
+            "plugin archive source",
+        )
+        archive_skill_files = plugin_archive.get("skill_files")
+        if not isinstance(archive_skill_files, Mapping):
+            raise ValueError(f"{label} evidence plugin archive Skill binding is invalid")
+        require_binding(
+            len(archive_skill_files),
+            distribution.get("plugin_skill_count"),
+            "plugin archive Skill count",
+        )
+        require_binding(
+            plugin_archive.get("mcp_servers"),
+            distribution.get("mcp_servers"),
+            "plugin archive MCP servers",
+        )
 
     source_binding = evidence.get("source_binding")
     if not isinstance(source_binding, Mapping):
@@ -2637,14 +2811,18 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         published_manifest.get("digest"),
         "published record manifest",
     )
-
     samples = evidence.get("samples")
     if not isinstance(samples, list) or not samples:
         raise ValueError(f"{label} evidence samples are missing")
+    seen_case_ids: set[str] = set()
+    total_usage: dict[str, int | float] = {}
     for sample in samples:
         if not isinstance(sample, Mapping):
             raise ValueError(f"{label} evidence sample is invalid")
         case_id = str(sample.get("case_id", "unknown"))
+        if case_id in seen_case_ids:
+            raise ValueError(f"{label} evidence sample identity is duplicated: {case_id}")
+        seen_case_ids.add(case_id)
         raw_integrity = sample.get("raw_integrity")
         rollout = sample.get("rollout_identity")
         rollout_verification = (
@@ -2653,7 +2831,11 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         layers = sample.get("failure_layers")
         execution_layer = layers.get("execution") if isinstance(layers, Mapping) else None
         identity_layer = layers.get("identity") if isinstance(layers, Mapping) else None
-        if not isinstance(raw_integrity, Mapping) or raw_integrity.get("status") != "verified":
+        if (
+            not isinstance(raw_integrity, Mapping)
+            or raw_integrity.get("status") != "verified"
+            or raw_integrity.get("mismatches") != []
+        ):
             raise ValueError(f"{label} evidence raw sample is unverified: {case_id}")
         require_binding(
             raw_integrity.get("arm_digest"), arm_digest, f"raw sample {case_id} arm"
@@ -2671,6 +2853,7 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         if (
             not isinstance(rollout_verification, Mapping)
             or rollout_verification.get("status") != "verified"
+            or rollout_verification.get("mismatches") != []
             or not isinstance(identity_layer, Mapping)
             or identity_layer.get("status") != "verified"
         ):
@@ -2698,6 +2881,63 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
             or execution_layer.get("status") != "passed"
         ):
             raise ValueError(f"{label} evidence execution failed: {case_id}")
+        route = sample.get("route")
+        routing_layer = layers.get("routing") if isinstance(layers, Mapping) else None
+        operational_layer = (
+            layers.get("operational") if isinstance(layers, Mapping) else None
+        )
+        observation = sample.get("observation")
+        require_binding(routing_layer, route, f"replay {case_id} routing layer")
+        require_binding(
+            operational_layer,
+            _operational_failure_layer(observation)
+            if isinstance(observation, Mapping)
+            else None,
+            f"replay {case_id} operational layer",
+        )
+        usage = observation.get("usage") if isinstance(observation, Mapping) else None
+        if not isinstance(usage, Mapping):
+            raise ValueError(f"{label} evidence replay usage is invalid: {case_id}")
+        for key, value in usage.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                total_usage[str(key)] = total_usage.get(str(key), 0) + value
+
+    summary = evidence.get("summary")
+    if not isinstance(summary, Mapping):
+        raise ValueError(f"{label} evidence replay summary is invalid")
+    classifications = {
+        classification: sum(
+            isinstance(sample, Mapping)
+            and isinstance(sample.get("route"), Mapping)
+            and sample["route"].get("classification") == classification
+            for sample in samples
+        )
+        for classification in sorted(CLASSIFICATIONS)
+    }
+    summary_checks = {
+        "sample_count": len(samples),
+        "routing_passed": sum(
+            isinstance(sample, Mapping)
+            and isinstance(sample.get("route"), Mapping)
+            and sample["route"].get("status") == "passed"
+            for sample in samples
+        ),
+        "routing_failed": sum(
+            isinstance(sample, Mapping)
+            and isinstance(sample.get("route"), Mapping)
+            and sample["route"].get("status") != "passed"
+            for sample in samples
+        ),
+        "classifications": classifications,
+        "usage": total_usage,
+    }
+    for key, expected in summary_checks.items():
+        require_binding(summary.get(key), expected, f"replay summary {key}")
+    require_binding(
+        published_verification.get("result_projection_digest"),
+        routing_result_projection_digest(evidence),
+        "published replay",
+    )
 
     if evidence.get("digest") != document_digest(evidence):
         raise ValueError(f"{label} evidence digest is invalid")
@@ -3176,6 +3416,9 @@ def _rebuild_pair_into(args: argparse.Namespace, output: Path) -> int:
             )
         verification["arm_digest"] = evidence["arm_identity"]["digest"]
         verification["manifest_digest"] = published["digest"]
+        verification["result_projection_digest"] = routing_result_projection_digest(
+            evidence
+        )
         evidence["raw_evidence"]["published_records"]["verification"] = verification
         evidence["digest"] = document_digest(evidence)
     comparison = compare_arm_evidence(baseline, candidate)
