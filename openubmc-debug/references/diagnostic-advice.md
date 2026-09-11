@@ -134,3 +134,7 @@ Advice is optional metadata: invalid attachments are omitted. Projection or pers
 can drop it with `diagnostic_advice_omitted` set to `projection_budget` or `persistence_budget`,
 without sacrificing factual results to retain suggestions. Resume and acceptance continue through
 the existing `execute` contract.
+
+Fault-chain summaries are available in the standalone helper output. Runtime
+projects validated facts, hypotheses and next observations; it omits the helper
+fault chain because ComparisonReceipt provenance is validated separately.

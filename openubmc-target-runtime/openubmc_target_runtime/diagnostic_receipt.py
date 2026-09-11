@@ -2229,7 +2229,22 @@ def _stored_diagnostic_advice(raw: object, evidence: object) -> dict[str, object
             if suggestion.get("stage") not in _ADVICE_STAGES or suggestion["query"].get("target") != raw["target"]:
                 return None
             ObservationQuery.from_query(suggestion["query"])
-        return copy.deepcopy(dict(raw))
+            stage = suggestion["stage"]
+            if selected.get(stage, {}).get("status") == "observed":
+                return None
+            index = _ADVICE_STAGES.index(stage)
+            remaining = {item["id"] for item in hypotheses if item["status"] != "contradicted"}
+            expected = {
+                "present": [name for name, values in patterns.items() if name in remaining and values[index]],
+                "absent": [name for name, values in patterns.items() if name in remaining and not values[index]],
+            }
+            if not all(expected.values()) or suggestion.get("expected_outcomes") != expected:
+                return None
+        projected = copy.deepcopy(dict(raw))
+        # ComparisonReceipt owns comparison provenance. The helper's standalone
+        # chain is not persisted as Runtime advice without that separate binding.
+        projected.pop("fault_chain", None)
+        return projected
     except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
         return None
 

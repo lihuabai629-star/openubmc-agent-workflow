@@ -117,6 +117,16 @@ class DiagnosticAdviceProjectionTests(unittest.TestCase):
         self.assertNotIn("diagnostic_advice", turn["diagnostic_receipt"])
         self.assertIsNone(turn["outcome"])
 
+    def test_unbound_fault_chain_is_not_promoted_to_runtime_advice(self):
+        class AlteredAdvice(AdviceBackend):
+            def debug_run(self, task, arguments, context):
+                result = super().debug_run(task, arguments, context)
+                result["diagnostic_advice"]["fault_chain"] = {
+                    "status": "comparable", "first_observed_divergence": "northbound"}
+                return result
+        _, turn = self.start(AlteredAdvice())
+        self.assertNotIn("fault_chain", turn["diagnostic_receipt"]["diagnostic_advice"])
+
     def test_tampered_attachment_is_omitted_without_changing_factual_coverage(self):
         _, baseline = self.start(AdviceBackend(include_advice=False))
         _, turn = self.start(AdviceBackend(tamper=True))
