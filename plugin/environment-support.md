@@ -1,6 +1,6 @@
 ---
 name: openubmc-environment-setup
-description: Inspect and repair an installed openUBMC Codex plugin, configure private BMC and knowledge-base credentials, and explain required local tools on Linux or WSL.
+description: "Configure or repair an installed openUBMC plugin on Linux/WSL: 新电脑配置、配置密钥、默认 BMC 账号密码、按 IP 覆盖、Conan 登录、KB 知识库配置、MCP 启动失败、插件检查。Use for local credentials, required tools, migration, and installation health; device diagnosis belongs to openubmc-debug."
 ---
 
 # openUBMC plugin environment
