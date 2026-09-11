@@ -85,6 +85,8 @@ class SystemdCollectorTests(unittest.TestCase):
             (subprocess.CompletedProcess('', 255, '', 'secret-host'), 'transport_failed'),
             (subprocess.CompletedProcess('', 127, '', 'command not found'), 'unsupported'),
             (subprocess.CompletedProcess('', 1, '', 'Permission denied'), 'permission_denied'),
+            (subprocess.CompletedProcess('', 1, '', 'No journal files were opened due to insufficient permissions.'), 'permission_denied'),
+            (subprocess.CompletedProcess('', 1, '', 'System has not been booted with systemd as init system'), 'unsupported'),
             (subprocess.CompletedProcess('', 0, 'x' * (256 * 1024 + 1), ''), 'output_limit'),
         ]
         for failure, gap in failures:

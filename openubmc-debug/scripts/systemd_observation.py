@@ -93,9 +93,9 @@ def collect_systemd(names, run_ssh, *, deadline, secret_values=()):
             raise CollectionGap('output_limit')
         if reply.returncode == 255:
             raise CollectionGap('transport_failed')
-        if reply.returncode == 127:
+        if reply.returncode == 127 or 'not been booted with systemd' in reply.stderr.lower():
             raise CollectionGap('unsupported')
-        if 'permission denied' in reply.stderr.lower() or 'access denied' in reply.stderr.lower():
+        if any(reason in reply.stderr.lower() for reason in ('permission denied', 'access denied', 'insufficient permissions')):
             raise CollectionGap('permission_denied')
         if (reply.returncode == 4 and text.startswith('LC_ALL=C systemctl --system show ')
                 and 'LoadState=not-found' in reply.stdout.splitlines()):
