@@ -43,6 +43,21 @@ from scripts.skill_routing_evaluation import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def refresh_embedded_arm_digest(arm: dict[str, object]) -> None:
+    kind = arm["kind"]
+    document = {
+        "schema": "openubmc.skill-routing-arm.v1",
+        "arm_id": arm["arm_id"],
+        "kind": kind,
+        "source": arm["source"],
+        "inventory": arm["inventory"],
+        "execution": arm["execution"],
+        "environment": arm["environment"],
+        "plugin" if kind == "plugin" else "loose_skills": arm["distribution"],
+    }
+    arm["digest"] = document_digest(document)
+
+
 class SkillRoutingEvaluationTests(unittest.TestCase):
     def test_evaluator_identity_requires_one_commit_with_all_review_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -789,6 +804,9 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             "-----BEGIN PRIVATE KEY-----\nprivate-material\n"
             "-----END PRIVATE KEY-----"
         )
+        truncated_private_key = (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\npartial-private-material"
+        )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             run = root / "run"
@@ -807,6 +825,7 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
                                     github_token,
                                     jwt,
                                     private_key,
+                                    truncated_private_key,
                                     "target 10.20.30.40",
                                 ]
                             ),
@@ -843,15 +862,31 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             verification = verify_published_records(
                 published, root / "published"
             )
+            source_scan = scan_secret_files(
+                [raw], {}, include_static_patterns=True
+            )
             retained = "\n".join(
                 (root / "published" / row["path"]).read_text()
                 for row in published["files"]
             )
 
         self.assertEqual(verification["status"], "verified")
+        self.assertIn(
+            {"path": "turn-1.jsonl", "pattern": "private-key"},
+            source_scan["matches"],
+        )
         self.assertEqual(published["file_count"], 3)
-        for value in (secret, github_token, jwt, private_key, "10.20.30.40"):
+        for value in (
+            secret,
+            github_token,
+            jwt,
+            private_key,
+            truncated_private_key,
+            "10.20.30.40",
+        ):
             self.assertNotIn(value, retained)
+        self.assertNotIn("BEGIN OPENSSH PRIVATE KEY", retained)
+        self.assertNotIn("partial-private-material", retained)
         for marker in (
             "<redacted:CLI_PROXY_API_KEY>",
             "<redacted:github-token>",
@@ -1404,6 +1439,7 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
         )
         candidate["arm_identity"]["execution"]["model"] = "different-model"
+        refresh_embedded_arm_digest(candidate["arm_identity"])
         candidate["digest"] = document_digest(candidate)
 
         with self.assertRaisesRegex(ValueError, "paired execution"):
@@ -1507,6 +1543,17 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             render_comparison_report(comparison),
             (evidence_root / "routing-report.md").read_text(),
         )
+
+    def test_comparison_rejects_a_contradictory_embedded_arm_identity(self) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        baseline = json.loads((evidence_root / "routing-evidence-loose.json").read_text())
+        candidate = json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
+        baseline["arm_identity"]["kind"] = "plugin"
+        refresh_embedded_arm_digest(baseline["arm_identity"])
+        baseline["digest"] = document_digest(baseline)
+
+        with self.assertRaisesRegex(ValueError, "baseline arm identity"):
+            compare_arm_evidence(baseline, candidate)
 
     def test_checked_in_evaluator_identity_matches_its_declared_commit(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"

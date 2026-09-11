@@ -54,7 +54,8 @@ SLACK_TOKEN = re.compile(r"\bxox[bpoasr]-[A-Za-z0-9-]{10,}\b")
 STRIPE_KEY = re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b")
 JWT_TOKEN = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 PRIVATE_KEY_BLOCK = re.compile(
-    r"-----BEGIN [^-\n]*PRIVATE KEY-----.*?-----END [^-\n]*PRIVATE KEY-----",
+    r"-----BEGIN [^-\n]*PRIVATE KEY-----.*?"
+    r"(?:-----END [^-\n]*PRIVATE KEY-----|\Z)",
     re.DOTALL,
 )
 DATABASE_CREDENTIALS = re.compile(
@@ -1088,8 +1089,7 @@ def verify_arm_artifacts(
     }
 
 
-def load_arm_identity(path: Path) -> dict[str, object]:
-    document = json.loads(path.read_text())
+def _validate_arm_identity(document: object) -> dict[str, object]:
     if not isinstance(document, dict) or document.get("schema") != ARM_SCHEMA:
         raise ValueError("routing arm identity schema is invalid")
     if document.get("digest") != document_digest(document):
@@ -1141,6 +1141,10 @@ def load_arm_identity(path: Path) -> dict[str, object]:
             if not loose.get(key):
                 raise ValueError(f"loose Skills routing arm identity requires {key}")
     return document
+
+
+def load_arm_identity(path: Path) -> dict[str, object]:
+    return _validate_arm_identity(json.loads(path.read_text()))
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -2378,7 +2382,25 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         raise ValueError(f"{label} evaluator identity is unverified")
 
     arm = evidence.get("arm_identity")
-    artifact = arm.get("artifact_verification") if isinstance(arm, Mapping) else None
+    if not isinstance(arm, Mapping):
+        raise ValueError(f"{label} arm identity is unverified")
+    kind = arm.get("kind")
+    embedded_arm = {
+        "schema": ARM_SCHEMA,
+        "arm_id": arm.get("arm_id"),
+        "kind": kind,
+        "source": arm.get("source"),
+        "inventory": arm.get("inventory"),
+        "execution": arm.get("execution"),
+        "environment": arm.get("environment"),
+        "digest": arm.get("digest"),
+        "plugin" if kind == "plugin" else "loose_skills": arm.get("distribution"),
+    }
+    try:
+        _validate_arm_identity(embedded_arm)
+    except ValueError as error:
+        raise ValueError(f"{label} arm identity is unverified: {error}") from error
+    artifact = arm.get("artifact_verification")
     if not isinstance(artifact, Mapping) or artifact.get("status") != "verified":
         raise ValueError(f"{label} evidence artifact identity is unverified")
 
