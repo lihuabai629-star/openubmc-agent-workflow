@@ -379,7 +379,7 @@ def _preflight_guidance(
                 "retry observe with the corrected canonical capability name"
             ),
             PreflightReason.UNSUPPORTED_SELECTOR_KIND: (
-                "retry observe with capability or mdb selector kind"
+                "retry observe with capability, mdb or systemd selector kind"
             ),
             PreflightReason.MDB_GRAMMAR: (
                 "retry observe with the corrected read-only mdbctl grammar"
@@ -1506,6 +1506,21 @@ class ResultProjector:
         counts = {state: 0 for state in CAPABILITY_STATES}
         mdb_index = 0
         for selector in scope.selectors:
+            if selector.kind == "systemd":
+                child = _mapping(_mapping(result.get("systemd")).get(selector.selector_id))
+                complete = child.get("complete") is True and child.get("requested") == list(selector.names)
+                counts["available" if complete else "not_checked"] += 1
+                from .systemd_contract import systemd_unit_summaries
+                observations[selector.selector_id] = {
+                    "kind": "systemd", "complete": complete,
+                    "units": systemd_unit_summaries(child),
+                    "boot_id": child.get("boot_id"),
+                    "gaps": child.get("gaps", ["systemd_not_collected"]),
+                }
+                claims.append({"path": f"results.{selector.selector_id}",
+                               "status": "grounded" if complete else "partial",
+                               "selector_id": selector.selector_id})
+                continue
             if selector.kind == "capability":
                 values = []
                 for name in selector.names:
@@ -1913,15 +1928,16 @@ def agent_operation_descriptors() -> tuple[OperationDescriptor, ...]:
                     "required": ["kind"],
                     "properties": {
                         "id": {"type": "string", "minLength": 1, "maxLength": 64},
-                        "kind": {"type": "string", "enum": ["capability", "mdb"]},
+                        "kind": {"type": "string", "enum": ["capability", "mdb", "systemd"]},
                         "names": {
                             "type": "array",
                             "maxItems": 16,
                             "items": {
                                 "type": "string",
                                 "minLength": 1,
-                                "maxLength": 64,
+                                "maxLength": 255,
                                 "description": (
+                                    "For systemd, literal .service IDs or [failed]; one systemd selector per query. "
                                     "Capability names are case-insensitive; canonical names: "
                                     + ", ".join(sorted(CAPABILITY_ALIASES))
                                 ),

@@ -15,6 +15,9 @@ from pathlib import Path
 import re
 import sys
 import threading
+import time
+import uuid
+import systemd_observation
 
 from _comparison import (
     compact_comparison_values,
@@ -846,6 +849,11 @@ class DebugMcpBackend:
             )
         if declared_mdb_queries != list(bounded.get("mdb_queries", [])):
             raise ValueError("MDB selector scope does not match Runtime arguments")
+        systemd_selectors = [item for item in normalized_selectors if item.get("kind") == "systemd"]
+        if len(systemd_selectors) > 1:
+            raise ValueError("one systemd selector is allowed per observation")
+        for selector in systemd_selectors:
+            systemd_observation.validate_names(selector.get("names"))
         credential_values = bounded.pop("_credential_values", None)
         minimum_target_epoch = bounded.pop("_minimum_target_epoch", 0)
         preflight_checks: set[str] = set()
@@ -860,6 +868,8 @@ class DebugMcpBackend:
                 preflight_checks.update({"SSH", "DBUS_ENV"})
             elif name in {"busctl", "alarms"}:
                 preflight_checks.update({"SSH", "DBUS_ENV", "BUSCTL"})
+        if systemd_selectors:
+            preflight_checks.add("SSH")
         if bounded.get("mdb_queries"):
             preflight_checks.update({"SSH", "MDBCTL"})
         bounded["mdb_only"] = preflight_checks <= {"SSH", "MDBCTL"}
@@ -939,6 +949,20 @@ class DebugMcpBackend:
                         )
                         for index, _query in enumerate(requested_queries)
                     }
+            systemd_results = {}
+            ssh_credentials = lease.ssh_credentials_mapping() if systemd_selectors else {}
+            def run_systemd_ssh(command, **limits):
+                return lease.ssh_runner(ip=args.ip, remote_cmd=command,
+                                        **ssh_credentials, **limits)
+            for selector in systemd_selectors:
+                systemd_results[selector["id"]] = lease.run_ssh_read(
+                    request_id=f"systemd-{uuid.uuid4().hex}", collector_name="systemd",
+                    operation={"names": selector["names"]},
+                    collect=lambda selector=selector: systemd_observation.collect_systemd(
+                        selector["names"], run_systemd_ssh,
+                        deadline=time.monotonic() + deadline.remaining(),
+                        secret_values=(str(ssh_credentials.get("password", "")),)),
+                )
             preflight_end = None
             if assured:
                 preflight_end = runner(
@@ -967,8 +991,14 @@ class DebugMcpBackend:
         for selector in normalized_selectors:
             selector_id = str(selector.get("id", ""))
             kind = str(selector.get("kind", ""))
-            if not selector_id or kind not in {"capability", "mdb"}:
+            if not selector_id or kind not in {"capability", "mdb", "systemd"}:
                 raise ValueError("selector identity and kind must be explicit")
+            if kind == "systemd":
+                child = systemd_results[selector_id]
+                selector_facts.append({"selector_id": selector_id, "kind": kind,
+                    "started_at": child["started_at"], "completed_at": child["completed_at"],
+                    "status": "observed" if child["complete"] else "missing"})
+                continue
             if kind == "capability":
                 names = selector.get("names", [])
                 observed = isinstance(names, list) and runtime.capability_selector_complete(
@@ -1056,6 +1086,7 @@ class DebugMcpBackend:
                     if preflight_end is not None
                     else {}
                 ),
+                **({"systemd": systemd_results} if systemd_results else {}),
                 "lanes": {"ssh": mdb_results},
                 "runtime": {"engine": self.engine_name, "status": runtime_status},
             },

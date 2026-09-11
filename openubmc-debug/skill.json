@@ -84,7 +84,8 @@
     "scripts/source_trace.py",
     "scripts/target_runtime_cli.py",
     "scripts/target_runtime_mcp.py",
-    "scripts/workflow_remote.py"
+    "scripts/workflow_remote.py",
+    "scripts/systemd_observation.py"
   ],
   "keywords": [
     "openubmc",

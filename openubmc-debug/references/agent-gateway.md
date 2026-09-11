@@ -217,3 +217,28 @@ internal selector Adapters behind `observe`, not additional Agent-facing tools.
 
 Agent `structuredContent` remains bounded to `ObservationReceipt` or `Turn`. Raw Evidence, Case
 ledgers, Runtime sequencing, incident metrics, and governance projections remain operator-facing.
+
+## Current systemd service evidence
+
+For current service failures, use `observe` with one systemd selector:
+
+```json
+{"target":"<bmc-host>","selectors":[{"id":"services","kind":"systemd","names":["fan.service"]}]}
+```
+
+Use `"names":["failed"]` to discover current failed system-manager services. Combine up to
+16 literal `.service` IDs in one selector; paths, wildcards and command options are rejected.
+Capability and MDB selectors may accompany it. User-manager services are outside this scope.
+
+Collection reads fixed state properties and up to 100 journal entries per unit, restricted to
+the current boot and invocation. The whole service collection has a 256 KiB output budget and
+shares the caller deadline. Boot or invocation changes, missing identity, permission failures,
+unsupported tools, missing units and malformed output remain explicit gaps. A saturated journal
+window is conservatively marked truncated. An empty successful failed-unit enumeration says only
+that no failed units were enumerated; it does not establish application health.
+
+`ActiveState=failed` is a collected service fact, not a transport failure. Use only complete,
+fresh, consistent observations as diagnosis evidence. Start `diagnosis-only` with the returned
+`observation_ref`, then use the Runtime-issued evidence references at `diagnosis.acceptance`.
+Collection itself does not establish the root cause or complete diagnosis. Full journal data
+remains in retained source evidence; do not substitute historical log bundles for current state.
