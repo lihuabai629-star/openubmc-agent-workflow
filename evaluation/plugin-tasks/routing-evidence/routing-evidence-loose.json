@@ -2,6 +2,7 @@
   "arm_identity": {
     "arm_id": "loose-skills",
     "artifact_verification": {
+      "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
       "mismatches": [],
       "observed": {
         "inventory": {
@@ -91,33 +92,33 @@
       "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
     }
   },
-  "digest": "sha256:a027dd8872d9b39d1e6a541bdfad5dccda32e78a5e64b4d0992ff6662311d5af",
+  "digest": "sha256:56fb1bebe50db557a5662782764d77fe95c47d09636c597918c29b24823e6e72",
   "evaluator": {
-    "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
+    "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
     "files": {
       "matrix": {
-        "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
+        "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
         "committed_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
         "path": "evaluation/plugin-tasks/routing-matrix.json",
         "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
       },
       "review_contract": {
-        "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
+        "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
         "committed_sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629",
         "path": "evaluation/plugin-tasks/routing-review-contract.json",
         "sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629"
       },
       "runner": {
-        "commit": "63e9e7f495ff9b4ca83ac746625d519f1d6dd922",
-        "committed_sha256": "sha256:36db44404f8b480f173dcdbc3593b3fa0e9265b5f99465cc5a65653d4f0359ad",
+        "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
+        "committed_sha256": "sha256:d286ff216118db2eacd4ba689ef31d63ea6a56a451fffc103d1ef30237b17634",
         "path": "scripts/skill_routing_evaluation.py",
-        "sha256": "sha256:36db44404f8b480f173dcdbc3593b3fa0e9265b5f99465cc5a65653d4f0359ad"
+        "sha256": "sha256:d286ff216118db2eacd4ba689ef31d63ea6a56a451fffc103d1ef30237b17634"
       }
     },
     "mismatches": [],
     "schema": "openubmc.skill-routing-evaluator.v1",
     "status": "verified",
-    "tree": "f52a02baae437a36a15017bf771c7ee3eda9cef8"
+    "tree": "c026522496bcf1e12aefff7fb62e49701d2c83ba"
   },
   "integrity": {
     "status": "verified"
@@ -466,13 +467,16 @@
         "schema": "openubmc.skill-routing-sanitized-records.v1"
       },
       "verification": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
         "file_count": 38,
+        "manifest_digest": "sha256:09f9ac549c738b3fe7f3a1268a4dfcf03ebdd8bc27e237fbeb6c7390b33a1eb7",
         "mismatches": [],
         "samples_verified": 12,
         "status": "verified"
       }
     },
     "secret_scan": {
+      "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
       "matches": [],
       "policy": "CLI_PROXY_API_KEY-and-credential-name-pattern",
       "status": "clean"
@@ -496,7 +500,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "diagnosis-zh-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:a90f4699a749a85aeb8fd2174c5a5d83120d316f8be23f08b97f8397dfa6f11b",
           "status": "verified"
         },
         "operational": {
@@ -569,7 +576,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "diagnosis-zh-ordinary",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:c5916e027a8fd4e8e20e2db6dd9a45208d7af4baf8af9ff31b78c1b00305d962",
         "status": "verified"
       },
       "raw_manifest": [
@@ -610,7 +620,10 @@
           "我的 openUBMC BMC 上 webserver 服务启动失败了，帮我读取当前服务状态和相关日志，判断原因。目标和凭据这次没有提供；只做只读检查，缺什么就明确说明，不要声称已经完成设备诊断。"
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "diagnosis-zh-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:a90f4699a749a85aeb8fd2174c5a5d83120d316f8be23f08b97f8397dfa6f11b",
           "status": "verified"
         }
       },
@@ -654,7 +667,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "diagnosis-en-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:c3e198dfaa84c45d6dfe59656a7d1ac31ffbb39816f3fff625d1602b7d2535c6",
           "status": "verified"
         },
         "operational": {
@@ -739,7 +755,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "diagnosis-en-ordinary",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:d4f589d5664188682b1974088ebf7c4ff655f152ead33d823f0a64ddbde194b0",
         "status": "verified"
       },
       "raw_manifest": [
@@ -780,7 +799,10 @@
           "Diagnose why the fan sensor is missing on my openUBMC BMC. I have not supplied a target or credentials in this task. Perform only authorized read-only checks, state the missing inputs, and do not claim the device was diagnosed."
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "diagnosis-en-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:c3e198dfaa84c45d6dfe59656a7d1ac31ffbb39816f3fff625d1602b7d2535c6",
           "status": "verified"
         }
       },
@@ -829,7 +851,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "logs-en-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:a3bf2178815983d55fc8b6f8e9d9f63570ee0dd89c0007e74f2941875aaa8054",
           "status": "verified"
         },
         "operational": {
@@ -908,7 +933,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "logs-en-ordinary",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:7d5f448fc3220164b3b2bea249cf172a4195d323cd901c2bb938270d1ad037ca",
         "status": "verified"
       },
       "raw_manifest": [
@@ -949,7 +977,10 @@
           "Analyze the openUBMC one-click log bundle at /tmp/openubmc-routing-eval/missing-bundle.tar.gz for repeated webserver crashes. Use only local read-only checks; if the bundle is absent, report that exact blocker without inventing findings."
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "logs-en-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:a3bf2178815983d55fc8b6f8e9d9f63570ee0dd89c0007e74f2941875aaa8054",
           "status": "verified"
         }
       },
@@ -999,7 +1030,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "build-zh-explicit-source",
           "mismatches": [],
+          "rollout_sha256": "sha256:f5c86e6d21165acd335a19531fe5c27e98b4cd2c349395d219d87894f9c91974",
           "status": "verified"
         },
         "operational": {
@@ -1122,7 +1156,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "build-zh-explicit-source",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:5e5bfbdceed9e704a6ffa62184bfc73a68499a243cd931c9c1f5f22b16818087",
         "status": "verified"
       },
       "raw_manifest": [
@@ -1163,7 +1200,10 @@
           "请检查外部源码目录 /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout 是否具备用 bmcgo 构建 openUBMC 组件的前置条件。本次只授权只读预检，不执行编译、安装、发布或修改源码；给出实际检查结果和缺口。"
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "build-zh-explicit-source",
           "mismatches": [],
+          "rollout_sha256": "sha256:f5c86e6d21165acd335a19531fe5c27e98b4cd2c349395d219d87894f9c91974",
           "status": "verified"
         }
       },
@@ -1209,7 +1249,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "build-en-source-cwd",
           "mismatches": [],
+          "rollout_sha256": "sha256:60e3e4e4d2f28d8af6aa1763e535f798abe07e8af4d7cea8c1a0f61cc8e04249",
           "status": "verified"
         },
         "operational": {
@@ -1455,7 +1498,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "build-en-source-cwd",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:94a481bd92867f6ce41506a29b3d0a9c99c86a46ef913cc72f75095271c22cab",
         "status": "verified"
       },
       "raw_manifest": [
@@ -1496,7 +1542,10 @@
           "Check this openUBMC source checkout for the prerequisites needed to build a component with bmcgo. This task authorizes read-only preflight only: do not compile, install, publish, or edit files."
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "build-en-source-cwd",
           "mismatches": [],
+          "rollout_sha256": "sha256:60e3e4e4d2f28d8af6aa1763e535f798abe07e8af4d7cea8c1a0f61cc8e04249",
           "status": "verified"
         }
       },
@@ -1540,7 +1589,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "upgrade-en-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:24f01e7aca21db10a73db5d2ee6f69c3101c91e297c8617625600112cb5bb567",
           "status": "verified"
         },
         "operational": {
@@ -1629,7 +1681,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "upgrade-en-ordinary",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:18198c3c4150d0186b3fc456312da79fb9333b812ee1f75f14e6754c5aba6bb1",
         "status": "verified"
       },
       "raw_manifest": [
@@ -1670,7 +1725,10 @@
           "I already have an openUBMC HPM and eventually need to upgrade a BMC. For now, only inspect the prerequisites and list the missing target and artifact identity; do not upload, activate, restart, or change any device."
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "upgrade-en-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:24f01e7aca21db10a73db5d2ee6f69c3101c91e297c8617625600112cb5bb567",
           "status": "verified"
         }
       },
@@ -1722,7 +1780,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "credentials-zh-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:62c274bc49b67d202359b7f8945d53dfce77acbeab83c9f41b64288021449f83",
           "status": "verified"
         },
         "operational": {
@@ -1828,7 +1889,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "credentials-zh-ordinary",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:3a036291f8e0e0c444cee7bb1cb817586093c77e72edd570addfc56282e85aec",
         "status": "verified"
       },
       "raw_manifest": [
@@ -1869,7 +1933,10 @@
           "帮我检查 Codex 的 openUBMC BMC/OS 凭据配置入口是否就绪。只检查隔离环境中的配置状态，不写入账号、不修改现有凭据；不要要求我在对话里发送密码。"
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "credentials-zh-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:62c274bc49b67d202359b7f8945d53dfce77acbeab83c9f41b64288021449f83",
           "status": "verified"
         }
       },
@@ -1919,7 +1986,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "kb-en-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:6846feadb43f9ebc62f1cf1c56a4813c1395ed8ff45f9c0e330bd33cdd5aa92f",
           "status": "verified"
         },
         "operational": {
@@ -1993,7 +2063,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "kb-en-ordinary",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:fd29cfe8b6c7c7e7e2e769da2a33d74b03713ba8bdac19ba272015f3f184ebfb",
         "status": "verified"
       },
       "raw_manifest": [
@@ -2034,7 +2107,10 @@
           "Search the configured openUBMC knowledge base for guidance on a missing fan sensor. Treat knowledge results only as candidate guidance. If the KB is not configured or authentication fails, report that environment failure plainly."
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "kb-en-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:6846feadb43f9ebc62f1cf1c56a4813c1395ed8ff45f9c0e330bd33cdd5aa92f",
           "status": "verified"
         }
       },
@@ -2084,7 +2160,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "component-zh-explicit-source",
           "mismatches": [],
+          "rollout_sha256": "sha256:13d85ca2492b654d455df3eb47834ef64ff57de95fe0b001ea20dae0e208bcc0",
           "status": "verified"
         },
         "operational": {
@@ -2302,7 +2381,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "component-zh-explicit-source",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:1bfe83aba3ccf7585e4b0f703aecfd19041cc6ae39013bd4a4eb72edbe6c93c5",
         "status": "verified"
       },
       "raw_manifest": [
@@ -2343,7 +2425,10 @@
           "在外部 openUBMC 源码目录 /tmp/openubmc-skill-routing-233-20260911/workspaces/source-checkout 中，我还没确定一个新的 MDB 属性应写进 model.json 生成链，还是手写 Lua。请只读分析源码所有权和扩展模式，不修改文件。"
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "component-zh-explicit-source",
           "mismatches": [],
+          "rollout_sha256": "sha256:13d85ca2492b654d455df3eb47834ef64ff57de95fe0b001ea20dae0e208bcc0",
           "status": "verified"
         }
       },
@@ -2385,7 +2470,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "negative-zh-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:67e938885f581c7b5bd5cc48e43b1ca3569eb8f22d3deb838bf8a97c2606b011",
           "status": "verified"
         },
         "operational": {
@@ -2432,7 +2520,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "negative-zh-ordinary",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:d15fd2933904ae1adad919f2fcd17a3b3d8755159d9347426ebe3b74ff25037a",
         "status": "verified"
       },
       "raw_manifest": [
@@ -2473,7 +2564,10 @@
           "解释 Python 列表推导式，并给一个纯 Python 示例。"
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "negative-zh-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:67e938885f581c7b5bd5cc48e43b1ca3569eb8f22d3deb838bf8a97c2606b011",
           "status": "verified"
         }
       },
@@ -2509,7 +2603,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "ambiguous-zh-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:c44edc831e1e1e4d3940502ad7c80be411d75bd872be680b84a50fc09f92b06b",
           "status": "verified"
         },
         "operational": {
@@ -2556,7 +2653,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "ambiguous-zh-ordinary",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:bd207b94f12ceed08c493669d436ad25d410e3a77425b7a271153a5c4cf0fa75",
         "status": "verified"
       },
       "raw_manifest": [
@@ -2597,7 +2697,10 @@
           "帮我看看这个问题，先告诉我还需要哪些信息。"
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "ambiguous-zh-ordinary",
           "mismatches": [],
+          "rollout_sha256": "sha256:c44edc831e1e1e4d3940502ad7c80be411d75bd872be680b84a50fc09f92b06b",
           "status": "verified"
         }
       },
@@ -2636,7 +2739,10 @@
           "timed_out": false
         },
         "identity": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "context-en-multi-turn",
           "mismatches": [],
+          "rollout_sha256": "sha256:bfd3c4ae4dd3a1172a81416c10b35c00e4eec66287e72e5154cfd7de28452560",
           "status": "verified"
         },
         "operational": {
@@ -2740,7 +2846,10 @@
         }
       },
       "raw_integrity": {
+        "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+        "case_id": "context-en-multi-turn",
         "mismatches": [],
+        "raw_manifest_digest": "sha256:aa61efaa8f3d688f623d2b163e5dcd5d5a1322c674f1d5921fd566df8a85a5b7",
         "status": "verified"
       },
       "raw_manifest": [
@@ -2804,7 +2913,10 @@
           "It is the webserver service on an openUBMC BMC. Continue as a read-only diagnosis, but the target and credentials are still unavailable, so preserve those as blockers."
         ],
         "verification": {
+          "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
+          "case_id": "context-en-multi-turn",
           "mismatches": [],
+          "rollout_sha256": "sha256:bfd3c4ae4dd3a1172a81416c10b35c00e4eec66287e72e5154cfd7de28452560",
           "status": "verified"
         }
       },
@@ -2870,6 +2982,7 @@
   ],
   "schema": "openubmc.skill-routing-evidence.v1",
   "source_binding": {
+    "arm_digest": "sha256:cc27cdc7861c3dcbfdc6be7ef626c6d6c0ce6e959c7231876859f4ca80b32d8f",
     "inventory_sha256": "sha256:a2acc0ed9efcc324a87162f1acaac68d61169d5839bf3eb782b10e9b5ae3eb13",
     "legacy_binding": {
       "matrix_file": {
