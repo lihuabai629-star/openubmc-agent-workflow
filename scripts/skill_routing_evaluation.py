@@ -1097,6 +1097,10 @@ def _validate_arm_identity(document: object) -> dict[str, object]:
     for key in ("arm_id", "kind", "source", "inventory", "execution", "environment"):
         if key not in document:
             raise ValueError(f"routing arm identity requires {key}")
+    if not isinstance(document["arm_id"], str) or re.fullmatch(
+        r"[a-z0-9][a-z0-9-]*", document["arm_id"]
+    ) is None:
+        raise ValueError("routing arm identity arm_id is invalid")
     if document["kind"] not in {"plugin", "loose-skills"}:
         raise ValueError("routing arm identity kind is invalid")
     for section in ("source", "inventory", "execution", "environment"):

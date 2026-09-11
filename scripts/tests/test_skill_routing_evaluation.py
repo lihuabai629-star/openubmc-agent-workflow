@@ -412,6 +412,20 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     load_arm_identity(path)
 
+    def test_arm_identity_requires_a_nonempty_canonical_identifier(self) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        original = json.loads((evidence_root / "routing-arm-loose.json").read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "arm.json"
+            for invalid in (None, "", "   "):
+                document = copy.deepcopy(original)
+                document["arm_id"] = invalid
+                document["digest"] = document_digest(document)
+                path.write_text(json.dumps(document))
+
+                with self.assertRaisesRegex(ValueError, "arm_id"):
+                    load_arm_identity(path)
+
     def test_arm_artifact_verification_detects_archive_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
