@@ -67,7 +67,7 @@ def check(plugin: Path, report: dict) -> None:
         prepared = json.loads(command([*cli, 'prepare'], environment, cwd=home, timeout=540).stdout)
         report['cold_dependencies'] = {'passed': True, 'seconds': round(time.monotonic() - started, 3)}
         environment['PYTHONPATH'] = os.pathsep.join([
-            str(ROOT/'behavior'), str(plugin/'skills/openubmc-target-runtime'),
+            str(ROOT/'behavior'), str(plugin/'skills/openubmc-target-runtime'), str(plugin/'scripts'),
             str(Path(prepared['dependencies'])/'python-packages'),
         ])
         for name, selectors in GROUPS.items():
