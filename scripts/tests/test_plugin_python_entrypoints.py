@@ -123,6 +123,9 @@ class PythonEntrypointTests(unittest.TestCase):
         result = self.run_python(self.plugin/'skills/openubmc-debug/scripts/target_runtime_cli.py', '--help')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(inventory(self.plugin), self.before)
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from plugin_archive import verify_directory
+        self.assertEqual(verify_directory(self.plugin)['name'], 'openubmc')
         verified = self.run_python('-I', self.plugin/'scripts/pluginctl.py', 'verify')
         self.assertEqual(verified.returncode, 0, verified.stderr)
         self.assertTrue(json.loads(verified.stdout)['ok'])
@@ -270,6 +273,9 @@ raise SystemExit(subprocess.run([sys.executable, '-I', sys.argv[1], '--help']).r
 
     def test_untracked_bytecode_is_ignored_without_execution(self):
         marker = self.poison_cache()
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from plugin_archive import verify_directory
+        self.assertEqual(verify_directory(self.plugin)['name'], 'openubmc')
         verified = self.run_python('-I', self.plugin/'scripts/pluginctl.py', 'verify')
         self.assertEqual(verified.returncode, 0, verified.stderr)
         commands = [(self.plugin/'skills/openubmc-debug/scripts/target_runtime_cli.py', '--help')]

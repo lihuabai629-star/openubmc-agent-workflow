@@ -82,7 +82,8 @@ def verify(root: Path = ROOT) -> tuple[dict, dict[str, bytes]]:
             relative = path.relative_to(root)
             # Python may create runtime bytecode beside packaged scripts. These
             # caches are derived files and must never change package identity.
-            if path.suffix == '.pyc' and '__pycache__' in relative.parts:
+            if (path.suffix == '.pyc' and '__pycache__' in relative.parts
+                    and relative.as_posix() not in lock['files']):
                 continue
             content[relative.as_posix()] = path.read_bytes()
     if {name: hashlib.sha256(data).hexdigest() for name, data in content.items()} != lock['files']:
