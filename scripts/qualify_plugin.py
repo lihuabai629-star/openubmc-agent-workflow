@@ -104,6 +104,11 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                 raise ValueError('native Codex plugin exec timed out')
             if process.returncode:
                 raise ValueError('native Codex plugin exec failed: '+(stderr or stdout)[-2000:])
+            catalog = json.dumps(server.requests[start:1 + start], ensure_ascii=False)
+            expected_skills = ('openubmc-debug', 'openubmc-build', 'openubmc-upgrade',
+                               'openubmc-environment-setup')
+            if any(name not in catalog for name in expected_skills):
+                raise ValueError('packaged Skills are absent from the model catalog outside a source checkout')
             outputs = {}
             for request in server.requests[start:]:
                 for item in request.get('input', []):
@@ -134,7 +139,8 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                 raise ValueError('Runtime process survived its Codex parent')
             runs.append({'codex_pid':process.pid, 'runtime_pid':lifecycle['process_id'],
                          'source_commit':source_commit, 'session_id':session, 'exit_reason':lifecycle['exit_reason'],
-                         'active_requests':0, 'tool_names':names, 'validated_calls':['observe','execute']})
+                         'active_requests':0, 'tool_names':names, 'validated_calls':['observe','execute'],
+                         'skills_visible_outside_source': list(expected_skills)})
     finally:
         server.shutdown()
         server.server_close()
