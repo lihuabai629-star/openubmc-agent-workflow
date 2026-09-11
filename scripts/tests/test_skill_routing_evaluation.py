@@ -733,6 +733,23 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_raw_secret_scan_leaves_static_indicators_for_public_sanitization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            raw = Path(temporary) / "raw.jsonl"
+            raw.write_text('{"target":"10.20.30.40"}\n')
+
+            raw_scan = scan_secret_files([raw], {})
+            public_scan = scan_secret_files(
+                [raw], {}, include_static_patterns=True
+            )
+
+        self.assertEqual(raw_scan["status"], "clean")
+        self.assertEqual(public_scan["status"], "blocked")
+        self.assertEqual(
+            public_scan["matches"],
+            [{"path": "raw.jsonl", "pattern": "private-ip"}],
+        )
+
     def test_summary_redacts_credential_values_from_all_retained_mcp_fields(self) -> None:
         secret = "credential-value-that-must-not-leak"
         events = [

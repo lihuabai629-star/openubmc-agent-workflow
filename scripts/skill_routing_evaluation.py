@@ -88,7 +88,10 @@ def _credential_environment(environ: Mapping[str, str]) -> dict[str, str]:
 
 
 def scan_secret_files(
-    paths: Sequence[Path], environ: Mapping[str, str]
+    paths: Sequence[Path],
+    environ: Mapping[str, str],
+    *,
+    include_static_patterns: bool = False,
 ) -> dict[str, object]:
     """Scan retained evidence without returning or logging secret values."""
     credentials = _credential_environment(environ)
@@ -98,13 +101,18 @@ def scan_secret_files(
         for name, value in credentials.items():
             if value.encode() in content:
                 matches.append({"path": path.name, "variable": name})
-        text = content.decode(errors="replace")
-        for name, pattern in PUBLIC_SENSITIVE_PATTERN_RULES:
-            if pattern.search(text):
-                matches.append({"path": path.name, "pattern": name})
+        if include_static_patterns:
+            text = content.decode(errors="replace")
+            for name, pattern in PUBLIC_SENSITIVE_PATTERN_RULES:
+                if pattern.search(text):
+                    matches.append({"path": path.name, "pattern": name})
     return {
         "status": "clean" if not matches else "blocked",
-        "policy": "credential-environment-values-and-critical-static-patterns",
+        "policy": (
+            "credential-environment-values-and-critical-static-patterns"
+            if include_static_patterns
+            else "CLI_PROXY_API_KEY-and-credential-name-pattern"
+        ),
         "matches": matches,
     }
 
@@ -2946,7 +2954,9 @@ def _rebuild_pair_into(args: argparse.Namespace, output: Path) -> int:
     actual_files = {path.relative_to(output).as_posix() for path in generated_files}
     if actual_files != expected_files:
         raise ValueError("generated sanitized evidence tree is not closed")
-    generated_scan = scan_secret_files(generated_files, os.environ)
+    generated_scan = scan_secret_files(
+        generated_files, os.environ, include_static_patterns=True
+    )
     if generated_scan["status"] != "clean":
         raise RuntimeError(
             "generated sanitized evidence contains sensitive values or patterns: "
