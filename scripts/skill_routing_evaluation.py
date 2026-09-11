@@ -1085,6 +1085,7 @@ def verify_arm_artifacts(
     return {
         "status": "verified" if not mismatches else "unverified",
         "mismatches": mismatches,
+        "arm_digest": identity.get("digest"),
         "observed": observed,
     }
 
@@ -2135,7 +2136,10 @@ def reconstruct_arm_evidence(
     execution = arm["execution"]
     assert isinstance(execution, Mapping)
     source_files = sorted(path for path in (run_directory / "raw").rglob("*") if path.is_file())
-    source_secret_scan = scan_secret_files(source_files, environ)
+    source_secret_scan = {
+        **scan_secret_files(source_files, environ),
+        "arm_digest": arm["digest"],
+    }
     legacy_samples = {
         path.stem: json.loads(path.read_text())
         for path in (run_directory / "samples").glob("*.json")
@@ -2209,26 +2213,31 @@ def reconstruct_arm_evidence(
             if observation["thread_id"]
             else {"status": "unverified", "thread_id": ""}
         )
-        rollout_verification = verify_rollout_identity(
-            rollout,
-            {
-                "codex_version": execution["codex_version"],
-                "model_provider": execution["model_provider"],
-                "originator": execution["originator"],
-                "model": execution["model"],
-                "effort": execution["effort"],
-                "cwd": str(cwd),
-                "approval_policy": execution["approval_policy"],
-                "sandbox_policy": execution["sandbox_policy"],
-                "turn_count": len(case["turns"]),
-                "prompts": [
-                    str(template).replace(
-                        "{source_path}", str(explicit_source_workspace)
-                    )
-                    for template in case["turns"]
-                ],
-            },
-        )
+        rollout_verification = {
+            **verify_rollout_identity(
+                rollout,
+                {
+                    "codex_version": execution["codex_version"],
+                    "model_provider": execution["model_provider"],
+                    "originator": execution["originator"],
+                    "model": execution["model"],
+                    "effort": execution["effort"],
+                    "cwd": str(cwd),
+                    "approval_policy": execution["approval_policy"],
+                    "sandbox_policy": execution["sandbox_policy"],
+                    "turn_count": len(case["turns"]),
+                    "prompts": [
+                        str(template).replace(
+                            "{source_path}", str(explicit_source_workspace)
+                        )
+                        for template in case["turns"]
+                    ],
+                },
+            ),
+            "arm_digest": arm["digest"],
+            "case_id": case_id,
+            "rollout_sha256": rollout.get("rollout_sha256"),
+        }
         legacy_identity = legacy.get("identity")
         if not isinstance(legacy_identity, Mapping):
             raw_mismatches.append("legacy.identity")
@@ -2261,6 +2270,11 @@ def reconstruct_arm_evidence(
         raw_integrity = {
             "status": "verified" if not raw_mismatches else "unverified",
             "mismatches": raw_mismatches,
+            "arm_digest": arm["digest"],
+            "case_id": case_id,
+            "raw_manifest_digest": document_digest(
+                {"case_id": case_id, "raw_manifest": raw_manifest}
+            ),
         }
         rebuilt_samples.append(
             {
@@ -2327,6 +2341,7 @@ def reconstruct_arm_evidence(
             "artifact_verification": arm_verification,
         },
         "source_binding": {
+            "arm_digest": arm["digest"],
             "retained_run_schema": legacy_run.get("schema"),
             "retained_run_sha256": _sha256(legacy_run_path),
             "legacy_binding": binding,
@@ -2404,25 +2419,176 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         _validate_arm_identity(embedded_arm)
     except ValueError as error:
         raise ValueError(f"{label} arm identity is unverified: {error}") from error
+    arm_digest = arm.get("digest")
+
+    def require_binding(actual: object, expected: object, name: str) -> None:
+        if actual != expected:
+            raise ValueError(f"{label} evidence {name} binding is invalid")
+
     artifact = arm.get("artifact_verification")
-    if not isinstance(artifact, Mapping) or artifact.get("status") != "verified":
+    if (
+        not isinstance(artifact, Mapping)
+        or artifact.get("status") != "verified"
+        or artifact.get("mismatches") != []
+    ):
         raise ValueError(f"{label} evidence artifact identity is unverified")
+    require_binding(artifact.get("arm_digest"), arm_digest, "artifact arm")
+    observed = artifact.get("observed")
+    if not isinstance(observed, Mapping):
+        raise ValueError(f"{label} evidence artifact binding is invalid")
+    observed_inventory = observed.get("inventory")
+    identity_inventory = arm.get("inventory")
+    if not isinstance(observed_inventory, Mapping) or not isinstance(
+        identity_inventory, Mapping
+    ):
+        raise ValueError(f"{label} evidence inventory binding is invalid")
+    for key in ("sha256", "content_digest"):
+        require_binding(
+            observed_inventory.get(key), identity_inventory.get(key), f"inventory {key}"
+        )
+    observed_source = observed.get("source")
+    identity_source = arm.get("source")
+    if not isinstance(observed_source, Mapping) or not isinstance(
+        identity_source, Mapping
+    ):
+        raise ValueError(f"{label} evidence source binding is invalid")
+    for key in ("commit", "tree"):
+        require_binding(
+            observed_source.get(key), identity_source.get(key), f"source {key}"
+        )
+    require_binding(observed_source.get("clean"), True, "source cleanliness")
+
+    distribution = arm.get("distribution")
+    if not isinstance(distribution, Mapping):
+        raise ValueError(f"{label} evidence distribution binding is invalid")
+    if kind == "loose-skills":
+        observed_loose = observed.get("loose_skills")
+        retained_inventory = observed.get("loose_content_inventory")
+        inventory_file = distribution.get("content_inventory_file")
+        if (
+            not isinstance(observed_loose, Mapping)
+            or not isinstance(retained_inventory, Mapping)
+            or not isinstance(inventory_file, Mapping)
+            or retained_inventory.get("status") != "verified"
+            or retained_inventory.get("mismatches") != []
+        ):
+            raise ValueError(f"{label} evidence loose distribution binding is invalid")
+        for key in ("content_inventory_digest", "configuration_sha256"):
+            require_binding(
+                observed_loose.get(key), distribution.get(key), f"loose {key}"
+            )
+        for observed_key, expected_key in (
+            ("sha256", "sha256"),
+            ("digest", "content_inventory_digest"),
+            ("file_count", "file_count"),
+        ):
+            expected = (
+                distribution.get(expected_key)
+                if expected_key == "content_inventory_digest"
+                else inventory_file.get(expected_key)
+            )
+            require_binding(
+                retained_inventory.get(observed_key),
+                expected,
+                f"loose content inventory {observed_key}",
+            )
+        require_binding(
+            observed_loose.get("file_count"),
+            inventory_file.get("file_count"),
+            "loose content file count",
+        )
+    else:
+        observed_plugin = observed.get("plugin")
+        plugin_binding = observed.get("plugin_binding")
+        if (
+            not isinstance(observed_plugin, Mapping)
+            or not isinstance(plugin_binding, Mapping)
+            or plugin_binding.get("status") != "verified"
+            or plugin_binding.get("mismatches") != []
+        ):
+            raise ValueError(f"{label} evidence plugin distribution binding is invalid")
+        for key in (
+            "archive_sha256",
+            "content_digest",
+            "subject_digest",
+            "runtime_digest",
+        ):
+            require_binding(
+                observed_plugin.get(key), distribution.get(key), f"plugin {key}"
+            )
 
     source_binding = evidence.get("source_binding")
     if not isinstance(source_binding, Mapping):
         raise ValueError(f"{label} evidence source binding is unverified")
+    require_binding(source_binding.get("arm_digest"), arm_digest, "source arm")
+    require_binding(
+        source_binding.get("inventory_sha256"),
+        identity_inventory.get("sha256"),
+        "source inventory",
+    )
+    require_binding(
+        source_binding.get("matrix_sha256"),
+        evaluator_files["matrix"].get("sha256"),
+        "source matrix",
+    )
+    require_binding(
+        source_binding.get("review_contract_sha256"),
+        evaluator_files["review_contract"].get("sha256"),
+        "source review contract",
+    )
     legacy = source_binding.get("legacy_binding")
     workspace = source_binding.get("workspace_verification")
     matrix_file = legacy.get("matrix_file") if isinstance(legacy, Mapping) else None
     if (
         not isinstance(legacy, Mapping)
         or legacy.get("status") != "verified"
+        or legacy.get("mismatches") != []
         or not isinstance(matrix_file, Mapping)
         or matrix_file.get("status") != "verified"
     ):
         raise ValueError(f"{label} evidence retained matrix binding is unverified")
-    if not isinstance(workspace, Mapping) or workspace.get("status") != "verified":
+    require_binding(
+        matrix_file.get("current_sha256"),
+        source_binding.get("matrix_sha256"),
+        "retained current matrix",
+    )
+    require_binding(
+        matrix_file.get("retained_sha256"),
+        source_binding.get("matrix_sha256"),
+        "retained original matrix",
+    )
+    if (
+        not isinstance(workspace, Mapping)
+        or workspace.get("status") != "verified"
+        or workspace.get("mismatches") != []
+    ):
         raise ValueError(f"{label} evidence workspace identity is unverified")
+    ordinary_workspace = workspace.get("ordinary")
+    if not isinstance(ordinary_workspace, Mapping):
+        raise ValueError(f"{label} evidence ordinary workspace binding is invalid")
+    require_binding(ordinary_workspace.get("empty"), True, "ordinary workspace empty")
+    require_binding(
+        ordinary_workspace.get("inside_git"), False, "ordinary workspace repository"
+    )
+    for workspace_name in ("source", "explicit_source"):
+        workspace_source = workspace.get(workspace_name)
+        if not isinstance(workspace_source, Mapping):
+            raise ValueError(
+                f"{label} evidence {workspace_name} workspace binding is invalid"
+            )
+        require_binding(
+            workspace_source.get("commit"),
+            identity_source.get("commit"),
+            f"{workspace_name} workspace commit",
+        )
+        require_binding(
+            workspace_source.get("clean"), True, f"{workspace_name} workspace clean"
+        )
+        require_binding(
+            workspace_source.get("repository_root"),
+            workspace_source.get("path"),
+            f"{workspace_name} workspace root",
+        )
 
     raw_evidence = evidence.get("raw_evidence")
     secret_scan = raw_evidence.get("secret_scan") if isinstance(raw_evidence, Mapping) else None
@@ -2447,8 +2613,10 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         or raw_evidence.get("embedded") is not False
         or not isinstance(secret_scan, Mapping)
         or secret_scan.get("status") != "clean"
+        or secret_scan.get("matches") != []
     ):
         raise ValueError(f"{label} evidence raw boundary is unverified")
+    require_binding(secret_scan.get("arm_digest"), arm_digest, "secret scan arm")
     if (
         not isinstance(published_manifest, Mapping)
         or published_manifest.get("schema")
@@ -2456,10 +2624,19 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         or published_manifest.get("digest") != document_digest(published_manifest)
         or not isinstance(published_verification, Mapping)
         or published_verification.get("status") != "verified"
+        or published_verification.get("mismatches") != []
         or published_verification.get("file_count")
         != raw_evidence.get("file_count", 0) + len(evidence.get("samples", []))
     ):
         raise ValueError(f"{label} published record identity is unverified")
+    require_binding(
+        published_verification.get("arm_digest"), arm_digest, "published record arm"
+    )
+    require_binding(
+        published_verification.get("manifest_digest"),
+        published_manifest.get("digest"),
+        "published record manifest",
+    )
 
     samples = evidence.get("samples")
     if not isinstance(samples, list) or not samples:
@@ -2478,6 +2655,19 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
         identity_layer = layers.get("identity") if isinstance(layers, Mapping) else None
         if not isinstance(raw_integrity, Mapping) or raw_integrity.get("status") != "verified":
             raise ValueError(f"{label} evidence raw sample is unverified: {case_id}")
+        require_binding(
+            raw_integrity.get("arm_digest"), arm_digest, f"raw sample {case_id} arm"
+        )
+        require_binding(
+            raw_integrity.get("case_id"), case_id, f"raw sample {case_id} case"
+        )
+        require_binding(
+            raw_integrity.get("raw_manifest_digest"),
+            document_digest(
+                {"case_id": case_id, "raw_manifest": sample.get("raw_manifest")}
+            ),
+            f"raw sample {case_id} manifest",
+        )
         if (
             not isinstance(rollout_verification, Mapping)
             or rollout_verification.get("status") != "verified"
@@ -2485,6 +2675,24 @@ def _require_qualified_evidence(label: str, evidence: Mapping[str, object]) -> N
             or identity_layer.get("status") != "verified"
         ):
             raise ValueError(f"{label} evidence rollout identity is unverified: {case_id}")
+        require_binding(
+            rollout_verification.get("arm_digest"),
+            arm_digest,
+            f"rollout {case_id} arm",
+        )
+        require_binding(
+            rollout_verification.get("case_id"), case_id, f"rollout {case_id} case"
+        )
+        require_binding(
+            rollout_verification.get("rollout_sha256"),
+            rollout.get("rollout_sha256"),
+            f"rollout {case_id} digest",
+        )
+        require_binding(
+            identity_layer,
+            rollout_verification,
+            f"rollout {case_id} failure layer",
+        )
         if (
             not isinstance(execution_layer, Mapping)
             or execution_layer.get("status") != "passed"
@@ -2966,6 +3174,8 @@ def _rebuild_pair_into(args: argparse.Namespace, output: Path) -> int:
                 f"{arm_name} sanitized record verification failed: "
                 + ", ".join(verification["mismatches"])
             )
+        verification["arm_digest"] = evidence["arm_identity"]["digest"]
+        verification["manifest_digest"] = published["digest"]
         evidence["raw_evidence"]["published_records"]["verification"] = verification
         evidence["digest"] = document_digest(evidence)
     comparison = compare_arm_evidence(baseline, candidate)

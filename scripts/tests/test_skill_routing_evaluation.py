@@ -58,6 +58,24 @@ def refresh_embedded_arm_digest(arm: dict[str, object]) -> None:
     arm["digest"] = document_digest(document)
 
 
+def refresh_evidence_arm_bindings(evidence: dict[str, object]) -> None:
+    """Keep cross-arm rule fixtures qualified after an intentional arm edit."""
+    arm = evidence["arm_identity"]
+    arm_digest = arm["digest"]
+    arm["artifact_verification"]["arm_digest"] = arm_digest
+    source_binding = evidence["source_binding"]
+    source_binding["arm_digest"] = arm_digest
+    source_binding["inventory_sha256"] = arm["inventory"]["sha256"]
+    raw_evidence = evidence["raw_evidence"]
+    raw_evidence["secret_scan"]["arm_digest"] = arm_digest
+    raw_evidence["published_records"]["verification"]["arm_digest"] = arm_digest
+    for sample in evidence["samples"]:
+        sample["raw_integrity"]["arm_digest"] = arm_digest
+        verification = sample["rollout_identity"]["verification"]
+        verification["arm_digest"] = arm_digest
+        sample["failure_layers"]["identity"] = copy.deepcopy(verification)
+
+
 class SkillRoutingEvaluationTests(unittest.TestCase):
     def test_evaluator_identity_requires_one_commit_with_all_review_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1454,6 +1472,7 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         )
         candidate["arm_identity"]["execution"]["model"] = "different-model"
         refresh_embedded_arm_digest(candidate["arm_identity"])
+        refresh_evidence_arm_bindings(candidate)
         candidate["digest"] = document_digest(candidate)
 
         with self.assertRaisesRegex(ValueError, "paired execution"):
@@ -1574,6 +1593,7 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         baseline = json.loads((evidence_root / "routing-evidence-loose.json").read_text())
         candidate = json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
         baseline["arm_identity"] = copy.deepcopy(candidate["arm_identity"])
+        refresh_evidence_arm_bindings(baseline)
         baseline["digest"] = document_digest(baseline)
 
         with self.assertRaisesRegex(ValueError, "paired arm roles"):
@@ -1585,10 +1605,32 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         candidate = json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
         candidate["arm_identity"]["arm_id"] = baseline["arm_identity"]["arm_id"]
         refresh_embedded_arm_digest(candidate["arm_identity"])
+        refresh_evidence_arm_bindings(candidate)
         candidate["digest"] = document_digest(candidate)
 
         with self.assertRaisesRegex(ValueError, "paired arm identities must be distinct"):
             compare_arm_evidence(baseline, candidate)
+
+    def test_comparison_rejects_verification_projections_from_another_arm(self) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        baseline = json.loads((evidence_root / "routing-evidence-loose.json").read_text())
+        candidate = json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
+        paths = (
+            ("arm_identity", "artifact_verification"),
+            ("source_binding",),
+        )
+        for path in paths:
+            tampered = copy.deepcopy(baseline)
+            source = candidate
+            target = tampered
+            for key in path[:-1]:
+                source = source[key]
+                target = target[key]
+            target[path[-1]] = copy.deepcopy(source[path[-1]])
+            tampered["digest"] = document_digest(tampered)
+
+            with self.assertRaisesRegex(ValueError, "binding"):
+                compare_arm_evidence(tampered, candidate)
 
     def test_checked_in_evaluator_identity_matches_its_declared_commit(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
