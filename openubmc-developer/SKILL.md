@@ -177,7 +177,6 @@ Carry the user's requested sequence forward, but let each owner validate its own
 inputs and authorization.
 
 ## Load references only for a material decision
-
 Do not load references from keywords, file types, directories, or language
 alone. Read one reference at a time when the task materially involves its
 contract or inspected source leaves a material decision unresolved. If a
