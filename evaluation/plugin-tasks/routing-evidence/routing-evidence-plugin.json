@@ -15,6 +15,33 @@
           "runtime_digest": "sha256:bd511c205cb754613795142d6cd91e1138802a33580c636a9e74e363a4d4d692",
           "subject_digest": "sha256:caf3583a199687176b38b3d6d0a9ce19d3c6ae74fab1dc2918e0f4351847cbde"
         },
+        "plugin_archive": {
+          "content_digest": "2ce74f4b0aeebd6fd1f1fc268c1611c92bf57179961ec44c380e6e074c31384d",
+          "file_count": 255,
+          "mcp_servers": [
+            "openubmc-kb",
+            "openubmc-target-runtime"
+          ],
+          "mismatches": [],
+          "name": "openubmc",
+          "skill_files": {
+            "skills/lua-component/SKILL.md": "16fa78b8ca9f127134758d7b6999a53ecaa2137c240f7f85fc6ee712152c8b67",
+            "skills/openubmc-build/SKILL.md": "4200156e9e4561ad666bcc8818e3ab433e9ef26e151b8fd4166d72e4857f5479",
+            "skills/openubmc-debug/SKILL.md": "d9f5bb098080dbdb4569989f6768a7c0446140cf1529de5a2bc61cd6786434da",
+            "skills/openubmc-developer/SKILL.md": "14b10394d0951961ca78ce62f5c1651a19c740cbdacfbab14a9dd3cd079991e8",
+            "skills/openubmc-environment-setup/SKILL.md": "3273fc1d1f8f4bfdb753fb3767711a08b56a83326cdf9e2dc445fb5473de4cb3",
+            "skills/openubmc-live-patch/SKILL.md": "81d5418e0b836ac5c64d79142cb0fd5490510cfe92b79836dcd040178c959b8c",
+            "skills/openubmc-log-analyzer/SKILL.md": "679e03ecf9a7ff976cc79d71a62c4dbb0c504a8a67d81403ebddc8453e663727",
+            "skills/openubmc-publish/SKILL.md": "a31bb9af83c805f6b442fc586156ebdd1def95608b52437c13f4f7ba616fd51b",
+            "skills/openubmc-target-runtime/SKILL.md": "4ce9249aec1392b2f6672189a0d2cd81995fdfc50915c4c5725c35aff3efc2f4",
+            "skills/openubmc-upgrade/SKILL.md": "d77d570ede1d583b95c75e379d90b226d21d7071ec1ca929d2a1e757be782c24",
+            "skills/qemu-testing/SKILL.md": "d575f68ba49337b8585ebf66a95bc005231e6040b562d25dc01ceb4404ee9d16",
+            "skills/testing/SKILL.md": "93662632203524968af5c0868e4fefe8dbcf0b3d9cf0747b9f38f41a8eac00e9"
+          },
+          "source_commit": "3a898818b5ea5bd5f810ecd3c22de6617ae617da",
+          "status": "verified",
+          "version": "2.0.12"
+        },
         "plugin_binding": {
           "mismatches": [],
           "status": "verified"
@@ -75,33 +102,33 @@
       "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
     }
   },
-  "digest": "sha256:2f732e7663b8a0f92cdcd2788bb77a48d025b6faf26c27170b4102d04ead5811",
+  "digest": "sha256:01f02f763f6bb120cb6aeadf012e725eff683820313a7d0dce30c1bb491f6541",
   "evaluator": {
-    "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
+    "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
     "files": {
       "matrix": {
-        "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
+        "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
         "committed_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
         "path": "evaluation/plugin-tasks/routing-matrix.json",
         "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
       },
       "review_contract": {
-        "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
+        "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
         "committed_sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629",
         "path": "evaluation/plugin-tasks/routing-review-contract.json",
         "sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629"
       },
       "runner": {
-        "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
-        "committed_sha256": "sha256:d286ff216118db2eacd4ba689ef31d63ea6a56a451fffc103d1ef30237b17634",
+        "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
+        "committed_sha256": "sha256:bef499f7c35484aa8ec2399a0bed83b64b262915076ca79273ecec37ada50b48",
         "path": "scripts/skill_routing_evaluation.py",
-        "sha256": "sha256:d286ff216118db2eacd4ba689ef31d63ea6a56a451fffc103d1ef30237b17634"
+        "sha256": "sha256:bef499f7c35484aa8ec2399a0bed83b64b262915076ca79273ecec37ada50b48"
       }
     },
     "mismatches": [],
     "schema": "openubmc.skill-routing-evaluator.v1",
     "status": "verified",
-    "tree": "c026522496bcf1e12aefff7fb62e49701d2c83ba"
+    "tree": "321bf3f9003eeba8f7e45699c1735dc10be08239"
   },
   "integrity": {
     "status": "verified"
@@ -454,6 +481,7 @@
         "file_count": 38,
         "manifest_digest": "sha256:d35be6529021101ebb8c556e4dba0de4e5eb0d1234f9aee23919c31f88273045",
         "mismatches": [],
+        "result_projection_digest": "sha256:c9a317b83f742a46b072bf68136c2dd8d8385bedf0c6d73d2f9b703ad2cc4d3b",
         "samples_verified": 12,
         "status": "verified"
       }

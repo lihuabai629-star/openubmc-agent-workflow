@@ -92,33 +92,33 @@
       "tree": "eab8fda257f1d9802cf5fad82f10223e1f8820e1"
     }
   },
-  "digest": "sha256:56fb1bebe50db557a5662782764d77fe95c47d09636c597918c29b24823e6e72",
+  "digest": "sha256:224546150c4251b16fb3ac1feee4a4cc85513fd766ef5541bacd979e79264459",
   "evaluator": {
-    "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
+    "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
     "files": {
       "matrix": {
-        "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
+        "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
         "committed_sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d",
         "path": "evaluation/plugin-tasks/routing-matrix.json",
         "sha256": "sha256:f6a93fabc04463a8865e47faa568fb045b19c04156498813777a99119cdfef4d"
       },
       "review_contract": {
-        "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
+        "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
         "committed_sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629",
         "path": "evaluation/plugin-tasks/routing-review-contract.json",
         "sha256": "sha256:88f288a09bfa2ecb8c30ab156840596c1e95354949cae9910d385df1a4715629"
       },
       "runner": {
-        "commit": "f327adf90f5447ffcee5395594b2acc4b848d1e7",
-        "committed_sha256": "sha256:d286ff216118db2eacd4ba689ef31d63ea6a56a451fffc103d1ef30237b17634",
+        "commit": "4372725763bab1c2e1f17156485bcd55847acffb",
+        "committed_sha256": "sha256:bef499f7c35484aa8ec2399a0bed83b64b262915076ca79273ecec37ada50b48",
         "path": "scripts/skill_routing_evaluation.py",
-        "sha256": "sha256:d286ff216118db2eacd4ba689ef31d63ea6a56a451fffc103d1ef30237b17634"
+        "sha256": "sha256:bef499f7c35484aa8ec2399a0bed83b64b262915076ca79273ecec37ada50b48"
       }
     },
     "mismatches": [],
     "schema": "openubmc.skill-routing-evaluator.v1",
     "status": "verified",
-    "tree": "c026522496bcf1e12aefff7fb62e49701d2c83ba"
+    "tree": "321bf3f9003eeba8f7e45699c1735dc10be08239"
   },
   "integrity": {
     "status": "verified"
@@ -471,6 +471,7 @@
         "file_count": 38,
         "manifest_digest": "sha256:09f9ac549c738b3fe7f3a1268a4dfcf03ebdd8bc27e237fbeb6c7390b33a1eb7",
         "mismatches": [],
+        "result_projection_digest": "sha256:fa831291ae51862b1a02ea11306ac67e2aafc990b36d28ec43056ab76266d5fc",
         "samples_verified": 12,
         "status": "verified"
       }
