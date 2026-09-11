@@ -12,9 +12,10 @@ import queue
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 
 MATRIX_SCHEMA = "openubmc.skill-routing-matrix.v1"
@@ -46,10 +47,35 @@ PRIVATE_IPV4 = re.compile(
 GITHUB_TOKEN = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
 )
+GITLAB_TOKEN = re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")
+AWS_ACCESS_KEY = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
+GOOGLE_API_KEY = re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b")
+SLACK_TOKEN = re.compile(r"\bxox[bpoasr]-[A-Za-z0-9-]{10,}\b")
+STRIPE_KEY = re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b")
 JWT_TOKEN = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 PRIVATE_KEY_BLOCK = re.compile(
     r"-----BEGIN [^-\n]*PRIVATE KEY-----.*?-----END [^-\n]*PRIVATE KEY-----",
     re.DOTALL,
+)
+DATABASE_CREDENTIALS = re.compile(
+    r"\b((?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss)://)"
+    r"[^\s/:@]+:[^\s/@]+@",
+    re.IGNORECASE,
+)
+PUBLIC_SENSITIVE_PATTERN_RULES = (
+    ("private-key", PRIVATE_KEY_BLOCK),
+    ("github-token", GITHUB_TOKEN),
+    ("gitlab-token", GITLAB_TOKEN),
+    ("aws-access-key", AWS_ACCESS_KEY),
+    ("google-api-key", GOOGLE_API_KEY),
+    ("slack-token", SLACK_TOKEN),
+    ("stripe-key", STRIPE_KEY),
+    ("jwt", JWT_TOKEN),
+    ("database-credentials", DATABASE_CREDENTIALS),
+    ("private-ip", PRIVATE_IPV4),
+)
+PUBLIC_SENSITIVE_PATTERNS = tuple(
+    pattern for _, pattern in PUBLIC_SENSITIVE_PATTERN_RULES
 )
 
 
@@ -72,9 +98,13 @@ def scan_secret_files(
         for name, value in credentials.items():
             if value.encode() in content:
                 matches.append({"path": path.name, "variable": name})
+        text = content.decode(errors="replace")
+        for name, pattern in PUBLIC_SENSITIVE_PATTERN_RULES:
+            if pattern.search(text):
+                matches.append({"path": path.name, "pattern": name})
     return {
         "status": "clean" if not matches else "blocked",
-        "policy": "CLI_PROXY_API_KEY-and-credential-name-pattern",
+        "policy": "credential-environment-values-and-critical-static-patterns",
         "matches": matches,
     }
 
@@ -109,7 +139,16 @@ def _sanitize_public_value(value: object, environ: Mapping[str, str]) -> object:
         if isinstance(current, str):
             current = PRIVATE_KEY_BLOCK.sub("<redacted:private-key>", current)
             current = GITHUB_TOKEN.sub("<redacted:github-token>", current)
+            current = GITLAB_TOKEN.sub("<redacted:gitlab-token>", current)
+            current = AWS_ACCESS_KEY.sub("<redacted:aws-access-key>", current)
+            current = GOOGLE_API_KEY.sub("<redacted:google-api-key>", current)
+            current = SLACK_TOKEN.sub("<redacted:slack-token>", current)
+            current = STRIPE_KEY.sub("<redacted:stripe-key>", current)
             current = JWT_TOKEN.sub("<redacted:jwt>", current)
+            current = DATABASE_CREDENTIALS.sub(
+                "<redacted:database-credentials>",
+                current,
+            )
             return PRIVATE_IPV4.sub("<redacted:private-ip>", current)
         if isinstance(current, Mapping):
             return {str(key): sanitize(item) for key, item in current.items()}
@@ -257,15 +296,30 @@ def verify_published_records(
     if not isinstance(files, list) or published.get("file_count") != len(files):
         mismatches.append("file_count")
         files = []
+    arm = published.get("arm")
+    if not isinstance(arm, str) or re.fullmatch(r"[a-z0-9-]+", arm) is None:
+        mismatches.append("arm")
+        arm = "invalid"
+    records_root = output_root / "sanitized-records" / arm
+    expected_paths: set[str] = set()
     for index, row in enumerate(files):
         if not isinstance(row, Mapping) or not isinstance(row.get("path"), str):
             mismatches.append(f"files[{index}]")
             continue
-        path = (output_root / str(row["path"])).resolve()
+        relative = str(row["path"])
+        if relative in expected_paths:
+            mismatches.append(f"files[{index}].duplicate")
+        expected_paths.add(relative)
+        path = (output_root / relative).resolve()
         try:
             path.relative_to(output_root)
         except ValueError:
             mismatches.append(f"files[{index}].path")
+            continue
+        try:
+            path.relative_to(records_root)
+        except ValueError:
+            mismatches.append(f"files[{index}].arm")
             continue
         if not path.is_file():
             mismatches.append(f"files[{index}].missing")
@@ -273,17 +327,21 @@ def verify_published_records(
         if row.get("sha256") != _sha256(path):
             mismatches.append(f"files[{index}].sha256")
         content = path.read_text(errors="replace")
-        if (
-            PRIVATE_IPV4.search(content)
-            or GITHUB_TOKEN.search(content)
-            or JWT_TOKEN.search(content)
-            or PRIVATE_KEY_BLOCK.search(content)
-        ):
+        if any(pattern.search(content) for pattern in PUBLIC_SENSITIVE_PATTERNS):
             mismatches.append(f"files[{index}].sensitive")
         if path.suffix == ".jsonl":
             _, invalid = _event_lines(content)
             if invalid:
                 mismatches.append(f"files[{index}].jsonl")
+    actual_paths: set[str] = set()
+    if records_root.is_dir():
+        actual_paths = {
+            path.relative_to(output_root).as_posix()
+            for path in records_root.rglob("*")
+            if path.is_file()
+        }
+    if actual_paths - expected_paths:
+        mismatches.append("unexpected-files")
     return {
         "status": "verified" if not mismatches else "unverified",
         "mismatches": mismatches,
@@ -1054,6 +1112,12 @@ def load_arm_identity(path: Path) -> dict[str, object]:
         )
     if not isinstance(document["execution"].get("plugins"), bool):
         raise ValueError("routing arm execution plugins must be boolean")
+    expected_plugins = document["kind"] == "plugin"
+    if document["execution"]["plugins"] is not expected_plugins:
+        required = "true" if expected_plugins else "false"
+        raise ValueError(
+            f"routing {document['kind']} arm requires plugins={required}"
+        )
     if document["kind"] == "plugin":
         plugin = document.get("plugin")
         if not isinstance(plugin, Mapping):
@@ -1074,6 +1138,28 @@ def load_arm_identity(path: Path) -> dict[str, object]:
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+
+def publish_directory_atomically(
+    destination: Path, producer: Callable[[Path], object]
+) -> object:
+    """Build a new publication in staging and expose it with one rename."""
+    destination = destination.resolve()
+    if destination.exists():
+        raise ValueError("publication destination must not exist")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{destination.name}.staging-", dir=destination.parent
+        )
+    )
+    try:
+        result = producer(staging)
+        os.replace(staging, destination)
+        return result
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def load_matrix(path: Path) -> dict[str, object]:
@@ -2698,7 +2784,7 @@ def render_comparison_report(comparison: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def rebuild_pair(args: argparse.Namespace) -> int:
+def _rebuild_pair_into(args: argparse.Namespace, output: Path) -> int:
     matrix_path = Path(args.matrix).resolve(strict=True)
     review_contract_path = Path(args.review_contract).resolve(strict=True)
     evaluator_workspace = Path(__file__).resolve().parents[1]
@@ -2717,8 +2803,6 @@ def rebuild_pair(args: argparse.Namespace) -> int:
     reviewed_matrix = apply_review_contract(
         load_matrix(matrix_path), matrix_path, review_contract_path
     )
-    output = Path(args.output).resolve()
-    output.mkdir(parents=True, exist_ok=True)
     ordinary = Path(args.ordinary_workspace).resolve(strict=True)
     source = Path(args.source_workspace).resolve(strict=True)
     explicit = Path(args.explicit_source).resolve(strict=True)
@@ -2849,28 +2933,40 @@ def rebuild_pair(args: argparse.Namespace) -> int:
     _write_json(candidate_path, candidate)
     _write_json(comparison_path, comparison)
     report_path.write_text(render_comparison_report(comparison))
-    generated_scan = scan_secret_files(
-        [
-            baseline_path,
-            candidate_path,
-            comparison_path,
-            report_path,
-            *sorted(
-                path
-                for path in (output / "sanitized-records").rglob("*")
-                if path.is_file()
-            ),
-        ],
-        os.environ,
-    )
+    expected_files = {
+        baseline_path.relative_to(output).as_posix(),
+        candidate_path.relative_to(output).as_posix(),
+        comparison_path.relative_to(output).as_posix(),
+        report_path.relative_to(output).as_posix(),
+    }
+    for evidence in (baseline, candidate):
+        manifest = evidence["raw_evidence"]["published_records"]["manifest"]
+        expected_files.update(str(row["path"]) for row in manifest["files"])
+    generated_files = sorted(path for path in output.rglob("*") if path.is_file())
+    actual_files = {path.relative_to(output).as_posix() for path in generated_files}
+    if actual_files != expected_files:
+        raise ValueError("generated sanitized evidence tree is not closed")
+    generated_scan = scan_secret_files(generated_files, os.environ)
     if generated_scan["status"] != "clean":
         raise RuntimeError(
-            "generated sanitized evidence contains credential environment values: "
-            + ", ".join(match["variable"] for match in generated_scan["matches"])
+            "generated sanitized evidence contains sensitive values or patterns: "
+            + ", ".join(
+                str(match.get("variable", match.get("pattern", "unknown")))
+                for match in generated_scan["matches"]
+            )
         )
     if baseline["integrity"]["status"] != "verified" or candidate["integrity"]["status"] != "verified":
-        return 2
+        raise ValueError("paired routing evidence integrity is unverified")
     return 0
+
+
+def rebuild_pair(args: argparse.Namespace) -> int:
+    output = Path(args.output).resolve()
+    result = publish_directory_atomically(
+        output, lambda staging: _rebuild_pair_into(args, staging)
+    )
+    assert isinstance(result, int)
+    return result
 
 
 def run_matrix(args: argparse.Namespace) -> int:

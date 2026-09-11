@@ -22,6 +22,7 @@ from scripts.skill_routing_evaluation import (
     inventory_content_digest,
     load_arm_identity,
     load_matrix,
+    publish_directory_atomically,
     publish_sanitized_records,
     render_comparison_report,
     resolve_executable,
@@ -378,6 +379,23 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             path.write_text(json.dumps(document))
             with self.assertRaisesRegex(ValueError, "plugins must be boolean"):
                 load_arm_identity(path)
+
+    def test_arm_identity_binds_kind_to_plugin_execution_mode(self) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        cases = (
+            ("routing-arm-plugin.json", False, "plugin arm requires plugins=true"),
+            ("routing-arm-loose.json", True, "loose-skills arm requires plugins=false"),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "arm.json"
+            for name, plugins, message in cases:
+                document = json.loads((evidence_root / name).read_text())
+                document["execution"]["plugins"] = plugins
+                document["digest"] = document_digest(document)
+                path.write_text(json.dumps(document))
+
+                with self.assertRaisesRegex(ValueError, message):
+                    load_arm_identity(path)
 
     def test_arm_artifact_verification_detects_archive_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -825,6 +843,124 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
             "<redacted:private-ip>",
         ):
             self.assertIn(marker, retained)
+
+    def test_published_native_records_redact_critical_credential_formats(self) -> None:
+        credentials = {
+            "gitlab": "glpat-" + "a" * 20,
+            "aws": "AKIA" + "B" * 16,
+            "google": "AIza" + "c" * 35,
+            "slack": "xoxb-" + "1234567890" + "-abcdefghijklmnop",
+            "stripe": "sk_live_" + "d" * 24,
+            "database": (
+                "postgresql://" + "operator" + ":private-password"
+                + "@db.example.invalid/data"
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run = root / "run"
+            raw = run / "raw/example/turn-1.jsonl"
+            stderr = run / "raw/example/turn-1.stderr"
+            raw.parent.mkdir(parents=True)
+            raw.write_text(
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "agent_message",
+                            "text": " ".join(credentials.values()),
+                        },
+                    }
+                )
+                + "\n"
+            )
+            stderr.write_text("")
+            sample = {
+                "case_id": "example",
+                "raw_manifest": [
+                    {
+                        "turn": 1,
+                        "jsonl": {"path": "raw/example/turn-1.jsonl"},
+                        "stderr": {"path": "raw/example/turn-1.stderr"},
+                    }
+                ],
+                "rollout_identity": {
+                    "rollout_sha256": "sha256:" + "a" * 64,
+                    "status": "recorded",
+                },
+            }
+
+            published = publish_sanitized_records(
+                run, root / "published", "loose", [sample], {}
+            )
+            verification = verify_published_records(published, root / "published")
+            retained = "\n".join(
+                (root / "published" / row["path"]).read_text()
+                for row in published["files"]
+            )
+
+        self.assertEqual(verification["status"], "verified", verification)
+        for credential in credentials.values():
+            self.assertNotIn(credential, retained)
+        for marker in (
+            "<redacted:gitlab-token>",
+            "<redacted:aws-access-key>",
+            "<redacted:google-api-key>",
+            "<redacted:slack-token>",
+            "<redacted:stripe-key>",
+            "<redacted:database-credentials>",
+        ):
+            self.assertIn(marker, retained)
+
+    def test_published_record_verification_rejects_unmanifested_files(self) -> None:
+        published = {
+            "schema": "openubmc.skill-routing-sanitized-records.v1",
+            "arm": "loose",
+            "file_count": 0,
+            "files": [],
+        }
+        published["digest"] = document_digest(published)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stale = root / "sanitized-records/loose/example/stale.jsonl"
+            stale.parent.mkdir(parents=True)
+            stale.write_text('{"target":"10.20.30.40"}\n')
+
+            verification = verify_published_records(published, root)
+
+        self.assertEqual(verification["status"], "unverified")
+        self.assertIn("unexpected-files", verification["mismatches"])
+
+    def test_atomic_publication_rejects_an_existing_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "published"
+            destination.mkdir()
+            retained = destination / "retained.txt"
+            retained.write_text("original\n")
+
+            with self.assertRaisesRegex(ValueError, "must not exist"):
+                publish_directory_atomically(
+                    destination,
+                    lambda staging: (staging / "new.txt").write_text("new\n"),
+                )
+
+            self.assertEqual(retained.read_text(), "original\n")
+            self.assertFalse((destination / "new.txt").exists())
+
+    def test_atomic_publication_removes_staging_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            destination = parent / "published"
+
+            def fail(staging: Path) -> None:
+                (staging / "invalid.jsonl").write_text("not-json\n")
+                raise ValueError("verification failed")
+
+            with self.assertRaisesRegex(ValueError, "verification failed"):
+                publish_directory_atomically(destination, fail)
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(parent.glob(".published.staging-*")), [])
 
     def test_operational_auth_failure_is_separate_from_route_result(self) -> None:
         observation = {
