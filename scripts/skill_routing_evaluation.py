@@ -2502,6 +2502,16 @@ def compare_arm_evidence(
         candidate_identity, Mapping
     ):
         raise ValueError("paired arm identities are missing")
+    if (
+        baseline_identity.get("kind") != "loose-skills"
+        or candidate_identity.get("kind") != "plugin"
+    ):
+        raise ValueError("paired arm roles must be loose-skills then plugin")
+    if (
+        baseline_identity.get("arm_id") == candidate_identity.get("arm_id")
+        or baseline_identity.get("digest") == candidate_identity.get("digest")
+    ):
+        raise ValueError("paired arm identities must be distinct")
     if baseline_identity.get("source") != candidate_identity.get("source"):
         raise ValueError("paired source identity does not match")
     if baseline.get("evaluator") != candidate.get("evaluator"):

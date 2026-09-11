@@ -1555,6 +1555,27 @@ class SkillRoutingEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "baseline arm identity"):
             compare_arm_evidence(baseline, candidate)
 
+    def test_comparison_rejects_a_valid_plugin_identity_in_the_baseline_role(self) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        baseline = json.loads((evidence_root / "routing-evidence-loose.json").read_text())
+        candidate = json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
+        baseline["arm_identity"] = copy.deepcopy(candidate["arm_identity"])
+        baseline["digest"] = document_digest(baseline)
+
+        with self.assertRaisesRegex(ValueError, "paired arm roles"):
+            compare_arm_evidence(baseline, candidate)
+
+    def test_comparison_requires_distinct_arm_identifiers(self) -> None:
+        evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
+        baseline = json.loads((evidence_root / "routing-evidence-loose.json").read_text())
+        candidate = json.loads((evidence_root / "routing-evidence-plugin.json").read_text())
+        candidate["arm_identity"]["arm_id"] = baseline["arm_identity"]["arm_id"]
+        refresh_embedded_arm_digest(candidate["arm_identity"])
+        candidate["digest"] = document_digest(candidate)
+
+        with self.assertRaisesRegex(ValueError, "paired arm identities must be distinct"):
+            compare_arm_evidence(baseline, candidate)
+
     def test_checked_in_evaluator_identity_matches_its_declared_commit(self) -> None:
         evidence_root = ROOT / "evaluation/plugin-tasks/routing-evidence"
         baseline = json.loads((evidence_root / "routing-evidence-loose.json").read_text())
