@@ -63,7 +63,7 @@ class _ResponsesHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
-def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, timeout: int = 180) -> dict:
+def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, timeout: int = 180, persistent: bool = False) -> dict:
     machine = platform.machine().lower()
     arch, target = ('arm64', 'aarch64') if machine in {'arm64','aarch64'} else ('x64','x86_64')
     executable = ROOT/f'plugin/host/node_modules/@openai/codex-linux-{arch}/vendor/{target}-unknown-linux-musl/bin/codex'
@@ -81,7 +81,7 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                OPENUBMC_TARGET_RUNTIME_STATE_DIR=str(root/'runtime-state'), OPENUBMC_CODEX_PROBE_API_KEY='local-probe',
                OPENUBMC_MCP_MODEL_IDENTITY=json.dumps({'model':'gpt-5.6-sol'}),
                OPENUBMC_MCP_CODEX_IDENTITY=json.dumps({'version':'codex-cli 0.153.4'}))
-    argv = [str(executable), 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+    argv = [str(executable), 'exec', '--json', *([] if persistent else ['--ephemeral']), '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
             '--color', 'never', '--model', 'gpt-5.6-sol', '-C', str(root),
             '-c', 'features.plugins=true', '-c', 'model_provider="openubmc_plugin_probe"',
             '-c', 'model_providers.openubmc_plugin_probe.name="OpenUBMC plugin probe"',
@@ -92,7 +92,7 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
             'Exercise the local Runtime request validation boundary without contacting a target.']
     runs = []
     try:
-        for _ in range(2):
+        for _ in range(1 if persistent else 2):
             start = len(server.requests)
             process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
@@ -140,7 +140,7 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                 raise ValueError('native Codex did not directly own exactly one Runtime process')
             lifecycle = matched[0]
             if lifecycle.get('source_commit') != source_commit or lifecycle.get('client') != 'codex' or not lifecycle.get('formal_run') or lifecycle.get('active_requests') != 0 or lifecycle.get('lifecycle_state') != 'stopped' or lifecycle.get('exit_reason') != 'client-terminated' or not lifecycle.get('parent_identity_verified'):
-                raise ValueError('native Runtime lifecycle failed to close with the selected source identity')
+                raise ValueError('native Runtime lifecycle failed to close: '+str({key:lifecycle.get(key) for key in ('source_commit','client','formal_run','active_requests','lifecycle_state','exit_reason','parent_identity_verified')}))
             if Path('/proc').joinpath(str(lifecycle['process_id'])).exists():
                 raise ValueError('Runtime process survived its Codex parent')
             events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
@@ -158,20 +158,12 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
             'transport':'local-hermetic-responses', 'network_scope':'loopback'}
 
 
-def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id: str) -> dict:
+def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id: str, old: Path, before: bytes) -> dict:
     """Exercise persisted thread/resume after obsolete manual launcher removal."""
     config = Path(env['CODEX_HOME'])/'config.toml'
-    before = config.read_bytes()
     marketplace = plugin.parent.parent.name
-    old = Path(env['CODEX_HOME'])/'plugins/cache'/marketplace/'openubmc/0.0.0'
-    old.mkdir(parents=True)
-    import shutil
-    shutil.rmtree(old)
-    overrides = ''
-    for name, capability in [('openubmc-target-runtime', 'runtime'), ('openubmc-kb', 'kb')]:
-        overrides += (f'\n[mcp_servers.{name}]\ncommand = "python3"\n'
-                      f'args = {json.dumps(["-I", str(old/"scripts/pluginctl.py"), capability])}\n')
-    config.write_bytes(before + overrides.encode())
+    if old.exists():
+        raise ValueError('old native cache must be absent before resume qualification')
     cli = [sys.executable, '-I', str(plugin/'scripts/pluginctl.py'), '--target-plugin', 'openubmc@'+marketplace]
     check = subprocess.run([*cli, 'doctor'], env=env, capture_output=True, text=True, timeout=30)
     if check.returncode != 2 or not json.loads(check.stdout)['codex_configuration']['changes']['mcp_servers']:
@@ -202,7 +194,7 @@ def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id
             raise ValueError('native app-server closed before '+method)
         call(1, 'initialize', {'clientInfo': {'name':'upgrade-qualification', 'version':'1'},
                               'capabilities': {'experimentalApi':True}})
-        resumed = call(2, 'thread/resume', {'threadId':thread_id, 'cwd':str(root)})
+        resumed = call(2, 'thread/resume', {'threadId':thread_id, 'cwd':str(root), 'modelProvider':'openai'})
         if resumed['thread']['id'] != thread_id:
             raise ValueError('resume returned another thread')
     finally:
@@ -218,7 +210,60 @@ def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id
             'repaired_servers':preview['changes']['mcp_servers'], 'configuration_preserved':True}
 
 
-def qualify(source: Path, ref: str, archive: Path) -> dict:
+BASELINE_SHA256 = '02d241a9c467fa1df9774ef88c281f4eea0522e12d7a695d95426d17731ca2e9'
+
+
+def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None) -> dict:
+    """Install a published baseline, persist a task, then upgrade its native cache."""
+    import shutil
+    import urllib.request
+    workspace = root/'upgrade'
+    workspace.mkdir()
+    if baseline is None:
+        baseline = workspace/'baseline.tar.gz'
+        url = 'https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/download/v2.0.13/openubmc-v2.0.13-codex.tar.gz'
+        with urllib.request.urlopen(url, timeout=60) as response:
+            baseline.write_bytes(response.read(4*1024*1024))
+    old_lock, old_files = read_archive(baseline, BASELINE_SHA256)
+    new_lock, new_files = read_archive(archive)
+    home = workspace/'home'; codex = workspace/'codex'; market = workspace/'market'
+    codex.mkdir(); source = market/'plugins/openubmc'
+    manifest = market/'.agents/plugins/marketplace.json'
+    manifest.parent.mkdir(parents=True)
+    manifest.write_bytes(canonical({'name':'upgrade-test','plugins':[{'name':'openubmc','source':{'source':'local','path':'./plugins/openubmc'}}]}))
+    materialize(source, old_files)
+    env = {key:value for key,value in os.environ.items() if not key.startswith(('CODEX_', 'OPENAI_', 'OPENUBMC_', 'XDG_'))}
+    env.update(HOME=str(home), CODEX_HOME=str(codex), XDG_CONFIG_HOME=str(home/'.config'),
+               XDG_DATA_HOME=str(home/'data'), XDG_CACHE_HOME=str(home/'cache'))
+    command(['codex','plugin','marketplace','add',str(market),'--json'],env)
+    installed = command(['codex','plugin','add','openubmc@upgrade-test','--json'],env)
+    old_plugin = Path(installed['installedPath'])
+    command([sys.executable,'-I',str(old_plugin/'scripts/pluginctl.py'),'prepare'],env)
+    persisted = native_exec_probe(env,workspace,old_lock['source_commit'],persistent=True)
+    config = codex/'config.toml'; before = config.read_bytes()
+    overrides = ''
+    for name, capability in [('openubmc-target-runtime','runtime'),('openubmc-kb','kb')]:
+        overrides += (f'\n[mcp_servers.{name}]\ncommand="python3"\n'
+                      f'args={json.dumps(["-I",str(old_plugin/"scripts/pluginctl.py"),capability])}\n')
+    config.write_bytes(before + overrides.encode())
+    shutil.rmtree(source)
+    materialize(source,new_files)
+    updated = command(['codex','plugin','add','openubmc@upgrade-test','--json'],env)
+    plugin = Path(updated['installedPath'])
+    if plugin == old_plugin or updated['version'] != new_lock['version']:
+        raise ValueError('native upgrade did not select a new version')
+    native_removed = not old_plugin.exists()
+    if old_plugin.exists():
+        shutil.rmtree(old_plugin)  # Explicitly exercise cache garbage collection.
+    command([sys.executable,'-I',str(plugin/'scripts/pluginctl.py'),'prepare'],env)
+    result = native_resume_probe(env,workspace,plugin,persisted['runs'][0]['thread_id'],old_plugin,before)
+    result.update(from_version=old_lock['version'],to_version=new_lock['version'],
+                  baseline_archive_sha256=BASELINE_SHA256,native_upgrade=True,
+                  old_cache_removed_by='native-client' if native_removed else 'qualification-gc')
+    return result
+
+
+def qualify(source: Path, ref: str, archive: Path, baseline: Path | None = None) -> dict:
     report = build(source, ref, archive)
     codex_version = subprocess.check_output(['codex', '--version'], text=True).strip()
     if codex_version != 'codex-cli 0.153.4':
@@ -280,7 +325,7 @@ def qualify(source: Path, ref: str, archive: Path) -> dict:
             if Path(server['transport']['cwd']).resolve() != plugin:
                 raise ValueError('MCP launcher does not resolve to the installed plugin')
         native_exec = native_exec_probe(env, root, lock['source_commit'])
-        resume = native_resume_probe(env, root, plugin, native_exec['runs'][0]['thread_id'])
+        resume = native_upgrade_probe(root, archive, baseline)
         distribution = Path(installed['source'])
         admin = [sys.executable, '-I', str(distribution/'scripts/plugin_admin.py')]
         audit = command([*admin, 'audit', '--home', str(home), '--codex-home', str(codex)], env)
@@ -312,9 +357,10 @@ def main() -> int:
     parser.add_argument('--source-ref', default='HEAD')
     parser.add_argument('--archive', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--baseline-archive', type=Path)
     args = parser.parse_args()
     try:
-        report = qualify(args.source.resolve(), args.source_ref, args.archive.resolve())
+        report = qualify(args.source.resolve(), args.source_ref, args.archive.resolve(), args.baseline_archive)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         report = {'ok':False, 'error':str(error)}
     args.output.parent.mkdir(parents=True, exist_ok=True)

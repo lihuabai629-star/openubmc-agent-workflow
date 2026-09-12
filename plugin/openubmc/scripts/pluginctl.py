@@ -469,7 +469,8 @@ def main() -> int:
             skill_paths = [item['path'] for item in json.loads(content['workflow.json'])['skills']]
             if args.command in ('migrate', 'repair-overrides'):
                 operation = module.preview if args.preview else module.migrate
-                result = operation(args.home, skill_paths, args.codex_home, mode='repair-overrides' if args.command == 'repair-overrides' else args.migration_mode, target_plugin=args.target_plugin)
+                binding = {'expected_before_digest': args.expected_config_digest} if not args.preview else {}
+                result = operation(args.home, skill_paths, args.codex_home, mode='repair-overrides' if args.command == 'repair-overrides' else args.migration_mode, target_plugin=args.target_plugin, **binding)
             else:
                 result = module.restore(args.home, args.transaction, args.codex_home)
             print(json.dumps(result, sort_keys=True)); return 0 if result['ok'] else 2

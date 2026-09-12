@@ -75,6 +75,19 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
     def mode(self, value):
         (self.root/'mode').write_text(value)
 
+    def test_page_repair_timeout_stops_dependency_workers(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('repair_page', ROOT/'openubmc-environment-setup/scripts/config_page.py')
+        page = importlib.util.module_from_spec(spec); spec.loader.exec_module(page)
+        self.mode('hang')
+        controller = page.PluginMaintenance(self.plugin, environment=self.env, timeout=2)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            controller.dispatch({'action':'dependencies', 'capability':'kb'})
+        pids = [int(value) for value in (self.root/'pids').read_text().split()]
+        for pid in pids:
+            stat = Path('/proc')/str(pid)/'stat'
+            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == 'Z', f'worker {pid} survived')
+
     def test_runtime_prepares_and_launches_when_node_and_npm_are_unavailable(self):
         node = self.root / 'bin' / 'node'
         node.write_text('#!/bin/sh\necho Node-unavailable >&2\nexit 17\n')

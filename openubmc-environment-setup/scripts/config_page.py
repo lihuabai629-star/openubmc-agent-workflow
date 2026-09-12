@@ -4,6 +4,7 @@
 from __future__ import annotations
 import argparse
 import copy
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
@@ -113,8 +114,9 @@ def import_legacy_targets(text):
 class PluginMaintenance:
     """Bounded local operations through the immutable plugin CLI."""
 
-    def __init__(self, plugin_root, *, environment=None):
+    def __init__(self, plugin_root, *, environment=None, timeout=660):
         self.root = Path(plugin_root)
+        self.timeout = timeout
         self.environment = dict(os.environ if environment is None else environment)
         self.home = Path(self.environment.get("HOME", str(Path.home())))
         self.codex = Path(self.environment.get("CODEX_HOME", str(self.home/".codex")))
@@ -123,16 +125,36 @@ class PluginMaintenance:
         self.transaction = None
 
     def command(self, *arguments):
-        result = subprocess.run(
+        process = subprocess.Popen(
             [sys.executable, "-I", "-B", str(self.root/"scripts/pluginctl.py"),
              *arguments, "--home", str(self.home), "--codex-home", str(self.codex)],
-            env=self.environment, capture_output=True, text=True, timeout=660,
+            env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, start_new_session=True,
         )
         try:
-            value = json.loads(result.stdout or result.stderr)
+            stdout, stderr = process.communicate(timeout=self.timeout)
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+            finally:
+                process.stdout.close()
+                process.stderr.close()
+            raise
+        try:
+            value = json.loads(stdout or stderr)
         except ValueError:
             raise ValueError("plugin_operation_failed") from None
-        if result.returncode not in (0, 2) or not isinstance(value, dict):
+        if process.returncode not in (0, 2) or not isinstance(value, dict):
             raise ValueError("plugin_operation_failed")
         return value
 
@@ -170,7 +192,7 @@ class PluginMaintenance:
             if not self.preview_id or data.get("preview_id") != self.preview_id or self.config_bytes() != self.preview_config:
                 raise ConfigurationConflict("configuration_conflict")
             self.preview_id = None
-            report = self.command("repair-overrides")
+            report = self.command("repair-overrides", "--expected-config-digest", hashlib.sha256(self.preview_config).hexdigest())
             if not report.get("ok"):
                 raise ConfigurationConflict("configuration_conflict")
             self.transaction = report.get("transaction")
