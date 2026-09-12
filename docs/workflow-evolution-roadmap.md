@@ -440,3 +440,5 @@ fresh 产品晋级仍必须重新取得：当前 Runtime Run ID、终态 Outcome
 6. 只把可跨会话复用的规则写入 project lesson store。
 
 本文是讨论索引，不替代实现测试、ADR、Release Lock 或原始实验工件。
+
+插件维护现状与能力投入顺序见[插件维护与能力方向](plugin-maintenance-direction.md)。

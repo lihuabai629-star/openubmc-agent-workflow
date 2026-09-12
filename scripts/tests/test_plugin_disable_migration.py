@@ -215,6 +215,17 @@ class DisableMigrationTests(unittest.TestCase):
         self.assertTrue(self.cli('repair-overrides')['changed'])
         self.assertNotIn('mcp_servers', self.config.read_text())
 
+    def test_override_apply_rejects_configuration_added_after_preview(self):
+        old = self.home/'.codex/plugins/cache/openubmc-public/openubmc/2.0.12/scripts/pluginctl.py'
+        before = '[plugins."openubmc@openubmc-public"]\nenabled = true\n'
+        self.config.write_text(before)
+        self.cli('repair-overrides', '--preview')
+        changed = (before + '[mcp_servers.openubmc-kb]\ncommand = "python3"\n'
+                   f'args = {json.dumps(["-I", str(old), "kb"])}\n')
+        self.config.write_text(changed)
+        self.cli('repair-overrides', '--expected-config-digest', hashlib.sha256(before.encode()).hexdigest(), success=False)
+        self.assertEqual(self.config.read_text(), changed)
+
     def test_restore_refuses_a_changed_installation_owner(self):
         applied = self.cli('migrate', '--disable-only')
         disabled = self.config.read_bytes()

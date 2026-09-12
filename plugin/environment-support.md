@@ -85,6 +85,12 @@ For a legacy loose installation or `openubmc@personal`, use `pluginctl.py migrat
 
 Use `codex plugin list` to identify the installed marketplace and `codex plugin remove openubmc@<marketplace>` to uninstall. For a Git marketplace, refresh with `codex plugin marketplace upgrade <marketplace>` and reinstall with `codex plugin add openubmc@<marketplace>`. Start a new Codex task after a version change.
 
+The local configuration page includes “插件状态与修复”: check version, package integrity,
+Runtime/KB startup and user-level override conflicts. Preview recognized override removal
+before applying it; the page retains a guarded undo for that repair during the page session.
+Use the per-service dependency repair buttons when dependencies are unavailable. Custom
+wrappers and environment settings require reconciliation and are retained.
+
 After a native marketplace upgrade, run the new package's `doctor`. Its
 `codex_configuration` result checks the selected Codex home's user-level MCP overrides;
 `startup_ready` describes the packaged servers only. A healthy package does not prove that

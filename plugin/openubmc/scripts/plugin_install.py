@@ -319,7 +319,7 @@ def preview(home: Path, skill_paths: list[str], codex_home: Path | None = None, 
 
 
 def migrate(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
-            mode: str = 'remove', target_plugin: str = 'openubmc@openubmc-public') -> dict:
+            mode: str = 'remove', target_plugin: str = 'openubmc@openubmc-public', expected_before_digest: str | None = None) -> dict:
     home = home.resolve()
     journals = journal_root(home)
     journals.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -331,6 +331,8 @@ def migrate(home: Path, skill_paths: list[str], codex_home: Path | None = None, 
             before, after = (root/'before.toml').read_bytes(), (root/'after.toml').read_bytes()
         else:
             record, before, after = plan(home, skill_paths, codex_home, mode=mode, target_plugin=target_plugin)
+            if expected_before_digest is not None and record['before_digest'] != expected_before_digest:
+                raise ValueError('Codex configuration changed since preview')
             if before == after and (mode == 'disable-only' or not record['links']):
                 return {'ok': True, 'changed': False, 'mode': mode}
             transaction = uuid.uuid4().hex
@@ -340,6 +342,8 @@ def migrate(home: Path, skill_paths: list[str], codex_home: Path | None = None, 
             write_atomic(root/'before.toml', before)
             write_atomic(root/'after.toml', after)
             save(root/'transaction.json', record)
+        if expected_before_digest is not None and record['before_digest'] != expected_before_digest:
+            raise ValueError('Codex configuration changed since preview')
         validate_ownership_state(home, record)
         config = (codex_home or home/'.codex').resolve()/'config.toml'
         if config.is_symlink():
