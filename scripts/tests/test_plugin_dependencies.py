@@ -28,6 +28,7 @@ class DependencyPreparationTests(unittest.TestCase):
                  'skills/openubmc-target-runtime/openubmc_target_runtime/credential_file.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/credential_file.py').read_bytes(),
                  'skills/openubmc-target-runtime/openubmc_target_runtime/configuration.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/configuration.py').read_bytes(),
                  'skills/openubmc-target-runtime/openubmc_target_runtime/credentials.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/credentials.py').read_bytes(),
+                 'scripts/plugin_install.py': (ROOT/'plugin/openubmc/scripts/plugin_install.py').read_bytes(),
                  'scripts/pluginctl.py': (ROOT/'plugin/openubmc/scripts/pluginctl.py').read_bytes()}
         for name, data in files.items():
             path = self.plugin/name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
@@ -63,6 +64,7 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
                         XDG_DATA_HOME=str(self.root/'data'), PIP_NO_INDEX='1', FIXTURE_ROOT=str(self.root))
         self.env['XDG_CACHE_HOME'] = str(self.root/'cache')
         self.env['XDG_CONFIG_HOME'] = str(self.root/'config')
+        self.env['CODEX_HOME'] = str(self.root/'codex')
         self.env.pop('OPENUBMC_CREDENTIALS_FILE', None)
         self.env.pop('OPENUBMC_DEBUG_CREDENTIALS_FILE', None)
         self.cli = [sys.executable,'-I',str(self.plugin/'scripts/pluginctl.py'),'prepare']
@@ -106,6 +108,26 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.assertTrue(report['capabilities']['runtime']['startup_ready'])
         self.assertFalse(report['capabilities']['kb']['dependencies_ready'])
         self.assertFalse(report['startup_ready'])
+
+    def test_doctor_detects_overrides_even_when_packaged_runtime_is_healthy(self):
+        self.assertEqual(self.prepare('--capability', 'runtime', '--offline').returncode, 0)
+        codex = Path(self.env['CODEX_HOME'])
+        codex.mkdir()
+        old = codex/'plugins/cache/openubmc-public/openubmc/2.0.12/scripts/pluginctl.py'
+        config = codex/'config.toml'
+        original = ('[plugins."openubmc@openubmc-public"]\nenabled = true\n'
+                    '[mcp_servers.openubmc-target-runtime]\ncommand = "python3"\n'
+                    f'args = {json.dumps(["-I", str(old), "runtime"])}\n')
+        config.write_text(original)
+        result = subprocess.run([*self.cli[:-1], 'doctor', '--capability', 'runtime'],
+                                env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report['mcp_health']['runtime']['ok'])
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['codex_configuration']['changes']['mcp_servers'], ['openubmc-target-runtime'])
+        self.assertIn('repair-overrides', report['codex_configuration']['repair_action'])
+        self.assertEqual(config.read_text(), original)
 
     def test_malformed_kb_receipt_does_not_hide_healthy_runtime(self):
         prepared = self.prepare('--offline')
