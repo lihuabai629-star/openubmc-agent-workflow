@@ -429,9 +429,9 @@ def positive_timeout(value: str) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'configure', 'migrate', 'restore-legacy'])
+    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'configure', 'migrate', 'repair-overrides', 'restore-legacy'])
     parser.add_argument('--home', type=Path, default=Path.home())
-    parser.add_argument('--codex-home', type=Path)
+    parser.add_argument('--codex-home', type=Path, default=Path(os.environ['CODEX_HOME']) if os.environ.get('CODEX_HOME') else None)
     parser.add_argument('--transaction', default='')
     migration_mode = parser.add_mutually_exclusive_group()
     migration_mode.add_argument('--disable-only', dest='migration_mode', action='store_const', const='disable-only', default='disable-only', help='Disable legacy registrations while retaining files (default)')
@@ -462,14 +462,14 @@ def main() -> int:
         write_timing(args.timings, 'verify', started)
         report = {'ok': True, 'source_commit': lock['source_commit'], 'version': lock['version'],
                   'content_digest': lock['content_digest'], 'skills': lock['skills']}
-        if args.command in ('migrate', 'restore-legacy'):
+        if args.command in ('migrate', 'repair-overrides', 'restore-legacy'):
             import types
             module = types.ModuleType('openubmc_plugin_install')
             exec(compile(content['scripts/plugin_install.py'], '<verified-plugin-install>', 'exec'), module.__dict__)
             skill_paths = [item['path'] for item in json.loads(content['workflow.json'])['skills']]
-            if args.command == 'migrate':
+            if args.command in ('migrate', 'repair-overrides'):
                 operation = module.preview if args.preview else module.migrate
-                result = operation(args.home, skill_paths, args.codex_home, mode=args.migration_mode, target_plugin=args.target_plugin)
+                result = operation(args.home, skill_paths, args.codex_home, mode='repair-overrides' if args.command == 'repair-overrides' else args.migration_mode, target_plugin=args.target_plugin)
             else:
                 result = module.restore(args.home, args.transaction, args.codex_home)
             print(json.dumps(result, sort_keys=True)); return 0 if result['ok'] else 2
@@ -515,7 +515,17 @@ def main() -> int:
             report['credentials'] = local_credentials_status(content)
             report['credentials_configured'] = report['credentials']['configured']
             report['startup_ready'] = report['dependencies_ready'] and all(item.get('ok') for item in report['mcp_health'].values())
-            report['ok'] = report['startup_ready']
+            import types
+            module = types.ModuleType('openubmc_plugin_install')
+            exec(compile(content['scripts/plugin_install.py'], '<verified-plugin-install>', 'exec'), module.__dict__)
+            configuration = module.preview(args.home, [], args.codex_home,
+                                           mode='repair-overrides', target_plugin=args.target_plugin)
+            configuration['ready'] = configuration['ok'] and not configuration['would_change']
+            if not configuration['ready']:
+                configuration['repair_action'] = ('pluginctl.py repair-overrides --preview; '
+                    'reconcile custom settings if reported, then pluginctl.py repair-overrides')
+            report['codex_configuration'] = configuration
+            report['ok'] = report['startup_ready'] and configuration['ready']
         print(json.dumps(report, sort_keys=True))
         return 0 if report['ok'] else 2
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:

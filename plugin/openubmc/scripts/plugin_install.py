@@ -129,11 +129,58 @@ def removal_changes(before: bytes, after: bytes, links: list[dict]) -> dict:
             'plugins': [], 'links': sorted(item['path'] for item in links)}
 
 
+def override_plan(home: Path, codex_root: Path, target_plugin: str) -> tuple[dict, bytes, bytes]:
+    """Remove only recognizable native-cache launch overrides, never arbitrary MCPs."""
+    if not re.fullmatch(r'openubmc@[A-Za-z0-9_-]+', target_plugin):
+        raise ValueError('override repair requires an openubmc marketplace plugin')
+    config = codex_root/'config.toml'
+    if config.is_symlink():
+        raise ValueError('managed configuration files must not be symbolic links')
+    before = config.read_bytes() if config.is_file() else b''
+    document = tomllib.loads(before.decode())
+    selected = set()
+    cache = codex_root/'plugins/cache'/target_plugin.split('@')[1]/'openubmc'
+    for name, capability in [('openubmc-target-runtime', 'runtime'), ('openubmc-kb', 'kb')]:
+        current = document.get('mcp_servers', {}).get(name)
+        if current is None:
+            continue
+        args = current.get('args', [])
+        paths = [arg for arg in args if isinstance(arg, str) and arg.endswith('/scripts/pluginctl.py')]
+        if len(paths) != 1:
+            raise ValueError('MCP override is not a recognized plugin launcher: ' + name)
+        path = Path(paths[0])
+        try:
+            relative = path.relative_to(cache)
+        except ValueError:
+            raise ValueError('MCP override is outside the selected plugin cache: ' + name) from None
+        if len(relative.parts) != 3 or relative.parts[1:] != ('scripts', 'pluginctl.py') or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', relative.parts[0]):
+            raise ValueError('MCP override has an unrecognized version path: ' + name)
+        index = args.index(paths[0])
+        flags = args[:index]
+        tail = args[index + 1:]
+        if (current.get('command') != 'python3' or flags not in (['-I'], ['-I', '-B'], ['-B', '-I'])
+                or tail not in ([capability], [capability, '--prepare-on-start'])):
+            raise ValueError('MCP override has custom launch arguments: ' + name)
+        if set(current) - {'command', 'args', 'enabled', 'startup_timeout_sec', 'tool_timeout_sec', 'required'}:
+            raise ValueError('MCP override contains custom settings; reconcile before repair: ' + name)
+        selected.add(name)
+    if selected and document.get('plugins', {}).get(target_plugin, {}).get('enabled') is not True:
+        raise ValueError('enable the selected native plugin before repairing overrides')
+    after = migration_config(before.decode(), selected, set()).encode()
+    record = {'schema': 'openubmc.plugin-migration.v1', 'home': str(home), 'codex_home': str(codex_root),
+              'before_digest': digest(before), 'after_digest': digest(after), 'links': [],
+              'config_existed': config.is_file(), 'status': 'prepared', 'mode': 'repair-overrides',
+              'changes': removal_changes(before, after, []), 'target_plugin': target_plugin}
+    return record, before, after
+
+
 def plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
          mode: str = 'remove', target_plugin: str = 'openubmc@openubmc-public') -> tuple[dict, bytes, bytes]:
-    if mode not in {'remove', 'disable-only'}:
+    if mode not in {'remove', 'disable-only', 'repair-overrides'}:
         raise ValueError('invalid migration mode')
     codex_root = (codex_home or home/'.codex').resolve()
+    if mode == 'repair-overrides':
+        return override_plan(home, codex_root, target_plugin)
     config = codex_root/'config.toml'
     state_path = home/'.config/openubmc/environment-state.json'
     if config.is_symlink() or state_path.is_symlink():
@@ -217,7 +264,7 @@ def pending_migration(home: Path, codex_home: Path | None, mode: str, target_plu
                 raise ValueError('incomplete migration journal belongs to another home')
             if record.get('mode', 'remove') != mode:
                 raise ValueError('incomplete migration uses another mode; reconcile that mode first')
-            if mode == 'disable-only' and record.get('target_plugin') != target_plugin:
+            if mode in {'disable-only', 'repair-overrides'} and record.get('target_plugin') != target_plugin:
                 raise ValueError('incomplete migration preserves a different target plugin')
             root = path.parent
             before_path, after_path = root/'before.toml', root/'after.toml'
