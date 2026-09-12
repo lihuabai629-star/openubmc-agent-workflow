@@ -189,6 +189,23 @@ class DisableMigrationTests(unittest.TestCase):
         self.cli('restore-legacy', '--transaction', applied['transaction'], success=False)
         self.assertEqual(config.read_text(), changed)
 
+    def test_override_preview_preserves_empty_tables_without_changes(self):
+        for original in ('[mcp_servers]\n', '[skills]\n', '[skills]\nconfig = []\n'):
+            with self.subTest(original=original):
+                self.config.write_text(original)
+                self.assertFalse(self.cli('repair-overrides', '--preview')['would_change'])
+                self.assertFalse(self.cli('repair-overrides')['changed'])
+                self.assertEqual(self.config.read_text(), original)
+
+    def test_override_removal_preserves_unrelated_empty_tables(self):
+        old = self.home/'.codex/plugins/cache/openubmc-public/openubmc/2.0.12/scripts/pluginctl.py'
+        original = ('[skills]\nconfig = []\n[plugins."openubmc@openubmc-public"]\nenabled = true\n'
+                    '[mcp_servers.openubmc-target-runtime]\ncommand = "python3"\n'
+                    f'args = {json.dumps(["-I", str(old), "runtime"])}\n')
+        self.config.write_text(original)
+        self.cli('repair-overrides')
+        self.assertEqual(self.config.read_text(), original.split('[mcp_servers.')[0])
+
     def test_restore_refuses_a_changed_installation_owner(self):
         applied = self.cli('migrate', '--disable-only')
         disabled = self.config.read_bytes()

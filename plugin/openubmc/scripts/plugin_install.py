@@ -44,9 +44,9 @@ def migration_config(text: str, servers: set[str], targets: set[str]) -> str:
     expected = copy.deepcopy(before)
     for name in servers:
         expected.get('mcp_servers', {}).pop(name, None)
-    if not expected.get('mcp_servers'):
+    if servers and not expected.get('mcp_servers'):
         expected.pop('mcp_servers', None)
-    if 'config' in expected.get('skills', {}):
+    if targets and 'config' in expected.get('skills', {}):
         expected['skills']['config'] = [row for row in expected['skills']['config'] if row.get('path') not in targets]
         if not expected['skills']['config']:
             expected['skills'].pop('config')
@@ -62,6 +62,8 @@ def migration_config(text: str, servers: set[str], targets: set[str]) -> str:
                 table = tomllib.loads(header+'\n')
             except tomllib.TOMLDecodeError:
                 table = {}
+            if table == {'mcp_servers': {}}:
+                expected.setdefault('mcp_servers', {})
             if set(table.get('mcp_servers', {})) & servers:
                 skip = True
             if header == '[[skills.config]]':
