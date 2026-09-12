@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 import uuid
 
 from package_plugin import build
@@ -170,7 +171,7 @@ def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id
         raise ValueError('obsolete override was not detected')
     preview = command([*cli, 'repair-overrides', '--preview'], env)
     repair = command([*cli, 'repair-overrides'], env)
-    if not repair.get('changed') or config.read_bytes() != before:
+    if not repair.get('changed') or tomllib.loads(config.read_text()) != tomllib.loads(before.decode()):
         raise ValueError('override repair did not preserve the original configuration')
     servers = command(['codex', 'mcp', 'list', '--json'], env)
     for name in ('openubmc-target-runtime', 'openubmc-kb'):
