@@ -53,6 +53,7 @@ operation identities, retry safety, target fencing, or terminal success.
 | **Hardware Coverage** | The required and observed protocol/device set bound to target Evidence. Coverage is protocol-specific; SATA/SAS observations do not prove NVMe behavior. |
 | **Session Outcome** | A governance projection generated from a terminal Outcome for review and possible promotion. |
 | **Target epoch** | A monotonic identity for the observed target state used to reject stale verification and unsafe replay. |
+| **Device association** | A non-secret local mapping from a BMC IP to its OS IP in an activated configuration snapshot. It supplies an address for an OS task; it does not authorize a connection or expand a Run's target scope. |
 | **Reconcile** | Read-first recovery of an unknown Effect using the same durable identity; it never silently creates a replacement operation. |
 | **PlanResolver** | An isolated Runtime-internal experimental Module that records one model planning Effect, validates a bounded proposal, and freezes an inert PlanRevision. It is not composed into production Run execution. |
 | **PlanProposal** | Versioned model output bound to one invocation and Run. It has no authority until Runtime validation accepts its bounded IR. |

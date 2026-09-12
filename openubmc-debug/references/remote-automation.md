@@ -47,8 +47,13 @@ existing legacy files and environment settings; do not export structured records
 password variables or replace them with ad hoc legacy parsing. Explicit per-operation selectors
 retain their legacy source family and should be used only when that account selection is intended.
 
-For credentials missing, invalid, or conflicting, report the Runtime's bounded reason and use the
-configuration page to repair the selected source. Keep passwords, key contents, and raw resolved
+For missing credentials or rejected authentication, follow `openubmc-environment-setup` to launch
+the focused configuration page, present its session link and await its secret-free completion
+event before continuing the authorized task. Do not require the user to launch it or announce
+completion. Diagnose invalid or conflicting sources before changing them. For an authorized OS
+task whose address is not explicit, use `CredentialResolver.associated_os` from that Skill to look
+up the BMC's configured OS association. The association itself authorizes no connection.
+Keep passwords, key contents, and raw resolved
 credential objects out of command arguments, model context, logs, and receipts. A successful local
 lookup establishes neither remote authentication nor authority for a target mutation.
 

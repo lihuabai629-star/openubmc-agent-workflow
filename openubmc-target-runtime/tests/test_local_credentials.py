@@ -11,6 +11,33 @@ from openubmc_target_runtime import CredentialResolver
 
 
 class LocalCredentialTests(unittest.TestCase):
+    def test_associated_os_uses_the_activated_task_snapshot_without_returning_secrets(self):
+        from openubmc_target_runtime.configuration import LocalConfigurationStore, ConfigurationError
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'credentials.json'
+            store = LocalConfigurationStore(path, kind='targets')
+            config = {'schema_version': 1, 'credentials': {
+                'bmc': {'user': 'root', 'password': 'bmc-local-secret'},
+                'os': {'user': 'operator', 'password': 'os-local-secret'}},
+                'defaults': {'bmc': {'ssh': 'bmc', 'redfish': 'bmc'}, 'os': {'ssh': 'os'}},
+                'devices': {'192.0.2.10': {'os_ip': '192.0.2.20'}}}
+            saved = store.save(config, expected_revision=None)
+            store.activate(saved['revision'], expected_active_revision=None)
+            resolver = CredentialResolver(config_path=path, environ={})
+            self.assertEqual(resolver.associated_os(task_id='task', bmc_host='192.0.2.10'), '192.0.2.20')
+            self.assertIsNone(resolver.associated_os(task_id='task', bmc_host='192.0.2.11'))
+            resolved = resolver.resolve_local(task_id='task', host='192.0.2.20', purpose='os', transport='ssh')
+            self.assertEqual(resolved.credentials.user, 'operator')
+            config['devices']['192.0.2.10']['os_ip'] = '192.0.2.21'
+            newer = store.save(config, expected_revision=saved['revision'])
+            store.activate(newer['revision'], expected_active_revision=saved['revision'])
+            self.assertEqual(resolver.associated_os(task_id='task', bmc_host='192.0.2.10'), '192.0.2.20')
+            resolver.refresh_local_revision('task')
+            self.assertEqual(resolver.associated_os(task_id='task', bmc_host='192.0.2.10'), '192.0.2.21')
+            config['devices']['192.0.2.10']['os_ip'] = 'not-an-ip'
+            with self.assertRaises(ConfigurationError):
+                store.save(config, expected_revision=newer['revision'])
+
     def test_specialized_observe_uses_selected_json_credentials(self):
         from unittest.mock import patch
         from test_agent_gateway import SemanticBackend

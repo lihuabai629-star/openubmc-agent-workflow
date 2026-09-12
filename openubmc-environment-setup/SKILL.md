@@ -144,7 +144,23 @@ KB health failure is non-blocking.
 
 ## Credentials
 
-The private file is:
+For interactive account setup, launch the bundled local page and show its printed session URL:
+
+~~~bash
+python3 -B <skills-repository>/openubmc-environment-setup/scripts/config_page.py --kind targets --wait-for-save
+~~~
+
+Use `--kind kb` or `--kind conan` for those services and `--focus-target <BMC IP>` to edit a
+device without probing it. Keep the process alive until its `configuration_saved` or
+`configuration_cancelled` event. Saving activates the requested configuration; inspect the
+event's readiness/check results and continue authorized work without requiring a chat reply.
+The page shares BMC SSH/Redfish credentials and stores optional BMC-to-OS associations.
+An associated OS is not authorization to connect. The hidden-input commands below remain a
+fallback when a browser is unavailable.
+
+### Legacy hidden-input configuration
+
+The private file used by the hidden-input helper is:
 
 ~~~text
 ~/.config/openubmc/credentials.env

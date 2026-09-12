@@ -440,6 +440,9 @@ def main() -> int:
     parser.add_argument('--preview', action='store_true', help='Inspect migration without changing files')
     parser.add_argument('--target-plugin', default='openubmc@openubmc-public', help='Plugin registration to preserve during migration')
     parser.add_argument('--no-browser', action='store_true')
+    parser.add_argument('--kind', choices=['targets', 'kb', 'conan'], default='targets')
+    parser.add_argument('--focus-target')
+    parser.add_argument('--wait-for-save', action='store_true')
     parser.add_argument('--target', action='append', default=[])
     parser.add_argument('--purpose', choices=['bmc','os'], default='bmc')
     parser.add_argument('--transport', choices=['ssh','redfish'], default='ssh')
@@ -486,6 +489,9 @@ def main() -> int:
             report['dependencies'] = roots.get('runtime', roots.get('kb'))
         elif args.command == 'configure':
             page_args=['--purpose',args.purpose,'--transport',args.transport,'--home',str(args.home)]
+            page_args.extend(['--kind', args.kind])
+            if args.focus_target: page_args.extend(['--focus-target', args.focus_target])
+            if args.wait_for_save: page_args.append('--wait-for-save')
             if args.codex_home: page_args.extend(['--codex-home',str(args.codex_home)])
             if args.no_browser: page_args.append('--no-browser')
             for target in args.target: page_args.extend(['--target',target])

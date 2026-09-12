@@ -21,6 +21,45 @@ page = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(page)
 
 class PluginHealthTests(unittest.TestCase):
+    def test_packaged_focused_configuration_reports_completion_without_probing(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            plugin = package_fixture(root)
+            home = root/'home'; home.mkdir()
+            env = {key: value for key, value in os.environ.items() if not key.startswith(('OPENUBMC_', 'XDG_', 'REDFISH_'))}
+            env.update(HOME=str(home), XDG_CONFIG_HOME=str(home/'.config'))
+            process = subprocess.Popen([sys.executable, '-I', '-B', str(plugin/'scripts/pluginctl.py'),
+                'configure', '--home', str(home), '--kind', 'targets', '--focus-target', '192.0.2.10',
+                '--no-browser', '--wait-for-save'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            timer = threading.Timer(15, process.kill); timer.start()
+            try:
+                url = process.stdout.readline().strip()
+                self.assertTrue(url.startswith('http://127.0.0.1:'), url)
+                origin, token = url.split('/#')
+                def post(path, data):
+                    request = Request(origin+path, data=json.dumps(data).encode(), headers={
+                        'X-OpenUBMC-Session': token, 'Origin': origin, 'Content-Type': 'application/json'})
+                    with urlopen(request, timeout=5) as response: return json.load(response)
+                saved = post('/api/save', {'kind': 'targets', 'expected_revision': None,
+                    'config': {'schema_version': 1, 'credentials': {
+                        'bmc': {'user': 'fixture', 'password': {'action': 'replace', 'value': 'private-device-password'}},
+                        'unused': {'user': 'incomplete'}},
+                        'defaults': {'os': {'ssh': 'unused'}},
+                        'targets': {'192.0.2.10': {'bmc': {'ssh': 'bmc', 'redfish': 'bmc'}}},
+                        'devices': {'192.0.2.10': {'os_ip': '192.0.2.20'}}}})
+                post('/api/activate', {'kind': 'targets', 'revision': saved['revision'], 'expected_active_revision': None})
+                stdout, stderr = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, stderr)
+                receipt = json.loads(stdout)
+                self.assertTrue(receipt['configured'])
+                self.assertEqual(receipt['associated_os'], '192.0.2.20')
+                self.assertEqual(receipt['checks'], [])
+                self.assertNotIn('private-device-password', stdout+stderr)
+            finally:
+                timer.cancel()
+                if process.poll() is None: process.kill()
+                process.communicate()
+
     def test_unprepared_plugin_opens_recovery_page_without_downloading_dependencies(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
