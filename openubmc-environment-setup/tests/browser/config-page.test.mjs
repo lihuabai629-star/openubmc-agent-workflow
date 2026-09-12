@@ -133,3 +133,34 @@ test(
     assert.equal(current.verified, false);
   },
 );
+
+test("plugin maintenance previews changes before apply and exposes undo", { timeout: 30000 }, async (t) => {
+  const { page, url } = await configurationPage(t);
+  const calls = [];
+  await page.route("**/api/plugin", async (route) => {
+    const data = route.request().postDataJSON();
+    calls.push(data);
+    const replies = {
+      status: { version: "2.0.14", integrity: true, runtime: true, kb: false,
+        configuration: { ready: false, conflict: false, servers: ["openubmc-kb"] } },
+      preview: { preview_id: "preview-fixture", would_change: true, servers: ["openubmc-kb"] },
+      apply: { changed: true, transaction: "transaction-fixture" },
+      undo: { restored: true },
+    };
+    await route.fulfill({ json: replies[data.action] });
+  });
+  await page.goto(url);
+  await page.locator("#plugin-maintenance summary").click();
+  assert.equal(await page.locator("#plugin-apply").isVisible(), false);
+  await page.locator("#plugin-check").click();
+  await page.getByText("版本：2.0.14", { exact: true }).waitFor();
+  await page.locator("#plugin-preview").click();
+  await page.locator("#plugin-apply").waitFor();
+  assert.equal(calls.some((c) => c.action === "apply"), false);
+  await page.locator("#plugin-apply").click();
+  await page.locator("#plugin-undo").waitFor();
+  await page.locator("#plugin-undo").click();
+  await page.getByText("已恢复修复前的配置。", { exact: true }).waitFor();
+  assert.deepEqual(calls.find((c) => c.action === "apply"), { action: "apply", preview_id: "preview-fixture" });
+  assert.deepEqual(calls.find((c) => c.action === "undo"), { action: "undo", transaction: "transaction-fixture" });
+});

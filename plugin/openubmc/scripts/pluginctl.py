@@ -384,6 +384,12 @@ def write_timing(path: Path | None, stage: str, started: float) -> None:
 
 
 def launch(command: str, content: dict[str, bytes], lock: dict, timings: Path | None = None, page_args: list[str] | None = None) -> int:
+    if command == 'configure':
+        # Recovery must remain accessible when either dependency cache is broken.
+        # The guarded page and configuration store use only the standard library.
+        argv = [sys.executable, '-I', '-B', str(ROOT/'skills/openubmc-environment-setup/scripts/config_page.py'), *(page_args or [])]
+        os.execvpe(argv[0], argv, node_environment())
+        return 0
     started = time.monotonic()
     dependencies = dependency_root(content, "runtime" if command == "configure" else command)
     write_timing(timings, 'dependency_identity', started)
@@ -399,13 +405,7 @@ def launch(command: str, content: dict[str, bytes], lock: dict, timings: Path | 
     env = node_environment()
     env['OPENUBMC_MCP_SOURCE_COMMIT'] = lock['source_commit']
     env['OPENUBMC_PLUGIN_CONTENT_DIGEST'] = lock['content_digest']
-    if command == 'configure':
-        # The page and its worker use the guarded package entrypoints. The
-        # execution snapshot provides verified dependencies, not a plugin lock.
-        argv = [sys.executable, '-I', '-B', '-c',
-                'import sys,runpy;sys.path.insert(0,sys.argv[1]);sys.argv=[sys.argv[2],*sys.argv[3:]];runpy.run_path(sys.argv[0],run_name="__main__")',
-                str(snapshot/'python-packages'), str(ROOT/'skills/openubmc-environment-setup/scripts/config_page.py'), *(page_args or [])]
-    elif command == 'runtime':
+    if command == 'runtime':
         argv = [sys.executable, '-I', '-B', '-c',
                 'import sys,runpy;sys.path.insert(0,sys.argv[1]);runpy.run_path(sys.argv[2],run_name="__main__")',
                 str(snapshot/'python-packages'), str(snapshot/'scripts/launch_runtime.py')]
@@ -483,9 +483,8 @@ def main() -> int:
             report['capability_dependencies'] = roots
             report['dependencies'] = roots.get('runtime', roots.get('kb'))
         elif args.command == 'configure':
-            if not (dependency_root(content, 'runtime')/'receipt.json').is_file():
-                prepare_dependencies(content, False, capability='runtime')
-            page_args=['--purpose',args.purpose,'--transport',args.transport]
+            page_args=['--purpose',args.purpose,'--transport',args.transport,'--home',str(args.home)]
+            if args.codex_home: page_args.extend(['--codex-home',str(args.codex_home)])
             if args.no_browser: page_args.append('--no-browser')
             for target in args.target: page_args.extend(['--target',target])
             return launch('configure',content,lock,page_args=page_args)

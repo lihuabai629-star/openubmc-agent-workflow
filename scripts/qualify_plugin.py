@@ -81,7 +81,7 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                OPENUBMC_TARGET_RUNTIME_STATE_DIR=str(root/'runtime-state'), OPENUBMC_CODEX_PROBE_API_KEY='local-probe',
                OPENUBMC_MCP_MODEL_IDENTITY=json.dumps({'model':'gpt-5.6-sol'}),
                OPENUBMC_MCP_CODEX_IDENTITY=json.dumps({'version':'codex-cli 0.153.4'}))
-    argv = [str(executable), 'exec', '--ephemeral', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+    argv = [str(executable), 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
             '--color', 'never', '--model', 'gpt-5.6-sol', '-C', str(root),
             '-c', 'features.plugins=true', '-c', 'model_provider="openubmc_plugin_probe"',
             '-c', 'model_providers.openubmc_plugin_probe.name="OpenUBMC plugin probe"',
@@ -143,7 +143,9 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
                 raise ValueError('native Runtime lifecycle failed to close with the selected source identity')
             if Path('/proc').joinpath(str(lifecycle['process_id'])).exists():
                 raise ValueError('Runtime process survived its Codex parent')
-            runs.append({'codex_pid':process.pid, 'runtime_pid':lifecycle['process_id'],
+            events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+            thread_id = next(event['thread_id'] for event in events if event.get('type') == 'thread.started')
+            runs.append({'thread_id': thread_id, 'codex_pid':process.pid, 'runtime_pid':lifecycle['process_id'],
                          'source_commit':source_commit, 'session_id':session, 'exit_reason':lifecycle['exit_reason'],
                          'active_requests':0, 'tool_names':names, 'validated_calls':['observe','execute'],
                          'skills_visible_outside_source': list(expected_skills)})
@@ -154,6 +156,66 @@ def native_exec_probe(env: dict[str, str], root: Path, source_commit: str, *, ti
     return {'invocations':len(runs), 'restart_verified':len(runs) == 2, 'runs':runs,
             'executable_sha256':hashlib.sha256(executable.read_bytes()).hexdigest(),
             'transport':'local-hermetic-responses', 'network_scope':'loopback'}
+
+
+def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id: str) -> dict:
+    """Exercise persisted thread/resume after obsolete manual launcher removal."""
+    config = Path(env['CODEX_HOME'])/'config.toml'
+    before = config.read_bytes()
+    marketplace = plugin.parent.parent.name
+    old = Path(env['CODEX_HOME'])/'plugins/cache'/marketplace/'openubmc/0.0.0'
+    old.mkdir(parents=True)
+    import shutil
+    shutil.rmtree(old)
+    overrides = ''
+    for name, capability in [('openubmc-target-runtime', 'runtime'), ('openubmc-kb', 'kb')]:
+        overrides += (f'\n[mcp_servers.{name}]\ncommand = "python3"\n'
+                      f'args = {json.dumps(["-I", str(old/"scripts/pluginctl.py"), capability])}\n')
+    config.write_bytes(before + overrides.encode())
+    cli = [sys.executable, '-I', str(plugin/'scripts/pluginctl.py'), '--target-plugin', 'openubmc@'+marketplace]
+    check = subprocess.run([*cli, 'doctor'], env=env, capture_output=True, text=True, timeout=30)
+    if check.returncode != 2 or not json.loads(check.stdout)['codex_configuration']['changes']['mcp_servers']:
+        raise ValueError('obsolete override was not detected')
+    preview = command([*cli, 'repair-overrides', '--preview'], env)
+    repair = command([*cli, 'repair-overrides'], env)
+    if not repair.get('changed') or config.read_bytes() != before:
+        raise ValueError('override repair did not preserve the original configuration')
+    servers = command(['codex', 'mcp', 'list', '--json'], env)
+    for name in ('openubmc-target-runtime', 'openubmc-kb'):
+        current = next(row for row in servers if row['name'] == name)
+        if Path(current['transport']['cwd']).resolve() != plugin:
+            raise ValueError('repaired launcher does not use the current plugin')
+    process = subprocess.Popen(['codex', 'app-server', '--stdio'], cwd=root, env=env,
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    timer = threading.Timer(45, process.kill)
+    timer.start()
+    try:
+        def call(number, method, params):
+            process.stdin.write(json.dumps({'id':number, 'method':method, 'params':params})+'\n')
+            process.stdin.flush()
+            for line in process.stdout:
+                result = json.loads(line)
+                if result.get('id') == number:
+                    if 'error' in result:
+                        raise ValueError('native '+method+' failed: '+str(result['error']))
+                    return result['result']
+            raise ValueError('native app-server closed before '+method)
+        call(1, 'initialize', {'clientInfo': {'name':'upgrade-qualification', 'version':'1'},
+                              'capabilities': {'experimentalApi':True}})
+        resumed = call(2, 'thread/resume', {'threadId':thread_id, 'cwd':str(root)})
+        if resumed['thread']['id'] != thread_id:
+            raise ValueError('resume returned another thread')
+    finally:
+        process.stdin.close()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill(); process.wait()
+        process.stdout.close()
+        timer.cancel()
+    return {'thread_id':thread_id, 'resume_error':None, 'transport':'native-app-server-stdio',
+            'desktop_ui_verified':False, 'old_cache_absent':not old.exists(),
+            'repaired_servers':preview['changes']['mcp_servers'], 'configuration_preserved':True}
 
 
 def qualify(source: Path, ref: str, archive: Path) -> dict:
@@ -218,6 +280,7 @@ def qualify(source: Path, ref: str, archive: Path) -> dict:
             if Path(server['transport']['cwd']).resolve() != plugin:
                 raise ValueError('MCP launcher does not resolve to the installed plugin')
         native_exec = native_exec_probe(env, root, lock['source_commit'])
+        resume = native_resume_probe(env, root, plugin, native_exec['runs'][0]['thread_id'])
         distribution = Path(installed['source'])
         admin = [sys.executable, '-I', str(distribution/'scripts/plugin_admin.py')]
         audit = command([*admin, 'audit', '--home', str(home), '--codex-home', str(codex)], env)
@@ -238,7 +301,7 @@ def qualify(source: Path, ref: str, archive: Path) -> dict:
         report.update(schema='openubmc.codex-plugin.qualification.v1', codex=codex_version,
                       deterministic_archive=True, native_install=True, native_uninstall=True,
                       reinstall=True, external_state_preserved=True, mcp_health=doctor['mcp_health'],
-                      native_codex_exec=native_exec)
+                      native_codex_exec=native_exec, native_thread_resume=resume)
         report['ok'] = True
     return report
 
