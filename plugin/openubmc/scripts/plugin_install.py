@@ -147,23 +147,28 @@ def override_plan(home: Path, codex_root: Path, target_plugin: str) -> tuple[dic
         if current is None:
             continue
         args = current.get('args', [])
-        paths = [arg for arg in args if isinstance(arg, str) and arg.endswith('/scripts/pluginctl.py')]
+        paths = [arg for arg in args if isinstance(arg, str) and (arg.endswith('/scripts/pluginctl.py') or arg == 'scripts/pluginctl.py')]
         if len(paths) != 1:
             raise ValueError('MCP override is not a recognized plugin launcher: ' + name)
         path = Path(paths[0])
+        cwd = current.get('cwd')
+        if not path.is_absolute() and isinstance(cwd, str):
+            path = Path(cwd)/path
         try:
             relative = path.relative_to(cache)
         except ValueError:
             raise ValueError('MCP override is outside the selected plugin cache: ' + name) from None
         if len(relative.parts) != 3 or relative.parts[1:] != ('scripts', 'pluginctl.py') or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', relative.parts[0]):
             raise ValueError('MCP override has an unrecognized version path: ' + name)
+        if cwd is not None and (not isinstance(cwd, str) or Path(cwd) != path.parent.parent):
+            raise ValueError('MCP override has a custom working directory: ' + name)
         index = args.index(paths[0])
         flags = args[:index]
         tail = args[index + 1:]
         if (current.get('command') != 'python3' or flags not in (['-I'], ['-I', '-B'], ['-B', '-I'])
                 or tail not in ([capability], [capability, '--prepare-on-start'])):
             raise ValueError('MCP override has custom launch arguments: ' + name)
-        if set(current) - {'command', 'args', 'enabled', 'startup_timeout_sec', 'tool_timeout_sec', 'required'}:
+        if set(current) - {'command', 'args', 'cwd', 'enabled', 'startup_timeout_sec', 'tool_timeout_sec', 'required'}:
             raise ValueError('MCP override contains custom settings; reconcile before repair: ' + name)
         selected.add(name)
     if selected and document.get('plugins', {}).get(target_plugin, {}).get('enabled') is not True:
