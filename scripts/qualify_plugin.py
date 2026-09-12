@@ -225,7 +225,7 @@ def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None) -> di
         with urllib.request.urlopen(url, timeout=60) as response:
             baseline.write_bytes(response.read(4*1024*1024))
     old_lock, old_files = read_archive(baseline, BASELINE_SHA256)
-    new_lock, new_files = read_archive(archive)
+    new_lock, new_files = read_archive(archive, hashlib.sha256(archive.read_bytes()).hexdigest())
     home = workspace/'home'; codex = workspace/'codex'; market = workspace/'market'
     codex.mkdir(); source = market/'plugins/openubmc'
     manifest = market/'.agents/plugins/marketplace.json'
