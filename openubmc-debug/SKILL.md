@@ -21,6 +21,14 @@ from implementation:
 - temporary runtime replacement -> `openubmc-live-patch`;
 - offline dump or log-bundle-only analysis -> `openubmc-log-analyzer`.
 
+On Windows or WSL, select the structured Runtime/MCP path only after its
+protocol health check succeeds. If it is unavailable, use the packaged
+`scripts/execution_router.py` contract: record a stable fallback reason, the
+execution host, requested scope, evidence boundary, and a bounded shell
+budget. Repeated equivalent shell actions stop with a convergence blocker.
+Shell output is observational and cannot close mutation, deployment,
+runtime-verification, or rollback gates.
+
 ## Choose `observe` or `execute`
 
 Use the default `openubmc-target-runtime` MCP through its semantic Agent Interface:
