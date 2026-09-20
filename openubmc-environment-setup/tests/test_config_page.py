@@ -11,6 +11,17 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "config_page.py"
 
 
 class ConfigPageTests(unittest.TestCase):
+    def test_state_exposes_one_loopback_entry_and_reason_without_secrets(self):
+        spec = importlib.util.spec_from_file_location("config_page", SCRIPT)
+        page = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(page)
+        with tempfile.TemporaryDirectory() as raw, page.LocalConfigurationServer(Path(raw)) as server:
+            state = server.state()
+            entry = state["configuration_entry"]
+            self.assertEqual(entry["url"], server.url)
+            self.assertEqual(entry["reason"], "configuration_required")
+            self.assertNotIn("password", json.dumps(state))
+
     def test_existing_private_source_is_shown_and_kept_without_manual_import(self):
         spec = importlib.util.spec_from_file_location("config_page", SCRIPT)
         page = importlib.util.module_from_spec(spec)

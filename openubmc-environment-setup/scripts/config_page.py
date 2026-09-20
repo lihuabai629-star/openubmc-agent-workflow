@@ -453,6 +453,10 @@ class LocalConfigurationServer:
 
     def state(self):
         with self._lock:
+            selected = self.view(self.page_session["kind"])
+            configured = bool(selected["active_revision"]) and bool(selected["readiness"]) and all(
+                item["configured"] for item in selected["readiness"]
+            )
             return {
                 **{kind: self.view(kind) for kind in self.stores},
                 "environment": {
@@ -464,6 +468,13 @@ class LocalConfigurationServer:
                 },
                 "authorized_targets": list(self.authorized_targets),
                 "page_session": self.page_session,
+                "configuration_entry": {
+                    "url": self.url,
+                    "reason": "configuration_ready" if configured else "configuration_required",
+                    "environment": "WSL"
+                    if "microsoft" in os.uname().release.lower()
+                    else "Linux",
+                },
             }
 
     def dispatch(self, path, data):
@@ -616,7 +627,14 @@ def main():
     parser.add_argument("--config-home", type=Path)
     parser.add_argument("--home", type=Path)
     parser.add_argument("--codex-home", type=Path)
-    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="open the printed loopback URL in a browser after starting the page",
+    )
+    # Kept as a compatibility alias for existing scripts.  The page no longer
+    # opens a browser implicitly; callers opt in with --open-browser.
+    parser.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--kind", choices=["targets", "kb", "conan"], default="targets")
     parser.add_argument("--focus-target", help="BMC IP to edit; does not authorize a connection")
     parser.add_argument("--wait-for-save", action="store_true", help="Report a secret-free completion and exit after the requested configuration is activated")
@@ -673,7 +691,7 @@ def main():
         if (Path(__file__).resolve().parents[3]/"plugin-lock.json").is_file() else None,
     ) as server:
         print(server.url, flush=True)
-        if not args.no_browser:
+        if args.open_browser and not args.no_browser:
             if "microsoft" in os.uname().release.lower() and shutil.which("wslview"):
                 subprocess.Popen(
                     ["wslview", server.url],

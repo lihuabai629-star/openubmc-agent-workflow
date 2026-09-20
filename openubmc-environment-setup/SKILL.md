@@ -111,6 +111,13 @@ proposed result separately under `planned_workflow`.
 
 ## Choose the target environment
 
+The configuration page is a loopback session entry point. Installation,
+doctor, and a configuration-required request should print the same URL and a
+stable reason (`configuration_required` or `configuration_ready`). The page
+does not open a browser implicitly; use the explicit `--open-browser` option
+when a desktop launch is wanted. In WSL the printed URL belongs to the WSL
+environment that owns the configuration.
+
 Run the installer inside the environment being configured.
 
 - On Linux or WSL, run it in that shell.
