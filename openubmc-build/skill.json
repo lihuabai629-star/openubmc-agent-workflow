@@ -38,6 +38,7 @@
     "scripts/run_bmcgo_checked.py",
     "scripts/build_route.py",
     "scripts/run_build_attempt.py",
+    "scripts/release_gates.py",
     "scripts/update_manifest_conan_ref.py",
     "scripts/verify_hpm_containment.py",
     "scripts/verify_product_artifact.py",

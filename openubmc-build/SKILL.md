@@ -119,6 +119,12 @@ Run `scripts/finalize_product_attempt.py` after a successful product Attempt. It
 
 When a deterministic retry may reproduce identical bytes, preserve and move aside the old HPM, final ext4 image, and built resolved lock before starting the new Attempt so each planned output begins absent.
 
+Before packaging or deployment, use `scripts/release_gates.py` for the
+pre-package Lua source gate, final-container completeness inspection,
+post-activation service-start smoke, and rollback proof. A failed or missing
+gate rejects the release; upload or version readback alone is not runtime
+verification.
+
 Until HPM containment of the inspected image is proved, final verification and metadata remain `package_binding_unverified` with `upgrade_eligible: false`.
 
 ## Runtime Handoff
