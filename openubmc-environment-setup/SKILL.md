@@ -285,6 +285,10 @@ source, Runtime, and credential-preservation state; check retains its detailed r
   checkout. The displaced revision becomes the next rollback target, so a
   second rollback toggles back when both revisions remain available.
 - `credentials` changes only the private credential file.
+- If a credential may have appeared in a task, process, Runtime record, or log,
+  follow [Credential exposure response](../docs/credential-exposure-response.md).
+  Rotate it at its owning authority and never paste the old value into chat or a
+  command to prove exposure.
 - `uninstall` removes only installer-owned configuration and preserves the
   credentials file.
 - Add `--purge-credentials` to an explicit uninstall only when the private file

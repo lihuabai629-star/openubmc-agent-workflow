@@ -28,6 +28,10 @@ from openubmc_target_runtime import (  # noqa: E402
     RuntimeMcpService,
     SQLiteRuntimeRepository,
 )
+from openubmc_target_runtime.redaction import (  # noqa: E402
+    register_secret_values,
+    secret_redaction_request,
+)
 from openubmc_target_runtime.effect_runner import (  # noqa: E402
     EffectIntent,
     EffectSettlementMode,
@@ -277,6 +281,85 @@ class RepositoryContractTests(unittest.TestCase):
                     repository.claim_idempotency(
                         "case-a", "same", "fingerprint-b"
                     )
+
+    def test_persistence_boundaries_redact_events_and_retry_receipts(self) -> None:
+        secret = "fixture-persistence-secret"
+        for repository in self.repositories():
+            with self.subTest(adapter=repository.status()["adapter"]):
+                with secret_redaction_request():
+                    register_secret_values({"password": secret})
+                    repository.commit(
+                        "case-secret-boundary",
+                        expected_revision=0,
+                        events=(
+                            PendingCaseEvent(
+                                "CaseOpened",
+                                {
+                                    "intent": "diagnosis-only",
+                                    "final_purpose": "diagnose",
+                                    "targets": [],
+                                    "authorization": {
+                                        "original_intent": "diagnosis-only",
+                                        "delivery_strategy": "",
+                                        "allowed_actions": [],
+                                        "authorized_exceptions": {},
+                                        "allow_insecure_tls": False,
+                                        "parse_count": 1,
+                                    },
+                                    "http": {"authorization": secret},
+                                    "password": secret,
+                                    "note": f"remote echoed {secret}",
+                                },
+                            ),
+                        ),
+                    )
+                    repository.claim_idempotency(
+                        "case-secret-boundary",
+                        "secret-retry",
+                        "fingerprint-secret-retry",
+                    )
+                    repository.complete_idempotency(
+                        "case-secret-boundary",
+                        "secret-retry",
+                        {
+                            "password": secret,
+                            "message": f"ordinary backend output: {secret}",
+                            "credential_source": "local-active-revision",
+                        },
+                    )
+
+                events = repository.events("case-secret-boundary")
+                replay = repository.claim_idempotency(
+                    "case-secret-boundary",
+                    "secret-retry",
+                    "fingerprint-secret-retry",
+                )
+                persisted = json.dumps(
+                    {"events": events, "replay": replay}, sort_keys=True
+                )
+
+                self.assertNotIn(secret, persisted)
+                self.assertNotIn('"password"', persisted)
+                self.assertNotIn('"authorization": "', persisted)
+                self.assertIn("<redacted>", persisted)
+                self.assertEqual(
+                    events[0]["payload"]["authorization"]["original_intent"],
+                    "diagnosis-only",
+                )
+                self.assertEqual(
+                    replay["credential_source"], "local-active-revision"
+                )
+
+    def test_request_secret_redaction_cleans_unlabelled_exception_text(self) -> None:
+        secret = "fixture-unlabelled-exception-secret"
+
+        with self.assertRaises(RuntimeError) as raised:
+            with secret_redaction_request():
+                register_secret_values({"password": secret})
+                raise RuntimeError(f"remote backend echoed {secret}")
+
+        self.assertNotIn(secret, str(raised.exception))
+        self.assertIn("<redacted>", str(raised.exception))
 
 
 class BlobRepositoryContractTests(unittest.TestCase):

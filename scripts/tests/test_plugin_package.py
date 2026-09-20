@@ -52,6 +52,10 @@ class PluginPackageTests(unittest.TestCase):
             self.assertEqual(len(report['source_commit']), 40)
             self.assertNotIn(str(ROOT).encode(), (plugin/'scripts/launch_runtime.py').read_bytes())
             self.assertFalse(any(p.name == '.git' for p in plugin.rglob('*')))
+            self.assertEqual(
+                (plugin/'skills/openubmc-environment-setup/references/credential-exposure-response.md').read_bytes(),
+                (self.source/'docs/credential-exposure-response.md').read_bytes(),
+            )
 
     def test_verify_rejects_added_or_changed_plugin_code(self):
         with tempfile.TemporaryDirectory() as temporary:

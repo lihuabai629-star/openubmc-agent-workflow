@@ -71,3 +71,8 @@ records return `credentials_missing`, conflicting sources return
 `credentials_invalid`. These failures stop before target access. Credentials do
 not authorize new operations; the existing observation and mutation boundaries
 continue to decide what may execute.
+
+If a credential may have entered a task transcript, process, Runtime record, or
+log, follow [Credential exposure response](credential-exposure-response.md). The
+response rotates the identity at its owning authority and activates a new private
+revision without sending the value through the Agent Interface.

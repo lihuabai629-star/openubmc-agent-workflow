@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 
 SECRET_KEY_TOKENS = (
@@ -47,6 +49,12 @@ class SecretMaterialError(ValueError):
 
     code = "secret_material_rejected"
 
+
+_REQUEST_SECRET_VALUES: ContextVar[tuple[str, ...] | None] = ContextVar(
+    "openubmc_request_secret_values",
+    default=None,
+)
+
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)((?<![a-z0-9_.-])[\"']?[a-z0-9_.-]{0,128}"
     r"(?:password|passwd|passphrase|secret|token|authorization|cookie|"
@@ -83,7 +91,8 @@ def redact_text(value: object, *, secret_values: tuple[str, ...] = ()) -> str:
     """Redact common inline secret forms while preserving selector names."""
 
     text = str(value or "")
-    for secret in sorted(set(secret_values), key=len, reverse=True):
+    active = _REQUEST_SECRET_VALUES.get() or ()
+    for secret in sorted(set((*active, *secret_values)), key=len, reverse=True):
         if secret:
             text = text.replace(secret, "<redacted>")
     text = re.sub(
@@ -98,6 +107,50 @@ def redact_text(value: object, *, secret_values: tuple[str, ...] = ()) -> str:
     )
     text = _BEARER.sub("Bearer <redacted>", text)
     return _URI_USERINFO.sub(r"\1<redacted>@", text)
+
+
+def register_secret_values(values: Mapping[str, object]) -> None:
+    """Add locally resolved values to the current request's redaction set."""
+
+    current = _REQUEST_SECRET_VALUES.get()
+    if current is None:
+        return
+    discovered = {
+        str(value)
+        for key, value in values.items()
+        if is_secret_key(key) and isinstance(value, str) and value
+    }
+    if discovered:
+        _REQUEST_SECRET_VALUES.set(tuple(sorted(set(current) | discovered)))
+
+
+def _redact_exception(exc: Exception) -> None:
+    if not exc.args:
+        return
+    try:
+        exc.args = tuple(
+            redact_text(item) if isinstance(item, str) else item
+            for item in exc.args
+        )
+    except (AttributeError, TypeError):
+        pass
+
+
+@contextmanager
+def secret_redaction_request():
+    """Keep locally resolved secrets available to every boundary in one call."""
+
+    if _REQUEST_SECRET_VALUES.get() is not None:
+        yield
+        return
+    token = _REQUEST_SECRET_VALUES.set(())
+    try:
+        yield
+    except Exception as exc:
+        _redact_exception(exc)
+        raise
+    finally:
+        _REQUEST_SECRET_VALUES.reset(token)
 
 
 def _secret_material_path(

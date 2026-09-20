@@ -63,6 +63,12 @@ find the entry point or run the command. Reuse available credentials without ope
 Configuration conflicts require diagnosing the selected source first; TLS, host identity and
 network failures are not reasons to ask for another password.
 
+If a credential may already have appeared in a persisted task, treat it as exposed and follow
+[Credential exposure response](references/credential-exposure-response.md). Identify affected
+accounts from non-secret target, purpose, record, revision and time metadata; never ask the user
+to paste the old value into chat or a command. Rotation stays an explicit operator action at the
+account authority, followed by local revision activation and capability verification.
+
 ```bash
 python3 -I -B <plugin-root>/scripts/pluginctl.py configure --kind targets --wait-for-save
 ```

@@ -102,6 +102,7 @@ def assemble(source: Path, ref: str) -> dict[str, bytes]:
     for name in ('install_plugin.py', 'plugin_admin.py', 'plugin_archive.py'):
         payload['scripts/'+name] = source_content['scripts/'+name]
     payload['skills/openubmc-environment-setup/SKILL.md'] = source_content['plugin/environment-support.md']
+    payload['skills/openubmc-environment-setup/references/credential-exposure-response.md'] = source_content['docs/credential-exposure-response.md']
     # The support directory retains the canonical sibling layout required by
     # existing public Skill helpers. Its descriptor is generated from the recipe.
     payload['skills/openubmc-target-runtime/SKILL.md'] = source_content['plugin/runtime-support.md']

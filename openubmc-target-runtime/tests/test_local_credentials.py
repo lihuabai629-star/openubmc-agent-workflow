@@ -63,6 +63,89 @@ class LocalCredentialTests(unittest.TestCase):
                 finally:
                     service.close()
 
+    def test_runtime_redacts_unlabelled_selected_secret_from_results_and_errors(self):
+        from unittest.mock import patch
+        from test_mcp_contracts import FakeDebugBackend
+        from openubmc_target_runtime import OrchestratedMcpBackend, RuntimeMcpService
+
+        secret = "fixture-selected-unlabelled-secret"
+
+        class EchoBackend(FakeDebugBackend):
+            fail = False
+
+            def debug_run(self, task, arguments, context):
+                selected = arguments["_credential_values"][
+                    "OPENUBMC_SSH_PASSWORD"
+                ]
+                if self.fail:
+                    raise RuntimeError(f"remote backend echoed {selected}")
+                value = super().debug_run(task, arguments, context)
+                value["root_cause"] = f"remote backend echoed {selected}"
+                return value
+
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "credentials.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "credentials": {
+                            "common": {"user": "fixture", "password": secret}
+                        },
+                        "defaults": {"bmc": {"ssh": "common"}},
+                    }
+                )
+            )
+            path.chmod(0o600)
+            environment = {
+                "HOME": raw,
+                "XDG_CONFIG_HOME": raw,
+                "OPENUBMC_CREDENTIALS_CONFIG": str(path),
+            }
+            with patch.dict("os.environ", environment, clear=True):
+                backend = EchoBackend()
+                service = RuntimeMcpService(
+                    OrchestratedMcpBackend({"debug_run": backend}),
+                    interface_profile="operator",
+                )
+                try:
+                    result = service.call_tool(
+                        "debug_run",
+                        {"ip": "192.0.2.10", "deadline": 2},
+                        task_id="selected-secret-result",
+                        operation_id="result",
+                    )
+                    case_id = result.envelope["case_id"]
+                    persisted = service._test.context_runtime.repository.events(
+                        case_id
+                    )
+                    self.assertNotIn(
+                        secret,
+                        json.dumps(
+                            {"result": result.envelope, "events": persisted}
+                        ),
+                    )
+                    evidence = result.envelope["evidence_refs"][0]
+                    stored = service._test.context_runtime.blob_repository.read(
+                        evidence["blob_id"]
+                    ).decode()
+                    self.assertNotIn(secret, stored)
+                    self.assertIn("<redacted>", stored)
+
+                    backend.fail = True
+                    failed_arguments = {"ip": "192.0.2.11", "deadline": 2}
+                    response = service.call_tool(
+                        "debug_run",
+                        failed_arguments,
+                        task_id="selected-secret-error",
+                        operation_id="error",
+                    )
+                    encoded = json.dumps(response.envelope)
+                    self.assertNotIn(secret, encoded)
+                    self.assertIn("<redacted>", encoded)
+                finally:
+                    service.close()
+
     def test_defaults_and_complete_ip_overrides_are_isolated_by_purpose_and_transport(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'credentials.json'

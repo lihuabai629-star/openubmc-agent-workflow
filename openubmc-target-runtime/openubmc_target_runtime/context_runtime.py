@@ -359,6 +359,14 @@ def _sanitize(value: object) -> object:
         sanitized: dict[str, object] = {}
         for key, item in value.items():
             name = str(key)
+            if name == _TASK_POLICY_FIELD and isinstance(item, Mapping):
+                try:
+                    sanitized[name] = (
+                        TaskAuthorizationPolicy.from_public_dict(item).to_public_dict()
+                    )
+                except (TypeError, ValueError):
+                    continue
+                continue
             if is_secret_key(name):
                 continue
             sanitized[name] = _sanitize(item)
@@ -370,6 +378,13 @@ def _sanitize(value: object) -> object:
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return redact_text(value)
+
+
+def _sanitize_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    sanitized = _sanitize(value)
+    if not isinstance(sanitized, Mapping):
+        raise TypeError("sanitized mapping changed shape")
+    return dict(sanitized)
 
 
 def _sanitize_runtime_inputs(value: object) -> object:
@@ -2301,18 +2316,19 @@ class InMemoryRuntimeRepository:
                 )
             now = self._clock()
             for item in pending:
+                sanitized_payload = _sanitize_mapping(item.payload)
                 revision = len(existing) + 1
                 existing.append(
                     {
                         "revision": revision,
                         "kind": item.kind,
                         "operation_id": item.operation_id,
-                        "payload": dict(item.payload),
+                        "payload": sanitized_payload,
                         "created_at": now,
                     }
                 )
                 if item.kind == "EvidenceAttached":
-                    reference = item.payload.get("evidence")
+                    reference = sanitized_payload.get("evidence")
                     if isinstance(reference, Mapping):
                         evidence_id = str(reference.get("evidence_id", ""))
                         if evidence_id:
@@ -2355,9 +2371,10 @@ class InMemoryRuntimeRepository:
     def complete_idempotency(
         self, case_id: str, key: str, receipt: Mapping[str, object]
     ) -> None:
+        sanitized_receipt = _sanitize_mapping(receipt)
         with self._lock:
             self._idempotency[(case_id, key)]["status"] = "completed"
-            self._idempotency[(case_id, key)]["receipt"] = dict(receipt)
+            self._idempotency[(case_id, key)]["receipt"] = sanitized_receipt
 
     def abandon_idempotency(self, case_id: str, key: str) -> None:
         with self._lock:
@@ -2786,6 +2803,7 @@ class SQLiteRuntimeRepository:
                 )
             now = self._clock()
             for offset, item in enumerate(pending, start=1):
+                sanitized_payload = _sanitize_mapping(item.payload)
                 connection.execute(
                     "INSERT INTO case_events "
                     "(case_id, revision, kind, operation_id, payload_json, created_at) "
@@ -2795,12 +2813,12 @@ class SQLiteRuntimeRepository:
                         current + offset,
                         item.kind,
                         item.operation_id,
-                        _json_bytes(dict(item.payload)).decode("utf-8"),
+                        _json_bytes(sanitized_payload).decode("utf-8"),
                         now,
                     ),
                 )
                 if item.kind == "EvidenceAttached":
-                    reference = item.payload.get("evidence")
+                    reference = sanitized_payload.get("evidence")
                     if isinstance(reference, Mapping):
                         evidence_id = str(reference.get("evidence_id", ""))
                         if evidence_id:
@@ -2898,12 +2916,13 @@ class SQLiteRuntimeRepository:
     def complete_idempotency(
         self, case_id: str, key: str, receipt: Mapping[str, object]
     ) -> None:
+        sanitized_receipt = _sanitize_mapping(receipt)
         with self._lock, self._connect() as connection:
             connection.execute(
                 "UPDATE idempotency SET status = 'completed', receipt_json = ?, "
                 "updated_at = ? WHERE case_id = ? AND key = ?",
                 (
-                    _json_bytes(dict(receipt)).decode("utf-8"),
+                    _json_bytes(sanitized_receipt).decode("utf-8"),
                     self._clock(),
                     case_id,
                     key,

@@ -11,6 +11,11 @@ RUNTIME_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime import FairTargetScheduler  # noqa: E402
+from openubmc_target_runtime.redaction import (  # noqa: E402
+    redact_text,
+    register_secret_values,
+    secret_redaction_request,
+)
 
 
 class FairTargetSchedulerTests(unittest.TestCase):
@@ -90,6 +95,37 @@ class FairTargetSchedulerTests(unittest.TestCase):
         self.assertEqual(result.results[2].value, "good-b")
         self.assertEqual(result.metrics["completed_count"], 2)
         self.assertEqual(result.metrics["failed_count"], 1)
+
+    def test_worker_inherits_request_secret_redaction_scope(self) -> None:
+        secret = "fixture-worker-local-secret"
+
+        def run_target(value: str, _context):
+            register_secret_values({"password": value})
+            return redact_text(f"remote echoed {value}")
+
+        with secret_redaction_request():
+            result = FairTargetScheduler(concurrency=2).run(
+                [secret],
+                run_target,
+                context=None,
+            )
+
+        self.assertNotIn(secret, result.results[0].value)
+        self.assertIn("<redacted>", result.results[0].value)
+
+        def fail_target(value: str, _context):
+            register_secret_values({"password": value})
+            raise RuntimeError(f"remote failure echoed {value}")
+
+        with secret_redaction_request():
+            failed = FairTargetScheduler(concurrency=2).run(
+                [secret],
+                fail_target,
+                context=None,
+            )
+
+        self.assertNotIn(secret, failed.results[0].error)
+        self.assertIn("<redacted>", failed.results[0].error)
 
 
 if __name__ == "__main__":
