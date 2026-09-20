@@ -88,6 +88,7 @@ from .mutation import (
 )
 from .operation_contracts import DEFAULT_OPERATION_CONTRACTS, LOG_BUNDLE_STAGE_CONTRACTS
 from .task_context import TaskContextStore
+from .redaction import require_secret_free
 from .orchestration import (
     DeliveryStrategy,
     DeveloperEditIntent,
@@ -3073,6 +3074,7 @@ class RuntimeMcpService:
 
         if not isinstance(arguments, Mapping):
             raise TypeError("tool arguments must be an object")
+        require_secret_free(arguments, boundary="MCP tool arguments")
         if self.interface_profile == "agent":
             bounded_request(arguments)
         if self.interface_profile == "agent":

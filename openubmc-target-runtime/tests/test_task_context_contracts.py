@@ -40,6 +40,27 @@ class CountingTaskContextStore(TaskContextStore):
 
 
 class TaskContextStoreTests(unittest.TestCase):
+    def test_secret_material_is_rejected_before_any_task_context_write(self) -> None:
+        cases = (
+            {"target": "192.0.2.10", "ssh_password": "fixture-secret"},
+            {
+                "target": "192.0.2.10",
+                "note": "Authorization: Bearer fixture-token",
+            },
+        )
+        for index, context in enumerate(cases):
+            with self.subTest(context=context), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                store = TaskContextStore(root)
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "secret material.*credential reference",
+                ):
+                    store.save(f"task-{index}", context)
+
+                self.assertEqual(list(root.glob("*.json")), [])
+
     def test_atomic_round_trip_and_version_zero_migration(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

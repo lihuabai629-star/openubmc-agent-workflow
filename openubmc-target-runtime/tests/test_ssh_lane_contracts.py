@@ -545,10 +545,10 @@ class OpenSshEnvironmentContractTests(unittest.TestCase):
             ResolvedSshCredentials(user="root", identity_file="/tmp/id_ed25519"),
             ResolvedSshCredentials(user="root", password="selected-secret"),
         ):
-            observed: list[dict[str, str] | None] = []
+            observed: list[tuple[list[str], dict[str, object]]] = []
 
             def completed(command, **kwargs):
-                observed.append(kwargs.get("env"))
+                observed.append((list(command), dict(kwargs)))
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             transport = OpenSshControlMasterTransport()
@@ -571,17 +571,20 @@ class OpenSshEnvironmentContractTests(unittest.TestCase):
                 master.closed = True
                 master.tempdir.cleanup()
 
-            environment = observed[0]
+            command, call = observed[0]
+            environment = call.get("env")
             self.assertIsNotNone(environment)
             assert environment is not None
-            self.assertEqual(environment["OPENUBMC_TEST_MARKER"], "keep-me")
+            self.assertNotIn("OPENUBMC_TEST_MARKER", environment)
             for name in inherited:
-                if name not in {"OPENUBMC_TEST_MARKER", "SSHPASS"}:
+                if name != "OPENUBMC_TEST_MARKER":
                     self.assertNotIn(name, environment)
             if credentials.password:
-                self.assertEqual(environment["SSHPASS"], "selected-secret")
+                self.assertEqual(command[:3], ["sshpass", "-d", "0"])
+                self.assertEqual(call.get("input"), "selected-secret\n")
+                self.assertNotIn("selected-secret", command)
             else:
-                self.assertNotIn("SSHPASS", environment)
+                self.assertIsNone(call.get("input"))
 
 
 if __name__ == "__main__":

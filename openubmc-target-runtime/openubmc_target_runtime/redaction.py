@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 
 SECRET_KEY_TOKENS = (
@@ -31,8 +32,20 @@ NON_SECRET_SELECTOR_KEYS = frozenset(
         "redfish_password_env",
         "ssh_identity_file",
         "ssh_known_hosts_file",
+        "authorization_policy",
+        "authorized_exceptions",
+        "credential_selector_fingerprint",
+        "credential_selectors",
+        "credential_source",
+        "credential_parse_count",
     }
 )
+
+
+class SecretMaterialError(ValueError):
+    """A model-visible or durable boundary received inline secret material."""
+
+    code = "secret_material_rejected"
 
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)((?<![a-z0-9_.-])[\"']?[a-z0-9_.-]{0,128}"
@@ -85,3 +98,39 @@ def redact_text(value: object, *, secret_values: tuple[str, ...] = ()) -> str:
     )
     text = _BEARER.sub("Bearer <redacted>", text)
     return _URI_USERINFO.sub(r"\1<redacted>@", text)
+
+
+def _secret_material_path(
+    value: object,
+    path: tuple[str, ...] = (),
+) -> tuple[str, ...] | None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            name = str(key)
+            candidate = (*path, name)
+            if is_secret_key(name):
+                return candidate
+            found = _secret_material_path(item, candidate)
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            found = _secret_material_path(item, (*path, str(index)))
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, str) and redact_text(value) != value:
+        return path or ("<text>",)
+    return None
+
+
+def require_secret_free(value: object, *, boundary: str) -> None:
+    """Reject inline secrets before a model-visible or durable boundary."""
+
+    if _secret_material_path(value) is None:
+        return
+    raise SecretMaterialError(
+        f"secret material is not accepted by {boundary}; "
+        "use a local credential reference"
+    )

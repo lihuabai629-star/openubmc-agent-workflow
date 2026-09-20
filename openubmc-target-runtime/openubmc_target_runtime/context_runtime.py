@@ -373,18 +373,9 @@ def _sanitize(value: object) -> object:
 
 
 def _sanitize_runtime_inputs(value: object) -> object:
-    """Normalize reusable internal inputs without discarding connection values."""
+    """Retain reusable inputs while keeping inline secrets out of durable Cases."""
 
-    if isinstance(value, Mapping):
-        return {
-            str(key): _sanitize_runtime_inputs(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [_sanitize_runtime_inputs(item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
+    return _sanitize(value)
 
 
 def _strict_bool(

@@ -1850,7 +1850,7 @@ class AgentGateway:
                 "code": (
                     "ScopeViolation"
                     if operation == "observe" and isinstance(exc, AgentPreflightError)
-                    else type(exc).__name__
+                    else str(getattr(exc, "code", type(exc).__name__))
                 ),
                 "message": _text(exc)[:1024],
             },

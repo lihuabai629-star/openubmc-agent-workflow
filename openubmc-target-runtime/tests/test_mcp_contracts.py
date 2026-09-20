@@ -705,7 +705,7 @@ class PersistentTaskContextTests(unittest.TestCase):
                     )
                     self.assertIsNone(store.load("policy-restore-task"))
 
-    def test_target_replacement_reuses_credentials_and_resets_old_ports(self) -> None:
+    def test_target_replacement_reuses_credentials_in_memory_without_persisting_them(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             domain = CapturingDomainBackend()
             service = self.service_for(Path(raw), domain)
@@ -751,7 +751,9 @@ class PersistentTaskContextTests(unittest.TestCase):
         self.assertEqual(second["ssh_host_key_policy"], "strict")
         self.assertNotIn("ssh_port", case["workflow_inputs"])
         self.assertNotIn("telnet_port", case["workflow_inputs"])
-        self.assertEqual(case["workflow_inputs"]["ssh_password"], "shared-secret")
+        self.assertNotIn("ssh_password", case["workflow_inputs"])
+        self.assertNotIn("telnet_password", case["workflow_inputs"])
+        self.assertNotIn("shared-secret", json.dumps(case, sort_keys=True))
         self.assertEqual(case["target_version"], 2)
 
     def test_absolute_runtime_lifetime_rehydrates_a_recent_long_running_task(self) -> None:
@@ -1055,6 +1057,37 @@ class JsonRpcEndpointTests(unittest.TestCase):
                 })
                 self.assertEqual(response["result"]["protocolVersion"], "2025-06-18")
         self.assertEqual(self.backend.created, [])
+
+    def test_model_visible_tools_reject_nested_secret_values_without_echoing_them(self) -> None:
+        secret = "fixture-secret-that-must-not-enter-rollout-output"
+        response = self.endpoint.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tools/call",
+                "params": {
+                    "name": "execute",
+                    "arguments": {
+                        "kind": "start",
+                        "target": "target.example",
+                        "intent": "diagnosis-only",
+                        "entry_operation": "debug_run",
+                        "entry_arguments": {"ssh_password": secret},
+                    },
+                },
+            }
+        )
+
+        encoded = json.dumps(response, sort_keys=True)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("secret_material_rejected", encoded)
+        self.assertNotIn(secret, encoded)
+        self.assertEqual(self.backend.created, [])
+        self.assertIsNone(
+            self.service._test.context_runtime.repository.case_for_task(
+                "stdio-session-task"
+            )
+        )
 
     def test_initialize_rejects_malformed_version_parameters(self) -> None:
         for params in ([], "invalid", {"protocolVersion": None},
