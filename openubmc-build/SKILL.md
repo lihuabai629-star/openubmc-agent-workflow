@@ -110,6 +110,8 @@ For `product-artifact`, an accepted result requires all Plan gates:
 - version read from `/etc/version.json` inside the Plan-bound final image equals the Plan;
 - dependency delta is within the Plan allowlist;
 - each planned non-root service can traverse its own mapped image paths.
+- every Lua source file under the planned final-image roots passes the frozen,
+  version-matched Lua compiler's syntax check.
 
 Run `scripts/finalize_product_attempt.py` after a successful product Attempt. It reacquires the Plan, checkout, and product-output locks and recomputes dependency, image-access, verification, and metadata evidence in one lock cycle. Standalone gate reports are diagnostic evidence, not acceptance tokens. Read [references/artifact-verification.md](references/artifact-verification.md).
 

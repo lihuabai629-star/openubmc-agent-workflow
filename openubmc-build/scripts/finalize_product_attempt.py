@@ -437,6 +437,10 @@ def finalization(
             reports_root / "rootfs-access.json",
             reports_root,
         )
+        rootfs_lua_report = safe_report_path(
+            reports_root / "rootfs-lua-syntax.json",
+            reports_root,
+        )
         run_gate(
             skill_root / "scripts/check_dependency_delta.py",
             plan_path=plan_resolved,
@@ -449,6 +453,13 @@ def finalization(
             plan_path=plan_resolved,
             state_path=state_resolved,
             output_path=rootfs_report,
+            finalization_id=finalization_id,
+        )
+        run_gate(
+            skill_root / "scripts/check_rootfs_lua.py",
+            plan_path=plan_resolved,
+            state_path=state_resolved,
+            output_path=rootfs_lua_report,
             finalization_id=finalization_id,
         )
         verification_path = safe_evidence_path(
@@ -466,7 +477,11 @@ def finalization(
             artifact_path=Path(
                 str(plan.get("expectations", {}).get("artifact", {}).get("path", ""))
             ),
-            gate_report_paths=[dependency_report, rootfs_report],
+            gate_report_paths=[
+                dependency_report,
+                rootfs_report,
+                rootfs_lua_report,
+            ],
             finalization_id=finalization_id,
         )
         atomic_write_json(verification_staged, verification)
@@ -521,7 +536,11 @@ def finalization(
             "verification_sha256": hashlib.sha256(
                 verification_staged.read_bytes()
             ).hexdigest(),
-            "gate_reports": [str(dependency_report), str(rootfs_report)],
+            "gate_reports": [
+                str(dependency_report),
+                str(rootfs_report),
+                str(rootfs_lua_report),
+            ],
             "package_binding": verification.get("package_binding", "package_binding_unverified"),
             "upgrade_eligible": verification.get("upgrade_eligible", False),
             "package_binding_proof": verification.get("package_binding_proof", {}),

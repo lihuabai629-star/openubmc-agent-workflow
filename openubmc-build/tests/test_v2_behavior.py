@@ -28,6 +28,7 @@ except ImportError:
 
 
 BUILD_ROOT = Path(__file__).resolve().parents[1]
+PRODUCT_LUA_ARGS = ("--lua-checker", "/bin/true")
 
 
 def run(
@@ -163,6 +164,7 @@ class BuildPlanBehaviorTests(unittest.TestCase):
                 str(creator),
                 "--mode",
                 "product-artifact",
+                *PRODUCT_LUA_ARGS,
                 "--workspace",
                 f"manifest={manifest}",
                 "--manifest-root",
@@ -201,6 +203,7 @@ class BuildPlanBehaviorTests(unittest.TestCase):
                 str(creator),
                 "--mode",
                 "product-artifact",
+                *PRODUCT_LUA_ARGS,
                 "--workspace",
                 f"manifest={manifest}",
                 "--manifest-root",
@@ -263,6 +266,7 @@ class BuildPlanBehaviorTests(unittest.TestCase):
                 str(creator),
                 "--mode",
                 "product-artifact",
+                *PRODUCT_LUA_ARGS,
                 "--workspace",
                 f"manifest={manifest}",
                 "--manifest-root",
@@ -314,6 +318,7 @@ class BuildPlanBehaviorTests(unittest.TestCase):
                 str(creator),
                 "--mode",
                 "product-artifact",
+                *PRODUCT_LUA_ARGS,
                 "--workspace",
                 f"manifest={manifest}",
                 "--manifest-root",
@@ -459,6 +464,7 @@ class BuildPlanBehaviorTests(unittest.TestCase):
                 str(creator),
                 "--mode",
                 "product-artifact",
+                *PRODUCT_LUA_ARGS,
                 "--workspace",
                 f"decoy={decoy}",
                 "--manifest-root",
@@ -525,6 +531,7 @@ class BuildPlanBehaviorTests(unittest.TestCase):
                         str(creator),
                         "--mode",
                         "product-artifact",
+                        *PRODUCT_LUA_ARGS,
                         "--workspace",
                         f"manifest={manifest}",
                         "--manifest-root",
@@ -574,6 +581,7 @@ class BuildPlanBehaviorTests(unittest.TestCase):
                 str(creator),
                 "--mode",
                 "product-artifact",
+                *PRODUCT_LUA_ARGS,
                 "--workspace",
                 f"manifest={manifest}",
                 "--manifest-root",
@@ -665,6 +673,7 @@ class BuildPlanBehaviorTests(unittest.TestCase):
                         str(creator),
                         "--mode",
                         "product-artifact",
+                        *PRODUCT_LUA_ARGS,
                         "--workspace",
                         f"manifest={manifest}",
                         "--manifest-root",
@@ -1258,6 +1267,7 @@ class BuildAttemptBehaviorTests(unittest.TestCase):
                 str(creator),
                 "--mode",
                 "product-artifact",
+                *PRODUCT_LUA_ARGS,
                 "--workspace",
                 f"manifest={manifest}",
                 "--manifest-root",
@@ -1468,6 +1478,7 @@ class BuildAttemptBehaviorTests(unittest.TestCase):
                     str(creator),
                     "--mode",
                     "product-artifact",
+                    *PRODUCT_LUA_ARGS,
                     "--workspace",
                     f"manifest={manifest}",
                     "--manifest-root",

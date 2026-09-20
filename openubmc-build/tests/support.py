@@ -102,6 +102,10 @@ def make_ext4(
         json.dumps({"Version": version}),
         encoding="utf-8",
     )
+    (staging / "opt/bmc/apps/health.lua").write_text(
+        "return true\n",
+        encoding="utf-8",
+    )
     image.parent.mkdir(parents=True, exist_ok=True)
     with image.open("wb") as handle:
         handle.truncate(16 * 1024 * 1024)
@@ -213,6 +217,8 @@ def create_product_attempt(
         str(baseline_lock),
         "--resolved-lock-path",
         str(actual_lock),
+        "--lua-checker",
+        "/bin/true",
         "--rootfs-service",
         "secbox=1000:1000=/opt/bmc/apps",
         "--allowed-dependency-change",
@@ -258,6 +264,7 @@ def create_product_attempt(
         "state": state_path,
         "dependency_report": state_path.parent / "reports/dependency-delta.json",
         "permission_report": state_path.parent / "reports/rootfs-access.json",
+        "lua_report": state_path.parent / "reports/rootfs-lua-syntax.json",
     }
 
 

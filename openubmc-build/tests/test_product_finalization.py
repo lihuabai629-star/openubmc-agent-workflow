@@ -84,6 +84,7 @@ def make_ext4(
     *,
     version: str = "12.00.05.03",
     directories: tuple[str, ...] = (),
+    files: dict[str, str] | None = None,
 ) -> Path:
     staging = root / f"{image.stem}-staging"
     for relative in (
@@ -97,6 +98,12 @@ def make_ext4(
         json.dumps({"Version": version}),
         encoding="utf-8",
     )
+    default_lua = staging / "opt/bmc/apps/health.lua"
+    default_lua.write_text("return true\n", encoding="utf-8")
+    for relative, content in (files or {}).items():
+        target = staging / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
     image.parent.mkdir(parents=True, exist_ok=True)
     with image.open("wb") as handle:
         handle.truncate(16 * 1024 * 1024)
@@ -171,6 +178,7 @@ class ProductFinalizationTests(unittest.TestCase):
         allowed_changes: tuple[str, ...] = (),
         mutable_paths: tuple[str, ...] = (),
         key_path: Path | None = None,
+        lua_checker: Path = Path("/bin/true"),
     ) -> list[str]:
         command = [
             sys.executable,
@@ -193,6 +201,8 @@ class ProductFinalizationTests(unittest.TestCase):
             str(baseline),
             "--resolved-lock-path",
             str(actual_lock),
+            "--lua-checker",
+            str(lua_checker),
         ]
         for service in services:
             command.extend(("--rootfs-service", service))
@@ -232,6 +242,8 @@ class ProductFinalizationTests(unittest.TestCase):
         artifact_inside_manifest: bool = False,
         hpm_payload: str | None = None,
         bind_hpm_key: bool = False,
+        image_files: dict[str, str] | None = None,
+        lua_checker: Path = Path("/bin/true"),
     ) -> dict[str, Path]:
         manifest, _ = self.create_manifest(root)
         baseline = root / "baseline.lock"
@@ -243,6 +255,7 @@ class ProductFinalizationTests(unittest.TestCase):
             root,
             template,
             directories=image_directories,
+            files=image_files,
         )
         for path, (uid, gid, mode) in (image_inode_settings or {}).items():
             set_image_directory(
@@ -309,6 +322,7 @@ class ProductFinalizationTests(unittest.TestCase):
                     else ()
                 ),
                 key_path=key_path if bind_hpm_key else None,
+                lua_checker=lua_checker,
             )
         )
         self.assertEqual(planned.returncode, 0, planned.stderr)
@@ -463,6 +477,15 @@ class ProductFinalizationTests(unittest.TestCase):
             )
             self.assertEqual(services["web"]["supplementary_gids"], [202])
             self.assertIn("/var/lib/web", services["web"]["paths"])
+            lua = plan["expectations"]["rootfs_lua"]
+            self.assertEqual(lua["image_path"], str(image.resolve()))
+            self.assertEqual(lua["roots"], ["/opt/bmc/apps", "/opt/bmc/drivers"])
+            self.assertEqual(lua["checker"]["path"], str(Path("/bin/true").resolve()))
+            self.assertEqual(lua["checker_argv"], ["-p", "{source}"])
+            self.assertEqual(
+                plan["expectations"]["required_gates"],
+                ["dependency-delta", "rootfs-access", "rootfs-lua-syntax"],
+            )
             self.assertEqual(
                 plan["expectations"]["outputs"]["rootfs_image"],
                 str(image.resolve()),
@@ -498,6 +521,46 @@ class ProductFinalizationTests(unittest.TestCase):
             rejected = run(*incomplete_command)
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("incomplete_resolved_lock", rejected.stderr)
+
+    def test_product_plan_requires_an_executable_lua_checker(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            manifest, _ = self.create_manifest(root)
+            baseline = root / "baseline.lock"
+            write_lock(baseline)
+            command = self.plan_command(
+                root=root,
+                manifest=manifest,
+                baseline=baseline,
+                image=root / "rootfs.img",
+                artifact=root / "firmware.hpm",
+                actual_lock=root / "actual.lock",
+                services=("ssdp=104:104=/opt/bmc/apps/ssdp",),
+            )
+            checker_index = command.index("--lua-checker")
+            del command[checker_index : checker_index + 2]
+
+            missing = run(*command)
+
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("missing_product_inputs", missing.stderr)
+            self.assertIn("--lua-checker", missing.stderr)
+
+            not_executable = root / "luac"
+            not_executable.write_text("checker\n", encoding="utf-8")
+            command = self.plan_command(
+                root=root / "invalid",
+                manifest=manifest,
+                baseline=baseline,
+                image=root / "other.img",
+                artifact=root / "other.hpm",
+                actual_lock=root / "other.lock",
+                services=("ssdp=104:104=/opt/bmc/apps/ssdp",),
+                lua_checker=not_executable,
+            )
+            invalid = run(*command)
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("invalid_lua_checker", invalid.stderr)
 
     def test_dependency_delta_preserves_requirement_roles(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -783,6 +846,120 @@ class ProductFinalizationTests(unittest.TestCase):
             self.assertTrue(
                 all(item["blocked_at"] == "/" for item in report["details"]["blocked"])
             )
+
+    def test_finalizer_rejects_syntax_invalid_lua_from_the_final_image(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            checker = root / "test-luac"
+            checker.write_text(
+                f"#!{sys.executable}\n"
+                "import pathlib, sys\n"
+                "source = pathlib.Path(sys.argv[-1]).read_bytes()\n"
+                "if b'function truncated(' in source:\n"
+                "    print(f'{sys.argv[-1]}:42: unexpected symbol near eof', file=sys.stderr)\n"
+                "    raise SystemExit(1)\n",
+                encoding="utf-8",
+            )
+            checker.chmod(0o755)
+            fixture = self.create_attempt(
+                root=root,
+                baseline_roles={
+                    "requires": ["storage/1.0@openubmc/stable"],
+                },
+                actual_roles={
+                    "requires": ["storage/1.0@openubmc/stable"],
+                },
+                services=("ssdp=104:104=/opt/bmc/apps/ssdp",),
+                image_directories=("opt/bmc/apps/ssdp",),
+                image_files={
+                    "opt/bmc/apps/ssdp/truncated.lua": "function truncated(\n",
+                },
+                lua_checker=checker,
+            )
+
+            finalized = self.finalize(fixture)
+
+            self.assertEqual(finalized.returncode, 1, finalized.stderr)
+            result = json.loads(finalized.stdout)
+            self.assertEqual(result["status"], "rejected")
+            verification = json.loads(
+                Path(result["verification_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(verification["failed_checks"], ["rootfs-lua-syntax"])
+            report_path = fixture["state"].parent / "reports/rootfs-lua-syntax.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "fail")
+            self.assertEqual(
+                report["details"]["failures"][0]["path"],
+                "/opt/bmc/apps/ssdp/truncated.lua",
+            )
+            self.assertEqual(report["details"]["failures"][0]["line"], 42)
+            rendered_report = json.dumps(report)
+            self.assertNotIn("unexpected symbol", rendered_report)
+            self.assertNotIn("openubmc-lua-gate-", rendered_report)
+            self.assertFalse(Path(str(fixture["artifact"]) + ".metadata.json").exists())
+
+    def test_finalizer_rejects_lua_checker_drift_after_the_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            checker = root / "test-luac"
+            checker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            checker.chmod(0o755)
+            fixture = self.create_attempt(
+                root=root,
+                baseline_roles={
+                    "requires": ["storage/1.0@openubmc/stable"],
+                },
+                actual_roles={
+                    "requires": ["storage/1.0@openubmc/stable"],
+                },
+                services=("ssdp=104:104=/opt/bmc/apps/ssdp",),
+                image_directories=("opt/bmc/apps/ssdp",),
+                lua_checker=checker,
+            )
+            checker.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+
+            finalized = self.finalize(fixture)
+
+            self.assertEqual(finalized.returncode, 2)
+            self.assertIn("input_lock_drift: lua_checker.sha256", finalized.stderr)
+            self.assertFalse((fixture["state"].parent / "finalization.json").exists())
+
+    def test_finalizer_rejects_an_empty_lua_file_even_when_checker_accepts_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = self.create_attempt(
+                root=root,
+                baseline_roles={
+                    "requires": ["storage/1.0@openubmc/stable"],
+                },
+                actual_roles={
+                    "requires": ["storage/1.0@openubmc/stable"],
+                },
+                services=("ssdp=104:104=/opt/bmc/apps/ssdp",),
+                image_directories=("opt/bmc/apps/ssdp",),
+                image_files={"opt/bmc/apps/ssdp/empty.lua": ""},
+            )
+
+            finalized = self.finalize(fixture)
+
+            self.assertEqual(finalized.returncode, 1, finalized.stderr)
+            result = json.loads(finalized.stdout)
+            verification = json.loads(
+                Path(result["verification_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(verification["failed_checks"], ["rootfs-lua-syntax"])
+            report = json.loads(
+                (fixture["state"].parent / "reports/rootfs-lua-syntax.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            failure = next(
+                item
+                for item in report["details"]["failures"]
+                if item.get("path") == "/opt/bmc/apps/ssdp/empty.lua"
+            )
+            self.assertEqual(failure["reason"], "empty_lua_source")
 
     def test_finalizer_recomputes_evidence_and_disables_automatic_upgrade(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
