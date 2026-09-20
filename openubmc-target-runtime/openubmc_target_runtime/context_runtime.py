@@ -1389,6 +1389,12 @@ def project_case(
                 and int(current_gate.get("gate_version", 0)) == gate_version
             ):
                 projection["current_gate"] = {}
+            if (
+                isinstance(projection.get("run_outcome"), Mapping)
+                and str(projection["run_outcome"].get("status", "")) == "partial"
+            ):
+                projection["run_outcome"] = {}
+                projection["status"] = "open"
         elif kind == "RunCancelled":
             gate_id = str(payload.get("gate_id", ""))
             gate_version = int(payload.get("gate_version", 0))
@@ -1439,11 +1445,23 @@ def project_case(
         elif kind == "RunOutcomeRecorded":
             raw_outcome = payload.get("outcome")
             if isinstance(raw_outcome, Mapping):
-                projection["run_outcome"] = dict(raw_outcome)
+                outcome = dict(raw_outcome)
+                projection["run_outcome"] = outcome
                 projection["current_gate"] = {}
                 projection["current_incident"] = {}
-                projection["status"] = "terminal"
-                projection["next_actions"] = []
+                if str(outcome.get("status", "")) == "partial":
+                    projection["status"] = "partial"
+                    remaining = outcome.get("remaining_work", [])
+                    projection["next_actions"] = [
+                        str(item.get("summary", "resume the remaining work"))
+                        for item in remaining
+                        if isinstance(item, Mapping) and str(item.get("summary", "")).strip()
+                    ][:8]
+                    if not projection["next_actions"]:
+                        projection["next_actions"] = ["resume the Run to continue remaining work"]
+                else:
+                    projection["status"] = "terminal"
+                    projection["next_actions"] = []
         elif kind == "RunDecisionCommitted":
             decision = {
                 key: value
@@ -4926,7 +4944,7 @@ class ContextRuntime:
             projection,
             terminal_status=(
                 outcome_status
-                if outcome_status == "cancelled"
+                if outcome_status in {"partial", "cancelled", "failed", "completed"}
                 else case_terminal_status(projection)
             ),
             include_bundle=self._closeout_bundle_enabled(projection),

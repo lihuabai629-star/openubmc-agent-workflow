@@ -219,6 +219,27 @@ def _string_array_schema() -> dict[str, object]:
     }
 
 
+def _partial_evidence_item_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "required": ["run_id", "evidence_ids", "summary"],
+        "properties": {
+            "run_id": {"type": "string", "minLength": 1},
+            "evidence_ids": {"type": "array", "minItems": 1},
+            "summary": {"type": "string", "minLength": 1},
+        },
+    }
+
+
+def _partial_outcome_properties() -> dict[str, object]:
+    item = _partial_evidence_item_schema()
+    return {
+        "verified_findings": {"type": "array", "minItems": 1, "items": item},
+        "remaining_work": {"type": "array", "items": item},
+        "blocked_by": {"type": "array", "items": item},
+    }
+
+
 def _artifact_ref_schema(kind: str, *, require_version: bool) -> dict[str, object]:
     required = [
         "handle",
@@ -458,6 +479,8 @@ def gate_input_schema(
         ]
     else:
         raise GateConflict(f"unsupported Agent Gate phase: {phase_type}")
+    if phase_type in {"developer.change", "build.artifact"}:
+        payload_properties.update(_partial_outcome_properties())
     schema = {
         "type": "object",
         "required": ["status", "summary", "payload"],
@@ -488,6 +511,23 @@ def gate_input_schema(
         ],
         "receipt_schema": descriptor.receipt_schema,
     }
+    if phase_type in {"developer.change", "build.artifact"}:
+        schema["allOf"].append(
+            {
+                "if": {"properties": {"status": {"const": "partial"}}},
+                "then": {
+                    "properties": {
+                        "payload": {
+                            "required": [
+                                "verified_findings",
+                                "remaining_work",
+                                "blocked_by",
+                            ]
+                        }
+                    }
+                },
+            }
+        )
     return schema
 
 
@@ -1040,9 +1080,9 @@ class RunEngine:
             )
         elif transition_kind is RunTransitionKind.OUTCOME_RECORDED:
             normalized = _text(payload.get("status")).lower()
-            if normalized not in {"completed", "failed", "cancelled"}:
+            if normalized not in {"completed", "failed", "cancelled", "partial"}:
                 raise ValueError(
-                    "Run Outcome status must be completed, failed, or cancelled"
+                    "Run Outcome status must be completed, failed, cancelled, or partial"
                 )
             derived = self.driver.derive_closeout(
                 run_id,
@@ -1069,6 +1109,15 @@ class RunEngine:
                 ),
                 "closeout_fingerprint": _text(closeout.get("fingerprint")),
             }
+            if normalized == "partial":
+                current_projection = _projection(self.driver.run_snapshot(run_id))
+                outcome.update(
+                    self._validate_partial_outcome_payload(
+                        payload,
+                        run_id=run_id,
+                        evidence_refs=current_projection.get("evidence_refs", []),
+                    )
+                )
             outcome["outcome_id"] = "outcome-" + fingerprint(
                 {"run_id": run_id, **outcome}
             )[:32]
@@ -1478,6 +1527,12 @@ class RunEngine:
                     + ", ".join(missing)
                 )
         payload = dict(raw_payload)
+        if status == "partial":
+            payload.update(self._validate_partial_outcome_payload(
+                payload,
+                run_id=_text(projection.get("case_id")),
+                evidence_refs=projection.get("evidence_refs", []),
+            ))
         if gate.name == "build.artifact" and status == "completed":
             if (
                 payload.get("package_binding") != "package_binding_verified"
@@ -1677,6 +1732,68 @@ class RunEngine:
                     )
             payload.update(assessment_fields)
         return {"status": status, "summary": summary, "payload": payload}
+
+    @staticmethod
+    def _validate_partial_outcome_payload(
+        payload: Mapping[str, object],
+        *,
+        run_id: str,
+        evidence_refs: object,
+    ) -> dict[str, list[dict[str, object]]]:
+        evidence_ids = {
+            str(item.get("evidence_id"))
+            for item in evidence_refs
+            if isinstance(item, Mapping) and str(item.get("evidence_id", "")).strip()
+        } if isinstance(evidence_refs, list) else set()
+        normalized: dict[str, list[dict[str, object]]] = {}
+        allowed_item_fields = {"run_id", "evidence_ids", "summary", "finding", "work", "reason"}
+        for field_name in ("verified_findings", "remaining_work", "blocked_by"):
+            items = payload.get(field_name)
+            if not isinstance(items, list):
+                raise GateConflict(f"partial response requires {field_name}")
+            if len(items) > 32:
+                raise GateConflict(f"partial response {field_name} exceeds 32 items")
+            if field_name == "verified_findings" and not items:
+                raise GateConflict("partial response requires at least one verified finding")
+            normalized[field_name] = []
+            for index, item in enumerate(items):
+                if not isinstance(item, Mapping):
+                    raise GateConflict(f"partial response {field_name}[{index}] must be an object")
+                if set(item) - allowed_item_fields:
+                    raise GateConflict(f"partial response {field_name}[{index}] contains unsupported fields")
+                if _text(item.get("run_id")) != run_id:
+                    raise GateConflict(
+                        f"partial response {field_name}[{index}] must bind to the current Run"
+                    )
+                ids = item.get("evidence_ids")
+                if not isinstance(ids, list) or not ids or any(
+                    not isinstance(evidence_id, str) or not evidence_id.strip()
+                    for evidence_id in ids
+                ):
+                    raise GateConflict(
+                        f"partial response {field_name}[{index}] requires evidence_ids"
+                    )
+                if len(ids) > 32:
+                    raise GateConflict(f"partial response {field_name}[{index}] exceeds 32 Evidence IDs")
+                unknown = sorted(set(ids) - evidence_ids)
+                if unknown:
+                    raise GateConflict(
+                        f"partial response {field_name}[{index}] references unknown Evidence: "
+                        + ", ".join(unknown)
+                    )
+                summary = _text(item.get("summary"))
+                if len(summary.encode("utf-8")) > 1024:
+                    raise GateConflict(f"partial response {field_name}[{index}] summary exceeds 1024 bytes")
+                normalized_item = {
+                    "run_id": run_id,
+                    "evidence_ids": list(ids),
+                    "summary": summary,
+                }
+                for optional in ("finding", "work", "reason"):
+                    if optional in item:
+                        normalized_item[optional] = _text(item.get(optional))
+                normalized[field_name].append(normalized_item)
+        return normalized
 
     def _validate_hardware_coverage_evidence(
         self,
@@ -1935,6 +2052,18 @@ class RunEngine:
             status=_text(raw.get("status")),
             summary=_text(raw.get("summary")),
             acceptance=raw.get("acceptance", []),
+            verified_findings=tuple(
+                dict(item) for item in raw.get("verified_findings", [])
+                if isinstance(item, Mapping)
+            ),
+            remaining_work=tuple(
+                dict(item) for item in raw.get("remaining_work", [])
+                if isinstance(item, Mapping)
+            ),
+            blocked_by=tuple(
+                dict(item) for item in raw.get("blocked_by", [])
+                if isinstance(item, Mapping)
+            ),
         )
 
     def _unknown_mutation(
@@ -2204,7 +2333,7 @@ class RunEngine:
         for _step_index in range(WORKFLOW_INTERNAL_MAX_STEPS):
             projection = _projection(snapshot)
             outcome = self._outcome(projection)
-            if outcome is not None:
+            if outcome is not None and outcome.status != "partial":
                 return self._turn(snapshot, observation_ref=observation_ref)
             if _text(projection.get("status")) == "cancelled":
                 snapshot = self._apply_transition(
@@ -2570,6 +2699,25 @@ class RunEngine:
             )
         )
         snapshot = self.driver.run_snapshot(command.run_id)
+        if response["status"] == "partial":
+            payload = _mapping(response.get("payload"))
+            snapshot = self._apply_transition(
+                command.run_id,
+                RunTransitionKind.OUTCOME_RECORDED,
+                {
+                    "status": "partial",
+                    "summary": response["summary"],
+                    "verified_findings": payload.get("verified_findings", []),
+                    "remaining_work": payload.get("remaining_work", []),
+                    "blocked_by": payload.get("blocked_by", []),
+                },
+                operation_id=f"{operation_id}-partial-outcome",
+            )
+            return self._turn(
+                snapshot,
+                state="partial",
+                next_action="resume the Run to continue remaining work",
+            )
         return self._advance(
             snapshot,
             task_id=task_id,

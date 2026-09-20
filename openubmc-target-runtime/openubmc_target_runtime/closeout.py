@@ -55,7 +55,7 @@ def case_terminal_status(projection: Mapping[str, object]) -> str:
         if str(operation.get("operation", "")) in _WORKFLOW_CONTROL_OPERATIONS:
             continue
         status = str(operation.get("status", "")).strip().lower()
-        if status in {"completed", "failed", "cancelled", "blocked"}:
+        if status in {"completed", "failed", "cancelled", "partial", "blocked"}:
             return status
     return "completed"
 
