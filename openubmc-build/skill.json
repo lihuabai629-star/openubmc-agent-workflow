@@ -30,6 +30,7 @@
     "scripts/check_dependency_delta.py",
     "scripts/component_impact.py",
     "scripts/check_rootfs_access.py",
+    "scripts/check_rootfs_lua.py",
     "scripts/create_build_plan.py",
     "scripts/detect_changed_components.py",
     "scripts/ensure_planned_version.py",
