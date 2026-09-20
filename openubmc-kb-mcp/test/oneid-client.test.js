@@ -161,3 +161,24 @@ test("coalesces concurrent token requests into one refresh", async () => {
   assert.deepEqual(await Promise.all([client.getAccessToken(), client.getAccessToken()]), ["shared-token", "shared-token"]);
   assert.equal(requests, 1);
 });
+
+test("stops on an invalid refresh token and requires local re-login", async () => {
+  const now = 1_700_000_000_000;
+  const store = memoryStore({ accessToken: "expired", refreshToken: "invalid-refresh", expiresAt: now - 1 });
+  const calls = [];
+  const client = new OneIdClient(config, {
+    now: () => now,
+    tokenStore: store,
+    fetch: async (url) => {
+      calls.push(String(url));
+      return json({ error: "invalid_grant" }, { status: 400 });
+    }
+  });
+
+  await assert.rejects(
+    () => client.getAccessToken(),
+    error => error.code === "KB_RELOGIN_REQUIRED"
+  );
+  assert.deepEqual(calls, [config.tokenEndpoint]);
+  assert.equal(store.snapshot(), undefined);
+});

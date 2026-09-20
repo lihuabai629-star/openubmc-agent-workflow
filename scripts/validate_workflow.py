@@ -401,6 +401,9 @@ def validate_release_metadata(document: dict[str, object]) -> None:
         raise SystemExit("workflow and openubmc-kb-mcp versions differ")
     if lock.get("name") != package.get("name") or lock.get("version") != package.get("version"):
         raise SystemExit("openubmc-kb-mcp package-lock metadata differs")
+    version_source = (ROOT / "openubmc-kb-mcp" / "src" / "version.js").read_text(encoding="utf-8")
+    if f'KNOWLEDGE_MCP_VERSION = "{knowledge_version}"' not in version_source:
+        raise SystemExit("KB server version identity differs from package metadata")
     installer = (
         ROOT / "openubmc-environment-setup" / "scripts" / "install_environment.py"
     ).read_text(encoding="utf-8")

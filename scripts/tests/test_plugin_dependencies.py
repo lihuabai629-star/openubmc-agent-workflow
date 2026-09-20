@@ -23,7 +23,7 @@ class DependencyPreparationTests(unittest.TestCase):
                  'requirements.lock': b'',
                  'openubmc-kb-mcp/package.json': b'{"name":"fixture","version":"0.0.0"}',
                  'openubmc-kb-mcp/package-lock.json': b'{}',
-                 'scripts/launch_runtime.py': b'import sys,json\nlines=sys.stdin.read().splitlines()\nif not lines: print("MCP_FIXTURE_READY", flush=True)\nfor line in lines:\n r=json.loads(line)\n if "id" in r: print(json.dumps({"jsonrpc":"2.0","id":r["id"],"result": {"serverInfo":{"name":"fixture"}} if r["method"]=="initialize" else {"tools":[{"name":"observe"},{"name":"execute"}]}}),flush=True)\n',
+                 'scripts/launch_runtime.py': b'import os,sys,json\nlines=sys.stdin.read().splitlines()\nif not lines: print("MCP_FIXTURE_READY", flush=True)\nfor line in lines:\n r=json.loads(line)\n if "id" in r: print(json.dumps({"jsonrpc":"2.0","id":r["id"],"result": {"serverInfo":None if os.environ.get("FIXTURE_NULL_SERVER") else {"name":"fixture"}} if r["method"]=="initialize" else {"tools":[{"name":"observe"},{"name":"execute"}]}}),flush=True)\n',
                  'openubmc-kb-mcp/src/server.js': b'console.log("MCP_FIXTURE_READY")\n',
                  'skills/openubmc-target-runtime/openubmc_target_runtime/credential_file.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/credential_file.py').read_bytes(),
                  'skills/openubmc-target-runtime/openubmc_target_runtime/configuration.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/configuration.py').read_bytes(),
@@ -113,6 +113,7 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         scoped = subprocess.run([*self.cli[:-1], 'doctor', '--capability', 'runtime'], env=self.env, capture_output=True, text=True, timeout=15)
         self.assertEqual(scoped.returncode, 0, scoped.stderr)
         report = json.loads(scoped.stdout)
+        self.assertEqual(report['knowledge_mcp_version'], '0.0.0')
         self.assertTrue(report['capabilities']['runtime']['startup_ready'])
         self.assertNotIn('kb', report['mcp_health'])
         combined = subprocess.run([*self.cli[:-1], 'doctor'], env=self.env, capture_output=True, text=True, timeout=15)
@@ -153,6 +154,17 @@ p=(prefix/'node_modules/fixture.js');p.parent.mkdir(parents=True,exist_ok=True);
         self.assertTrue(report['capabilities']['runtime']['startup_ready'])
         self.assertFalse(report['capabilities']['kb']['dependencies_ready'])
         self.assertIn('cache drift', report['capabilities']['kb']['error'])
+
+    def test_doctor_reports_invalid_server_info_without_crashing(self):
+        prepared = self.prepare('--capability', 'runtime', '--offline')
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        self.env['FIXTURE_NULL_SERVER'] = '1'
+        result = subprocess.run([*self.cli[:-1], 'doctor', '--capability', 'runtime'],
+                                env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report['capabilities']['runtime']['startup_ready'])
+        self.assertFalse(report['mcp_health']['runtime']['ok'])
 
     def test_first_start_prepares_dependencies_and_warm_start_does_not_download(self):
         argv = [sys.executable, '-I', str(self.plugin/'scripts/pluginctl.py'), 'runtime', '--prepare-on-start']

@@ -27,3 +27,10 @@ test("persists tokens only for the matching account and protects the cache on PO
   await store.clear();
   assert.equal(await store.load(), undefined);
 });
+
+test("binds token ownership to the installed knowledge-base version", () => {
+  assert.notEqual(
+    createTokenOwner({ ...ownerConfig, knowledgeMcpVersion: "1.3.0" }),
+    createTokenOwner({ ...ownerConfig, knowledgeMcpVersion: "1.4.0" })
+  );
+});
