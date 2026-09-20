@@ -95,6 +95,9 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: python scripts/validate_workflow.py
 
+      - name: Run sanitized session replay regressions
+        run: python scripts/sanitized_replay.py evaluation/sanitized-replays
+
       - name: Validate local configuration in Chromium
         working-directory: openubmc-environment-setup/tests/browser
         run: |
