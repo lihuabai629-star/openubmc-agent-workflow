@@ -661,6 +661,15 @@ def _scenario_acceptance_issues(
                 issues.append("final answer is empty")
             if not str(final_answer.get("run_id", "")).strip():
                 issues.append("final answer is not bound to a terminal Run")
+            if not str(final_answer.get("delivery_stage", "")).strip():
+                issues.append("final answer has no delivery stage")
+            outcome = receipt.get("terminal_outcome")
+            if isinstance(outcome, Mapping):
+                if final_answer.get("status") != outcome.get("status"):
+                    issues.append("final answer status does not match terminal Outcome")
+            fingerprint = str(final_answer.get("outcome_fingerprint", ""))
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint):
+                issues.append("final answer is missing an Outcome fingerprint")
     return issues
 
 

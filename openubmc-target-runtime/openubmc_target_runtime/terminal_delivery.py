@@ -11,9 +11,12 @@ import os
 from pathlib import Path
 import tempfile
 
+from .delivery_stage import DELIVERY_STAGES
+
 
 SCHEMA = "openubmc.terminal-answer/v1"
 TERMINAL_STATUSES = frozenset({"completed", "partial", "failed", "cancelled", "blocked"})
+TERMINAL_DELIVERY_STAGES = frozenset((*DELIVERY_STAGES, "unverified"))
 
 
 class TerminalAnswerError(ValueError):
@@ -49,6 +52,8 @@ class FinalAnswerRecord:
             raise TerminalAnswerError("final answer text must not be empty")
         if not self.outcome_fingerprint.startswith("sha256:"):
             raise TerminalAnswerError("final answer must bind an Outcome fingerprint")
+        if self.delivery_stage not in TERMINAL_DELIVERY_STAGES:
+            raise TerminalAnswerError("final answer has an unsupported delivery stage")
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -64,8 +69,17 @@ class FinalAnswerRecord:
         }
 
 
-def outcome_fingerprint(outcome: Mapping[str, object]) -> str:
-    return _fingerprint(dict(outcome))
+def outcome_fingerprint(
+    outcome: Mapping[str, object],
+    *,
+    delivery_stage: str = "unverified",
+) -> str:
+    selected_stage = _text(delivery_stage) or "unverified"
+    if selected_stage not in TERMINAL_DELIVERY_STAGES:
+        raise TerminalAnswerError("unsupported delivery stage")
+    return _fingerprint(
+        {"outcome": dict(outcome), "delivery_stage": selected_stage}
+    )
 
 
 def render_final_answer(
@@ -80,6 +94,9 @@ def render_final_answer(
         raise TerminalAnswerError("cannot render a non-terminal status")
     if not _text(summary):
         raise TerminalAnswerError("terminal summary is required")
+    delivery_stage = _text(delivery_stage) or "unverified"
+    if delivery_stage not in TERMINAL_DELIVERY_STAGES:
+        raise TerminalAnswerError("unsupported delivery stage")
     labels = {
         "completed": "已完成",
         "partial": "部分完成",
@@ -87,7 +104,7 @@ def render_final_answer(
         "cancelled": "已取消",
         "blocked": "受阻",
     }
-    lines = [f"状态：{labels[status]}", f"交付阶段：{delivery_stage or '未形成阶段证据'}", _text(summary)]
+    lines = [f"状态：{labels[status]}", f"交付阶段：{delivery_stage}", _text(summary)]
     if status != "completed":
         lines.append(f"下一步：{_text(next_action) or '需要补充证据后继续。'}")
     return "\n".join(lines)
@@ -134,7 +151,11 @@ class TerminalAnswerStore:
         delivery_stage: str,
         text: str,
     ) -> FinalAnswerRecord:
-        fingerprint = outcome_fingerprint(outcome)
+        selected_stage = _text(delivery_stage) or "unverified"
+        fingerprint = outcome_fingerprint(
+            outcome,
+            delivery_stage=selected_stage,
+        )
         existing = self.get(task_id)
         if existing is not None:
             if existing.run_id != run_id or existing.outcome_fingerprint != fingerprint:
@@ -146,7 +167,7 @@ class TerminalAnswerStore:
             run_id=run_id,
             outcome_fingerprint=fingerprint,
             status=status,
-            delivery_stage=_text(delivery_stage),
+            delivery_stage=selected_stage,
             text=_text(text),
             delivery_id="answer-" + _fingerprint({"task_id": task_id, "run_id": run_id, "outcome": fingerprint}),
             delivered_at=datetime.now(timezone.utc).isoformat(),
@@ -173,13 +194,17 @@ def qualify_terminal_answer(
     task_id: str,
     run_id: str,
     outcome: Mapping[str, object],
+    delivery_stage: str,
     record: FinalAnswerRecord | None,
 ) -> dict[str, object]:
     """Fail closed when terminal evidence lacks a matching final answer."""
     status = _text(outcome.get("status")).lower()
+    selected_stage = _text(delivery_stage) or "unverified"
     failures: list[str] = []
     if status not in TERMINAL_STATUSES:
         failures.append("outcome_not_terminal")
+    if selected_stage not in TERMINAL_DELIVERY_STAGES:
+        failures.append("final_answer_stage_invalid")
     if record is None:
         failures.append("final_answer_missing")
     else:
@@ -187,8 +212,14 @@ def qualify_terminal_answer(
             failures.append("final_answer_task_mismatch")
         if record.run_id != run_id:
             failures.append("final_answer_run_mismatch")
-        if record.outcome_fingerprint != outcome_fingerprint(outcome):
-            failures.append("final_answer_outcome_mismatch")
+        if record.delivery_stage != selected_stage:
+            failures.append("final_answer_stage_mismatch")
+        if selected_stage in TERMINAL_DELIVERY_STAGES:
+            if record.outcome_fingerprint != outcome_fingerprint(
+                outcome,
+                delivery_stage=selected_stage,
+            ):
+                failures.append("final_answer_outcome_mismatch")
         if record.status != status:
             failures.append("final_answer_status_mismatch")
         if not record.text.strip():

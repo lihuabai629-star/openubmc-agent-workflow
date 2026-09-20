@@ -992,6 +992,11 @@ class ProductFinalizationTests(unittest.TestCase):
                 "package_binding_unverified",
             )
             self.assertIs(result["upgrade_eligible"], False)
+            self.assertEqual(result["release_gates"]["status"], "rejected")
+            self.assertIn(
+                "package-completeness",
+                result["release_gates"]["failed_gates"],
+            )
             verification = json.loads(
                 Path(result["verification_path"]).read_text(encoding="utf-8")
             )
@@ -1044,6 +1049,8 @@ class ProductFinalizationTests(unittest.TestCase):
             verification = json.loads(Path(result["verification_path"]).read_text())
             metadata = json.loads(Path(result["metadata_path"]).read_text())
             self.assertEqual(result["status"], "accepted")
+            self.assertEqual(result["release_gates"]["status"], "accepted")
+            self.assertEqual(result["release_gates"]["failed_gates"], [])
             for record in (result, verification, metadata):
                 self.assertIs(record["upgrade_eligible"], True)
                 self.assertEqual(record["package_binding"], "package_binding_verified")

@@ -56,10 +56,33 @@ class ReleaseGateTests(unittest.TestCase):
         missing = rollback_gate(recovery_artifact=None, rollback=lambda: {"verified": True})
         self.assertEqual(missing["status"], "fail")
         passed = rollback_gate(
-            recovery_artifact={"sha256": "a" * 64, "version": "1.0"},
-            rollback=lambda: {"verified": True, "version": "1.0"},
+            recovery_artifact={
+                "sha256": "a" * 64,
+                "version": "1.0",
+                "established_before_mutation": True,
+            },
+            rollback=lambda: {
+                "verified": True,
+                "artifact_sha256": "a" * 64,
+                "version": "1.0",
+                "evidence_ids": ["rollback-check"],
+            },
         )
         self.assertEqual(passed["status"], "pass")
+
+    def test_release_result_requires_every_named_gate_once(self):
+        incomplete = release_result(
+            {"gate": "lua-source-syntax", "status": "pass"},
+            required_gates=("lua-source-syntax", "package-completeness"),
+        )
+        self.assertEqual(incomplete["status"], "rejected")
+        self.assertIn("package-completeness", incomplete["failed_gates"])
+        duplicate = release_result(
+            {"gate": "lua-source-syntax", "status": "pass"},
+            {"gate": "lua-source-syntax", "status": "pass"},
+            required_gates=("lua-source-syntax",),
+        )
+        self.assertEqual(duplicate["status"], "rejected")
 
 
 if __name__ == "__main__":

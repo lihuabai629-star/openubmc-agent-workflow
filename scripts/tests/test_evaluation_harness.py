@@ -127,6 +127,32 @@ class EvaluationHarnessPreflightTests(unittest.TestCase):
 
 
 class EvaluationHarnessRunTests(unittest.TestCase):
+    def test_terminal_answer_gate_requires_bound_stage_status_and_fingerprint(self) -> None:
+        plan = {
+            "execution_id": "task-1",
+            "identity": {
+                "scenario": {"name": "scenario", "version": "v1", "acceptance": "terminal-answer-v1"},
+                "source_commit": "a" * 40,
+            },
+        }
+        receipt = {
+            "schema": "openubmc-agent-workflow.scenario-acceptance.v1",
+            "execution_id": "task-1",
+            "source_commit": "a" * 40,
+            "scenario": {"name": "scenario", "version": "v1"},
+            "accepted": True,
+            "terminal_outcome": {"status": "completed"},
+            "final_answer": {
+                "task_id": "task-1", "run_id": "run-1", "text": "done",
+                "status": "failed", "delivery_stage": "",
+                "outcome_fingerprint": "missing",
+            },
+        }
+        issues = harness._scenario_acceptance_issues(plan, receipt)
+        self.assertIn("final answer has no delivery stage", issues)
+        self.assertIn("final answer status does not match terminal Outcome", issues)
+        self.assertIn("final answer is missing an Outcome fingerprint", issues)
+
     def test_formal_dsh_run_is_isolated_and_records_reproducible_identity(self) -> None:
         commit = "a" * 40
         preflight = {

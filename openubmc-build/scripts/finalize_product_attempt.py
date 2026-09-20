@@ -28,6 +28,7 @@ from create_build_plan import (
 )
 from verify_product_artifact import verify
 from write_artifact_metadata import artifact_identity, write_metadata
+from release_gates import release_result
 
 
 FINALIZATION_SCHEMA = "openubmc-build/finalization-v1"
@@ -486,6 +487,35 @@ def finalization(
             ],
             finalization_id=finalization_id,
         )
+        rootfs_lua = load_json(rootfs_lua_report)[2]
+        release_gates = release_result(
+            {
+                "gate": "generated-lua-syntax",
+                "status": "pass" if rootfs_lua.get("status") == "pass" else "fail",
+                "report_path": str(rootfs_lua_report),
+                "report_sha256": hashlib.sha256(
+                    rootfs_lua_report.read_bytes()
+                ).hexdigest(),
+            },
+            {
+                "gate": "package-completeness",
+                "status": (
+                    "pass"
+                    if verification.get("status") == "accepted"
+                    and verification.get("package_binding") == "package_binding_verified"
+                    and verification.get("upgrade_eligible") is True
+                    else "fail"
+                ),
+                "artifact": dict(verification.get("artifact", {})),
+                "package_binding": verification.get(
+                    "package_binding", "package_binding_unverified"
+                ),
+                "package_binding_proof": dict(
+                    verification.get("package_binding_proof", {})
+                ),
+            },
+            required_gates=("generated-lua-syntax", "package-completeness"),
+        )
         atomic_write_json(verification_staged, verification)
 
         metadata_path: Path | None = None
@@ -546,6 +576,7 @@ def finalization(
             "package_binding": verification.get("package_binding", "package_binding_unverified"),
             "upgrade_eligible": verification.get("upgrade_eligible", False),
             "package_binding_proof": verification.get("package_binding_proof", {}),
+            "release_gates": release_gates,
         }
         if verification_status == "accepted":
             document.update({

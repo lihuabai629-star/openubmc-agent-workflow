@@ -128,11 +128,25 @@ def service_start_smoke(
 ) -> dict[str, object]:
     """Run a controlled post-activation smoke and bind every result identity."""
     checks: list[dict[str, object]] = []
+    failures: list[str] = []
+    if not required_services:
+        failures.append("required_services_missing")
+    if not all(str(value).strip() for value in (target, address, version)):
+        failures.append("service_smoke_identity_incomplete")
+    if not command or any(not str(item).strip() for item in command):
+        failures.append("service_smoke_command_missing")
     for service in required_services:
-        raw = adapter(service)
-        ok = raw is True or isinstance(raw, Mapping) and raw.get("active") is True
+        try:
+            raw = adapter(service)
+            ok = raw is True or isinstance(raw, Mapping) and raw.get("active") is True
+        except Exception as exc:
+            raw = None
+            ok = False
+            failures.append(f"{service}:{type(exc).__name__}")
         checks.append({"service": service, "active": ok})
-    passed = bool(checks) and all(item["active"] for item in checks)
+    if any(not item["active"] for item in checks):
+        failures.append("required_service_inactive")
+    passed = not failures
     return {
         "gate": "service-start-smoke",
         "status": "pass" if passed else "fail",
@@ -142,6 +156,7 @@ def service_start_smoke(
         "observed_at": observed_at or datetime.now(timezone.utc).isoformat(),
         "command": list(command),
         "checks": checks,
+        "failures": failures,
     }
 
 
@@ -151,10 +166,32 @@ def rollback_gate(
     rollback: Callable[[], Mapping[str, object]],
 ) -> dict[str, object]:
     """Require a pre-mutation recovery identity and independent verification."""
-    if not isinstance(recovery_artifact, Mapping) or not recovery_artifact.get("sha256"):
+    if (
+        not isinstance(recovery_artifact, Mapping)
+        or not recovery_artifact.get("sha256")
+        or not recovery_artifact.get("version")
+        or recovery_artifact.get("established_before_mutation") is not True
+    ):
         return {"gate": "rollback", "status": "fail", "reason": "recovery_artifact_missing"}
-    result = rollback()
-    verified = isinstance(result, Mapping) and result.get("verified") is True
+    try:
+        result = rollback()
+    except Exception as exc:
+        return {
+            "gate": "rollback",
+            "status": "fail",
+            "reason": f"rollback_error:{type(exc).__name__}",
+            "recovery_artifact": dict(recovery_artifact),
+        }
+    evidence_ids = result.get("evidence_ids", []) if isinstance(result, Mapping) else []
+    verified = (
+        isinstance(result, Mapping)
+        and result.get("verified") is True
+        and str(result.get("artifact_sha256", "")).removeprefix("sha256:")
+        == str(recovery_artifact.get("sha256", "")).removeprefix("sha256:")
+        and result.get("version") == recovery_artifact.get("version")
+        and isinstance(evidence_ids, list)
+        and bool(evidence_ids)
+    )
     return {
         "gate": "rollback",
         "status": "pass" if verified else "fail",
@@ -163,12 +200,23 @@ def rollback_gate(
     }
 
 
-def release_result(*gates: Mapping[str, object]) -> dict[str, object]:
-    failures = [str(gate.get("gate", "unknown")) for gate in gates if gate.get("status") != "pass"]
+def release_result(
+    *gates: Mapping[str, object],
+    required_gates: Sequence[str] = (),
+) -> dict[str, object]:
+    names = [str(gate.get("gate", "unknown")) for gate in gates]
+    failures = [
+        name for name, gate in zip(names, gates) if gate.get("status") != "pass"
+    ]
+    failures.extend(name for name in required_gates if name not in names)
+    failures.extend(name for name in set(names) if names.count(name) > 1)
+    if not gates:
+        failures.append("release_gates_missing")
+    failures = list(dict.fromkeys(failures))
     return {
         "schema": SCHEMA,
         "status": "accepted" if not failures else "rejected",
         "gates": [dict(gate) for gate in gates],
         "failed_gates": failures,
+        "required_gates": list(required_gates),
     }
-

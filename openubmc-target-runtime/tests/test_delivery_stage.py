@@ -56,6 +56,107 @@ class DeliveryStageTests(unittest.TestCase):
         self.assertEqual(DELIVERY_STAGES[0], "diagnosed")
         self.assertEqual(DELIVERY_STAGES[-1], "rollback-verified")
 
+    def test_full_delivery_requires_bound_release_service_and_rollback_evidence(self):
+        artifact = {
+            "kind": "openubmc-hpm",
+            "sha256": "a" * 64,
+            "version": "2.0.14",
+        }
+        result = assess_delivery_stages([
+            receipt("diagnosis"),
+            receipt("development", facts={"authored_files": ["a.lua"]}),
+            receipt("build", artifact=artifact, facts={
+                "artifact_kind": "openubmc-hpm",
+                "package_binding": "package_binding_verified",
+                "release_gates": {"status": "accepted", "failed_gates": []},
+            }),
+            receipt("upgrade", facts={
+                "artifact_sha256": "a" * 64,
+                "product_version": "2.0.14",
+                "target_id": "bmc-a",
+                "target_address": "fixture.invalid",
+            }),
+            receipt("verification", facts={
+                "artifact_sha256": "a" * 64,
+                "product_version": "2.0.14",
+                "target_id": "bmc-a",
+                "target_address": "fixture.invalid",
+                "freshness": "verified",
+                "service_start": {
+                    "status": "pass",
+                    "target": "bmc-a",
+                    "address": "fixture.invalid",
+                    "version": "2.0.14",
+                    "observed_at": "2026-09-20T00:00:00Z",
+                    "command": ["systemctl", "is-active"],
+                    "checks": [{"service": "network.service", "active": True}],
+                },
+            }),
+            receipt("rollback", facts={
+                "rollback_verified": True,
+                "recovery_artifact": {
+                    "sha256": "b" * 64,
+                    "version": "2.0.13",
+                    "established_before_mutation": True,
+                },
+                "rollback_verification": {
+                    "status": "pass",
+                    "artifact_sha256": "b" * 64,
+                    "version": "2.0.13",
+                    "evidence_ids": ["rollback-check"],
+                },
+            }),
+        ])
+        self.assertEqual(result["highest"], "rollback-verified")
+        self.assertIsNone(result["next"])
+
+    def test_identity_mismatch_and_service_failure_stop_stage_promotion(self):
+        common = [
+            receipt("diagnosis"),
+            receipt("development", facts={"authored_files": ["a.lua"]}),
+            receipt("build", artifact={
+                "kind": "openubmc-hpm", "sha256": "a" * 64, "version": "2.0.14",
+            }, facts={
+                "artifact_kind": "openubmc-hpm",
+                "package_binding": "package_binding_verified",
+                "release_gates": {"status": "accepted"},
+            }),
+        ]
+        mismatched = assess_delivery_stages([*common, receipt("upgrade", facts={
+            "artifact_sha256": "c" * 64, "product_version": "2.0.14",
+            "target_id": "bmc-a", "target_address": "fixture.invalid",
+        })])
+        self.assertEqual(mismatched["highest"], "packaged")
+        self.assertFalse(mismatched["stages"]["deployed"]["verified"])
+
+        service_failed = assess_delivery_stages([*common, receipt("upgrade", facts={
+            "artifact_sha256": "a" * 64, "product_version": "2.0.14",
+            "target_id": "bmc-a", "target_address": "fixture.invalid",
+        }), receipt("verification", facts={
+            "artifact_sha256": "a" * 64, "product_version": "2.0.14",
+            "target_id": "bmc-a", "target_address": "fixture.invalid",
+            "freshness": "verified",
+            "service_start": {"status": "fail", "checks": [
+                {"service": "network.service", "active": False},
+            ]},
+        })])
+        self.assertEqual(service_failed["highest"], "deployed")
+        self.assertFalse(service_failed["stages"]["runtime-verified"]["verified"])
+
+    def test_packaged_requires_release_gate_receipt(self):
+        result = assess_delivery_stages([
+            receipt("diagnosis"),
+            receipt("development", facts={"authored_files": ["a.lua"]}),
+            receipt("build", facts={
+                "artifact_kind": "openubmc-hpm",
+                "package_binding": "package_binding_verified",
+            }, artifact={
+                "kind": "openubmc-hpm", "sha256": "a" * 64, "version": "2.0.14",
+            }),
+        ])
+        self.assertEqual(result["highest"], "product-built")
+        self.assertFalse(result["stages"]["packaged"]["verified"])
+
 
 if __name__ == "__main__":
     unittest.main()
