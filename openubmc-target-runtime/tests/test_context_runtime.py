@@ -111,6 +111,51 @@ class FullFakeBackend:
         return value
 
 
+class VersionedUpgradeBackend(FullFakeBackend):
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().upgrade_run(task, arguments, context)
+        value["installed_version"] = str(arguments["product_version"])
+        return value
+
+
+class ConflictingVersionUpgradeBackend(FullFakeBackend):
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().upgrade_run(task, arguments, context)
+        value["product_version"] = "backend-reported-alias"
+        value["installed_version"] = str(arguments["product_version"])
+        return value
+
+
+class ArtifactAliasOnlyUpgradeBackend(FullFakeBackend):
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().upgrade_run(task, arguments, context)
+        value["product_version"] = str(arguments["product_version"])
+        return value
+
+
+class SecretShapedVersionUpgradeBackend(FullFakeBackend):
+    def upgrade_run(self, task, arguments, context) -> dict[str, object]:
+        value = super().upgrade_run(task, arguments, context)
+        value["installed_version"] = "token=must-not-persist"
+        return value
+
+
+class MultiTargetDebugBackend(FullFakeBackend):
+    def debug_run(self, task, arguments, context) -> dict[str, object]:
+        context.raise_if_stopped()
+        return {
+            "ok": True,
+            "targets": [
+                {
+                    "target_id": target["target_id"],
+                    "operation_id": "token=must-not-persist",
+                    "result": {"firmware_version": f"version-{index}"},
+                }
+                for index, target in enumerate(arguments["targets"], start=1)
+            ],
+        }
+
+
 class FailingBindRepository(InMemoryRuntimeRepository):
     def bind_task(self, task_id: str, case_id: str) -> None:
         raise OSError("shadow repository unavailable")
@@ -1115,6 +1160,11 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                     operation_id="evidence-one",
                 )
                 reference = result.envelope["evidence_refs"][0]
+                self.assertEqual(reference["target_address"], "192.0.2.40")
+                self.assertEqual(reference["operation"], "debug_run")
+                self.assertEqual(reference["operation_id"], "evidence-one")
+                self.assertEqual(reference["case_id"], result.envelope["case_id"])
+                self.assertGreater(reference["observed_at"], 0)
                 with self.assertRaisesRegex(Exception, "target does not match"):
                     service.call_tool(
                         "evidence_read",
@@ -1125,6 +1175,17 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                         },
                         task_id="reader",
                         operation_id="wrong-target",
+                    )
+                with self.assertRaisesRegex(Exception, "address does not match"):
+                    service.call_tool(
+                        "evidence_read",
+                        {
+                            "case_id": result.envelope["case_id"],
+                            "evidence_id": reference["evidence_id"],
+                            "target_address": "192.0.2.41",
+                        },
+                        task_id="reader",
+                        operation_id="wrong-address",
                     )
                 blob_path = (
                     root
@@ -1145,6 +1206,182 @@ class ContextRuntimeIntegrationTests(unittest.TestCase):
                     )
             finally:
                 service.close()
+
+    def test_multi_target_diagnosis_evidence_binds_each_target_identity(self) -> None:
+        service = RuntimeMcpService(MultiTargetDebugBackend())
+        try:
+            result = service.call_tool(
+                "debug_run",
+                {
+                    "targets": [
+                        {"target_id": "bmc-a", "ip": "192.0.2.48"},
+                        {"target_id": "bmc-b", "ip": "192.0.2.49"},
+                    ],
+                    "deadline": 10,
+                },
+                task_id="multi-target-evidence",
+                operation_id="multi-target-debug",
+            )
+            projection = service._test.context_runtime.read_case(
+                result.envelope["case_id"]
+            )
+        finally:
+            service.close()
+
+        reference = result.envelope["evidence_refs"][0]
+        operation = next(
+            item
+            for item in projection["operations"]
+            if item["operation_id"] == "multi-target-debug"
+        )
+        self.assertEqual(
+            [target["target_id"] for target in operation["inputs"]["targets"]],
+            ["bmc-a", "bmc-b"],
+        )
+        self.assertEqual(
+            reference["target_bindings"],
+            [
+                {
+                    "target_id": "bmc-a",
+                    "target_address": "192.0.2.48",
+                    "operation_id": "multi-target-debug",
+                    "expected_product_version": "",
+                    "observed_product_version": "version-1",
+                },
+                {
+                    "target_id": "bmc-b",
+                    "target_address": "192.0.2.49",
+                    "operation_id": "multi-target-debug",
+                    "expected_product_version": "",
+                    "observed_product_version": "version-2",
+                },
+            ],
+        )
+
+    def test_upgrade_evidence_binds_expected_and_observed_product_versions(self) -> None:
+        service = RuntimeMcpService(VersionedUpgradeBackend())
+        try:
+            result = service.call_tool(
+                "upgrade_run",
+                {
+                    "ip": "192.0.2.45",
+                    "target_id": "candidate-a",
+                    "artifact_path": "/tmp/openubmc.hpm",
+                    "artifact_sha256": "a" * 64,
+                    "product_version": "12.00.05.03",
+                    "deadline": 10,
+                    "idempotency_key": "version-bound-upgrade",
+                },
+                task_id="version-bound-evidence",
+                operation_id="upgrade-version-bound",
+            )
+            reference = result.envelope["evidence_refs"][0]
+            self.assertEqual(reference["expected_product_version"], "12.00.05.03")
+            self.assertEqual(reference["observed_product_version"], "12.00.05.03")
+            loaded = service.call_tool(
+                "evidence_read",
+                {
+                    "case_id": result.envelope["case_id"],
+                    "evidence_id": reference["evidence_id"],
+                    "target_address": "192.0.2.45",
+                    "expected_product_version": "12.00.05.03",
+                    "observed_product_version": "12.00.05.03",
+                    "operation": "upgrade_run",
+                    "operation_id": "upgrade-version-bound",
+                },
+                task_id="version-bound-reader",
+                operation_id="read-version-bound",
+            )
+            self.assertEqual(
+                loaded["evidence"]["observed_product_version"],
+                "12.00.05.03",
+            )
+            with self.assertRaisesRegex(Exception, "version does not match"):
+                service.call_tool(
+                    "evidence_read",
+                    {
+                        "case_id": result.envelope["case_id"],
+                        "evidence_id": reference["evidence_id"],
+                        "observed_product_version": "12.00.05.04",
+                    },
+                    task_id="version-bound-reader",
+                    operation_id="read-wrong-version",
+                )
+        finally:
+            service.close()
+
+    def test_expected_version_comes_from_the_request_not_a_backend_alias(self) -> None:
+        service = RuntimeMcpService(ConflictingVersionUpgradeBackend())
+        try:
+            result = service.call_tool(
+                "upgrade_run",
+                {
+                    "ip": "192.0.2.46",
+                    "target_id": "candidate-a",
+                    "artifact_path": "/tmp/openubmc.hpm",
+                    "artifact_sha256": "b" * 64,
+                    "product_version": "12.00.05.03",
+                    "deadline": 10,
+                    "idempotency_key": "request-version-authoritative",
+                },
+                task_id="request-version-authoritative",
+                operation_id="upgrade-request-version",
+            )
+        finally:
+            service.close()
+
+        reference = result.envelope["evidence_refs"][0]
+        self.assertEqual(reference["expected_product_version"], "12.00.05.03")
+        self.assertEqual(reference["observed_product_version"], "12.00.05.03")
+
+    def test_artifact_product_version_is_not_device_observation(self) -> None:
+        service = RuntimeMcpService(ArtifactAliasOnlyUpgradeBackend())
+        try:
+            result = service.call_tool(
+                "upgrade_run",
+                {
+                    "ip": "192.0.2.50",
+                    "target_id": "candidate-a",
+                    "artifact_path": "/tmp/openubmc.hpm",
+                    "artifact_sha256": "d" * 64,
+                    "product_version": "12.00.05.03",
+                    "deadline": 10,
+                    "idempotency_key": "artifact-alias-is-not-observation",
+                },
+                task_id="artifact-alias-is-not-observation",
+                operation_id="upgrade-artifact-alias",
+            )
+        finally:
+            service.close()
+
+        reference = result.envelope["evidence_refs"][0]
+        self.assertEqual(reference["expected_product_version"], "12.00.05.03")
+        self.assertEqual(reference["observed_product_version"], "")
+
+    def test_secret_shaped_backend_version_is_not_persisted_as_identity(self) -> None:
+        service = RuntimeMcpService(SecretShapedVersionUpgradeBackend())
+        try:
+            result = service.call_tool(
+                "upgrade_run",
+                {
+                    "ip": "192.0.2.47",
+                    "target_id": "candidate-a",
+                    "artifact_path": "/tmp/openubmc.hpm",
+                    "artifact_sha256": "c" * 64,
+                    "product_version": "12.00.05.03",
+                    "deadline": 10,
+                    "idempotency_key": "secret-shaped-version",
+                },
+                task_id="secret-shaped-version",
+                operation_id="upgrade-secret-version",
+            )
+        finally:
+            service.close()
+
+        reference = result.envelope["evidence_refs"][0]
+        self.assertEqual(reference["expected_product_version"], "12.00.05.03")
+        self.assertEqual(reference["observed_product_version"], "")
+        self.assertNotIn("must-not-persist", json.dumps(result.envelope))
 
     def test_sqlite_rejects_an_unknown_storage_version(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

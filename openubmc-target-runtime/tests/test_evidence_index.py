@@ -187,6 +187,11 @@ class EvidenceIndexTests(unittest.TestCase):
         self.assertFalse(attached["idempotent_replay"])
         self.assertEqual(attached["evidence"]["blob_id"], digest)
         self.assertEqual(attached["evidence"]["target_id"], "target-1")
+        self.assertEqual(attached["evidence"]["target_address"], "192.0.2.80")
+        self.assertEqual(
+            attached["evidence"]["operation"], "operator-evidence-attach"
+        )
+        self.assertEqual(attached["evidence"]["operation_id"], "attach-official-ut")
         self.assertEqual(loaded["body"], "3/3 passed\n")
 
     def test_recovery_package_is_managed_by_artifact_store_not_evidence_blob(self) -> None:
@@ -246,10 +251,14 @@ class EvidenceIndexTests(unittest.TestCase):
         self.assertEqual(artifact_ref["kind"], "openubmc-hpm")
         self.assertEqual(artifact_ref["run_id"], run_id)
         self.assertEqual(artifact_ref["target"], "192.0.2.84")
+        self.assertEqual(attached["evidence"]["target_address"], "192.0.2.84")
+        self.assertEqual(
+            attached["evidence"]["operation_id"], "attach-recovery-artifact"
+        )
         self.assertEqual(managed_body, recovery_body)
         self.assertEqual(json.loads(loaded["body"])["artifact_ref"], artifact_ref)
 
-    def test_operator_file_evidence_attach_is_idempotent(self) -> None:
+    def test_operator_file_evidence_uses_distinct_operation_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             evidence_path = root / "build.log"
@@ -293,13 +302,19 @@ class EvidenceIndexTests(unittest.TestCase):
                 service.close()
 
         self.assertFalse(first["idempotent_replay"])
-        self.assertTrue(second["idempotent_replay"])
-        self.assertEqual(first["evidence"], second["evidence"])
+        self.assertFalse(second["idempotent_replay"])
+        self.assertNotEqual(
+            first["evidence"]["evidence_id"],
+            second["evidence"]["evidence_id"],
+        )
+        self.assertEqual(first["evidence"]["blob_id"], second["evidence"]["blob_id"])
+        self.assertEqual(first["evidence"]["operation_id"], "attach-build-first")
+        self.assertEqual(second["evidence"]["operation_id"], "attach-build-second")
         self.assertEqual(
             attachment_events,
             ["EvidenceAttached", "RunDecisionCommitted"],
         )
-        self.assertEqual(first_revision, second_revision)
+        self.assertGreater(second_revision, first_revision)
 
     def test_operator_file_evidence_retry_survives_source_removal_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -354,6 +369,14 @@ class EvidenceIndexTests(unittest.TestCase):
         self.assertFalse(first["idempotent_replay"])
         self.assertTrue(replayed["idempotent_replay"])
         self.assertEqual(first["evidence"], replayed["evidence"])
+        self.assertEqual(replayed["evidence"]["target_address"], "192.0.2.85")
+        self.assertEqual(
+            replayed["evidence"]["operation"], "operator-evidence-attach"
+        )
+        self.assertEqual(
+            replayed["evidence"]["operation_id"],
+            "attach-build-after-restart",
+        )
 
     def test_operator_file_evidence_retry_survives_terminal_run_and_source_removal(
         self,
@@ -768,6 +791,13 @@ class EvidenceIndexTests(unittest.TestCase):
         self.assertEqual(item["case_count"], 2)
         self.assertEqual(item["target_count"], 1)
         self.assertEqual(item["generation_count"], 1)
+        self.assertTrue(item["identity_mixed"])
+        self.assertEqual(item["identity_binding_count"], 2)
+        self.assertFalse(item["identity_bindings_truncated"])
+        self.assertEqual(
+            {binding["operation_id"] for binding in item["identity_bindings"]},
+            {"debug-query-one", "debug-query-two"},
+        )
         self.assertIn(
             item["case_id"],
             {first.envelope["case_id"], second.envelope["case_id"]},
@@ -846,6 +876,13 @@ class EvidenceIndexTests(unittest.TestCase):
         self.assertEqual(result["unique_content_count"], 1)
         self.assertEqual(result["returned_item_count"], 1)
         self.assertEqual(result["items"][0]["target_count"], 2)
+        self.assertEqual(
+            {
+                (binding["target_id"], binding["target_address"])
+                for binding in result["items"][0]["identity_bindings"]
+            },
+            {("bmc-a", "192.0.2.75"), ("bmc-b", "192.0.2.76")},
+        )
 
     def test_sqlite_operator_query_matches_in_memory_shape(self) -> None:
         def collect(service: RuntimeMcpService) -> dict[str, object]:

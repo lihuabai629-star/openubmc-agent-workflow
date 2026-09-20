@@ -9013,6 +9013,34 @@ class AgentGatewayTests(unittest.TestCase):
         self.assertEqual(public["coverage"]["requested"], 1)
         self.assertEqual(public["results"][0]["kind"], "diagnostic-scope")
 
+    def test_diagnostic_receipt_projects_evidence_identity_bindings(self) -> None:
+        receipt = build_diagnostic_receipt(
+            "debug_run",
+            {"ok": True, "root_cause": "bounded diagnosis"},
+            {"ip": "192.0.2.20", "target_id": "candidate"},
+            (
+                {
+                    "evidence_id": "evidence-one",
+                    "target_id": "candidate",
+                    "target_address": "192.0.2.20",
+                    "operation": "debug_run",
+                    "operation_id": "diagnosis-one",
+                    "expected_product_version": "12.00.05.03",
+                    "observed_product_version": "12.00.05.03",
+                    "observed_at": 1.0,
+                },
+            ),
+            closeout_stage="diagnosis",
+        )
+
+        self.assertIsNotNone(receipt)
+        reference = receipt.to_public_dict()["evidence"][0]
+        self.assertEqual(reference["target_address"], "192.0.2.20")
+        self.assertEqual(reference["operation"], "debug_run")
+        self.assertEqual(reference["operation_id"], "diagnosis-one")
+        self.assertEqual(reference["expected_product_version"], "12.00.05.03")
+        self.assertEqual(reference["observed_product_version"], "12.00.05.03")
+
     def test_duplicate_special_file_requests_receive_unique_result_identities(
         self,
     ) -> None:

@@ -163,6 +163,22 @@ freshness, capability states, truncation, content completeness, gaps, and bounde
 references. Raw Evidence remains in the Operator / CI Plane; the Agent does not need a third
 Evidence-read operation to evaluate the current Turn.
 
+Every newly persisted Evidence reference carries the Run, producing operation and operation ID,
+observation time, and any expected or observed product version available at collection time. A
+single-target reference also carries its target ID and address. A multi-target reference carries one
+`target_bindings` entry per target with its address, child operation ID, and expected and observed
+versions. These bindings are part of the durable reference identity and are projected through
+DiagnosticReceipt and the Operator Evidence index. `evidence_read` accepts the same fields as exact
+selectors and resolves all supplied target selectors against one binding. If a Run target address
+changes or a reference conflicts with the operation, target, or version that would consume it,
+readback and Closeout fail closed instead of reusing the bytes for the new identity. Closeout also
+rejects an Evidence timestamp that predates its producing operation. References written before
+these fields existed remain readable when no explicit selector or conflicting binding is present.
+
+The Operator query may fold identical bytes across references. A folded item retains one readable
+canonical reference and exposes bounded `identity_bindings`, their full count, and a truncation flag;
+the canonical target or operation is never presented as the identity of every folded reference.
+
 The Runtime Core sanitizes, forms, and persists the typed `DiagnosticReceipt` because its status
 participates in Closeout and Replay. `AgentGateway` targets an 8 KiB Turn projection but does not
 compact facts, diagnostic previews, or other typed Turn fields merely to meet that display target.
@@ -340,7 +356,10 @@ rejection, and promotion remain operator-only operations.
 can attach verified local file bytes only while the selected Run is open. Runtime Core resolves the
 Run-bound target, verifies the expected digest, stores the bytes content-addressably, and appends an
 idempotent `EvidenceAttached` fact. The operation cannot answer a Gate or change phase, Incident,
-Effect, or Outcome state, and it is absent from the Agent profile.
+Effect, or Outcome state, and it is absent from the Agent profile. File and Recovery Artifact
+attachments retain the canonical target address, Operator operation identity, and applicable
+product version across process restarts; the secret material used to reach the target is never part
+of an Evidence reference.
 
 A `workflow-diagnosis-record` attachment may subsequently be cited by the same Run's current
 `diagnosis.acceptance` Gate. Citation does not let the Operator plane answer that Gate: the Agent

@@ -409,6 +409,367 @@ class CaseCloseoutIntegrationTests(unittest.TestCase):
         self.assertEqual(degraded.status, "partial")
         self.assertNotIn("old failed conclusion", str(degraded.facts))
 
+    def test_closeout_rejects_evidence_bound_to_another_operation(self) -> None:
+        plan = AcceptancePlan.freeze(
+            {"intent": "diagnosis-only", "final_purpose": "diagnose"},
+            frozen_at=1.0,
+        )
+        base_projection = {
+            "case_id": "operation-bound-evidence",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [{"target_id": "target-1", "address": "192.0.2.30"}],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-one",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 1,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["diagnosis-evidence"],
+                }
+            ],
+            "phase_records": [],
+        }
+
+        for foreign_binding in (
+            {"operation": "debug_collect"},
+            {"operation_id": "diagnosis-two"},
+            {"target_id": "target-2"},
+        ):
+            with self.subTest(foreign_binding=foreign_binding):
+                projection = {
+                    **base_projection,
+                    "evidence_refs": [
+                        {
+                            "evidence_id": "diagnosis-evidence",
+                            "blob_id": "diagnosis",
+                            "operation": "debug_run",
+                            "operation_id": "diagnosis-one",
+                            "target_id": "target-1",
+                            **foreign_binding,
+                        }
+                    ],
+                }
+                reads: list[str] = []
+                closeout = aggregate_case_closeout(
+                    projection,
+                    lambda reference: reads.append(str(reference["evidence_id"]))
+                    or {"ok": True, "root_cause": "foreign evidence"},
+                )
+                diagnosis = next(
+                    receipt
+                    for receipt in closeout.receipts
+                    if receipt.stage == "diagnosis"
+                )
+
+                self.assertEqual(reads, [])
+                self.assertEqual(diagnosis.status, "partial")
+                self.assertNotIn("foreign evidence", str(diagnosis.facts))
+
+    def test_closeout_rejects_evidence_when_its_bound_target_no_longer_exists(
+        self,
+    ) -> None:
+        plan = AcceptancePlan.freeze(
+            {"intent": "diagnosis-only", "final_purpose": "diagnose"},
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "replaced-target-evidence",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [{"target_id": "target-2", "address": "192.0.2.32"}],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-one",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 1,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["diagnosis-evidence"],
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {
+                    "evidence_id": "diagnosis-evidence",
+                    "blob_id": "diagnosis",
+                    "target_id": "target-1",
+                    "target_address": "192.0.2.31",
+                    "operation": "debug_run",
+                    "operation_id": "diagnosis-one",
+                }
+            ],
+        }
+        reads: list[str] = []
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda reference: reads.append(str(reference["evidence_id"]))
+            or {"ok": True, "root_cause": "removed target evidence"},
+        )
+        diagnosis = next(
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(reads, [])
+        self.assertEqual(diagnosis.status, "partial")
+
+    def test_closeout_accepts_complete_multi_target_evidence_bindings(self) -> None:
+        plan = AcceptancePlan.freeze(
+            {"intent": "diagnosis-only", "final_purpose": "diagnose"},
+            frozen_at=1.0,
+        )
+        targets = [
+            {"target_id": "bmc-a", "address": "192.0.2.33"},
+            {"target_id": "bmc-b", "address": "192.0.2.34"},
+        ]
+        projection = {
+            "case_id": "multi-target-bound-evidence",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": targets,
+            "operations": [
+                {
+                    "operation_id": "diagnosis-many",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 1,
+                    "inputs": {"targets": targets},
+                    "evidence_ids": ["diagnosis-evidence"],
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {
+                    "evidence_id": "diagnosis-evidence",
+                    "blob_id": "diagnosis",
+                    "operation": "debug_run",
+                    "operation_id": "diagnosis-many",
+                    "target_bindings": [
+                        {
+                            "target_id": "bmc-a",
+                            "target_address": "192.0.2.33",
+                            "operation_id": "diagnosis-many",
+                            "expected_product_version": "",
+                            "observed_product_version": "",
+                        },
+                        {
+                            "target_id": "bmc-b",
+                            "target_address": "192.0.2.34",
+                            "operation_id": "diagnosis-many",
+                            "expected_product_version": "",
+                            "observed_product_version": "",
+                        },
+                    ],
+                }
+            ],
+        }
+        reads: list[str] = []
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda reference: reads.append(str(reference["evidence_id"]))
+            or {"ok": True, "root_cause": "multi-target root cause"},
+        )
+        diagnosis = next(
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(reads, ["diagnosis-evidence"])
+        self.assertEqual(diagnosis.status, "blocked")
+        self.assertEqual(diagnosis.facts["root_cause"], "multi-target root cause")
+
+    def test_closeout_rejects_evidence_from_a_previous_target_address(self) -> None:
+        plan = AcceptancePlan.freeze(
+            {"intent": "diagnosis-only", "final_purpose": "diagnose"},
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "address-bound-evidence",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [{"target_id": "target-1", "address": "192.0.2.31"}],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-one",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 1,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["diagnosis-evidence"],
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {
+                    "evidence_id": "diagnosis-evidence",
+                    "blob_id": "diagnosis",
+                    "target_id": "target-1",
+                    "target_address": "192.0.2.30",
+                    "operation": "debug_run",
+                    "operation_id": "diagnosis-one",
+                }
+            ],
+        }
+        reads: list[str] = []
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda reference: reads.append(str(reference["evidence_id"]))
+            or {"ok": True, "root_cause": "old target evidence"},
+        )
+        diagnosis = next(
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(reads, [])
+        self.assertEqual(diagnosis.status, "partial")
+        self.assertNotIn("old target evidence", str(diagnosis.facts))
+
+    def test_closeout_rejects_evidence_for_another_expected_product_version(
+        self,
+    ) -> None:
+        plan = AcceptancePlan.freeze(
+            {"intent": "diagnosis-only", "final_purpose": "diagnose"},
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "version-bound-evidence",
+            "acceptance_plan": plan.to_public_dict(),
+            "workflow_inputs": {"product_version": "3.2.0"},
+            "targets": [{"target_id": "target-1", "address": "192.0.2.30"}],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-one",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 1,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["diagnosis-evidence"],
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {
+                    "evidence_id": "diagnosis-evidence",
+                    "blob_id": "diagnosis",
+                    "target_id": "target-1",
+                    "target_address": "192.0.2.30",
+                    "operation": "debug_run",
+                    "operation_id": "diagnosis-one",
+                    "expected_product_version": "3.1.0",
+                }
+            ],
+        }
+        reads: list[str] = []
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda reference: reads.append(str(reference["evidence_id"]))
+            or {"ok": True, "root_cause": "wrong version evidence"},
+        )
+        diagnosis = next(
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(reads, [])
+        self.assertEqual(diagnosis.status, "partial")
+        self.assertNotIn("wrong version evidence", str(diagnosis.facts))
+
+    def test_closeout_rejects_evidence_observed_for_a_different_version(
+        self,
+    ) -> None:
+        plan = AcceptancePlan.freeze(
+            {"intent": "diagnosis-only", "final_purpose": "diagnose"},
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "observed-version-bound-evidence",
+            "acceptance_plan": plan.to_public_dict(),
+            "workflow_inputs": {"product_version": "3.2.0"},
+            "targets": [{"target_id": "target-1", "address": "192.0.2.30"}],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-one",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "terminal_revision": 1,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["diagnosis-evidence"],
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {
+                    "evidence_id": "diagnosis-evidence",
+                    "blob_id": "diagnosis",
+                    "target_id": "target-1",
+                    "target_address": "192.0.2.30",
+                    "operation": "debug_run",
+                    "operation_id": "diagnosis-one",
+                    "expected_product_version": "3.2.0",
+                    "observed_product_version": "3.1.0",
+                }
+            ],
+        }
+        reads: list[str] = []
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda reference: reads.append(str(reference["evidence_id"]))
+            or {"ok": True, "root_cause": "wrong observed version"},
+        )
+        diagnosis = next(
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(reads, [])
+        self.assertEqual(diagnosis.status, "partial")
+
+    def test_closeout_rejects_evidence_older_than_its_operation(self) -> None:
+        plan = AcceptancePlan.freeze(
+            {"intent": "diagnosis-only", "final_purpose": "diagnose"},
+            frozen_at=1.0,
+        )
+        projection = {
+            "case_id": "time-bound-evidence",
+            "acceptance_plan": plan.to_public_dict(),
+            "targets": [{"target_id": "target-1", "address": "192.0.2.30"}],
+            "operations": [
+                {
+                    "operation_id": "diagnosis-one",
+                    "operation": "debug_run",
+                    "status": "completed",
+                    "started_at": 20.0,
+                    "terminal_revision": 1,
+                    "inputs": {"target_id": "target-1"},
+                    "evidence_ids": ["diagnosis-evidence"],
+                }
+            ],
+            "phase_records": [],
+            "evidence_refs": [
+                {
+                    "evidence_id": "diagnosis-evidence",
+                    "blob_id": "diagnosis",
+                    "target_id": "target-1",
+                    "target_address": "192.0.2.30",
+                    "operation": "debug_run",
+                    "operation_id": "diagnosis-one",
+                    "observed_at": 19.0,
+                }
+            ],
+        }
+        reads: list[str] = []
+
+        closeout = aggregate_case_closeout(
+            projection,
+            lambda reference: reads.append(str(reference["evidence_id"]))
+            or {"ok": True, "root_cause": "pre-operation evidence"},
+        )
+        diagnosis = next(
+            receipt for receipt in closeout.receipts if receipt.stage == "diagnosis"
+        )
+
+        self.assertEqual(reads, [])
+        self.assertEqual(diagnosis.status, "partial")
+
     def test_accepted_diagnosis_supersedes_only_its_bound_runtime_receipt(
         self,
     ) -> None:
