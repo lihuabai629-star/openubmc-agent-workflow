@@ -284,9 +284,9 @@ class LivePatchCliTests(unittest.TestCase):
                     raise SystemExit(0 if success else 1)
                 if any("cat >" in value for value in argv):
                     sys.stdin.buffer.read()
-                    Path(os.environ["FAKE_SSH_LOG"]).write_text(
+                    Path(__file__).resolve().with_name("ssh.json").write_text(
                         json.dumps({
-                            "argv": (["-e"] if os.environ.get("FAKE_SSHPASS_USED") else []) + argv,
+                            "argv": ([os.environ["FAKE_SSHPASS_USED"]] if os.environ.get("FAKE_SSHPASS_USED") else []) + argv,
                             "sspass_present": bool(os.environ.get("SSHPASS")),
                             "unrelated_passwords_present": any(
                                 os.environ.get(name)
@@ -311,7 +311,7 @@ class LivePatchCliTests(unittest.TestCase):
                 from pathlib import Path
                 import sys
 
-                Path(os.environ["FAKE_SSHPASS_LOG"]).write_text(
+                Path(__file__).resolve().with_name("sshpass.json").write_text(
                     json.dumps({
                         "argv": sys.argv[1:],
                         "sspass_present": bool(os.environ.get("SSHPASS")),
@@ -322,8 +322,9 @@ class LivePatchCliTests(unittest.TestCase):
                     }),
                     encoding="utf-8",
                 )
-                os.environ["FAKE_SSHPASS_USED"] = "1"
-                os.execvp(sys.argv[2], sys.argv[2:])
+                os.environ["FAKE_SSHPASS_USED"] = sys.argv[1]
+                command_index = 3 if sys.argv[1:2] == ["-d"] else 2
+                os.execvp(sys.argv[command_index], sys.argv[command_index:])
                 """
             ),
             encoding="utf-8",
@@ -651,8 +652,10 @@ class LivePatchCliTests(unittest.TestCase):
             "--host-key-policy insecure",
             applied["rollback_plan_command"],
         )
-        self.assertIn("--ssh-password super-secret-password", applied["rollback_plan_command"])
-        self.assertIn("--telnet-password telnet-secret-password", applied["rollback_plan_command"])
+        self.assertNotIn("super-secret-password", applied["rollback_plan_command"])
+        self.assertNotIn("telnet-secret-password", applied["rollback_plan_command"])
+        self.assertNotIn("--ssh-password", applied["rollback_plan_command"])
+        self.assertNotIn("--telnet-password", applied["rollback_plan_command"])
         self.assertIn(
             applied["local_sha256"],
             applied["rollback_plan_command"],
@@ -667,8 +670,8 @@ class LivePatchCliTests(unittest.TestCase):
         self.assertIn("UserKnownHostsFile=/dev/null", ssh["argv"])
         self.assertFalse(ssh["sspass_present"])
         self.assertFalse(ssh["unrelated_passwords_present"])
-        self.assertEqual(sshpass["argv"][0], "-e")
-        self.assertTrue(sshpass["sspass_present"])
+        self.assertEqual(sshpass["argv"][0], "-d")
+        self.assertFalse(sshpass["sspass_present"])
         self.assertFalse(sshpass["unrelated_passwords_present"])
 
     def test_generated_rollback_inherits_transport_selectors_and_no_remount(self) -> None:

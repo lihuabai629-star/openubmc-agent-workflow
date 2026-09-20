@@ -227,15 +227,33 @@ def ssh_stream_file(
     timeout: int,
 ) -> None:
     ssh_command = ["ssh"]
-    command_env = os.environ.copy()
-    command_env.pop("SSHPASS", None)
-    command_env.pop("OPENUBMC_SSH_PASSWORD", None)
-    command_env.pop("OPENUBMC_TELNET_PASSWORD", None)
+    secret_tokens = (
+        "PASSWORD",
+        "PASSWD",
+        "PASSPHRASE",
+        "SECRET",
+        "TOKEN",
+        "AUTHORIZATION",
+        "COOKIE",
+        "API_KEY",
+        "APIKEY",
+    )
+    command_env = {
+        name: value
+        for name, value in os.environ.items()
+        if not any(token in name.upper() for token in secret_tokens)
+        and name != "SSHPASS"
+    }
+    password_fd: int | None = None
     if password:
         if not shutil.which("sshpass"):
             raise LivePatchError("password SSH authentication requires sshpass in PATH")
-        ssh_command = ["sshpass", "-e", "ssh"]
-        command_env["SSHPASS"] = password
+        password_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, (password + "\n").encode("utf-8"))
+        finally:
+            os.close(write_fd)
+        ssh_command = ["sshpass", "-d", str(password_fd), "ssh"]
     ssh_command.extend(["-o", f"BatchMode={'no' if password else 'yes'}"])
 
     host_key_options = {
@@ -262,13 +280,18 @@ def ssh_stream_file(
             f"cat > {shlex.quote(staging_payload)}",
         ]
     )
-    completed = subprocess.run(
-        ssh_command,
-        env=command_env,
-        input=local.read_bytes(),
-        capture_output=True,
-        timeout=timeout,
-    )
+    try:
+        completed = subprocess.run(
+            ssh_command,
+            env=command_env,
+            input=local.read_bytes(),
+            capture_output=True,
+            timeout=timeout,
+            pass_fds=((password_fd,) if password_fd is not None else ()),
+        )
+    finally:
+        if password_fd is not None:
+            os.close(password_fd)
     if completed.returncode != 0:
         detail = (
             completed.stderr.decode("utf-8", errors="ignore").strip()
@@ -322,10 +345,7 @@ def rollback_command(
         command.append("--no-remount")
     if ssh_user:
         command.extend(["--ssh-user", ssh_user])
-    if ssh_password:
-        command.extend(["--ssh-password", ssh_password])
-    if telnet_password:
-        command.extend(["--telnet-password", telnet_password])
+    del ssh_password, telnet_password
     if ssh_identity:
         command.extend(["--ssh-identity", str(ssh_identity)])
     if known_hosts:

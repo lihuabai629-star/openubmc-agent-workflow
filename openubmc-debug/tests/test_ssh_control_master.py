@@ -183,6 +183,35 @@ def runtime_target(fixture: EphemeralSshd) -> TargetSpec:
 
 
 class ControlMasterTransportTests(unittest.TestCase):
+    def test_password_auth_uses_local_input_without_argv_or_environment_secrets(self) -> None:
+        secret = "fixture-password-never-in-process-metadata"
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        target = TargetSpec(
+            host="bmc.example",
+            credential_selector_fingerprint="0" * 64,
+            policy=TargetPolicy(ssh_host_key_policy="insecure"),
+        )
+        credentials = ResolvedSshCredentials(user="root", password=secret)
+        transport = OpenSshControlMasterTransport()
+
+        with (
+            mock.patch("_remote_common.shutil.which", return_value="/usr/bin/tool"),
+            mock.patch("_remote_common.subprocess.run", return_value=completed) as run,
+            mock.patch.object(transport, "check_master", return_value=True),
+        ):
+            master = transport.open_master(target=target, credentials=credentials)
+            master.closed = True
+            master.tempdir.cleanup()
+
+        command = list(run.call_args.args[0])
+        call = run.call_args.kwargs
+        self.assertEqual(command[:3], ["sshpass", "-d", "0"])
+        self.assertNotIn(secret, command)
+        self.assertEqual(call.get("input"), secret + "\n")
+        environment = call.get("env") or {}
+        self.assertFalse(any(secret == value for value in environment.values()))
+        self.assertNotIn("SSHPASS", environment)
+
     def test_channel_host_key_options_must_match_the_authenticated_lease(self) -> None:
         transport = OpenSshControlMasterTransport(
             host_key_policy="strict",

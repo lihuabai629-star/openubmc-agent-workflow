@@ -77,6 +77,47 @@ class MainJsonValidationTests(unittest.TestCase):
         self.assertEqual(args.redfish_password, "")
         self.assertEqual(args.ssh_password, "")
 
+    def test_ssh_command_uses_a_local_input_reference_instead_of_password_argv(self) -> None:
+        secret = "fixture-password-never-in-argv"
+        with mock.patch("pull_bundle.shutil.which", return_value="/usr/bin/sshpass"):
+            command = pull_bundle.build_ssh_command(
+                ip="192.0.2.10",
+                user="root",
+                password=secret,
+                port=22,
+                identity_file="",
+                remote_command="true",
+            )
+
+        self.assertEqual(command[:3], ["sshpass", "-d", "0"])
+        self.assertNotIn(secret, command)
+
+    @mock.patch("pull_bundle.subprocess.run")
+    def test_checked_ssh_streams_password_without_exporting_it(
+        self,
+        subprocess_run_mock: mock.Mock,
+    ) -> None:
+        secret = "fixture-password-never-in-env"
+        subprocess_run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stderr="",
+            stdout="",
+        )
+
+        pull_bundle.run_checked(
+            ["sshpass", "-d", "0", "ssh", "root@192.0.2.10", "true"],
+            timeout=3,
+            error_code="ssh_failed",
+            failure_message="SSH failed",
+            secret_input=secret,
+        )
+
+        call = subprocess_run_mock.call_args.kwargs
+        self.assertEqual(call.get("input"), secret + "\n")
+        environment = call.get("env") or {}
+        self.assertFalse(any(secret == value for value in environment.values()))
+        self.assertNotIn("SSHPASS", environment)
+
     def test_redfish_proxy_mode_can_be_forced_disabled(self) -> None:
         args = pull_bundle.parse_args(["--redfish-proxy", "disable"])
         self.assertEqual(args.redfish_proxy, "disable")

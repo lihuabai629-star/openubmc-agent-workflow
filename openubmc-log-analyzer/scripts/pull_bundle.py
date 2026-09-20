@@ -39,6 +39,27 @@ DEFAULT_NAME_GLOBS = [
     "*dump*.tar.gz",
     "*log*.tar.gz",
 ]
+
+_SECRET_ENV_NAME_TOKENS = (
+    "PASSWORD",
+    "PASSWD",
+    "PASSPHRASE",
+    "SECRET",
+    "TOKEN",
+    "AUTHORIZATION",
+    "COOKIE",
+    "API_KEY",
+    "APIKEY",
+)
+
+
+def sanitized_transport_environment() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not any(token in name.upper() for token in _SECRET_ENV_NAME_TOKENS)
+        and name != "SSHPASS"
+    }
 PATH_MARKER = "BUNDLE_PATH="
 SCHEMA_VERSION = "1.0"
 DEFAULT_REDFISH_BUNDLE_DIR = "/tmp"
@@ -782,7 +803,7 @@ def build_ssh_command(
     if password:
         if not shutil.which("sshpass"):
             raise BundlePullError("sshpass_missing", "sshpass not found; install it or use key-based auth")
-        command.extend(["sshpass", "-p", password])
+        command.extend(["sshpass", "-d", "0"])
     command.extend(
         [
             "ssh",
@@ -815,7 +836,7 @@ def build_scp_command(
     if password:
         if not shutil.which("sshpass"):
             raise BundlePullError("sshpass_missing", "sshpass not found; install it or use key-based auth")
-        command.extend(["sshpass", "-p", password])
+        command.extend(["sshpass", "-d", "0"])
     command.extend(
         [
             "scp",
@@ -1305,9 +1326,23 @@ def redfish_download_bundle(
     return local_path
 
 
-def run_checked(command: list[str], timeout: int, error_code: str, failure_message: str) -> subprocess.CompletedProcess[str]:
+def run_checked(
+    command: list[str],
+    timeout: int,
+    error_code: str,
+    failure_message: str,
+    *,
+    secret_input: str = "",
+) -> subprocess.CompletedProcess[str]:
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=sanitized_transport_environment(),
+            input=(secret_input + "\n" if secret_input else None),
+        )
     except subprocess.TimeoutExpired as exc:
         raise BundlePullError(error_code, f"{failure_message}: timed out after {timeout}s") from exc
     if completed.returncode != 0:
@@ -1340,7 +1375,13 @@ def download_remote_bundle(
         remote_path=remote_path,
         local_path=local_path,
     )
-    run_checked(command, timeout=timeout, error_code="bundle_download_failed", failure_message="Failed to download remote bundle")
+    run_checked(
+        command,
+        timeout=timeout,
+        error_code="bundle_download_failed",
+        failure_message="Failed to download remote bundle",
+        secret_input=password,
+    )
     return local_path
 
 
@@ -1378,6 +1419,7 @@ def run_ssh_bundle_flow(
             timeout=args.generate_timeout,
             error_code="remote_collect_failed",
             failure_message="Failed to generate remote bundle",
+            secret_input=ssh_password,
         )
         remote_bundle_path = parse_remote_bundle_path(f"{generated.stdout}\n{generated.stderr}") or remote_bundle_path
 
@@ -1395,6 +1437,7 @@ def run_ssh_bundle_flow(
             timeout=args.search_timeout,
             error_code="bundle_discovery_failed",
             failure_message="Failed to discover remote bundle",
+            secret_input=ssh_password,
         )
         remote_bundle_path = parse_remote_bundle_path(discovered.stdout or "")
 
