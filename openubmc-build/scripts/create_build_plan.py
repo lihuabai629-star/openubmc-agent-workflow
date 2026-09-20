@@ -13,6 +13,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import re
+
+from build_route import equivalence_receipt
 
 
 SCHEMA = "openubmc-build/plan-v1"
@@ -32,6 +35,7 @@ RESOLVED_LOCK_ROLES = (
 )
 LOCAL_LOCK_ROOT = Path("/tmp") / f"openubmc-build-{os.getuid()}"
 EXECUTION_CONTRACT_FILES = (
+    "scripts/build_route.py",
     "scripts/check_dependency_delta.py",
     "scripts/check_rootfs_access.py",
     "scripts/check_rootfs_lua.py",
@@ -50,6 +54,19 @@ class BuildPlanError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def validate_routing_binding(plan: dict[str, object]) -> None:
+    """Fail closed when a plan declares a substituted tool without proof."""
+    routing = plan.get("routing")
+    if not isinstance(routing, dict) or not routing.get("substitution_required"):
+        return
+    receipt = routing.get("equivalence")
+    if not isinstance(receipt, dict) or receipt.get("equivalent") is not True:
+        raise ValueError("tool_equivalence_missing_from_plan")
+    normalized = equivalence_receipt(receipt)
+    if normalized.get("digest") != receipt.get("digest"):
+        raise ValueError("tool_equivalence_digest_mismatch")
 
 
 def run_git(root: Path, *args: str) -> bytes:
@@ -555,6 +572,15 @@ def main(argv: list[str] | None = None) -> int:
         choices=("user", "handoff", "generated"),
         default="user",
     )
+    parser.add_argument(
+        "--equivalence-receipt",
+        help="JSON receipt required when the selected build tool replaces the routed tool",
+    )
+    parser.add_argument(
+        "--tool-substitution",
+        action="store_true",
+        help="declare that the command intentionally replaces the routed build tool",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(raw_argv)
 
@@ -568,6 +594,28 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         output_path = Path(args.output).resolve()
+        equivalence: dict[str, object] | None = None
+        if args.equivalence_receipt:
+            raw_equivalence = json.loads(
+                Path(args.equivalence_receipt).resolve(strict=True).read_text(encoding="utf-8")
+            )
+            if not isinstance(raw_equivalence, dict):
+                raise BuildPlanError("invalid_equivalence_receipt", "equivalence receipt must be an object")
+            try:
+                equivalence = equivalence_receipt(raw_equivalence)
+            except (TypeError, ValueError) as exc:
+                raise BuildPlanError("invalid_equivalence_receipt", str(exc)) from exc
+        command_text = " ".join(command).lower()
+        if re.search(r"\bconan\s+create\b", command_text) and equivalence is None:
+            raise BuildPlanError(
+                "raw_conan_requires_equivalence",
+                "raw conan create cannot bypass the routed tool without an equivalence receipt",
+            )
+        if args.tool_substitution and equivalence is None:
+            raise BuildPlanError(
+                "tool_substitution_requires_equivalence",
+                "--tool-substitution requires --equivalence-receipt",
+            )
         if args.reuse_evidence and args.mode not in {"validate", "component-package"}:
             raise BuildPlanError("evidence_reuse_mode_unsupported", "only local validate/component-package evidence may be reused")
         if (args.evidence_input or args.evidence_output) and not args.reuse_evidence:
@@ -981,6 +1029,12 @@ def main(argv: list[str] | None = None) -> int:
                 "executable": command_executable_identity(command, cwd),
             },
         }
+        if equivalence is not None or args.tool_substitution:
+            plan["routing"] = {
+                "tool": Path(command[0]).name if command else "",
+                "substitution_required": bool(args.tool_substitution or equivalence),
+                "equivalence": equivalence,
+            }
         if args.reuse_evidence:
             plan["evidence_reuse"] = {"kind": args.reuse_evidence, "scope": "local-only"}
         plan["plan_id"] = semantic_plan_id(plan)

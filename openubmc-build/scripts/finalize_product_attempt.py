@@ -23,6 +23,7 @@ from create_build_plan import (
     output_resource_lock,
     semantic_plan_id,
     skill_digest,
+    validate_routing_binding,
     workspace_identity,
 )
 from verify_product_artifact import verify
@@ -329,6 +330,7 @@ def finalization(
     state_path: Path,
 ) -> dict[str, object]:
     plan_resolved, plan_bytes, plan = load_json(plan_path)
+    validate_routing_binding(plan)
     state_resolved, state_bytes, state = load_json(state_path)
     plan_id = str(plan.get("plan_id", ""))
     plan_sha256 = hashlib.sha256(plan_bytes).hexdigest()

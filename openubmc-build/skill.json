@@ -16,6 +16,7 @@
     "references/2630-wsl-profile.md",
     "references/artifact-verification.md",
     "references/build-plan.md",
+    "references/build-routing.md",
     "references/conan-auth.md",
     "references/handoff-contract.md",
     "references/modes/component-package.md",
@@ -35,6 +36,7 @@
     "scripts/finalize_product_attempt.py",
     "scripts/preflight_build_env.sh",
     "scripts/run_bmcgo_checked.py",
+    "scripts/build_route.py",
     "scripts/run_build_attempt.py",
     "scripts/update_manifest_conan_ref.py",
     "scripts/verify_hpm_containment.py",
@@ -48,8 +50,25 @@
     "build",
     "bmcgo",
     "conan",
-    "firmware"
+    "firmware",
+    "hpm",
+    "component build"
   ],
+  "routing": {
+    "positive_triggers": {
+      "validate": ["bmcgo", "compile", "gen", "unit test", "编译", "生成代码"],
+      "component-package": ["component package", "conan package", "组件包"],
+      "product-artifact": ["bmcgo build --board", "HPM", "rootfs", "产品固件"],
+      "handoff": ["bingo", "安装构建环境"]
+    },
+    "negative_triggers": ["explicit bingo build command", "bingo CLI development", "environment installation", "package publication"],
+    "handoffs": {
+      "bingo-build": "openubmc-bingo-build",
+      "bingo-development": "openubmc-bingo-development",
+      "environment": "openubmc-environment-setup",
+      "publication": "openubmc-publish"
+    }
+  },
   "categories": [
     "development",
     "delivery"
