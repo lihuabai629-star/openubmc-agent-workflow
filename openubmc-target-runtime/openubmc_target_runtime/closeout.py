@@ -7,7 +7,7 @@ it does not maintain a second workflow state machine.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 
@@ -18,6 +18,7 @@ from .delivery import (
     DeliveryRecord,
     DeploymentIdentity,
 )
+from .delivery_stage import assess_delivery_stages, identity_split
 from .diagnostic_receipt import (
     DiagnosticReceipt,
     DiagnosticStatus,
@@ -520,6 +521,8 @@ class CaseCloseout:
     receipts: tuple[StageReceipt, ...]
     delivery_records: tuple[DeliveryRecord, ...]
     reasons: tuple[str, ...]
+    delivery_stage: Mapping[str, object] = field(default_factory=dict)
+    artifact_identities: Mapping[str, object] = field(default_factory=dict)
 
     @property
     def fingerprint(self) -> str:
@@ -546,6 +549,8 @@ class CaseCloseout:
                 item.to_public_dict() for item in self.delivery_records
             ],
             "reasons": list(self.reasons),
+            "delivery_stage": dict(self.delivery_stage or {}),
+            "artifact_identities": dict(self.artifact_identities or {}),
         }
         if include_fingerprint:
             value["fingerprint"] = self.fingerprint
@@ -2379,6 +2384,12 @@ def aggregate_case_closeout(
         receipts=tuple(receipts),
         delivery_records=delivery_records,
         reasons=tuple(dict.fromkeys(reasons)),
+        delivery_stage=assess_delivery_stages(
+            [receipt.to_public_dict() for receipt in receipts]
+        ),
+        artifact_identities=identity_split(
+            [receipt.to_public_dict() for receipt in receipts]
+        ),
     )
 
 
@@ -2496,6 +2507,14 @@ def render_markdown(result: CaseCloseout) -> str:
         (
             "总体状态",
             _STATUS_ZH.get(result.closure_status, result.closure_status),
+        ),
+        (
+            "交付阶段",
+            result.delivery_stage.get("highest") or "未形成阶段证据",
+        ),
+        (
+            "下一阶段",
+            result.delivery_stage.get("next") or "全部阶段已验证",
         ),
         ("任务目标", result.acceptance_plan.goal),
         ("目标", targets),
