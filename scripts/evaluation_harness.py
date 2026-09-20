@@ -650,6 +650,17 @@ def _scenario_acceptance_issues(
         )
         if outcome.get("status") != "completed":
             issues.append("scenario requires a completed terminal Outcome")
+    if scenario.get("final_answer_required") is True or scenario.get("acceptance") == "terminal-answer-v1":
+        final_answer = receipt.get("final_answer")
+        if not isinstance(final_answer, Mapping):
+            issues.append("terminal evidence exists but final answer is missing")
+        else:
+            if final_answer.get("task_id") != plan.get("execution_id"):
+                issues.append("final answer belongs to another task")
+            if not str(final_answer.get("text", "")).strip():
+                issues.append("final answer is empty")
+            if not str(final_answer.get("run_id", "")).strip():
+                issues.append("final answer is not bound to a terminal Run")
     return issues
 
 
