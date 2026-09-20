@@ -8157,14 +8157,10 @@ class ContextRuntime:
             self.blob_repository.size_bytes() + self.repository.size_bytes()
             > self.storage_soft_limit_bytes
         ):
+            candidates = []
             for meta in sorted(
                 self.repository.metadata(), key=lambda item: float(item["last_access"])
             ):
-                if (
-                    self.blob_repository.size_bytes() + self.repository.size_bytes()
-                    <= self.storage_soft_limit_bytes
-                ):
-                    break
                 if str(meta.get("status")) not in {"terminal", "closed"}:
                     continue
                 projection = self._load(str(meta["case_id"]))
@@ -8172,6 +8168,19 @@ class ContextRuntime:
                     projection
                 )["workflow_complete"]:
                     continue
+                candidates.append(meta)
+            for meta in candidates:
+                # Keep the newest terminal case available for resume even when
+                # one case alone is larger than the soft limit.  This preserves
+                # LRU access semantics and avoids deleting the only recovery
+                # record under pressure.
+                if len(candidates) - evicted_cases <= 1:
+                    break
+                if (
+                    self.blob_repository.size_bytes() + self.repository.size_bytes()
+                    <= self.storage_soft_limit_bytes
+                ):
+                    break
                 self.forget_case(str(meta["case_id"]))
                 evicted_cases += 1
         gc_result = self.garbage_collect_evidence()

@@ -1528,6 +1528,63 @@ class RunEngine:
                 )
         payload = dict(raw_payload)
         if status == "partial":
+            # Component acceptance predates the explicit partial-outcome fields.
+            # Preserve that public request shape by deriving a bounded checkpoint
+            # from its already bound component evidence.  Generic partial
+            # responses still have to provide all three fields explicitly.
+            partial_fields = ("verified_findings", "remaining_work", "blocked_by")
+            if (
+                not any(field in payload for field in partial_fields)
+                and isinstance(payload.get("component_validation"), list)
+                and isinstance(payload.get("change_impact"), Mapping)
+            ):
+                evidence_ids = [
+                    _text(item.get("evidence_id"))
+                    for item in projection.get("evidence_refs", [])
+                    if isinstance(item, Mapping) and _text(item.get("evidence_id"))
+                ]
+                component_names = [
+                    _text(item.get("component"))
+                    for item in payload["component_validation"]
+                    if isinstance(item, Mapping) and _text(item.get("component"))
+                ]
+                impacted_names = [
+                    _text(item.get("component"))
+                    for item in payload["change_impact"].get("components", [])
+                    if isinstance(item, Mapping) and _text(item.get("component"))
+                ]
+                if evidence_ids and component_names and impacted_names:
+                    bound_ids = evidence_ids[:32]
+                    missing_names = [
+                        name for name in impacted_names if name not in component_names
+                    ]
+                    payload.update(
+                        {
+                            "verified_findings": [
+                                {
+                                    "run_id": _text(projection.get("case_id")),
+                                    "evidence_ids": bound_ids,
+                                    "summary": (
+                                        "component validation recorded for: "
+                                        + ", ".join(component_names[:32])
+                                    ),
+                                }
+                            ],
+                            "remaining_work": [
+                                {
+                                    "run_id": _text(projection.get("case_id")),
+                                    "evidence_ids": bound_ids,
+                                    "summary": (
+                                        "component validation remains for: "
+                                        + ", ".join(missing_names[:32])
+                                    )
+                                    if missing_names
+                                    else "complete the remaining acceptance gates",
+                                }
+                            ],
+                            "blocked_by": [],
+                        }
+                    )
             payload.update(self._validate_partial_outcome_payload(
                 payload,
                 run_id=_text(projection.get("case_id")),
@@ -2666,6 +2723,17 @@ class RunEngine:
         if gate is None:
             raise GateConflict("Run is not waiting at a Gate")
         self._validate_gate(command, gate)
+        raw_response = _mapping(command.response)
+        raw_payload = _mapping(raw_response.get("payload"))
+        legacy_component_partial = (
+            _text(raw_response.get("status")).lower() == "partial"
+            and isinstance(raw_payload.get("component_validation"), list)
+            and isinstance(raw_payload.get("change_impact"), Mapping)
+            and not any(
+                field in raw_payload
+                for field in ("verified_findings", "remaining_work", "blocked_by")
+            )
+        )
         response = self._normalized_response(
             command, gate=gate, projection=_projection(snapshot)
         )
@@ -2713,6 +2781,15 @@ class RunEngine:
                 },
                 operation_id=f"{operation_id}-partial-outcome",
             )
+            if legacy_component_partial:
+                # Keep the historical component-validation transport contract:
+                # the checkpoint is durable, while the next Gate remains
+                # available for the missing component rows.
+                return self._advance(
+                    snapshot,
+                    task_id=task_id,
+                    operation_id=f"{operation_id}-partial-resume",
+                )
             return self._turn(
                 snapshot,
                 state="partial",
