@@ -145,6 +145,75 @@ class ActivationTests(unittest.TestCase):
         self.assertTrue((store/'archives'/(first['archive_sha256']+'.tar.gz')).is_file())
         self.assertEqual(json.loads((store/'install-audits'/(first['content_digest'][:16]+'.json')).read_bytes())['status'], 'committed')
 
+    @unittest.skipUnless(__import__('shutil').which('codex'), 'Codex required')
+    def test_upgrade_atomically_removes_recognized_override_for_retired_cache(self):
+        first = self.activate()
+        config = self.codex/'config.toml'
+        stale = Path(first['codex_install']['installedPath'])/'scripts/pluginctl.py'
+        config.write_text(
+            config.read_text()
+            + '[mcp_servers.openubmc-target-runtime]\n'
+            + 'command = "python3"\n'
+            + f'args = ["-I", "-B", {json.dumps(str(stale))}, "runtime", "--prepare-on-start"]\n'
+        )
+
+        upgraded = self.activate(1)
+
+        document = __import__('tomllib').loads(config.read_text())
+        self.assertEqual(upgraded['version'], '2.0.8')
+        self.assertNotIn('openubmc-target-runtime', document.get('mcp_servers', {}))
+        self.assertFalse(stale.exists())
+        journal = self.home/'.local/share/openubmc/plugin-store/transactions'/upgraded['transaction']
+        backup = journal/'config-before'
+        self.assertIn('openubmc-target-runtime', backup.read_text())
+
+    @unittest.skipUnless(__import__('shutil').which('codex'), 'Codex required')
+    def test_activation_migrates_owned_loose_override_before_native_cache_checks(self):
+        loose = self.home/'legacy-openubmc/scripts/pluginctl.py'
+        arguments = ['-I', str(loose), 'runtime']
+        config = self.codex/'config.toml'
+        config.write_text(
+            config.read_text()
+            + '[mcp_servers.openubmc-target-runtime]\n'
+            + 'command = "python3"\n'
+            + f'args = {json.dumps(arguments)}\n'
+        )
+        state = self.home/'.config/openubmc/environment-state.json'
+        state.parent.mkdir(parents=True)
+        state.write_text(json.dumps({
+            'runtime_mcp': {
+                'codex': {
+                    'created_entry': True,
+                    'command': 'python3',
+                    'args': arguments,
+                },
+            },
+        }))
+
+        installed = self.activate()
+
+        document = __import__('tomllib').loads(config.read_text())
+        self.assertEqual(installed['version'], '2.0.7')
+        self.assertNotIn('openubmc-target-runtime', document.get('mcp_servers', {}))
+
+    @unittest.skipUnless(__import__('shutil').which('codex'), 'Codex required')
+    def test_reinstall_repairs_stale_override_when_plugin_registration_is_missing(self):
+        stale = self.codex/'plugins/cache/personal/openubmc/2.0.6/scripts/pluginctl.py'
+        config = self.codex/'config.toml'
+        config.write_text(
+            'model="before"\n'
+            + '[mcp_servers.openubmc-target-runtime]\n'
+            + 'command = "python3"\n'
+            + f'args = ["-I", "-B", {json.dumps(str(stale))}, "runtime"]\n'
+        )
+
+        installed = self.activate()
+
+        document = __import__('tomllib').loads(config.read_text())
+        self.assertEqual(installed['version'], '2.0.7')
+        self.assertTrue(document['plugins']['openubmc@personal']['enabled'])
+        self.assertNotIn('openubmc-target-runtime', document.get('mcp_servers', {}))
+
     def test_native_failure_does_not_bless_concurrent_user_config(self):
         from unittest.mock import patch
         config = self.codex/'config.toml'
