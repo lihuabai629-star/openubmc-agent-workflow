@@ -240,6 +240,9 @@ class FakeTelnetTransport:
         self.machine_id = "machine-a"
         self.firmware_id = "firmware-1"
         self.reboot_anchor = "boot-a"
+        self.target_clock = "2026-09-22 21:30:00"
+        self.target_clock_epoch = "1790083800"
+        self.target_uptime_seconds = "3600.00"
         self.skynet_pid = 100
         self.skynet_start = 1000
         self.opens = 0
@@ -251,7 +254,12 @@ class FakeTelnetTransport:
 
     def run_command(self, _session, command: str, **_kwargs):
         self.commands.append(command)
-        if "live_patch_paths_safe" in command:
+        inspected_command = (
+            decoded_shell_script(command)
+            if "busybox base64 -d" in command
+            else command
+        )
+        if "live_patch_paths_safe" in inspected_command:
             stdout = "live_patch_paths_safe"
         elif "live_patch_codec_ready" in command:
             stdout = "live_patch_codec_ready"
@@ -261,6 +269,9 @@ class FakeTelnetTransport:
                 f"machine_id={self.machine_id}\n"
                 f"firmware_id={self.firmware_id}\n"
                 f"reboot_anchor={self.reboot_anchor}\n"
+                f"target_clock={self.target_clock}\n"
+                f"target_clock_epoch={self.target_clock_epoch}\n"
+                f"target_uptime_seconds={self.target_uptime_seconds}\n"
                 "live_patch_identity_inspected"
             )
         elif "rollback_backup_inspected" in command:
@@ -312,7 +323,9 @@ class FakeTelnetTransport:
                 f"backup_uid={self.target_uid}\n"
                 f"backup_gid={self.target_gid}\nbackup_ok"
             )
-        elif "p=r;" in command:
+        elif "p=r;" in command and (
+            "restore_ok" in inspected_command or "remove_ok" in inspected_command
+        ):
             script = decoded_shell_script(command)
             if "remove_ok" in script:
                 self.target_exists = False
@@ -334,7 +347,7 @@ class FakeTelnetTransport:
                 )
         elif "verify_missing" in command:
             stdout = "verify_missing" if not self.target_exists else "target_still_exists"
-        elif "p=i;" in command:
+        elif "p=i;" in command and "deploy_ok" in inspected_command:
             script = decoded_shell_script(command)
             mode = re.search(r"chmod ([0-7]{3,4}) ", script)
             owner = re.search(r"chown ([0-9]+):([0-9]+) ", script)
@@ -349,13 +362,15 @@ class FakeTelnetTransport:
                 f"remote_uid={self.current_uid}\n"
                 f"remote_gid={self.current_gid}\ndeploy_ok"
             )
-        elif "verify_sha256" in command:
+        elif "verify_sha256" in inspected_command:
             stdout = (
                 f"remote_sha256={self.digest}\n"
                 f"remote_mode={self.current_mode}\n"
                 f"remote_uid={self.current_uid}\n"
                 f"remote_gid={self.current_gid}\nverify_sha256"
             )
+        elif "verify_missing" in inspected_command:
+            stdout = "verify_missing" if not self.target_exists else "target_still_exists"
         elif "restart_ok" in command:
             self.skynet_pid += 1
             self.skynet_start += 1000
@@ -378,6 +393,24 @@ class FakeTelnetTransport:
     @staticmethod
     def close_session(_session) -> None:
         return None
+
+
+class LineEndingFakeTelnetTransport(FakeTelnetTransport):
+    def __init__(self, digest: str, *, line_ending: str, **kwargs) -> None:
+        super().__init__(digest, **kwargs)
+        self.line_ending = line_ending
+
+    def run_command(self, session, command: str, **kwargs):
+        result = super().run_command(session, command, **kwargs)
+        stdout = result.stdout.replace("\n", self.line_ending)
+        return TelnetCommandResult(
+            stdout=stdout,
+            returncode=result.returncode,
+            framing_complete=result.framing_complete,
+            timed_out=result.timed_out,
+            connection_closed=result.connection_closed,
+            raw=stdout.encode(),
+        )
 
 
 class FailRestartOnceTelnetTransport(FakeTelnetTransport):
@@ -669,6 +702,92 @@ class BlockAfterTerminalLivePatchBackend(LivePatchMcpBackend):
 
 
 class LivePatchRuntimeBackendTests(unittest.TestCase):
+    def test_backend_rejects_a_missing_health_anchor_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            ssh = FakeSshTransport()
+            telnet = FakeTelnetTransport(digest)
+            telnet.target_clock = ""
+            backend = LivePatchMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: ssh,
+                telnet_transport_factory=lambda _arguments: telnet,
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "target clock"):
+                    service.call_tool(
+                        "live_patch_run",
+                        {
+                            "intent": "live_patch",
+                            "ip": "bmc.example",
+                            "local_path": str(local),
+                            "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                            "restart_scope": "none",
+                            "deadline": TEST_DEADLINE_SECONDS,
+                        },
+                        task_id="task-live-patch-missing-clock",
+                        operation_id="apply-missing-clock",
+                    )
+            finally:
+                service.close()
+
+        self.assertEqual(ssh.uploads, [])
+        self.assertFalse(
+            any(
+                "p=b;" in command or "p=i;" in command
+                for command in telnet.commands
+            )
+        )
+
+    def test_backend_accepts_crlf_and_lone_cr_identity_boundaries(self) -> None:
+        for index, line_ending in enumerate(("\r\n", "\r")):
+            with self.subTest(line_ending=repr(line_ending)), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                local = root / "unit.lua"
+                local.write_text("return true\n", encoding="utf-8")
+                digest = hashlib.sha256(local.read_bytes()).hexdigest()
+                telnet = LineEndingFakeTelnetTransport(
+                    digest,
+                    line_ending=line_ending,
+                )
+                backend = LivePatchMcpBackend(
+                    journal_store=MutationJournalStore(root / "journals"),
+                    credential_loader=lambda _arguments: {
+                        "ssh": {"user": "root", "password": "ssh-secret"},
+                        "telnet": {"user": "root", "password": "telnet-secret"},
+                    },
+                    ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                    telnet_transport_factory=lambda _arguments: telnet,
+                )
+                service = RuntimeMcpService(backend)
+                try:
+                    result = service.call_tool(
+                        "live_patch_run",
+                        {
+                            "intent": "live_patch",
+                            "ip": "bmc.example",
+                            "local_path": str(local),
+                            "remote_path": "/opt/bmc/apps/demo/unit.lua",
+                            "restart_scope": "skynet",
+                            "deadline": TEST_DEADLINE_SECONDS,
+                        },
+                        task_id=f"task-live-patch-line-ending-{index}",
+                        operation_id=f"apply-line-ending-{index}",
+                    )
+                finally:
+                    service.close()
+
+                self.assertEqual(result["journal"]["stage"], "verified")
+                self.assertTrue(any("restart_ok" in command for command in telnet.commands))
+
     def test_sigkill_at_real_backend_cuts_restarts_without_repeating_dangerous_steps(
         self,
     ) -> None:
@@ -1615,7 +1734,7 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
             ),
         )
 
-    def test_backend_splits_path_guards_below_telnet_input_boundary(self) -> None:
+    def test_short_path_guard_runs_directly_before_codec_probe(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             local = root / "unit.lua"
@@ -1643,26 +1762,80 @@ class LivePatchRuntimeBackendTests(unittest.TestCase):
                         "restart_scope": "none",
                         "deadline": TEST_DEADLINE_SECONDS,
                     },
+                    task_id="task-live-patch-direct-guard",
+                    operation_id="apply-direct-guard",
+                )
+            finally:
+                service.close()
+
+        first_guard = next(
+            index
+            for index, command in enumerate(telnet.commands)
+            if "live_patch_paths_safe" in command
+        )
+        codec_probe = next(
+            index
+            for index, command in enumerate(telnet.commands)
+            if "live_patch_codec_ready" in command
+        )
+        self.assertLess(first_guard, codec_probe)
+        self.assertNotIn("busybox base64 -d", telnet.commands[first_guard])
+
+    def test_backend_splits_path_guards_below_telnet_input_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / "unit.lua"
+            local.write_text("return true\n", encoding="utf-8")
+            digest = hashlib.sha256(local.read_bytes()).hexdigest()
+            telnet = FakeTelnetTransport(digest)
+            remote_path = (
+                "/opt/bmc/apps/network_adapter/lualib/hardware_config/"
+                "device_profiles/I350AM4.lua"
+            )
+            backend = LivePatchMcpBackend(
+                journal_store=MutationJournalStore(root / "journals"),
+                credential_loader=lambda _arguments: {
+                    "ssh": {"user": "root", "password": "ssh-secret"},
+                    "telnet": {"user": "root", "password": "telnet-secret"},
+                },
+                ssh_transport_factory=lambda _arguments: FakeSshTransport(),
+                telnet_transport_factory=lambda _arguments: telnet,
+            )
+            service = RuntimeMcpService(backend)
+            try:
+                service.call_tool(
+                    "live_patch_run",
+                    {
+                        "intent": "live_patch",
+                        "ip": "bmc.example",
+                        "local_path": str(local),
+                        "remote_path": remote_path,
+                        "restart_scope": "none",
+                        "deadline": TEST_DEADLINE_SECONDS,
+                    },
                     task_id="task-live-patch-bounded-guards",
                     operation_id="apply-bounded-guards",
                 )
             finally:
                 service.close()
 
-        guards = [
-            command
-            for command in telnet.commands
-            if "live_patch_paths_safe" in command
-        ]
-        self.assertEqual(len(guards), 5)
-        self.assertTrue(
-            all(len(command.encode("utf-8")) <= 700 for command in guards)
-        )
-        self.assertTrue(
-            all(
-                len(command.encode("utf-8")) <= 700
-                for command in telnet.commands
+        guards = []
+        compressed_guards = []
+        for command in telnet.commands:
+            script = (
+                decoded_shell_script(command)
+                if "busybox base64 -d" in command
+                else command
             )
+            if "live_patch_paths_safe" in script:
+                guards.append(script)
+                if script != command:
+                    compressed_guards.append(script)
+        self.assertEqual(len(guards), 5)
+        self.assertTrue(any(remote_path in script for script in compressed_guards))
+        self.assertTrue(
+            all(len(command.encode("utf-8")) <= 700 for command in telnet.commands),
+            [(len(command.encode("utf-8")), command[:80]) for command in telnet.commands],
         )
 
     def test_backend_runs_one_typed_mutation_and_fresh_checksum_verification(self) -> None:

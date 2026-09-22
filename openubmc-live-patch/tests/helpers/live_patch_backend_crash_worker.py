@@ -151,6 +151,9 @@ class PersistentTelnetTransport:
             return self._result(
                 "product_id=product-a\nmachine_id=machine-a\n"
                 "firmware_id=firmware-1\nreboot_anchor=boot-a\n"
+                "target_clock=2026-09-22 21:30:00\n"
+                "target_clock_epoch=1790083800\n"
+                "target_uptime_seconds=3600.00\n"
                 "live_patch_identity_inspected"
             )
         if "rollback_backup_inspected" in command:

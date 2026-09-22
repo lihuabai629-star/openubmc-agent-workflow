@@ -166,6 +166,17 @@ class TargetContractTests(unittest.TestCase):
             firmware_id="firmware-1",
             reboot_anchor="boot-a",
             target_clock="2026-08-01T12:00:00Z",
+            target_clock_epoch="1785585600",
+            target_uptime_seconds="3600.00",
+        )
+
+        self.assertEqual(
+            original.to_public_dict()["target_clock_epoch"],
+            "1785585600",
+        )
+        self.assertEqual(
+            original.to_public_dict()["target_uptime_seconds"],
+            "3600.00",
         )
 
         self.assertEqual(

@@ -21,6 +21,7 @@ from deploy_live_file import (  # type: ignore  # noqa: E402
     atomic_install_command,
     atomic_restore_command,
     remote_path_guard_command,
+    run_health_check,
 )
 
 
@@ -147,6 +148,9 @@ class LivePatchCliTests(unittest.TestCase):
                             text = (
                                 "product_id=product-a\\nmachine_id=machine-a\\n"
                                 "firmware_id=firmware-1\\nreboot_anchor=boot-a\\n"
+                                "target_clock=2026-09-22 21:30:00\\n"
+                                "target_clock_epoch=1790083800\\n"
+                                "target_uptime_seconds=3600.00\\n"
                                 "live_patch_identity_inspected"
                             )
                         elif "rollback_backup_inspected" in command:
@@ -336,9 +340,16 @@ class LivePatchCliTests(unittest.TestCase):
         for name, body in {
             "preflight_remote.py": "import os; raise SystemExit(int(os.environ.get('FAKE_PREFLIGHT_RC', '0')))\n",
             "collect_logs.py": (
-                "import os\n"
-                "print(os.environ.get('FAKE_LOG_TEXT', "
-                "'check startup status completely, total components count: 4, normal count: 4'))\n"
+                "import json, os\n"
+                "message = os.environ.get('FAKE_LOG_TEXT', "
+                "'check startup status completely, total components count: 4, normal count: 4')\n"
+                "print(json.dumps({'result': {"
+                "'boot_id': 'boot-a', 'boot_time': '2026-09-22 20:00:00', "
+                "'target_clock': '2026-09-22 21:31:00', "
+                "'target_clock_epoch': '1790083860', "
+                "'target_uptime_seconds': '3660.00', "
+                "'effective_since_time': '2026-09-22 21:30:00'}, "
+                "'message': message}))\n"
                 "raise SystemExit(int(os.environ.get('FAKE_LOG_RC', '0')))\n"
             ),
             "mdbctl_remote.py": "import os; raise SystemExit(int(os.environ.get('FAKE_MDBCTL_RC', '0')))\n",
@@ -821,6 +832,194 @@ class LivePatchCliTests(unittest.TestCase):
         self.assertFalse(json.loads(health_failure.stdout)["ok"])
         self.assertNotEqual(verification_failure.returncode, 0)
         self.assertFalse(json.loads(verification_failure.stdout)["ok"])
+
+    def test_verification_grammar_is_rejected_before_remote_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            local = self.write_local_file(directory)
+            env = self.make_fake_runtime(directory, local)
+            result = self.run_cli(
+                "deploy_live_file.py",
+                "--ip",
+                "192.0.2.10",
+                "--local",
+                str(local),
+                "--remote",
+                "/opt/bmc/apps/demo/lualib/unit_manager.lua",
+                "--apply",
+                "--intent",
+                "live_patch",
+                "--authorize-live-patch",
+                "--restart-scope",
+                "none",
+                "--verify-mdbctl",
+                "call Eeprom0 bmc.kepler.Chip.BlockIO Write 0 0 16",
+                "--json",
+                env=env,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unsupported read-only", json.loads(result.stdout)["error"])
+        self.assertFalse(Path(env["FAKE_REMOTE_LOG"]).exists())
+
+    def test_health_receipt_rejects_a_changed_boot_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            scripts = directory / "debug-scripts"
+            scripts.mkdir()
+            (scripts / "preflight_remote.py").write_text(
+                "raise SystemExit(0)\n", encoding="utf-8"
+            )
+            (scripts / "collect_logs.py").write_text(
+                "import json\n"
+                "print(json.dumps({'result': {"
+                "'boot_id': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', "
+                "'boot_time': '2026-09-22 20:00:00', "
+                "'target_clock': '2026-09-22 21:31:00', "
+                "'target_clock_epoch': '1790083860', "
+                "'target_uptime_seconds': '3660.00', "
+                "'entries': []}, "
+                "'message': 'check startup status completely, total components count: 4, normal count: 4'}))\n"
+                "raise SystemExit(0)\n",
+                encoding="utf-8",
+            )
+            (scripts / "mdbctl_remote.py").write_text(
+                "raise SystemExit(0)\n", encoding="utf-8"
+            )
+            old_scripts = os.environ.get("OPENUBMC_DEBUG_SCRIPTS")
+            os.environ["OPENUBMC_DEBUG_SCRIPTS"] = str(scripts)
+            try:
+                result = run_health_check(
+                    "bmc.example",
+                    0,
+                    0,
+                    [],
+                    [],
+                    True,
+                    "2026-09-22 21:30:00",
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "1790083800",
+                    "3600.00",
+                )
+            finally:
+                if old_scripts is None:
+                    os.environ.pop("OPENUBMC_DEBUG_SCRIPTS", None)
+                else:
+                    os.environ["OPENUBMC_DEBUG_SCRIPTS"] = old_scripts
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["boot_changed"])
+        self.assertEqual(result["clock_status"], "rebooted")
+        self.assertEqual(
+            result["observed_boot_id"],
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        )
+
+    def test_health_receipt_fails_closed_on_missing_identity_or_clock_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            scripts = Path(raw) / "debug-scripts"
+            scripts.mkdir()
+            (scripts / "preflight_remote.py").write_text(
+                "raise SystemExit(0)\n", encoding="utf-8"
+            )
+            (scripts / "collect_logs.py").write_text(
+                "import json, os\n"
+                "payload = json.loads(os.environ['FAKE_HEALTH_OBSERVATION'])\n"
+                "payload['message'] = 'check startup status completely, total components count: 4, normal count: 4'\n"
+                "print(json.dumps(payload))\n",
+                encoding="utf-8",
+            )
+            (scripts / "mdbctl_remote.py").write_text(
+                "raise SystemExit(0)\n", encoding="utf-8"
+            )
+            old_scripts = os.environ.get("OPENUBMC_DEBUG_SCRIPTS")
+            old_observation = os.environ.get("FAKE_HEALTH_OBSERVATION")
+            os.environ["OPENUBMC_DEBUG_SCRIPTS"] = str(scripts)
+            cases = (
+                (
+                    "missing-boot-id",
+                    {
+                        "boot_time": "2026-09-22 20:00:00",
+                        "target_clock": "2026-09-22 21:31:00",
+                        "target_clock_epoch": "1790083860",
+                        "target_uptime_seconds": "3660.00",
+                    },
+                    False,
+                    "unavailable",
+                    "continuous",
+                ),
+                (
+                    "backward-clock",
+                    {
+                        "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "boot_time": "2026-09-22 20:00:00",
+                        "target_clock": "2026-09-22 21:29:59",
+                        "target_clock_epoch": "1790083790",
+                        "target_uptime_seconds": "3660.00",
+                    },
+                    False,
+                    "matched",
+                    "discontinuous",
+                ),
+                (
+                    "forward-clock",
+                    {
+                        "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "boot_time": "2026-09-22 20:00:00",
+                        "target_clock": "2026-09-22 21:33:00",
+                        "target_clock_epoch": "1790083980",
+                        "target_uptime_seconds": "3660.00",
+                    },
+                    False,
+                    "matched",
+                    "discontinuous",
+                ),
+                (
+                    "continuous",
+                    {
+                        "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "boot_time": "2026-09-22 20:00:00",
+                        "target_clock": "2026-09-22 21:31:00",
+                        "target_clock_epoch": "1790083860",
+                        "target_uptime_seconds": "3660.00",
+                    },
+                    True,
+                    "matched",
+                    "continuous",
+                ),
+            )
+            try:
+                for name, observation, expected_ok, boot_status, clock_status in cases:
+                    with self.subTest(name=name):
+                        os.environ["FAKE_HEALTH_OBSERVATION"] = json.dumps(
+                            {"result": observation}
+                        )
+                        result = run_health_check(
+                            "bmc.example",
+                            0,
+                            0,
+                            [],
+                            [],
+                            True,
+                            "2026-09-22 21:30:00",
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            "1790083800",
+                            "3600.00",
+                        )
+                        self.assertEqual(result["ok"], expected_ok)
+                        self.assertEqual(
+                            result["boot_identity_status"], boot_status
+                        )
+                        self.assertEqual(result["clock_status"], clock_status)
+            finally:
+                if old_scripts is None:
+                    os.environ.pop("OPENUBMC_DEBUG_SCRIPTS", None)
+                else:
+                    os.environ["OPENUBMC_DEBUG_SCRIPTS"] = old_scripts
+                if old_observation is None:
+                    os.environ.pop("FAKE_HEALTH_OBSERVATION", None)
+                else:
+                    os.environ["FAKE_HEALTH_OBSERVATION"] = old_observation
 
     def test_lua_mapping_requires_explicit_app_instead_of_repo_name(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
