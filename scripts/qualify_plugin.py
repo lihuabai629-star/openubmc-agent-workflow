@@ -211,7 +211,8 @@ def native_resume_probe(env: dict[str, str], root: Path, plugin: Path, thread_id
             'repaired_servers':preview['changes']['mcp_servers'], 'configuration_preserved':True}
 
 
-BASELINE_SHA256 = '02d241a9c467fa1df9774ef88c281f4eea0522e12d7a695d95426d17731ca2e9'
+BASELINE_VERSION = '2.0.14'
+BASELINE_SHA256 = '23aa11f197407c31531ea607b333699a70b5c7df853fcdda0175252f2f486c80'
 
 
 def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None) -> dict:
@@ -222,7 +223,8 @@ def native_upgrade_probe(root: Path, archive: Path, baseline: Path | None) -> di
     workspace.mkdir()
     if baseline is None:
         baseline = workspace/'baseline.tar.gz'
-        url = 'https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/download/v2.0.13/openubmc-v2.0.13-codex.tar.gz'
+        url = (f'https://github.com/lihuabai629-star/openubmc-codex-plugins/releases/download/'
+               f'v{BASELINE_VERSION}/openubmc-v{BASELINE_VERSION}-codex.tar.gz')
         with urllib.request.urlopen(url, timeout=60) as response:
             baseline.write_bytes(response.read(4*1024*1024))
     old_lock, old_files = read_archive(baseline, BASELINE_SHA256)
