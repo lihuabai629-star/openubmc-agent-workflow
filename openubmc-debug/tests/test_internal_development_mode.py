@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import subprocess
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -28,6 +29,41 @@ def load_script(name: str):
 
 
 class InternalDevelopmentModeTests(unittest.TestCase):
+    def test_doctor_os_probe_uses_internal_insecure_host_key_policy(self) -> None:
+        module = load_script("doctor")
+        completed = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="os-host\n",
+            stderr="",
+        )
+        completed.ssh_host_key_policy = "insecure"
+        completed.ssh_host_key_policy_source = "explicit_argument"
+        completed.ssh_known_hosts_source = "disabled"
+        completed.ssh_transport_warnings = [
+            "ssh_host_key_verification_disabled"
+        ]
+
+        with mock.patch.object(
+            module,
+            "run_ssh",
+            return_value=completed,
+        ) as run_ssh:
+            result = module.run_os_ssh_smoke(
+                {
+                    "ip": "192.0.2.10",
+                    "user": "root",
+                    "password": "local-secret",
+                    "port": 22,
+                },
+                module.parse_args(["--ip", "192.0.2.20", "--os-check"]),
+            )
+
+        self.assertEqual(run_ssh.call_args.kwargs["host_key_policy"], "insecure")
+        self.assertIn("<host-key-policy:insecure>", result["command"])
+        self.assertEqual(result["transport"]["host_key_policy"], "insecure")
+        self.assertEqual(result["status"], "ok")
+
     def test_mdb_property_names_are_not_blocked_or_redacted(self) -> None:
         module = load_script("mdbctl_remote")
         command = ["getprop", "Account", "1", "Password"]

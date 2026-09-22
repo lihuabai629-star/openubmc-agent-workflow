@@ -86,8 +86,9 @@ SSH failure. Machine-readable metadata records the effective policy, its source,
 known-hosts source category (`ssh_default`, `environment`, `explicit_argument`, or `disabled`),
 never the known-hosts path.
 
-This default is limited to BMC access. `doctor.py --os-check` explicitly keeps OS-host SSH at
-`strict`; never inherit the BMC policy into `OPENUBMC_OS_*` access.
+The same internal-development default applies to OS-host SSH. `doctor.py --os-check` uses
+`insecure` host-key handling for `OPENUBMC_OS_*` access, so replaceable OS targets do not require
+an interactive host-key confirmation step.
 
 Typed Debug object and alarm reads may reconnect and replay once only when an established SSH
 ControlMaster is lost during that explicitly read-only request. Unclassified or mutating SSH

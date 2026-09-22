@@ -14,6 +14,25 @@ from build_route import equivalence_receipt, route_receipt  # noqa: E402
 
 
 class BuildRouteTests(unittest.TestCase):
+    def test_product_release_package_contract_uses_the_ordinary_bingo_command(self) -> None:
+        product_reference = (
+            ROOT / "references" / "modes" / "product-artifact.md"
+        ).read_text(encoding="utf-8")
+        publish_skill = (ROOT.parent / "openubmc-publish" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "bingo build -t publish -b <board> -bt release --stage stable",
+            product_reference,
+        )
+        self.assertNotIn(" -sc ", product_reference)
+        self.assertIn("conan upload '<exact-ref>'", publish_skill)
+        self.assertIn(
+            "bingo build -t publish -b <board> -bt release --stage stable",
+            publish_skill,
+        )
+
     def test_explicit_bingo_build_and_development_are_separate(self) -> None:
         for request, owner in (("run bingo build", "openubmc-bingo-build"), ("开发 bingo 构建工具", "openubmc-bingo-development")):
             receipt = route_receipt(request)

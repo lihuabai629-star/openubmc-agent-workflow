@@ -13,5 +13,6 @@ Representative ownership examples:
 | `bmcgo build -b openUBMC` / “构建产品 HPM” | `openubmc-build` | `product-artifact` |
 | “编译组件并运行单测” | `openubmc-build` | `validate` |
 | `bingo build` / “用 bingo 构建组件” | `openubmc-bingo-build` | handoff |
+| `bingo build -t publish -b <board> -bt release --stage stable` | `openubmc-bingo-build` | handoff |
 | “开发 bingo 构建工具” | `openubmc-bingo-development` | handoff |
 | “安装构建环境” | `openubmc-environment-setup` | handoff |
