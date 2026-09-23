@@ -16,7 +16,7 @@ from typing import Mapping
 
 
 ROUTE_SCHEMA = "openubmc.build-route/receipt-v1"
-EQUIVALENCE_SCHEMA = "openubmc.build-route/equivalence-v1"
+EQUIVALENCE_SCHEMA = "openubmc.build-route/equivalence-claim-v2"
 
 
 def _text(value: object) -> str:
@@ -132,7 +132,7 @@ def _tool_substitution_precondition(
         }, None
     return {
         "name": "tool_equivalence",
-        "status": "passed",
+        "status": "pending_plan_binding",
         "tool": executable,
         "receipt_digest": normalized["digest"],
     }, normalized
@@ -167,6 +167,7 @@ def route_receipt(
         "ready": ready,
         "handoff": owner if owner != "openubmc-build" else "",
         "tool": selected_tool if ready else "",
+        "plan_binding_required": normalized_equivalence is not None,
     }
     if normalized_equivalence is not None:
         receipt["equivalence"] = normalized_equivalence
@@ -202,7 +203,7 @@ def equivalence_receipt(value: Mapping[str, object]) -> dict[str, object]:
         raise ValueError("release_gates must be a non-empty list of names")
     receipt = {
         "schema": EQUIVALENCE_SCHEMA,
-        "equivalent": True,
+        "claim_complete": True,
         **{name: value[name] for name in required},
     }
     receipt["digest"] = _digest(receipt)

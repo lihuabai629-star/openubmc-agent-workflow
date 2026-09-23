@@ -21,6 +21,9 @@ if str(RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(RUNTIME_ROOT))
 
 from openubmc_target_runtime.release import build_release_lock  # noqa: E402
+from openubmc_target_runtime.terminal_delivery import (  # noqa: E402
+    TerminalAnswerError, audit_rollout_final, outcome_fingerprint,
+)
 from scripts.evidence_report import (  # noqa: E402
     evidence_fingerprint,
     source_commit as selected_source_commit,
@@ -650,7 +653,9 @@ def _scenario_acceptance_issues(
         )
         if outcome.get("status") != "completed":
             issues.append("scenario requires a completed terminal Outcome")
-    if scenario.get("final_answer_required") is True or scenario.get("acceptance") == "terminal-answer-v1":
+    if (scenario.get("final_answer_required") is True
+            or scenario.get("acceptance") == "terminal-answer-v1"
+            or isinstance(receipt.get("terminal_outcome"), Mapping)):
         final_answer = receipt.get("final_answer")
         if not isinstance(final_answer, Mapping):
             issues.append("terminal evidence exists but final answer is missing")
@@ -670,6 +675,39 @@ def _scenario_acceptance_issues(
             fingerprint = str(final_answer.get("outcome_fingerprint", ""))
             if not re.fullmatch(r"sha256:[0-9a-f]{64}", fingerprint):
                 issues.append("final answer is missing an Outcome fingerprint")
+            elif isinstance(outcome, Mapping) and str(final_answer.get("delivery_stage", "")).strip():
+                try:
+                    expected_fingerprint = outcome_fingerprint(
+                        outcome, delivery_stage=str(final_answer["delivery_stage"])
+                    )
+                except ValueError:
+                    issues.append("final answer has an invalid delivery stage")
+                else:
+                    if fingerprint != expected_fingerprint:
+                        issues.append("final answer Outcome fingerprint does not match")
+            if not str(final_answer.get("delivered_at", "")).strip() or not str(
+                final_answer.get("host_event_id", "")
+            ).strip():
+                issues.append("final answer has no observed host delivery")
+            if final_answer.get("delivery_source") != "codex-rollout-v1":
+                issues.append("final answer has no verified host delivery source")
+            rollout_path = str(receipt.get("rollout_path", "")).strip()
+            prepared_at = str(final_answer.get("prepared_at", "")).strip()
+            if not rollout_path or not prepared_at:
+                issues.append("final answer has no auditable rollout")
+            else:
+                try:
+                    event_id, event_text, event_time = audit_rollout_final(
+                        Path(rollout_path), task_id=str(plan.get("execution_id", "")),
+                        prepared_at=prepared_at,
+                    )
+                except TerminalAnswerError:
+                    issues.append("final answer has no matching host final event")
+                else:
+                    if (event_id != final_answer.get("host_event_id")
+                            or event_text != final_answer.get("text")
+                            or event_time != final_answer.get("delivered_at")):
+                        issues.append("final answer host event does not match receipt")
     return issues
 
 

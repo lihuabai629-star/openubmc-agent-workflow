@@ -1,5 +1,6 @@
 {
   "case_id": "final-answer-negative",
+  "probe": {"kind": "terminal-answer", "delivered": false, "expected_observation": {"present": false, "task_id": "final-answer-negative"}},
   "evidence_boundary": {
     "completion_calibration": {
       "bounded": true,

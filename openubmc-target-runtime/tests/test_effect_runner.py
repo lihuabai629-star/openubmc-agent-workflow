@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import threading
 import unittest
 
 
@@ -14,9 +15,72 @@ from openubmc_target_runtime.effect_runner import (  # noqa: E402
     EffectRunMode,
     LocalEffectRunner,
 )
+from openubmc_target_runtime.redaction import (  # noqa: E402
+    register_secret_values,
+    secret_redaction_request,
+)
 
 
 class LocalEffectRunnerTests(unittest.TestCase):
+    def test_reattach_after_request_exit_never_returns_a_worker_secret(self) -> None:
+        secret = "synthetic-delayed-password-5729"
+        release = threading.Event()
+        started = threading.Event()
+
+        def execute(_intent: EffectIntent) -> dict[str, object]:
+            started.set()
+            self.assertTrue(release.wait(2))
+            return {"diagnosis": {"message": "remote echoed " + secret}}
+
+        intent = EffectIntent(
+            run_id="run-delayed-secret", effect_id="effect-delayed-secret",
+            operation="debug_run", effect_class=EffectClass.READ_ONLY,
+            request_fingerprint="2" * 64, arguments={},
+        )
+        runner = LocalEffectRunner(execute, execute, max_workers=1)
+        try:
+            with secret_redaction_request():
+                register_secret_values({"OPENUBMC_SSH_PASSWORD": secret})
+                first = runner.ensure(intent, mode=EffectRunMode.DISPATCH)
+                self.assertTrue(started.wait(1))
+            release.set()
+            reattached = runner.ensure(intent, mode=EffectRunMode.REATTACH)
+            self.assertIs(reattached, first)
+            self.assertEqual(
+                reattached.future.result(timeout=2),
+                {"diagnosis": {"message": "remote echoed <redacted>"}},
+            )
+        finally:
+            release.set()
+            runner.close()
+
+    def test_worker_exception_is_redacted_after_the_request_exits(self) -> None:
+        secret = "synthetic-exception-password-6384"
+        release = threading.Event()
+
+        def execute(_intent: EffectIntent) -> dict[str, object]:
+            self.assertTrue(release.wait(2))
+            raise RuntimeError("remote rejected " + secret)
+
+        intent = EffectIntent(
+            run_id="run-exception-secret", effect_id="effect-exception-secret",
+            operation="debug_run", effect_class=EffectClass.READ_ONLY,
+            request_fingerprint="3" * 64, arguments={},
+        )
+        runner = LocalEffectRunner(execute, execute, max_workers=1)
+        try:
+            with secret_redaction_request():
+                register_secret_values({"OPENUBMC_SSH_PASSWORD": secret})
+                execution = runner.ensure(intent, mode=EffectRunMode.DISPATCH)
+            release.set()
+            with self.assertRaises(RuntimeError) as failure:
+                execution.future.result(timeout=2)
+            self.assertNotIn(secret, str(failure.exception))
+            self.assertIn("<redacted>", str(failure.exception))
+        finally:
+            release.set()
+            runner.close()
+
     def test_reattach_reuses_a_settled_result_until_the_runtime_commits_it(self) -> None:
         calls: list[str] = []
 
