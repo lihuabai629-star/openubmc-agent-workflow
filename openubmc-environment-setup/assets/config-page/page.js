@@ -171,6 +171,10 @@ function renderRemember() {
           notice("请填写设备 IP、用户名和密码。", true);
           return;
         }
+        if (state.targets.revision !== state.targets.active_revision) {
+          notice("有尚未生效的配置，请先处理后再连接。", true);
+          return;
+        }
         const result = await api("/api/connect-and-remember", {
           kind: "targets",
           target: { ip: ip.value.trim(), purpose: purpose.value, transport: transport.value },
