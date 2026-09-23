@@ -171,6 +171,28 @@ The page shares BMC SSH/Redfish credentials and stores optional BMC-to-OS associ
 An associated OS is not authorization to connect. The hidden-input commands below remain a
 fallback when a browser is unavailable.
 
+When the user explicitly confirms that a specific BMC IP and OS IP belong to the same device,
+record the pair directly from the conversation. State the exact pair before asking if the
+relationship is ambiguous; an already explicit statement about that pair needs no repeated
+question. Never infer an association from similar credentials, nearby IPs, or a successful login.
+Run the local command yourself, keeping all account values out of its arguments and output:
+
+~~~bash
+python3 -B <skills-repository>/openubmc-environment-setup/scripts/associate_device.py --bmc-ip <BMC-IP> --os-ip <OS-IP> --confirm-same-device
+~~~
+
+The command uses Runtime credential-source selection rules in this CLI process. If the MCP
+entry uses a different explicit local source, add `--source <path>` for that selected source.
+
+An `association_conflict` receipt includes the existing OS IP. Show the existing and proposed
+pairs, and use `--replace-existing --expected-os-ip <existing-OS-IP>` only after the user
+explicitly confirms the replacement. The expected address prevents a later, different mapping
+from being overwritten under an earlier confirmation.
+A `configuration_conflict` requires reconciling the pending edit or current revision before
+retrying. The new association is available to later Runtime task snapshots; an existing task
+may need a request-boundary refresh. The address does not verify OS credentials or authorize
+OS access.
+
 ### Legacy hidden-input configuration
 
 The private file used by the hidden-input helper is:
