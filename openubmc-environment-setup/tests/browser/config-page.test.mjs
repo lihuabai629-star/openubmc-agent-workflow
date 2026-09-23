@@ -118,6 +118,7 @@ test("a focused task offers connection-gated remembering and clears a rejected p
   });
   await page.goto(url);
   const form = page.locator("#remember");
+  await form.waitFor({ state: "visible" });
   assert.equal(await form.isVisible(), true);
   assert.equal(await form.getByLabel("设备 IP").inputValue(), "192.0.2.10");
   await form.getByLabel("连接用户名").fill("fixture");
