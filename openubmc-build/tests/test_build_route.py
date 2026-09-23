@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import subprocess
 import json
+import os
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,13 +35,19 @@ class BuildRouteTests(unittest.TestCase):
                 "expected_artifact": {"kind": "component-package", "version": "1.0"},
                 "release_gates": ["unit-tests"],
             }), encoding="utf-8")
+            binary = root / "bin"
+            binary.mkdir()
+            conan = binary / "conan"
+            conan.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            conan.chmod(0o755)
             result = subprocess.run([
                 sys.executable, str(ROOT / "scripts" / "create_build_plan.py"),
                 "--mode", "validate", "--workspace", f"component={checkout}",
                 "--cwd", str(checkout), "--output", str(root / "plan.json"),
                 "--equivalence-receipt", str(receipt_path), "--",
                 "conan", "create", ".",
-            ], capture_output=True, text=True, check=False)
+            ], capture_output=True, text=True, check=False,
+                env={**os.environ, "PATH": str(binary) + os.pathsep + os.environ.get("PATH", "")})
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("tool_equivalence", result.stderr)
             self.assertFalse((root / "plan.json").exists())
