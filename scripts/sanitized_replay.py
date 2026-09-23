@@ -12,7 +12,10 @@ import subprocess
 import sys
 import tempfile
 
-from scripts.execution_router import ExecutionRouter, probe_protocol
+SCRIPT_ROOT = Path(__file__).resolve().parent
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+from execution_router import ExecutionRouter, probe_protocol
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1] / "openubmc-target-runtime"
 if str(RUNTIME_ROOT) not in sys.path:
