@@ -7,6 +7,7 @@ import sys
 import threading
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -21,6 +22,43 @@ page = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(page)
 
 class PluginHealthTests(unittest.TestCase):
+    def test_configure_opens_the_browser_and_still_prints_the_session_url(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            plugin = package_fixture(root)
+            home = root/'home'; home.mkdir()
+            browser = root/'browser.sh'
+            opened = root/'opened-url'
+            browser.write_text('#!/bin/sh\nprintf "%s" "$1" > "$OPENUBMC_TEST_BROWSER_LOG"\n')
+            browser.chmod(0o700)
+            binary = root/'bin'; binary.mkdir()
+            (binary/'wslview').symlink_to(browser)
+            env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home/'.config'),
+                       BROWSER=str(browser), PATH=str(binary)+os.pathsep+os.environ['PATH'],
+                       OPENUBMC_TEST_BROWSER_LOG=str(opened))
+            process = subprocess.Popen([sys.executable, '-I', '-B', str(plugin/'scripts/pluginctl.py'),
+                'configure', '--home', str(home)], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            timer = threading.Timer(15, process.kill); timer.start()
+            try:
+                url = process.stdout.readline().strip()
+                self.assertTrue(url.startswith('http://127.0.0.1:'), url)
+                deadline = time.monotonic() + 4
+                while not opened.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertEqual(opened.read_text(), url)
+                origin, token = url.split('/#')
+                request = Request(origin+'/api/close', data=b'{}', headers={
+                    'X-OpenUBMC-Session': token, 'Origin': origin, 'Content-Type': 'application/json'})
+                with urlopen(request, timeout=5) as response:
+                    self.assertTrue(json.load(response)['closed'])
+                process.wait(timeout=5)
+            finally:
+                timer.cancel()
+                if process.poll() is None: process.kill(); process.wait()
+                process.stdout.close()
+                process.stderr.close()
+
     def test_packaged_focused_configuration_reports_completion_without_probing(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

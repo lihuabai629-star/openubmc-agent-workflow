@@ -157,7 +157,13 @@ For interactive account setup, launch the bundled local page and show its printe
 python3 -B <skills-repository>/openubmc-environment-setup/scripts/config_page.py --kind targets --wait-for-save
 ~~~
 
-Use `--kind kb` or `--kind conan` for those services and `--focus-target <BMC IP>` to edit a
+For a specific IP supplied during a task, add `--focus-target <IP> --purpose bmc|os --transport ssh|redfish`.
+Point the user to **连接并记住这台设备** on the page. The user enters the account in the browser;
+the page verifies the selected IP and saves an active IP override only after success. A failed
+connection or configuration conflict leaves the existing active account in place. Never copy a
+chat-pasted password into a command or tool argument; follow the credential exposure response.
+
+Use `--kind kb` or `--kind conan` for those services and `--focus-target <target IP>` to edit a
 device without probing it. Keep the process alive until its `configuration_saved` or
 `configuration_cancelled` event. Saving activates the requested configuration; inspect the
 event's readiness/check results and continue authorized work without requiring a chat reply.

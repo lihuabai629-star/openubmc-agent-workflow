@@ -63,6 +63,16 @@ find the entry point or run the command. Reuse available credentials without ope
 Configuration conflicts require diagnosing the selected source first; TLS, host identity and
 network failures are not reasons to ask for another password.
 
+When a task has a target IP and the user wants its account remembered after a successful connection,
+start the targets page with `--focus-target <IP> --purpose bmc|os --transport ssh|redfish --wait-for-save`.
+Show the page URL and direct the user to **连接并记住这台设备**. The user enters the username and password
+there and explicitly starts a strict connection check. Only a verified connection creates an active
+IP-specific credential; a rejected check or concurrent configuration edit leaves the active account
+unchanged. The completion event is secret-free and subsequent Runtime requests use the newly active
+revision. A verified SSH scope does not verify Redfish, and a BMC account does not authorize OS access.
+Do not transfer a chat-pasted password to a tool or command; treat it as exposed and use the rotation
+procedure below before it is saved through the local page.
+
 If a credential may already have appeared in a persisted task, treat it as exposed and follow
 [Credential exposure response](references/credential-exposure-response.md). Identify affected
 accounts from non-secret target, purpose, record, revision and time metadata; never ask the user
@@ -73,7 +83,7 @@ account authority, followed by local revision activation and capability verifica
 python3 -I -B <plugin-root>/scripts/pluginctl.py configure --kind targets --wait-for-save
 ```
 
-Use `--kind kb` or `--kind conan` for those accounts. Add `--focus-target <BMC IP>` to
+Use `--kind kb` or `--kind conan` for those accounts. Add `--focus-target <target IP>` to
 open that device's settings without authorizing a connection. The launcher attempts to open the
 browser and prints a session URL first. Always present that exact URL as a clickable configuration
 link in the conversation, even when browser launch was attempted. Do not claim a browser opened

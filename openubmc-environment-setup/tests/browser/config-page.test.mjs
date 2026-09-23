@@ -106,6 +106,52 @@ test("a default BMC account is saved for both protocols with one action", { time
   assert.equal(await page.getByLabel("BMC 密码", { exact: true }).isVisible(), false);
 });
 
+test("a focused task offers connection-gated remembering and clears a rejected password", { timeout: 30000 }, async (t) => {
+  const { page, api, url } = await configurationPage(t, ["--focus-target", "192.0.2.10"]);
+  await page.route("**/api/connect-and-remember", async (route) => {
+    const submitted = route.request().postDataJSON();
+    assert.deepEqual(submitted.target, { ip: "192.0.2.10", purpose: "bmc", transport: "ssh" });
+    assert.equal(submitted.password, "browser-only-secret");
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      verified: false, code: "authentication_failed", target: submitted.target,
+    }) });
+  });
+  await page.goto(url);
+  const form = page.locator("#remember");
+  assert.equal(await form.isVisible(), true);
+  assert.equal(await form.getByLabel("设备 IP").inputValue(), "192.0.2.10");
+  await form.getByLabel("连接用户名").fill("fixture");
+  await form.getByLabel("连接密码").fill("browser-only-secret");
+  await form.getByRole("button", { name: "连接并记住" }).click();
+  await page.getByRole("status").filter({ hasText: "凭据未保存" }).waitFor();
+  assert.equal(await form.getByLabel("连接密码").inputValue(), "");
+  assert.equal((await api("/api/state")).targets.active_revision, null);
+});
+
+test("a remembered account renders from the completion response without another page request", { timeout: 30000 }, async (t) => {
+  const { page, url } = await configurationPage(t, ["--focus-target", "192.0.2.10"]);
+  let stateRequests = 0;
+  await page.route("**/api/state", async (route) => { stateRequests++; await route.continue(); });
+  await page.route("**/api/connect-and-remember", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      verified: true, code: "connected", remembered: true,
+      configuration: { saved: true, revision: "fixture-revision", active_revision: "fixture-revision",
+        config: { schema_version: 1, credentials: { remembered: { user: "fixture", password_set: true } },
+          targets: { "192.0.2.10": { bmc: { ssh: "remembered" } } } },
+        readiness: [{ scope: "192.0.2.10", purpose: "bmc", transport: "ssh", configured: true }],
+        checks: [], source: "private-fixture", legacy_available: false },
+    }) });
+  });
+  await page.goto(url);
+  const form = page.locator("#remember");
+  await form.getByLabel("连接用户名").fill("fixture");
+  await form.getByLabel("连接密码").fill("browser-only-secret");
+  await form.getByRole("button", { name: "连接并记住" }).click();
+  await page.getByRole("status").filter({ hasText: "连接成功，已为此 IP 记住账号" }).waitFor();
+  assert.equal(stateRequests, 1);
+  assert.equal(await form.getByLabel("连接密码").inputValue(), "");
+});
+
 test("a device has a BMC override and an associated OS with its own account", { timeout: 30000 }, async (t) => {
   const { page, api, url } = await configurationPage(t);
   await page.goto(url);
@@ -250,4 +296,20 @@ test("existing independent protocol accounts are preserved instead of silently u
   assert.deepEqual(config.devices, { "192.0.2.10": { os_ip: "192.0.2.20" } });
   assert.equal(config.credentials.ssh.password_set, true);
   assert.equal(config.credentials.rf.password_set, true);
+});
+
+test("a credential verified for one BMC protocol is not copied to the other by editing", { timeout: 30000 }, async (t) => {
+  const { page, api, url } = await configurationPage(t);
+  await api("/api/save", { kind: "targets", expected_revision: null, config: {
+    schema_version: 1,
+    credentials: { ssh: { user: "verified", password: { action: "replace", value: "one-protocol-secret" } } },
+    targets: { "192.0.2.10": { bmc: { ssh: "ssh" } } },
+  } });
+  await page.goto(url);
+  await page.getByRole("button", { name: "返回常用配置", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "请先将两种协议选择为同一账号并保存" }).waitFor();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "配置已生效" }).waitFor();
+  const config = (await api("/api/state")).targets.config;
+  assert.deepEqual(config.targets["192.0.2.10"].bmc, { ssh: "ssh" });
 });
