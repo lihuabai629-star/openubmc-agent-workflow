@@ -1,5 +1,6 @@
 {
   "case_id": "skill-routing-negative",
+  "probe": {"kind": "build-route", "request": "run bingo build", "expected_observation": {"owner": "openubmc-bingo-build"}},
   "evidence_boundary": {
     "completion_calibration": {
       "bounded": true,

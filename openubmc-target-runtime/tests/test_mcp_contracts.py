@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ from openubmc_target_runtime import (  # noqa: E402
     RuntimeMcpService,
     TaskContextStore,
     PendingCaseEvent,
+    SQLiteRuntimeRepository,
 )
 from openubmc_target_runtime import mcp as runtime_mcp  # noqa: E402
 
@@ -584,6 +586,48 @@ class PersistentTaskContextTests(unittest.TestCase):
             state_store=TaskContextStore(root),
         )
         return RuntimeMcpService(backend, **registry_options)
+
+    def test_public_execute_redacts_worker_credential_echo_from_response_and_events(self) -> None:
+        secret = "synthetic-worker-password-9471"
+
+        class EchoingBackend(FakeDebugBackend):
+            @staticmethod
+            def debug_run(task, arguments, context):
+                result = FakeDebugBackend.debug_run(task, arguments, context)
+                result["root_cause"] = (
+                    "remote echoed "
+                    + arguments["_credential_values"]["OPENUBMC_SSH_PASSWORD"]
+                )
+                return result
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            backend = OrchestratedMcpBackend(
+                {"debug_run": EchoingBackend()}, state_store=TaskContextStore(root)
+            )
+            service = RuntimeMcpService(
+                backend, context_repository=SQLiteRuntimeRepository(root / "runtime.sqlite3")
+            )
+            try:
+                with mock.patch(
+                    "openubmc_target_runtime.mcp.load_selected_credentials_file",
+                    return_value={"OPENUBMC_SSH_PASSWORD": secret},
+                ):
+                    response = service.call_exposed_tool(
+                        "execute",
+                        {
+                            "kind": "start", "target": "192.0.2.10",
+                            "intent": "diagnose-and-fix",
+                            "delivery_strategy": "source-only",
+                        },
+                        task_id="synthetic-secret-task",
+                        operation_id="synthetic-start",
+                    )
+            finally:
+                service.close()
+            persisted = b"".join(path.read_bytes() for path in root.rglob("*") if path.is_file())
+        self.assertNotIn(secret, json.dumps(response, sort_keys=True))
+        self.assertNotIn(secret.encode(), persisted)
 
     def test_process_restart_restores_context_but_rebuilds_domain_resources(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

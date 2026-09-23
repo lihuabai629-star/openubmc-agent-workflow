@@ -2482,9 +2482,9 @@ class AgentGatewayTests(unittest.TestCase):
         started_at = time.monotonic()
         turn = call()
         elapsed = time.monotonic() - started_at
-        self.assertTrue(started.wait(timeout=maximum_elapsed))
         self.assertLess(elapsed, maximum_elapsed)
         self.assertEqual(turn["state"], "running")
+        self.assertTrue(started.wait(timeout=2))
         return turn
 
     def open_tampered_live_patch_incident(

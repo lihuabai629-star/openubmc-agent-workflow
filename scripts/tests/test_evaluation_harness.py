@@ -153,6 +153,51 @@ class EvaluationHarnessRunTests(unittest.TestCase):
         self.assertIn("final answer status does not match terminal Outcome", issues)
         self.assertIn("final answer is missing an Outcome fingerprint", issues)
 
+    def test_terminal_outcome_rejects_unconfirmed_or_forged_final_answer(self) -> None:
+        plan = {"execution_id": "task-2", "identity": {"source_commit": "a" * 40,
+                "scenario": {"name": "scenario", "version": "v1"}}}
+        receipt = {"schema": "openubmc-agent-workflow.scenario-acceptance.v1",
+                   "execution_id": "task-2", "source_commit": "a" * 40,
+                   "scenario": {"name": "scenario", "version": "v1"},
+                   "accepted": True, "terminal_outcome": {"status": "completed"},
+                   "final_answer": {"task_id": "task-2", "run_id": "run-2",
+                                    "status": "completed", "delivery_stage": "runtime-verified",
+                                    "text": "done", "outcome_fingerprint": "sha256:" + "0" * 64,
+                                    "delivered_at": "", "host_event_id": ""}}
+        issues = harness._scenario_acceptance_issues(plan, receipt)
+        self.assertIn("final answer Outcome fingerprint does not match", issues)
+        self.assertIn("final answer has no observed host delivery", issues)
+        self.assertIn("final answer has no auditable rollout", issues)
+
+    def test_terminal_outcome_accepts_a_matching_persisted_host_final(self) -> None:
+        from datetime import datetime, timedelta
+        from openubmc_target_runtime.terminal_delivery import TerminalAnswerStore
+
+        plan = {"execution_id": "task-3", "identity": {"source_commit": "a" * 40,
+                "scenario": {"name": "scenario", "version": "v1"}}}
+        outcome = {"status": "completed", "summary": "done"}
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            store = TerminalAnswerStore(root / "answers.json")
+            prepared = store.prepare(task_id="task-3", run_id="run-3", outcome=outcome,
+                                     delivery_stage="runtime-verified", text="done")
+            observed_at = (datetime.fromisoformat(prepared.prepared_at) + timedelta(seconds=1)).isoformat()
+            rollout = root / "rollout.jsonl"
+            rollout.write_text("\n".join(json.dumps(event) for event in (
+                {"type": "session_meta", "payload": {"id": "task-3"}},
+                {"type": "response_item", "timestamp": observed_at,
+                 "payload": {"type": "message", "id": "final-3", "role": "assistant",
+                             "phase": "final_answer", "content": [{"type": "output_text", "text": "done"}]}},
+            )) + "\n", encoding="utf-8")
+            final = store.acknowledge_rollout(rollout, task_id="task-3", run_id="run-3",
+                                              outcome=outcome, delivery_stage="runtime-verified")
+            receipt = {"schema": "openubmc-agent-workflow.scenario-acceptance.v1",
+                       "execution_id": "task-3", "source_commit": "a" * 40,
+                       "scenario": {"name": "scenario", "version": "v1"},
+                       "accepted": True, "terminal_outcome": outcome,
+                       "final_answer": final.to_public_dict(), "rollout_path": str(rollout)}
+            self.assertEqual(harness._scenario_acceptance_issues(plan, receipt), [])
+
     def test_formal_dsh_run_is_isolated_and_records_reproducible_identity(self) -> None:
         commit = "a" * 40
         preflight = {

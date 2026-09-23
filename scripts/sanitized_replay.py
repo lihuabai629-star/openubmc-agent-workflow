@@ -4,9 +4,25 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import re
+import subprocess
+import sys
+import tempfile
+
+SCRIPT_ROOT = Path(__file__).resolve().parent
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+from execution_router import ExecutionRouter, probe_protocol
+
+RUNTIME_ROOT = Path(__file__).resolve().parents[1] / "openubmc-target-runtime"
+if str(RUNTIME_ROOT) not in sys.path:
+    sys.path.insert(0, str(RUNTIME_ROOT))
+from openubmc_target_runtime.terminal_delivery import (  # noqa: E402
+    TerminalAnswerError, TerminalAnswerStore, qualify_terminal_answer,
+)
 
 
 SCHEMA = "openubmc.sanitized-replay/v1"
@@ -36,6 +52,80 @@ SHELL_FALLBACK_FIELDS = (
 
 class ReplayError(ValueError):
     pass
+
+
+def _live_observation(case: Mapping[str, object]) -> dict[str, object]:
+    """Derive selected observations from packaged public entry points."""
+    observed = dict(_mapping(case.get("observed"), "observed"))
+    probe = case.get("probe")
+    if probe is None:
+        return observed
+    probe = _mapping(probe, "probe")
+    if probe.get("kind") == "build-route":
+        request = str(probe.get("request", ""))
+        if not request or len(request) > 256:
+            raise ReplayError("build-route probe requires a bounded request")
+        script = Path(__file__).resolve().parents[1] / "openubmc-build" / "scripts" / "build_route.py"
+        completed = subprocess.run(
+            [sys.executable, str(script), "--request", request],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if completed.returncode not in (0, 2):
+            raise ReplayError("build-route public probe failed")
+        route = json.loads(completed.stdout)
+        observed["skill_routing"] = {"owner": route["owner"]}
+    elif probe.get("kind") == "execution-route":
+        environment = str(probe.get("environment", ""))
+        operation = str(probe.get("operation", ""))
+        raw_tools = probe.get("tools")
+        if not isinstance(raw_tools, list) or not all(isinstance(item, str) for item in raw_tools):
+            raise ReplayError("execution-route probe tools must be a list")
+        router = ExecutionRouter(environment=environment)
+        route = router.choose(
+            operation,
+            probe=probe_protocol(operation, host=router.expected_host,
+                                 list_tools=lambda: raw_tools),
+            requested_scope="sanitized fixture", evidence_boundary="router receipt",
+        )
+        observed["execution_host"] = {
+            "host": route["execution_host"],
+            "route": "structured-runtime" if route["path"] == "structured-runtime-mcp" else "shell-fallback",
+        }
+    elif probe.get("kind") == "terminal-answer":
+        task_id = str(case.get("case_id", ""))
+        outcome = {"status": "completed", "summary": "fixture"}
+        with tempfile.TemporaryDirectory() as raw:
+            store = TerminalAnswerStore(Path(raw) / "answers.json")
+            store.prepare(task_id=task_id, run_id="fixture-run", outcome=outcome,
+                          delivery_stage="diagnosed", text="fixture final")
+            rollout = Path(raw) / "rollout.jsonl"
+            events = [{"type": "session_meta", "payload": {"id": task_id}}]
+            if probe.get("delivered") is True:
+                prepared = store.get(task_id)
+                event_time = (datetime.fromisoformat(prepared.prepared_at) + timedelta(seconds=1)).isoformat()
+                events.append({"type": "response_item", "timestamp": event_time, "payload": {
+                    "type": "message", "id": "fixture-host-final", "role": "assistant",
+                    "phase": "final_answer",
+                    "content": [{"type": "output_text", "text": "fixture final"}],
+                }})
+            rollout.write_text("\n".join(json.dumps(event) for event in events) + "\n",
+                               encoding="utf-8")
+            try:
+                store.acknowledge_rollout(
+                    rollout, task_id=task_id, run_id="fixture-run", outcome=outcome,
+                    delivery_stage="diagnosed",
+                )
+            except TerminalAnswerError as exc:
+                if "final event is missing" not in str(exc):
+                    raise
+            result = qualify_terminal_answer(
+                task_id=task_id, run_id="fixture-run", outcome=outcome,
+                delivery_stage="diagnosed", record=store.get(task_id),
+            )
+        observed["final_answer"] = {"present": result["status"] == "passed", "task_id": task_id}
+    else:
+        raise ReplayError("unsupported live probe")
+    return observed
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:
@@ -148,6 +238,32 @@ def evaluate_case(case: Mapping[str, object]) -> dict[str, object]:
     if not case_id:
         raise ReplayError("case_id is required")
     failures = sanitization_issues(case)
+    try:
+        observed = _live_observation(case)
+    except (ReplayError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise ReplayError(f"{case_id}: {exc}") from exc
+    probe = case.get("probe")
+    probe_result: dict[str, object] = {"status": "not_applicable", "failures": []}
+    if isinstance(probe, Mapping):
+        probe_dimension = {
+            "build-route": "skill_routing",
+            "execution-route": "execution_host",
+            "terminal-answer": "final_answer",
+        }.get(str(probe.get("kind")))
+        wanted = _mapping(probe.get("expected_observation"), "probe.expected_observation")
+        actual = _mapping(observed.get(probe_dimension), f"observed.{probe_dimension}")
+        probe_failures = [
+            f"{key}: expected {value!r}, observed {actual.get(key)!r}"
+            for key, value in wanted.items() if actual.get(key) != value
+        ]
+        probe_result = {
+            "status": "passed" if not probe_failures else "failed",
+            "dimension": probe_dimension,
+            "expected_observation": dict(wanted),
+            "observed_observation": dict(actual),
+            "failures": probe_failures,
+        }
+    case = {**case, "observed": observed}
     dimensions: dict[str, object] = {}
     for name in DIMENSIONS:
         try:
@@ -168,10 +284,11 @@ def evaluate_case(case: Mapping[str, object]) -> dict[str, object]:
     return {
         "schema": SCHEMA,
         "case_id": case_id,
-        "status": "passed" if observed_status == expected_status else "failed",
+        "status": "passed" if observed_status == expected_status and probe_result["status"] != "failed" else "failed",
         "observed_status": observed_status,
         "expected_status": expected_status,
         "dimensions": dimensions,
+        "probe": probe_result,
     }
 
 

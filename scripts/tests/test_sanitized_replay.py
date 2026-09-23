@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 import unittest
 
@@ -11,6 +12,40 @@ from scripts.sanitized_replay import evaluate_case, evaluate_directory  # noqa: 
 
 
 class SanitizedReplayTests(unittest.TestCase):
+    def test_live_probe_cannot_be_overridden_by_a_fixture_observation(self):
+        path = ROOT / "evaluation" / "sanitized-replays" / "skill-routing-negative.json"
+        case = json.loads(path.read_text(encoding="utf-8"))
+        case["observed"]["skill_routing"] = dict(case["expected"]["skill_routing"])
+        result = evaluate_case(case)
+        self.assertEqual(result["observed_status"], "failed")
+        self.assertEqual(result["dimensions"]["skill_routing"]["observed_behavior"]["owner"],
+                         "openubmc-bingo-build")
+
+    def test_execution_host_is_taken_from_the_live_router(self):
+        path = ROOT / "evaluation" / "sanitized-replays" / "execution-host-negative.json"
+        case = json.loads(path.read_text(encoding="utf-8"))
+        case["observed"]["execution_host"] = dict(case["expected"]["execution_host"])
+        result = evaluate_case(case)
+        self.assertEqual(result["observed_status"], "failed")
+        self.assertEqual(result["dimensions"]["execution_host"]["observed_behavior"]["host"],
+                         "windows-native")
+
+    def test_final_presence_is_taken_from_the_live_delivery_gate(self):
+        path = ROOT / "evaluation" / "sanitized-replays" / "final-answer-negative.json"
+        case = json.loads(path.read_text(encoding="utf-8"))
+        case["observed"]["final_answer"] = dict(case["expected"]["final_answer"])
+        result = evaluate_case(case)
+        self.assertEqual(result["observed_status"], "failed")
+        self.assertFalse(result["dimensions"]["final_answer"]["observed_behavior"]["present"])
+
+    def test_live_probe_requires_the_exact_known_behavior(self):
+        path = ROOT / "evaluation" / "sanitized-replays" / "skill-routing-negative.json"
+        case = json.loads(path.read_text(encoding="utf-8"))
+        case["probe"]["expected_observation"]["owner"] = "other-owner"
+        result = evaluate_case(case)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["probe"]["status"], "failed")
+
     def test_known_good_offline_package_analysis_is_positive(self):
         report = evaluate_directory(ROOT / "evaluation" / "sanitized-replays")
         self.assertEqual(report["status"], "passed")
