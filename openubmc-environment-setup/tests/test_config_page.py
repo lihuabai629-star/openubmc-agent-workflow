@@ -98,6 +98,27 @@ class ConfigPageTests(unittest.TestCase):
                 self.assertEqual(status["revision"], status["active_revision"])
                 self.assertNotIn("targets", server.stores["targets"].read_active())
 
+    def test_verified_explicit_os_ip_completes_without_a_bmc_association(self):
+        spec = importlib.util.spec_from_file_location("config_page", SCRIPT)
+        page = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(page)
+        with tempfile.TemporaryDirectory() as raw, page.LocalConfigurationServer(
+            Path(raw), checker=lambda *_args, **_metadata: {"verified": True, "code": "connected"},
+            purpose="os", transport="ssh", focus_target="192.0.2.20", wait_for_save=True,
+        ) as server:
+            request = Request(server.origin + "/api/connect-and-remember",
+                data=json.dumps({"kind": "targets", "target": {"ip": "192.0.2.20", "purpose": "os", "transport": "ssh"},
+                    "user": "os-user", "password": "os-local-secret", "expected_revision": None,
+                    "expected_active_revision": None}).encode(),
+                headers={"X-OpenUBMC-Session": server.session_token, "Origin": server.origin,
+                    "Content-Type": "application/json"})
+            with urlopen(request, timeout=3) as response:
+                self.assertTrue(json.load(response)["verified"])
+            self.assertTrue(server.completion["configured"])
+            self.assertEqual(server.completion["focus_target"], "192.0.2.20")
+            self.assertIsNone(server.completion["associated_os"])
+            self.assertNotIn("os-local-secret", json.dumps(server.completion))
+
     def test_invalid_target_and_changed_legacy_source_cannot_be_remembered(self):
         spec = importlib.util.spec_from_file_location("config_page", SCRIPT)
         page = importlib.util.module_from_spec(spec)

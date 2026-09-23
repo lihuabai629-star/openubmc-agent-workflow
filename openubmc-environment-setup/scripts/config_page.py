@@ -617,7 +617,7 @@ class LocalConfigurationServer:
             try:
                 if focus:
                     receipt["associated_os"] = resolver.associated_os(task_id="configuration", bmc_host=focus)
-                    if not self.authorized_targets and self.page_session["purpose"] == "os":
+                    if not verified_target and not self.authorized_targets and self.page_session["purpose"] == "os":
                         if receipt["associated_os"] is None:
                             return {**receipt, "configured": False, "reason": "target_required"}
                         scopes[0]["ip"] = receipt["associated_os"]
