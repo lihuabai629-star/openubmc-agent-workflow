@@ -23,6 +23,7 @@ class DependencyPreparationTests(unittest.TestCase):
                  'requirements.lock': b'',
                  'openubmc-kb-mcp/package.json': b'{"name":"fixture","version":"0.0.0"}',
                  'openubmc-kb-mcp/package-lock.json': b'{}',
+                 'workflow.json': b'{"skills": []}',
                  'scripts/launch_runtime.py': b'import os,sys,json\nlines=sys.stdin.read().splitlines()\nif not lines: print("MCP_FIXTURE_READY", flush=True)\nfor line in lines:\n r=json.loads(line)\n if "id" in r: print(json.dumps({"jsonrpc":"2.0","id":r["id"],"result": {"serverInfo":None if os.environ.get("FIXTURE_NULL_SERVER") else {"name":"fixture"}} if r["method"]=="initialize" else {"tools":[{"name":"observe"},{"name":"execute"}]}}),flush=True)\n',
                  'openubmc-kb-mcp/src/server.js': b'console.log("MCP_FIXTURE_READY")\n',
                  'skills/openubmc-target-runtime/openubmc_target_runtime/credential_file.py': (ROOT/'openubmc-target-runtime/openubmc_target_runtime/credential_file.py').read_bytes(),

@@ -130,6 +130,33 @@ class DisableMigrationTests(unittest.TestCase):
         for path in self.preserved:
             self.assertEqual(path.read_bytes(), b'private-fixture-do-not-print')
 
+    def test_disable_only_adds_exact_name_loose_skill_without_claiming_other_skills(self):
+        self.link.unlink()
+        self.state.write_text('{}')
+        exact = self.home/'.codex/skills/openubmc-debug'
+        exact.mkdir()
+        (exact/'SKILL.md').write_text('---\nname: openubmc-debug\ndescription: loose fixture\n---\n')
+        unrelated = self.home/'.codex/skills/openubmc-webui-dev'
+        unrelated.mkdir()
+        (unrelated/'SKILL.md').write_text('---\nname: openubmc-webui-dev\ndescription: keep fixture\n---\n')
+        original = '[plugins."openubmc@openubmc-public"]\nenabled = true\n'
+        self.config.write_text(original)
+
+        doctor = self.cli('doctor', '--capability', 'runtime', success=False)
+        self.assertEqual(doctor['codex_configuration']['changes']['skills'], [str(exact/'SKILL.md')])
+        self.assertFalse(doctor['codex_configuration']['ready'])
+        preview = self.cli('migrate', '--disable-only', '--preview')
+        self.assertEqual(preview['changes']['skills'], [str(exact/'SKILL.md')])
+        applied = self.cli('migrate', '--disable-only')
+        document = self.config.read_text()
+        self.assertIn(str(exact/'SKILL.md'), document)
+        self.assertNotIn(str(unrelated), document)
+        self.assertTrue((exact/'SKILL.md').is_file())
+        self.assertTrue((unrelated/'SKILL.md').is_file())
+
+        self.cli('restore-legacy', '--transaction', applied['transaction'])
+        self.assertEqual(self.config.read_text(), original)
+
     def test_version_pinned_overrides_are_removed_with_backup_and_native_config_recovery(self):
         old = self.home/'.codex/plugins/cache/openubmc-public/openubmc/2.0.12/scripts/pluginctl.py'
         original = '[plugins."openubmc@openubmc-public"]\nenabled = true\n'

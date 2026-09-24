@@ -126,3 +126,66 @@ jobs:
           name: codex-plugin-qualification
           path: ${{ runner.temp }}/plugin-qualification.json
           if-no-files-found: error
+
+  windows-plugin:
+    name: Windows marketplace bootstrap
+    needs: ci-contract
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.2"
+
+      - name: Install locked Codex plugin host
+        shell: pwsh
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix plugin/host
+
+      - name: Build and install the marketplace package
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "openubmc-plugin.tar.gz"
+          python scripts/package_plugin.py build --source . --source-ref HEAD --output $archive
+          $market = Join-Path $env:RUNNER_TEMP "openubmc-marketplace"
+          New-Item -ItemType Directory -Force -Path (Join-Path $market "plugins") | Out-Null
+          tar -xf $archive -C (Join-Path $market "plugins")
+          New-Item -ItemType Directory -Force -Path (Join-Path $market ".agents/plugins") | Out-Null
+          '{"name":"windows-test","plugins":[{"name":"openubmc","source":{"source":"local","path":"./plugins/openubmc"}}]}' | Set-Content -Encoding utf8NoBOM (Join-Path $market ".agents/plugins/marketplace.json")
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP "codex-home"
+          New-Item -ItemType Directory -Force -Path $env:CODEX_HOME | Out-Null
+          $codex = Resolve-Path "plugin/host/node_modules/.bin/codex.cmd"
+          & $codex plugin marketplace add $market
+          & $codex plugin add openubmc@windows-test --json
+          $servers = (& $codex mcp list --json | ConvertFrom-Json)
+          foreach ($name in @("openubmc-target-runtime", "openubmc-kb")) {
+            $server = $servers | Where-Object { $_.name -eq $name }
+            if ($null -eq $server -or $server.transport.command -ne "node") { throw "Windows MCP launcher was not installed for $name" }
+          }
+
+      - name: Verify setup-mode MCP initialization without WSL
+        shell: pwsh
+        run: |
+          $plugin = Join-Path $env:RUNNER_TEMP "openubmc-marketplace/plugins/openubmc"
+          $env:OPENUBMC_PLUGIN_HOST_PLATFORM = "win32"
+          $env:OPENUBMC_PLUGIN_WSL_EXE = Join-Path $env:RUNNER_TEMP "missing-wsl.exe"
+          $request = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}',
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          )
+          $responses = $request | node (Join-Path $plugin "scripts/openubmc-mcp-bootstrap.js") runtime
+          $initialize = $responses[0] | ConvertFrom-Json
+          $tools = $responses[1] | ConvertFrom-Json
+          if ($initialize.result.serverInfo.name -ne "openubmc-runtime-setup") { throw "setup initialize failed" }
+          if (($tools.result.tools.name -notcontains "openubmc_setup_status")) { throw "setup tools unavailable" }

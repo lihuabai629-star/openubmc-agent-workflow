@@ -346,6 +346,26 @@ def local_credentials_status(content: dict[str, bytes]) -> dict[str, object]:
             sys.modules.pop(name, None)
 
 
+def cleanup_retired_processes(content: dict[str, bytes], lock: dict) -> dict[str, object]:
+    """Retire only source-bound orphan MCPs from an older verified package."""
+    import types
+    module = types.ModuleType('_verified_openubmc_mcp_lifecycle')
+    path = 'skills/openubmc-target-runtime/openubmc_target_runtime/mcp_lifecycle.py'
+    exec(compile(content[path], '<verified-mcp-lifecycle>', 'exec'), module.__dict__)
+    configured = os.environ.get('OPENUBMC_MCP_LIFECYCLE_DIR', '').strip()
+    root = Path(configured).expanduser().absolute() if configured else (
+        Path.home()/'.local/state/openubmc-agent-workflow/mcp-processes').absolute()
+    before = module.inspect_mcp_process_records(root)
+    retired = [item for item in before if item.get('source_commit') != lock['source_commit']]
+    cleaned = module.cleanup_retired_orphaned_mcp_processes(
+        root, current_source_commit=lock['source_commit'])
+    after = module.inspect_mcp_process_records(root)
+    remaining = [item for item in after if item.get('process_running') is True
+                 and item.get('source_commit') != lock['source_commit']]
+    return {'ok': True, 'lifecycle_root': str(root), 'retired_records': len(retired),
+            'cleaned_processes': cleaned, 'remaining_retired_processes': len(remaining)}
+
+
 def probe_server(command: str, content: dict[str, bytes], lock: dict, knowledge_mcp_version: str | None = None) -> dict[str, object]:
     """Perform a bounded MCP initialize/tools/list probe through the public launcher."""
     request = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
@@ -436,7 +456,7 @@ def positive_timeout(value: str) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'configure', 'migrate', 'repair-overrides', 'restore-legacy'])
+    parser.add_argument('command', choices=['verify', 'prepare', 'doctor', 'runtime', 'kb', 'configure', 'migrate', 'repair-overrides', 'restore-legacy', 'cleanup-retired'])
     parser.add_argument('--home', type=Path, default=Path.home())
     parser.add_argument('--codex-home', type=Path, default=Path(os.environ['CODEX_HOME']) if os.environ.get('CODEX_HOME') else None)
     parser.add_argument('--transaction', default='')
@@ -476,6 +496,9 @@ def main() -> int:
         report = {'ok': True, 'source_commit': lock['source_commit'], 'version': lock['version'],
                   'content_digest': lock['content_digest'], 'skills': lock['skills'],
                   'knowledge_mcp_version': knowledge_mcp_version}
+        if args.command == 'cleanup-retired':
+            print(json.dumps(cleanup_retired_processes(content, lock), sort_keys=True))
+            return 0
         if args.command in ('migrate', 'repair-overrides', 'restore-legacy'):
             import types
             module = types.ModuleType('openubmc_plugin_install')
@@ -535,8 +558,12 @@ def main() -> int:
             import types
             module = types.ModuleType('openubmc_plugin_install')
             exec(compile(content['scripts/plugin_install.py'], '<verified-plugin-install>', 'exec'), module.__dict__)
-            configuration = module.preview(args.home, [], args.codex_home,
+            skill_paths = [item['path'] for item in json.loads(content['workflow.json'])['skills']]
+            configuration = module.preview(args.home, skill_paths, args.codex_home,
                                            mode='repair-overrides', target_plugin=args.target_plugin)
+            overlaps = module.loose_skill_overlaps(args.home.resolve(), skill_paths, args.codex_home)
+            configuration.setdefault('changes', {})['skills'] = overlaps
+            configuration['would_change'] = bool(configuration.get('would_change') or overlaps)
             configuration['ready'] = configuration['ok'] and not configuration['would_change']
             if not configuration['ready']:
                 configuration['repair_action'] = ('pluginctl.py repair-overrides --preview; '

@@ -176,9 +176,62 @@ jobs:
             "openubmc-$RELEASE_TAG-codex.sha256" \
             plugin-qualification.json
 
+  windows-plugin-gate:
+    needs: release-gate
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-gate.outputs.release_tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.2"
+
+      - name: Install locked Codex plugin host
+        shell: pwsh
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix plugin/host
+
+      - name: Download and install the released package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-gate.outputs.release_tag }}
+        run: |
+          $asset = "openubmc-$env:RELEASE_TAG-codex.tar.gz"
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern $asset --dir $env:RUNNER_TEMP
+          $market = Join-Path $env:RUNNER_TEMP "openubmc-release-marketplace"
+          New-Item -ItemType Directory -Force -Path (Join-Path $market "plugins") | Out-Null
+          tar -xf (Join-Path $env:RUNNER_TEMP $asset) -C (Join-Path $market "plugins")
+          New-Item -ItemType Directory -Force -Path (Join-Path $market ".agents/plugins") | Out-Null
+          '{"name":"windows-release","plugins":[{"name":"openubmc","source":{"source":"local","path":"./plugins/openubmc"}}]}' | Set-Content -Encoding utf8NoBOM (Join-Path $market ".agents/plugins/marketplace.json")
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP "codex-home"
+          New-Item -ItemType Directory -Force -Path $env:CODEX_HOME | Out-Null
+          $codex = Resolve-Path "plugin/host/node_modules/.bin/codex.cmd"
+          & $codex plugin marketplace add $market
+          & $codex plugin add openubmc@windows-release --json
+          $servers = (& $codex mcp list --json | ConvertFrom-Json)
+          foreach ($name in @("openubmc-target-runtime", "openubmc-kb")) {
+            $server = $servers | Where-Object { $_.name -eq $name }
+            if ($null -eq $server -or $server.transport.command -ne "node") { throw "released Windows launcher missing for $name" }
+          }
+          $plugin = Join-Path $market "plugins/openubmc"
+          $env:OPENUBMC_PLUGIN_HOST_PLATFORM = "win32"
+          $env:OPENUBMC_PLUGIN_WSL_EXE = Join-Path $env:RUNNER_TEMP "missing-wsl.exe"
+          $request = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}',
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          )
+          $responses = $request | node (Join-Path $plugin "scripts/openubmc-mcp-bootstrap.js") runtime
+          if ((($responses[0] | ConvertFrom-Json).result.serverInfo.name) -ne "openubmc-runtime-setup") { throw "released setup mode failed" }
+
   promote:
     if: ${{ inputs.promote }}
-    needs: release-gate
+    needs: [release-gate, windows-plugin-gate]
     runs-on: ubuntu-latest
     permissions:
       contents: write

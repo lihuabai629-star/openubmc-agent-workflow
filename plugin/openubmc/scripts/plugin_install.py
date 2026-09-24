@@ -200,6 +200,21 @@ def legacy_owned_servers(document: dict, state: dict) -> set[str]:
     return owned
 
 
+def loose_skill_overlaps(home: Path, skill_paths: list[str], codex_home: Path | None = None) -> list[str]:
+    """Return exact-name loose Skill files that compete with this plugin."""
+    codex_root = (codex_home or home/'.codex').resolve()
+    names = set(skill_paths)
+    overlaps = set()
+    for root in (codex_root/'skills', home/'.agents/skills', home/'.local/share/openubmc/codex-skill-links'):
+        if root.is_symlink() or not root.is_dir():
+            continue
+        for path in root.iterdir():
+            skill = path/'SKILL.md'
+            if path.name in names and skill.is_file():
+                overlaps.add(str(skill.resolve()))
+    return sorted(overlaps)
+
+
 class PlanSnapshot(NamedTuple):
     config: Path
     state_bytes: bytes
@@ -256,6 +271,7 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
     if source:
         targets.update(str(Path(source)/name) for name in skill_paths)
     links = []
+    exact_skill_files = set(loose_skill_overlaps(home, skill_paths, codex_root))
     roots = [codex_root/'skills', home/'.agents/skills', home/'.local/share/openubmc/codex-skill-links']
     for root in roots:
         if root.is_symlink():
@@ -263,15 +279,20 @@ def _plan(home: Path, skill_paths: list[str], codex_home: Path | None = None, *,
         if not root.is_dir():
             continue
         for path in root.iterdir():
+            exact_overlap = mode == 'disable-only' and path.name in skill_paths and (path/'SKILL.md').is_file()
+            # Exact-name loose Skills compete with the marketplace Skill even
+            # when an older installer left no usable ownership record.  A
+            # config-only disable is reversible and does not claim the files.
             if path.is_symlink() and str(path.resolve()) in targets:
                 links.append({'path': str(path), 'target': os.readlink(path)})
-            elif mode == 'disable-only' and (str(path) in state.get('links', {}) or path.name in skill_paths):
+            elif mode == 'disable-only' and not exact_overlap and (str(path) in state.get('links', {}) or path.name in skill_paths):
                 if str(path.resolve()) not in targets:
                     raise ValueError('Skill installation ownership conflicts at: ' + str(path))
     changes = {'skills': [], 'mcp_servers': sorted(owned_servers), 'plugins': []}
     if mode == 'disable-only':
         skill_files = {str((Path(target)/'SKILL.md').resolve()) for target in targets
                        if (Path(target)/'SKILL.md').is_file()}
+        skill_files.update(exact_skill_files)
         # Codex matches the canonical SKILL.md file, not the containing directory.
         current_rows = document.get('skills', {}).get('config', [])
         skill_files = {path for path in skill_files if not any(row.get('path') == path for row in current_rows)

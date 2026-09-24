@@ -31,11 +31,14 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
 
     def test_contract_preflight_is_a_separate_required_check(self) -> None:
         jobs = self.workflow["jobs"]
-        self.assertEqual(set(jobs), {"ci-contract", "validate"})
+        self.assertEqual(set(jobs), {"ci-contract", "validate", "windows-plugin"})
         preflight = jobs["ci-contract"]
         self.assertEqual(preflight["name"], "CI contract preflight")
         self.assertEqual(jobs["validate"]["name"], "Complete repository validation")
         self.assertEqual(jobs["validate"]["needs"], "ci-contract")
+        self.assertEqual(jobs["windows-plugin"]["name"], "Windows marketplace bootstrap")
+        self.assertEqual(jobs["windows-plugin"]["runs-on"], "windows-2025")
+        self.assertEqual(jobs["windows-plugin"]["needs"], "ci-contract")
         self.assertEqual(
             next(
                 step["run"]
@@ -109,7 +112,7 @@ class ContinuousValidationWorkflowTests(unittest.TestCase):
         )
 
     def test_validation_fetches_historical_release_identity(self) -> None:
-        for job_name in ("ci-contract", "validate"):
+        for job_name in ("ci-contract", "validate", "windows-plugin"):
             checkout = next(
                 step
                 for step in self.workflow["jobs"][job_name]["steps"]

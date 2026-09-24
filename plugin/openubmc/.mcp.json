@@ -2,19 +2,20 @@
   "mcpServers": {
     "openubmc-target-runtime": {
       "type": "stdio",
-      "command": "python3",
+      "command": "node",
       "args": [
-        "-I",
-        "-B",
-        "./scripts/pluginctl.py",
-        "runtime",
-        "--prepare-on-start"
+        "./scripts/openubmc-mcp-bootstrap.js",
+        "runtime"
       ],
       "cwd": "./",
       "env_vars": [
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "XDG_CACHE_HOME",
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "CODEX_HOME",
+        "OPENUBMC_WSL_DISTRO",
         "OPENUBMC_CREDENTIALS_FILE",
         "OPENUBMC_TARGET_RUNTIME_STATE_DIR",
         "OPENUBMC_MCP_FORMAL_RUN",
@@ -53,19 +54,20 @@
     },
     "openubmc-kb": {
       "type": "stdio",
-      "command": "python3",
+      "command": "node",
       "args": [
-        "-I",
-        "-B",
-        "./scripts/pluginctl.py",
-        "kb",
-        "--prepare-on-start"
+        "./scripts/openubmc-mcp-bootstrap.js",
+        "kb"
       ],
       "cwd": "./",
       "env_vars": [
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "XDG_CACHE_HOME",
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "CODEX_HOME",
+        "OPENUBMC_WSL_DISTRO",
         "OPENUBMC_CREDENTIALS_FILE",
         "OPENUBMC_KB_CONFIG",
         "OPENUBMC_KB_USERNAME",
