@@ -36,6 +36,9 @@ choice.
 
 The Local Setup Plane does not create a Run, answer a Gate, invoke a Domain Adapter, record Evidence,
 commit an Effect, or form an Outcome. A new task loads the normal backend after setup succeeds.
+The bootstrap remains the MCP process directly owned by Codex and supervises the selected backend.
+Formal lifecycle qualification binds the backend record to the exact task, session and source created
+by that invocation, then proves that both the backend and its bootstrap supervisor terminate.
 
 ## Consequences
 
