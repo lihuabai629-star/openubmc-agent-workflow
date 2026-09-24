@@ -91,12 +91,157 @@ class BuildRouteTests(unittest.TestCase):
             publish_skill,
         )
 
+        packaged_bingo_skill = (
+            ROOT.parent / "openubmc-bingo-build" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "bingo build -t publish -b <board> -bt release --stage stable",
+            packaged_bingo_skill,
+        )
+        self.assertNotIn(" -sc ", packaged_bingo_skill)
+
     def test_explicit_bingo_build_and_development_are_separate(self) -> None:
-        for request, owner in (("run bingo build", "openubmc-bingo-build"), ("开发 bingo 构建工具", "openubmc-bingo-development")):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            component = root / "component"
+            component.mkdir()
+            (component / "mds").mkdir()
+            (component / "mds" / "service.json").write_text("{}\n")
+            bingo_source = root / "bingo"
+            bingo_source.mkdir()
+            (bingo_source / "pyproject.toml").write_text(
+                '[project]\nname = "openubmc-bingo"\n', encoding="utf-8"
+            )
+
+            build = route_receipt(
+                "run bingo build",
+                argv=["bingo", "build"],
+                workspace=component,
+            )
+            development = route_receipt(
+                "开发 bingo 构建工具", workspace=bingo_source
+            )
+
+        self.assertEqual(build["owner"], "openubmc-bingo-build")
+        self.assertEqual(build["mode"], "handoff")
+        self.assertTrue(build["ready"])
+        self.assertEqual(build["artifact"]["kind"], "component-build")
+        self.assertEqual(development["owner"], "openubmc-bingo-development")
+        self.assertEqual(development["mode"], "handoff")
+        self.assertTrue(development["ready"])
+
+    def test_bingo_handoffs_require_the_owning_workspace(self) -> None:
+        for request, owner in (
+            ("run bingo build", "openubmc-bingo-build"),
+            ("开发 bingo 构建工具", "openubmc-bingo-development"),
+        ):
             receipt = route_receipt(request)
             self.assertEqual(receipt["owner"], owner)
-            self.assertEqual(receipt["mode"], "handoff")
-            self.assertTrue(receipt["ready"])
+            self.assertFalse(receipt["ready"])
+            self.assertEqual(receipt["preconditions"][0]["status"], "required")
+
+    def test_bingo_product_publish_requires_manifest_and_board(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / ".bingo").mkdir()
+            (root / ".bingo" / "config").write_text("manifest\n")
+            (root / "build" / "product" / "2488hv6").mkdir(parents=True)
+            missing_board = route_receipt(
+                "publish product with bingo",
+                argv=["bingo", "build", "-t", "publish", "-bt", "release", "--stage", "stable"],
+                workspace=root,
+            )
+            ready = route_receipt(
+                "publish product with bingo",
+                argv=["bingo", "build", "-t", "publish", "-b", "2488hv6", "-bt", "release", "--stage", "stable"],
+                workspace=root,
+            )
+            implicit_product = route_receipt(
+                "run bingo build",
+                argv=["bingo", "build"],
+                workspace=root,
+            )
+            malformed_board = route_receipt(
+                "publish product with bingo",
+                argv=["bingo", "build", "-t", "publish", "-b", "-bt", "release", "--stage", "stable"],
+                workspace=root,
+            )
+            unresolved_boards = [
+                route_receipt(
+                    "publish product with bingo",
+                    argv=["bingo", "build", "-t", "publish", "-b", board],
+                    workspace=root,
+                )
+                for board in (" ", "does-not-exist", "../escape")
+            ]
+            duplicate_board = route_receipt(
+                "publish product with bingo",
+                argv=["bingo", "build", "-b", "2488hv6", "-b", "../escape"],
+                workspace=root,
+            )
+
+            external = root / "external-products"
+            (external / "outside-board").mkdir(parents=True)
+            linked = root / "linked-manifest"
+            (linked / ".bingo").mkdir(parents=True)
+            (linked / ".bingo" / "config").write_text("manifest\n")
+            (linked / "build").mkdir()
+            (linked / "build" / "product").symlink_to(external, target_is_directory=True)
+            external_board = route_receipt(
+                "publish product with bingo",
+                argv=["bingo", "build", "-b", "outside-board"],
+                workspace=linked,
+            )
+
+        self.assertFalse(missing_board["ready"])
+        self.assertEqual(missing_board["artifact"]["status"], "required")
+        self.assertFalse(implicit_product["ready"])
+        self.assertEqual(implicit_product["artifact"]["status"], "required")
+        self.assertFalse(malformed_board["ready"])
+        self.assertEqual(malformed_board["artifact"]["status"], "required")
+        for unresolved in unresolved_boards:
+            self.assertFalse(unresolved["ready"])
+            self.assertEqual(unresolved["artifact"]["status"], "failed")
+        self.assertFalse(duplicate_board["ready"])
+        self.assertEqual(duplicate_board["artifact"]["status"], "failed")
+        self.assertFalse(external_board["ready"])
+        self.assertEqual(external_board["artifact"]["status"], "failed")
+        self.assertTrue(ready["ready"])
+        self.assertEqual(ready["artifact"]["kind"], "product-release")
+        self.assertEqual(ready["artifact"]["board"], "2488hv6")
+
+    def test_environment_setup_owns_requests_that_also_name_bingo(self) -> None:
+        for request in (
+            "install bingo build environment",
+            "setup build environment for bingo",
+            "配置 bingo 构建环境",
+        ):
+            receipt = route_receipt(request)
+            self.assertEqual(receipt["owner"], "openubmc-environment-setup")
+
+    def test_bingo_tool_substitution_requires_equivalence_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "mds").mkdir()
+            (root / "mds" / "service.json").write_text("{}\n")
+            receipt = route_receipt(
+                "run bingo build", argv=["ninja"], workspace=root
+            )
+        self.assertFalse(receipt["ready"])
+        self.assertEqual(receipt["preconditions"][-1]["name"], "tool_equivalence")
+
+    def test_explicit_bingo_executable_variants_keep_bingo_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "mds").mkdir()
+            (root / "mds" / "service.json").write_text("{}\n")
+            for executable in ("bingo.exe", "/usr/local/bin/bingo"):
+                with self.subTest(executable=executable):
+                    receipt = route_receipt(
+                        "run build", argv=[executable, "build"], workspace=root
+                    )
+                    self.assertEqual(receipt["owner"], "openubmc-bingo-build")
+                    self.assertTrue(receipt["ready"])
 
     def test_product_and_component_routes_are_mutually_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

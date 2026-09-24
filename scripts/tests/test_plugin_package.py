@@ -48,7 +48,10 @@ class PluginPackageTests(unittest.TestCase):
             self.assertEqual(check.returncode, 0, check.stderr)
             report = json.loads(check.stdout)
             self.assertTrue(report['ok'])
-            self.assertEqual(len(report['skills']), 11)
+            self.assertEqual(len(report['skills']), 13)
+            for skill in ('openubmc-bingo-build', 'openubmc-bingo-development'):
+                self.assertIn(skill, report['skills'])
+                self.assertTrue((plugin/'skills'/skill/'SKILL.md').is_file())
             self.assertEqual(len(report['source_commit']), 40)
             self.assertNotIn(str(ROOT).encode(), (plugin/'scripts/launch_runtime.py').read_bytes())
             self.assertFalse(any(p.name == '.git' for p in plugin.rglob('*')))
@@ -56,6 +59,25 @@ class PluginPackageTests(unittest.TestCase):
                 (plugin/'skills/openubmc-environment-setup/references/credential-exposure-response.md').read_bytes(),
                 (self.source/'docs/credential-exposure-response.md').read_bytes(),
             )
+
+    def test_packaging_rejects_a_skill_catalog_over_the_prompt_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            oversized = base/'source'
+            subprocess.run(['git', 'clone', '-q', str(self.source), str(oversized)], check=True)
+            prompt = oversized/'openubmc-bingo-build/SKILL.md'
+            prompt.write_text(prompt.read_text(encoding='utf-8') + '\n' + ('x' * 16384), encoding='utf-8')
+            subprocess.run(['git', '-C', str(oversized), 'add', str(prompt.relative_to(oversized))], check=True)
+            subprocess.run([
+                'git', '-C', str(oversized), '-c', 'user.name=Fixture',
+                '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'Oversized prompt',
+            ], check=True)
+            result = subprocess.run([
+                sys.executable, str(BUILDER), 'build', '--source', str(oversized),
+                '--output', str(base/'bundle.tar.gz'),
+            ], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('prompt budget', result.stderr)
 
     def test_verify_rejects_added_or_changed_plugin_code(self):
         with tempfile.TemporaryDirectory() as temporary:
