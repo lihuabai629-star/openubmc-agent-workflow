@@ -209,6 +209,12 @@ class LivePatchCliTests(unittest.TestCase):
                                 f"remote_uid={_fake_current_uid}\\n"
                                 f"remote_gid={_fake_current_gid}\\ndeploy_ok"
                             )
+                        elif "p=r;" in command and "remove_ok" in _fake_decoded_script(command):
+                            text = (
+                                "removed_sha256="
+                                + _fake_os.environ["FAKE_LOCAL_SHA256"]
+                                + "\\nremove_ok"
+                            )
                         elif "p=r;" in command:
                             script = _fake_decoded_script(command)
                             mode = _fake_re.search(r"chmod ([0-7]{3,4}) ", script)
@@ -231,6 +237,8 @@ class LivePatchCliTests(unittest.TestCase):
                                 "backup_gid=104\\n"
                                 f"remote_gid={_fake_current_gid}\\nrestore_ok"
                             )
+                        elif "verify_missing" in command:
+                            text = "verify_missing"
                         elif "verify_sha256" in command:
                             digest = _fake_os.environ["FAKE_LOCAL_SHA256"]
                             text = (
@@ -1270,6 +1278,31 @@ class LivePatchCliTests(unittest.TestCase):
         self.assertTrue(payload["remove_created"])
         self.assertEqual(payload["expected_current_sha256"], digest)
         self.assertEqual(conflicting.returncode, 2)
+
+    def test_remove_created_rollback_applies_through_runtime_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            local = self.write_local_file(directory)
+            env = self.make_fake_runtime(directory, local)
+            result = self.run_cli(
+                "rollback_live_file.py",
+                "--ip", "192.0.2.10",
+                "--remove-created",
+                "--expected-current-sha256", env["FAKE_LOCAL_SHA256"],
+                "--remote", "/tmp/openubmc-live-patch-smoke",
+                "--apply", "--intent", "live_patch",
+                "--authorize-live-patch", "--restart-scope", "none",
+                "--json",
+                env=env,
+            )
+            commands = self.read_commands(Path(env["FAKE_REMOTE_LOG"]))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["remote_removed"])
+        self.assertTrue(payload["root_mount_restored"])
+        self.assertTrue(any("verify_missing" in command for command in commands))
 
     def test_nonstandard_rollback_target_requires_force_path(self) -> None:
         common = (
